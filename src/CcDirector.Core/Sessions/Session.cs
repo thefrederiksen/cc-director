@@ -1,0 +1,94 @@
+using System.Text;
+using CcDirector.Core.ConPty;
+using CcDirector.Core.Memory;
+
+namespace CcDirector.Core.Sessions;
+
+public enum SessionStatus
+{
+    Starting,
+    Running,
+    Exiting,
+    Exited,
+    Failed
+}
+
+/// <summary>
+/// Represents a single claude.exe session with its ConPTY, process, and buffer.
+/// </summary>
+public sealed class Session : IDisposable
+{
+    private readonly PseudoConsole _console;
+    private readonly ProcessHost _processHost;
+    private bool _disposed;
+
+    public Guid Id { get; }
+    public string RepoPath { get; }
+    public string WorkingDirectory { get; }
+    public SessionStatus Status { get; internal set; }
+    public DateTimeOffset CreatedAt { get; }
+    public string? ClaudeArgs { get; }
+    public CircularTerminalBuffer Buffer { get; }
+    public int? ExitCode { get; internal set; }
+    public int ProcessId => _processHost.ProcessId;
+
+    internal ProcessHost ProcessHost => _processHost;
+
+    internal Session(
+        Guid id,
+        string repoPath,
+        string workingDirectory,
+        string? claudeArgs,
+        PseudoConsole console,
+        ProcessHost processHost,
+        CircularTerminalBuffer buffer)
+    {
+        Id = id;
+        RepoPath = repoPath;
+        WorkingDirectory = workingDirectory;
+        ClaudeArgs = claudeArgs;
+        _console = console;
+        _processHost = processHost;
+        Buffer = buffer;
+        CreatedAt = DateTimeOffset.UtcNow;
+        Status = SessionStatus.Starting;
+    }
+
+    /// <summary>Send raw bytes to the ConPTY input pipe.</summary>
+    public void SendInput(byte[] data)
+    {
+        if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
+        _processHost.Write(data);
+    }
+
+    /// <summary>Send text to the ConPTY. Appends CR (not LF) as ConPTY expects carriage return.</summary>
+    public void SendText(string text)
+    {
+        if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
+        var bytes = Encoding.UTF8.GetBytes(text + "\r");
+        _processHost.Write(bytes);
+    }
+
+    /// <summary>Resize the pseudo console.</summary>
+    public void Resize(short cols, short rows)
+    {
+        if (_disposed) return;
+        _console.Resize(cols, rows);
+    }
+
+    /// <summary>Kill the session gracefully, then force if needed.</summary>
+    public async Task KillAsync(int timeoutMs = 5000)
+    {
+        if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
+        Status = SessionStatus.Exiting;
+        await _processHost.GracefulShutdownAsync(timeoutMs);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _processHost.Dispose();
+        Buffer.Dispose();
+    }
+}
