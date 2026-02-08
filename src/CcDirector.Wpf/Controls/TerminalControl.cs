@@ -177,8 +177,8 @@ public class TerminalControl : FrameworkElement
             }
         }
 
-        // Draw cursor
-        if (_scrollOffset == 0 && _parser != null)
+        // Draw cursor (only when visible and not scrolled)
+        if (_scrollOffset == 0 && _parser != null && _parser.IsCursorVisible)
         {
             var (cursorCol, cursorRow) = _parser.GetCursorPosition();
             if (cursorCol >= 0 && cursorCol < _cols && cursorRow >= 0 && cursorRow < _rows)

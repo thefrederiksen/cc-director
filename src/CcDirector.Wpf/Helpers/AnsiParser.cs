@@ -18,12 +18,27 @@ public class AnsiParser
     private int _cursorCol;
     private int _cursorRow;
 
+    // Scroll region margins (0-based, inclusive)
+    private int _scrollTop;
+    private int _scrollBottom;
+
     // Current text attributes
     private Color _fg = Colors.LightGray;
     private Color _bg = default;
     private bool _bold;
     private bool _italic;
     private bool _underline;
+    private bool _reverse;
+
+    // Cursor visibility (DEC ?25)
+    private bool _cursorVisible = true;
+
+    // Alternate screen buffer (DEC ?1049)
+    private TerminalCell[,]? _savedCells;
+    private int _savedCursorCol;
+    private int _savedCursorRow;
+    private int _savedScrollTop;
+    private int _savedScrollBottom;
 
     // Parser state machine
     private ParserState _state = ParserState.Ground;
@@ -73,6 +88,8 @@ public class AnsiParser
         _cells = cells;
         _cols = cols;
         _rows = rows;
+        _scrollTop = 0;
+        _scrollBottom = rows - 1;
         _scrollback = scrollback;
         _maxScrollback = maxScrollback;
     }
@@ -82,11 +99,15 @@ public class AnsiParser
         _cells = cells;
         _cols = cols;
         _rows = rows;
+        _scrollTop = 0;
+        _scrollBottom = rows - 1;
         _cursorCol = Math.Min(_cursorCol, cols - 1);
         _cursorRow = Math.Min(_cursorRow, rows - 1);
     }
 
     public (int Col, int Row) GetCursorPosition() => (_cursorCol, _cursorRow);
+
+    public bool IsCursorVisible => _cursorVisible;
 
     public void Parse(byte[] data)
     {
@@ -202,9 +223,9 @@ public class AnsiParser
                 _state = ParserState.OscString;
                 break;
             case (byte)'M': // RI - reverse index (scroll down)
-                if (_cursorRow == 0)
+                if (_cursorRow == _scrollTop)
                     ScrollDown();
-                else
+                else if (_cursorRow > 0)
                     _cursorRow--;
                 _state = ParserState.Ground;
                 break;
@@ -281,7 +302,7 @@ public class AnsiParser
         // Handle ? prefix (DEC private modes)
         if (_intermediateChar == '?')
         {
-            // Ignore DEC private mode set/reset (cursor visibility, alt screen, etc.)
+            HandleDecPrivateMode(final, p0);
             return;
         }
 
@@ -347,7 +368,27 @@ public class AnsiParser
             case 'm': // SGR - Select Graphic Rendition
                 HandleSgr();
                 break;
-            case 'r': // DECSTBM - Set Top and Bottom Margins (ignore for now)
+            case 'r': // DECSTBM - Set Top and Bottom Margins
+                if (p0 == 0 && p1 == 0)
+                {
+                    // Reset to full screen
+                    _scrollTop = 0;
+                    _scrollBottom = _rows - 1;
+                }
+                else
+                {
+                    // Parameters are 1-based
+                    _scrollTop = Math.Max(0, (p0 > 0 ? p0 : 1) - 1);
+                    _scrollBottom = Math.Min(_rows - 1, (p1 > 0 ? p1 : _rows) - 1);
+                    if (_scrollTop >= _scrollBottom)
+                    {
+                        _scrollTop = 0;
+                        _scrollBottom = _rows - 1;
+                    }
+                }
+                // DECSTBM moves cursor to home position
+                _cursorCol = 0;
+                _cursorRow = 0;
                 break;
             case 's': // SCP - Save Cursor Position
                 break;
@@ -363,6 +404,51 @@ public class AnsiParser
             case 'n': // DSR - Device Status Report (ignore)
                 break;
             case 't': // Window manipulation (ignore)
+                break;
+        }
+    }
+
+    private void HandleDecPrivateMode(char final, int mode)
+    {
+        bool set = (final == 'h');
+
+        switch (mode)
+        {
+            case 25: // DECTCEM - cursor visibility
+                _cursorVisible = set;
+                break;
+            case 1049: // Alternate screen buffer with save/restore cursor
+                if (set)
+                {
+                    // Save state and switch to alt screen
+                    _savedCursorCol = _cursorCol;
+                    _savedCursorRow = _cursorRow;
+                    _savedScrollTop = _scrollTop;
+                    _savedScrollBottom = _scrollBottom;
+                    _savedCells = _cells.Clone() as TerminalCell[,];
+                    // Clear the screen for alt buffer
+                    for (int r = 0; r < _rows; r++)
+                        for (int c = 0; c < _cols; c++)
+                            _cells[c, r] = new TerminalCell();
+                    _cursorCol = 0;
+                    _cursorRow = 0;
+                    _scrollTop = 0;
+                    _scrollBottom = _rows - 1;
+                }
+                else if (_savedCells != null)
+                {
+                    // Restore saved state
+                    int copyC = Math.Min(_savedCells.GetLength(0), _cols);
+                    int copyR = Math.Min(_savedCells.GetLength(1), _rows);
+                    for (int r = 0; r < _rows; r++)
+                        for (int c = 0; c < _cols; c++)
+                            _cells[c, r] = (c < copyC && r < copyR) ? _savedCells[c, r] : new TerminalCell();
+                    _cursorCol = Math.Min(_savedCursorCol, _cols - 1);
+                    _cursorRow = Math.Min(_savedCursorRow, _rows - 1);
+                    _scrollTop = _savedScrollTop;
+                    _scrollBottom = Math.Min(_savedScrollBottom, _rows - 1);
+                    _savedCells = null;
+                }
                 break;
         }
     }
@@ -386,13 +472,27 @@ public class AnsiParser
                 case 3: _italic = true; break;
                 case 4: _underline = true; break;
                 case 7: // Reverse video
-                    (_fg, _bg) = (_bg == default ? Color.FromRgb(30, 30, 30) : _bg,
-                                  _fg == default ? Colors.LightGray : _fg);
+                    if (!_reverse)
+                    {
+                        _reverse = true;
+                        var oldFg = _fg == default ? Colors.LightGray : _fg;
+                        var oldBg = _bg == default ? Color.FromRgb(30, 30, 30) : _bg;
+                        _fg = oldBg;
+                        _bg = oldFg;
+                    }
                     break;
                 case 22: _bold = false; break;
                 case 23: _italic = false; break;
                 case 24: _underline = false; break;
-                case 27: // Reverse off (just reset to default)
+                case 27: // Reverse off
+                    if (_reverse)
+                    {
+                        _reverse = false;
+                        var oldFg = _fg;
+                        var oldBg = _bg;
+                        _fg = oldBg == Color.FromRgb(30, 30, 30) ? default : oldBg;
+                        _bg = oldFg == Colors.LightGray ? default : oldFg;
+                    }
                     break;
                 case >= 30 and <= 37:
                     _fg = _bold ? AnsiColors[p - 30 + 8] : AnsiColors[p - 30];
@@ -477,6 +577,7 @@ public class AnsiParser
         _bold = false;
         _italic = false;
         _underline = false;
+        _reverse = false;
     }
 
     private void PutChar(char ch)
@@ -502,49 +603,52 @@ public class AnsiParser
 
     private void LineFeed()
     {
-        if (_cursorRow < _rows - 1)
+        if (_cursorRow == _scrollBottom)
+        {
+            // At the bottom margin - scroll the region up
+            ScrollUp();
+        }
+        else if (_cursorRow < _rows - 1)
         {
             _cursorRow++;
-        }
-        else
-        {
-            ScrollUp();
         }
     }
 
     private void ScrollUp()
     {
-        // Save top row to scrollback
-        var savedRow = new TerminalCell[_cols];
-        for (int c = 0; c < _cols; c++)
-            savedRow[c] = _cells[c, 0];
-        _scrollback.Add(savedRow);
+        // Only save to scrollback when scrolling the full screen (top margin at row 0)
+        if (_scrollTop == 0)
+        {
+            var savedRow = new TerminalCell[_cols];
+            for (int c = 0; c < _cols; c++)
+                savedRow[c] = _cells[c, 0];
+            _scrollback.Add(savedRow);
 
-        // Trim scrollback
-        while (_scrollback.Count > _maxScrollback)
-            _scrollback.RemoveAt(0);
+            while (_scrollback.Count > _maxScrollback)
+                _scrollback.RemoveAt(0);
+        }
 
-        // Shift rows up
-        for (int r = 0; r < _rows - 1; r++)
+        // Shift rows up within the scroll region only
+        for (int r = _scrollTop; r < _scrollBottom; r++)
             for (int c = 0; c < _cols; c++)
                 _cells[c, r] = _cells[c, r + 1];
 
-        // Clear bottom row
-        for (int c = 0; c < _cols; c++)
-            _cells[c, _rows - 1] = new TerminalCell();
+        // Clear bottom row of scroll region with BCE
+        ClearRow(_scrollBottom);
     }
 
     private void ScrollDown()
     {
-        // Shift rows down
-        for (int r = _rows - 1; r > 0; r--)
+        // Shift rows down within the scroll region only
+        for (int r = _scrollBottom; r > _scrollTop; r--)
             for (int c = 0; c < _cols; c++)
                 _cells[c, r] = _cells[c, r - 1];
 
-        // Clear top row
-        for (int c = 0; c < _cols; c++)
-            _cells[c, 0] = new TerminalCell();
+        // Clear top row of scroll region with BCE
+        ClearRow(_scrollTop);
     }
+
+    private TerminalCell BceCell() => new() { Background = _bg };
 
     private void EraseInDisplay(int mode)
     {
@@ -558,8 +662,9 @@ public class AnsiParser
             case 1: // Clear from start to cursor
                 for (int r = 0; r < _cursorRow; r++)
                     ClearRow(r);
+                var bce1 = BceCell();
                 for (int c = 0; c <= _cursorCol && c < _cols; c++)
-                    _cells[c, _cursorRow] = new TerminalCell();
+                    _cells[c, _cursorRow] = bce1;
                 break;
             case 2: // Clear entire display
             case 3: // Clear entire display and scrollback
@@ -572,15 +677,16 @@ public class AnsiParser
 
     private void EraseInLine(int mode)
     {
+        var bce = BceCell();
         switch (mode)
         {
             case 0: // Clear from cursor to end of line
                 for (int c = _cursorCol; c < _cols; c++)
-                    _cells[c, _cursorRow] = new TerminalCell();
+                    _cells[c, _cursorRow] = bce;
                 break;
             case 1: // Clear from start of line to cursor
                 for (int c = 0; c <= _cursorCol && c < _cols; c++)
-                    _cells[c, _cursorRow] = new TerminalCell();
+                    _cells[c, _cursorRow] = bce;
                 break;
             case 2: // Clear entire line
                 ClearRow(_cursorRow);
@@ -590,15 +696,17 @@ public class AnsiParser
 
     private void ClearRow(int row)
     {
+        var bce = BceCell();
         for (int c = 0; c < _cols; c++)
-            _cells[c, row] = new TerminalCell();
+            _cells[c, row] = bce;
     }
 
     private void InsertLines(int count)
     {
+        int bottom = _scrollBottom;
         for (int n = 0; n < count; n++)
         {
-            for (int r = _rows - 1; r > _cursorRow; r--)
+            for (int r = bottom; r > _cursorRow; r--)
                 for (int c = 0; c < _cols; c++)
                     _cells[c, r] = _cells[c, r - 1];
             ClearRow(_cursorRow);
@@ -607,34 +715,38 @@ public class AnsiParser
 
     private void DeleteLines(int count)
     {
+        int bottom = _scrollBottom;
         for (int n = 0; n < count; n++)
         {
-            for (int r = _cursorRow; r < _rows - 1; r++)
+            for (int r = _cursorRow; r < bottom; r++)
                 for (int c = 0; c < _cols; c++)
                     _cells[c, r] = _cells[c, r + 1];
-            ClearRow(_rows - 1);
+            ClearRow(bottom);
         }
     }
 
     private void DeleteChars(int count)
     {
+        var bce = BceCell();
         for (int c = _cursorCol; c < _cols - count; c++)
             _cells[c, _cursorRow] = _cells[c + count, _cursorRow];
         for (int c = Math.Max(_cursorCol, _cols - count); c < _cols; c++)
-            _cells[c, _cursorRow] = new TerminalCell();
+            _cells[c, _cursorRow] = bce;
     }
 
     private void InsertChars(int count)
     {
+        var bce = BceCell();
         for (int c = _cols - 1; c >= _cursorCol + count; c--)
             _cells[c, _cursorRow] = _cells[c - count, _cursorRow];
         for (int c = _cursorCol; c < _cursorCol + count && c < _cols; c++)
-            _cells[c, _cursorRow] = new TerminalCell();
+            _cells[c, _cursorRow] = bce;
     }
 
     private void EraseChars(int count)
     {
+        var bce = BceCell();
         for (int c = _cursorCol; c < _cursorCol + count && c < _cols; c++)
-            _cells[c, _cursorRow] = new TerminalCell();
+            _cells[c, _cursorRow] = bce;
     }
 }
