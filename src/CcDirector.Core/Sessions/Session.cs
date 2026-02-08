@@ -1,6 +1,7 @@
 using System.Text;
 using CcDirector.Core.ConPty;
 using CcDirector.Core.Memory;
+using CcDirector.Core.Pipes;
 
 namespace CcDirector.Core.Sessions;
 
@@ -32,6 +33,15 @@ public sealed class Session : IDisposable
     public int? ExitCode { get; internal set; }
     public int ProcessId => _processHost.ProcessId;
 
+    /// <summary>Claude's cognitive activity state, driven by hook events.</summary>
+    public ActivityState ActivityState { get; private set; } = ActivityState.Starting;
+
+    /// <summary>The session_id reported by Claude hooks, used for routing.</summary>
+    public string? ClaudeSessionId { get; internal set; }
+
+    /// <summary>Fires when ActivityState changes. Args: (oldState, newState).</summary>
+    public event Action<ActivityState, ActivityState>? OnActivityStateChanged;
+
     internal ProcessHost ProcessHost => _processHost;
 
     internal Session(
@@ -59,6 +69,7 @@ public sealed class Session : IDisposable
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         _processHost.Write(data);
+        SetActivityState(ActivityState.Working);
     }
 
     /// <summary>Send text to the ConPTY. Appends CR (not LF) as ConPTY expects carriage return.</summary>
@@ -67,6 +78,33 @@ public sealed class Session : IDisposable
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         var bytes = Encoding.UTF8.GetBytes(text + "\r");
         _processHost.Write(bytes);
+        SetActivityState(ActivityState.Working);
+    }
+
+    /// <summary>Process a hook event and transition activity state accordingly.</summary>
+    public void HandlePipeEvent(PipeMessage msg)
+    {
+        var newState = msg.HookEventName switch
+        {
+            "Stop" => ActivityState.Idle,
+            "UserPromptSubmit" => ActivityState.Working,
+            "Notification" when msg.NotificationType == "permission_prompt" => ActivityState.WaitingForPerm,
+            "Notification" => ActivityState.WaitingForInput,
+            "SessionStart" => ActivityState.Idle,
+            "SessionEnd" => ActivityState.Exited,
+            _ => (ActivityState?)null
+        };
+
+        if (newState.HasValue)
+            SetActivityState(newState.Value);
+    }
+
+    private void SetActivityState(ActivityState newState)
+    {
+        var old = ActivityState;
+        if (old == newState) return;
+        ActivityState = newState;
+        OnActivityStateChanged?.Invoke(old, newState);
     }
 
     /// <summary>Resize the pseudo console.</summary>

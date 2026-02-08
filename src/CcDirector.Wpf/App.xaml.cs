@@ -2,6 +2,8 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Hooks;
+using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
 
 namespace CcDirector.Wpf;
@@ -11,23 +13,55 @@ public partial class App : Application
     public SessionManager SessionManager { get; private set; } = null!;
     public AgentOptions Options { get; private set; } = null!;
     public List<RepositoryConfig> Repositories { get; private set; } = new();
+    public DirectorPipeServer PipeServer { get; private set; } = null!;
+    public EventRouter EventRouter { get; private set; } = null!;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         LoadConfiguration();
 
-        SessionManager = new SessionManager(Options, msg =>
-            System.Diagnostics.Debug.WriteLine($"[SessionManager] {msg}"));
+        Action<string> log = msg => System.Diagnostics.Debug.WriteLine($"[CcDirector] {msg}");
 
+        SessionManager = new SessionManager(Options, log);
         SessionManager.ScanForOrphans();
+
+        // Start pipe server and event router
+        PipeServer = new DirectorPipeServer(log);
+        EventRouter = new EventRouter(SessionManager, log);
+        PipeServer.OnMessageReceived += EventRouter.Route;
+        PipeServer.Start();
+
+        // Install hooks (fire-and-forget, non-blocking startup)
+        _ = InstallHooksAsync(log);
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
+        PipeServer.Dispose();
         SessionManager.KillAllSessionsAsync().GetAwaiter().GetResult();
         SessionManager.Dispose();
         base.OnExit(e);
+    }
+
+    private async Task InstallHooksAsync(Action<string> log)
+    {
+        try
+        {
+            var relayScriptPath = Path.Combine(AppContext.BaseDirectory, "Hooks", "hook-relay.ps1");
+            if (File.Exists(relayScriptPath))
+            {
+                await HookInstaller.InstallAsync(relayScriptPath, log);
+            }
+            else
+            {
+                log($"Hook relay script not found at {relayScriptPath}, skipping hook installation.");
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"Failed to install hooks: {ex.Message}");
+        }
     }
 
     private void LoadConfiguration()

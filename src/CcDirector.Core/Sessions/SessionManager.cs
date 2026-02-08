@@ -12,6 +12,7 @@ namespace CcDirector.Core.Sessions;
 public sealed class SessionManager : IDisposable
 {
     private readonly ConcurrentDictionary<Guid, Session> _sessions = new();
+    private readonly ConcurrentDictionary<string, Guid> _claudeSessionMap = new();
     private readonly AgentOptions _options;
     private readonly Action<string>? _log;
 
@@ -44,6 +45,7 @@ public sealed class SessionManager : IDisposable
             {
                 session.ExitCode = exitCode;
                 session.Status = SessionStatus.Exited;
+                session.HandlePipeEvent(new Pipes.PipeMessage { HookEventName = "SessionEnd" });
                 _log?.Invoke($"Session {id} exited with code {exitCode}.");
             };
 
@@ -119,6 +121,49 @@ public sealed class SessionManager : IDisposable
         }
     }
 
+    /// <summary>Register a Claude session_id → Director session mapping.</summary>
+    public void RegisterClaudeSession(string claudeSessionId, Guid directorSessionId)
+    {
+        _claudeSessionMap[claudeSessionId] = directorSessionId;
+        if (_sessions.TryGetValue(directorSessionId, out var session))
+            session.ClaudeSessionId = claudeSessionId;
+        _log?.Invoke($"Registered Claude session {claudeSessionId} → Director session {directorSessionId}.");
+    }
+
+    /// <summary>Look up a Director session by its Claude session_id.</summary>
+    public Session? GetSessionByClaudeId(string claudeSessionId)
+    {
+        if (_claudeSessionMap.TryGetValue(claudeSessionId, out var id))
+            return GetSession(id);
+        return null;
+    }
+
+    /// <summary>
+    /// Find an unmatched session (no ClaudeSessionId set) by matching cwd,
+    /// falling back to the oldest unmatched session.
+    /// </summary>
+    public Session? FindUnmatchedSession(string? cwd)
+    {
+        var unmatched = _sessions.Values
+            .Where(s => s.ClaudeSessionId == null && s.Status == SessionStatus.Running)
+            .OrderBy(s => s.CreatedAt)
+            .ToList();
+
+        if (unmatched.Count == 0) return null;
+
+        if (!string.IsNullOrEmpty(cwd))
+        {
+            var byPath = unmatched.FirstOrDefault(s =>
+                string.Equals(
+                    Path.GetFullPath(s.WorkingDirectory).TrimEnd('\\', '/'),
+                    Path.GetFullPath(cwd).TrimEnd('\\', '/'),
+                    StringComparison.OrdinalIgnoreCase));
+            if (byPath != null) return byPath;
+        }
+
+        return unmatched[0];
+    }
+
     public void Dispose()
     {
         foreach (var session in _sessions.Values)
@@ -126,5 +171,6 @@ public sealed class SessionManager : IDisposable
             session.Dispose();
         }
         _sessions.Clear();
+        _claudeSessionMap.Clear();
     }
 }
