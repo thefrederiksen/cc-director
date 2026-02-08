@@ -227,6 +227,13 @@ public class AnsiParser
 
     private void HandleCsi(byte b)
     {
+        // Private parameter prefix chars (? < = >) come before digits
+        if (b >= 0x3C && b <= 0x3F)
+        {
+            _intermediateChar = (char)b;
+            return;
+        }
+
         if (b >= '0' && b <= '9')
         {
             _currentParam = _currentParam * 10 + (b - '0');
@@ -234,7 +241,7 @@ public class AnsiParser
             return;
         }
 
-        if (b == ';')
+        if (b == ';' || b == ':')
         {
             _params.Add(_hasParam ? _currentParam : 0);
             _currentParam = 0;
@@ -242,7 +249,7 @@ public class AnsiParser
             return;
         }
 
-        // Intermediate characters (? ! > etc.)
+        // Intermediate characters (space, !, ", #, $, etc.)
         if (b >= 0x20 && b <= 0x2F)
         {
             _intermediateChar = (char)b;
