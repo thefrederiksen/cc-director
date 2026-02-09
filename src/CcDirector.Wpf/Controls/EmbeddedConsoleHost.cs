@@ -99,6 +99,18 @@ public class EmbeddedConsoleHost : IDisposable
         return host;
     }
 
+    /// <summary>
+    /// Read the window title text for a given HWND via Win32 GetWindowText.
+    /// Returns empty string on failure.
+    /// </summary>
+    public static string GetWindowTitle(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return string.Empty;
+        var sb = new System.Text.StringBuilder(512);
+        GetWindowText(hwnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
+
     private IntPtr _consoleHwnd;
     private Process? _process;
     private bool _disposed;
@@ -788,6 +800,9 @@ public class EmbeddedConsoleHost : IDisposable
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern short VkKeyScan(char ch);

@@ -41,18 +41,21 @@ listElementsCmd.SetAction(parseResult => Run(() =>
 // ── click ──
 var clickCmd = new Command("click", "Click a UI element");
 var xyOption = new Option<string?>("--xy") { Description = "Absolute screen coordinates (e.g. \"500,300\")" };
+var rightOption = new Option<bool>("--right", "-r") { Description = "Right-click instead of left-click" };
 clickCmd.Options.Add(windowOption);
 clickCmd.Options.Add(nameOption);
 clickCmd.Options.Add(idOption);
 clickCmd.Options.Add(xyOption);
+clickCmd.Options.Add(rightOption);
 clickCmd.SetAction(parseResult => Run(() =>
 {
     var window = parseResult.GetValue(windowOption);
     var name = parseResult.GetValue(nameOption);
     var id = parseResult.GetValue(idOption);
     var xy = parseResult.GetValue(xyOption);
+    var right = parseResult.GetValue(rightOption);
     using var automation = new UIA3Automation();
-    return ClickCommand.Execute(automation, window, name, id, xy);
+    return ClickCommand.Execute(automation, window, name, id, xy, right);
 }));
 
 // ── type ──

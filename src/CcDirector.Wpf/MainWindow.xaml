@@ -42,14 +42,14 @@
                                 Foreground="{StaticResource TextForeground}"
                                 BorderThickness="0"
                                 Cursor="Hand" />
-                        <Button x:Name="BtnScanProcesses" Content="Scan Processes"
-                                Click="BtnScanProcesses_Click"
+                        <Button x:Name="BtnReconnect" Content="Reconnect"
+                                Click="BtnReconnect_Click"
                                 Height="30" Margin="0,2"
                                 Background="{StaticResource ButtonBackground}"
                                 Foreground="{StaticResource TextForeground}"
                                 BorderThickness="0"
                                 Cursor="Hand"
-                                ToolTip="Log all running processes to file log" />
+                                ToolTip="Find and re-adopt orphaned claude.exe processes" />
                         <Button x:Name="BtnOpenLogs" Content="Open Logs"
                                 Click="BtnOpenLogs_Click"
                                 Height="30" Margin="0,2"

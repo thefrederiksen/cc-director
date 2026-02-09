@@ -86,18 +86,22 @@ public partial class GitChangesControl : UserControl
 
     private async void PollTimer_Tick(object? sender, EventArgs e)
     {
-        await RefreshAsync();
+        try { await RefreshAsync(); } catch { /* prevent crash from async void */ }
     }
 
     private async void SyncTimer_Tick(object? sender, EventArgs e)
     {
-        bool shouldFetch = (DateTime.UtcNow - _lastFetchTime).TotalSeconds >= 60;
-        await RefreshSyncAsync(fetch: shouldFetch);
+        try
+        {
+            bool shouldFetch = (DateTime.UtcNow - _lastFetchTime).TotalSeconds >= 60;
+            await RefreshSyncAsync(fetch: shouldFetch);
+        }
+        catch { /* prevent crash from async void */ }
     }
 
     private async Task RefreshSyncAsync(bool fetch = false)
     {
-        if (_repoPath == null) return;
+        if (_repoPath == null || !Directory.Exists(_repoPath)) return;
 
         if (fetch)
         {
@@ -157,7 +161,7 @@ public partial class GitChangesControl : UserControl
 
     private async Task RefreshAsync()
     {
-        if (_repoPath == null) return;
+        if (_repoPath == null || !Directory.Exists(_repoPath)) return;
 
         var result = await _provider.GetStatusAsync(_repoPath);
         if (!result.Success) return;

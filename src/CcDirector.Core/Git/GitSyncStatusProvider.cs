@@ -110,7 +110,14 @@ public class GitSyncStatusProvider
 
     public async Task FetchAsync(string repoPath)
     {
-        await RunGitAsync(repoPath, "fetch --quiet");
+        try
+        {
+            await RunGitAsync(repoPath, "fetch --quiet");
+        }
+        catch
+        {
+            // Swallow — invalid paths, git not found, etc.
+        }
     }
 
     private async Task<string?> DetectMainBranchAsync(string repoPath)

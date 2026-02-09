@@ -25,9 +25,9 @@ public static class ListElementsCommand
 
         var result = elements.Select(e => new
         {
-            name = e.Name ?? "",
-            automationId = e.AutomationId ?? "",
-            controlType = e.ControlType.ToString(),
+            name = Safe(() => e.Name) ?? "",
+            automationId = Safe(() => e.AutomationId) ?? "",
+            controlType = Safe(() => e.ControlType.ToString()) ?? "Unknown",
             boundingRect = FormatRect(e.BoundingRectangle)
         }).ToArray();
 
@@ -38,5 +38,11 @@ public static class ListElementsCommand
     private static object FormatRect(System.Drawing.Rectangle r)
     {
         return new { x = r.X, y = r.Y, width = r.Width, height = r.Height };
+    }
+
+    private static string? Safe(Func<string?> accessor)
+    {
+        try { return accessor(); }
+        catch { return null; }
     }
 }
