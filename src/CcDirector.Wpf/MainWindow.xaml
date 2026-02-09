@@ -70,7 +70,7 @@
                             <DataTemplate>
                                 <Grid>
                                     <Grid.ContextMenu>
-                                        <ContextMenu>
+                                        <ContextMenu Opened="SessionContextMenu_Opened" Closed="SessionContextMenu_Closed">
                                             <MenuItem Header="Rename" Click="MenuRenameSession_Click" />
                                             <Separator />
                                             <MenuItem Header="Open in Explorer" Click="MenuOpenInExplorer_Click" />

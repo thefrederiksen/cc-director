@@ -26,8 +26,6 @@ public partial class MainWindow : Window
     private readonly Dictionary<Guid, EmbeddedConsoleHost> _embeddedHosts = new();
     private EmbeddedConsoleHost? _activeEmbeddedHost;
     private Session? _activeSession;
-    private System.Windows.Threading.DispatcherTimer? _zOrderTimer;
-
     public MainWindow()
     {
         InitializeComponent();
@@ -41,9 +39,37 @@ public partial class MainWindow : Window
         SessionTabs.SelectionChanged += SessionTabs_SelectionChanged;
     }
 
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+        source?.AddHook(WndProc);
+    }
+
+    private const int WM_NCACTIVATE = 0x0086;
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        // WM_NCACTIVATE fires when the title bar activation state changes
+        // (title bar click, alt-tab, etc.). Re-assert console z-order when
+        // the window is being activated (wParam != 0).
+        if (msg == WM_NCACTIVATE && wParam != IntPtr.Zero)
+        {
+            if (_activeEmbeddedHost != null &&
+                _activeEmbeddedHost.IsVisible &&
+                WindowState != WindowState.Minimized)
+            {
+                Dispatcher.BeginInvoke(
+                    System.Windows.Threading.DispatcherPriority.Input,
+                    () => _activeEmbeddedHost?.EnsureZOrder());
+            }
+        }
+
+        return IntPtr.Zero;
+    }
+
     protected override void OnClosing(CancelEventArgs e)
     {
-        _zOrderTimer?.Stop();
         var app = (App)Application.Current;
 
         // Check for active running sessions
@@ -54,7 +80,7 @@ public partial class MainWindow : Window
         if (activeSessions.Count > 0)
         {
             var dialog = new CloseDialog(activeSessions.Count) { Owner = this };
-            if (dialog.ShowDialog() != true)
+            if (ShowDialogOverConsole(dialog) != true)
             {
                 e.Cancel = true;
                 return;
@@ -101,23 +127,6 @@ public partial class MainWindow : Window
 
         // Restore persisted sessions (loaded by App.OnStartup into SessionManager)
         RestorePersistedSessions();
-
-        // Periodic z-order check: re-assert console overlay position when it
-        // should be visible but the WPF window isn't active (context menu, title bar, etc.)
-        _zOrderTimer = new System.Windows.Threading.DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(250)
-        };
-        _zOrderTimer.Tick += (_, _) =>
-        {
-            if (_activeEmbeddedHost != null &&
-                _activeEmbeddedHost.IsVisible &&
-                WindowState != WindowState.Minimized)
-            {
-                _activeEmbeddedHost.EnsureZOrder();
-            }
-        };
-        _zOrderTimer.Start();
     }
 
     private void RestorePersistedSessions()
@@ -175,7 +184,7 @@ public partial class MainWindow : Window
 
         var dialog = new NewSessionDialog(registry, recentStore);
         dialog.Owner = this;
-        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        if (ShowDialogOverConsole(dialog) == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
             if (!string.IsNullOrWhiteSpace(dialog.SelectedCustomName))
             {
@@ -443,6 +452,48 @@ public partial class MainWindow : Window
             UpdateConsolePosition);
     }
 
+    private void SessionContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        // Context menu popups can push the console overlay behind the WPF window.
+        // Re-assert z-order after a brief delay so the popup settles first.
+        Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.Input,
+            () => _activeEmbeddedHost?.EnsureZOrder());
+    }
+
+    private void SessionContextMenu_Closed(object sender, RoutedEventArgs e)
+    {
+        if (_activeEmbeddedHost != null && _activeEmbeddedHost.IsVisible)
+        {
+            _activeEmbeddedHost.Show();
+            DeferConsolePositionUpdate();
+        }
+    }
+
+    /// <summary>
+    /// Show a modal dialog while temporarily hiding the console overlay
+    /// so it doesn't render on top of the dialog.
+    /// </summary>
+    private bool? ShowDialogOverConsole(Window dialog)
+    {
+        _activeEmbeddedHost?.Hide();
+        try
+        {
+            return dialog.ShowDialog();
+        }
+        finally
+        {
+            if (_activeEmbeddedHost != null &&
+                _activeEmbeddedHost.IsVisible == false &&
+                WindowState != WindowState.Minimized &&
+                SessionTabs.SelectedIndex == 0)
+            {
+                _activeEmbeddedHost.Show();
+                DeferConsolePositionUpdate();
+            }
+        }
+    }
+
     private void SessionTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_activeEmbeddedHost == null) return;
@@ -648,7 +699,7 @@ public partial class MainWindow : Window
     private void ShowRenameDialog(SessionViewModel vm)
     {
         var dialog = new RenameSessionDialog(vm.DisplayName) { Owner = this };
-        if (dialog.ShowDialog() == true)
+        if (ShowDialogOverConsole(dialog) == true)
         {
             vm.Rename(dialog.SessionName);
         }
