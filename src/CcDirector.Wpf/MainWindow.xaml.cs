@@ -20,7 +20,8 @@ public partial class MainWindow : Window
 
     private SessionManager _sessionManager = null!;
     private TerminalControl? _terminalControl;
-    private EmbeddedConsoleHost? _embeddedHost;
+    private readonly Dictionary<Guid, EmbeddedConsoleHost> _embeddedHosts = new();
+    private EmbeddedConsoleHost? _activeEmbeddedHost;
     private Session? _activeSession;
 
     public MainWindow()
@@ -39,6 +40,12 @@ public partial class MainWindow : Window
     protected override void OnClosing(CancelEventArgs e)
     {
         DetachTerminal();
+
+        // Dispose all embedded hosts (not just the active one)
+        foreach (var host in _embeddedHosts.Values)
+            host.Dispose();
+        _embeddedHosts.Clear();
+
         base.OnClosing(e);
     }
 
@@ -87,15 +94,17 @@ public partial class MainWindow : Window
 
         try
         {
-            // Kill embedded console process if this is the active embedded session
-            if (_activeSession?.Id == vm.Session.Id && _embeddedHost != null)
+            // Dispose and remove the embedded host for this session
+            if (_embeddedHosts.Remove(vm.Session.Id, out var host))
             {
-                _embeddedHost.Dispose();
+                if (_activeEmbeddedHost == host)
+                    _activeEmbeddedHost = null;
+                host.Dispose();
             }
 
             await _sessionManager.KillSessionAsync(vm.Session.Id);
 
-            // Detach terminal
+            // Detach terminal if this was the active session
             if (_activeSession?.Id == vm.Session.Id)
             {
                 DetachTerminal();
@@ -115,10 +124,12 @@ public partial class MainWindow : Window
 
         try
         {
-            // Kill embedded console process if this is the active embedded session
-            if (_activeSession?.Id == vm.Session.Id && _embeddedHost != null)
+            // Dispose and remove the embedded host for this session
+            if (_embeddedHosts.Remove(vm.Session.Id, out var host))
             {
-                _embeddedHost.Dispose();
+                if (_activeEmbeddedHost == host)
+                    _activeEmbeddedHost = null;
+                host.Dispose();
             }
 
             // Kill if still running
@@ -161,41 +172,51 @@ public partial class MainWindow : Window
         PlaceholderText.Visibility = Visibility.Collapsed;
         SessionTabs.Visibility = Visibility.Visible;
 
-        // Clean up previous controls
+        // Hide previous embedded host (don't kill it)
+        _activeEmbeddedHost?.Hide();
+        _activeEmbeddedHost = null;
+
+        // Clean up previous terminal control
         if (_terminalControl != null)
         {
             _terminalControl.Detach();
             _terminalControl = null;
         }
-        if (_embeddedHost != null)
-        {
-            _embeddedHost.KillProcess();
-            _embeddedHost = null;
-        }
         TerminalArea.Child = null;
 
         if (session.Mode == SessionMode.Embedded)
         {
-            var app = (App)Application.Current;
-            var host = new EmbeddedConsoleHost();
-            _embeddedHost = host;
-            // No TerminalArea.Child — overlay is a separate top-level window
-
-            string args = session.ClaudeArgs ?? string.Empty;
-            host.StartProcess(app.SessionManager.Options.ClaudePath, args, session.WorkingDirectory);
-            session.SetEmbeddedProcessId(host.ProcessId);
-
-            // Set WPF window as owner so console stays above it in Z-order
-            var wpfHwnd = new WindowInteropHelper(this).Handle;
-            host.SetOwner(wpfHwnd);
-
-            host.OnProcessExited += exitCode =>
+            if (_embeddedHosts.TryGetValue(session.Id, out var existingHost))
             {
-                session.NotifyEmbeddedProcessExited(exitCode);
-            };
+                // Reuse existing host — just show it
+                _activeEmbeddedHost = existingHost;
+                existingHost.Show();
+                DeferConsolePositionUpdate();
+            }
+            else
+            {
+                // Create new host
+                var app = (App)Application.Current;
+                var host = new EmbeddedConsoleHost();
+                _activeEmbeddedHost = host;
+                _embeddedHosts[session.Id] = host;
 
-            // Position console overlay after layout
-            DeferConsolePositionUpdate();
+                string args = session.ClaudeArgs ?? string.Empty;
+                host.StartProcess(app.SessionManager.Options.ClaudePath, args, session.WorkingDirectory);
+                session.SetEmbeddedProcessId(host.ProcessId);
+
+                // Set WPF window as owner so console stays above it in Z-order
+                var wpfHwnd = new WindowInteropHelper(this).Handle;
+                host.SetOwner(wpfHwnd);
+
+                host.OnProcessExited += exitCode =>
+                {
+                    session.NotifyEmbeddedProcessExited(exitCode);
+                };
+
+                // Position console overlay after layout
+                DeferConsolePositionUpdate();
+            }
         }
         else
         {
@@ -219,11 +240,8 @@ public partial class MainWindow : Window
             _terminalControl.Detach();
             _terminalControl = null;
         }
-        if (_embeddedHost != null)
-        {
-            _embeddedHost.Dispose();
-            _embeddedHost = null;
-        }
+        _activeEmbeddedHost?.Hide();
+        _activeEmbeddedHost = null;
         TerminalArea.Child = null;
 
         GitChanges.Detach();
@@ -233,7 +251,7 @@ public partial class MainWindow : Window
 
     private void UpdateConsolePosition()
     {
-        if (_embeddedHost == null || _embeddedHost.ConsoleHwnd == IntPtr.Zero)
+        if (_activeEmbeddedHost == null || _activeEmbeddedHost.ConsoleHwnd == IntPtr.Zero)
             return;
 
         // TerminalArea is a Border — get its screen-space rect
@@ -244,20 +262,20 @@ public partial class MainWindow : Window
         var bottomRight = TerminalArea.PointToScreen(new Point(TerminalArea.ActualWidth, TerminalArea.ActualHeight));
 
         var screenRect = new Rect(topLeft, bottomRight);
-        _embeddedHost.UpdatePosition(screenRect);
+        _activeEmbeddedHost.UpdatePosition(screenRect);
     }
 
     private void MainWindow_StateChanged(object? sender, EventArgs e)
     {
-        if (_embeddedHost == null) return;
+        if (_activeEmbeddedHost == null) return;
 
         if (WindowState == WindowState.Minimized)
         {
-            _embeddedHost.Hide();
+            _activeEmbeddedHost.Hide();
         }
         else
         {
-            _embeddedHost.Show();
+            _activeEmbeddedHost.Show();
             // Reposition after restore
             DeferConsolePositionUpdate();
         }
@@ -265,10 +283,10 @@ public partial class MainWindow : Window
 
     private void MainWindow_Activated(object? sender, EventArgs e)
     {
-        if (_embeddedHost == null) return;
+        if (_activeEmbeddedHost == null) return;
 
         // Bring console overlay back to top when WPF window regains focus
-        _embeddedHost.Show();
+        _activeEmbeddedHost.Show();
         DeferConsolePositionUpdate();
     }
 
@@ -281,25 +299,25 @@ public partial class MainWindow : Window
 
     private void SessionTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_embeddedHost == null) return;
+        if (_activeEmbeddedHost == null) return;
 
         // Terminal tab is index 0 — show overlay only when it's selected
         if (SessionTabs.SelectedIndex == 0)
         {
-            _embeddedHost.Show();
+            _activeEmbeddedHost.Show();
             DeferConsolePositionUpdate();
         }
         else
         {
-            _embeddedHost.Hide();
+            _activeEmbeddedHost.Hide();
         }
     }
 
     private void BtnRefreshConsole_Click(object sender, RoutedEventArgs e)
     {
-        if (_embeddedHost != null)
+        if (_activeEmbeddedHost != null)
         {
-            _embeddedHost.Show();
+            _activeEmbeddedHost.Show();
             UpdateConsolePosition();
         }
     }
@@ -309,9 +327,9 @@ public partial class MainWindow : Window
         // Re-show console overlay when text box gets focus — covers the case
         // where the user clicked the console window then clicked back here,
         // which can cause the console to slip behind the WPF window.
-        if (_embeddedHost != null)
+        if (_activeEmbeddedHost != null)
         {
-            _embeddedHost.Show();
+            _activeEmbeddedHost.Show();
             DeferConsolePositionUpdate();
         }
     }
@@ -339,10 +357,10 @@ public partial class MainWindow : Window
         var text = PromptInput.Text.ReplaceLineEndings(" ").Trim();
         PromptInput.Clear();
 
-        if (_activeSession.Mode == SessionMode.Embedded && _embeddedHost != null)
+        if (_activeSession.Mode == SessionMode.Embedded && _activeEmbeddedHost != null)
         {
             // Send keystrokes directly to the embedded console window
-            await _embeddedHost.SendTextAsync(text);
+            await _activeEmbeddedHost.SendTextAsync(text);
         }
         else
         {
