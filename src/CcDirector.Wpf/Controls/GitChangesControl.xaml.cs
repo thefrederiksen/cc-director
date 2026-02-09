@@ -35,7 +35,10 @@ public partial class GitChangesControl : UserControl
     private static readonly SolidColorBrush BrushDefault = Freeze(new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)));
 
     private readonly GitStatusProvider _provider = new();
+    private readonly GitSyncStatusProvider _syncProvider = new();
     private DispatcherTimer? _pollTimer;
+    private DispatcherTimer? _syncTimer;
+    private DateTime _lastFetchTime = DateTime.MinValue;
     private string? _repoPath;
 
     public GitChangesControl()
@@ -55,24 +58,101 @@ public partial class GitChangesControl : UserControl
         _pollTimer.Tick += PollTimer_Tick;
         _pollTimer.Start();
 
+        _syncTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(30)
+        };
+        _syncTimer.Tick += SyncTimer_Tick;
+        _syncTimer.Start();
+
         _ = RefreshAsync();
+        _ = RefreshSyncAsync(fetch: true);
     }
 
     public void Detach()
     {
         _pollTimer?.Stop();
         _pollTimer = null;
+        _syncTimer?.Stop();
+        _syncTimer = null;
         _repoPath = null;
 
         StagedTree.ItemsSource = null;
         ChangesTree.ItemsSource = null;
         StagedSection.Visibility = Visibility.Collapsed;
         EmptyText.Visibility = Visibility.Visible;
+        BranchBar.Visibility = Visibility.Collapsed;
     }
 
     private async void PollTimer_Tick(object? sender, EventArgs e)
     {
         await RefreshAsync();
+    }
+
+    private async void SyncTimer_Tick(object? sender, EventArgs e)
+    {
+        bool shouldFetch = (DateTime.UtcNow - _lastFetchTime).TotalSeconds >= 60;
+        await RefreshSyncAsync(fetch: shouldFetch);
+    }
+
+    private async Task RefreshSyncAsync(bool fetch = false)
+    {
+        if (_repoPath == null) return;
+
+        if (fetch)
+        {
+            _lastFetchTime = DateTime.UtcNow;
+            await _syncProvider.FetchAsync(_repoPath);
+        }
+
+        var status = await _syncProvider.GetSyncStatusAsync(_repoPath);
+        if (!status.Success)
+        {
+            BranchBar.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        BranchBar.Visibility = Visibility.Visible;
+
+        // Branch name
+        BranchNameText.Text = status.IsDetachedHead ? "(detached HEAD)" : status.BranchName;
+
+        // No upstream hint
+        NoUpstreamText.Visibility = !status.IsDetachedHead && !status.HasUpstream
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        // Ahead badge
+        if (status.AheadCount > 0)
+        {
+            AheadBadge.Visibility = Visibility.Visible;
+            AheadText.Text = $"\u2191{status.AheadCount}";
+        }
+        else
+        {
+            AheadBadge.Visibility = Visibility.Collapsed;
+        }
+
+        // Behind badge
+        if (status.BehindCount > 0)
+        {
+            BehindBadge.Visibility = Visibility.Visible;
+            BehindText.Text = $"\u2193{status.BehindCount}";
+        }
+        else
+        {
+            BehindBadge.Visibility = Visibility.Collapsed;
+        }
+
+        // Behind main badge
+        if (status.BehindMainCount > 0)
+        {
+            BehindMainBadge.Visibility = Visibility.Visible;
+            BehindMainText.Text = $"{status.MainBranchName} \u2193{status.BehindMainCount}";
+        }
+        else
+        {
+            BehindMainBadge.Visibility = Visibility.Collapsed;
+        }
     }
 
     private async Task RefreshAsync()
