@@ -355,6 +355,22 @@ public partial class MainWindow : Window
             }
             else
             {
+                // Check if Windows Terminal is the default - warn user before proceeding
+                if (EmbeddedConsoleHost.IsWindowsTerminalDefault())
+                {
+                    var warningDialog = new WindowsTerminalWarningDialog { Owner = this };
+                    if (warningDialog.ShowDialog() != true)
+                    {
+                        // User declined or opened settings - don't start session
+                        var sessionMgr = ((App)Application.Current).SessionManager;
+                        sessionMgr.RemoveSession(session.Id);
+                        SessionList.SelectedItem = null;
+                        PlaceholderText.Visibility = Visibility.Visible;
+                        SessionTabs.Visibility = Visibility.Collapsed;
+                        return;
+                    }
+                }
+
                 // Create new host
                 var app = (App)Application.Current;
                 var host = new EmbeddedConsoleHost();

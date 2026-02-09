@@ -617,6 +617,36 @@ public class EmbeddedConsoleHost : IDisposable
 
     // --- Diagnostic helpers ---
 
+    /// <summary>
+    /// Check if Windows Terminal is configured as the default terminal.
+    /// </summary>
+    /// <returns>True if Windows Terminal is default, false if legacy conhost or unknown.</returns>
+    public static bool IsWindowsTerminalDefault()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Console\%%Startup");
+            if (key == null)
+                return false; // Key not present = legacy conhost
+
+            var delegationTerminal = key.GetValue("DelegationTerminal")?.ToString();
+            const string wtTerminalGuid = "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}";
+            const string conhostGuid = "{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}";
+
+            // If explicitly set to conhost, not Windows Terminal
+            if (delegationTerminal?.Contains(conhostGuid, StringComparison.OrdinalIgnoreCase) == true)
+                return false;
+
+            // If set to Windows Terminal GUID, or not set (Win11 default), consider it Windows Terminal
+            return delegationTerminal?.Contains(wtTerminalGuid, StringComparison.OrdinalIgnoreCase) == true
+                || string.IsNullOrEmpty(delegationTerminal);
+        }
+        catch
+        {
+            return false; // Assume safe on error
+        }
+    }
+
     /// <summary>Log the default terminal setting from the registry.</summary>
     private static void LogDefaultTerminalSetting()
     {
