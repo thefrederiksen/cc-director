@@ -62,7 +62,6 @@
 
                     <ListBox x:Name="SessionList"
                              SelectionChanged="SessionList_SelectionChanged"
-                             MouseDoubleClick="SessionList_MouseDoubleClick"
                              Background="Transparent"
                              BorderThickness="0"
                              Foreground="{StaticResource TextForeground}"

@@ -440,6 +440,20 @@ public class EmbeddedConsoleHost : IDisposable
 
     public bool IsVisible => _visible;
 
+    /// <summary>
+    /// Lightweight z-order re-assert: only does the TOPMOST flash if the console
+    /// should be visible. Cheaper than full Show() for periodic polling.
+    /// </summary>
+    public void EnsureZOrder()
+    {
+        if (_consoleHwnd == IntPtr.Zero || !IsWindow(_consoleHwnd) || !_visible) return;
+
+        SetWindowPos(_consoleHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+        SetWindowPos(_consoleHwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    }
+
     public void KillProcess()
     {
         try

@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<Guid, EmbeddedConsoleHost> _embeddedHosts = new();
     private EmbeddedConsoleHost? _activeEmbeddedHost;
     private Session? _activeSession;
+    private System.Windows.Threading.DispatcherTimer? _zOrderTimer;
 
     public MainWindow()
     {
@@ -42,6 +43,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
+        _zOrderTimer?.Stop();
         var app = (App)Application.Current;
 
         // Check for active running sessions
@@ -99,6 +101,23 @@ public partial class MainWindow : Window
 
         // Restore persisted sessions (loaded by App.OnStartup into SessionManager)
         RestorePersistedSessions();
+
+        // Periodic z-order check: re-assert console overlay position when it
+        // should be visible but the WPF window isn't active (context menu, title bar, etc.)
+        _zOrderTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+        _zOrderTimer.Tick += (_, _) =>
+        {
+            if (_activeEmbeddedHost != null &&
+                _activeEmbeddedHost.IsVisible &&
+                WindowState != WindowState.Minimized)
+            {
+                _activeEmbeddedHost.EnsureZOrder();
+            }
+        };
+        _zOrderTimer.Start();
     }
 
     private void RestorePersistedSessions()
@@ -590,12 +609,6 @@ public partial class MainWindow : Window
     private void PromptArea_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         DeferConsolePositionUpdate();
-    }
-
-    private void SessionList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (SessionList.SelectedItem is SessionViewModel vm)
-            ShowRenameDialog(vm);
     }
 
     private void MenuRenameSession_Click(object sender, RoutedEventArgs e)
