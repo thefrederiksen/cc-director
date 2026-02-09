@@ -70,6 +70,24 @@ public class RepositoryRegistry
         return true;
     }
 
+    public bool Remove(string folderPath)
+    {
+        var normalized = Path.GetFullPath(folderPath).TrimEnd('\\', '/');
+
+        var index = _repositories.FindIndex(r =>
+            string.Equals(
+                Path.GetFullPath(r.Path).TrimEnd('\\', '/'),
+                normalized,
+                StringComparison.OrdinalIgnoreCase));
+
+        if (index < 0)
+            return false;
+
+        _repositories.RemoveAt(index);
+        Save();
+        return true;
+    }
+
     public void SeedFrom(IEnumerable<RepositoryConfig> repos)
     {
         foreach (var repo in repos)

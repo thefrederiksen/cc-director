@@ -247,6 +247,57 @@ public class EmbeddedConsoleHost : IDisposable
     }
 
     /// <summary>
+    /// Send just an Enter keystroke to the console via WriteConsoleInput.
+    /// Used as a retry mechanism when the initial Enter may not have registered.
+    /// </summary>
+    public async Task SendEnterAsync()
+    {
+        if (_process == null || _process.HasExited)
+        {
+            FileLog.Write("[EmbeddedConsoleHost] SendEnterAsync: process not running");
+            return;
+        }
+
+        await Task.Run(() =>
+        {
+            FreeConsole();
+            if (!AttachConsole((uint)_process!.Id))
+            {
+                FileLog.Write($"[EmbeddedConsoleHost] SendEnterAsync: AttachConsole failed, error={Marshal.GetLastWin32Error()}");
+                return;
+            }
+
+            try
+            {
+                IntPtr hInput = GetStdHandle(STD_INPUT_HANDLE);
+                if (hInput == IntPtr.Zero || hInput == INVALID_HANDLE_VALUE)
+                {
+                    FileLog.Write("[EmbeddedConsoleHost] SendEnterAsync: GetStdHandle failed");
+                    return;
+                }
+
+                var enterRecords = new INPUT_RECORD[]
+                {
+                    MakeKeyEvent('\r', VK_RETURN, true),
+                    MakeKeyEvent('\r', VK_RETURN, false),
+                };
+
+                if (!WriteConsoleInput(hInput, enterRecords, (uint)enterRecords.Length, out uint written))
+                {
+                    FileLog.Write($"[EmbeddedConsoleHost] SendEnterAsync: WriteConsoleInput failed, error={Marshal.GetLastWin32Error()}");
+                    return;
+                }
+
+                FileLog.Write($"[EmbeddedConsoleHost] SendEnterAsync: wrote {written}/{enterRecords.Length} Enter records");
+            }
+            finally
+            {
+                FreeConsole();
+            }
+        });
+    }
+
+    /// <summary>
     /// Tier 1: Inject text via WriteConsoleInput using pure Unicode key events.
     /// Uses UnicodeChar field only (VK=0, SC=0) so keyboard layout is irrelevant.
     /// Text and Enter are sent in separate batches with a delay so Claude Code's

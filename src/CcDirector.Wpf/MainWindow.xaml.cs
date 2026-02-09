@@ -5,9 +5,11 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
@@ -27,6 +29,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<Guid, EmbeddedConsoleHost> _embeddedHosts = new();
     private EmbeddedConsoleHost? _activeEmbeddedHost;
     private Session? _activeSession;
+    private CancellationTokenSource? _enterRetryCts;
     public MainWindow()
     {
         InitializeComponent();
@@ -508,6 +511,10 @@ public partial class MainWindow : Window
 
     private void SessionTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        // Refresh repo list when Repositories tab is selected (index 2)
+        if (SessionTabs.SelectedIndex == 2)
+            RefreshRepoManagerList();
+
         if (_activeEmbeddedHost == null) return;
 
         // Terminal tab is index 0 — show overlay only when it's selected
@@ -570,6 +577,7 @@ public partial class MainWindow : Window
         {
             // Send keystrokes directly to the embedded console window
             await _activeEmbeddedHost.SendTextAsync(text);
+            ScheduleEnterRetry(_activeSession, _activeEmbeddedHost);
         }
         else
         {
@@ -577,6 +585,44 @@ public partial class MainWindow : Window
         }
 
         PromptInput.Focus();
+    }
+
+    private void ScheduleEnterRetry(Session session, EmbeddedConsoleHost host)
+    {
+        _enterRetryCts?.Cancel();
+        _enterRetryCts = new CancellationTokenSource();
+        var cts = _enterRetryCts;
+
+        void OnStateChanged(ActivityState oldState, ActivityState newState)
+        {
+            if (newState == ActivityState.Working)
+            {
+                cts.Cancel();
+                session.OnActivityStateChanged -= OnStateChanged;
+            }
+        }
+
+        session.OnActivityStateChanged += OnStateChanged;
+        _ = RetryEnterAfterDelay(session, host, cts, OnStateChanged);
+    }
+
+    private async Task RetryEnterAfterDelay(
+        Session session,
+        EmbeddedConsoleHost host,
+        CancellationTokenSource cts,
+        Action<ActivityState, ActivityState> handler)
+    {
+        try
+        {
+            await Task.Delay(3000, cts.Token);
+            await host.SendEnterAsync();
+            FileLog.Write("[MainWindow] Enter retry: sent extra Enter (no UserPromptSubmit within 3s)");
+        }
+        catch (TaskCanceledException) { /* UserPromptSubmit arrived — no retry needed */ }
+        finally
+        {
+            session.OnActivityStateChanged -= handler;
+        }
     }
 
     private void PersistSessionState()
@@ -843,6 +889,186 @@ public partial class MainWindow : Window
         }
     }
 
+    // --- Repository Management Tab ---
+
+    private void RefreshRepoManagerList()
+    {
+        var app = (App)Application.Current;
+        RepoManagerList.ItemsSource = app.RepositoryRegistry.Repositories
+            .OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async void BtnCloneRepo_Click(object sender, RoutedEventArgs e)
+    {
+        var urlDialog = new CloneRepoDialog { Owner = this };
+        if (urlDialog.ShowDialog() != true) return;
+
+        var url = urlDialog.RepoUrl;
+        var destination = urlDialog.Destination;
+
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(destination))
+            return;
+
+        try
+        {
+            var psi = new ProcessStartInfo("git", $"clone \"{url}\" \"{destination}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            var process = Process.Start(psi);
+            if (process == null)
+            {
+                MessageBox.Show(this, "Failed to start git.", "Clone Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            await process.WaitForExitAsync();
+            var stderr = await process.StandardError.ReadToEndAsync();
+
+            if (process.ExitCode != 0)
+            {
+                MessageBox.Show(this, $"git clone failed:\n{stderr}", "Clone Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var app = (App)Application.Current;
+            app.RepositoryRegistry.TryAdd(destination);
+            RefreshRepoManagerList();
+
+            MessageBox.Show(this, $"Repository cloned to:\n{destination}", "Clone Complete",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Clone failed:\n{ex.Message}", "Clone Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BtnAddExistingRepo_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select Repository Folder"
+        };
+
+        if (dialog.ShowDialog(this) == true)
+        {
+            var app = (App)Application.Current;
+            if (app.RepositoryRegistry.TryAdd(dialog.FolderName))
+                RefreshRepoManagerList();
+            else
+                MessageBox.Show(this, "Repository is already registered.", "Add Repository",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private void BtnCreateRepo_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select Folder for New Repository"
+        };
+
+        if (dialog.ShowDialog(this) != true) return;
+
+        try
+        {
+            var psi = new ProcessStartInfo("git", $"init \"{dialog.FolderName}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            var process = Process.Start(psi);
+            process?.WaitForExit();
+
+            if (process?.ExitCode != 0)
+            {
+                MessageBox.Show(this, "git init failed.", "Create Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var app = (App)Application.Current;
+            app.RepositoryRegistry.TryAdd(dialog.FolderName);
+            RefreshRepoManagerList();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Create failed:\n{ex.Message}", "Create Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BtnLaunchSessionFromRepo_Click(object sender, RoutedEventArgs e)
+    {
+        if (RepoManagerList.SelectedItem is not RepositoryConfig repo)
+        {
+            MessageBox.Show(this, "Select a repository first.", "Launch Session",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!System.IO.Directory.Exists(repo.Path))
+        {
+            MessageBox.Show(this, $"Repository path not found:\n{repo.Path}", "Launch Session",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var vm = CreateSession(repo.Path);
+        if (vm == null) return;
+
+        ShowRenameDialog(vm);
+        if (!string.IsNullOrWhiteSpace(vm.Session.CustomName))
+        {
+            var app = (App)Application.Current;
+            app.RecentSessionStore.Add(repo.Path, vm.Session.CustomName);
+        }
+
+        // Switch to Terminal tab to show the new session
+        SessionTabs.SelectedIndex = 0;
+    }
+
+    private void BtnRepoOpenExplorer_Click(object sender, RoutedEventArgs e)
+    {
+        if (RepoManagerList.SelectedItem is RepositoryConfig repo &&
+            System.IO.Directory.Exists(repo.Path))
+        {
+            Process.Start("explorer.exe", repo.Path);
+        }
+    }
+
+    private void BtnRemoveRepo_Click(object sender, RoutedEventArgs e)
+    {
+        if (RepoManagerList.SelectedItem is not RepositoryConfig repo)
+        {
+            MessageBox.Show(this, "Select a repository first.", "Remove Repository",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var result = MessageBox.Show(this,
+            $"Remove \"{repo.Name}\" from the registry?\n\nThis does NOT delete files on disk.",
+            "Remove Repository", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+        if (result != MessageBoxResult.Yes) return;
+
+        var app = (App)Application.Current;
+        app.RepositoryRegistry.Remove(repo.Path);
+        RefreshRepoManagerList();
+    }
+
     private void ShowRenameDialog(SessionViewModel vm)
     {
         var dialog = new RenameSessionDialog(vm.DisplayName) { Owner = this };
@@ -851,6 +1077,183 @@ public partial class MainWindow : Window
             vm.Rename(dialog.SessionName);
             PersistSessionState();
         }
+    }
+
+    // --- Drag-and-drop session reordering ---
+
+    private Point _dragStartPoint;
+    private DropInsertionAdorner? _dropAdorner;
+
+    private void SessionList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _dragStartPoint = e.GetPosition(null);
+    }
+
+    private void SessionList_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+
+        var diff = _dragStartPoint - e.GetPosition(null);
+        if (Math.Abs(diff.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(diff.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        // Find the ListBoxItem under the mouse
+        if (GetSessionViewModelAtPoint(e.GetPosition(SessionList)) is not SessionViewModel draggedVm)
+            return;
+
+        var data = new DataObject("SessionViewModel", draggedVm);
+        DragDrop.DoDragDrop(SessionList, data, DragDropEffects.Move);
+        RemoveDropAdorner();
+    }
+
+    private void SessionList_DragOver(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent("SessionViewModel"))
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        e.Effects = DragDropEffects.Move;
+        e.Handled = true;
+
+        // Show insertion indicator
+        var pos = e.GetPosition(SessionList);
+        var (targetIndex, insertBelow) = GetDropTargetIndex(pos);
+
+        if (targetIndex >= 0 && targetIndex < _sessions.Count)
+        {
+            var container = (ListBoxItem)SessionList.ItemContainerGenerator.ContainerFromIndex(targetIndex);
+            if (container != null)
+                ShowDropAdorner(container, insertBelow);
+            else
+                RemoveDropAdorner();
+        }
+        else
+        {
+            RemoveDropAdorner();
+        }
+    }
+
+    private void SessionList_DragLeave(object sender, DragEventArgs e)
+    {
+        RemoveDropAdorner();
+    }
+
+    private void SessionList_Drop(object sender, DragEventArgs e)
+    {
+        RemoveDropAdorner();
+
+        if (!e.Data.GetDataPresent("SessionViewModel")) return;
+        var draggedVm = (SessionViewModel)e.Data.GetData("SessionViewModel");
+
+        var pos = e.GetPosition(SessionList);
+        var (targetIndex, insertBelow) = GetDropTargetIndex(pos);
+
+        int fromIndex = _sessions.IndexOf(draggedVm);
+        if (fromIndex < 0) return;
+
+        int toIndex = insertBelow ? targetIndex + 1 : targetIndex;
+        // Clamp
+        toIndex = Math.Max(0, Math.Min(toIndex, _sessions.Count - 1));
+
+        // Adjust for removal shift
+        if (fromIndex < toIndex)
+            toIndex--;
+
+        if (fromIndex != toIndex && toIndex >= 0 && toIndex < _sessions.Count)
+        {
+            _sessions.Move(fromIndex, toIndex);
+            SessionList.SelectedItem = draggedVm;
+            PersistSessionState();
+        }
+    }
+
+    private SessionViewModel? GetSessionViewModelAtPoint(Point point)
+    {
+        var element = SessionList.InputHitTest(point) as DependencyObject;
+        while (element != null && element != SessionList)
+        {
+            if (element is ListBoxItem item)
+                return item.DataContext as SessionViewModel;
+            element = VisualTreeHelper.GetParent(element);
+        }
+        return null;
+    }
+
+    private (int index, bool insertBelow) GetDropTargetIndex(Point pos)
+    {
+        for (int i = 0; i < _sessions.Count; i++)
+        {
+            var container = (ListBoxItem?)SessionList.ItemContainerGenerator.ContainerFromIndex(i);
+            if (container == null) continue;
+
+            var itemPos = container.TranslatePoint(new Point(0, 0), SessionList);
+            var itemRect = new Rect(itemPos, new Size(container.ActualWidth, container.ActualHeight));
+
+            if (pos.Y >= itemRect.Top && pos.Y <= itemRect.Bottom)
+            {
+                bool below = pos.Y > itemRect.Top + itemRect.Height / 2;
+                return (i, below);
+            }
+        }
+
+        // If below all items, insert at end
+        if (_sessions.Count > 0)
+            return (_sessions.Count - 1, true);
+
+        return (-1, false);
+    }
+
+    private void ShowDropAdorner(ListBoxItem container, bool below)
+    {
+        var layer = AdornerLayer.GetAdornerLayer(container);
+        if (layer == null) return;
+
+        if (_dropAdorner != null && _dropAdorner.AdornedElement == container && _dropAdorner.IsBelow == below)
+            return; // already showing correct adorner
+
+        RemoveDropAdorner();
+        _dropAdorner = new DropInsertionAdorner(container, below);
+        layer.Add(_dropAdorner);
+    }
+
+    private void RemoveDropAdorner()
+    {
+        if (_dropAdorner == null) return;
+
+        var layer = AdornerLayer.GetAdornerLayer(_dropAdorner.AdornedElement);
+        layer?.Remove(_dropAdorner);
+        _dropAdorner = null;
+    }
+}
+
+internal class DropInsertionAdorner : Adorner
+{
+    private static readonly Pen LinePen;
+
+    static DropInsertionAdorner()
+    {
+        LinePen = new Pen(new SolidColorBrush(Color.FromRgb(0x00, 0x7A, 0xCC)), 2);
+        LinePen.Freeze();
+    }
+
+    public bool IsBelow { get; }
+
+    public DropInsertionAdorner(UIElement adornedElement, bool isBelow)
+        : base(adornedElement)
+    {
+        IsBelow = isBelow;
+        IsHitTestVisible = false;
+    }
+
+    protected override void OnRender(DrawingContext drawingContext)
+    {
+        var rect = new Rect(AdornedElement.RenderSize);
+        double y = IsBelow ? rect.Bottom : rect.Top;
+        drawingContext.DrawLine(LinePen, new Point(rect.Left, y), new Point(rect.Right, y));
     }
 }
 

@@ -134,6 +134,55 @@ public class RepositoryRegistryTests : IDisposable
         Assert.Equal(2, registry.Repositories.Count);
     }
 
+    [Fact]
+    public void Remove_ExistingRepo_ReturnsTrue_Persists()
+    {
+        var repoDir = Path.Combine(_tempDir, "repo-to-remove");
+        Directory.CreateDirectory(repoDir);
+
+        var registry = new RepositoryRegistry(_filePath);
+        registry.Load();
+        registry.TryAdd(repoDir);
+        Assert.Single(registry.Repositories);
+
+        var result = registry.Remove(repoDir);
+
+        Assert.True(result);
+        Assert.Empty(registry.Repositories);
+
+        // Verify persisted to disk
+        var registry2 = new RepositoryRegistry(_filePath);
+        registry2.Load();
+        Assert.Empty(registry2.Repositories);
+    }
+
+    [Fact]
+    public void Remove_NonExistent_ReturnsFalse()
+    {
+        var registry = new RepositoryRegistry(_filePath);
+        registry.Load();
+
+        var result = registry.Remove(@"C:\NonExistent\Path");
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void Remove_CaseInsensitive()
+    {
+        var repoDir = Path.Combine(_tempDir, "case-test-repo");
+        Directory.CreateDirectory(repoDir);
+
+        var registry = new RepositoryRegistry(_filePath);
+        registry.Load();
+        registry.TryAdd(repoDir);
+
+        var result = registry.Remove(repoDir.ToUpper());
+
+        Assert.True(result);
+        Assert.Empty(registry.Repositories);
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); }

@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:CcDirector.Wpf.Controls"
         Title="CC Director"
+        Icon="app.ico"
         Width="1400" Height="700"
         MinWidth="800" MinHeight="500"
         Background="{StaticResource PanelBackground}"
@@ -35,14 +36,7 @@
                                 Foreground="White"
                                 BorderThickness="0"
                                 Cursor="Hand" />
-                        <Button x:Name="BtnKillSession" Content="Kill Session"
-                                Click="BtnKillSession_Click"
-                                Height="30" Margin="0,2"
-                                Background="{StaticResource ButtonBackground}"
-                                Foreground="{StaticResource TextForeground}"
-                                BorderThickness="0"
-                                Cursor="Hand" />
-                        <Button x:Name="BtnReconnect" Content="Reconnect"
+<Button x:Name="BtnReconnect" Content="Reconnect"
                                 Click="BtnReconnect_Click"
                                 Height="30" Margin="0,2"
                                 Background="{StaticResource ButtonBackground}"
@@ -62,10 +56,23 @@
 
                     <ListBox x:Name="SessionList"
                              SelectionChanged="SessionList_SelectionChanged"
+                             AllowDrop="True"
+                             PreviewMouseMove="SessionList_PreviewMouseMove"
+                             PreviewMouseLeftButtonDown="SessionList_PreviewMouseLeftButtonDown"
+                             DragOver="SessionList_DragOver"
+                             Drop="SessionList_Drop"
+                             DragLeave="SessionList_DragLeave"
                              Background="Transparent"
                              BorderThickness="0"
                              Foreground="{StaticResource TextForeground}"
                              Margin="4,0">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Padding" Value="0" />
+                                <Setter Property="Margin" Value="0" />
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Grid>
@@ -162,6 +169,61 @@
                     </TabItem>
                     <TabItem Header="Source Control">
                         <controls:GitChangesControl x:Name="GitChanges" />
+                    </TabItem>
+                    <TabItem Header="Repositories">
+                        <Grid Margin="12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Text="Registered Repositories"
+                                       Foreground="#CCCCCC" FontWeight="SemiBold"
+                                       FontSize="14" Margin="0,0,0,8" />
+
+                            <ListBox x:Name="RepoManagerList" Grid.Row="1"
+                                     Background="#1E1E1E"
+                                     Foreground="#CCCCCC"
+                                     BorderBrush="#3C3C3C"
+                                     BorderThickness="1">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="6,4">
+                                            <TextBlock Text="{Binding Name}" FontWeight="Medium" />
+                                            <TextBlock Text="{Binding Path}" FontSize="10" Opacity="0.6" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <WrapPanel Grid.Row="2" Margin="0,8,0,0" HorizontalAlignment="Left">
+                                <Button Content="Clone Repo" Click="BtnCloneRepo_Click"
+                                        Height="28" Padding="12,0" Margin="0,0,6,0"
+                                        Background="{StaticResource AccentBrush}"
+                                        Foreground="White" BorderThickness="0" Cursor="Hand" />
+                                <Button Content="Add Existing" Click="BtnAddExistingRepo_Click"
+                                        Height="28" Padding="12,0" Margin="0,0,6,0"
+                                        Background="{StaticResource ButtonBackground}"
+                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                                <Button Content="Create New" Click="BtnCreateRepo_Click"
+                                        Height="28" Padding="12,0" Margin="0,0,6,0"
+                                        Background="{StaticResource ButtonBackground}"
+                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                                <Button Content="Launch Session" Click="BtnLaunchSessionFromRepo_Click"
+                                        Height="28" Padding="12,0" Margin="0,0,6,0"
+                                        Background="{StaticResource AccentBrush}"
+                                        Foreground="White" BorderThickness="0" Cursor="Hand" />
+                                <Button Content="Open in Explorer" Click="BtnRepoOpenExplorer_Click"
+                                        Height="28" Padding="12,0" Margin="0,0,6,0"
+                                        Background="{StaticResource ButtonBackground}"
+                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                                <Button Content="Remove" Click="BtnRemoveRepo_Click"
+                                        Height="28" Padding="12,0" Margin="0,0,6,0"
+                                        Background="{StaticResource ButtonBackground}"
+                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                            </WrapPanel>
+                        </Grid>
                     </TabItem>
                 </TabControl>
                 </Grid>
