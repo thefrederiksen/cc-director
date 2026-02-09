@@ -5,6 +5,7 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.Hooks;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Utilities;
 using CcDirector.Wpf.Controls;
 
 namespace CcDirector.Wpf;
@@ -18,6 +19,8 @@ public partial class App : Application
     public DirectorPipeServer PipeServer { get; private set; } = null!;
     public EventRouter EventRouter { get; private set; } = null!;
     public SessionStateStore SessionStateStore { get; private set; } = null!;
+    public RecentSessionStore RecentSessionStore { get; private set; } = null!;
+    public NulFileWatcher NulFileWatcher { get; private set; } = null!;
 
     /// <summary>
     /// Persisted session data loaded on startup, consumed by MainWindow for HWND reattach.
@@ -56,6 +59,9 @@ public partial class App : Application
 
         SessionStateStore = new SessionStateStore();
 
+        RecentSessionStore = new RecentSessionStore();
+        RecentSessionStore.Load();
+
         Action<string> log = msg => System.Diagnostics.Debug.WriteLine($"[CcDirector] {msg}");
 
         SessionManager = new SessionManager(Options, log);
@@ -74,6 +80,10 @@ public partial class App : Application
 
         // Install hooks (fire-and-forget, non-blocking startup)
         _ = InstallHooksAsync(log);
+
+        // Start NUL file watcher (monitors drive for stray NUL files)
+        NulFileWatcher = new NulFileWatcher(log: log);
+        NulFileWatcher.Start();
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -90,6 +100,7 @@ public partial class App : Application
             SessionManager?.KillAllSessionsAsync().GetAwaiter().GetResult();
         }
 
+        NulFileWatcher?.Dispose();
         PipeServer?.Dispose();
         SessionManager?.Dispose();
 
