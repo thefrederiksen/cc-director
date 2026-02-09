@@ -478,6 +478,30 @@ public partial class MainWindow : Window
     {
         _pipeMessages.Clear();
     }
+
+    private void SessionList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (SessionList.SelectedItem is SessionViewModel vm)
+            ShowRenameDialog(vm);
+    }
+
+    private void MenuRenameSession_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem menuItem &&
+            menuItem.DataContext is SessionViewModel vm)
+        {
+            ShowRenameDialog(vm);
+        }
+    }
+
+    private void ShowRenameDialog(SessionViewModel vm)
+    {
+        var dialog = new RenameSessionDialog(vm.DisplayName) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            vm.Rename(dialog.SessionName);
+        }
+    }
 }
 
 public class SessionViewModel : INotifyPropertyChanged
@@ -503,7 +527,15 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnActivityStateChanged += OnActivityStateChanged;
     }
 
-    public string DisplayName => System.IO.Path.GetFileName(Session.RepoPath.TrimEnd('\\', '/'));
+    public string DisplayName => !string.IsNullOrWhiteSpace(Session.CustomName)
+        ? Session.CustomName
+        : System.IO.Path.GetFileName(Session.RepoPath.TrimEnd('\\', '/'));
+
+    public void Rename(string? newName)
+    {
+        Session.CustomName = string.IsNullOrWhiteSpace(newName) ? null : newName.Trim();
+        OnPropertyChanged(nameof(DisplayName));
+    }
     public string StatusText => $"{Session.ActivityState} (PID {Session.ProcessId})";
     public SolidColorBrush ActivityBrush => ActivityBrushes.GetValueOrDefault(Session.ActivityState, ActivityBrushes[ActivityState.Starting]);
 

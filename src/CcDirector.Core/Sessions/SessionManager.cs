@@ -231,6 +231,7 @@ public sealed class SessionManager : IDisposable
                 RepoPath = s.RepoPath,
                 WorkingDirectory = s.WorkingDirectory,
                 ClaudeArgs = s.ClaudeArgs,
+                CustomName = s.CustomName,
                 EmbeddedProcessId = s.EmbeddedProcessId,
                 ConsoleHwnd = getHwnd(s.Id),
                 ClaudeSessionId = s.ClaudeSessionId,
@@ -248,7 +249,8 @@ public sealed class SessionManager : IDisposable
     {
         var session = new Session(
             ps.Id, ps.RepoPath, ps.WorkingDirectory, ps.ClaudeArgs,
-            ps.EmbeddedProcessId, ps.ClaudeSessionId, ps.ActivityState, ps.CreatedAt);
+            ps.EmbeddedProcessId, ps.ClaudeSessionId, ps.ActivityState, ps.CreatedAt,
+            ps.CustomName);
 
         _sessions[session.Id] = session;
 

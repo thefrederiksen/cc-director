@@ -10,7 +10,7 @@
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="220" MinWidth="150" />
+            <ColumnDefinition Width="264" MinWidth="180" />
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
@@ -46,6 +46,7 @@
 
                     <ListBox x:Name="SessionList"
                              SelectionChanged="SessionList_SelectionChanged"
+                             MouseDoubleClick="SessionList_MouseDoubleClick"
                              Background="Transparent"
                              BorderThickness="0"
                              Foreground="{StaticResource TextForeground}"
@@ -53,6 +54,11 @@
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Grid>
+                                    <Grid.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="Rename" Click="MenuRenameSession_Click" />
+                                        </ContextMenu>
+                                    </Grid.ContextMenu>
                                     <Border BorderBrush="{Binding ActivityBrush}"
                                             BorderThickness="4,0,0,0"
                                             Padding="6,2,0,2">
@@ -64,7 +70,8 @@
                                                     BorderThickness="0" Cursor="Hand"
                                                     VerticalAlignment="Center" Margin="4,0,2,0" />
                                             <StackPanel Margin="4,2">
-                                                <TextBlock Text="{Binding DisplayName}" FontWeight="Medium" />
+                                                <TextBlock Text="{Binding DisplayName}" FontWeight="Medium"
+                                                           TextTrimming="CharacterEllipsis" />
                                                 <TextBlock Text="{Binding StatusText}" FontSize="10" Opacity="0.7" />
                                             </StackPanel>
                                         </DockPanel>

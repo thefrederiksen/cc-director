@@ -69,6 +69,9 @@ public sealed class Session : IDisposable
     /// <summary>The session_id reported by Claude hooks, used for routing.</summary>
     public string? ClaudeSessionId { get; internal set; }
 
+    /// <summary>User-defined display name for this session. Null means use default (repo folder name).</summary>
+    public string? CustomName { get; set; }
+
     /// <summary>Fires when ActivityState changes. Args: (oldState, newState).</summary>
     public event Action<ActivityState, ActivityState>? OnActivityStateChanged;
 
@@ -146,7 +149,8 @@ public sealed class Session : IDisposable
         int embeddedProcessId,
         string? claudeSessionId,
         ActivityState activityState,
-        DateTimeOffset createdAt)
+        DateTimeOffset createdAt,
+        string? customName = null)
     {
         Mode = SessionMode.Embedded;
         Id = id;
@@ -155,6 +159,7 @@ public sealed class Session : IDisposable
         ClaudeArgs = claudeArgs;
         EmbeddedProcessId = embeddedProcessId;
         ClaudeSessionId = claudeSessionId;
+        CustomName = customName;
         Buffer = new CircularTerminalBuffer(1);
         CreatedAt = createdAt;
         Status = SessionStatus.Running;
