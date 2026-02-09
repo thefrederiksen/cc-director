@@ -16,6 +16,8 @@ public sealed class SessionManager : IDisposable
     private readonly AgentOptions _options;
     private readonly Action<string>? _log;
 
+    public AgentOptions Options => _options;
+
     public SessionManager(AgentOptions options, Action<string>? log = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -66,6 +68,43 @@ public sealed class SessionManager : IDisposable
         }
     }
 
+    /// <summary>Create a new pipe mode session for the given repo path.
+    /// No process is spawned until the user sends a prompt.</summary>
+    public Session CreatePipeModeSession(string repoPath, string? claudeArgs = null)
+    {
+        if (!Directory.Exists(repoPath))
+            throw new DirectoryNotFoundException($"Repository path not found: {repoPath}");
+
+        var id = Guid.NewGuid();
+        var buffer = new CircularTerminalBuffer(_options.DefaultBufferSizeBytes);
+        string args = claudeArgs ?? _options.DefaultClaudeArgs ?? string.Empty;
+
+        var session = new Session(id, repoPath, repoPath, claudeArgs, _options.ClaudePath, args, buffer);
+
+        _sessions[id] = session;
+        _log?.Invoke($"Pipe mode session {id} created for repo {repoPath}.");
+
+        return session;
+    }
+
+    /// <summary>Create an embedded mode session. The WPF layer spawns the process
+    /// inside an EmbeddedConsoleHost; no buffer or ConPTY is needed.</summary>
+    public Session CreateEmbeddedSession(string repoPath, string? claudeArgs = null)
+    {
+        if (!Directory.Exists(repoPath))
+            throw new DirectoryNotFoundException($"Repository path not found: {repoPath}");
+
+        var id = Guid.NewGuid();
+        string args = claudeArgs ?? _options.DefaultClaudeArgs ?? string.Empty;
+
+        var session = new Session(id, repoPath, repoPath, args);
+
+        _sessions[id] = session;
+        _log?.Invoke($"Embedded session {id} created for repo {repoPath}.");
+
+        return session;
+    }
+
     /// <summary>Get a session by ID.</summary>
     public Session? GetSession(Guid id) => _sessions.TryGetValue(id, out var s) ? s : null;
 
@@ -103,6 +142,20 @@ public sealed class SessionManager : IDisposable
         catch (Exception ex)
         {
             _log?.Invoke($"Error scanning for orphaned claude.exe processes: {ex.Message}");
+        }
+    }
+
+    /// <summary>Remove a session from tracking (dispose and clean up).</summary>
+    public void RemoveSession(Guid id)
+    {
+        if (_sessions.TryRemove(id, out var session))
+        {
+            // Remove any Claude session mapping
+            if (session.ClaudeSessionId != null)
+                _claudeSessionMap.TryRemove(session.ClaudeSessionId, out _);
+
+            session.Dispose();
+            _log?.Invoke($"Session {id} removed.");
         }
     }
 

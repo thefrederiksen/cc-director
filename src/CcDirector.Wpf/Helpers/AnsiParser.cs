@@ -230,10 +230,13 @@ public class AnsiParser
                 _state = ParserState.Ground;
                 break;
             case (byte)'7': // DECSC - save cursor
-                // Simplified: just ignore
+                _savedCursorCol = _cursorCol;
+                _savedCursorRow = _cursorRow;
                 _state = ParserState.Ground;
                 break;
             case (byte)'8': // DECRC - restore cursor
+                _cursorCol = Math.Min(_savedCursorCol, _cols - 1);
+                _cursorRow = Math.Min(_savedCursorRow, _rows - 1);
                 _state = ParserState.Ground;
                 break;
             case (byte)'=': // DECKPAM
@@ -391,8 +394,12 @@ public class AnsiParser
                 _cursorRow = 0;
                 break;
             case 's': // SCP - Save Cursor Position
+                _savedCursorCol = _cursorCol;
+                _savedCursorRow = _cursorRow;
                 break;
             case 'u': // RCP - Restore Cursor Position
+                _cursorCol = Math.Min(_savedCursorCol, _cols - 1);
+                _cursorRow = Math.Min(_savedCursorRow, _rows - 1);
                 break;
             case '@': // ICH - Insert Characters
                 InsertChars(Math.Max(1, p0));

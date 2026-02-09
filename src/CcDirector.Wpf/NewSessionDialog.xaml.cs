@@ -7,15 +7,18 @@ namespace CcDirector.Wpf;
 
 public partial class NewSessionDialog : Window
 {
+    private readonly RepositoryRegistry? _registry;
+
     public string? SelectedPath { get; private set; }
 
-    public NewSessionDialog(List<RepositoryConfig>? repos = null)
+    public NewSessionDialog(RepositoryRegistry? registry = null)
     {
         InitializeComponent();
+        _registry = registry;
 
-        if (repos != null && repos.Count > 0)
+        if (_registry != null && _registry.Repositories.Count > 0)
         {
-            RepoList.ItemsSource = repos;
+            RepoList.ItemsSource = _registry.Repositories.ToList();
             RepoList.Visibility = Visibility.Visible;
         }
         else
@@ -42,6 +45,13 @@ public partial class NewSessionDialog : Window
         if (dialog.ShowDialog(this) == true)
         {
             PathInput.Text = dialog.FolderName;
+
+            if (_registry != null)
+            {
+                _registry.TryAdd(dialog.FolderName);
+                RepoList.ItemsSource = _registry.Repositories.ToList();
+                RepoList.Visibility = Visibility.Visible;
+            }
         }
     }
 

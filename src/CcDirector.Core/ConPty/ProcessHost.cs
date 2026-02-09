@@ -155,14 +155,26 @@ public sealed class ProcessHost : IDisposable
     /// <summary>Write raw bytes to the process input.</summary>
     public void Write(byte[] data)
     {
-        if (_disposed || _inputStream == null) return;
+        if (_disposed || _inputStream == null)
+        {
+            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] SKIPPED — disposed={_disposed}, stream null={_inputStream == null}");
+            return;
+        }
         try
         {
+            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] {data.Length} bytes: [{string.Join(", ", data.Select(b => $"0x{b:X2}"))}] \"{System.Text.Encoding.UTF8.GetString(data).Replace("\r", "\\r").Replace("\n", "\\n")}\"");
             _inputStream.Write(data, 0, data.Length);
             _inputStream.Flush();
+            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] Flushed OK");
         }
-        catch (IOException) { }
-        catch (ObjectDisposedException) { }
+        catch (IOException ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] IOException: {ex.Message}");
+        }
+        catch (ObjectDisposedException ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[ConPTY Write] ObjectDisposedException: {ex.Message}");
+        }
     }
 
     /// <summary>Write raw bytes to the process input (async).</summary>

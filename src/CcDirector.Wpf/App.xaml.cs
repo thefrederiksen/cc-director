@@ -13,6 +13,7 @@ public partial class App : Application
     public SessionManager SessionManager { get; private set; } = null!;
     public AgentOptions Options { get; private set; } = null!;
     public List<RepositoryConfig> Repositories { get; private set; } = new();
+    public RepositoryRegistry RepositoryRegistry { get; private set; } = null!;
     public DirectorPipeServer PipeServer { get; private set; } = null!;
     public EventRouter EventRouter { get; private set; } = null!;
 
@@ -20,6 +21,11 @@ public partial class App : Application
     {
         base.OnStartup(e);
         LoadConfiguration();
+
+        // Initialize repository registry and seed from appsettings
+        RepositoryRegistry = new RepositoryRegistry();
+        RepositoryRegistry.Load();
+        RepositoryRegistry.SeedFrom(Repositories);
 
         Action<string> log = msg => System.Diagnostics.Debug.WriteLine($"[CcDirector] {msg}");
 

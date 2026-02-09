@@ -1,0 +1,100 @@
+<UserControl x:Class="CcDirector.Wpf.Controls.GitChangesControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#1E1E1E">
+    <DockPanel>
+        <TextBlock DockPanel.Dock="Top"
+                   Text="SOURCE CONTROL"
+                   Foreground="#CCCCCC"
+                   FontWeight="SemiBold"
+                   FontSize="12"
+                   Margin="12,12,12,8" />
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="8,0">
+                <!-- Staged Changes section -->
+                <StackPanel x:Name="StagedSection" Visibility="Collapsed">
+                    <DockPanel Margin="0,4,0,2">
+                        <TextBlock Text="Staged Changes"
+                                   Foreground="#CCCCCC"
+                                   FontWeight="SemiBold"
+                                   FontSize="11" />
+                        <TextBlock x:Name="StagedCount"
+                                   Foreground="#888888"
+                                   FontSize="11"
+                                   Margin="6,0,0,0" />
+                    </DockPanel>
+                    <ItemsControl x:Name="StagedList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="4,1">
+                                    <TextBlock DockPanel.Dock="Right"
+                                               Text="{Binding StatusChar}"
+                                               Foreground="{Binding StatusBrush}"
+                                               FontFamily="Cascadia Mono, Consolas"
+                                               FontSize="12"
+                                               FontWeight="Bold"
+                                               Margin="8,0,4,0"
+                                               VerticalAlignment="Center" />
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding FileName}"
+                                                   Foreground="#CCCCCC"
+                                                   FontSize="12" />
+                                        <TextBlock Text="{Binding FilePath}"
+                                                   Foreground="#666666"
+                                                   FontSize="10" />
+                                    </StackPanel>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+
+                <!-- Unstaged Changes section -->
+                <DockPanel Margin="0,8,0,2">
+                    <TextBlock Text="Changes"
+                               Foreground="#CCCCCC"
+                               FontWeight="SemiBold"
+                               FontSize="11" />
+                    <TextBlock x:Name="UnstagedCount"
+                               Foreground="#888888"
+                               FontSize="11"
+                               Margin="6,0,0,0" />
+                </DockPanel>
+                <ItemsControl x:Name="UnstagedList">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <DockPanel Margin="4,1">
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding StatusChar}"
+                                           Foreground="{Binding StatusBrush}"
+                                           FontFamily="Cascadia Mono, Consolas"
+                                           FontSize="12"
+                                           FontWeight="Bold"
+                                           Margin="8,0,4,0"
+                                           VerticalAlignment="Center" />
+                                <StackPanel>
+                                    <TextBlock Text="{Binding FileName}"
+                                               Foreground="#CCCCCC"
+                                               FontSize="12" />
+                                    <TextBlock Text="{Binding FilePath}"
+                                               Foreground="#666666"
+                                               FontSize="10" />
+                                </StackPanel>
+                            </DockPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- Empty state -->
+                <TextBlock x:Name="EmptyText"
+                           Text="No changes detected"
+                           Foreground="#555555"
+                           FontSize="12"
+                           Margin="4,12,0,0"
+                           Visibility="Visible" />
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

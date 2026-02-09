@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
@@ -18,6 +19,7 @@ public partial class MainWindow : Window
 
     private SessionManager _sessionManager = null!;
     private TerminalControl? _terminalControl;
+    private EmbeddedConsoleHost? _embeddedHost;
     private Session? _activeSession;
 
     public MainWindow()
@@ -26,6 +28,9 @@ public partial class MainWindow : Window
         SessionList.ItemsSource = _sessions;
         PipeMessageList.ItemsSource = _pipeMessages;
         Loaded += MainWindow_Loaded;
+        LocationChanged += (_, _) => UpdateConsolePosition();
+        SizeChanged += (_, _) => UpdateConsolePosition();
+        StateChanged += MainWindow_StateChanged;
     }
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -40,26 +45,13 @@ public partial class MainWindow : Window
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
     {
         var app = (App)Application.Current;
-        var repos = app.Repositories;
+        var registry = app.RepositoryRegistry;
 
-        if (repos.Count == 0)
+        var dialog = new NewSessionDialog(registry);
+        dialog.Owner = this;
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
-            // No repos configured - ask for a path
-            var dialog = new NewSessionDialog();
-            dialog.Owner = this;
-            if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
-            {
-                CreateSession(dialog.SelectedPath);
-            }
-            return;
-        }
-
-        // Show repo picker
-        var pickerDialog = new NewSessionDialog(repos);
-        pickerDialog.Owner = this;
-        if (pickerDialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(pickerDialog.SelectedPath))
-        {
-            CreateSession(pickerDialog.SelectedPath);
+            CreateSession(dialog.SelectedPath);
         }
     }
 
@@ -67,7 +59,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var session = _sessionManager.CreateSession(repoPath);
+            var session = _sessionManager.CreateEmbeddedSession(repoPath);
             var vm = new SessionViewModel(session, Dispatcher);
             _sessions.Add(vm);
             SessionList.SelectedItem = vm;
@@ -86,6 +78,12 @@ public partial class MainWindow : Window
 
         try
         {
+            // Kill embedded console process if this is the active embedded session
+            if (_activeSession?.Id == vm.Session.Id && _embeddedHost != null)
+            {
+                _embeddedHost.Dispose();
+            }
+
             await _sessionManager.KillSessionAsync(vm.Session.Id);
 
             // Detach terminal
@@ -97,6 +95,42 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Failed to kill session:\n{ex.Message}",
+                "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void BtnCloseSession_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not SessionViewModel vm)
+            return;
+
+        try
+        {
+            // Kill embedded console process if this is the active embedded session
+            if (_activeSession?.Id == vm.Session.Id && _embeddedHost != null)
+            {
+                _embeddedHost.Dispose();
+            }
+
+            // Kill if still running
+            if (vm.Session.Status is SessionStatus.Running or SessionStatus.Starting)
+            {
+                await _sessionManager.KillSessionAsync(vm.Session.Id);
+            }
+
+            // Detach if active
+            if (_activeSession?.Id == vm.Session.Id)
+            {
+                DetachTerminal();
+            }
+
+            // Remove from UI and manager
+            _sessions.Remove(vm);
+            _sessionManager.RemoveSession(vm.Session.Id);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to close session:\n{ex.Message}",
                 "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -116,17 +150,52 @@ public partial class MainWindow : Window
     {
         _activeSession = session;
         PlaceholderText.Visibility = Visibility.Collapsed;
+        SessionTabs.Visibility = Visibility.Visible;
 
+        // Clean up previous controls
         if (_terminalControl != null)
         {
             _terminalControl.Detach();
-            TerminalArea.Child = null;
+            _terminalControl = null;
+        }
+        if (_embeddedHost != null)
+        {
+            _embeddedHost.KillProcess();
+            _embeddedHost = null;
+        }
+        TerminalArea.Child = null;
+
+        if (session.Mode == SessionMode.Embedded)
+        {
+            var app = (App)Application.Current;
+            var host = new EmbeddedConsoleHost();
+            _embeddedHost = host;
+            // No TerminalArea.Child — overlay is a separate top-level window
+
+            string args = session.ClaudeArgs ?? string.Empty;
+            host.StartProcess(app.SessionManager.Options.ClaudePath, args, session.WorkingDirectory);
+            session.SetEmbeddedProcessId(host.ProcessId);
+
+            host.OnProcessExited += exitCode =>
+            {
+                session.NotifyEmbeddedProcessExited(exitCode);
+            };
+
+            // Position console overlay after layout
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, UpdateConsolePosition);
+        }
+        else
+        {
+            _terminalControl = new TerminalControl();
+            TerminalArea.Child = _terminalControl;
+            _terminalControl.Attach(session);
         }
 
-        _terminalControl = new TerminalControl();
-        TerminalArea.Child = _terminalControl;
-        _terminalControl.Attach(session);
-        _terminalControl.Focus();
+        // Attach git changes polling
+        GitChanges.Attach(session.RepoPath);
+
+        // Select Terminal tab and focus
+        SessionTabs.SelectedIndex = 0;
     }
 
     private void DetachTerminal()
@@ -135,10 +204,86 @@ public partial class MainWindow : Window
         if (_terminalControl != null)
         {
             _terminalControl.Detach();
-            TerminalArea.Child = null;
             _terminalControl = null;
         }
+        if (_embeddedHost != null)
+        {
+            _embeddedHost.Dispose();
+            _embeddedHost = null;
+        }
+        TerminalArea.Child = null;
+
+        GitChanges.Detach();
+        SessionTabs.Visibility = Visibility.Collapsed;
         PlaceholderText.Visibility = Visibility.Visible;
+    }
+
+    private void UpdateConsolePosition()
+    {
+        if (_embeddedHost == null || _embeddedHost.ConsoleHwnd == IntPtr.Zero)
+            return;
+
+        // TerminalArea is a Border — get its screen-space rect
+        if (!TerminalArea.IsVisible || TerminalArea.ActualWidth <= 0 || TerminalArea.ActualHeight <= 0)
+            return;
+
+        var topLeft = TerminalArea.PointToScreen(new Point(0, 0));
+        var bottomRight = TerminalArea.PointToScreen(new Point(TerminalArea.ActualWidth, TerminalArea.ActualHeight));
+
+        var screenRect = new Rect(topLeft, bottomRight);
+        _embeddedHost.UpdatePosition(screenRect);
+    }
+
+    private void MainWindow_StateChanged(object? sender, EventArgs e)
+    {
+        if (_embeddedHost == null) return;
+
+        if (WindowState == WindowState.Minimized)
+        {
+            _embeddedHost.Hide();
+        }
+        else
+        {
+            _embeddedHost.Show();
+            // Reposition after restore
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, UpdateConsolePosition);
+        }
+    }
+
+    private async void PromptInput_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            await SendPromptAsync();
+        }
+    }
+
+    private async void BtnSendPrompt_Click(object sender, RoutedEventArgs e)
+    {
+        await SendPromptAsync();
+    }
+
+    private async Task SendPromptAsync()
+    {
+        if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text))
+            return;
+
+        // Strip newlines — Claude Code prompt expects single-line input
+        var text = PromptInput.Text.ReplaceLineEndings(" ").Trim();
+        PromptInput.Clear();
+
+        if (_activeSession.Mode == SessionMode.Embedded && _embeddedHost != null)
+        {
+            // Send keystrokes directly to the embedded console window
+            _embeddedHost.SendText(text);
+        }
+        else
+        {
+            await _activeSession.SendTextAsync(text);
+        }
+
+        PromptInput.Focus();
     }
 
     private void OnPipeMessageReceived(PipeMessage msg)

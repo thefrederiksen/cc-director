@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using CcDirector.Core.ConPty;
 using CcDirector.Core.Memory;
@@ -14,15 +15,29 @@ public enum SessionStatus
     Failed
 }
 
+public enum SessionMode
+{
+    ConPty,
+    PipeMode,
+    Embedded
+}
+
 /// <summary>
-/// Represents a single claude.exe session with its ConPTY, process, and buffer.
+/// Represents a single claude.exe session with its ConPTY or pipe mode process and buffer.
 /// </summary>
 public sealed class Session : IDisposable
 {
-    private readonly PseudoConsole _console;
-    private readonly ProcessHost _processHost;
+    private readonly PseudoConsole? _console;
+    private readonly ProcessHost? _processHost;
     private bool _disposed;
 
+    // Pipe mode fields
+    private readonly string? _claudePath;
+    private readonly string? _defaultClaudeArgs;
+    private Process? _currentProcess;
+    private readonly SemaphoreSlim _busy = new(1, 1);
+
+    public SessionMode Mode { get; }
     public Guid Id { get; }
     public string RepoPath { get; }
     public string WorkingDirectory { get; }
@@ -31,7 +46,22 @@ public sealed class Session : IDisposable
     public string? ClaudeArgs { get; }
     public CircularTerminalBuffer Buffer { get; }
     public int? ExitCode { get; internal set; }
-    public int ProcessId => _processHost.ProcessId;
+
+    /// <summary>For embedded mode, set via SetEmbeddedProcessId from the WPF layer.</summary>
+    public int EmbeddedProcessId { get; private set; }
+
+    public int ProcessId
+    {
+        get
+        {
+            if (Mode == SessionMode.ConPty)
+                return _processHost!.ProcessId;
+            if (Mode == SessionMode.Embedded)
+                return EmbeddedProcessId;
+            try { return _currentProcess?.Id ?? 0; }
+            catch { return 0; }
+        }
+    }
 
     /// <summary>Claude's cognitive activity state, driven by hook events.</summary>
     public ActivityState ActivityState { get; private set; } = ActivityState.Starting;
@@ -42,8 +72,9 @@ public sealed class Session : IDisposable
     /// <summary>Fires when ActivityState changes. Args: (oldState, newState).</summary>
     public event Action<ActivityState, ActivityState>? OnActivityStateChanged;
 
-    internal ProcessHost ProcessHost => _processHost;
+    internal ProcessHost? ProcessHost => _processHost;
 
+    /// <summary>ConPTY mode constructor.</summary>
     internal Session(
         Guid id,
         string repoPath,
@@ -53,6 +84,7 @@ public sealed class Session : IDisposable
         ProcessHost processHost,
         CircularTerminalBuffer buffer)
     {
+        Mode = SessionMode.ConPty;
         Id = id;
         RepoPath = repoPath;
         WorkingDirectory = workingDirectory;
@@ -64,20 +96,211 @@ public sealed class Session : IDisposable
         Status = SessionStatus.Starting;
     }
 
+    /// <summary>Pipe mode constructor — no ConPTY required.</summary>
+    internal Session(
+        Guid id,
+        string repoPath,
+        string workingDirectory,
+        string? claudeArgs,
+        string claudePath,
+        string? defaultClaudeArgs,
+        CircularTerminalBuffer buffer)
+    {
+        Mode = SessionMode.PipeMode;
+        Id = id;
+        RepoPath = repoPath;
+        WorkingDirectory = workingDirectory;
+        ClaudeArgs = claudeArgs;
+        _claudePath = claudePath;
+        _defaultClaudeArgs = defaultClaudeArgs;
+        Buffer = buffer;
+        CreatedAt = DateTimeOffset.UtcNow;
+        Status = SessionStatus.Running;
+        ActivityState = ActivityState.WaitingForInput;
+    }
+
+    /// <summary>Embedded mode constructor — console window handles display directly.</summary>
+    internal Session(
+        Guid id,
+        string repoPath,
+        string workingDirectory,
+        string? claudeArgs)
+    {
+        Mode = SessionMode.Embedded;
+        Id = id;
+        RepoPath = repoPath;
+        WorkingDirectory = workingDirectory;
+        ClaudeArgs = claudeArgs;
+        Buffer = new CircularTerminalBuffer(1); // minimal; not used in embedded mode
+        CreatedAt = DateTimeOffset.UtcNow;
+        Status = SessionStatus.Running;
+        ActivityState = ActivityState.Starting;
+    }
+
     /// <summary>Send raw bytes to the ConPTY input pipe.</summary>
     public void SendInput(byte[] data)
     {
+        if (Mode is SessionMode.PipeMode or SessionMode.Embedded) return; // no-op outside ConPTY
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
-        _processHost.Write(data);
+        System.Diagnostics.Debug.WriteLine($"[Session.SendInput] {data.Length} bytes");
+        _processHost!.Write(data);
         SetActivityState(ActivityState.Working);
     }
 
-    /// <summary>Send text to the ConPTY. Appends CR (not LF) as ConPTY expects carriage return.</summary>
-    public void SendText(string text)
+    /// <summary>
+    /// In ConPTY mode: send text + Enter to the pseudo console.
+    /// In pipe mode: spawn claude -p, write prompt to stdin, drain stdout to buffer.
+    /// </summary>
+    public async Task SendTextAsync(string text)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
-        var bytes = Encoding.UTF8.GetBytes(text + "\r");
-        _processHost.Write(bytes);
+
+        // Embedded mode: keystrokes are sent via EmbeddedConsoleHost.SendText
+        if (Mode == SessionMode.Embedded) return;
+
+        if (Mode == SessionMode.ConPty)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Session.SendTextAsync] text=\"{text}\" len={text.Length}");
+            var textBytes = Encoding.UTF8.GetBytes(text);
+            _processHost!.Write(textBytes);
+            await Task.Delay(50);
+            _processHost.Write([(byte)'\r']);
+            System.Diagnostics.Debug.WriteLine($"[Session.SendTextAsync] Done");
+            SetActivityState(ActivityState.Working);
+            return;
+        }
+
+        // Pipe mode
+        if (!await _busy.WaitAsync(0))
+        {
+            System.Diagnostics.Debug.WriteLine("[Session.SendTextAsync] Busy, ignoring prompt");
+            return;
+        }
+
+        try
+        {
+            SetActivityState(ActivityState.Working);
+
+            // Echo prompt to buffer for visual feedback
+            var echoBytes = Encoding.UTF8.GetBytes($"> {text}\n\n");
+            Buffer.Write(echoBytes);
+
+            // Build args: -p [claudeArgs] [--resume sessionId]
+            var args = BuildPipeModeArgs();
+
+            // Clear ClaudeSessionId so EventRouter.FindUnmatchedSession can re-map
+            // the new Claude session_id to this Director session
+            ClaudeSessionId = null;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = _claudePath!,
+                Arguments = args,
+                WorkingDirectory = WorkingDirectory,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+
+            System.Diagnostics.Debug.WriteLine($"[Session.PipeMode] Starting: {_claudePath} {args}");
+
+            var process = new Process { StartInfo = psi };
+            process.Start();
+            _currentProcess = process;
+
+            // Write prompt to stdin and close it (claude -p reads all of stdin)
+            await process.StandardInput.WriteAsync(text);
+            process.StandardInput.Close();
+
+            // Drain stdout → buffer in background
+            var stdoutTask = DrainStreamToBufferAsync(process.StandardOutput.BaseStream);
+
+            // Drain stderr for logging
+            var stderrTask = DrainStderrAsync(process.StandardError);
+
+            // Wait for process to exit
+            await process.WaitForExitAsync();
+            await Task.WhenAll(stdoutTask, stderrTask);
+
+            ExitCode = process.ExitCode;
+            System.Diagnostics.Debug.WriteLine($"[Session.PipeMode] Process exited with code {process.ExitCode}");
+
+            // Add separator after response
+            Buffer.Write(Encoding.UTF8.GetBytes("\n"));
+
+            _currentProcess = null;
+            process.Dispose();
+
+            SetActivityState(ActivityState.WaitingForInput);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Session.PipeMode] Error: {ex.Message}");
+            var errorBytes = Encoding.UTF8.GetBytes($"\n[Error: {ex.Message}]\n");
+            Buffer.Write(errorBytes);
+            _currentProcess = null;
+            SetActivityState(ActivityState.WaitingForInput);
+        }
+        finally
+        {
+            _busy.Release();
+        }
+    }
+
+    private string BuildPipeModeArgs()
+    {
+        var sb = new StringBuilder("-p");
+
+        // Append user's claude args or defaults
+        var extraArgs = ClaudeArgs ?? _defaultClaudeArgs ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(extraArgs))
+        {
+            sb.Append(' ');
+            sb.Append(extraArgs);
+        }
+
+        // Resume if we have a previous Claude session id
+        if (ClaudeSessionId != null)
+        {
+            sb.Append(" --resume ");
+            sb.Append(ClaudeSessionId);
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task DrainStreamToBufferAsync(Stream stream)
+    {
+        var buf = new byte[4096];
+        int bytesRead;
+        while ((bytesRead = await stream.ReadAsync(buf, 0, buf.Length)) > 0)
+        {
+            Buffer.Write(buf.AsSpan(0, bytesRead));
+        }
+    }
+
+    private async Task DrainStderrAsync(StreamReader stderr)
+    {
+        var content = await stderr.ReadToEndAsync();
+        if (!string.IsNullOrWhiteSpace(content))
+        {
+            System.Diagnostics.Debug.WriteLine($"[Session.PipeMode.stderr] {content}");
+        }
+    }
+
+    /// <summary>Send text followed by Enter to the ConPTY (sync, legacy).
+    /// Prefer SendTextAsync which handles bracketed paste mode correctly.</summary>
+    public void SendText(string text)
+    {
+        if (Mode is SessionMode.PipeMode or SessionMode.Embedded) return; // no-op outside ConPTY
+        if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
+        var textBytes = Encoding.UTF8.GetBytes(text);
+        _processHost!.Write(textBytes);
+        _processHost.Write([(byte)'\r']);
         SetActivityState(ActivityState.Working);
     }
 
@@ -121,6 +344,22 @@ public sealed class Session : IDisposable
         SetActivityState(newState.Value);
     }
 
+    /// <summary>Set the process ID for embedded mode sessions.</summary>
+    public void SetEmbeddedProcessId(int pid)
+    {
+        if (Mode != SessionMode.Embedded) return;
+        EmbeddedProcessId = pid;
+    }
+
+    /// <summary>Notify the session that the embedded process has exited.</summary>
+    public void NotifyEmbeddedProcessExited(int exitCode)
+    {
+        if (Mode != SessionMode.Embedded) return;
+        ExitCode = exitCode;
+        Status = SessionStatus.Exited;
+        HandlePipeEvent(new Pipes.PipeMessage { HookEventName = "SessionEnd" });
+    }
+
     private void SetActivityState(ActivityState newState)
     {
         var old = ActivityState;
@@ -132,8 +371,8 @@ public sealed class Session : IDisposable
     /// <summary>Resize the pseudo console.</summary>
     public void Resize(short cols, short rows)
     {
-        if (_disposed) return;
-        _console.Resize(cols, rows);
+        if (_disposed || Mode is SessionMode.PipeMode or SessionMode.Embedded) return;
+        _console!.Resize(cols, rows);
     }
 
     /// <summary>Kill the session gracefully, then force if needed.</summary>
@@ -141,14 +380,64 @@ public sealed class Session : IDisposable
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         Status = SessionStatus.Exiting;
-        await _processHost.GracefulShutdownAsync(timeoutMs);
+
+        if (Mode == SessionMode.ConPty)
+        {
+            await _processHost!.GracefulShutdownAsync(timeoutMs);
+        }
+        else if (Mode == SessionMode.PipeMode)
+        {
+            // Pipe mode: kill current process if running
+            try
+            {
+                if (_currentProcess is { HasExited: false } proc)
+                {
+                    proc.Kill(entireProcessTree: true);
+                    await proc.WaitForExitAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Session.KillAsync] Error killing pipe process: {ex.Message}");
+            }
+
+            Status = SessionStatus.Exited;
+            SetActivityState(ActivityState.Exited);
+        }
+        else
+        {
+            // Embedded mode: process is owned by EmbeddedConsoleHost
+            Status = SessionStatus.Exited;
+            SetActivityState(ActivityState.Exited);
+        }
     }
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
-        _processHost.Dispose();
+
+        if (Mode == SessionMode.ConPty)
+        {
+            _processHost!.Dispose();
+        }
+        else if (Mode == SessionMode.PipeMode)
+        {
+            // Kill pipe mode process if still running
+            try
+            {
+                if (_currentProcess is { HasExited: false } proc)
+                {
+                    proc.Kill(entireProcessTree: true);
+                }
+            }
+            catch { /* best effort */ }
+
+            _currentProcess?.Dispose();
+            _busy.Dispose();
+        }
+        // Embedded mode: process cleanup is handled by EmbeddedConsoleHost
+
         Buffer.Dispose();
     }
 }

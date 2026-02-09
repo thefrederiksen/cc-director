@@ -219,6 +219,13 @@ public class TerminalControl : FrameworkElement
         }
     }
 
+    protected override void OnMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseDown(e);
+        Focus();
+        e.Handled = true;
+    }
+
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         if (_session == null) return;
