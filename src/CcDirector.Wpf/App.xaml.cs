@@ -103,15 +103,9 @@ public partial class App : Application
     {
         try
         {
-            var relayScriptPath = Path.Combine(AppContext.BaseDirectory, "Hooks", "hook-relay.ps1");
-            if (File.Exists(relayScriptPath))
-            {
-                await HookInstaller.InstallAsync(relayScriptPath, log);
-            }
-            else
-            {
-                log($"Hook relay script not found at {relayScriptPath}, skipping hook installation.");
-            }
+            HookRelayScript.EnsureWritten();
+            log($"Hook relay script written to {HookRelayScript.ScriptPath}");
+            await HookInstaller.InstallAsync(HookRelayScript.ScriptPath, log);
         }
         catch (Exception ex)
         {
@@ -125,7 +119,9 @@ public partial class App : Application
         var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
 
         if (!File.Exists(configPath))
-            return;
+        {
+            WriteDefaultConfig(configPath);
+        }
 
         try
         {
@@ -153,6 +149,29 @@ public partial class App : Application
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"Error loading config: {ex.Message}");
+        }
+    }
+
+    private static void WriteDefaultConfig(string configPath)
+    {
+        const string defaultConfig = """
+            {
+              "Agent": {
+                "ClaudePath": "claude",
+                "DefaultBufferSizeBytes": 2097152,
+                "GracefulShutdownTimeoutSeconds": 5
+              },
+              "Repositories": []
+            }
+            """;
+
+        try
+        {
+            File.WriteAllText(configPath, defaultConfig);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Failed to write default config: {ex.Message}");
         }
     }
 }
