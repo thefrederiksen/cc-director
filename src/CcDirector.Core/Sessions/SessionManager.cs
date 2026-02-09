@@ -217,6 +217,84 @@ public sealed class SessionManager : IDisposable
         return unmatched[0];
     }
 
+    /// <summary>
+    /// Save state of all running embedded sessions to the store.
+    /// The getHwnd delegate maps session ID → console HWND (as long), provided by the WPF layer.
+    /// </summary>
+    public void SaveSessionState(SessionStateStore store, Func<Guid, long> getHwnd)
+    {
+        var persisted = _sessions.Values
+            .Where(s => s.Mode == SessionMode.Embedded && s.Status == SessionStatus.Running)
+            .Select(s => new PersistedSession
+            {
+                Id = s.Id,
+                RepoPath = s.RepoPath,
+                WorkingDirectory = s.WorkingDirectory,
+                ClaudeArgs = s.ClaudeArgs,
+                EmbeddedProcessId = s.EmbeddedProcessId,
+                ConsoleHwnd = getHwnd(s.Id),
+                ClaudeSessionId = s.ClaudeSessionId,
+                ActivityState = s.ActivityState,
+                CreatedAt = s.CreatedAt,
+            })
+            .ToList();
+
+        store.Save(persisted);
+        _log?.Invoke($"Saved {persisted.Count} session(s) to state store.");
+    }
+
+    /// <summary>Restore a single persisted embedded session into tracking.</summary>
+    public Session RestoreEmbeddedSession(PersistedSession ps)
+    {
+        var session = new Session(
+            ps.Id, ps.RepoPath, ps.WorkingDirectory, ps.ClaudeArgs,
+            ps.EmbeddedProcessId, ps.ClaudeSessionId, ps.ActivityState, ps.CreatedAt);
+
+        _sessions[session.Id] = session;
+
+        if (ps.ClaudeSessionId != null)
+            _claudeSessionMap[ps.ClaudeSessionId] = session.Id;
+
+        _log?.Invoke($"Restored session {session.Id} (PID {ps.EmbeddedProcessId}).");
+        return session;
+    }
+
+    /// <summary>
+    /// Load persisted sessions from the store. Validates each PID is still alive,
+    /// restores valid ones, and returns tuples of (Session, PersistedSession) so
+    /// the WPF layer can use the stored HWND for reattach.
+    /// </summary>
+    public List<(Session Session, PersistedSession Persisted)> LoadPersistedSessions(SessionStateStore store)
+    {
+        var persisted = store.Load();
+        var restored = new List<(Session, PersistedSession)>();
+
+        foreach (var ps in persisted)
+        {
+            try
+            {
+                var proc = Process.GetProcessById(ps.EmbeddedProcessId);
+                if (proc.HasExited)
+                {
+                    _log?.Invoke($"Persisted session {ps.Id} PID {ps.EmbeddedProcessId} has exited, skipping.");
+                    proc.Dispose();
+                    continue;
+                }
+                proc.Dispose();
+            }
+            catch
+            {
+                _log?.Invoke($"Persisted session {ps.Id} PID {ps.EmbeddedProcessId} not found, skipping.");
+                continue;
+            }
+
+            restored.Add((RestoreEmbeddedSession(ps), ps));
+        }
+
+        _log?.Invoke($"Loaded {restored.Count}/{persisted.Count} persisted session(s).");
+        return restored;
+    }
+
     public void Dispose()
     {
         foreach (var session in _sessions.Values)

@@ -137,6 +137,30 @@ public sealed class Session : IDisposable
         ActivityState = ActivityState.Starting;
     }
 
+    /// <summary>Reattach constructor — restore a persisted embedded session.</summary>
+    internal Session(
+        Guid id,
+        string repoPath,
+        string workingDirectory,
+        string? claudeArgs,
+        int embeddedProcessId,
+        string? claudeSessionId,
+        ActivityState activityState,
+        DateTimeOffset createdAt)
+    {
+        Mode = SessionMode.Embedded;
+        Id = id;
+        RepoPath = repoPath;
+        WorkingDirectory = workingDirectory;
+        ClaudeArgs = claudeArgs;
+        EmbeddedProcessId = embeddedProcessId;
+        ClaudeSessionId = claudeSessionId;
+        Buffer = new CircularTerminalBuffer(1);
+        CreatedAt = createdAt;
+        Status = SessionStatus.Running;
+        ActivityState = activityState;
+    }
+
     /// <summary>Send raw bytes to the ConPTY input pipe.</summary>
     public void SendInput(byte[] data)
     {

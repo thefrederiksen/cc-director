@@ -17,10 +17,36 @@ public partial class App : Application
     public RepositoryRegistry RepositoryRegistry { get; private set; } = null!;
     public DirectorPipeServer PipeServer { get; private set; } = null!;
     public EventRouter EventRouter { get; private set; } = null!;
+    public SessionStateStore SessionStateStore { get; private set; } = null!;
+
+    /// <summary>
+    /// Persisted session data loaded on startup, consumed by MainWindow for HWND reattach.
+    /// Cleared after MainWindow processes it.
+    /// </summary>
+    public List<PersistedSession>? RestoredPersistedData { get; set; }
+
+    /// <summary>
+    /// Set to true by MainWindow when the user chooses "Keep Sessions" on close.
+    /// When true, OnExit detaches consoles instead of killing them.
+    /// </summary>
+    public bool KeepSessionsOnExit { get; set; }
+
+    private Mutex? _singleInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Single-instance enforcement
+        _singleInstanceMutex = new Mutex(true, @"Global\CcDirector_SingleInstance", out bool createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show("CC Director is already running.", "CC Director",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            Shutdown();
+            return;
+        }
+
         LoadConfiguration();
 
         // Initialize repository registry and seed from appsettings
@@ -28,10 +54,17 @@ public partial class App : Application
         RepositoryRegistry.Load();
         RepositoryRegistry.SeedFrom(Repositories);
 
+        SessionStateStore = new SessionStateStore();
+
         Action<string> log = msg => System.Diagnostics.Debug.WriteLine($"[CcDirector] {msg}");
 
         SessionManager = new SessionManager(Options, log);
         SessionManager.ScanForOrphans();
+
+        // Restore persisted sessions (before pipe server starts, so EventRouter can find them)
+        var restored = SessionManager.LoadPersistedSessions(SessionStateStore);
+        RestoredPersistedData = restored.Select(r => r.Persisted).ToList();
+        SessionStateStore.Clear(); // prevent stale re-reads on crash
 
         // Start pipe server and event router
         PipeServer = new DirectorPipeServer(log);
@@ -45,10 +78,24 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        EmbeddedConsoleHost.DisposeAll();
-        PipeServer.Dispose();
-        SessionManager.KillAllSessionsAsync().GetAwaiter().GetResult();
-        SessionManager.Dispose();
+        if (KeepSessionsOnExit)
+        {
+            // Sessions were already saved and detached by MainWindow.OnClosing
+            EmbeddedConsoleHost.DetachAll();
+        }
+        else
+        {
+            SessionStateStore?.Clear();
+            EmbeddedConsoleHost.DisposeAll();
+            SessionManager?.KillAllSessionsAsync().GetAwaiter().GetResult();
+        }
+
+        PipeServer?.Dispose();
+        SessionManager?.Dispose();
+
+        _singleInstanceMutex?.ReleaseMutex();
+        _singleInstanceMutex?.Dispose();
+
         base.OnExit(e);
     }
 

@@ -39,9 +39,46 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
-        DetachTerminal();
+        var app = (App)Application.Current;
 
-        // Dispose all embedded hosts (not just the active one)
+        // Check for active running sessions
+        var activeSessions = _sessions
+            .Where(vm => vm.Session.Status is SessionStatus.Running or SessionStatus.Starting)
+            .ToList();
+
+        if (activeSessions.Count > 0)
+        {
+            var dialog = new CloseDialog(activeSessions.Count) { Owner = this };
+            if (dialog.ShowDialog() != true)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            if (!dialog.ShutDownCommandWindows)
+            {
+                // Keep sessions alive — save state, detach consoles
+                app.SessionManager.SaveSessionState(app.SessionStateStore, sessionId =>
+                {
+                    if (_embeddedHosts.TryGetValue(sessionId, out var host))
+                        return host.ConsoleHwnd.ToInt64();
+                    return 0;
+                });
+
+                DetachTerminal();
+                foreach (var host in _embeddedHosts.Values)
+                    host.Detach();
+                _embeddedHosts.Clear();
+
+                app.KeepSessionsOnExit = true;
+                base.OnClosing(e);
+                return;
+            }
+
+            // Checkbox checked — kill all (default behavior, falls through below)
+        }
+
+        DetachTerminal();
         foreach (var host in _embeddedHosts.Values)
             host.Dispose();
         _embeddedHosts.Clear();
@@ -56,6 +93,56 @@ public partial class MainWindow : Window
 
         if (app.EventRouter != null)
             app.EventRouter.OnRawMessage += OnPipeMessageReceived;
+
+        // Restore persisted sessions (loaded by App.OnStartup into SessionManager)
+        RestorePersistedSessions();
+    }
+
+    private void RestorePersistedSessions()
+    {
+        var app = (App)Application.Current;
+        var persistedData = app.RestoredPersistedData;
+        app.RestoredPersistedData = null; // consume once
+
+        var restoredSessions = _sessionManager.ListSessions()
+            .Where(s => s.Mode == SessionMode.Embedded && s.Status == SessionStatus.Running)
+            .ToList();
+
+        if (restoredSessions.Count == 0) return;
+
+        // Build HWND lookup from persisted data
+        var hwndMap = persistedData?.ToDictionary(p => p.Id, p => new IntPtr(p.ConsoleHwnd))
+            ?? new Dictionary<Guid, IntPtr>();
+
+        var wpfHwnd = new WindowInteropHelper(this).Handle;
+
+        foreach (var session in restoredSessions)
+        {
+            var vm = new SessionViewModel(session, Dispatcher);
+            _sessions.Add(vm);
+
+            // Reattach the embedded console host using persisted HWND
+            hwndMap.TryGetValue(session.Id, out var persistedHwnd);
+            var host = EmbeddedConsoleHost.Reattach(session.EmbeddedProcessId, persistedHwnd);
+            if (host != null)
+            {
+                _embeddedHosts[session.Id] = host;
+                host.SetOwner(wpfHwnd);
+                host.OnProcessExited += exitCode =>
+                {
+                    session.NotifyEmbeddedProcessExited(exitCode);
+                };
+            }
+        }
+
+        // Auto-select the first session after layout completes so the
+        // console overlay positions correctly over the rendered TerminalArea.
+        if (_sessions.Count > 0)
+        {
+            Dispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.Loaded,
+                () => SessionList.SelectedItem = _sessions[0]);
+        }
     }
 
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)

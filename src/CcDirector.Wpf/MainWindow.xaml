@@ -9,22 +9,15 @@
         WindowStartupLocation="CenterScreen">
 
     <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220" MinWidth="150" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="280" MinWidth="200" />
+        </Grid.ColumnDefinitions>
 
-        <!-- Main 3-panel layout -->
-        <Grid Grid.Row="0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="220" MinWidth="150" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="280" MinWidth="200" />
-            </Grid.ColumnDefinitions>
-
-            <!-- Left sidebar: sessions panel -->
+            <!-- Left sidebar: sessions panel (full height) -->
             <Border Grid.Column="0" Background="{StaticResource SidebarBackground}">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top"
@@ -89,8 +82,15 @@
                           HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" />
 
-            <!-- Center: tabbed terminal + source control -->
-            <Grid Grid.Column="2" Background="#1E1E1E">
+            <!-- Center: terminal + prompt stacked vertically -->
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Center top: tabbed terminal + source control -->
+                <Grid Grid.Row="0" Background="#1E1E1E">
                 <TextBlock x:Name="PlaceholderText"
                            Text="Select or create a session to begin"
                            Foreground="#555555"
@@ -145,6 +145,53 @@
                         <controls:GitChangesControl x:Name="GitChanges" />
                     </TabItem>
                 </TabControl>
+                </Grid>
+
+                <!-- Prompt bar (center column only) -->
+                <Border Grid.Row="1" Background="{StaticResource SidebarBackground}"
+                        BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="PromptInput"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 MinLines="4"
+                                 MaxHeight="160"
+                                 VerticalScrollBarVisibility="Auto"
+                                 Background="#1E1E1E"
+                                 Foreground="#CCCCCC"
+                                 CaretBrush="#CCCCCC"
+                                 BorderBrush="#3C3C3C"
+                                 BorderThickness="1"
+                                 Padding="8,6"
+                                 FontFamily="Cascadia Mono, Consolas, Courier New"
+                                 FontSize="13"
+                                 KeyDown="PromptInput_KeyDown"
+                                 GotFocus="PromptInput_GotFocus" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                            <Button Content="Send"
+                                    Click="BtnSendPrompt_Click"
+                                    Width="60" Margin="8,0,0,0"
+                                    Height="30"
+                                    Background="{StaticResource AccentBrush}"
+                                    Foreground="White"
+                                    BorderThickness="0"
+                                    Cursor="Hand" />
+                            <Button Content="&#x21bb;" Click="BtnRefreshConsole_Click"
+                                    Width="30" Margin="4,0,0,0"
+                                    Height="30"
+                                    Background="{StaticResource ButtonBackground}"
+                                    Foreground="{StaticResource TextForeground}"
+                                    BorderThickness="0"
+                                    Cursor="Hand"
+                                    ToolTip="Reposition console overlay"
+                                    FontSize="16" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
             </Grid>
 
             <!-- Splitter (right) -->
@@ -153,7 +200,7 @@
                           HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" />
 
-            <!-- Right sidebar: pipe messages panel -->
+            <!-- Right sidebar: pipe messages panel (full height) -->
             <Border Grid.Column="4" Background="{StaticResource SidebarBackground}">
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="12,12,12,8">
@@ -202,52 +249,5 @@
                     </ListBox>
                 </DockPanel>
             </Border>
-        </Grid>
-
-        <!-- Prompt bar -->
-        <Border Grid.Row="1" Background="{StaticResource SidebarBackground}"
-                BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBox x:Name="PromptInput"
-                         AcceptsReturn="True"
-                         TextWrapping="Wrap"
-                         MaxHeight="120"
-                         MinHeight="36"
-                         VerticalScrollBarVisibility="Auto"
-                         Background="#1E1E1E"
-                         Foreground="#CCCCCC"
-                         CaretBrush="#CCCCCC"
-                         BorderBrush="#3C3C3C"
-                         BorderThickness="1"
-                         Padding="8,6"
-                         FontFamily="Cascadia Mono, Consolas, Courier New"
-                         FontSize="13"
-                         KeyDown="PromptInput_KeyDown"
-                         GotFocus="PromptInput_GotFocus" />
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
-                    <Button Content="Send"
-                            Click="BtnSendPrompt_Click"
-                            Width="60" Margin="8,0,0,0"
-                            Height="30"
-                            Background="{StaticResource AccentBrush}"
-                            Foreground="White"
-                            BorderThickness="0"
-                            Cursor="Hand" />
-                    <Button Content="&#x21bb;" Click="BtnRefreshConsole_Click"
-                            Width="30" Margin="4,0,0,0"
-                            Height="30"
-                            Background="{StaticResource ButtonBackground}"
-                            Foreground="{StaticResource TextForeground}"
-                            BorderThickness="0"
-                            Cursor="Hand"
-                            ToolTip="Reposition console overlay"
-                            FontSize="16" />
-                </StackPanel>
-            </Grid>
-        </Border>
     </Grid>
 </Window>

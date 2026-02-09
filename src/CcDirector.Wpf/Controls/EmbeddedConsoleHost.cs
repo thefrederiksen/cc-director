@@ -26,6 +26,78 @@ public class EmbeddedConsoleHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Detach all instances — restore console windows to normal standalone
+    /// windows without killing the processes.
+    /// </summary>
+    public static void DetachAll()
+    {
+        foreach (var instance in _allInstances.Keys)
+        {
+            try { instance.Detach(); }
+            catch (Exception ex) { Debug.WriteLine($"[EmbeddedConsoleHost] DetachAll error: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>
+    /// Reattach to an existing console process. Returns null if the process is dead
+    /// or the HWND is invalid.
+    /// </summary>
+    public static EmbeddedConsoleHost? Reattach(int processId, IntPtr persistedHwnd)
+    {
+        Process process;
+        try
+        {
+            process = Process.GetProcessById(processId);
+            if (process.HasExited)
+            {
+                process.Dispose();
+                return null;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        // Try persisted HWND first; fallback to AttachConsole discovery
+        IntPtr hwnd = IntPtr.Zero;
+        if (persistedHwnd != IntPtr.Zero && IsWindow(persistedHwnd))
+        {
+            hwnd = persistedHwnd;
+        }
+        else
+        {
+            hwnd = WaitForConsoleWindow(process, TimeSpan.FromSeconds(2));
+        }
+
+        if (hwnd == IntPtr.Zero)
+        {
+            Debug.WriteLine($"[EmbeddedConsoleHost] Reattach: no valid HWND for PID {processId}");
+            process.Dispose();
+            return null;
+        }
+
+        var host = new EmbeddedConsoleHost();
+        host._process = process;
+        host._process.EnableRaisingEvents = true;
+        host._consoleHwnd = hwnd;
+        host._visible = false;
+
+        host._process.Exited += (_, _) =>
+        {
+            int code = 0;
+            try { code = host._process.ExitCode; } catch { }
+            Application.Current?.Dispatcher.BeginInvoke(() => host.OnProcessExited?.Invoke(code));
+        };
+
+        StripBorders(hwnd);
+        _allInstances.TryAdd(host, 0);
+
+        Debug.WriteLine($"[EmbeddedConsoleHost] Reattached to PID {processId}, hwnd=0x{hwnd:X}");
+        return host;
+    }
+
     private IntPtr _consoleHwnd;
     private Process? _process;
     private bool _disposed;
@@ -369,6 +441,46 @@ public class EmbeddedConsoleHost : IDisposable
         _consoleHwnd = IntPtr.Zero;
     }
 
+    /// <summary>
+    /// Restore the console window to a normal standalone window without killing the process.
+    /// After this call the host is considered disposed and should not be reused.
+    /// </summary>
+    public void Detach()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (_consoleHwnd != IntPtr.Zero && IsWindow(_consoleHwnd))
+        {
+            RestoreBorders(_consoleHwnd);
+            // Clear owner so the window is independent
+            SetWindowLong(_consoleHwnd, GWL_HWNDPARENT, 0);
+            ShowWindow(_consoleHwnd, SW_SHOW);
+        }
+
+        _process = null;
+        _consoleHwnd = IntPtr.Zero;
+        _allInstances.TryRemove(this, out _);
+    }
+
+    /// <summary>
+    /// Inverse of StripBorders: restore caption, resize frame, taskbar presence.
+    /// </summary>
+    private static void RestoreBorders(IntPtr hwnd)
+    {
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        style |= WS_CAPTION | WS_THICKFRAME | WS_SYSMENU;
+        SetWindowLong(hwnd, GWL_STYLE, style);
+
+        int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+        exStyle |= WS_EX_APPWINDOW;
+        exStyle &= ~WS_EX_TOOLWINDOW;
+        SetWindowLong(hwnd, GWL_EXSTYLE, exStyle);
+
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -454,7 +566,9 @@ public class EmbeddedConsoleHost : IDisposable
     private const int WS_EX_DLGMODALFRAME = 0x00000001;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_APPWINDOW = 0x00040000;
+    private const int WS_SYSMENU = 0x00080000;
     private const int SW_HIDE = 0;
+    private const int SW_SHOW = 5;
     private const int SW_SHOWNOACTIVATE = 4;
     private const int GWL_HWNDPARENT = -8;
     private const int SWP_NOMOVE = 0x0002;
