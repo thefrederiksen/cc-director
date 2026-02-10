@@ -4,6 +4,12 @@ A Windows desktop application for managing multiple [Claude Code](https://docs.a
 
 ![CC Director](images/cc-director-main.png)
 
+## Download
+
+**[Download cc_director.exe](releases/cc_director.exe)** - Pre-built Windows executable (no build required)
+
+Requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) installed on your machine.
+
 ## Features
 
 ### Multi-Session Management
