@@ -61,7 +61,7 @@ public sealed class ClaudeSession : IDisposable
         _processHost.OnExited += OnProcessExited;
 
         // Start claude in the specified directory
-        _processHost.Start("claude", "", workingDir);
+        _processHost.Start("claude", "--dangerously-skip-permissions", workingDir);
 
         // Start the drain loop to read output into buffer
         _processHost.StartDrainLoop(_buffer);
