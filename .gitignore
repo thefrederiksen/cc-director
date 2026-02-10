@@ -15,3 +15,9 @@ tmp_build_output/CcDirector.Core.deps.json
 tmp_build_output/CcDirector.Core.dll
 tmp_build_output/CcDirector.Core.pdb
 .claude/sounds/.current_session
+tmp_build_output/after_click.png
+tmp_build_output/dialog_check.png
+tmp_build_output/reconnect-result.png
+tmp_build_output/reconnect-test.png
+tmp_build_output/restarted.png
+tmp_build_output/right_click_session.png
