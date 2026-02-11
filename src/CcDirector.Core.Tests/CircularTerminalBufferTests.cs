@@ -134,7 +134,7 @@ public class CircularTerminalBufferTests
     }
 
     [Fact]
-    public void ConcurrentAccess_IsThreadSafe()
+    public async Task ConcurrentAccess_IsThreadSafe()
     {
         using var buffer = new CircularTerminalBuffer(1024);
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -166,7 +166,7 @@ public class CircularTerminalBufferTests
             }
         })).ToArray();
 
-        Task.WaitAll(writers.Concat(readers).ToArray());
+        await Task.WhenAll(writers.Concat(readers).ToArray());
         Assert.Empty(exceptions);
         Assert.True(buffer.TotalBytesWritten > 0);
     }

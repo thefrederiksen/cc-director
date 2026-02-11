@@ -242,7 +242,72 @@ public class OperationResult<T>
 
 ---
 
-## 4. Testing Standards
+## 4. Null-Forgiving Operator (!) Is FORBIDDEN
+
+The null-forgiving operator (`!`) is **FORBIDDEN** in this codebase. It is lazy programming that hides problems instead of fixing them.
+
+### Why It's Forbidden
+
+- It doesn't fix null reference issues - just silences the compiler
+- If the value IS null at runtime, you still get NullReferenceException
+- No context about what went wrong or why
+- It's fallback programming in disguise - "trust me bro" coding
+
+### What To Do Instead
+
+**If null is a programming error - throw with context:**
+
+```csharp
+// BAD - lazy, crashes with useless error
+var data = session.Buffer!.DumpAll();
+
+// GOOD - fails fast with useful error
+if (session.Buffer == null)
+    throw new InvalidOperationException(
+        $"Session {session.Id} has no buffer (BackendType={session.BackendType})");
+var data = session.Buffer.DumpAll();
+```
+
+**If null is valid - handle explicitly:**
+
+```csharp
+// BAD
+var name = user!.Name;
+
+// GOOD
+if (user == null)
+    return "Anonymous";
+return user.Name;
+```
+
+**In tests - use Assert.NotNull:**
+
+```csharp
+// BAD
+Assert.Equal(expected, obj!.Value);
+
+// GOOD
+Assert.NotNull(obj);
+Assert.Equal(expected, obj.Value);
+```
+
+### Only Exception
+
+Constructor field assignment where you're immediately initializing and the compiler can't figure it out. Must include a comment explaining why.
+
+```csharp
+// OK - compiler can't see that Loaded event initializes this
+private DataService _dataService = null!; // Initialized in OnLoaded
+
+private void OnLoaded()
+{
+    _dataService = new DataService();
+}
+```
+
+---
+
+## 5. Testing Standards
 
 ### Test Coverage Requirements
 
@@ -299,7 +364,7 @@ public void Test1()
 
 ---
 
-## 5. Threading and UI
+## 6. Threading and UI
 
 ### WPF Threading Rules
 
@@ -340,7 +405,7 @@ private async Task DoWorkAsync()
 
 ---
 
-## 6. Naming Conventions
+## 7. Naming Conventions
 
 ### Classes
 - **PascalCase** for all class names
@@ -373,7 +438,7 @@ private SessionManager sessionManager;  // Missing underscore
 
 ---
 
-## 7. Project Configuration
+## 8. Project Configuration
 
 ### Every Project Must Include
 
@@ -387,7 +452,7 @@ private SessionManager sessionManager;  // Missing underscore
 
 ---
 
-## 8. Documentation
+## 9. Documentation
 
 ### XML Documentation for Public APIs
 
@@ -419,7 +484,7 @@ await Task.Delay(500);
 
 ---
 
-## 9. Validation
+## 10. Validation
 
 ### Validate Early
 
@@ -453,7 +518,7 @@ if (session == null)  // Less clear intent
 
 ---
 
-## 10. Quick Reference
+## 11. Quick Reference
 
 | Aspect | Convention | Example |
 |--------|------------|---------|
