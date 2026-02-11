@@ -924,6 +924,27 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SessionMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] SessionMenuButton_Click");
+        if (sender is not Button button)
+            return;
+
+        // Find the parent Grid that has the ContextMenu
+        var parent = VisualTreeHelper.GetParent(button);
+        while (parent != null && parent is not Grid)
+        {
+            parent = VisualTreeHelper.GetParent(parent);
+        }
+
+        if (parent is Grid grid && grid.ContextMenu != null)
+        {
+            grid.ContextMenu.PlacementTarget = button;
+            grid.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            grid.ContextMenu.IsOpen = true;
+        }
+    }
+
     // --- Repository Management Tab ---
 
     private void RefreshRepoManagerList()
