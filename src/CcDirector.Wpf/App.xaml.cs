@@ -99,7 +99,8 @@ public partial class App : Application
         }
         else
         {
-            SessionStateStore?.Clear();
+            // Don't clear SessionStateStore - sessions.json should persist for crash recovery.
+            // On next startup, sessions with ClaudeSessionId can be resumed with --resume flag.
             EmbeddedConsoleHost.DisposeAll();
             SessionManager?.KillAllSessionsAsync().GetAwaiter().GetResult();
         }

@@ -148,7 +148,95 @@ public partial class MainWindow : Window
         // Subscribe to session registration for ClaudeSessionId persistence
         _sessionManager.OnClaudeSessionRegistered += OnClaudeSessionRegistered;
 
-        // v2 uses ConPTY only - no session restoration from embedded mode
+        // Restore sessions from previous run (crash recovery)
+        RestorePersistedSessions();
+    }
+
+    /// <summary>
+    /// Restore sessions from previous run that have a ClaudeSessionId.
+    /// Uses Claude's --resume flag to continue the conversation.
+    /// </summary>
+    private void RestorePersistedSessions()
+    {
+        var app = (App)Application.Current;
+        var persisted = app.RestoredPersistedData;
+
+        if (persisted == null || persisted.Count == 0)
+        {
+            FileLog.Write("[MainWindow] RestorePersistedSessions: No sessions to restore");
+            return;
+        }
+
+        FileLog.Write($"[MainWindow] RestorePersistedSessions: Found {persisted.Count} persisted session(s)");
+
+        int restored = 0;
+        foreach (var p in persisted)
+        {
+            // Skip sessions without ClaudeSessionId - they never fully started
+            if (string.IsNullOrEmpty(p.ClaudeSessionId))
+            {
+                FileLog.Write($"[MainWindow] Skipping session {p.Id}: No ClaudeSessionId");
+                continue;
+            }
+
+            // Skip if repo path no longer exists
+            if (!System.IO.Directory.Exists(p.RepoPath))
+            {
+                FileLog.Write($"[MainWindow] Skipping session {p.Id}: Repo path not found: {p.RepoPath}");
+                continue;
+            }
+
+            try
+            {
+                // Create new session with --resume flag to continue Claude conversation
+                var session = _sessionManager.CreateSession(
+                    p.RepoPath,
+                    claudeArgs: null,
+                    SessionBackendType.ConPty,
+                    resumeSessionId: p.ClaudeSessionId);
+
+                if (session != null)
+                {
+                    // Restore custom name and color
+                    session.CustomName = p.CustomName;
+                    session.CustomColor = p.CustomColor;
+
+                    var vm = new SessionViewModel(session, Dispatcher);
+                    _sessions.Add(vm);
+                    restored++;
+
+                    FileLog.Write($"[MainWindow] Restored session {session.Id} from {p.RepoPath} (Resume={p.ClaudeSessionId[..8]}...)");
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] Failed to restore session for {p.RepoPath}: {ex.Message}");
+            }
+        }
+
+        if (restored > 0)
+        {
+            FileLog.Write($"[MainWindow] Restored {restored} session(s) from previous run");
+
+            // Clear persisted data after successful restoration to avoid re-restoring
+            app.SessionStateStore.Clear();
+            app.RestoredPersistedData = null;
+
+            // Select first restored session
+            if (_sessions.Count > 0)
+            {
+                SessionList.SelectedItem = _sessions[0];
+            }
+
+            // Persist the newly created sessions
+            PersistSessionState();
+        }
+        else
+        {
+            // No sessions restored, clear the state store
+            app.SessionStateStore.Clear();
+            app.RestoredPersistedData = null;
+        }
     }
 
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
@@ -759,8 +847,9 @@ public partial class MainWindow : Window
 
     private void OnClaudeSessionRegistered(Session session, string claudeSessionId)
     {
-        // Log the registration - actual session data is stored by Claude Code itself
+        // Persist session state so ClaudeSessionId is saved for crash recovery
         FileLog.Write($"[MainWindow] Claude session registered: {claudeSessionId} for {session.RepoPath}");
+        PersistSessionState();
     }
 
     private void BtnOpenLogs_Click(object sender, RoutedEventArgs e)
