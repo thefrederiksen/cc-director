@@ -96,11 +96,14 @@ public class TerminalControl : FrameworkElement
         _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines);
 
         // Load any existing buffer content
-        var (initial, pos) = session.Buffer.GetWrittenSince(0);
-        _bufferPosition = pos;
-        if (initial.Length > 0)
+        if (session.Buffer != null)
         {
-            _parser.Parse(initial);
+            var (initial, pos) = session.Buffer.GetWrittenSince(0);
+            _bufferPosition = pos;
+            if (initial.Length > 0)
+            {
+                _parser.Parse(initial);
+            }
         }
 
         _pollTimer = new DispatcherTimer(DispatcherPriority.Render)
@@ -123,7 +126,7 @@ public class TerminalControl : FrameworkElement
 
     private void PollTimer_Tick(object? sender, EventArgs e)
     {
-        if (_session == null) return;
+        if (_session?.Buffer == null) return;
 
         var (data, newPos) = _session.Buffer.GetWrittenSince(_bufferPosition);
         if (data.Length > 0)

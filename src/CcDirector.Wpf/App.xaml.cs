@@ -35,7 +35,8 @@ public partial class App : Application
     /// </summary>
     public bool KeepSessionsOnExit { get; set; }
 
-    private Mutex? _singleInstanceMutex;
+    // Assigned when single-instance enforcement is enabled (currently disabled for testing)
+    private Mutex? _singleInstanceMutex = null;
 
     protected override void OnStartup(StartupEventArgs e)
     {

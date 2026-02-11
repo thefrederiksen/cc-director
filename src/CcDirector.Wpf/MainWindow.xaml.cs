@@ -955,7 +955,7 @@ public partial class MainWindow : Window
                     if (result.Success)
                     {
                         int count = result.StagedChanges.Count + result.UnstagedChanges.Count;
-                        Dispatcher.BeginInvoke(() => repo.UncommittedCount = count);
+                        _ = Dispatcher.BeginInvoke(() => repo.UncommittedCount = count);
                     }
                 }
                 catch (Exception ex)
