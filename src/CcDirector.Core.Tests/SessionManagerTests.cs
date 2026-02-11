@@ -1,3 +1,4 @@
+using CcDirector.Core.Backends;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
 using Xunit;
@@ -200,6 +201,145 @@ public class SessionManagerTests : IDisposable
     {
         // Just verify it doesn't crash
         _manager.ScanForOrphans();
+    }
+
+    [Fact]
+    public void SaveCurrentState_ConPtySession_IsPersisted()
+    {
+        // Create a temp file for the store
+        var tempFile = Path.Combine(Path.GetTempPath(), $"test_sessions_{Guid.NewGuid()}.json");
+        try
+        {
+            var store = new SessionStateStore(tempFile);
+
+            // Create a ConPty session
+            var session = _manager.CreateSession(Path.GetTempPath());
+            Assert.Equal(SessionBackendType.ConPty, session.BackendType);
+            Assert.Equal(SessionStatus.Running, session.Status);
+
+            // Set custom name and Claude session ID
+            session.CustomName = "Test Session";
+            session.CustomColor = "#FF5500";
+            session.ClaudeSessionId = "test-claude-session-id";
+
+            // Save state
+            _manager.SaveCurrentState(store);
+
+            // Load and verify
+            var loaded = store.Load();
+            Assert.Single(loaded);
+            Assert.Equal(session.Id, loaded[0].Id);
+            Assert.Equal(session.RepoPath, loaded[0].RepoPath);
+            Assert.Equal("Test Session", loaded[0].CustomName);
+            Assert.Equal("#FF5500", loaded[0].CustomColor);
+            Assert.Equal("test-claude-session-id", loaded[0].ClaudeSessionId);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void SaveCurrentState_ExitedSessionWithoutClaudeSessionId_NotPersisted()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"test_sessions_{Guid.NewGuid()}.json");
+        try
+        {
+            var store = new SessionStateStore(tempFile);
+
+            // Create and kill a session (no ClaudeSessionId)
+            var session = _manager.CreateSession(Path.GetTempPath());
+            _manager.KillSessionAsync(session.Id).GetAwaiter().GetResult();
+
+            // Wait for status to change
+            for (int i = 0; i < 10 && session.Status == SessionStatus.Running; i++)
+            {
+                Thread.Sleep(100);
+            }
+
+            // Save state - killed session without ClaudeSessionId should not be persisted
+            _manager.SaveCurrentState(store);
+
+            var loaded = store.Load();
+            Assert.Empty(loaded);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void SaveCurrentState_ExitedSessionWithClaudeSessionId_IsPersisted()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"test_sessions_{Guid.NewGuid()}.json");
+        try
+        {
+            var store = new SessionStateStore(tempFile);
+
+            // Create and kill a session, but set ClaudeSessionId first
+            var session = _manager.CreateSession(Path.GetTempPath());
+            session.ClaudeSessionId = "test-claude-session-id";
+
+            _manager.KillSessionAsync(session.Id).GetAwaiter().GetResult();
+
+            // Wait for status to change to Exited
+            for (int i = 0; i < 10 && session.Status == SessionStatus.Running; i++)
+            {
+                Thread.Sleep(100);
+            }
+
+            // Save state - exited session WITH ClaudeSessionId should be persisted
+            _manager.SaveCurrentState(store);
+
+            var loaded = store.Load();
+            Assert.Single(loaded);
+            Assert.Equal("test-claude-session-id", loaded[0].ClaudeSessionId);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void SaveCurrentState_AnyStatusWithClaudeSessionId_IsPersisted()
+    {
+        // This test verifies that ANY session with a ClaudeSessionId is persisted,
+        // regardless of its status (Running, Exiting, Exited, Failed, etc.)
+        var tempFile = Path.Combine(Path.GetTempPath(), $"test_sessions_{Guid.NewGuid()}.json");
+        try
+        {
+            var store = new SessionStateStore(tempFile);
+
+            // Create session and set ClaudeSessionId
+            var session = _manager.CreateSession(Path.GetTempPath());
+            session.ClaudeSessionId = "test-claude-session-id";
+
+            // Start killing - this puts session in Exiting status
+            var killTask = _manager.KillSessionAsync(session.Id);
+
+            // Immediately save while potentially in Exiting status
+            _manager.SaveCurrentState(store);
+
+            var loaded = store.Load();
+
+            // Session should be persisted regardless of whether it's Running, Exiting, or Exited
+            Assert.Single(loaded);
+            Assert.Equal("test-claude-session-id", loaded[0].ClaudeSessionId);
+
+            // Wait for kill to complete
+            killTask.GetAwaiter().GetResult();
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
     }
 
     public void Dispose()

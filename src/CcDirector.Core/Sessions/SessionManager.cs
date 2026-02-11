@@ -62,6 +62,13 @@ public sealed class SessionManager : IDisposable
 
         var session = new Session(id, repoPath, repoPath, claudeArgs, backend, backendType);
 
+        // Pre-populate ClaudeSessionId if resuming - ensures it's saved for crash recovery
+        // even if Claude exits before sending SessionStart event
+        if (!string.IsNullOrEmpty(resumeSessionId))
+        {
+            session.ClaudeSessionId = resumeSessionId;
+        }
+
         try
         {
             // Get initial terminal dimensions (default 120x30)
@@ -254,14 +261,24 @@ public sealed class SessionManager : IDisposable
     }
 
     /// <summary>
-    /// Save state of all running embedded sessions to the store without needing HWNDs.
-    /// Used for incremental persistence during normal operation.
-    /// ConsoleHwnd is written as 0; Reattach discovers the HWND via AttachConsole.
+    /// Save state of sessions that can be resumed.
+    /// Includes: running sessions, and ANY session with ClaudeSessionId (can resume with --resume).
     /// </summary>
     public void SaveCurrentState(SessionStateStore store)
     {
+        // Log all sessions for debugging
+        _log?.Invoke($"[SaveCurrentState] Total sessions in manager: {_sessions.Count}");
+        foreach (var s in _sessions.Values)
+        {
+            _log?.Invoke($"  Session {s.Id}: Status={s.Status}, ClaudeSessionId={s.ClaudeSessionId ?? "(null)"}, Repo={s.RepoPath}");
+        }
+
+        // Include:
+        // - Running sessions (always save active sessions)
+        // - ANY session with ClaudeSessionId (can be resumed with --resume, regardless of status)
         var persisted = _sessions.Values
-            .Where(s => s.BackendType == SessionBackendType.Embedded && s.Status == SessionStatus.Running)
+            .Where(s => s.Status == SessionStatus.Running ||
+                       !string.IsNullOrEmpty(s.ClaudeSessionId))
             .Select(s => new PersistedSession
             {
                 Id = s.Id,
@@ -279,17 +296,29 @@ public sealed class SessionManager : IDisposable
             .ToList();
 
         store.Save(persisted);
-        _log?.Invoke($"Saved {persisted.Count} session(s) to state store.");
+        _log?.Invoke($"[SaveCurrentState] Saved {persisted.Count} session(s) to state store.");
     }
 
     /// <summary>
-    /// Save state of all running embedded sessions to the store.
-    /// The getHwnd delegate maps session ID -> console HWND (as long), provided by the WPF layer.
+    /// Save state of sessions to the store (used when keeping sessions on exit).
+    /// The getHwnd delegate maps session ID -> console HWND (as long), for Embedded mode only.
+    /// Saves ALL sessions that can be resumed: running sessions and any session with ClaudeSessionId.
     /// </summary>
     public void SaveSessionState(SessionStateStore store, Func<Guid, long> getHwnd)
     {
+        // Log all sessions for debugging
+        _log?.Invoke($"[SaveSessionState] Total sessions in manager: {_sessions.Count}");
+        foreach (var s in _sessions.Values)
+        {
+            _log?.Invoke($"  Session {s.Id}: Backend={s.BackendType}, Status={s.Status}, ClaudeSessionId={s.ClaudeSessionId ?? "(null)"}");
+        }
+
+        // Include ALL sessions that can be resumed:
+        // - Running sessions (regardless of backend type)
+        // - Any session with ClaudeSessionId (can resume with --resume flag)
         var persisted = _sessions.Values
-            .Where(s => s.BackendType == SessionBackendType.Embedded && s.Status == SessionStatus.Running)
+            .Where(s => s.Status == SessionStatus.Running ||
+                       !string.IsNullOrEmpty(s.ClaudeSessionId))
             .Select(s => new PersistedSession
             {
                 Id = s.Id,
@@ -299,7 +328,7 @@ public sealed class SessionManager : IDisposable
                 CustomName = s.CustomName,
                 CustomColor = s.CustomColor,
                 EmbeddedProcessId = s.ProcessId,
-                ConsoleHwnd = getHwnd(s.Id),
+                ConsoleHwnd = s.BackendType == SessionBackendType.Embedded ? getHwnd(s.Id) : 0,
                 ClaudeSessionId = s.ClaudeSessionId,
                 ActivityState = s.ActivityState,
                 CreatedAt = s.CreatedAt,
@@ -307,7 +336,7 @@ public sealed class SessionManager : IDisposable
             .ToList();
 
         store.Save(persisted);
-        _log?.Invoke($"Saved {persisted.Count} session(s) to state store.");
+        _log?.Invoke($"[SaveSessionState] Saved {persisted.Count} session(s) to state store.");
     }
 
     /// <summary>Restore a single persisted embedded session into tracking.
@@ -330,8 +359,8 @@ public sealed class SessionManager : IDisposable
 
     /// <summary>
     /// Load persisted sessions from the store. Returns PersistedSession records
-    /// for the WPF layer to reattach backends. Call RestoreEmbeddedSession for each
-    /// successful reattach.
+    /// for the WPF layer to restore. Sessions with ClaudeSessionId can be resumed
+    /// via --resume flag even if the original process is gone.
     /// </summary>
     public List<PersistedSession> LoadPersistedSessions(SessionStateStore store)
     {
@@ -340,6 +369,17 @@ public sealed class SessionManager : IDisposable
 
         foreach (var ps in persisted)
         {
+            // Sessions with ClaudeSessionId can be resumed with --resume flag,
+            // even if the original process is gone (ConPty crash recovery)
+            if (!string.IsNullOrEmpty(ps.ClaudeSessionId))
+            {
+                _log?.Invoke($"Persisted session {ps.Id} has ClaudeSessionId {ps.ClaudeSessionId[..8]}..., valid for resume.");
+                valid.Add(ps);
+                continue;
+            }
+
+            // Sessions without ClaudeSessionId need the original process still running
+            // (for Embedded mode reattach)
             try
             {
                 var proc = Process.GetProcessById(ps.EmbeddedProcessId);
@@ -360,9 +400,7 @@ public sealed class SessionManager : IDisposable
 
         _log?.Invoke($"Found {valid.Count}/{persisted.Count} valid persisted session(s).");
 
-        // Re-save with only the live sessions (prunes dead entries)
-        store.Save(valid);
-
+        // Don't re-save here - let RestorePersistedSessions handle cleanup after restoration
         return valid;
     }
 
