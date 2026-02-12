@@ -1024,6 +1024,7 @@ public class TerminalControl : FrameworkElement
     private static byte[]? MapKeyToBytes(Key key, ModifierKeys modifiers)
     {
         bool ctrl = (modifiers & ModifierKeys.Control) != 0;
+        bool shift = (modifiers & ModifierKeys.Shift) != 0;
 
         // Ctrl+C
         if (ctrl && key == Key.C) return new byte[] { 0x03 };
@@ -1033,6 +1034,9 @@ public class TerminalControl : FrameworkElement
         if (ctrl && key == Key.Z) return new byte[] { 0x1A };
         // Ctrl+L
         if (ctrl && key == Key.L) return new byte[] { 0x0C };
+
+        // Shift+Tab (backtab) - used by Claude Code for mode cycling
+        if (shift && key == Key.Tab) return "\x1b[Z"u8.ToArray();
 
         return key switch
         {
