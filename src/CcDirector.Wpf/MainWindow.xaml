@@ -80,6 +80,7 @@
                                             <Separator />
                                             <MenuItem Header="Open in Explorer" Click="MenuOpenInExplorer_Click" />
                                             <MenuItem Header="Open in VS Code" Click="MenuOpenInVsCode_Click" />
+                                            <MenuItem Header="GitHub Issues" Click="MenuGitHubIssues_Click" />
                                             <Separator />
                                             <MenuItem Header="Close Session" Click="MenuCloseSession_Click" />
                                         </ContextMenu>
