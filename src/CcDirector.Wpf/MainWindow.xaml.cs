@@ -993,25 +993,49 @@ public partial class MainWindow : Window
 
         FileLog.Write($"[MainWindow] MenuGitHubIssues_Click: {vm.Session.RepoPath}");
 
-        try
+        // Get remote URL
+        var psi = new ProcessStartInfo
         {
-            // Use gh CLI to open issues page in browser
-            var psi = new ProcessStartInfo
-            {
-                FileName = "gh",
-                Arguments = "issue list --web",
-                WorkingDirectory = vm.Session.RepoPath,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            FileName = "git",
+            Arguments = "remote get-url origin",
+            WorkingDirectory = vm.Session.RepoPath,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
 
-            Process.Start(psi);
-            FileLog.Write("[MainWindow] MenuGitHubIssues_Click: Started gh browse");
-        }
-        catch (Exception ex)
+        using var proc = Process.Start(psi);
+        if (proc is null) return;
+
+        string remoteUrl = proc.StandardOutput.ReadToEnd().Trim();
+        proc.WaitForExit();
+
+        if (string.IsNullOrEmpty(remoteUrl)) return;
+
+        // Parse owner/repo from remote URL
+        // SSH: git@github.com:owner/repo.git
+        // HTTPS: https://github.com/owner/repo.git
+        string ownerRepo;
+        if (remoteUrl.StartsWith("git@github.com:"))
         {
-            FileLog.Write($"[MainWindow] MenuGitHubIssues_Click FAILED: {ex.Message}");
+            ownerRepo = remoteUrl.Substring("git@github.com:".Length);
         }
+        else if (remoteUrl.StartsWith("https://github.com/"))
+        {
+            ownerRepo = remoteUrl.Substring("https://github.com/".Length);
+        }
+        else
+        {
+            return;
+        }
+
+        if (ownerRepo.EndsWith(".git"))
+            ownerRepo = ownerRepo.Substring(0, ownerRepo.Length - 4);
+
+        // Open in browser
+        string issuesUrl = $"https://github.com/{ownerRepo}/issues";
+        FileLog.Write($"[MainWindow] MenuGitHubIssues_Click: Opening {issuesUrl}");
+        Process.Start(new ProcessStartInfo(issuesUrl) { UseShellExecute = true });
     }
 
     private void SessionMenuButton_Click(object sender, RoutedEventArgs e)
