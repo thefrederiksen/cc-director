@@ -374,24 +374,12 @@ public class TerminalControl : FrameworkElement
 
         var pos = e.GetPosition(this);
 
-        // Check if clicking on a link
+        // Check if clicking on a link - show context menu
         foreach (var region in _linkRegions)
         {
             if (region.Bounds.Contains(pos))
             {
-                // Open the link directly
-                _detectedLink = region.Text;
-                _detectedLinkType = region.Type;
-
-                if (region.Type == LinkType.Url)
-                {
-                    OpenInBrowser();
-                }
-                else if (region.Type == LinkType.Path)
-                {
-                    OpenInVsCode();
-                }
-
+                ShowLinkContextMenu(pos, region.Text, region.Type);
                 e.Handled = true;
                 return;
             }
@@ -500,27 +488,13 @@ public class TerminalControl : FrameworkElement
     {
         base.OnMouseRightButtonUp(e);
 
-        // First priority: if there's a selection, copy it
+        // Right-click with selection copies to clipboard
         if (_hasSelection)
         {
             FileLog.Write($"[TerminalControl] Right-click with selection, copying to clipboard");
             CopySelectionToClipboard();
             ClearSelection();
             InvalidateVisual();
-            e.Handled = true;
-            return;
-        }
-
-        // Second priority: detect path/URL at click position
-        var pos = e.GetPosition(this);
-        var (col, row) = HitTestCell(pos);
-
-        var (link, type) = DetectLinkAtCell(col, row);
-
-        if (link != null && type != LinkType.None)
-        {
-            FileLog.Write($"[TerminalControl] Detected {type}: {link}");
-            ShowLinkContextMenu(pos, link, type);
             e.Handled = true;
         }
     }
