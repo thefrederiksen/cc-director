@@ -11,7 +11,6 @@ public sealed class NulFileWatcher : IDisposable
     private readonly Action<string>? _log;
     private readonly CancellationTokenSource _cts = new();
     private readonly List<FileSystemWatcher> _watchers = new();
-    private Task? _scanTask;
     private bool _disposed;
 
     /// <summary>Raised when a NUL file is successfully deleted.</summary>
@@ -76,78 +75,12 @@ public sealed class NulFileWatcher : IDisposable
                 _log?.Invoke($"Failed to create watcher for {drivePath}: {ex.Message}");
             }
         }
-
-        _scanTask = ScanAllDrivesAsync(_cts.Token);
     }
 
     private void OnFileCreated(object sender, FileSystemEventArgs e)
     {
         _log?.Invoke($"NUL file detected by watcher: {e.FullPath}");
         TryDeleteAndRaiseEvents(e.FullPath);
-    }
-
-    internal Task ScanAllDrivesAsync(CancellationToken ct)
-    {
-        return Task.Run(() =>
-        {
-            foreach (var drivePath in _drivePaths)
-            {
-                if (ct.IsCancellationRequested) return;
-                _log?.Invoke($"Scanning drive for NUL files: {drivePath}");
-                ScanDirectory(drivePath, ct);
-            }
-            _log?.Invoke("Initial NUL file scan complete.");
-        }, ct);
-    }
-
-    // Keep this for backward compatibility with tests
-    internal Task ScanDriveAsync(CancellationToken ct)
-    {
-        return Task.Run(() =>
-        {
-            foreach (var drivePath in _drivePaths)
-            {
-                if (ct.IsCancellationRequested) return;
-                ScanDirectory(drivePath, ct);
-            }
-        }, ct);
-    }
-
-    private void ScanDirectory(string directory, CancellationToken ct)
-    {
-        if (ct.IsCancellationRequested) return;
-
-        var dirName = Path.GetFileName(directory);
-        if (dirName is "$Recycle.Bin" or "System Volume Information")
-            return;
-
-        try
-        {
-            // Check for NUL file in this directory
-            var nulPath = Path.Combine(directory, "NUL");
-            var extendedPath = ToExtendedLengthPath(nulPath);
-
-            if (File.Exists(extendedPath))
-            {
-                _log?.Invoke($"NUL file found by scan: {nulPath}");
-                TryDeleteAndRaiseEvents(nulPath);
-            }
-
-            // Recursively scan subdirectories
-            foreach (var subDir in Directory.GetDirectories(directory))
-            {
-                if (ct.IsCancellationRequested) return;
-                ScanDirectory(subDir, ct);
-            }
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Skip directories we can't access
-        }
-        catch (IOException)
-        {
-            // Skip directories with I/O errors
-        }
     }
 
     private void TryDeleteAndRaiseEvents(string path)

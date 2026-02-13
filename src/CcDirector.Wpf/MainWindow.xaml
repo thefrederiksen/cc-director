@@ -31,6 +31,7 @@
                     <StackPanel DockPanel.Dock="Bottom" Margin="8,4,8,8">
                         <Button x:Name="BtnNewSession" Content="+ New Session"
                                 Click="BtnNewSession_Click"
+                                Focusable="False"
                                 Height="30" Margin="0,2"
                                 Background="{StaticResource AccentBrush}"
                                 Foreground="White"
@@ -38,6 +39,7 @@
                                 Cursor="Hand" />
                         <Button x:Name="BtnOpenLogs" Content="Open Logs"
                                 Click="BtnOpenLogs_Click"
+                                Focusable="False"
                                 Height="30" Margin="0,2"
                                 Background="{StaticResource ButtonBackground}"
                                 Foreground="{StaticResource TextForeground}"
@@ -54,6 +56,9 @@
 
                     <ListBox x:Name="SessionList"
                              SelectionChanged="SessionList_SelectionChanged"
+                             IsTabStop="False"
+                             KeyboardNavigation.TabNavigation="None"
+                             PreviewKeyDown="SessionList_PreviewKeyDown"
                              AllowDrop="True"
                              PreviewMouseMove="SessionList_PreviewMouseMove"
                              PreviewMouseLeftButtonDown="SessionList_PreviewMouseLeftButtonDown"
@@ -66,6 +71,7 @@
                              Margin="4,0">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
+                                <Setter Property="IsTabStop" Value="False" />
                                 <Setter Property="Padding" Value="0" />
                                 <Setter Property="Margin" Value="0" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -144,6 +150,7 @@
                                     <Button Grid.Column="1"
                                             Content="..."
                                             Click="SessionMenuButton_Click"
+                                            Focusable="False"
                                             VerticalAlignment="Center"
                                             Padding="4,0"
                                             Margin="2,0,4,0"
@@ -176,6 +183,7 @@
 
             <!-- Splitter (left) -->
             <GridSplitter Grid.Column="1" Width="3"
+                          Focusable="False"
                           Background="{StaticResource PanelBackground}"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" />
@@ -468,6 +476,7 @@
             <Border Grid.Column="3" Background="{StaticResource SidebarBackground}" Width="24">
                 <Button x:Name="PipeToggleButton" Content="&#x00AB;"
                         Click="TogglePipeMessages_Click"
+                        Focusable="False"
                         Background="Transparent" Foreground="#888888"
                         BorderThickness="0" Cursor="Hand"
                         FontSize="14" VerticalAlignment="Center"

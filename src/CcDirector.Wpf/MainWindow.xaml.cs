@@ -38,6 +38,8 @@ public partial class MainWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _repoChangeTimer;
     private readonly GitStatusProvider _gitStatusProvider = new();
     private bool _repoChangeRefreshRunning;
+    private CancellationTokenSource? _persistDebounceCts;
+    private const int PersistDebounceMs = 250;
     public MainWindow()
     {
         InitializeComponent();
@@ -89,6 +91,10 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
+        // Cancel any pending debounced persist and flush immediately
+        _persistDebounceCts?.Cancel();
+        PersistSessionStateCore();
+
         var app = (App)Application.Current;
 
         // In sandbox mode, skip exit dialog and just kill all sessions
@@ -363,7 +369,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void MenuCloseSession_Click(object sender, RoutedEventArgs e)
+    private void MenuCloseSession_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem menuItem || menuItem.DataContext is not SessionViewModel vm)
             return;
@@ -374,36 +380,42 @@ public partial class MainWindow : Window
         if (result != MessageBoxResult.Yes)
             return;
 
-        try
+        FileLog.Write($"[MainWindow] MenuCloseSession_Click: closing session {vm.Session.Id}");
+
+        // Immediately remove from UI
+        if (_activeSession?.Id == vm.Session.Id)
         {
-            // Clear active backend reference if this is the active session
-            if (_activeSession?.Id == vm.Session.Id)
-            {
-                _activeEmbeddedBackend = null;
-            }
-
-            // Kill if still running
-            if (vm.Session.Status is SessionStatus.Running or SessionStatus.Starting)
-            {
-                await _sessionManager.KillSessionAsync(vm.Session.Id);
-            }
-
-            // Detach if active
-            if (_activeSession?.Id == vm.Session.Id)
-            {
-                DetachTerminal();
-            }
-
-            // Remove from UI and manager
-            _sessions.Remove(vm);
-            _sessionManager.RemoveSession(vm.Session.Id);
-            PersistSessionState();
+            _activeEmbeddedBackend = null;
+            DetachTerminal();
         }
-        catch (Exception ex)
+        _sessions.Remove(vm);
+        PersistSessionState();
+
+        // Background cleanup: kill process and dispose backend
+        var sessionId = vm.Session.Id;
+        var wasRunning = vm.Session.Status is SessionStatus.Running or SessionStatus.Starting;
+        _ = Task.Run(async () =>
         {
-            MessageBox.Show(this, $"Failed to close session:\n{ex.Message}",
-                "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+            try
+            {
+                if (wasRunning)
+                {
+                    await _sessionManager.KillSessionAsync(sessionId);
+                }
+                _sessionManager.RemoveSession(sessionId);
+                FileLog.Write($"[MainWindow] MenuCloseSession_Click: background cleanup complete for {sessionId}");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] MenuCloseSession_Click background cleanup FAILED: {ex.Message}");
+            }
+        });
+    }
+
+    private void SessionList_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // Suppress all keyboard navigation on the session list — selection is mouse-only
+        e.Handled = true;
     }
 
     private void SessionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -415,6 +427,12 @@ public partial class MainWindow : Window
         }
 
         AttachTerminal(vm.Session);
+
+        // Redirect focus back to terminal/prompt so the sidebar doesn't keep focus
+        if (_terminalControl != null && SessionTabs.SelectedIndex == 0)
+            Dispatcher.BeginInvoke(() => _terminalControl?.Focus());
+        else
+            Dispatcher.BeginInvoke(() => PromptInput.Focus());
     }
 
     private void AttachTerminal(Session session)
@@ -684,11 +702,18 @@ public partial class MainWindow : Window
 
     private void MainWindow_Activated(object? sender, EventArgs e)
     {
-        if (_activeEmbeddedBackend == null) return;
+        if (_activeEmbeddedBackend != null)
+        {
+            // Bring console overlay back to top when WPF window regains focus
+            _activeEmbeddedBackend.Show();
+            DeferConsolePositionUpdate();
+        }
 
-        // Bring console overlay back to top when WPF window regains focus
-        _activeEmbeddedBackend.Show();
-        DeferConsolePositionUpdate();
+        // Ensure focus goes to terminal or prompt, not sidebar
+        if (_terminalControl != null && SessionTabs.SelectedIndex == 0)
+            Dispatcher.BeginInvoke(() => _terminalControl?.Focus());
+        else
+            Dispatcher.BeginInvoke(() => PromptInput.Focus());
     }
 
     private void MainWindow_Deactivated(object? sender, EventArgs e)
@@ -856,6 +881,24 @@ public partial class MainWindow : Window
 
     private void PersistSessionState()
     {
+        // Cancel any pending debounce
+        _persistDebounceCts?.Cancel();
+        _persistDebounceCts = new CancellationTokenSource();
+        var cts = _persistDebounceCts;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(PersistDebounceMs, cts.Token);
+                PersistSessionStateCore();
+            }
+            catch (TaskCanceledException) { /* debounce superseded */ }
+        });
+    }
+
+    private void PersistSessionStateCore()
+    {
         var app = (App)Application.Current;
 
         // In sandbox mode, don't persist session state
@@ -981,7 +1024,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void MenuGitHubIssues_Click(object sender, RoutedEventArgs e)
+    private async void MenuGitHubIssues_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem menuItem ||
             menuItem.DataContext is not SessionViewModel vm ||
@@ -1007,8 +1050,8 @@ public partial class MainWindow : Window
         using var proc = Process.Start(psi);
         if (proc is null) return;
 
-        string remoteUrl = proc.StandardOutput.ReadToEnd().Trim();
-        proc.WaitForExit();
+        string remoteUrl = (await proc.StandardOutput.ReadToEndAsync()).Trim();
+        await proc.WaitForExitAsync();
 
         if (string.IsNullOrEmpty(remoteUrl)) return;
 
@@ -1191,7 +1234,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnCreateRepo_Click(object sender, RoutedEventArgs e)
+    private async void BtnCreateRepo_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new Microsoft.Win32.OpenFolderDialog
         {
@@ -1211,7 +1254,8 @@ public partial class MainWindow : Window
             };
 
             var process = Process.Start(psi);
-            process?.WaitForExit();
+            if (process != null)
+                await process.WaitForExitAsync();
 
             if (process?.ExitCode != 0)
             {

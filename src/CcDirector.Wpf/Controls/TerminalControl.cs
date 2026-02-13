@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -61,6 +62,9 @@ public class TerminalControl : FrameworkElement
     private string? _detectedLink;
     private LinkType _detectedLinkType;
 
+    // Path existence cache - avoids disk I/O in OnRender
+    private readonly ConcurrentDictionary<string, bool> _pathExistsCache = new();
+
     /// <summary>Raised when scroll position or scrollback changes.</summary>
     public event EventHandler? ScrollChanged;
 
@@ -117,6 +121,7 @@ public class TerminalControl : FrameworkElement
         _bufferPosition = 0;
         _scrollOffset = 0;
         _scrollback.Clear();
+        _pathExistsCache.Clear();
 
         RecalculateGridSize();
         InitializeCells();
@@ -150,6 +155,7 @@ public class TerminalControl : FrameworkElement
         _pollTimer = null;
         _session = null;
         _parser = null;
+        _pathExistsCache.Clear();
     }
 
     private void PollTimer_Tick(object? sender, EventArgs e)
@@ -161,6 +167,9 @@ public class TerminalControl : FrameworkElement
         {
             _bufferPosition = newPos;
             _parser?.Parse(data);
+
+            // Clear path cache so links re-evaluate with new terminal content
+            _pathExistsCache.Clear();
 
             // Clear selection when terminal output changes
             ClearSelection();
@@ -654,7 +663,7 @@ public class TerminalControl : FrameworkElement
             matches.Add(new LinkMatch(m.Index, m.Index + m.Length, path, LinkType.Path));
         }
 
-        // Collect relative path matches (only if session has repo path and path exists)
+        // Collect relative path matches (only if session has repo path and path exists in cache)
         if (_session?.RepoPath != null)
         {
             foreach (Match m in RelativePathRegex.Matches(lineText))
@@ -662,9 +671,24 @@ public class TerminalControl : FrameworkElement
                 string relativePath = StripLineNumber(m.Value);
                 string fullPath = Path.Combine(_session.RepoPath, relativePath.Replace('/', '\\'));
 
-                if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                if (_pathExistsCache.TryGetValue(fullPath, out bool exists))
                 {
-                    matches.Add(new LinkMatch(m.Index, m.Index + m.Length, relativePath, LinkType.Path));
+                    // Cache hit
+                    if (exists)
+                        matches.Add(new LinkMatch(m.Index, m.Index + m.Length, relativePath, LinkType.Path));
+                }
+                else
+                {
+                    // Cache miss — don't block render; check in background
+                    var capturedPath = fullPath;
+                    var capturedRelative = relativePath;
+                    _ = Task.Run(() =>
+                    {
+                        bool found = File.Exists(capturedPath) || Directory.Exists(capturedPath);
+                        _pathExistsCache[capturedPath] = found;
+                        if (found)
+                            Dispatcher.BeginInvoke(InvalidateVisual);
+                    });
                 }
             }
         }
@@ -731,10 +755,16 @@ public class TerminalControl : FrameworkElement
                     string relativePath = StripLineNumber(relPathMatch.Value);
                     string fullPath = Path.Combine(_session.RepoPath, relativePath.Replace('/', '\\'));
 
-                    // Only return if the path exists
-                    if (File.Exists(fullPath) || Directory.Exists(fullPath))
+                    // Check cache first, fall back to synchronous check (click context, not render)
+                    if (_pathExistsCache.TryGetValue(fullPath, out bool exists))
                     {
-                        return (relativePath, LinkType.Path);
+                        if (exists) return (relativePath, LinkType.Path);
+                    }
+                    else
+                    {
+                        bool found = File.Exists(fullPath) || Directory.Exists(fullPath);
+                        _pathExistsCache[fullPath] = found;
+                        if (found) return (relativePath, LinkType.Path);
                     }
                 }
                 relPathMatch = relPathMatch.NextMatch();

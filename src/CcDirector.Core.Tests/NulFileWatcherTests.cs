@@ -52,33 +52,6 @@ public class NulFileWatcherTests : IDisposable
     }
 
     [Fact]
-    public async Task Start_InitialScan_DeletesExistingNulFile()
-    {
-        var subDir = Path.Combine(_tempDir, "sub");
-        Directory.CreateDirectory(subDir);
-
-        var nulPath = Path.Combine(subDir, "NUL");
-        var extendedPath = @"\\?\" + nulPath;
-        File.WriteAllText(extendedPath, "test");
-        Assert.True(File.Exists(extendedPath), "NUL file should exist after creation");
-
-        var tcs = new TaskCompletionSource<string>();
-
-        using var watcher = new NulFileWatcher(_tempDir, msg => System.Diagnostics.Debug.WriteLine($"[Test] {msg}"));
-        watcher.OnNulFileDeleted = path => tcs.TrySetResult(path);
-        watcher.Start();
-
-        // Note: If cc_director is running, its NulFileWatcher may delete this file
-        // before this test's watcher can, causing a timeout.
-        var completed = await Task.WhenAny(tcs.Task, Task.Delay(10_000));
-        Assert.True(completed == tcs.Task, "Timed out waiting for NUL file deletion (is cc_director running?)");
-
-        var deletedPath = await tcs.Task;
-        Assert.Contains("NUL", deletedPath);
-        Assert.False(File.Exists(extendedPath), "NUL file should have been deleted by scan");
-    }
-
-    [Fact]
     public async Task Start_Watcher_DetectsNewNulFile()
     {
         var tcs = new TaskCompletionSource<string>();
@@ -100,18 +73,6 @@ public class NulFileWatcherTests : IDisposable
 
         var deletedPath = await tcs.Task;
         Assert.Contains("NUL", deletedPath);
-    }
-
-    [Fact]
-    public async Task InitialScan_SkipsInaccessibleDirectories()
-    {
-        // Scan should complete without throwing even if subdirectories are inaccessible
-        using var watcher = new NulFileWatcher(_tempDir, msg => System.Diagnostics.Debug.WriteLine($"[Test] {msg}"));
-
-        // ScanDriveAsync is internal, call it directly
-        await watcher.ScanDriveAsync(CancellationToken.None);
-
-        // If we get here without exception, the test passes
     }
 
     [Fact]
