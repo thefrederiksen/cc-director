@@ -38,8 +38,13 @@ public partial class MainWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _repoChangeTimer;
     private readonly GitStatusProvider _gitStatusProvider = new();
     private bool _repoChangeRefreshRunning;
+    private readonly System.Windows.Threading.DispatcherTimer _sessionGitTimer;
+    private bool _sessionGitRefreshRunning;
     private CancellationTokenSource? _persistDebounceCts;
     private const int PersistDebounceMs = 250;
+
+    /// <summary>Tracks whether the read-only mode warning has been shown to avoid repeated dialogs.</summary>
+    private bool _readOnlyWarningShown;
     public MainWindow()
     {
         InitializeComponent();
@@ -58,6 +63,12 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(30)
         };
         _repoChangeTimer.Tick += async (_, _) => await RefreshRepoChangeCountsAsync();
+
+        _sessionGitTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(15)
+        };
+        _sessionGitTimer.Tick += async (_, _) => await RefreshSessionGitStatusAsync();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -93,6 +104,7 @@ public partial class MainWindow : Window
     {
         // Cancel any pending debounced persist and flush immediately
         _persistDebounceCts?.Cancel();
+        _sessionGitTimer.Stop();
         PersistSessionStateCore();
 
         var app = (App)Application.Current;
@@ -168,6 +180,12 @@ public partial class MainWindow : Window
         var app = (App)Application.Current;
         _sessionManager = app.SessionManager;
 
+        // Update title bar if running in read-only mode
+        if (app.ReadOnlyMode)
+        {
+            Title = "CC Director v2 [READ-ONLY]";
+        }
+
         if (app.EventRouter != null)
             app.EventRouter.OnRawMessage += OnPipeMessageReceived;
 
@@ -179,6 +197,10 @@ public partial class MainWindow : Window
 
         // Restore sessions from previous run (crash recovery)
         RestorePersistedSessions();
+
+        // Start session git status polling
+        _sessionGitTimer.Start();
+        _ = RefreshSessionGitStatusAsync();
     }
 
     private void SetBuildInfo()
@@ -937,9 +959,15 @@ public partial class MainWindow : Window
     {
         var app = (App)Application.Current;
 
-        // In sandbox mode, don't persist session state
+        // In sandbox mode or read-only mode, don't persist session state
         if (app.SandboxMode)
         {
+            return;
+        }
+
+        if (app.ReadOnlyMode)
+        {
+            ShowReadOnlyWarning();
             return;
         }
 
@@ -962,6 +990,23 @@ public partial class MainWindow : Window
         {
             FileLog.Write($"[MainWindow] PersistSessionState error: {ex.Message}");
         }
+    }
+
+    private void ShowReadOnlyWarning()
+    {
+        if (_readOnlyWarningShown) return;
+        _readOnlyWarningShown = true;
+
+        FileLog.Write("[MainWindow] Read-only mode: blocked write attempt");
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            MessageBox.Show(
+                "Another CC Director instance is running.\n\nChanges will not be saved.",
+                "Read-Only Mode",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        });
     }
 
     /// <summary>Copy prompt text from VMs (and the active PromptInput) to Session objects for persistence. Must run on UI thread.</summary>
@@ -1226,6 +1271,45 @@ public partial class MainWindow : Window
         finally
         {
             _repoChangeRefreshRunning = false;
+        }
+    }
+
+    private async Task RefreshSessionGitStatusAsync()
+    {
+        if (_sessionGitRefreshRunning) return;
+        _sessionGitRefreshRunning = true;
+
+        try
+        {
+            var sessions = _sessions.ToList();
+            using var semaphore = new SemaphoreSlim(4);
+
+            var tasks = sessions.Select(async vm =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    var repoPath = vm.Session.RepoPath;
+                    if (!System.IO.Directory.Exists(repoPath)) return;
+
+                    var result = await _gitStatusProvider.GetStatusAsync(repoPath);
+                    if (result.Success)
+                    {
+                        int count = result.StagedChanges.Count + result.UnstagedChanges.Count;
+                        _ = Dispatcher.BeginInvoke(() => vm.UncommittedCount = count);
+                    }
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+        }
+        finally
+        {
+            _sessionGitRefreshRunning = false;
         }
     }
 
@@ -1702,6 +1786,23 @@ public class SessionViewModel : INotifyPropertyChanged
 
     /// <summary>Whether Claude metadata is available.</summary>
     public bool HasClaudeMetadata => Session.ClaudeMetadata != null;
+
+    private int _uncommittedCount;
+    public int UncommittedCount
+    {
+        get => _uncommittedCount;
+        set
+        {
+            if (_uncommittedCount != value)
+            {
+                _uncommittedCount = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(HasUncommittedChanges));
+            }
+        }
+    }
+
+    public bool HasUncommittedChanges => _uncommittedCount > 0;
 
     /// <summary>Refresh Claude metadata from sessions-index.json.</summary>
     public void RefreshClaudeMetadata()

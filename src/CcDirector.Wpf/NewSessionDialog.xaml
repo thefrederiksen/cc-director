@@ -68,9 +68,40 @@
                                             <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
 
-                                        <TextBlock Grid.Row="0" Grid.Column="0"
-                                                   Text="{Binding ProjectName}"
-                                                   FontWeight="Bold" FontSize="13" />
+                                        <!-- Row 0: Display name + repo suffix + color indicator -->
+                                        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal">
+                                            <!-- Color indicator bar -->
+                                            <Border Width="4" Height="16" CornerRadius="2" Margin="0,0,8,0"
+                                                    Background="{Binding CustomColorBrush}">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HasCustomColor}" Value="False">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                            </Border>
+                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" FontSize="13" />
+                                            <!-- Repo name in parentheses when custom name is set -->
+                                            <TextBlock Text="{Binding ProjectNameSuffix}" FontSize="11"
+                                                       Foreground="#888888" Margin="6,0,0,0" VerticalAlignment="Center">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HasCustomName}" Value="False">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </StackPanel>
+
+                                        <!-- Message count and time -->
                                         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
                                             <TextBlock Text="{Binding MessageCountDisplay}"
                                                        Foreground="#888888" FontSize="11" Margin="0,0,8,0" />
@@ -78,10 +109,11 @@
                                                        Foreground="#888888" FontSize="11" />
                                         </StackPanel>
 
+                                        <!-- Row 1: Summary -->
                                         <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
                                                    Text="{Binding DisplaySummary}"
-                                                   Foreground="#AAAAAA" FontSize="11"
-                                                   TextTrimming="CharacterEllipsis" />
+                                                   Foreground="#22C55E" FontSize="11"
+                                                   TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>

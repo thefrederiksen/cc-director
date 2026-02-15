@@ -30,6 +30,12 @@ public partial class App : Application
     public bool SandboxMode { get; private set; }
 
     /// <summary>
+    /// When true, sessions.json writes are blocked (another instance owns the file).
+    /// Second instances run in read-only mode to prevent data loss from concurrent writes.
+    /// </summary>
+    public bool ReadOnlyMode { get; private set; }
+
+    /// <summary>
     /// Persisted session data loaded on startup, consumed by MainWindow for HWND reattach.
     /// Cleared after MainWindow processes it.
     /// </summary>
@@ -41,8 +47,8 @@ public partial class App : Application
     /// </summary>
     public bool KeepSessionsOnExit { get; set; }
 
-    // Assigned when single-instance enforcement is enabled (currently disabled for testing)
-    private Mutex? _singleInstanceMutex = null;
+    // Mutex for single-instance detection - second instances run in read-only mode
+    private Mutex? _singleInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -51,15 +57,12 @@ public partial class App : Application
         // Parse command-line arguments
         SandboxMode = e.Args.Contains("--sandbox", StringComparer.OrdinalIgnoreCase);
 
-        // Single-instance enforcement (disabled for testing)
-        // _singleInstanceMutex = new Mutex(true, @"Global\CcDirector_SingleInstance", out bool createdNew);
-        // if (!createdNew)
-        // {
-        //     MessageBox.Show("CC Director is already running.", "CC Director",
-        //         MessageBoxButton.OK, MessageBoxImage.Information);
-        //     Shutdown();
-        //     return;
-        // }
+        // Single-instance detection - second instances run in read-only mode
+        _singleInstanceMutex = new Mutex(true, @"Global\CcDirector_SingleInstance", out bool createdNew);
+        if (!createdNew)
+        {
+            ReadOnlyMode = true;
+        }
 
         LoadConfiguration();
 
@@ -75,7 +78,7 @@ public partial class App : Application
 
         FileLog.Start();
         Action<string> log = msg => FileLog.Write($"[CcDirector] {msg}");
-        log($"CC Director starting (SandboxMode={SandboxMode}), log file: {FileLog.CurrentLogPath}");
+        log($"CC Director starting (SandboxMode={SandboxMode}, ReadOnlyMode={ReadOnlyMode}), log file: {FileLog.CurrentLogPath}");
 
         SessionManager = new SessionManager(Options, log);
         SessionManager.ScanForOrphans();

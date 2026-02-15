@@ -22,7 +22,7 @@
             <Border Grid.Column="0" Background="{StaticResource SidebarBackground}">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top"
-                               Text="SESSIONS v2.0-ConPTY"
+                               Text="SESSIONS"
                                Foreground="{StaticResource TextForeground}"
                                FontWeight="SemiBold"
                                FontSize="12"
@@ -122,6 +122,29 @@
                                                         </Style>
                                                     </Border.Style>
                                                     <TextBlock Text="{Binding ClaudeMessageCount}"
+                                                               Foreground="White"
+                                                               FontSize="9"
+                                                               FontWeight="SemiBold" />
+                                                </Border>
+                                                <!-- Uncommitted changes badge (orange) -->
+                                                <Border DockPanel.Dock="Right"
+                                                        Background="#D97706"
+                                                        CornerRadius="8"
+                                                        Padding="5,1"
+                                                        Margin="6,0,0,0"
+                                                        VerticalAlignment="Center"
+                                                        HorizontalAlignment="Right">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasUncommittedChanges}" Value="False">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Text="{Binding UncommittedCount}"
                                                                Foreground="White"
                                                                FontSize="9"
                                                                FontWeight="SemiBold" />

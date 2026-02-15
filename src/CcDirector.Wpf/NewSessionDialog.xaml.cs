@@ -1,8 +1,10 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using Microsoft.Win32;
 
@@ -15,10 +17,14 @@ namespace CcDirector.Wpf;
 public class ClaudeSessionViewModel
 {
     private readonly ClaudeSessionMetadata _metadata;
+    private readonly string? _customName;
+    private readonly string? _customColor;
 
-    public ClaudeSessionViewModel(ClaudeSessionMetadata metadata)
+    public ClaudeSessionViewModel(ClaudeSessionMetadata metadata, string? customName = null, string? customColor = null)
     {
         _metadata = metadata;
+        _customName = customName;
+        _customColor = customColor;
     }
 
     /// <summary>The underlying metadata.</summary>
@@ -26,6 +32,33 @@ public class ClaudeSessionViewModel
 
     /// <summary>The Claude session ID for resuming.</summary>
     public string SessionId => _metadata.SessionId;
+
+    /// <summary>Display name prefers custom name over repo name.</summary>
+    public string DisplayName => !string.IsNullOrWhiteSpace(_customName) ? _customName : ProjectName;
+
+    /// <summary>Show repo name in parentheses when custom name is set.</summary>
+    public string ProjectNameSuffix => HasCustomName ? $"({ProjectName})" : string.Empty;
+
+    /// <summary>Whether this session has a custom name.</summary>
+    public bool HasCustomName => !string.IsNullOrWhiteSpace(_customName);
+
+    /// <summary>Whether this session has a custom color.</summary>
+    public bool HasCustomColor => !string.IsNullOrWhiteSpace(_customColor);
+
+    /// <summary>The custom color brush for the color indicator.</summary>
+    public SolidColorBrush? CustomColorBrush
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_customColor)) return null;
+            try
+            {
+                var color = (Color)ColorConverter.ConvertFromString(_customColor);
+                return new SolidColorBrush(color);
+            }
+            catch { return null; }
+        }
+    }
 
     /// <summary>Extract project name from path.</summary>
     public string ProjectName
@@ -155,10 +188,29 @@ public partial class NewSessionDialog : Window
 
         try
         {
-            var sessions = await Task.Run(() => ClaudeSessionReader.ScanAllProjects());
-            FileLog.Write($"[NewSessionDialog] LoadClaudeSessionsAsync: found {sessions.Count} sessions");
+            // Load both data sources in parallel
+            var claudeSessionsTask = Task.Run(() => ClaudeSessionReader.ScanAllProjects());
+            var persistedSessionsTask = Task.Run(() => new SessionStateStore().Load());
 
-            _allSessions = sessions.Select(s => new ClaudeSessionViewModel(s)).ToList();
+            await Task.WhenAll(claudeSessionsTask, persistedSessionsTask);
+
+            var claudeSessions = claudeSessionsTask.Result;
+            var persistedSessions = persistedSessionsTask.Result;
+
+            FileLog.Write($"[NewSessionDialog] LoadClaudeSessionsAsync: found {claudeSessions.Count} Claude sessions, {persistedSessions.Count} persisted sessions");
+
+            // Create lookup by ClaudeSessionId
+            var persistedByClaudeId = persistedSessions
+                .Where(p => !string.IsNullOrEmpty(p.ClaudeSessionId))
+                .ToDictionary(p => p.ClaudeSessionId!, p => p);
+
+            // Merge: for each Claude session, check if we have custom name/color
+            _allSessions = claudeSessions.Select(s =>
+            {
+                persistedByClaudeId.TryGetValue(s.SessionId, out var persisted);
+                return new ClaudeSessionViewModel(s, persisted?.CustomName, persisted?.CustomColor);
+            }).ToList();
+
             _sessionsLoaded = true;
 
             // Update UI
@@ -223,7 +275,8 @@ public partial class NewSessionDialog : Window
         else
         {
             SessionList.ItemsSource = _allSessions
-                .Where(s => s.ProjectName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                .Where(s => s.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                         || s.ProjectName.Contains(filter, StringComparison.OrdinalIgnoreCase)
                          || s.ProjectPath.Contains(filter, StringComparison.OrdinalIgnoreCase)
                          || s.DisplaySummary.Contains(filter, StringComparison.OrdinalIgnoreCase))
                 .ToList();
