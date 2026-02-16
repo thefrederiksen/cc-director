@@ -1,5 +1,6 @@
 bin/
 obj/
+logs/
 publish/
 *.user
 *.suo
