@@ -428,13 +428,28 @@ public sealed class SessionManager : IDisposable
     }
 
     /// <summary>
-    /// Load persisted sessions from the store. Returns PersistedSession records
-    /// for the WPF layer to restore. Sessions with ClaudeSessionId can be resumed
-    /// via --resume flag even if the original process is gone.
+    /// Load persisted sessions from the store. Returns a RestoreSessionsResult containing
+    /// PersistedSession records for the WPF layer to restore, plus any load errors.
+    /// Sessions with ClaudeSessionId can be resumed via --resume flag even if the original process is gone.
     /// </summary>
-    public List<PersistedSession> LoadPersistedSessions(SessionStateStore store)
+    public RestoreSessionsResult LoadPersistedSessions(SessionStateStore store)
     {
-        var persisted = store.Load();
+        var loadResult = store.Load();
+
+        // If load failed, return immediately with error info
+        if (!loadResult.Success)
+        {
+            _log?.Invoke($"CRITICAL: Failed to load sessions.json: {loadResult.ErrorMessage}");
+            return new RestoreSessionsResult
+            {
+                Sessions = new List<PersistedSession>(),
+                LoadSuccess = false,
+                LoadErrorMessage = loadResult.ErrorMessage,
+                FileExistedButFailed = loadResult.FileExistedButFailed
+            };
+        }
+
+        var persisted = loadResult.Sessions;
         var valid = new List<PersistedSession>();
 
         // Track seen ClaudeSessionIds to detect duplicates in persisted data
@@ -470,7 +485,13 @@ public sealed class SessionManager : IDisposable
         _log?.Invoke($"Found {valid.Count}/{persisted.Count} valid persisted session(s).");
 
         // Don't re-save here - let RestorePersistedSessions handle cleanup after restoration
-        return valid;
+        return new RestoreSessionsResult
+        {
+            Sessions = valid,
+            LoadSuccess = true,
+            LoadErrorMessage = null,
+            FileExistedButFailed = false
+        };
     }
 
     public void Dispose()

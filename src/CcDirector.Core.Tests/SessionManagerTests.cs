@@ -229,13 +229,14 @@ public class SessionManagerTests : IDisposable
             _manager.SaveCurrentState(store);
 
             // Load and verify
-            var loaded = store.Load();
-            Assert.Single(loaded);
-            Assert.Equal(session.Id, loaded[0].Id);
-            Assert.Equal(session.RepoPath, loaded[0].RepoPath);
-            Assert.Equal("Test Session", loaded[0].CustomName);
-            Assert.Equal("#FF5500", loaded[0].CustomColor);
-            Assert.Equal("test-claude-session-id", loaded[0].ClaudeSessionId);
+            var result = store.Load();
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.Equal(session.Id, result.Sessions[0].Id);
+            Assert.Equal(session.RepoPath, result.Sessions[0].RepoPath);
+            Assert.Equal("Test Session", result.Sessions[0].CustomName);
+            Assert.Equal("#FF5500", result.Sessions[0].CustomColor);
+            Assert.Equal("test-claude-session-id", result.Sessions[0].ClaudeSessionId);
         }
         finally
         {
@@ -265,8 +266,9 @@ public class SessionManagerTests : IDisposable
             // Save state - killed session without ClaudeSessionId should not be persisted
             _manager.SaveCurrentState(store);
 
-            var loaded = store.Load();
-            Assert.Empty(loaded);
+            var result = store.Load();
+            Assert.True(result.Success);
+            Assert.Empty(result.Sessions);
         }
         finally
         {
@@ -298,9 +300,10 @@ public class SessionManagerTests : IDisposable
             // Save state - exited session WITH ClaudeSessionId should be persisted
             _manager.SaveCurrentState(store);
 
-            var loaded = store.Load();
-            Assert.Single(loaded);
-            Assert.Equal("test-claude-session-id", loaded[0].ClaudeSessionId);
+            var result = store.Load();
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.Equal("test-claude-session-id", result.Sessions[0].ClaudeSessionId);
         }
         finally
         {
@@ -329,11 +332,12 @@ public class SessionManagerTests : IDisposable
             // Immediately save while potentially in Exiting status
             _manager.SaveCurrentState(store);
 
-            var loaded = store.Load();
+            var result = store.Load();
 
             // Session should be persisted regardless of whether it's Running, Exiting, or Exited
-            Assert.Single(loaded);
-            Assert.Equal("test-claude-session-id", loaded[0].ClaudeSessionId);
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.Equal("test-claude-session-id", result.Sessions[0].ClaudeSessionId);
 
             // Wait for kill to complete
             await killTask;
@@ -359,16 +363,18 @@ public class SessionManagerTests : IDisposable
 
             // Verify it would be persisted before removal
             _manager.SaveCurrentState(store);
-            var loaded = store.Load();
-            Assert.Single(loaded);
+            var result = store.Load();
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
 
             // Remove the session from the manager
             _manager.RemoveSession(session.Id);
 
             // After removal, SaveCurrentState should NOT include the removed session
             _manager.SaveCurrentState(store);
-            loaded = store.Load();
-            Assert.Empty(loaded);
+            result = store.Load();
+            Assert.True(result.Success);
+            Assert.Empty(result.Sessions);
         }
         finally
         {

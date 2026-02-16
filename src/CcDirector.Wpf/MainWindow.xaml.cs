@@ -244,23 +244,59 @@ public partial class MainWindow : Window
     private void RestorePersistedSessions()
     {
         var app = (App)Application.Current;
-        var persisted = app.RestoredPersistedData;
+        var restoreResult = app.RestoredPersistedData;
 
-        if (persisted == null || persisted.Count == 0)
+        if (restoreResult == null)
+        {
+            FileLog.Write("[MainWindow] RestorePersistedSessions: No restore result");
+            return;
+        }
+
+        // Check for load errors first - sessions.json may have been corrupted
+        if (!restoreResult.LoadSuccess)
+        {
+            FileLog.Write($"[MainWindow] RestorePersistedSessions: Load failed - {restoreResult.LoadErrorMessage}");
+
+            if (restoreResult.FileExistedButFailed)
+            {
+                // Show error to user - this is a critical issue they need to know about
+                MessageBox.Show(this,
+                    $"Failed to load saved sessions:\n\n{restoreResult.LoadErrorMessage}\n\n" +
+                    $"A backup was created at sessions.json.bak.\n" +
+                    $"Your sessions from the previous run could not be restored.",
+                    "Session Load Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            app.RestoredPersistedData = null;
+            return;
+        }
+
+        var persisted = restoreResult.Sessions;
+        if (persisted.Count == 0)
         {
             FileLog.Write("[MainWindow] RestorePersistedSessions: No sessions to restore");
+            app.RestoredPersistedData = null;
             return;
         }
 
         FileLog.Write($"[MainWindow] RestorePersistedSessions: Found {persisted.Count} persisted session(s)");
 
         int restored = 0;
-        foreach (var p in persisted)
+        int skippedNoClaudeId = 0;
+        int skippedRepoNotFound = 0;
+        int failedToCreate = 0;
+        var failedRepos = new List<string>();
+
+        // Restore sessions in their saved order (SortOrder preserves UI order from last run)
+        foreach (var p in persisted.OrderBy(s => s.SortOrder))
         {
             // Skip sessions without ClaudeSessionId - they never fully started
             if (string.IsNullOrEmpty(p.ClaudeSessionId))
             {
                 FileLog.Write($"[MainWindow] Skipping session {p.Id}: No ClaudeSessionId");
+                skippedNoClaudeId++;
                 continue;
             }
 
@@ -268,17 +304,28 @@ public partial class MainWindow : Window
             if (!System.IO.Directory.Exists(p.RepoPath))
             {
                 FileLog.Write($"[MainWindow] Skipping session {p.Id}: Repo path not found: {p.RepoPath}");
+                skippedRepoNotFound++;
+                failedRepos.Add(System.IO.Path.GetFileName(p.RepoPath.TrimEnd('\\', '/')) + " (path not found)");
                 continue;
+            }
+
+            // Validate that the Claude session still exists before trying to resume
+            // Sessions can be lost if Claude's storage is cleaned up or corrupted
+            string? resumeSessionId = p.ClaudeSessionId;
+            if (!ClaudeSessionReader.SessionExists(p.ClaudeSessionId, p.RepoPath))
+            {
+                FileLog.Write($"[MainWindow] Session {p.Id}: ClaudeSessionId {p.ClaudeSessionId[..8]}... no longer exists in Claude storage, starting fresh");
+                resumeSessionId = null;
             }
 
             try
             {
-                // Create new session with --resume flag to continue Claude conversation
+                // Create new session, with --resume only if the session still exists
                 var session = _sessionManager.CreateSession(
                     p.RepoPath,
                     claudeArgs: null,
                     SessionBackendType.ConPty,
-                    resumeSessionId: p.ClaudeSessionId);
+                    resumeSessionId: resumeSessionId);
 
                 if (session != null)
                 {
@@ -286,26 +333,70 @@ public partial class MainWindow : Window
                     session.CustomName = p.CustomName;
                     session.CustomColor = p.CustomColor;
 
+                    // Mark as pre-verified since this is a restored session with ClaudeSessionId
+                    // This skips terminal verification (it was already verified in previous run)
+                    if (!string.IsNullOrEmpty(session.ClaudeSessionId))
+                    {
+                        session.MarkAsPreVerified();
+                        session.VerifyClaudeSession();
+                    }
+
                     var vm = new SessionViewModel(session, Dispatcher);
                     vm.PendingPromptText = p.PendingPromptText ?? string.Empty;
                     _sessions.Add(vm);
                     restored++;
 
-                    FileLog.Write($"[MainWindow] Restored session {session.Id} from {p.RepoPath} (Resume={p.ClaudeSessionId[..8]}...)");
+                    var resumeInfo = resumeSessionId != null
+                        ? $"Resume={resumeSessionId[..8]}..."
+                        : "Fresh start (old session expired)";
+                    FileLog.Write($"[MainWindow] Restored session {session.Id} from {p.RepoPath} ({resumeInfo})");
+                }
+                else
+                {
+                    failedToCreate++;
+                    failedRepos.Add(System.IO.Path.GetFileName(p.RepoPath.TrimEnd('\\', '/')) + " (create failed)");
                 }
             }
             catch (Exception ex)
             {
                 FileLog.Write($"[MainWindow] Failed to restore session for {p.RepoPath}: {ex.Message}");
+                failedToCreate++;
+                failedRepos.Add(System.IO.Path.GetFileName(p.RepoPath.TrimEnd('\\', '/')) + $" ({ex.Message})");
             }
+        }
+
+        int totalFailed = skippedRepoNotFound + failedToCreate;
+        FileLog.Write($"[MainWindow] RestorePersistedSessions complete: restored={restored}, skippedNoClaudeId={skippedNoClaudeId}, skippedRepoNotFound={skippedRepoNotFound}, failedToCreate={failedToCreate}");
+
+        // Show summary to user if any sessions failed to restore
+        if (totalFailed > 0)
+        {
+            var failedList = string.Join("\n  - ", failedRepos);
+            MessageBox.Show(this,
+                $"Restored {restored} of {persisted.Count} sessions.\n\n" +
+                $"{totalFailed} session(s) could not be restored:\n  - {failedList}\n\n" +
+                $"The sessions.json backup has been preserved.",
+                "Session Restore Warning",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
 
         if (restored > 0)
         {
             FileLog.Write($"[MainWindow] Restored {restored} session(s) from previous run");
 
-            // Clear persisted data after successful restoration to avoid re-restoring
-            app.SessionStateStore.Clear();
+            // Only clear sessions.json if ALL sessions were restored successfully
+            // If any failed, keep the backup so user doesn't lose session data permanently
+            if (totalFailed == 0)
+            {
+                app.SessionStateStore.Clear();
+                FileLog.Write("[MainWindow] All sessions restored successfully, cleared sessions.json");
+            }
+            else
+            {
+                FileLog.Write($"[MainWindow] Keeping sessions.json - {totalFailed} session(s) failed to restore");
+            }
+
             app.RestoredPersistedData = null;
 
             // Select first restored session
@@ -319,8 +410,17 @@ public partial class MainWindow : Window
         }
         else
         {
-            // No sessions restored, clear the state store
-            app.SessionStateStore.Clear();
+            // No sessions restored
+            if (totalFailed > 0)
+            {
+                // Some sessions existed but all failed - keep the backup
+                FileLog.Write("[MainWindow] No sessions restored but some failed - keeping sessions.json backup");
+            }
+            else
+            {
+                // No sessions with ClaudeSessionId - safe to clear
+                app.SessionStateStore.Clear();
+            }
             app.RestoredPersistedData = null;
         }
     }
@@ -567,6 +667,74 @@ public partial class MainWindow : Window
     private void OnTerminalScrollChanged(object? sender, EventArgs e)
     {
         UpdateScrollBar();
+        CheckTerminalVerification();
+    }
+
+    /// <summary>
+    /// Check if terminal verification should be triggered.
+    /// Starts matching immediately - shows "Potential" for early matches, "Matched" after 50+ lines.
+    /// </summary>
+    private void CheckTerminalVerification()
+    {
+        if (_terminalControl == null || _activeSession == null)
+            return;
+
+        // Skip if already fully verified (Matched) or failed
+        var status = _activeSession.TerminalVerificationStatus;
+        if (status == TerminalVerificationStatus.Matched || status == TerminalVerificationStatus.Failed)
+            return;
+
+        // Use ContentLineCount (actual content) not TotalLineCount (includes empty terminal rows)
+        int lineCount = _terminalControl.ContentLineCount;
+
+        // Need at least a few lines to have any content to match
+        if (lineCount < 5)
+            return;
+
+        FileLog.Write($"[MainWindow] CheckTerminalVerification: contentLines={lineCount}, status={status}, session={_activeSession.Id}");
+
+        // Run verification in background to avoid blocking UI
+        var session = _activeSession;
+        var terminalText = _terminalControl.GetAllTerminalText();
+
+        Task.Run(() =>
+        {
+            try
+            {
+                var result = session.VerifyWithTerminalContent(terminalText, lineCount);
+
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (result.IsMatched)
+                    {
+                        FileLog.Write($"[MainWindow] Terminal verification CONFIRMED: {result.MatchedSessionId} for {session.Id}");
+                        if (_activeSession?.Id == session.Id)
+                        {
+                            UpdateSessionHeader();
+                        }
+                        PersistSessionState();
+                    }
+                    else if (result.IsPotential)
+                    {
+                        FileLog.Write($"[MainWindow] Terminal verification POTENTIAL: {result.MatchedSessionId} for {session.Id} ({lineCount} lines)");
+                        if (_activeSession?.Id == session.Id)
+                        {
+                            UpdateSessionHeader();
+                        }
+                        // Also persist potential matches so they can be recovered
+                        PersistSessionState();
+                    }
+                    else
+                    {
+                        FileLog.Write($"[MainWindow] Terminal verification no match: {result.ErrorMessage} for {session.Id} ({lineCount} lines)");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] CheckTerminalVerification FAILED: {ex.Message}");
+            }
+        });
     }
 
     private void UpdateScrollBar()
@@ -663,6 +831,46 @@ public partial class MainWindow : Window
             HeaderMessageCountBadge.Visibility = Visibility.Collapsed;
             HeaderClaudeSummary.Visibility = Visibility.Collapsed;
         }
+
+        // Update verification display
+        UpdateHeaderVerification(vm);
+    }
+
+    private void UpdateHeaderVerification(SessionViewModel vm)
+    {
+        // Show session ID panel
+        HeaderSessionIdPanel.Visibility = Visibility.Visible;
+        HeaderSessionId.Text = vm.ClaudeSessionIdShort;
+
+        // Update verification badge
+        if (vm.IsVerified)
+        {
+            HeaderVerificationBadge.Background = new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E));
+            HeaderVerificationText.Text = "OK";
+            HeaderVerificationBadge.Visibility = Visibility.Visible;
+            BtnRelink.Visibility = Visibility.Collapsed;
+        }
+        else if (vm.HasVerificationWarning)
+        {
+            HeaderVerificationBadge.Background = new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44));
+            HeaderVerificationText.Text = "!";
+            HeaderVerificationBadge.Visibility = Visibility.Visible;
+            BtnRelink.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            // Not linked
+            HeaderVerificationBadge.Visibility = Visibility.Collapsed;
+            BtnRelink.Visibility = Visibility.Visible;
+        }
+
+        // Set tooltip with details
+        var tooltip = vm.VerificationStatusText;
+        if (!string.IsNullOrEmpty(vm.VerifiedFirstPrompt))
+        {
+            tooltip += $"\n\nFirst prompt: {vm.VerifiedFirstPrompt}";
+        }
+        HeaderVerificationBadge.ToolTip = tooltip;
     }
 
     private void UpdateHeaderActivityState(SessionViewModel vm)
@@ -713,6 +921,14 @@ public partial class MainWindow : Window
                  or nameof(SessionViewModel.ClaudeInfoText))
         {
             UpdateHeaderClaudeMetadata(vm);
+        }
+        else if (e.PropertyName is nameof(SessionViewModel.IsVerified)
+                 or nameof(SessionViewModel.HasVerificationWarning)
+                 or nameof(SessionViewModel.VerificationStatusText)
+                 or nameof(SessionViewModel.VerifiedFirstPrompt)
+                 or nameof(SessionViewModel.ClaudeSessionIdShort))
+        {
+            UpdateHeaderVerification(vm);
         }
     }
 
@@ -1014,9 +1230,12 @@ public partial class MainWindow : Window
     {
         FileLog.Write($"[MainWindow] SyncPromptTextToSessions: syncing {_sessions.Count} session(s)");
 
-        foreach (var vm in _sessions)
+        // Update SortOrder and PendingPromptText from UI order
+        for (int i = 0; i < _sessions.Count; i++)
         {
+            var vm = _sessions[i];
             vm.Session.PendingPromptText = vm.PendingPromptText;
+            vm.Session.SortOrder = i;
         }
 
         // For the active session, capture the live PromptInput text
@@ -1052,7 +1271,12 @@ public partial class MainWindow : Window
                 if (session != null)
                 {
                     var sessionVm = _sessions.FirstOrDefault(s => s.Session.Id == session.Id);
-                    sessionVm?.RefreshClaudeMetadata();
+                    if (sessionVm != null)
+                    {
+                        sessionVm.RefreshClaudeMetadata();
+                        // Re-verify session file after each turn
+                        session.VerifyClaudeSession();
+                    }
                 }
             }
         });
@@ -1064,7 +1288,85 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] Claude session registered: {claudeSessionId} for {session.RepoPath}");
         // This event can fire from a non-UI thread; PersistSessionState touches _persistDebounceCts
         // which must only be accessed on the UI thread.
-        Dispatcher.BeginInvoke(PersistSessionState);
+        Dispatcher.BeginInvoke(() =>
+        {
+            PersistSessionState();
+            // Update header if this is the active session
+            if (_activeSession?.Id == session.Id)
+            {
+                UpdateSessionHeader();
+            }
+        });
+    }
+
+    private void BtnRelink_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeSession == null)
+            return;
+
+        var dialog = new RelinkSessionDialog(_activeSession.RepoPath) { Owner = this };
+        if (dialog.ShowDialog() == true && !string.IsNullOrEmpty(dialog.SelectedSessionId))
+        {
+            var app = (App)Application.Current;
+            app.SessionManager.RelinkClaudeSession(_activeSession.Id, dialog.SelectedSessionId);
+
+            // Update UI immediately
+            UpdateSessionHeader();
+            PersistSessionState();
+        }
+    }
+
+    private void SessionOpenJsonl_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] SessionOpenJsonl_Click");
+
+        if (sender is not Button button || button.DataContext is not SessionViewModel vm)
+            return;
+
+        var claudeSessionId = vm.Session.ClaudeSessionId;
+        if (string.IsNullOrEmpty(claudeSessionId))
+        {
+            FileLog.Write("[MainWindow] SessionOpenJsonl_Click: No ClaudeSessionId");
+            return;
+        }
+
+        var jsonlPath = ClaudeSessionReader.GetJsonlPath(claudeSessionId, vm.Session.RepoPath);
+
+        if (!System.IO.File.Exists(jsonlPath))
+        {
+            FileLog.Write($"[MainWindow] SessionOpenJsonl_Click: File not found: {jsonlPath}");
+            MessageBox.Show(this, $"Session file not found:\n{jsonlPath}", "File Not Found",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        FileLog.Write($"[MainWindow] SessionOpenJsonl_Click: Opening {jsonlPath}");
+        Process.Start("explorer.exe", $"/select,\"{jsonlPath}\"");
+    }
+
+    private void SessionRelink_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] SessionRelink_Click");
+
+        if (sender is not Button button || button.DataContext is not SessionViewModel vm)
+            return;
+
+        var dialog = new RelinkSessionDialog(vm.Session.RepoPath) { Owner = this };
+        if (dialog.ShowDialog() == true && !string.IsNullOrEmpty(dialog.SelectedSessionId))
+        {
+            var app = (App)Application.Current;
+            app.SessionManager.RelinkClaudeSession(vm.Session.Id, dialog.SelectedSessionId);
+
+            FileLog.Write($"[MainWindow] SessionRelink_Click: Relinked {vm.Session.Id} to {dialog.SelectedSessionId}");
+
+            // Update header if this is the active session
+            if (_activeSession?.Id == vm.Session.Id)
+            {
+                UpdateSessionHeader();
+            }
+
+            PersistSessionState();
+        }
     }
 
     private void BtnOpenLogs_Click(object sender, RoutedEventArgs e)
@@ -1203,18 +1505,18 @@ public partial class MainWindow : Window
         if (sender is not Button button)
             return;
 
-        // Find the parent Grid that has the ContextMenu
+        // Find the parent Grid that has the ContextMenu (may need to skip inner grids)
         var parent = VisualTreeHelper.GetParent(button);
-        while (parent != null && parent is not Grid)
+        while (parent != null)
         {
+            if (parent is Grid grid && grid.ContextMenu != null)
+            {
+                grid.ContextMenu.PlacementTarget = button;
+                grid.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+                grid.ContextMenu.IsOpen = true;
+                return;
+            }
             parent = VisualTreeHelper.GetParent(parent);
-        }
-
-        if (parent is Grid grid && grid.ContextMenu != null)
-        {
-            grid.ContextMenu.PlacementTarget = button;
-            grid.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
-            grid.ContextMenu.IsOpen = true;
         }
     }
 
@@ -1696,6 +1998,8 @@ public class SessionViewModel : INotifyPropertyChanged
         _dispatcher = dispatcher;
         session.OnActivityStateChanged += OnActivityStateChanged;
         session.OnClaudeMetadataChanged += OnClaudeMetadataChanged;
+        session.OnVerificationStatusChanged += OnVerificationStatusChanged;
+        session.OnTerminalVerificationStatusChanged += OnTerminalVerificationStatusChanged;
     }
 
     private static readonly SolidColorBrush DefaultHeaderBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26)));
@@ -1748,7 +2052,7 @@ public class SessionViewModel : INotifyPropertyChanged
     /// <summary>Prompt text the user was composing but hasn't sent yet. Saved/restored on session switch.</summary>
     public string PendingPromptText { get; set; } = string.Empty;
 
-    public string StatusText => $"{Session.ActivityState} (PID {Session.ProcessId}) - ConPTY";
+    public string StatusText => $"{Session.ActivityState} (PID {Session.ProcessId})";
     public SolidColorBrush ActivityBrush => ActivityBrushes.GetValueOrDefault(Session.ActivityState, ActivityBrushes[ActivityState.Starting]);
 
     /// <summary>Claude session summary (from sessions-index.json).</summary>
@@ -1786,6 +2090,68 @@ public class SessionViewModel : INotifyPropertyChanged
 
     /// <summary>Whether Claude metadata is available.</summary>
     public bool HasClaudeMetadata => Session.ClaudeMetadata != null;
+
+    /// <summary>Short Claude session ID for display (first 8 chars or "Not linked").</summary>
+    public string ClaudeSessionIdShort
+    {
+        get
+        {
+            var id = Session.ClaudeSessionId;
+            if (string.IsNullOrEmpty(id)) return "Not linked";
+            return id.Length > 8 ? id[..8] + "..." : id;
+        }
+    }
+
+    /// <summary>Whether the session is verified (file exists and readable).</summary>
+    public bool IsVerified => Session.VerificationStatus == SessionVerificationStatus.Verified;
+
+    /// <summary>Whether there's a verification warning (file not found or error).</summary>
+    public bool HasVerificationWarning =>
+        Session.VerificationStatus is SessionVerificationStatus.FileNotFound
+                                    or SessionVerificationStatus.Error
+                                    or SessionVerificationStatus.ContentMismatch;
+
+    /// <summary>Whether we're waiting for Claude session link (not yet linked).</summary>
+    public bool IsWaitingForLink => Session.VerificationStatus == SessionVerificationStatus.NotLinked;
+
+    /// <summary>Text describing the verification status.</summary>
+    public string VerificationStatusText => Session.VerificationStatus switch
+    {
+        SessionVerificationStatus.Verified => "Verified",
+        SessionVerificationStatus.FileNotFound => "Session file not found",
+        SessionVerificationStatus.NotLinked => "Waiting for Claude session ID...",
+        SessionVerificationStatus.ContentMismatch => "Session content mismatch",
+        SessionVerificationStatus.Error => "Verification error",
+        _ => "Unknown"
+    };
+
+    /// <summary>First prompt from verified session file.</summary>
+    public string? VerifiedFirstPrompt => Session.VerifiedFirstPrompt;
+
+    /// <summary>Terminal-based verification status.</summary>
+    public TerminalVerificationStatus TerminalVerificationStatus => Session.TerminalVerificationStatus;
+
+    /// <summary>Text to display for terminal verification status.</summary>
+    public string TerminalVerificationStatusText => Session.TerminalVerificationStatus switch
+    {
+        TerminalVerificationStatus.Waiting => "Waiting...",
+        TerminalVerificationStatus.Potential => "Potential Match",
+        TerminalVerificationStatus.Matched => "Matched",
+        TerminalVerificationStatus.Failed => "Verification Failed",
+        _ => "Unknown"
+    };
+
+    /// <summary>Whether terminal verification is in waiting state.</summary>
+    public bool IsTerminalVerificationWaiting => Session.TerminalVerificationStatus == TerminalVerificationStatus.Waiting;
+
+    /// <summary>Whether terminal verification has a potential match (not yet confirmed).</summary>
+    public bool IsTerminalVerificationPotential => Session.TerminalVerificationStatus == TerminalVerificationStatus.Potential;
+
+    /// <summary>Whether terminal verification matched (confirmed at 50+ lines).</summary>
+    public bool IsTerminalVerificationMatched => Session.TerminalVerificationStatus == TerminalVerificationStatus.Matched;
+
+    /// <summary>Whether terminal verification failed.</summary>
+    public bool IsTerminalVerificationFailed => Session.TerminalVerificationStatus == TerminalVerificationStatus.Failed;
 
     private int _uncommittedCount;
     public int UncommittedCount
@@ -1830,6 +2196,39 @@ public class SessionViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(ClaudeFirstPrompt));
             OnPropertyChanged(nameof(ClaudeInfoText));
             OnPropertyChanged(nameof(HasClaudeMetadata));
+        });
+    }
+
+    private void OnVerificationStatusChanged(SessionVerificationStatus status)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            OnPropertyChanged(nameof(IsVerified));
+            OnPropertyChanged(nameof(HasVerificationWarning));
+            OnPropertyChanged(nameof(IsWaitingForLink));
+            OnPropertyChanged(nameof(VerificationStatusText));
+            OnPropertyChanged(nameof(VerifiedFirstPrompt));
+            OnPropertyChanged(nameof(ClaudeSessionIdShort));
+            OnPropertyChanged(nameof(StatusText));
+        });
+    }
+
+    private void OnTerminalVerificationStatusChanged(TerminalVerificationStatus status)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            OnPropertyChanged(nameof(TerminalVerificationStatus));
+            OnPropertyChanged(nameof(TerminalVerificationStatusText));
+            OnPropertyChanged(nameof(IsTerminalVerificationWaiting));
+            OnPropertyChanged(nameof(IsTerminalVerificationPotential));
+            OnPropertyChanged(nameof(IsTerminalVerificationMatched));
+            OnPropertyChanged(nameof(IsTerminalVerificationFailed));
+            // Also update verification-related properties since ClaudeSessionId may have changed
+            OnPropertyChanged(nameof(ClaudeSessionIdShort));
+            OnPropertyChanged(nameof(IsVerified));
+            OnPropertyChanged(nameof(IsWaitingForLink));
+            OnPropertyChanged(nameof(HasVerificationWarning));
+            OnPropertyChanged(nameof(VerificationStatusText));
         });
     }
 

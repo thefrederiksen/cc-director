@@ -127,6 +127,74 @@ public class TerminalControl : FrameworkElement
     /// <summary>Number of visible rows in the viewport.</summary>
     public int ViewportRows => _rows;
 
+    /// <summary>Total number of lines (scrollback + current screen) - includes empty rows.</summary>
+    public int TotalLineCount => _scrollback.Count + _rows;
+
+    /// <summary>
+    /// Count of lines with actual content (non-empty lines).
+    /// Used for terminal verification to determine when we have enough content.
+    /// </summary>
+    public int ContentLineCount
+    {
+        get
+        {
+            int count = _scrollback.Count; // All scrollback lines have content
+
+            // Count non-empty rows in current screen buffer
+            for (int row = 0; row < _rows; row++)
+            {
+                bool hasContent = false;
+                for (int col = 0; col < _cols; col++)
+                {
+                    char ch = _cells[col, row].Character;
+                    if (ch != '\0' && ch != ' ')
+                    {
+                        hasContent = true;
+                        break;
+                    }
+                }
+                if (hasContent)
+                    count++;
+            }
+            return count;
+        }
+    }
+
+    /// <summary>
+    /// Get all terminal text (scrollback + current screen) as a single string.
+    /// Used for terminal-to-JSONL verification.
+    /// </summary>
+    public string GetAllTerminalText()
+    {
+        var sb = new StringBuilder();
+
+        // First, add all scrollback lines
+        foreach (var line in _scrollback)
+        {
+            var lineBuilder = new StringBuilder();
+            for (int col = 0; col < line.Length; col++)
+            {
+                char ch = line[col].Character;
+                lineBuilder.Append(ch == '\0' ? ' ' : ch);
+            }
+            sb.AppendLine(lineBuilder.ToString().TrimEnd());
+        }
+
+        // Then add current screen buffer lines
+        for (int row = 0; row < _rows; row++)
+        {
+            var lineBuilder = new StringBuilder();
+            for (int col = 0; col < _cols; col++)
+            {
+                char ch = _cells[col, row].Character;
+                lineBuilder.Append(ch == '\0' ? ' ' : ch);
+            }
+            sb.AppendLine(lineBuilder.ToString().TrimEnd());
+        }
+
+        return sb.ToString();
+    }
+
     // Font metrics
     private double _cellWidth;
     private double _cellHeight;

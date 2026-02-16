@@ -4,6 +4,34 @@ using System.Text.Json.Serialization;
 namespace CcDirector.Core.Claude;
 
 /// <summary>
+/// Status of session verification against the actual .jsonl file.
+/// </summary>
+public enum SessionVerificationStatus
+{
+    /// <summary>The .jsonl file exists and content matches expected prompt.</summary>
+    Verified,
+    /// <summary>No .jsonl file found for the session ID.</summary>
+    FileNotFound,
+    /// <summary>No ClaudeSessionId is set on the session.</summary>
+    NotLinked,
+    /// <summary>An error occurred while reading the .jsonl file.</summary>
+    Error,
+    /// <summary>The .jsonl file exists but first prompt doesn't match expected content.</summary>
+    ContentMismatch
+}
+
+/// <summary>
+/// Result of verifying a Claude session against its .jsonl file.
+/// </summary>
+public sealed class SessionVerificationResult
+{
+    public SessionVerificationStatus Status { get; init; }
+    public string? FirstPromptSnippet { get; init; }
+    public long? FileSizeBytes { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
 /// Reads Claude Code session metadata from the ~/.claude/projects folder.
 /// </summary>
 public static class ClaudeSessionReader
@@ -18,12 +46,13 @@ public static class ClaudeSessionReader
     /// </summary>
     public static string GetProjectFolder(string repoPath)
     {
-        // Claude Code sanitizes paths: replaces : and \ and / with -
+        // Claude Code sanitizes paths: replaces : \ / and _ with -
         var normalized = Path.GetFullPath(repoPath);
         var sanitized = normalized
             .Replace(":", "-")
             .Replace("\\", "-")
-            .Replace("/", "-");
+            .Replace("/", "-")
+            .Replace("_", "-");
         return sanitized;
     }
 
@@ -134,6 +163,300 @@ public static class ClaudeSessionReader
         var projectFolder = GetProjectFolderPath(repoPath);
         var indexPath = Path.Combine(projectFolder, "sessions-index.json");
         return File.Exists(indexPath);
+    }
+
+    /// <summary>
+    /// Check if a specific Claude session ID exists in storage for the given repo.
+    /// Returns false if the session cannot be found (cannot be resumed).
+    /// </summary>
+    public static bool SessionExists(string claudeSessionId, string repoPath)
+    {
+        if (string.IsNullOrEmpty(claudeSessionId))
+            return false;
+
+        var metadata = ReadSessionMetadata(claudeSessionId, repoPath);
+        return metadata != null;
+    }
+
+    /// <summary>
+    /// Get the path to the .jsonl file for a Claude session.
+    /// </summary>
+    public static string GetJsonlPath(string claudeSessionId, string repoPath)
+    {
+        var projectFolder = GetProjectFolderPath(repoPath);
+        return Path.Combine(projectFolder, $"{claudeSessionId}.jsonl");
+    }
+
+    /// <summary>
+    /// Extract user prompt text from a .jsonl file.
+    /// Skips meta messages (isMeta=true) and short prompts.
+    /// Returns list of prompt strings for matching against terminal content.
+    /// </summary>
+    public static List<string> ExtractUserPrompts(string jsonlPath)
+    {
+        var prompts = new List<string>();
+
+        if (!File.Exists(jsonlPath))
+            return prompts;
+
+        try
+        {
+            // Use FileShare.ReadWrite to allow reading while Claude writes
+            using var fs = new FileStream(jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(fs);
+
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+
+                    // Skip if not a user message
+                    if (!root.TryGetProperty("type", out var typeEl) || typeEl.GetString() != "user")
+                        continue;
+
+                    // Skip meta messages
+                    if (root.TryGetProperty("isMeta", out var metaEl) && metaEl.GetBoolean())
+                        continue;
+
+                    // Extract message content
+                    if (root.TryGetProperty("message", out var msgEl))
+                    {
+                        string? content = null;
+
+                        // Message can be a simple string or an object with content array
+                        if (msgEl.ValueKind == JsonValueKind.String)
+                        {
+                            content = msgEl.GetString();
+                        }
+                        else if (msgEl.TryGetProperty("content", out var contentEl))
+                        {
+                            if (contentEl.ValueKind == JsonValueKind.String)
+                            {
+                                content = contentEl.GetString();
+                            }
+                            else if (contentEl.ValueKind == JsonValueKind.Array)
+                            {
+                                // Find first text content
+                                foreach (var item in contentEl.EnumerateArray())
+                                {
+                                    if (item.TryGetProperty("type", out var itemType) &&
+                                        itemType.GetString() == "text" &&
+                                        item.TryGetProperty("text", out var textProp))
+                                    {
+                                        content = textProp.GetString();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Only include prompts with meaningful content (> 10 chars)
+                        if (!string.IsNullOrEmpty(content))
+                        {
+                            content = content.Trim();
+                            if (content.Length > 10)
+                            {
+                                prompts.Add(content);
+                            }
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Skip malformed lines
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[ClaudeSessionReader] ExtractUserPrompts error: {ex.Message}");
+        }
+
+        return prompts;
+    }
+
+    /// <summary>
+    /// Verify that a Claude session's .jsonl file exists and is readable.
+    /// This reads the file directly, which is more reliable than sessions-index.json
+    /// (which Claude updates asynchronously).
+    /// </summary>
+    /// <param name="claudeSessionId">The Claude session ID to verify.</param>
+    /// <param name="repoPath">The repo path to locate the .jsonl file.</param>
+    /// <param name="expectedFirstPrompt">Optional expected first prompt to match against. If null, only file existence is checked.</param>
+    public static SessionVerificationResult VerifySessionFile(string? claudeSessionId, string repoPath, string? expectedFirstPrompt = null)
+    {
+        if (string.IsNullOrEmpty(claudeSessionId))
+        {
+            return new SessionVerificationResult { Status = SessionVerificationStatus.NotLinked };
+        }
+
+        var jsonlPath = GetJsonlPath(claudeSessionId, repoPath);
+
+        if (!File.Exists(jsonlPath))
+        {
+            return new SessionVerificationResult
+            {
+                Status = SessionVerificationStatus.FileNotFound,
+                ErrorMessage = $"File not found: {jsonlPath}"
+            };
+        }
+
+        try
+        {
+            var fileInfo = new FileInfo(jsonlPath);
+            var firstPrompt = ReadFirstPromptFromJsonl(jsonlPath);
+
+            // If expected prompt provided, verify it matches
+            if (!string.IsNullOrEmpty(expectedFirstPrompt) && !string.IsNullOrEmpty(firstPrompt))
+            {
+                // Compare normalized versions (trimmed, first 100 chars)
+                var normalizedExpected = NormalizeForComparison(expectedFirstPrompt);
+                var normalizedActual = NormalizeForComparison(firstPrompt);
+
+                if (!string.Equals(normalizedExpected, normalizedActual, StringComparison.Ordinal))
+                {
+                    return new SessionVerificationResult
+                    {
+                        Status = SessionVerificationStatus.ContentMismatch,
+                        FileSizeBytes = fileInfo.Length,
+                        FirstPromptSnippet = firstPrompt,
+                        ErrorMessage = $"Expected: \"{expectedFirstPrompt[..Math.Min(50, expectedFirstPrompt.Length)]}...\", Got: \"{firstPrompt[..Math.Min(50, firstPrompt.Length)]}...\""
+                    };
+                }
+            }
+
+            return new SessionVerificationResult
+            {
+                Status = SessionVerificationStatus.Verified,
+                FileSizeBytes = fileInfo.Length,
+                FirstPromptSnippet = firstPrompt
+            };
+        }
+        catch (Exception ex)
+        {
+            return new SessionVerificationResult
+            {
+                Status = SessionVerificationStatus.Error,
+                ErrorMessage = ex.Message
+            };
+        }
+    }
+
+    /// <summary>
+    /// Normalize text for comparison: trim, collapse whitespace, take first 100 chars.
+    /// </summary>
+    private static string NormalizeForComparison(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+
+        // Collapse whitespace and newlines
+        text = text.ReplaceLineEndings(" ").Trim();
+        while (text.Contains("  "))
+            text = text.Replace("  ", " ");
+
+        // Remove trailing "..." if present (from truncation)
+        if (text.EndsWith("..."))
+            text = text[..^3].TrimEnd();
+
+        // Take first 100 chars for comparison
+        if (text.Length > 100)
+            text = text[..100];
+
+        return text;
+    }
+
+    /// <summary>
+    /// Read the first user prompt from a .jsonl file.
+    /// Returns the first 100 characters of the prompt, or null if not found.
+    /// </summary>
+    public static string? ReadFirstPromptFromJsonl(string jsonlPath)
+    {
+        if (!File.Exists(jsonlPath))
+            return null;
+
+        try
+        {
+            // Read first few KB to find the first user message
+            // (don't load entire file for large sessions)
+            using var fs = new FileStream(jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(fs);
+
+            // Read up to 100 lines looking for a user message
+            for (int i = 0; i < 100 && !reader.EndOfStream; i++)
+            {
+                var line = reader.ReadLine();
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+
+                    // Look for user messages
+                    if (root.TryGetProperty("type", out var typeProp) &&
+                        typeProp.GetString() == "user")
+                    {
+                        // Get the message content
+                        if (root.TryGetProperty("message", out var messageProp))
+                        {
+                            // Message can be a simple string or an object with content array
+                            if (messageProp.ValueKind == JsonValueKind.String)
+                            {
+                                var text = messageProp.GetString();
+                                return TruncatePrompt(text);
+                            }
+                            else if (messageProp.TryGetProperty("content", out var contentProp) &&
+                                     contentProp.ValueKind == JsonValueKind.Array)
+                            {
+                                // Find first text content
+                                foreach (var item in contentProp.EnumerateArray())
+                                {
+                                    if (item.TryGetProperty("type", out var itemType) &&
+                                        itemType.GetString() == "text" &&
+                                        item.TryGetProperty("text", out var textProp))
+                                    {
+                                        return TruncatePrompt(textProp.GetString());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Skip malformed lines
+                }
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TruncatePrompt(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return null;
+
+        // Clean up whitespace
+        text = text.ReplaceLineEndings(" ").Trim();
+
+        // Truncate to 100 chars
+        if (text.Length > 100)
+            text = text[..100] + "...";
+
+        return text;
     }
 
     /// <summary>

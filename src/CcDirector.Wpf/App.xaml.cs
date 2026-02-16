@@ -13,15 +13,16 @@ namespace CcDirector.Wpf;
 
 public partial class App : Application
 {
-    public SessionManager SessionManager { get; private set; } = null!;
-    public AgentOptions Options { get; private set; } = null!;
+    // All null! fields are initialized in OnStartup before any other code accesses them
+    public SessionManager SessionManager { get; private set; } = null!; // Initialized in OnStartup
+    public AgentOptions Options { get; private set; } = null!; // Initialized in OnStartup via LoadConfiguration
     public List<RepositoryConfig> Repositories { get; private set; } = new();
-    public RepositoryRegistry RepositoryRegistry { get; private set; } = null!;
-    public DirectorPipeServer PipeServer { get; private set; } = null!;
-    public EventRouter EventRouter { get; private set; } = null!;
-    public SessionStateStore SessionStateStore { get; private set; } = null!;
-    public RecentSessionStore RecentSessionStore { get; private set; } = null!;
-    public NulFileWatcher NulFileWatcher { get; private set; } = null!;
+    public RepositoryRegistry RepositoryRegistry { get; private set; } = null!; // Initialized in OnStartup
+    public DirectorPipeServer PipeServer { get; private set; } = null!; // Initialized in OnStartup
+    public EventRouter EventRouter { get; private set; } = null!; // Initialized in OnStartup
+    public SessionStateStore SessionStateStore { get; private set; } = null!; // Initialized in OnStartup
+    public RecentSessionStore RecentSessionStore { get; private set; } = null!; // Initialized in OnStartup
+    public NulFileWatcher NulFileWatcher { get; private set; } = null!; // Initialized in OnStartup
 
     /// <summary>
     /// When true, sessions are not loaded or saved, and no exit dialog is shown.
@@ -37,9 +38,10 @@ public partial class App : Application
 
     /// <summary>
     /// Persisted session data loaded on startup, consumed by MainWindow for HWND reattach.
+    /// Contains both the session list and any load errors that need to be displayed.
     /// Cleared after MainWindow processes it.
     /// </summary>
-    public List<PersistedSession>? RestoredPersistedData { get; set; }
+    public RestoreSessionsResult? RestoredPersistedData { get; set; }
 
     /// <summary>
     /// Set to true by MainWindow when the user chooses "Keep Sessions" on close.

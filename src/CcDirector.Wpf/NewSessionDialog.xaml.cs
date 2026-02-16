@@ -195,7 +195,8 @@ public partial class NewSessionDialog : Window
             await Task.WhenAll(claudeSessionsTask, persistedSessionsTask);
 
             var claudeSessions = claudeSessionsTask.Result;
-            var persistedSessions = persistedSessionsTask.Result;
+            var persistedResult = persistedSessionsTask.Result;
+            var persistedSessions = persistedResult.Sessions;
 
             FileLog.Write($"[NewSessionDialog] LoadClaudeSessionsAsync: found {claudeSessions.Count} Claude sessions, {persistedSessions.Count} persisted sessions");
 

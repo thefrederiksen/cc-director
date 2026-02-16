@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Sessions;
 
@@ -20,6 +21,38 @@ public class PersistedSession
     public ActivityState ActivityState { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>Order in the session list, used to restore UI order after restart.</summary>
+    public int SortOrder { get; set; }
+
+    /// <summary>The first prompt text from the Claude session, used to verify session identity on restore.</summary>
+    public string? ExpectedFirstPrompt { get; set; }
+}
+
+/// <summary>Result of loading persisted sessions from disk.</summary>
+public class LoadSessionsResult
+{
+    public List<PersistedSession> Sessions { get; init; } = new();
+    public bool Success { get; init; }
+    public string? ErrorMessage { get; init; }
+
+    /// <summary>True if sessions.json existed but could not be read.</summary>
+    public bool FileExistedButFailed { get; init; }
+}
+
+/// <summary>Result of restoring persisted sessions, including load errors and restore failures.</summary>
+public class RestoreSessionsResult
+{
+    public List<PersistedSession> Sessions { get; init; } = new();
+
+    /// <summary>True if sessions.json was loaded successfully.</summary>
+    public bool LoadSuccess { get; init; }
+
+    /// <summary>Error message if sessions.json could not be loaded.</summary>
+    public string? LoadErrorMessage { get; init; }
+
+    /// <summary>True if sessions.json existed but could not be read (corrupted, locked, etc).</summary>
+    public bool FileExistedButFailed { get; init; }
 }
 
 public class SessionStateStore
@@ -31,52 +64,160 @@ public class SessionStateStore
     };
 
     public string FilePath { get; }
+    public string BackupFilePath => FilePath + ".bak";
 
     public SessionStateStore(string? filePath = null)
     {
         FilePath = filePath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "CcDirector_v2",
+            "CcDirector",
             "sessions.json");
+        FileLog.Write($"[SessionStateStore] Initialized: FilePath={FilePath}");
     }
 
-    public void Save(IEnumerable<PersistedSession> sessions)
+    /// <summary>
+    /// Save sessions to disk. Returns true on success, false on failure.
+    /// </summary>
+    public bool Save(IEnumerable<PersistedSession> sessions)
     {
-        var dir = Path.GetDirectoryName(FilePath)!;
-        if (!Directory.Exists(dir))
-            Directory.CreateDirectory(dir);
+        FileLog.Write($"[SessionStateStore] Save: saving sessions to {FilePath}");
 
-        var json = JsonSerializer.Serialize(sessions.ToList(), JsonOptions);
-        File.WriteAllText(FilePath, json);
+        try
+        {
+            var dir = Path.GetDirectoryName(FilePath);
+            if (string.IsNullOrEmpty(dir))
+                throw new InvalidOperationException($"Cannot determine directory from path: {FilePath}");
+
+            if (!Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+                FileLog.Write($"[SessionStateStore] Save: created directory {dir}");
+            }
+
+            var sessionList = sessions.ToList();
+            var json = JsonSerializer.Serialize(sessionList, JsonOptions);
+            File.WriteAllText(FilePath, json);
+
+            FileLog.Write($"[SessionStateStore] Save: saved {sessionList.Count} session(s)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionStateStore] Save FAILED: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
     }
 
-    public List<PersistedSession> Load()
+    /// <summary>
+    /// Load sessions from disk. Returns a result containing sessions and any error information.
+    /// </summary>
+    public LoadSessionsResult Load()
     {
+        FileLog.Write($"[SessionStateStore] Load: loading from {FilePath}");
+
         if (!File.Exists(FilePath))
-            return new List<PersistedSession>();
+        {
+            FileLog.Write("[SessionStateStore] Load: file does not exist, returning empty list");
+            return new LoadSessionsResult
+            {
+                Sessions = new List<PersistedSession>(),
+                Success = true,
+                FileExistedButFailed = false
+            };
+        }
 
         try
         {
             var json = File.ReadAllText(FilePath);
-            return JsonSerializer.Deserialize<List<PersistedSession>>(json, JsonOptions)
+            var sessions = JsonSerializer.Deserialize<List<PersistedSession>>(json, JsonOptions)
                 ?? new List<PersistedSession>();
+
+            FileLog.Write($"[SessionStateStore] Load: loaded {sessions.Count} session(s)");
+            return new LoadSessionsResult
+            {
+                Sessions = sessions,
+                Success = true,
+                FileExistedButFailed = false
+            };
         }
-        catch
+        catch (JsonException ex)
         {
-            return new List<PersistedSession>();
+            FileLog.Write($"[SessionStateStore] Load FAILED (JSON parse error): {ex.Message}");
+            return new LoadSessionsResult
+            {
+                Sessions = new List<PersistedSession>(),
+                Success = false,
+                ErrorMessage = $"sessions.json is corrupted: {ex.Message}",
+                FileExistedButFailed = true
+            };
+        }
+        catch (IOException ex)
+        {
+            FileLog.Write($"[SessionStateStore] Load FAILED (IO error): {ex.Message}");
+            return new LoadSessionsResult
+            {
+                Sessions = new List<PersistedSession>(),
+                Success = false,
+                ErrorMessage = $"Cannot read sessions.json: {ex.Message}",
+                FileExistedButFailed = true
+            };
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionStateStore] Load FAILED: {ex.GetType().Name}: {ex.Message}");
+            return new LoadSessionsResult
+            {
+                Sessions = new List<PersistedSession>(),
+                Success = false,
+                ErrorMessage = $"Failed to load sessions: {ex.Message}",
+                FileExistedButFailed = true
+            };
         }
     }
 
+    /// <summary>
+    /// Create a backup of sessions.json before clearing.
+    /// </summary>
+    public void Backup()
+    {
+        if (!File.Exists(FilePath))
+        {
+            FileLog.Write("[SessionStateStore] Backup: nothing to backup, file does not exist");
+            return;
+        }
+
+        try
+        {
+            File.Copy(FilePath, BackupFilePath, overwrite: true);
+            FileLog.Write($"[SessionStateStore] Backup: created backup at {BackupFilePath}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionStateStore] Backup FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Clear the sessions file. Creates a backup first.
+    /// </summary>
     public void Clear()
     {
+        FileLog.Write("[SessionStateStore] Clear: clearing sessions file");
+
+        // Always backup before clearing
+        Backup();
+
         try
         {
             if (File.Exists(FilePath))
+            {
                 File.Delete(FilePath);
+                FileLog.Write("[SessionStateStore] Clear: deleted sessions.json");
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            // best effort
+            FileLog.Write($"[SessionStateStore] Clear FAILED: {ex.Message}");
         }
     }
 }

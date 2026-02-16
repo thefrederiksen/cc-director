@@ -91,112 +91,265 @@
                                             <MenuItem Header="Close Session" Click="MenuCloseSession_Click" />
                                         </ContextMenu>
                                     </Grid.ContextMenu>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Grid.Column="0"
-                                            BorderBrush="{Binding ActivityBrush}"
+                                    <Border BorderBrush="{Binding ActivityBrush}"
                                             BorderThickness="4,0,0,0"
-                                            Padding="6,2,0,2">
-                                        <StackPanel Margin="4,2">
-                                            <DockPanel>
-                                                <TextBlock Text="{Binding DisplayName}" FontWeight="Medium"
+                                            Padding="6,4,4,4">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+
+                                            <!-- Row 0: Display name + Status text -->
+                                            <StackPanel Grid.Row="0">
+                                                <!-- Session name -->
+                                                <TextBlock Text="{Binding DisplayName}"
+                                                           FontWeight="Medium"
+                                                           FontSize="13"
                                                            TextTrimming="CharacterEllipsis" />
-                                                <!-- Message count badge -->
-                                                <Border DockPanel.Dock="Right"
-                                                        Background="#3B82F6"
-                                                        CornerRadius="8"
-                                                        Padding="5,1"
-                                                        Margin="6,0,0,0"
+                                                <!-- Status: Working (PID xxx) - ConPTY -->
+                                                <TextBlock Text="{Binding StatusText}"
+                                                           FontSize="10"
+                                                           Foreground="#888888"
+                                                           Margin="0,1,0,0" />
+                                            </StackPanel>
+
+                                            <!-- Row 1: ClaudeSessionId + Verification badge + [Open] [Relink] buttons -->
+                                            <DockPanel Grid.Row="1" Margin="0,4,0,0">
+                                                <!-- Buttons (right-aligned) -->
+                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="6,0,0,0">
+                                                    <!-- Open .jsonl button -->
+                                                    <Button Content="Open"
+                                                            Click="SessionOpenJsonl_Click"
+                                                            Focusable="False"
+                                                            FontSize="9"
+                                                            Padding="6,2"
+                                                            Margin="0,0,4,0"
+                                                            Background="#374151"
+                                                            Foreground="#D1D5DB"
+                                                            BorderThickness="0"
+                                                            Cursor="Hand"
+                                                            ToolTip="Open .jsonl file in Explorer">
+                                                        <Button.Style>
+                                                            <Style TargetType="Button">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Setter Property="IsEnabled" Value="True" />
+                                                                <Style.Triggers>
+                                                                    <!-- Hide when waiting for terminal verification -->
+                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                    <!-- Hide when terminal verification failed -->
+                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                    <!-- Disable when file not found or error -->
+                                                                    <DataTrigger Binding="{Binding Session.VerificationStatus}" Value="FileNotFound">
+                                                                        <Setter Property="IsEnabled" Value="False" />
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Session.VerificationStatus}" Value="Error">
+                                                                        <Setter Property="IsEnabled" Value="False" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Button.Style>
+                                                    </Button>
+                                                    <!-- Relink button -->
+                                                    <Button Content="Relink"
+                                                            Click="SessionRelink_Click"
+                                                            Focusable="False"
+                                                            FontSize="9"
+                                                            Padding="6,2"
+                                                            Background="#374151"
+                                                            Foreground="#D1D5DB"
+                                                            BorderThickness="0"
+                                                            Cursor="Hand"
+                                                            ToolTip="Re-link to a different Claude session">
+                                                        <Button.Style>
+                                                            <Style TargetType="Button">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Style.Triggers>
+                                                                    <!-- Hide when waiting for terminal verification -->
+                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Button.Style>
+                                                    </Button>
+                                                </StackPanel>
+                                                <!-- Terminal Verification badge -->
+                                                <Border CornerRadius="2"
+                                                        Padding="4,1"
+                                                        Margin="0,0,4,0"
                                                         VerticalAlignment="Center"
-                                                        HorizontalAlignment="Right">
+                                                        ToolTip="{Binding TerminalVerificationStatusText}">
                                                     <Border.Style>
                                                         <Style TargetType="Border">
-                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Setter Property="Background" Value="#22C55E" />
+                                                            <Setter Property="Visibility" Value="Collapsed" />
                                                             <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding HasClaudeMetadata}" Value="False">
-                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                <!-- Gray for waiting -->
+                                                                <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                    <Setter Property="Background" Value="#6B7280" />
+                                                                </DataTrigger>
+                                                                <!-- Yellow/Orange for potential match -->
+                                                                <DataTrigger Binding="{Binding IsTerminalVerificationPotential}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                    <Setter Property="Background" Value="#F59E0B" />
+                                                                </DataTrigger>
+                                                                <!-- Green for confirmed match -->
+                                                                <DataTrigger Binding="{Binding IsTerminalVerificationMatched}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                    <Setter Property="Background" Value="#22C55E" />
+                                                                </DataTrigger>
+                                                                <!-- Red for failed -->
+                                                                <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                    <Setter Property="Background" Value="#EF4444" />
                                                                 </DataTrigger>
                                                             </Style.Triggers>
                                                         </Style>
                                                     </Border.Style>
-                                                    <TextBlock Text="{Binding ClaudeMessageCount}"
-                                                               Foreground="White"
-                                                               FontSize="9"
-                                                               FontWeight="SemiBold" />
+                                                    <TextBlock FontSize="8" FontWeight="Bold" Foreground="White">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Text" Value="OK" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
+                                                                        <Setter Property="Text" Value="?" />
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationPotential}" Value="True">
+                                                                        <Setter Property="Text" Value="?" />
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
+                                                                        <Setter Property="Text" Value="!" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
                                                 </Border>
-                                                <!-- Uncommitted changes badge (orange) -->
-                                                <Border DockPanel.Dock="Right"
-                                                        Background="#D97706"
-                                                        CornerRadius="8"
-                                                        Padding="5,1"
-                                                        Margin="6,0,0,0"
-                                                        VerticalAlignment="Center"
-                                                        HorizontalAlignment="Right">
-                                                    <Border.Style>
-                                                        <Style TargetType="Border">
-                                                            <Setter Property="Visibility" Value="Visible" />
+                                                <!-- Claude session ID or status text -->
+                                                <TextBlock FontFamily="Consolas, Courier New"
+                                                           FontSize="10"
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Text" Value="{Binding ClaudeSessionIdShort}" />
+                                                            <Setter Property="Foreground" Value="#9CA3AF" />
                                                             <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding HasUncommittedChanges}" Value="False">
-                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                <!-- Show "Waiting..." when waiting -->
+                                                                <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
+                                                                    <Setter Property="Text" Value="Waiting..." />
+                                                                    <Setter Property="Foreground" Value="#6B7280" />
+                                                                </DataTrigger>
+                                                                <!-- Show session ID in yellow/orange when potential match -->
+                                                                <DataTrigger Binding="{Binding IsTerminalVerificationPotential}" Value="True">
+                                                                    <Setter Property="Foreground" Value="#F59E0B" />
+                                                                </DataTrigger>
+                                                                <!-- Show "Verification Failed" in red when failed -->
+                                                                <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
+                                                                    <Setter Property="Text" Value="Verification Failed" />
+                                                                    <Setter Property="Foreground" Value="#EF4444" />
                                                                 </DataTrigger>
                                                             </Style.Triggers>
                                                         </Style>
-                                                    </Border.Style>
-                                                    <TextBlock Text="{Binding UncommittedCount}"
-                                                               Foreground="White"
-                                                               FontSize="9"
-                                                               FontWeight="SemiBold" />
-                                                </Border>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
                                             </DockPanel>
-                                            <TextBlock Text="{Binding StatusText}" FontSize="10" Opacity="0.7" />
-                                            <!-- Claude summary/info text -->
-                                            <TextBlock Text="{Binding ClaudeInfoText}" FontSize="9"
-                                                       Foreground="#6B7280"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       Margin="0,2,0,0">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="Visibility" Value="Visible" />
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding HasClaudeMetadata}" Value="False">
-                                                                <Setter Property="Visibility" Value="Collapsed" />
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                        </StackPanel>
+
+                                            <!-- Row 2: Stats badges + three-dot menu -->
+                                            <DockPanel Grid.Row="2" Margin="0,4,0,0">
+                                                <!-- Three-dot menu button (right-aligned) -->
+                                                <Button DockPanel.Dock="Right"
+                                                        Content="..."
+                                                        Click="SessionMenuButton_Click"
+                                                        Focusable="False"
+                                                        VerticalAlignment="Center"
+                                                        Padding="6,2"
+                                                        Margin="4,0,0,0"
+                                                        MinWidth="24"
+                                                        Background="Transparent"
+                                                        Foreground="#888888"
+                                                        BorderThickness="0"
+                                                        Cursor="Hand"
+                                                        FontWeight="Bold"
+                                                        FontSize="12"
+                                                        ToolTip="Session options">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button">
+                                                            <Setter Property="Opacity" Value="0.5" />
+                                                            <Style.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter Property="Opacity" Value="1" />
+                                                                    <Setter Property="Foreground" Value="#CCCCCC" />
+                                                                </Trigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
+                                                <!-- Stats badges -->
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <!-- Message count badge -->
+                                                    <Border Background="#3B82F6"
+                                                            CornerRadius="8"
+                                                            Padding="6,2"
+                                                            Margin="0,0,6,0"
+                                                            VerticalAlignment="Center">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding HasClaudeMetadata}" Value="False">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding ClaudeMessageCount}"
+                                                                       Foreground="White"
+                                                                       FontSize="9"
+                                                                       FontWeight="SemiBold" />
+                                                            <TextBlock Text=" msgs"
+                                                                       Foreground="White"
+                                                                       FontSize="9"
+                                                                       Opacity="0.8" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <!-- Uncommitted changes badge (orange) -->
+                                                    <Border Background="#D97706"
+                                                            CornerRadius="8"
+                                                            Padding="6,2"
+                                                            VerticalAlignment="Center">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding HasUncommittedChanges}" Value="False">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding UncommittedCount}"
+                                                                       Foreground="White"
+                                                                       FontSize="9"
+                                                                       FontWeight="SemiBold" />
+                                                            <TextBlock Text=" uncommitted"
+                                                                       Foreground="White"
+                                                                       FontSize="9"
+                                                                       Opacity="0.8" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </StackPanel>
+                                            </DockPanel>
+                                        </Grid>
                                     </Border>
-                                    <!-- Three-dot menu button -->
-                                    <Button Grid.Column="1"
-                                            Content="..."
-                                            Click="SessionMenuButton_Click"
-                                            Focusable="False"
-                                            VerticalAlignment="Center"
-                                            Padding="4,0"
-                                            Margin="2,0,4,0"
-                                            MinWidth="20"
-                                            Background="Transparent"
-                                            Foreground="#888888"
-                                            BorderThickness="0"
-                                            Cursor="Hand"
-                                            FontWeight="Bold"
-                                            FontSize="14"
-                                            ToolTip="Session options">
-                                        <Button.Style>
-                                            <Style TargetType="Button">
-                                                <Setter Property="Opacity" Value="0.5" />
-                                                <Style.Triggers>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter Property="Opacity" Value="1" />
-                                                        <Setter Property="Foreground" Value="#CCCCCC" />
-                                                    </Trigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Button.Style>
-                                    </Button>
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -231,6 +384,7 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
@@ -291,6 +445,45 @@
                                    TextTrimming="CharacterEllipsis"
                                    Margin="0,2,16,0"
                                    Visibility="Collapsed" />
+
+                        <!-- Session ID and verification row -->
+                        <StackPanel x:Name="HeaderSessionIdPanel" Grid.Column="0" Grid.Row="2"
+                                    Orientation="Horizontal"
+                                    Margin="0,4,0,0"
+                                    Visibility="Collapsed">
+                            <TextBlock Text="Session: "
+                                       Foreground="#6B7280"
+                                       FontSize="10" />
+                            <TextBlock x:Name="HeaderSessionId"
+                                       Text="Not linked"
+                                       Foreground="#9CA3AF"
+                                       FontSize="10"
+                                       FontFamily="Consolas, Courier New" />
+                            <!-- Verification badge -->
+                            <Border x:Name="HeaderVerificationBadge"
+                                    CornerRadius="2"
+                                    Padding="4,1"
+                                    Margin="8,0,0,0"
+                                    VerticalAlignment="Center">
+                                <TextBlock x:Name="HeaderVerificationText"
+                                           Text="OK"
+                                           FontSize="9"
+                                           FontWeight="SemiBold"
+                                           Foreground="White" />
+                            </Border>
+                            <!-- Re-link button -->
+                            <Button x:Name="BtnRelink"
+                                    Content="Re-link"
+                                    Click="BtnRelink_Click"
+                                    Visibility="Collapsed"
+                                    Margin="8,0,0,0"
+                                    Padding="6,2"
+                                    FontSize="10"
+                                    Background="#374151"
+                                    Foreground="#D1D5DB"
+                                    BorderThickness="0"
+                                    Cursor="Hand" />
+                        </StackPanel>
                     </Grid>
                 </Border>
 

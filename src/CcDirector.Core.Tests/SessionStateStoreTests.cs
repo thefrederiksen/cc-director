@@ -36,13 +36,14 @@ public class SessionStateStoreTests
             Assert.Contains("test-claude-session-123", json);
 
             // Load
-            var loaded = store.Load();
+            var result = store.Load();
 
             // Verify
-            Assert.Single(loaded);
-            Assert.Equal(session.Id, loaded[0].Id);
-            Assert.Equal("test-claude-session-123", loaded[0].ClaudeSessionId);
-            Assert.Equal("Test Session", loaded[0].CustomName);
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.Equal(session.Id, result.Sessions[0].Id);
+            Assert.Equal("test-claude-session-123", result.Sessions[0].ClaudeSessionId);
+            Assert.Equal("Test Session", result.Sessions[0].CustomName);
         }
         finally
         {
@@ -60,9 +61,10 @@ public class SessionStateStoreTests
             File.WriteAllText(tempFile, "[]");
             var store = new SessionStateStore(tempFile);
 
-            var loaded = store.Load();
+            var result = store.Load();
 
-            Assert.Empty(loaded);
+            Assert.True(result.Success);
+            Assert.Empty(result.Sessions);
         }
         finally
         {
@@ -76,9 +78,10 @@ public class SessionStateStoreTests
     {
         var store = new SessionStateStore(@"C:\nonexistent\path\sessions.json");
 
-        var loaded = store.Load();
+        var result = store.Load();
 
-        Assert.Empty(loaded);
+        Assert.True(result.Success);
+        Assert.Empty(result.Sessions);
     }
 
     [Fact]
@@ -102,11 +105,12 @@ public class SessionStateStoreTests
 
             // Act
             store.Save(new[] { session });
-            var loaded = store.Load();
+            var result = store.Load();
 
             // Assert
-            Assert.Single(loaded);
-            Assert.Equal("fix the login bug in auth.cs", loaded[0].PendingPromptText);
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.Equal("fix the login bug in auth.cs", result.Sessions[0].PendingPromptText);
         }
         finally
         {
@@ -136,11 +140,12 @@ public class SessionStateStoreTests
 
             // Act
             store.Save(new[] { session });
-            var loaded = store.Load();
+            var result = store.Load();
 
             // Assert
-            Assert.Single(loaded);
-            Assert.Null(loaded[0].PendingPromptText);
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.Null(result.Sessions[0].PendingPromptText);
         }
         finally
         {
