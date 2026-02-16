@@ -62,13 +62,6 @@ public sealed class SessionManager : IDisposable
 
         var session = new Session(id, repoPath, repoPath, claudeArgs, backend, backendType);
 
-        // Pre-populate ClaudeSessionId if resuming - ensures it's saved for crash recovery
-        // even if Claude exits before sending SessionStart event
-        if (!string.IsNullOrEmpty(resumeSessionId))
-        {
-            session.ClaudeSessionId = resumeSessionId;
-        }
-
         try
         {
             // Get initial terminal dimensions (default 120x30)
@@ -76,6 +69,16 @@ public sealed class SessionManager : IDisposable
             session.MarkRunning();
 
             _sessions[id] = session;
+
+            // Pre-populate ClaudeSessionId if resuming - ensures it's saved for crash recovery
+            // even if Claude exits before sending SessionStart event.
+            // Also register in _claudeSessionMap so GetSessionByClaudeId can find it and
+            // prevent orphaned Claude processes from stealing this session ID.
+            if (!string.IsNullOrEmpty(resumeSessionId))
+            {
+                session.ClaudeSessionId = resumeSessionId;
+                _claudeSessionMap[resumeSessionId] = id;
+            }
             var resumeInfo = !string.IsNullOrEmpty(resumeSessionId) ? $", Resume={resumeSessionId[..8]}..." : "";
             _log?.Invoke($"Session {id} created for repo {repoPath} (PID {backend.ProcessId}, Backend={backendType}{resumeInfo}).");
 
@@ -214,16 +217,54 @@ public sealed class SessionManager : IDisposable
     /// <summary>Register a Claude session_id -> Director session mapping.</summary>
     public void RegisterClaudeSession(string claudeSessionId, Guid directorSessionId)
     {
+        // Check if this Claude session ID is already assigned to a different Director session
+        if (_claudeSessionMap.TryGetValue(claudeSessionId, out var existingId) && existingId != directorSessionId)
+        {
+            _log?.Invoke($"WARNING: Claude session {claudeSessionId} is already registered to Director session {existingId}, ignoring registration for {directorSessionId}.");
+            return;
+        }
+
         _claudeSessionMap[claudeSessionId] = directorSessionId;
         if (_sessions.TryGetValue(directorSessionId, out var session))
         {
             session.ClaudeSessionId = claudeSessionId;
             // Refresh Claude metadata now that we have the session ID
             session.RefreshClaudeMetadata();
+            // Verify the session file exists
+            session.VerifyClaudeSession();
             // Notify listeners
             OnClaudeSessionRegistered?.Invoke(session, claudeSessionId);
         }
         _log?.Invoke($"Registered Claude session {claudeSessionId} -> Director session {directorSessionId}.");
+    }
+
+    /// <summary>Manually re-link a Director session to a different Claude session ID.</summary>
+    public void RelinkClaudeSession(Guid directorSessionId, string newClaudeSessionId)
+    {
+        if (!_sessions.TryGetValue(directorSessionId, out var session))
+        {
+            _log?.Invoke($"RelinkClaudeSession: Director session {directorSessionId} not found.");
+            return;
+        }
+
+        // Remove old mapping if present
+        if (session.ClaudeSessionId != null)
+        {
+            _claudeSessionMap.TryRemove(session.ClaudeSessionId, out _);
+            _log?.Invoke($"RelinkClaudeSession: Removed old mapping {session.ClaudeSessionId}.");
+        }
+
+        // Set new mapping
+        session.ClaudeSessionId = newClaudeSessionId;
+        _claudeSessionMap[newClaudeSessionId] = directorSessionId;
+
+        // Refresh metadata and verify
+        session.RefreshClaudeMetadata();
+        session.VerifyClaudeSession();
+
+        // Notify listeners
+        OnClaudeSessionRegistered?.Invoke(session, newClaudeSessionId);
+        _log?.Invoke($"RelinkClaudeSession: Linked {directorSessionId} to Claude session {newClaudeSessionId}.");
     }
 
     /// <summary>Look up a Director session by its Claude session_id.</summary>
@@ -279,6 +320,7 @@ public sealed class SessionManager : IDisposable
         var persisted = _sessions.Values
             .Where(s => s.Status == SessionStatus.Running ||
                        !string.IsNullOrEmpty(s.ClaudeSessionId))
+            .OrderBy(s => s.SortOrder)
             .Select(s => new PersistedSession
             {
                 Id = s.Id,
@@ -293,6 +335,8 @@ public sealed class SessionManager : IDisposable
                 ClaudeSessionId = s.ClaudeSessionId,
                 ActivityState = s.ActivityState,
                 CreatedAt = s.CreatedAt,
+                SortOrder = s.SortOrder,
+                ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
             })
             .ToList();
 
@@ -320,6 +364,7 @@ public sealed class SessionManager : IDisposable
         var persisted = _sessions.Values
             .Where(s => s.Status == SessionStatus.Running ||
                        !string.IsNullOrEmpty(s.ClaudeSessionId))
+            .OrderBy(s => s.SortOrder)
             .Select(s => new PersistedSession
             {
                 Id = s.Id,
@@ -334,6 +379,8 @@ public sealed class SessionManager : IDisposable
                 ClaudeSessionId = s.ClaudeSessionId,
                 ActivityState = s.ActivityState,
                 CreatedAt = s.CreatedAt,
+                SortOrder = s.SortOrder,
+                ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
             })
             .ToList();
 
@@ -350,10 +397,31 @@ public sealed class SessionManager : IDisposable
             embeddedBackend, ps.ClaudeSessionId, ps.ActivityState, ps.CreatedAt,
             ps.CustomName, ps.CustomColor, ps.PendingPromptText);
 
+        // Set expected first prompt BEFORE verification so it can be compared
+        session.ExpectedFirstPrompt = ps.ExpectedFirstPrompt;
+
         _sessions[session.Id] = session;
 
         if (ps.ClaudeSessionId != null)
-            _claudeSessionMap[ps.ClaudeSessionId] = session.Id;
+        {
+            // Check for duplicate ClaudeSessionId - if another session already has this ID,
+            // clear it from this session to force auto-registration of a new ID
+            if (_claudeSessionMap.TryGetValue(ps.ClaudeSessionId, out var existingId))
+            {
+                _log?.Invoke($"WARNING: ClaudeSessionId {ps.ClaudeSessionId[..8]}... already used by session {existingId}, clearing from {session.Id}");
+                session.ClaudeSessionId = null;
+            }
+            else
+            {
+                _claudeSessionMap[ps.ClaudeSessionId] = session.Id;
+                // Verify session file exists AND content matches expected prompt
+                session.VerifyClaudeSession();
+                if (session.VerificationStatus == Claude.SessionVerificationStatus.ContentMismatch)
+                {
+                    _log?.Invoke($"WARNING: Session {session.Id} ClaudeSessionId {ps.ClaudeSessionId[..8]}... content mismatch - session file doesn't match expected prompt");
+                }
+            }
+        }
 
         _log?.Invoke($"Restored session {session.Id} (PID {session.ProcessId}).");
         return session;
@@ -369,35 +437,34 @@ public sealed class SessionManager : IDisposable
         var persisted = store.Load();
         var valid = new List<PersistedSession>();
 
+        // Track seen ClaudeSessionIds to detect duplicates in persisted data
+        var seenClaudeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var ps in persisted)
         {
             // Sessions with ClaudeSessionId can be resumed with --resume flag,
             // even if the original process is gone (ConPty crash recovery)
             if (!string.IsNullOrEmpty(ps.ClaudeSessionId))
             {
-                _log?.Invoke($"Persisted session {ps.Id} has ClaudeSessionId {ps.ClaudeSessionId[..8]}..., valid for resume.");
+                // Check for duplicate ClaudeSessionIds - this indicates corrupt persisted data
+                if (seenClaudeIds.Contains(ps.ClaudeSessionId))
+                {
+                    _log?.Invoke($"WARNING: Persisted session {ps.Id} has duplicate ClaudeSessionId {ps.ClaudeSessionId[..8]}..., clearing to force fresh start.");
+                    ps.ClaudeSessionId = null;
+                }
+                else
+                {
+                    seenClaudeIds.Add(ps.ClaudeSessionId);
+                    _log?.Invoke($"Persisted session {ps.Id} has ClaudeSessionId {ps.ClaudeSessionId[..8]}..., valid for resume.");
+                }
                 valid.Add(ps);
                 continue;
             }
 
-            // Sessions without ClaudeSessionId need the original process still running
-            // (for Embedded mode reattach)
-            try
-            {
-                var proc = Process.GetProcessById(ps.EmbeddedProcessId);
-                if (proc.HasExited)
-                {
-                    _log?.Invoke($"Persisted session {ps.Id} PID {ps.EmbeddedProcessId} has exited, skipping.");
-                    proc.Dispose();
-                    continue;
-                }
-                proc.Dispose();
-                valid.Add(ps);
-            }
-            catch
-            {
-                _log?.Invoke($"Persisted session {ps.Id} PID {ps.EmbeddedProcessId} not found, skipping.");
-            }
+            // Sessions without ClaudeSessionId are still valid - they just won't use --resume
+            // ConPTY will start a fresh Claude process for them
+            _log?.Invoke($"Persisted session {ps.Id} has no ClaudeSessionId, will start fresh Claude process.");
+            valid.Add(ps);
         }
 
         _log?.Invoke($"Found {valid.Count}/{persisted.Count} valid persisted session(s).");
