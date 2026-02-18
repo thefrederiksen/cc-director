@@ -391,30 +391,8 @@ public sealed class Session : IDisposable
         if (isConfirmationRun)
             _terminalVerificationAttempted = true;
 
-        var projectFolder = ClaudeSessionReader.GetProjectFolderPath(RepoPath);
-        if (!Directory.Exists(projectFolder))
-        {
-            FileLog.Write($"[Session.Verify] Project folder not found: {projectFolder}");
-            if (isConfirmationRun)
-                SetTerminalVerificationStatus(TerminalVerificationStatus.Failed);
-            return new TerminalVerificationResult { ErrorMessage = "Project folder not found" };
-        }
-
-        var allFiles = Directory.GetFiles(projectFolder, "*.jsonl")
-            .Select(f => new FileInfo(f))
-            .OrderByDescending(f => f.LastWriteTimeUtc)
-            .ToList();
-
-        FileLog.Write($"[Session.Verify] Found {allFiles.Count} .jsonl files in {projectFolder}");
-
-        if (allFiles.Count == 0)
-        {
-            if (isConfirmationRun)
-                SetTerminalVerificationStatus(TerminalVerificationStatus.Failed);
-            else
-                FileLog.Write($"[Session.Verify] No .jsonl files, NOT confirmation run - staying in current status");
-            return new TerminalVerificationResult { ErrorMessage = "No .jsonl files found" };
-        }
+        var error = LoadJsonlFilesForVerification(isConfirmationRun, out var allFiles);
+        if (error != null) return error;
 
         var timeFiltered = allFiles
             .Where(f => Math.Abs((f.LastWriteTimeUtc - CreatedAt.UtcDateTime).TotalHours) < 1)
@@ -444,6 +422,43 @@ public sealed class Session : IDisposable
             FileLog.Write($"[Session.Verify] No match found yet, NOT confirmation run - staying in status={TerminalVerificationStatus}");
         }
         return new TerminalVerificationResult { ErrorMessage = "No matching .jsonl file found" };
+    }
+
+    /// <summary>
+    /// Load and validate .jsonl files for terminal verification.
+    /// Returns null on success (files populated), or an error result on failure.
+    /// </summary>
+    private TerminalVerificationResult? LoadJsonlFilesForVerification(
+        bool isConfirmationRun, out List<FileInfo> allFiles)
+    {
+        allFiles = new List<FileInfo>();
+
+        var projectFolder = ClaudeSessionReader.GetProjectFolderPath(RepoPath);
+        if (!Directory.Exists(projectFolder))
+        {
+            FileLog.Write($"[Session.Verify] Project folder not found: {projectFolder}");
+            if (isConfirmationRun)
+                SetTerminalVerificationStatus(TerminalVerificationStatus.Failed);
+            return new TerminalVerificationResult { ErrorMessage = "Project folder not found" };
+        }
+
+        allFiles = Directory.GetFiles(projectFolder, "*.jsonl")
+            .Select(f => new FileInfo(f))
+            .OrderByDescending(f => f.LastWriteTimeUtc)
+            .ToList();
+
+        FileLog.Write($"[Session.Verify] Found {allFiles.Count} .jsonl files in {projectFolder}");
+
+        if (allFiles.Count == 0)
+        {
+            if (isConfirmationRun)
+                SetTerminalVerificationStatus(TerminalVerificationStatus.Failed);
+            else
+                FileLog.Write($"[Session.Verify] No .jsonl files, NOT confirmation run - staying in current status");
+            return new TerminalVerificationResult { ErrorMessage = "No .jsonl files found" };
+        }
+
+        return null;
     }
 
     private TerminalVerificationResult? TryMatchAgainstFiles(
