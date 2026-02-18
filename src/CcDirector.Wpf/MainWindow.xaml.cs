@@ -105,6 +105,7 @@ public partial class MainWindow : Window
         // Cancel any pending debounced persist and flush immediately
         _persistDebounceCts?.Cancel();
         _sessionGitTimer.Stop();
+        SyncPromptTextToSessions();
         PersistSessionStateCore();
 
         var app = (App)Application.Current;
@@ -231,8 +232,9 @@ public partial class MainWindow : Window
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
+            FileLog.Write($"[MainWindow] SetBuildInfo FAILED: {ex.Message}");
             BuildInfoText.Text = "Build: unknown";
         }
     }
@@ -284,7 +286,6 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] RestorePersistedSessions: Found {persisted.Count} persisted session(s)");
 
         int restored = 0;
-        int skippedNoClaudeId = 0;
         int skippedRepoNotFound = 0;
         int failedToCreate = 0;
         var failedRepos = new List<string>();
@@ -292,14 +293,6 @@ public partial class MainWindow : Window
         // Restore sessions in their saved order (SortOrder preserves UI order from last run)
         foreach (var p in persisted.OrderBy(s => s.SortOrder))
         {
-            // Skip sessions without ClaudeSessionId - they never fully started
-            if (string.IsNullOrEmpty(p.ClaudeSessionId))
-            {
-                FileLog.Write($"[MainWindow] Skipping session {p.Id}: No ClaudeSessionId");
-                skippedNoClaudeId++;
-                continue;
-            }
-
             // Skip if repo path no longer exists
             if (!System.IO.Directory.Exists(p.RepoPath))
             {
@@ -309,18 +302,27 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            // Validate that the Claude session still exists before trying to resume
-            // Sessions can be lost if Claude's storage is cleaned up or corrupted
-            string? resumeSessionId = p.ClaudeSessionId;
-            if (!ClaudeSessionReader.SessionExists(p.ClaudeSessionId, p.RepoPath))
+            // Determine resume ID: only resume if ClaudeSessionId exists AND session file is still valid
+            string? resumeSessionId = null;
+            if (!string.IsNullOrEmpty(p.ClaudeSessionId))
             {
-                FileLog.Write($"[MainWindow] Session {p.Id}: ClaudeSessionId {p.ClaudeSessionId[..8]}... no longer exists in Claude storage, starting fresh");
-                resumeSessionId = null;
+                if (ClaudeSessionReader.SessionExists(p.ClaudeSessionId, p.RepoPath))
+                {
+                    resumeSessionId = p.ClaudeSessionId;
+                }
+                else
+                {
+                    FileLog.Write($"[MainWindow] Session {p.Id}: ClaudeSessionId {p.ClaudeSessionId[..8]}... no longer exists in Claude storage, starting fresh");
+                }
+            }
+            else
+            {
+                FileLog.Write($"[MainWindow] Session {p.Id}: No ClaudeSessionId, starting fresh");
             }
 
             try
             {
-                // Create new session, with --resume only if the session still exists
+                // Create new session, with --resume only if the Claude session still exists
                 var session = _sessionManager.CreateSession(
                     p.RepoPath,
                     claudeArgs: null,
@@ -348,7 +350,7 @@ public partial class MainWindow : Window
 
                     var resumeInfo = resumeSessionId != null
                         ? $"Resume={resumeSessionId[..8]}..."
-                        : "Fresh start (old session expired)";
+                        : "Fresh start";
                     FileLog.Write($"[MainWindow] Restored session {session.Id} from {p.RepoPath} ({resumeInfo})");
                 }
                 else
@@ -366,7 +368,7 @@ public partial class MainWindow : Window
         }
 
         int totalFailed = skippedRepoNotFound + failedToCreate;
-        FileLog.Write($"[MainWindow] RestorePersistedSessions complete: restored={restored}, skippedNoClaudeId={skippedNoClaudeId}, skippedRepoNotFound={skippedRepoNotFound}, failedToCreate={failedToCreate}");
+        FileLog.Write($"[MainWindow] RestorePersistedSessions complete: restored={restored}, skippedRepoNotFound={skippedRepoNotFound}, failedToCreate={failedToCreate}");
 
         // Show summary to user if any sessions failed to restore
         if (totalFailed > 0)
@@ -708,6 +710,9 @@ public partial class MainWindow : Window
                     if (result.IsMatched)
                     {
                         FileLog.Write($"[MainWindow] Terminal verification CONFIRMED: {result.MatchedSessionId} for {session.Id}");
+                        // Register through SessionManager so hook events can route to this session
+                        if (!string.IsNullOrEmpty(result.MatchedSessionId))
+                            _sessionManager.RegisterClaudeSession(result.MatchedSessionId, session.Id);
                         if (_activeSession?.Id == session.Id)
                         {
                             UpdateSessionHeader();
@@ -717,6 +722,9 @@ public partial class MainWindow : Window
                     else if (result.IsPotential)
                     {
                         FileLog.Write($"[MainWindow] Terminal verification POTENTIAL: {result.MatchedSessionId} for {session.Id} ({lineCount} lines)");
+                        // Register through SessionManager so hook events can route to this session
+                        if (!string.IsNullOrEmpty(result.MatchedSessionId))
+                            _sessionManager.RegisterClaudeSession(result.MatchedSessionId, session.Id);
                         if (_activeSession?.Id == session.Id)
                         {
                             UpdateSessionHeader();
@@ -758,6 +766,11 @@ public partial class MainWindow : Window
         TerminalScrollBar.Visibility = total > 0 ? Visibility.Visible : Visibility.Collapsed;
         _updatingScrollBar = false;
     }
+
+    private static readonly SolidColorBrush VerifiedBadgeBrush = FreezeMainBrush(new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E)));
+    private static readonly SolidColorBrush WarningBadgeBrush = FreezeMainBrush(new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44)));
+
+    private static SolidColorBrush FreezeMainBrush(SolidColorBrush brush) { brush.Freeze(); return brush; }
 
     private static readonly Dictionary<ActivityState, string> ActivityLabels = new()
     {
@@ -845,14 +858,14 @@ public partial class MainWindow : Window
         // Update verification badge
         if (vm.IsVerified)
         {
-            HeaderVerificationBadge.Background = new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E));
+            HeaderVerificationBadge.Background = VerifiedBadgeBrush;
             HeaderVerificationText.Text = "OK";
             HeaderVerificationBadge.Visibility = Visibility.Visible;
             BtnRelink.Visibility = Visibility.Collapsed;
         }
         else if (vm.HasVerificationWarning)
         {
-            HeaderVerificationBadge.Background = new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44));
+            HeaderVerificationBadge.Background = WarningBadgeBrush;
             HeaderVerificationText.Text = "!";
             HeaderVerificationBadge.Visibility = Visibility.Visible;
             BtnRelink.Visibility = Visibility.Visible;
@@ -1155,6 +1168,10 @@ public partial class MainWindow : Window
     {
         Debug.Assert(Dispatcher.CheckAccess(), "PersistSessionState must be called on the UI thread");
 
+        // Sync prompt text on the UI thread NOW, before the background debounce.
+        // This avoids needing Dispatcher.Invoke from a background thread (deadlock risk).
+        SyncPromptTextToSessions();
+
         // Cancel any pending debounce
         _persistDebounceCts?.Cancel();
         _persistDebounceCts = new CancellationTokenSource();
@@ -1189,17 +1206,6 @@ public partial class MainWindow : Window
 
         try
         {
-            // Sync prompt text from VMs to Session objects so it gets persisted.
-            // Must read PromptInput.Text on the UI thread.
-            if (Dispatcher.CheckAccess())
-            {
-                SyncPromptTextToSessions();
-            }
-            else
-            {
-                Dispatcher.Invoke(SyncPromptTextToSessions);
-            }
-
             _sessionManager.SaveCurrentState(app.SessionStateStore);
         }
         catch (Exception ex)
@@ -2034,7 +2040,10 @@ public class SessionViewModel : INotifyPropertyChanged
                     _customColorBrush = Freeze(new SolidColorBrush(color));
                     return _customColorBrush;
                 }
-                catch { /* fall through to default */ }
+                catch (FormatException)
+                {
+                    FileLog.Write($"[SessionViewModel] Invalid custom color: {Session.CustomColor}");
+                }
             }
             return DefaultHeaderBrush;
         }

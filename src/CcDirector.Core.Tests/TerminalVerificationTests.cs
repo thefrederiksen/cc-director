@@ -234,6 +234,77 @@ public class TerminalVerificationTests : IDisposable
         Assert.True(isConfirmationRun);
     }
 
+    [Fact]
+    public void ExtractUserPrompts_SkipsCommandMessages()
+    {
+        // Arrange - system-injected command invocations should be filtered out
+        var jsonlPath = Path.Combine(_testDir, "test_commands.jsonl");
+        var lines = new[]
+        {
+            """{"type":"user","message":"<command-message>review-code</command-message>\n<command-name>/review-code</command-name>"}""",
+            """{"type":"user","message":{"content":"This is the actual user prompt that should be kept and extracted"}}"""
+        };
+        File.WriteAllLines(jsonlPath, lines);
+
+        // Act
+        var prompts = ClaudeSessionReader.ExtractUserPrompts(jsonlPath);
+
+        // Assert - only the real user prompt, not the command message
+        Assert.Single(prompts);
+        Assert.Contains("actual user prompt", prompts[0]);
+    }
+
+    [Fact]
+    public void ExtractUserPrompts_SkipsSkillExpansions()
+    {
+        // Arrange - skill expansions injected by CLI should be filtered out
+        var jsonlPath = Path.Combine(_testDir, "test_skills.jsonl");
+        var lines = new[]
+        {
+            """{"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: D:\\Repos\\project\\.claude\\skills\\review-code\n\n# Code Review Skill\n\nReview changed files."}]}}""",
+            """{"type":"user","message":{"content":"Please review my code changes and find any bugs in the implementation"}}"""
+        };
+        File.WriteAllLines(jsonlPath, lines);
+
+        // Act
+        var prompts = ClaudeSessionReader.ExtractUserPrompts(jsonlPath);
+
+        // Assert - only the real user prompt, not the skill expansion
+        Assert.Single(prompts);
+        Assert.Contains("review my code changes", prompts[0]);
+    }
+
+    [Fact]
+    public void ExtractUserPrompts_MixedContent_OnlyRealPrompts()
+    {
+        // Arrange - realistic session with commands, skills, tool results, and actual prompts
+        var jsonlPath = Path.Combine(_testDir, "test_mixed.jsonl");
+        var lines = new[]
+        {
+            // Command invocation (should be filtered)
+            """{"type":"user","message":"<command-message>commit</command-message>\n<command-name>/commit</command-name>"}""",
+            // Skill expansion (should be filtered)
+            """{"type":"user","message":{"content":[{"type":"text","text":"Base directory for this skill: D:\\project\\.claude\\skills\\commit\n\n# Commit Skill\n\nCreate a git commit."}]}}""",
+            // Tool result (should be filtered - no text type)
+            """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_123","content":"file contents here"}]}}""",
+            // Short prompt (should be filtered - < 10 chars)
+            """{"type":"user","message":"fix"}""",
+            // Real user prompt (should be kept)
+            """{"type":"user","message":"Look at the latest screenshot and figure out why verification failed"}""",
+            // Another real prompt (should be kept)
+            """{"type":"user","message":{"content":"Can you also add better logging to help debug this issue in the future"}}"""
+        };
+        File.WriteAllLines(jsonlPath, lines);
+
+        // Act
+        var prompts = ClaudeSessionReader.ExtractUserPrompts(jsonlPath);
+
+        // Assert - only the two real user prompts
+        Assert.Equal(2, prompts.Count);
+        Assert.Contains("verification failed", prompts[0]);
+        Assert.Contains("better logging", prompts[1]);
+    }
+
     public void Dispose()
     {
         try
@@ -243,9 +314,9 @@ public class TerminalVerificationTests : IDisposable
                 Directory.Delete(_testDir, recursive: true);
             }
         }
-        catch
+        catch (IOException)
         {
-            // Ignore cleanup errors
+            // Ignore cleanup errors (locked files, etc.)
         }
     }
 }

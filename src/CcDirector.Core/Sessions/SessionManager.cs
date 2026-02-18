@@ -276,70 +276,13 @@ public sealed class SessionManager : IDisposable
     }
 
     /// <summary>
-    /// Find an unmatched session (no ClaudeSessionId set) by matching cwd,
-    /// falling back to the oldest unmatched session.
-    /// </summary>
-    public Session? FindUnmatchedSession(string? cwd)
-    {
-        var unmatched = _sessions.Values
-            .Where(s => s.ClaudeSessionId == null && s.Status == SessionStatus.Running)
-            .OrderBy(s => s.CreatedAt)
-            .ToList();
-
-        if (unmatched.Count == 0) return null;
-
-        if (!string.IsNullOrEmpty(cwd))
-        {
-            var byPath = unmatched.FirstOrDefault(s =>
-                string.Equals(
-                    Path.GetFullPath(s.WorkingDirectory).TrimEnd('\\', '/'),
-                    Path.GetFullPath(cwd).TrimEnd('\\', '/'),
-                    StringComparison.OrdinalIgnoreCase));
-            if (byPath != null) return byPath;
-        }
-
-        return unmatched[0];
-    }
-
-    /// <summary>
     /// Save state of sessions that can be resumed.
     /// Includes: running sessions, and ANY session with ClaudeSessionId (can resume with --resume).
     /// </summary>
     public void SaveCurrentState(SessionStateStore store)
     {
-        // Log all sessions for debugging
-        _log?.Invoke($"[SaveCurrentState] Total sessions in manager: {_sessions.Count}");
-        foreach (var s in _sessions.Values)
-        {
-            _log?.Invoke($"  Session {s.Id}: Status={s.Status}, ClaudeSessionId={s.ClaudeSessionId ?? "(null)"}, Repo={s.RepoPath}");
-        }
-
-        // Include:
-        // - Running sessions (always save active sessions)
-        // - ANY session with ClaudeSessionId (can be resumed with --resume, regardless of status)
-        var persisted = _sessions.Values
-            .Where(s => s.Status == SessionStatus.Running ||
-                       !string.IsNullOrEmpty(s.ClaudeSessionId))
-            .OrderBy(s => s.SortOrder)
-            .Select(s => new PersistedSession
-            {
-                Id = s.Id,
-                RepoPath = s.RepoPath,
-                WorkingDirectory = s.WorkingDirectory,
-                ClaudeArgs = s.ClaudeArgs,
-                CustomName = s.CustomName,
-                CustomColor = s.CustomColor,
-                PendingPromptText = s.PendingPromptText,
-                EmbeddedProcessId = s.ProcessId,
-                ConsoleHwnd = 0,
-                ClaudeSessionId = s.ClaudeSessionId,
-                ActivityState = s.ActivityState,
-                CreatedAt = s.CreatedAt,
-                SortOrder = s.SortOrder,
-                ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
-            })
-            .ToList();
-
+        LogSessionsForDebug("SaveCurrentState");
+        var persisted = BuildPersistedSessions();
         store.Save(persisted);
         _log?.Invoke($"[SaveCurrentState] Saved {persisted.Count} session(s) to state store.");
     }
@@ -351,17 +294,22 @@ public sealed class SessionManager : IDisposable
     /// </summary>
     public void SaveSessionState(SessionStateStore store, Func<Guid, long> getHwnd)
     {
-        // Log all sessions for debugging
-        _log?.Invoke($"[SaveSessionState] Total sessions in manager: {_sessions.Count}");
-        foreach (var s in _sessions.Values)
-        {
-            _log?.Invoke($"  Session {s.Id}: Backend={s.BackendType}, Status={s.Status}, ClaudeSessionId={s.ClaudeSessionId ?? "(null)"}");
-        }
+        LogSessionsForDebug("SaveSessionState");
+        var persisted = BuildPersistedSessions(getHwnd);
+        store.Save(persisted);
+        _log?.Invoke($"[SaveSessionState] Saved {persisted.Count} session(s) to state store.");
+    }
 
-        // Include ALL sessions that can be resumed:
-        // - Running sessions (regardless of backend type)
-        // - Any session with ClaudeSessionId (can resume with --resume flag)
-        var persisted = _sessions.Values
+    private void LogSessionsForDebug(string caller)
+    {
+        _log?.Invoke($"[{caller}] Total sessions in manager: {_sessions.Count}");
+        foreach (var s in _sessions.Values)
+            _log?.Invoke($"  Session {s.Id}: Status={s.Status}, ClaudeSessionId={s.ClaudeSessionId ?? "(null)"}, Repo={s.RepoPath}");
+    }
+
+    private List<PersistedSession> BuildPersistedSessions(Func<Guid, long>? getHwnd = null)
+    {
+        return _sessions.Values
             .Where(s => s.Status == SessionStatus.Running ||
                        !string.IsNullOrEmpty(s.ClaudeSessionId))
             .OrderBy(s => s.SortOrder)
@@ -375,7 +323,7 @@ public sealed class SessionManager : IDisposable
                 CustomColor = s.CustomColor,
                 PendingPromptText = s.PendingPromptText,
                 EmbeddedProcessId = s.ProcessId,
-                ConsoleHwnd = s.BackendType == SessionBackendType.Embedded ? getHwnd(s.Id) : 0,
+                ConsoleHwnd = getHwnd != null && s.BackendType == SessionBackendType.Embedded ? getHwnd(s.Id) : 0,
                 ClaudeSessionId = s.ClaudeSessionId,
                 ActivityState = s.ActivityState,
                 CreatedAt = s.CreatedAt,
@@ -383,9 +331,6 @@ public sealed class SessionManager : IDisposable
                 ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
             })
             .ToList();
-
-        store.Save(persisted);
-        _log?.Invoke($"[SaveSessionState] Saved {persisted.Count} session(s) to state store.");
     }
 
     /// <summary>Restore a single persisted embedded session into tracking.

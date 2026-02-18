@@ -1,11 +1,13 @@
 ---
 name: review-code
-description: Review recent code changes for security issues and bugs against CodingStyle.md. Triggers on "/review-code" or when called by commit skill.
+description: Review recent code changes for security issues, PII leaks, and bugs against CodingStyle.md. Triggers on "/review-code" or when called by commit skill.
 ---
 
 # Code Review Skill
 
-Review changed files against docs/CodingStyle.md.
+Review changed files against docs/CodingStyle.md and check for PII/personal information leaks.
+
+This is a **public repository**. Every commit is visible to the world. The PII check is mandatory.
 
 ## Triggers
 
@@ -17,8 +19,10 @@ STEP 1: Get files to review
 
 Use Bash tool to run: git diff --cached --name-only
 Then run: git diff --name-only
+Also run: git status to find untracked files.
 
-Collect all .cs, .xaml, and .xaml.cs files from the output.
+Collect ALL files from the output, not just .cs files. PII can appear in ANY file type:
+.cs, .xaml, .xaml.cs, .json, .md, .txt, .ps1, .bat, .sh, .config, .yaml, .yml, .xml, .csproj, etc.
 
 STEP 2: Read the standards (MANDATORY)
 
@@ -26,9 +30,49 @@ Use the Read tool to read: docs/CodingStyle.md
 
 Do NOT skip this. Do NOT rely on memory. Actually READ this file.
 
-STEP 3: Review each changed file
+STEP 3: PII and Personal Information Scan (MANDATORY)
 
-For each file from Step 1:
+This is a PUBLIC REPOSITORY. Any personal information committed here is exposed to the entire internet.
+
+For EVERY changed or untracked file, scan for ALL of the following:
+
+BLOCKING PII (must NEVER be committed):
+- Real names of people (developers, employees, users, customers)
+- Email addresses (personal or corporate)
+- Usernames, account names, Windows user profile names (e.g., "jsmith", "jdoe")
+- File paths containing usernames (e.g., C:\Users\jsmith\..., /home/jdoe/...)
+- Company names, organization names, internal project codenames
+- IP addresses (internal or external, not localhost/127.0.0.1/::1)
+- Phone numbers
+- Physical addresses, office locations
+- API keys, tokens, secrets, passwords (even if expired or fake-looking)
+- Internal URLs (intranet, VPN, internal tools, Jira, Confluence)
+- Employee IDs, badge numbers
+- Machine names, server hostnames (not generic like "localhost")
+- Database connection strings with server names
+- Git remote URLs containing usernames or internal domains
+- Screenshots or images that may contain PII (flag for manual review)
+- Session IDs, auth tokens, or cookies from real sessions
+- License keys or registration codes
+
+IMPORTANT PATH PATTERNS to flag:
+- C:\Users\[anyname]\... -> BLOCKING (exposes Windows username)
+- /home/[anyname]/... -> BLOCKING (exposes Linux username)
+- /Users/[anyname]/... -> BLOCKING (exposes macOS username)
+- \\[servername]\... -> BLOCKING (exposes internal server name)
+
+EXCEPTIONS (NOT PII - do not flag these):
+- Generic placeholder paths in code comments explaining patterns (e.g., "E.g., C:\Users\username\...")
+- Paths using environment variables (e.g., %USERPROFILE%, $HOME, ~/)
+- Paths using AppContext.BaseDirectory, Path.GetTempPath(), Environment.GetFolderPath()
+- "localhost", "127.0.0.1", "::1", "0.0.0.0"
+- Example/placeholder values clearly marked as such (e.g., "user@example.com")
+- Open-source project names and maintainer names from public packages
+- Anthropic/Claude branding (this is a Claude Code tool - that's expected)
+
+STEP 4: Code style review
+
+For each .cs, .xaml, and .xaml.cs file from Step 1:
 - Use the Read tool to read the full file
 - Compare against the rules from docs/CodingStyle.md
 - Record issues with FULL PATH and line number
@@ -38,15 +82,22 @@ Issue severities:
 - WARNING: Should fix. Review still PASSES.
 - SUGGESTION: Nice to have. Review still PASSES.
 
-STEP 4: Present findings
+STEP 5: Present findings
 
 Use this exact format (plain text, no markdown tables):
 
 Code Review Report
 
 Files Reviewed: [count]
-Standards Applied: CodingStyle.md
+Standards Applied: CodingStyle.md, PII Scan
 Result: PASS or FAIL
+
+PII/PERSONAL INFORMATION Issues (BLOCKING - must fix before commit):
+
+[full path]:[line]
+PII Type: [what kind of PII was found]
+Content: [the offending text, redacted if necessary]
+Fix: [how to fix it - use environment variables, generics, or remove]
 
 BLOCKING Issues (must fix before commit):
 
@@ -64,10 +115,13 @@ SUGGESTIONS:
 [full path]:[line]
 Issue: [what could be improved]
 
-CRITICAL: Use FULL file paths like D:\ReposFred\cc_director\src\CcDirector.Core\Session.cs:45
+CRITICAL: Use FULL file paths like D:\Repos\cc_director\src\CcDirector.Core\Session.cs:45
 Never use just the filename.
 
-STEP 5: Return structured status
+If NO PII is found, include this line in the report:
+PII Scan: CLEAN - No personal information detected in changed files.
+
+STEP 6: Return structured status
 
 At the very end, include these lines exactly:
 
@@ -75,8 +129,9 @@ REVIEW_STATUS: PASS or FAIL
 BLOCKING_COUNT: [number]
 WARNING_COUNT: [number]
 SUGGESTION_COUNT: [number]
+PII_COUNT: [number]
 
-FAIL if any BLOCKING issues exist. PASS otherwise.
+FAIL if any BLOCKING issues OR any PII issues exist. PASS otherwise.
 
 ## Common Issues from CodingStyle.md
 
@@ -113,9 +168,10 @@ WARNING:
 Focus on changed code, not legacy issues.
 Be specific with line numbers.
 The commit skill depends on the REVIEW_STATUS line.
+PII scan applies to ALL file types, not just code files.
 
 ---
 
-**Skill Version:** 1.0
-**Last Updated:** 2026-02-14
+**Skill Version:** 2.0
+**Last Updated:** 2026-02-18
 **Adapted from:** mindzieWeb review-code skill

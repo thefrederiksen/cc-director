@@ -1,0 +1,247 @@
+using CcDirector.Core.Backends;
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Pipes;
+using CcDirector.Core.Sessions;
+using Xunit;
+
+namespace CcDirector.Core.Tests;
+
+/// <summary>
+/// Edge case and error handling tests for sessions: invalid operations,
+/// concurrent access, disposed sessions, etc.
+/// </summary>
+public class SessionEdgeCaseTests : IDisposable
+{
+    private readonly SessionManager _manager;
+
+    public SessionEdgeCaseTests()
+    {
+        var options = new AgentOptions
+        {
+            ClaudePath = "cmd.exe",
+            DefaultBufferSizeBytes = 65536,
+            GracefulShutdownTimeoutSeconds = 2
+        };
+        _manager = new SessionManager(options);
+    }
+
+    [Fact]
+    public void CreateSession_InvalidPath_ThrowsDirectoryNotFoundException()
+    {
+        Assert.Throws<DirectoryNotFoundException>(
+            () => _manager.CreateSession(@"Z:\nonexistent\path\99999"));
+    }
+
+    [Fact]
+    public void CreateSession_NullPath_ThrowsDirectoryNotFoundException()
+    {
+        // Path.GetTempPath() exists, but a made-up path shouldn't
+        Assert.Throws<DirectoryNotFoundException>(
+            () => _manager.CreateSession(@"X:\this\does\not\exist"));
+    }
+
+    [Fact]
+    public void CreateSession_EmbeddedType_ThrowsInvalidOperation()
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => _manager.CreateSession(Path.GetTempPath(), null, SessionBackendType.Embedded));
+    }
+
+    [Fact]
+    public void CreateSession_InvalidBackendType_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => _manager.CreateSession(Path.GetTempPath(), null, (SessionBackendType)999));
+    }
+
+    [Fact]
+    public async Task SendText_OnExitedSession_NoOp()
+    {
+        var session = _manager.CreateSession(Path.GetTempPath());
+        await _manager.KillSessionAsync(session.Id);
+
+        // Wait for session to fully exit
+        for (int i = 0; i < 20 && session.Status != SessionStatus.Exited; i++)
+            await Task.Delay(100);
+
+        // Should not throw
+        await session.SendTextAsync("should be ignored");
+    }
+
+    [Fact]
+    public async Task SendEnter_OnExitedSession_NoOp()
+    {
+        var session = _manager.CreateSession(Path.GetTempPath());
+        await _manager.KillSessionAsync(session.Id);
+
+        for (int i = 0; i < 20 && session.Status != SessionStatus.Exited; i++)
+            await Task.Delay(100);
+
+        await session.SendEnterAsync();
+    }
+
+    [Fact]
+    public void HandlePipeEvent_FullStateTransitionSequence()
+    {
+        var session = _manager.CreateSession(Path.GetTempPath());
+        var transitions = new List<(ActivityState from, ActivityState to)>();
+
+        session.OnActivityStateChanged += (old, @new) =>
+            transitions.Add((old, @new));
+
+        // Simulate a typical Claude interaction:
+        // 1. SessionStart → Idle
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" });
+        Assert.Equal(ActivityState.Idle, session.ActivityState);
+
+        // 2. UserPromptSubmit → Working
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "UserPromptSubmit" });
+        Assert.Equal(ActivityState.Working, session.ActivityState);
+
+        // 3. PreToolUse → Working (stays)
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "PreToolUse", ToolName = "Bash" });
+        Assert.Equal(ActivityState.Working, session.ActivityState);
+
+        // 4. PostToolUse → Working (stays)
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "PostToolUse", ToolName = "Bash" });
+        Assert.Equal(ActivityState.Working, session.ActivityState);
+
+        // 5. Stop → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" });
+        Assert.Equal(ActivityState.WaitingForInput, session.ActivityState);
+
+        // 6. Late SubagentStop → Blocked (stays WaitingForInput)
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SubagentStop" });
+        Assert.Equal(ActivityState.WaitingForInput, session.ActivityState);
+
+        // 7. UserPromptSubmit → Working (allowed from WaitingForInput)
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "UserPromptSubmit" });
+        Assert.Equal(ActivityState.Working, session.ActivityState);
+
+        // 8. PermissionRequest → WaitingForPerm
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "PermissionRequest" });
+        Assert.Equal(ActivityState.WaitingForPerm, session.ActivityState);
+
+        // 9. Stop → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" });
+        Assert.Equal(ActivityState.WaitingForInput, session.ActivityState);
+
+        // 10. SessionEnd → Exited
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionEnd" });
+        Assert.Equal(ActivityState.Exited, session.ActivityState);
+
+        // Verify event count (same-state transitions don't fire)
+        Assert.True(transitions.Count >= 6);
+    }
+
+    [Fact]
+    public void HandlePipeEvent_PermissionNotification_FromWaitingForInput_Allowed()
+    {
+        var session = _manager.CreateSession(Path.GetTempPath());
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+
+        session.HandlePipeEvent(new PipeMessage
+        {
+            HookEventName = "Notification",
+            NotificationType = "permission_prompt"
+        });
+
+        Assert.Equal(ActivityState.WaitingForPerm, session.ActivityState);
+    }
+
+    [Fact]
+    public void HandlePipeEvent_NonPermissionNotification_FromWaitingForInput_Blocked()
+    {
+        var session = _manager.CreateSession(Path.GetTempPath());
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+
+        session.HandlePipeEvent(new PipeMessage
+        {
+            HookEventName = "Notification",
+            NotificationType = "idle_prompt"
+        });
+
+        // Should stay WaitingForInput (non-permission notifications are blocked)
+        Assert.Equal(ActivityState.WaitingForInput, session.ActivityState);
+    }
+
+    [Fact]
+    public void Session_CreatedAt_IsSet()
+    {
+        var before = DateTimeOffset.UtcNow;
+        var session = _manager.CreateSession(Path.GetTempPath());
+        var after = DateTimeOffset.UtcNow;
+
+        Assert.True(session.CreatedAt >= before);
+        Assert.True(session.CreatedAt <= after);
+    }
+
+    [Fact]
+    public void Session_Buffer_IsNotNull_ForConPty()
+    {
+        var session = _manager.CreateSession(Path.GetTempPath());
+        Assert.NotNull(session.Buffer);
+    }
+
+    [Fact]
+    public void Session_RepoPath_MatchesInput()
+    {
+        var tempDir = Path.GetTempPath();
+        var session = _manager.CreateSession(tempDir);
+        Assert.Equal(tempDir, session.RepoPath);
+        Assert.Equal(tempDir, session.WorkingDirectory);
+    }
+
+    [Fact]
+    public async Task ConcurrentSessionCreation_AllSucceed()
+    {
+        var tasks = Enumerable.Range(0, 5).Select(_ =>
+            Task.Run(() => _manager.CreateSession(Path.GetTempPath()))
+        ).ToArray();
+
+        var sessions = await Task.WhenAll(tasks);
+
+        Assert.Equal(5, sessions.Length);
+        Assert.Equal(5, _manager.ListSessions().Count);
+
+        // All should have unique IDs
+        var ids = sessions.Select(s => s.Id).ToHashSet();
+        Assert.Equal(5, ids.Count);
+    }
+
+    [Fact]
+    public void RegisterClaudeSession_ThenRemove_CleansMappingAndClaudeId()
+    {
+        var session = _manager.CreateSession(Path.GetTempPath());
+        _manager.RegisterClaudeSession("claude-123", session.Id);
+
+        Assert.Equal("claude-123", session.ClaudeSessionId);
+        Assert.NotNull(_manager.GetSessionByClaudeId("claude-123"));
+
+        _manager.RemoveSession(session.Id);
+
+        // After removal, the mapping should be cleaned up
+        Assert.Null(_manager.GetSessionByClaudeId("claude-123"));
+    }
+
+    [Fact]
+    public void CreatePipeModeSession_InvalidPath_Throws()
+    {
+        Assert.Throws<DirectoryNotFoundException>(
+            () => _manager.CreatePipeModeSession(@"Z:\nonexistent\path"));
+    }
+
+    [Fact]
+    public void CreateEmbeddedSession_InvalidPath_Throws()
+    {
+        // Path validation happens before the backend is used, so a stub that throws on use is fine
+        var stubBackend = new StubSessionBackend();
+        Assert.Throws<DirectoryNotFoundException>(
+            () => _manager.CreateEmbeddedSession(@"Z:\nonexistent\path", null, stubBackend));
+    }
+
+    public void Dispose()
+    {
+        _manager.Dispose();
+    }
+}

@@ -24,24 +24,26 @@ public class EventRouterTests : IDisposable
     }
 
     [Fact]
-    public void Route_AutoRegisters_ByMatchingCwd()
+    public void Route_UnknownClaudeSession_DoesNotAutoRegister()
     {
         var tempPath = Path.GetTempPath();
         var session = _manager.CreateSession(tempPath);
 
         Assert.Null(session.ClaudeSessionId);
 
+        // Unknown Claude session IDs should NOT be auto-registered;
+        // session ID discovery is handled by terminal content matching only.
         var msg = new PipeMessage
         {
-            HookEventName = "Stop",
+            HookEventName = "SessionStart",
             SessionId = "claude-abc-123",
             Cwd = tempPath
         };
 
         _router.Route(msg);
 
-        Assert.Equal("claude-abc-123", session.ClaudeSessionId);
-        Assert.Equal(ActivityState.WaitingForInput, session.ActivityState);
+        Assert.Null(session.ClaudeSessionId);
+        Assert.Contains(_logs, l => l.Contains("No linked session"));
     }
 
     [Fact]
@@ -75,7 +77,7 @@ public class EventRouterTests : IDisposable
         _router.Route(msg);
 
         // Should log and skip without throwing
-        Assert.Contains(_logs, l => l.Contains("No unmatched session"));
+        Assert.Contains(_logs, l => l.Contains("No linked session"));
     }
 
     [Fact]
@@ -87,7 +89,7 @@ public class EventRouterTests : IDisposable
         var msg = new PipeMessage
         {
             HookEventName = "Stop",
-            SessionId = "any-id"
+            SessionId = "any-session-id"
         };
 
         _router.Route(msg);

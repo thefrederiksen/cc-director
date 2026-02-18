@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Claude;
 
@@ -42,7 +43,7 @@ public static class ClaudeSessionReader
 
     /// <summary>
     /// Convert a repo path to the Claude project folder name.
-    /// E.g., "D:\ReposFred\cc_director" -> "D--ReposFred-cc-director"
+    /// E.g., "D:\Repos\my_project" -> "D--Repos-my-project"
     /// </summary>
     public static string GetProjectFolder(string repoPath)
     {
@@ -105,7 +106,7 @@ public static class ClaudeSessionReader
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[ClaudeSessionReader] Error reading sessions-index.json: {ex.Message}");
+            FileLog.Write($"[ClaudeSessionReader] Error reading sessions-index.json: {ex.Message}");
             return null;
         }
     }
@@ -149,7 +150,7 @@ public static class ClaudeSessionReader
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[ClaudeSessionReader] Error reading sessions-index.json: {ex.Message}");
+            FileLog.Write($"[ClaudeSessionReader] Error reading sessions-index.json: {ex.Message}");
         }
 
         return result;
@@ -256,10 +257,22 @@ public static class ClaudeSessionReader
                             }
                         }
 
-                        // Only include prompts with meaningful content (> 10 chars)
+                        // Only include actual user-typed prompts
                         if (!string.IsNullOrEmpty(content))
                         {
                             content = content.Trim();
+
+                            // Skip system-injected content that never appears in the terminal:
+                            // - Command invocations: <command-message>..., <command-name>...
+                            // - Skill expansions injected by the CLI
+                            if (content.StartsWith("<command-message>", StringComparison.Ordinal) ||
+                                content.StartsWith("<command-name>", StringComparison.Ordinal) ||
+                                content.StartsWith("Base directory for this skill:", StringComparison.Ordinal))
+                            {
+                                continue;
+                            }
+
+                            // Skip very short prompts (unreliable for matching)
                             if (content.Length > 10)
                             {
                                 prompts.Add(content);
@@ -275,7 +288,7 @@ public static class ClaudeSessionReader
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[ClaudeSessionReader] ExtractUserPrompts error: {ex.Message}");
+            FileLog.Write($"[ClaudeSessionReader] ExtractUserPrompts error: {ex.Message}");
         }
 
         return prompts;
@@ -438,8 +451,14 @@ public static class ClaudeSessionReader
 
             return null;
         }
-        catch
+        catch (IOException ex)
         {
+            FileLog.Write($"[ClaudeSessionReader] ReadFirstPromptFromJsonl IO error: {ex.Message}");
+            return null;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            FileLog.Write($"[ClaudeSessionReader] ReadFirstPromptFromJsonl access denied: {ex.Message}");
             return null;
         }
     }
@@ -519,13 +538,13 @@ public static class ClaudeSessionReader
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[ClaudeSessionReader] Error reading {indexPath}: {ex.Message}");
+                    FileLog.Write($"[ClaudeSessionReader] Error reading {indexPath}: {ex.Message}");
                 }
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[ClaudeSessionReader] Error scanning projects: {ex.Message}");
+            FileLog.Write($"[ClaudeSessionReader] Error scanning projects: {ex.Message}");
         }
 
         // Sort by Modified date, most recent first
@@ -534,7 +553,7 @@ public static class ClaudeSessionReader
 
     /// <summary>
     /// Derive the original repo path from the sanitized folder name.
-    /// E.g., "D--ReposFred-cc-director" -> "D:\ReposFred\cc-director"
+    /// E.g., "D--Repos-my-project" -> "D:\Repos\my-project"
     /// This is a best-effort reverse of GetProjectFolder.
     /// </summary>
     private static string DerivePathFromFolder(string folderName)
