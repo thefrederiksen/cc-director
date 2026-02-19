@@ -1,0 +1,1 @@
+Always end your response with the word DONE on its own line.

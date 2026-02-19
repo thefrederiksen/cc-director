@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "The answer to the question"
+    },
+    "confidence": {
+      "type": "number",
+      "description": "Confidence level from 0 to 1"
+    }
+  },
+  "required": ["answer"]
+}
