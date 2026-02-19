@@ -27,6 +27,9 @@ public class PersistedSession
 
     /// <summary>The first prompt text from the Claude session, used to verify session identity on restore.</summary>
     public string? ExpectedFirstPrompt { get; set; }
+
+    /// <summary>Links this session to a SessionHistoryEntry for persistent workspace tracking.</summary>
+    public Guid? HistoryEntryId { get; set; }
 }
 
 /// <summary>Result of loading persisted sessions from disk.</summary>

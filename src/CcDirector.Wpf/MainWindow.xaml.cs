@@ -108,6 +108,9 @@ public partial class MainWindow : Window
         SyncPromptTextToSessions();
         PersistSessionStateCore();
 
+        // Update LastUsedAt for all active sessions in history
+        UpdateAllSessionHistoryTimestamps();
+
         var app = (App)Application.Current;
 
         // Unsubscribe event handlers to prevent memory leaks
@@ -331,9 +334,10 @@ public partial class MainWindow : Window
 
                 if (session != null)
                 {
-                    // Restore custom name and color
+                    // Restore custom name, color, and history link
                     session.CustomName = p.CustomName;
                     session.CustomColor = p.CustomColor;
+                    session.HistoryEntryId = p.HistoryEntryId;
 
                     // Mark as pre-verified since this is a restored session with ClaudeSessionId
                     // This skips terminal verification (it was already verified in previous run)
@@ -432,7 +436,7 @@ public partial class MainWindow : Window
         var app = (App)Application.Current;
         var registry = app.RepositoryRegistry;
 
-        var dialog = new NewSessionDialog(registry);
+        var dialog = new NewSessionDialog(registry, app.SessionHistoryStore);
         dialog.Owner = this;
         if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
@@ -442,10 +446,31 @@ public partial class MainWindow : Window
             var vm = CreateSession(dialog.SelectedPath, resumeSessionId);
             if (vm == null) return;
 
-            // Show rename dialog for new sessions (not resume)
-            if (string.IsNullOrEmpty(resumeSessionId))
+            if (!string.IsNullOrEmpty(resumeSessionId))
             {
+                // Resume: copy name/color from history entry, update LastUsedAt
+                var historyEntry = app.SessionHistoryStore.FindByClaudeSessionId(resumeSessionId);
+                if (historyEntry != null)
+                {
+                    vm.Session.CustomName = historyEntry.CustomName;
+                    vm.Session.CustomColor = historyEntry.CustomColor;
+                    vm.Session.HistoryEntryId = historyEntry.Id;
+                    vm.NotifyDisplayChanged();
+                    historyEntry.LastUsedAt = DateTimeOffset.UtcNow;
+                    app.SessionHistoryStore.Save(historyEntry);
+                }
+                else
+                {
+                    // No history entry for this Claude session - show rename dialog
+                    ShowRenameDialog(vm);
+                    SaveSessionToHistory(vm);
+                }
+            }
+            else
+            {
+                // New session: show rename dialog, then create history entry
                 ShowRenameDialog(vm);
+                SaveSessionToHistory(vm);
             }
 
             PersistSessionState();
@@ -1297,6 +1322,21 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             PersistSessionState();
+
+            // Update session history with the new ClaudeSessionId link
+            if (session.HistoryEntryId != null)
+            {
+                var app = (App)Application.Current;
+                var entry = app.SessionHistoryStore.Load(session.HistoryEntryId.Value);
+                if (entry != null)
+                {
+                    entry.ClaudeSessionId = claudeSessionId;
+                    entry.LastUsedAt = DateTimeOffset.UtcNow;
+                    entry.FirstPromptSnippet = session.ClaudeMetadata?.FirstPrompt ?? entry.FirstPromptSnippet;
+                    app.SessionHistoryStore.Save(entry);
+                }
+            }
+
             // Update header if this is the active session
             if (_activeSession?.Id == session.Id)
             {
@@ -1319,6 +1359,11 @@ public partial class MainWindow : Window
             // Update UI immediately
             UpdateSessionHeader();
             PersistSessionState();
+
+            // Update session history with the relinked ClaudeSessionId
+            var activeVm = _sessions.FirstOrDefault(s => s.Session.Id == _activeSession.Id);
+            if (activeVm != null)
+                UpdateSessionHistory(activeVm);
         }
     }
 
@@ -1758,6 +1803,7 @@ public partial class MainWindow : Window
         if (vm == null) return;
 
         ShowRenameDialog(vm);
+        SaveSessionToHistory(vm);
         PersistSessionState();
 
         // Switch to Terminal tab to show the new session
@@ -1801,6 +1847,75 @@ public partial class MainWindow : Window
         {
             vm.Rename(dialog.SessionName, dialog.SelectedColor);
             PersistSessionState();
+            UpdateSessionHistory(vm);
+        }
+    }
+
+    /// <summary>
+    /// Create a new history entry for a session that was just created and renamed.
+    /// </summary>
+    private void SaveSessionToHistory(SessionViewModel vm)
+    {
+        var app = (App)Application.Current;
+        var entry = new SessionHistoryEntry
+        {
+            Id = vm.Session.HistoryEntryId ?? Guid.NewGuid(),
+            CustomName = vm.Session.CustomName,
+            CustomColor = vm.Session.CustomColor,
+            RepoPath = vm.Session.RepoPath,
+            ClaudeSessionId = vm.Session.ClaudeSessionId,
+            CreatedAt = vm.Session.CreatedAt,
+            LastUsedAt = DateTimeOffset.UtcNow,
+        };
+        vm.Session.HistoryEntryId = entry.Id;
+        app.SessionHistoryStore.Save(entry);
+    }
+
+    /// <summary>
+    /// Update an existing history entry with the session's current name, color, and ClaudeSessionId.
+    /// </summary>
+    private void UpdateSessionHistory(SessionViewModel vm)
+    {
+        if (vm.Session.HistoryEntryId == null)
+        {
+            SaveSessionToHistory(vm);
+            return;
+        }
+
+        var app = (App)Application.Current;
+        var entry = app.SessionHistoryStore.Load(vm.Session.HistoryEntryId.Value);
+        if (entry == null)
+        {
+            SaveSessionToHistory(vm);
+            return;
+        }
+
+        entry.CustomName = vm.Session.CustomName;
+        entry.CustomColor = vm.Session.CustomColor;
+        entry.ClaudeSessionId = vm.Session.ClaudeSessionId;
+        entry.LastUsedAt = DateTimeOffset.UtcNow;
+        entry.FirstPromptSnippet = vm.Session.ClaudeMetadata?.FirstPrompt ?? entry.FirstPromptSnippet;
+        app.SessionHistoryStore.Save(entry);
+    }
+
+    /// <summary>
+    /// Update LastUsedAt for all active sessions in history. Called on app close.
+    /// </summary>
+    private void UpdateAllSessionHistoryTimestamps()
+    {
+        var app = (App)Application.Current;
+        foreach (var vm in _sessions)
+        {
+            if (vm.Session.HistoryEntryId == null)
+                continue;
+
+            var entry = app.SessionHistoryStore.Load(vm.Session.HistoryEntryId.Value);
+            if (entry == null)
+                continue;
+
+            entry.LastUsedAt = DateTimeOffset.UtcNow;
+            entry.ClaudeSessionId = vm.Session.ClaudeSessionId ?? entry.ClaudeSessionId;
+            app.SessionHistoryStore.Save(entry);
         }
     }
 
@@ -2056,6 +2171,15 @@ public class SessionViewModel : INotifyPropertyChanged
 
         // Update color
         CustomColor = color;
+    }
+
+    /// <summary>Notify the UI that display properties have changed (e.g., after copying from history entry).</summary>
+    public void NotifyDisplayChanged()
+    {
+        _customColorBrush = null;
+        OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(CustomColor));
+        OnPropertyChanged(nameof(CustomColorBrush));
     }
 
     /// <summary>Prompt text the user was composing but hasn't sent yet. Saved/restored on session switch.</summary>

@@ -22,6 +22,7 @@ public partial class App : Application
     public EventRouter EventRouter { get; private set; } = null!; // Initialized in OnStartup
     public SessionStateStore SessionStateStore { get; private set; } = null!; // Initialized in OnStartup
     public RecentSessionStore RecentSessionStore { get; private set; } = null!; // Initialized in OnStartup
+    public SessionHistoryStore SessionHistoryStore { get; private set; } = null!; // Initialized in OnStartup
     public NulFileWatcher NulFileWatcher { get; private set; } = null!; // Initialized in OnStartup
 
     /// <summary>
@@ -77,6 +78,9 @@ public partial class App : Application
 
         RecentSessionStore = new RecentSessionStore();
         RecentSessionStore.Load();
+
+        SessionHistoryStore = new SessionHistoryStore();
+        MigrateRecentSessionsToHistory();
 
         FileLog.Start();
         Action<string> log = msg => FileLog.Write($"[CcDirector] {msg}");
@@ -224,6 +228,37 @@ public partial class App : Application
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"Failed to write default config: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// One-time migration: import RecentSessionStore entries into SessionHistoryStore.
+    /// Only runs if the sessions/ folder is empty and recent-sessions.json has entries.
+    /// </summary>
+    private void MigrateRecentSessionsToHistory()
+    {
+        var existing = SessionHistoryStore.LoadAll();
+        if (existing.Count > 0)
+            return;
+
+        var recent = RecentSessionStore.GetRecent();
+        if (recent.Count == 0)
+            return;
+
+        FileLog.Write($"[App] MigrateRecentSessionsToHistory: migrating {recent.Count} entries");
+
+        foreach (var r in recent)
+        {
+            SessionHistoryStore.Save(new SessionHistoryEntry
+            {
+                Id = Guid.NewGuid(),
+                CustomName = r.CustomName,
+                CustomColor = r.CustomColor,
+                RepoPath = r.RepoPath,
+                ClaudeSessionId = r.ClaudeSessionId,
+                CreatedAt = r.LastUsed,
+                LastUsedAt = r.LastUsed,
+            });
         }
     }
 }

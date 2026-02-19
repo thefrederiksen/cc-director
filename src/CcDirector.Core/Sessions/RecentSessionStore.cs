@@ -58,7 +58,7 @@ public class RecentSessionStore
         }
     }
 
-    public void Add(string repoPath, string? customName, string? customColor = null)
+    public void Add(string repoPath, string? customName, string? customColor = null, string? claudeSessionId = null)
     {
         if (string.IsNullOrWhiteSpace(customName))
             return;
@@ -75,6 +75,7 @@ public class RecentSessionStore
             RepoPath = normalized,
             CustomName = customName,
             CustomColor = customColor,
+            ClaudeSessionId = claudeSessionId,
             LastUsed = DateTime.UtcNow
         });
 

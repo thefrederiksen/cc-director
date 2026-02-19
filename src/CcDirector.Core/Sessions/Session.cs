@@ -98,6 +98,9 @@ public sealed class Session : IDisposable
     /// <summary>User-chosen header color (hex string like "#2563EB"). Null means default dark header.</summary>
     public string? CustomColor { get; set; }
 
+    /// <summary>Links this session to a SessionHistoryEntry for persistent workspace tracking.</summary>
+    public Guid? HistoryEntryId { get; set; }
+
     /// <summary>Terminal-based verification status (matching terminal to .jsonl).</summary>
     public TerminalVerificationStatus TerminalVerificationStatus { get; private set; } = TerminalVerificationStatus.Waiting;
 

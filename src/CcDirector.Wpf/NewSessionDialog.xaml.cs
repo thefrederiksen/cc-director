@@ -13,6 +13,7 @@ namespace CcDirector.Wpf;
 /// <summary>
 /// View model for displaying Claude sessions in the Resume Session tab.
 /// Wraps ClaudeSessionMetadata with display-friendly properties.
+/// Still used by RelinkSessionDialog for browsing raw Claude sessions.
 /// </summary>
 public class ClaudeSessionViewModel
 {
@@ -116,7 +117,7 @@ public class ClaudeSessionViewModel
         }
     }
 
-    private static string TruncateWithEllipsis(string text, int maxLength)
+    internal static string TruncateWithEllipsis(string text, int maxLength)
     {
         if (string.IsNullOrEmpty(text))
             return string.Empty;
@@ -135,10 +136,134 @@ public class ClaudeSessionViewModel
     }
 }
 
+/// <summary>
+/// View model for displaying session history entries in the Resume Session tab.
+/// Wraps a SessionHistoryEntry with optional Claude metadata enrichment.
+/// </summary>
+public class SessionHistoryViewModel
+{
+    private readonly SessionHistoryEntry _entry;
+    private readonly ClaudeSessionMetadata? _claudeMetadata;
+
+    public SessionHistoryViewModel(SessionHistoryEntry entry, ClaudeSessionMetadata? claudeMetadata)
+    {
+        _entry = entry;
+        _claudeMetadata = claudeMetadata;
+    }
+
+    /// <summary>The Claude session ID for resuming (null if not yet linked).</summary>
+    public string? ClaudeSessionId => _entry.ClaudeSessionId;
+
+    /// <summary>Display name prefers custom name over repo folder name.</summary>
+    public string DisplayName => !string.IsNullOrWhiteSpace(_entry.CustomName)
+        ? _entry.CustomName
+        : ProjectName;
+
+    /// <summary>Extract project name from repo path.</summary>
+    public string ProjectName
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_entry.RepoPath))
+                return "Unknown Project";
+            return Path.GetFileName(_entry.RepoPath.TrimEnd('\\', '/'));
+        }
+    }
+
+    /// <summary>Show repo name in parentheses when custom name is set.</summary>
+    public string ProjectNameSuffix => HasCustomName ? $"({ProjectName})" : string.Empty;
+
+    /// <summary>Whether this session has a custom name.</summary>
+    public bool HasCustomName => !string.IsNullOrWhiteSpace(_entry.CustomName);
+
+    /// <summary>Whether this session has a custom color.</summary>
+    public bool HasCustomColor => !string.IsNullOrWhiteSpace(_entry.CustomColor);
+
+    /// <summary>The custom color brush for the color indicator.</summary>
+    public SolidColorBrush? CustomColorBrush
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_entry.CustomColor)) return null;
+            try
+            {
+                var color = (Color)ColorConverter.ConvertFromString(_entry.CustomColor);
+                return new SolidColorBrush(color);
+            }
+            catch { return null; }
+        }
+    }
+
+    /// <summary>The full project path.</summary>
+    public string ProjectPath => _entry.RepoPath;
+
+    /// <summary>Message count display from Claude metadata, or empty.</summary>
+    public string MessageCountDisplay => _claudeMetadata != null
+        ? $"{_claudeMetadata.MessageCount} msgs"
+        : string.Empty;
+
+    /// <summary>Time ago based on our LastUsedAt (when user last used this in CC Director).</summary>
+    public string TimeAgo
+    {
+        get
+        {
+            if (_entry.LastUsedAt == default)
+                return string.Empty;
+
+            var span = DateTimeOffset.UtcNow - _entry.LastUsedAt;
+
+            if (span.TotalMinutes < 1)
+                return "just now";
+            if (span.TotalMinutes < 60)
+                return $"{(int)span.TotalMinutes}m ago";
+            if (span.TotalHours < 24)
+                return $"{(int)span.TotalHours}h ago";
+            if (span.TotalDays < 30)
+                return $"{(int)span.TotalDays}d ago";
+            if (span.TotalDays < 365)
+                return $"{(int)(span.TotalDays / 30)}mo ago";
+            return $"{(int)(span.TotalDays / 365)}y ago";
+        }
+    }
+
+    /// <summary>Summary from Claude metadata, or cached first prompt snippet.</summary>
+    public string DisplaySummary
+    {
+        get
+        {
+            if (_claudeMetadata != null)
+            {
+                if (!string.IsNullOrWhiteSpace(_claudeMetadata.Summary))
+                    return ClaudeSessionViewModel.TruncateWithEllipsis(_claudeMetadata.Summary, 120);
+
+                if (!string.IsNullOrWhiteSpace(_claudeMetadata.FirstPrompt))
+                    return ClaudeSessionViewModel.TruncateWithEllipsis(_claudeMetadata.FirstPrompt, 120);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_entry.FirstPromptSnippet))
+                return ClaudeSessionViewModel.TruncateWithEllipsis(_entry.FirstPromptSnippet, 120);
+
+            return string.Empty;
+        }
+    }
+}
+
 public partial class NewSessionDialog : Window
 {
+    private static readonly SolidColorBrush ResumeButtonBrush = new(
+        (Color)ColorConverter.ConvertFromString("#22C55E"));
+    private static readonly SolidColorBrush NewSessionButtonBrush = new(
+        (Color)ColorConverter.ConvertFromString("#007ACC"));
+
+    static NewSessionDialog()
+    {
+        ResumeButtonBrush.Freeze();
+        NewSessionButtonBrush.Freeze();
+    }
+
     private readonly RepositoryRegistry? _registry;
-    private List<ClaudeSessionViewModel>? _allSessions;
+    private readonly SessionHistoryStore? _historyStore;
+    private List<SessionHistoryViewModel>? _allSessions;
     private List<RepositoryConfig>? _allRepos;
     private bool _sessionsLoaded;
 
@@ -148,11 +273,12 @@ public partial class NewSessionDialog : Window
     /// <summary>The Claude session ID to resume (null for new session).</summary>
     public string? SelectedResumeSessionId { get; private set; }
 
-    public NewSessionDialog(RepositoryRegistry? registry = null)
+    public NewSessionDialog(RepositoryRegistry? registry = null, SessionHistoryStore? historyStore = null)
     {
         FileLog.Write("[NewSessionDialog] Constructor: initializing");
         InitializeComponent();
         _registry = registry;
+        _historyStore = historyStore;
 
         // Set dialog size to 80% of screen
         Width = SystemParameters.PrimaryScreenWidth * 0.8;
@@ -172,44 +298,47 @@ public partial class NewSessionDialog : Window
             _allRepos = new List<RepositoryConfig>();
         }
 
-        // Load Claude sessions async after dialog is shown
+        // Load session history async after dialog is shown
         Loaded += async (_, _) =>
         {
             SessionSearchBox.Focus();
-            await LoadClaudeSessionsAsync();
+            await LoadSessionHistoryAsync();
         };
 
         FileLog.Write("[NewSessionDialog] Constructor: complete");
     }
 
-    private async Task LoadClaudeSessionsAsync()
+    private async Task LoadSessionHistoryAsync()
     {
-        FileLog.Write("[NewSessionDialog] LoadClaudeSessionsAsync: starting");
+        FileLog.Write("[NewSessionDialog] LoadSessionHistoryAsync: starting");
 
         try
         {
             // Load both data sources in parallel
-            var claudeSessionsTask = Task.Run(() => ClaudeSessionReader.ScanAllProjects());
-            var persistedSessionsTask = Task.Run(() => new SessionStateStore().Load());
-
-            await Task.WhenAll(claudeSessionsTask, persistedSessionsTask);
-
-            var claudeSessions = claudeSessionsTask.Result;
-            var persistedResult = persistedSessionsTask.Result;
-            var persistedSessions = persistedResult.Sessions;
-
-            FileLog.Write($"[NewSessionDialog] LoadClaudeSessionsAsync: found {claudeSessions.Count} Claude sessions, {persistedSessions.Count} persisted sessions");
-
-            // Create lookup by ClaudeSessionId
-            var persistedByClaudeId = persistedSessions
-                .Where(p => !string.IsNullOrEmpty(p.ClaudeSessionId))
-                .ToDictionary(p => p.ClaudeSessionId!, p => p);
-
-            // Merge: for each Claude session, check if we have custom name/color
-            _allSessions = claudeSessions.Select(s =>
+            var historyTask = Task.Run(() => _historyStore?.LoadAll() ?? new List<SessionHistoryEntry>());
+            var claudeMetadataTask = Task.Run(() =>
             {
-                persistedByClaudeId.TryGetValue(s.SessionId, out var persisted);
-                return new ClaudeSessionViewModel(s, persisted?.CustomName, persisted?.CustomColor);
+                var map = new Dictionary<string, ClaudeSessionMetadata>(StringComparer.Ordinal);
+                foreach (var cm in ClaudeSessionReader.ScanAllProjects())
+                    map.TryAdd(cm.SessionId, cm);
+                return map;
+            });
+
+            await Task.WhenAll(historyTask, claudeMetadataTask);
+
+            var historyEntries = historyTask.Result;
+            var claudeMetadata = claudeMetadataTask.Result;
+
+            FileLog.Write($"[NewSessionDialog] LoadSessionHistoryAsync: found {historyEntries.Count} history entries, {claudeMetadata.Count} Claude sessions");
+
+            // Build view models: history entries enriched with Claude metadata
+            _allSessions = historyEntries.Select(entry =>
+            {
+                ClaudeSessionMetadata? meta = null;
+                if (!string.IsNullOrEmpty(entry.ClaudeSessionId))
+                    claudeMetadata.TryGetValue(entry.ClaudeSessionId, out meta);
+
+                return new SessionHistoryViewModel(entry, meta);
             }).ToList();
 
             _sessionsLoaded = true;
@@ -224,12 +353,13 @@ public partial class NewSessionDialog : Window
             }
             else
             {
+                NoSessionsText.Text = "No session history yet. Start a new session to begin.";
                 NoSessionsText.Visibility = Visibility.Visible;
             }
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[NewSessionDialog] LoadClaudeSessionsAsync FAILED: {ex.Message}");
+            FileLog.Write($"[NewSessionDialog] LoadSessionHistoryAsync FAILED: {ex.Message}");
             LoadingText.Visibility = Visibility.Collapsed;
             NoSessionsText.Text = "Error loading sessions";
             NoSessionsText.Visibility = Visibility.Visible;
@@ -249,15 +379,13 @@ public partial class NewSessionDialog : Window
         if (MainTabs.SelectedIndex == 0) // Resume Session tab
         {
             BtnAction.Content = "Resume Selected";
-            BtnAction.Background = new System.Windows.Media.SolidColorBrush(
-                (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#22C55E")!);
+            BtnAction.Background = ResumeButtonBrush;
             BtnAction.IsEnabled = SessionList.SelectedItem != null;
         }
         else // New Session tab
         {
             BtnAction.Content = "Start Session";
-            BtnAction.Background = new System.Windows.Media.SolidColorBrush(
-                (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#007ACC")!);
+            BtnAction.Background = NewSessionButtonBrush;
             BtnAction.IsEnabled = !string.IsNullOrWhiteSpace(PathInput.Text);
         }
     }
@@ -306,11 +434,11 @@ public partial class NewSessionDialog : Window
 
     private void SessionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (SessionList.SelectedItem is ClaudeSessionViewModel vm)
+        if (SessionList.SelectedItem is SessionHistoryViewModel vm)
         {
-            SelectedResumeSessionId = vm.SessionId;
+            SelectedResumeSessionId = vm.ClaudeSessionId;
             SelectedPath = vm.ProjectPath;
-            FileLog.Write($"[NewSessionDialog] Session selected: {vm.SessionId}, path: {vm.ProjectPath}");
+            FileLog.Write($"[NewSessionDialog] Session selected: claude={vm.ClaudeSessionId}, path: {vm.ProjectPath}");
         }
         else
         {
@@ -368,13 +496,17 @@ public partial class NewSessionDialog : Window
     {
         if (MainTabs.SelectedIndex == 0) // Resume Session tab
         {
-            if (string.IsNullOrEmpty(SelectedResumeSessionId))
+            if (SessionList.SelectedItem is not SessionHistoryViewModel vm)
             {
                 FileLog.Write("[NewSessionDialog] BtnAction_Click: No session selected for resume");
                 return;
             }
 
-            FileLog.Write($"[NewSessionDialog] BtnAction_Click: Resuming session {SelectedResumeSessionId}");
+            // For sessions without a ClaudeSessionId, start a fresh session at the repo path
+            SelectedResumeSessionId = vm.ClaudeSessionId;
+            SelectedPath = vm.ProjectPath;
+
+            FileLog.Write($"[NewSessionDialog] BtnAction_Click: Resuming session claude={vm.ClaudeSessionId}, path={vm.ProjectPath}");
             DialogResult = true;
         }
         else // New Session tab

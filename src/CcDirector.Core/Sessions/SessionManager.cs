@@ -341,6 +341,7 @@ public sealed class SessionManager : IDisposable
                 CreatedAt = s.CreatedAt,
                 SortOrder = s.SortOrder,
                 ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
+                HistoryEntryId = s.HistoryEntryId,
             })
             .ToList();
     }
@@ -356,6 +357,7 @@ public sealed class SessionManager : IDisposable
 
         // Set expected first prompt BEFORE verification so it can be compared
         session.ExpectedFirstPrompt = ps.ExpectedFirstPrompt;
+        session.HistoryEntryId = ps.HistoryEntryId;
 
         _sessions[session.Id] = session;
 

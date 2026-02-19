@@ -158,6 +158,36 @@ public class RecentSessionStoreTests : IDisposable
     }
 
     [Fact]
+    public void Add_WithClaudeSessionId_StoresId()
+    {
+        var store = new RecentSessionStore(_filePath);
+        store.Load();
+
+        store.Add(_tempDir, "MySession", "#FF0000", "claude-session-abc");
+
+        var recent = store.GetRecent();
+        Assert.Single(recent);
+        Assert.Equal("MySession", recent[0].CustomName);
+        Assert.Equal("#FF0000", recent[0].CustomColor);
+        Assert.Equal("claude-session-abc", recent[0].ClaudeSessionId);
+    }
+
+    [Fact]
+    public void Add_WithClaudeSessionId_PersistsToDisk()
+    {
+        var store1 = new RecentSessionStore(_filePath);
+        store1.Load();
+        store1.Add(_tempDir, "TestSession", null, "persisted-claude-id");
+
+        var store2 = new RecentSessionStore(_filePath);
+        store2.Load();
+
+        var recent = store2.GetRecent();
+        Assert.Single(recent);
+        Assert.Equal("persisted-claude-id", recent[0].ClaudeSessionId);
+    }
+
+    [Fact]
     public void UpdateClaudeSessionId_NoOpForNonExistentEntry()
     {
         var store = new RecentSessionStore(_filePath);
