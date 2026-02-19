@@ -262,15 +262,8 @@ public static class ClaudeSessionReader
                         {
                             content = content.Trim();
 
-                            // Skip system-injected content that never appears in the terminal:
-                            // - Command invocations: <command-message>..., <command-name>...
-                            // - Skill expansions injected by the CLI
-                            if (content.StartsWith("<command-message>", StringComparison.Ordinal) ||
-                                content.StartsWith("<command-name>", StringComparison.Ordinal) ||
-                                content.StartsWith("Base directory for this skill:", StringComparison.Ordinal))
-                            {
+                            if (IsSystemInjectedContent(content))
                                 continue;
-                            }
 
                             // Skip very short prompts (unreliable for matching)
                             if (content.Length > 10)
@@ -292,6 +285,64 @@ public static class ClaudeSessionReader
         }
 
         return prompts;
+    }
+
+    /// <summary>
+    /// Check if content is system-injected (not typed by the user) and should be excluded from matching.
+    /// </summary>
+    internal static bool IsSystemInjectedContent(string content)
+    {
+        // Command invocations: <command-message>..., <command-name>...
+        if (content.StartsWith("<command-message>", StringComparison.Ordinal) ||
+            content.StartsWith("<command-name>", StringComparison.Ordinal))
+            return true;
+
+        // Skill expansions injected by the CLI
+        if (content.StartsWith("Base directory for this skill:", StringComparison.Ordinal))
+            return true;
+
+        // Tool results and system notifications injected by Claude CLI
+        if (content.StartsWith("<local-command-stdout>", StringComparison.Ordinal) ||
+            content.StartsWith("<task-notification>", StringComparison.Ordinal) ||
+            content.StartsWith("<system-reminder>", StringComparison.Ordinal) ||
+            content.StartsWith("<tool-result>", StringComparison.Ordinal))
+            return true;
+
+        // Context continuation messages from session compacting
+        if (content.StartsWith("This session is being continued from a previous conversation", StringComparison.Ordinal))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Normalize text for terminal matching: collapse all whitespace into single spaces.
+    /// This handles word-wrapped prompts in the terminal where newlines are inserted.
+    /// </summary>
+    public static string NormalizeForMatching(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+
+        var sb = new System.Text.StringBuilder(text.Length);
+        bool lastWasSpace = false;
+        foreach (char c in text)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!lastWasSpace)
+                {
+                    sb.Append(' ');
+                    lastWasSpace = true;
+                }
+            }
+            else
+            {
+                sb.Append(c);
+                lastWasSpace = false;
+            }
+        }
+        return sb.ToString().Trim();
     }
 
     /// <summary>

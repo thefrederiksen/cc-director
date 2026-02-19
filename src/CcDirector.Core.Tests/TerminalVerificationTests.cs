@@ -305,6 +305,80 @@ public class TerminalVerificationTests : IDisposable
         Assert.Contains("better logging", prompts[1]);
     }
 
+    [Fact]
+    public void ExtractUserPrompts_SkipsSystemInjectedContent()
+    {
+        // Arrange - system-injected messages that aren't user-typed
+        var jsonlPath = Path.Combine(_testDir, "test_system.jsonl");
+        var lines = new[]
+        {
+            // local-command-stdout (system injection)
+            """{"type":"user","message":"<local-command-stdout>Login successful</local-command-stdout>"}""",
+            // task-notification (system injection)
+            """{"type":"user","message":"<task-notification>\n<task-id>b499ff3</task-id>\n<output-file>C:\\temp\\output.txt</output-file>\n</task-notification>"}""",
+            // system-reminder (system injection)
+            """{"type":"user","message":"<system-reminder>Remember to use proper error handling</system-reminder>"}""",
+            // Context continuation (system injection)
+            """{"type":"user","message":"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier discussion."}""",
+            // Real user prompt (should be kept)
+            """{"type":"user","message":"Can you fix the login bug in the authentication handler please"}"""
+        };
+        File.WriteAllLines(jsonlPath, lines);
+
+        // Act
+        var prompts = ClaudeSessionReader.ExtractUserPrompts(jsonlPath);
+
+        // Assert - only the real user prompt
+        Assert.Single(prompts);
+        Assert.Contains("fix the login bug", prompts[0]);
+    }
+
+    [Fact]
+    public void IsSystemInjectedContent_DetectsAllTypes()
+    {
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("<command-message>commit</command-message>"));
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("<command-name>/commit</command-name>"));
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("<local-command-stdout>output</local-command-stdout>"));
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("<task-notification><task-id>123</task-id></task-notification>"));
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("<system-reminder>reminder text</system-reminder>"));
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("<tool-result>some result</tool-result>"));
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("Base directory for this skill: D:\\project\\.claude\\skills\\commit"));
+        Assert.True(ClaudeSessionReader.IsSystemInjectedContent("This session is being continued from a previous conversation that ran out of context."));
+
+        Assert.False(ClaudeSessionReader.IsSystemInjectedContent("Can you fix the login bug?"));
+        Assert.False(ClaudeSessionReader.IsSystemInjectedContent("What are all these uncommitted files?"));
+    }
+
+    [Fact]
+    public void NormalizeForMatching_CollapsesWhitespace()
+    {
+        // Handles word wrapping (newlines inserted in terminal)
+        Assert.Equal("hello world foo bar", ClaudeSessionReader.NormalizeForMatching("hello  world\nfoo   bar"));
+        Assert.Equal("fix the authentication bug in the login handler",
+            ClaudeSessionReader.NormalizeForMatching("fix the authentication bug\n  in the login handler"));
+        Assert.Equal("a b c", ClaudeSessionReader.NormalizeForMatching("  a  \n  b  \n  c  "));
+        Assert.Equal("", ClaudeSessionReader.NormalizeForMatching(""));
+        Assert.Equal("", ClaudeSessionReader.NormalizeForMatching("   "));
+    }
+
+    [Fact]
+    public void NormalizeForMatching_HandlesWordWrappedPrompts()
+    {
+        // Simulate a prompt that wraps in terminal at column 80
+        var originalPrompt = "fix the authentication bug in the login handler that causes users to be logged out";
+        var wrappedInTerminal = "fix the authentication bug in the login handler that causes users to be logged\nout";
+
+        var normalizedPrompt = ClaudeSessionReader.NormalizeForMatching(originalPrompt);
+        var normalizedTerminal = ClaudeSessionReader.NormalizeForMatching(wrappedInTerminal);
+
+        Assert.Equal(normalizedPrompt, normalizedTerminal);
+
+        // Also verify the normalized terminal text contains the normalized prompt
+        var fullTerminal = $"> {wrappedInTerminal}\nSome response text\n> Another prompt";
+        var normalizedFull = ClaudeSessionReader.NormalizeForMatching(fullTerminal);
+        Assert.Contains(normalizedPrompt, normalizedFull);
+    }
+
     public void Dispose()
     {
         try

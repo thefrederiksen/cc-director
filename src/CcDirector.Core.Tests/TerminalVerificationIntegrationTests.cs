@@ -128,7 +128,7 @@ public class TerminalVerificationIntegrationTests
     }
 
     [Fact]
-    public void VerifyWithTerminalContent_Under50Lines_ReturnsPotential()
+    public void VerifyWithTerminalContent_Under50Lines_MatchesSession()
     {
         var target = FindFileWithPrompts();
         if (target == null)
@@ -150,15 +150,131 @@ public class TerminalVerificationIntegrationTests
             Guid.NewGuid(), GetRepoRoot(), GetRepoRoot(),
             null, backend, SessionBackendType.ConPty, createdAt);
 
-        // Call with < 50 lines -- should return Potential, not Matched
+        // Call with < 50 lines -- with 2+ matches, goes straight to Matched
         var result = session.VerifyWithTerminalContent(terminalText, 10);
 
-        _output.WriteLine($"Result: IsPotential={result.IsPotential}, MatchedId={result.MatchedSessionId}");
+        _output.WriteLine($"Result: IsMatched={result.IsMatched}, IsPotential={result.IsPotential}, MatchedId={result.MatchedSessionId}");
         _output.WriteLine($"Session.TerminalVerificationStatus: {session.TerminalVerificationStatus}");
 
-        Assert.True(result.IsPotential, $"Expected Potential, got: {result.ErrorMessage}");
+        // With 2+ prompts matching, should be Matched (high confidence even at few lines)
+        // With 1 prompt, should be Potential
+        Assert.True(result.IsMatched || result.IsPotential,
+            $"Expected Matched or Potential, got: {result.ErrorMessage}");
         Assert.Equal(expectedSessionId, result.MatchedSessionId);
-        Assert.Equal(TerminalVerificationStatus.Potential, session.TerminalVerificationStatus);
+        Assert.True(
+            session.TerminalVerificationStatus == TerminalVerificationStatus.Matched ||
+            session.TerminalVerificationStatus == TerminalVerificationStatus.Potential);
+    }
+
+    [Fact]
+    public void VerifyWithTerminalContent_ResumedSession_MatchesWithPartialPrompts()
+    {
+        // Simulate a resumed session: JSONL has 10 prompts, but terminal only shows the last 2
+        // This was the PRIMARY failure mode - the old 95% ratio would fail (2/10 = 20%)
+        var target = FindFileWithPrompts(3);
+        if (target == null)
+        {
+            _output.WriteLine("SKIPPED: No .jsonl file with 3+ prompts");
+            return;
+        }
+
+        var (file, prompts) = target.Value;
+        var expectedSessionId = Path.GetFileNameWithoutExtension(file.Name);
+        _output.WriteLine($"Target: {file.Name}, total prompts: {prompts.Count}");
+
+        // Build terminal text with ONLY the last 2 prompts (simulates resumed session)
+        var recentPrompts = prompts.TakeLast(2).ToList();
+        var terminalLines = new List<string>
+        {
+            "Welcome to Claude Code", "", " /help for help", "",
+            "Resuming session...", "",
+        };
+        foreach (var prompt in recentPrompts)
+        {
+            terminalLines.Add($"> {prompt}");
+            terminalLines.Add("");
+            terminalLines.Add("I'll help you with that.");
+            terminalLines.Add("");
+        }
+        // Pad to 50+ lines for confirmation
+        while (terminalLines.Count < 55)
+            terminalLines.Add("Some output text from Claude response");
+
+        var terminalText = string.Join("\n", terminalLines);
+
+        var createdAt = new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero);
+        var backend = new StubSessionBackend();
+        var session = new Session(
+            Guid.NewGuid(), GetRepoRoot(), GetRepoRoot(),
+            null, backend, SessionBackendType.ConPty, createdAt);
+
+        // Act: confirmation run with partial prompts visible
+        var result = session.VerifyWithTerminalContent(terminalText, terminalLines.Count);
+
+        // Assert: should match even with only 2 of N prompts visible
+        _output.WriteLine($"Result: IsMatched={result.IsMatched}, MatchedId={result.MatchedSessionId}");
+        _output.WriteLine($"Status: {session.TerminalVerificationStatus}");
+        _output.WriteLine($"Only {recentPrompts.Count} of {prompts.Count} prompts were in terminal");
+
+        Assert.True(result.IsMatched,
+            $"Expected Matched with {recentPrompts.Count}/{prompts.Count} prompts visible. Error: {result.ErrorMessage}");
+        Assert.Equal(expectedSessionId, result.MatchedSessionId);
+        Assert.Equal(TerminalVerificationStatus.Matched, session.TerminalVerificationStatus);
+    }
+
+    [Fact]
+    public void VerifyWithTerminalContent_WordWrappedPrompts_StillMatches()
+    {
+        // Test that prompts wrapped in terminal (newlines inserted at column boundary) still match
+        var target = FindFileWithPrompts(1);
+        if (target == null)
+        {
+            _output.WriteLine("SKIPPED: No .jsonl file with prompts");
+            return;
+        }
+
+        var (file, prompts) = target.Value;
+        var expectedSessionId = Path.GetFileNameWithoutExtension(file.Name);
+
+        // Build terminal text with prompts that have word wrapping (newlines inserted mid-text)
+        var terminalLines = new List<string>
+        {
+            "Welcome to Claude Code", "", " /help for help", "",
+        };
+        foreach (var prompt in prompts)
+        {
+            // Simulate word wrapping at column 60
+            if (prompt.Length > 60)
+            {
+                var wrapped = prompt[..60] + "\n" + prompt[60..];
+                terminalLines.Add($"> {wrapped}");
+            }
+            else
+            {
+                terminalLines.Add($"> {prompt}");
+            }
+            terminalLines.Add("");
+            terminalLines.Add("Response text here.");
+            terminalLines.Add("");
+        }
+
+        var terminalText = string.Join("\n", terminalLines);
+        var effectiveLineCount = Math.Max(terminalLines.Count, 50);
+
+        var createdAt = new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero);
+        var backend = new StubSessionBackend();
+        var session = new Session(
+            Guid.NewGuid(), GetRepoRoot(), GetRepoRoot(),
+            null, backend, SessionBackendType.ConPty, createdAt);
+
+        var result = session.VerifyWithTerminalContent(terminalText, effectiveLineCount);
+
+        _output.WriteLine($"Result: IsMatched={result.IsMatched}, IsPotential={result.IsPotential}, MatchedId={result.MatchedSessionId}");
+        _output.WriteLine($"Status: {session.TerminalVerificationStatus}");
+
+        Assert.True(result.IsMatched || result.IsPotential,
+            $"Expected match with word-wrapped prompts. Error: {result.ErrorMessage}");
+        Assert.Equal(expectedSessionId, result.MatchedSessionId);
     }
 
     [Fact]
@@ -217,7 +333,12 @@ public class TerminalVerificationIntegrationTests
 
         Assert.False(result.IsMatched);
         Assert.False(result.IsPotential);
-        // Over 50 lines with no match -> should be Failed
+        // First confirmation attempt with no match -> should be Failed
         Assert.Equal(TerminalVerificationStatus.Failed, session.TerminalVerificationStatus);
+
+        // Verify retries are allowed (up to max) - subsequent calls should still process
+        var result2 = session.VerifyWithTerminalContent(terminalText, 70);
+        Assert.False(result2.IsMatched);
+        _output.WriteLine($"After retry: status={session.TerminalVerificationStatus}");
     }
 }

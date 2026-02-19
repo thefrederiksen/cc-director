@@ -681,9 +681,9 @@ public partial class MainWindow : Window
         if (_terminalControl == null || _activeSession == null)
             return;
 
-        // Skip if already fully verified (Matched) or failed
+        // Skip if already fully verified (Matched)
         var status = _activeSession.TerminalVerificationStatus;
-        if (status == TerminalVerificationStatus.Matched || status == TerminalVerificationStatus.Failed)
+        if (status == TerminalVerificationStatus.Matched)
             return;
 
         // Use ContentLineCount (actual content) not TotalLineCount (includes empty terminal rows)

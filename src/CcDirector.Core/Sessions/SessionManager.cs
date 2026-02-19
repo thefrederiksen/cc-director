@@ -232,6 +232,12 @@ public sealed class SessionManager : IDisposable
             session.RefreshClaudeMetadata();
             // Verify the session file exists
             session.VerifyClaudeSession();
+            // If file verification passed, also mark terminal verification as matched
+            // This handles the case where terminal matching found the right session
+            if (session.VerificationStatus == Claude.SessionVerificationStatus.Verified)
+            {
+                session.MarkAsPreVerified();
+            }
             // Notify listeners
             OnClaudeSessionRegistered?.Invoke(session, claudeSessionId);
         }
@@ -261,6 +267,12 @@ public sealed class SessionManager : IDisposable
         // Refresh metadata and verify
         session.RefreshClaudeMetadata();
         session.VerifyClaudeSession();
+
+        // If file verification passed, also mark terminal verification as matched
+        if (session.VerificationStatus == Claude.SessionVerificationStatus.Verified)
+        {
+            session.MarkAsPreVerified();
+        }
 
         // Notify listeners
         OnClaudeSessionRegistered?.Invoke(session, newClaudeSessionId);

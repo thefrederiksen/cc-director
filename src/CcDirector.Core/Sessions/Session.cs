@@ -104,8 +104,11 @@ public sealed class Session : IDisposable
     /// <summary>Fires when terminal verification status changes.</summary>
     public event Action<TerminalVerificationStatus>? OnTerminalVerificationStatusChanged;
 
-    /// <summary>Whether terminal verification has been attempted (only run once).</summary>
-    private volatile bool _terminalVerificationAttempted;
+    /// <summary>Number of confirmation attempts made (at 50+ lines). Allows retries up to a limit.</summary>
+    private volatile int _confirmationAttempts;
+
+    /// <summary>Max confirmation attempts before giving up permanently.</summary>
+    private const int MaxConfirmationAttempts = 5;
 
     /// <summary>Guard to prevent concurrent verification runs.</summary>
     private int _verificationRunning;
@@ -118,7 +121,7 @@ public sealed class Session : IDisposable
     {
         if (!string.IsNullOrEmpty(ClaudeSessionId))
         {
-            _terminalVerificationAttempted = true;
+            _confirmationAttempts = MaxConfirmationAttempts;
             SetTerminalVerificationStatus(TerminalVerificationStatus.Matched);
         }
     }
@@ -359,12 +362,20 @@ public sealed class Session : IDisposable
     /// <returns>Verification result with matched session ID or error.</returns>
     public TerminalVerificationResult VerifyWithTerminalContent(string terminalText, int lineCount)
     {
-        // Skip if already fully verified (confirmed at 50+ lines)
-        if (_terminalVerificationAttempted)
+        // Skip if already matched or exhausted all retry attempts
+        if (TerminalVerificationStatus == TerminalVerificationStatus.Matched)
         {
             return new TerminalVerificationResult
             {
-                IsMatched = TerminalVerificationStatus == TerminalVerificationStatus.Matched,
+                IsMatched = true,
+                MatchedSessionId = ClaudeSessionId
+            };
+        }
+        if (_confirmationAttempts >= MaxConfirmationAttempts)
+        {
+            return new TerminalVerificationResult
+            {
+                IsMatched = false,
                 MatchedSessionId = ClaudeSessionId
             };
         }
@@ -385,36 +396,43 @@ public sealed class Session : IDisposable
 
     private TerminalVerificationResult VerifyWithTerminalContentCore(string terminalText, int lineCount)
     {
-        FileLog.Write($"[Session.Verify] START: lineCount={lineCount}, status={TerminalVerificationStatus}, sessionId={Id}");
+        FileLog.Write($"[Session.Verify] START: lineCount={lineCount}, status={TerminalVerificationStatus}, attempts={_confirmationAttempts}, sessionId={Id}");
 
         bool isConfirmationRun = lineCount >= 50;
         if (isConfirmationRun)
-            _terminalVerificationAttempted = true;
+            _confirmationAttempts++;
 
         var error = LoadJsonlFilesForVerification(isConfirmationRun, out var allFiles);
         if (error != null) return error;
 
-        var timeFiltered = allFiles
-            .Where(f => Math.Abs((f.LastWriteTimeUtc - CreatedAt.UtcDateTime).TotalHours) < 1)
-            .ToList();
+        // Normalize terminal text once for whitespace-insensitive matching
+        var normalizedTerminal = ClaudeSessionReader.NormalizeForMatching(terminalText);
 
-        var filesToCheck = timeFiltered.Count > 0 ? timeFiltered : allFiles;
-        FileLog.Write($"[Session.Verify] Checking {filesToCheck.Count} files ({timeFiltered.Count} time-filtered)");
+        // Score all files and pick the best match
+        var bestMatch = FindBestMatch(allFiles, terminalText, normalizedTerminal);
 
-        var result = TryMatchAgainstFiles(filesToCheck, terminalText, isConfirmationRun);
-        if (result != null) return result;
-
-        if (timeFiltered.Count > 0)
+        if (bestMatch != null)
         {
-            var remaining = allFiles.Except(timeFiltered).ToList();
-            FileLog.Write($"[Session.Verify] Phase 2: checking {remaining.Count} remaining files");
-            result = TryMatchAgainstFiles(remaining, terminalText, isConfirmationRun);
-            if (result != null) return result;
+            ClaudeSessionId = bestMatch.Value.SessionId;
+
+            if (isConfirmationRun || bestMatch.Value.MatchCount >= 2)
+            {
+                SetTerminalVerificationStatus(TerminalVerificationStatus.Matched);
+                ExpectedFirstPrompt = ClaudeSessionReader.ReadFirstPromptFromJsonl(bestMatch.Value.FilePath);
+                VerifyClaudeSession();
+                FileLog.Write($"[Session.Verify] MATCHED: {bestMatch.Value.SessionId} (matches={bestMatch.Value.MatchCount}, prompts={bestMatch.Value.TotalPrompts})");
+                return new TerminalVerificationResult { IsMatched = true, MatchedSessionId = bestMatch.Value.SessionId };
+            }
+
+            SetTerminalVerificationStatus(TerminalVerificationStatus.Potential);
+            FileLog.Write($"[Session.Verify] POTENTIAL: {bestMatch.Value.SessionId} (matches={bestMatch.Value.MatchCount}, prompts={bestMatch.Value.TotalPrompts})");
+            return new TerminalVerificationResult { IsPotential = true, MatchedSessionId = bestMatch.Value.SessionId };
         }
 
         if (isConfirmationRun)
         {
-            FileLog.Write($"[Session.Verify] NO MATCH FOUND - Setting status=Failed (confirmation run, {allFiles.Count} files checked)");
+            // Set Failed status immediately, but allow retries up to MaxConfirmationAttempts
+            FileLog.Write($"[Session.Verify] NO MATCH FOUND - Setting status=Failed (attempt {_confirmationAttempts}/{MaxConfirmationAttempts}, {allFiles.Count} files checked)");
             SetTerminalVerificationStatus(TerminalVerificationStatus.Failed);
         }
         else
@@ -461,37 +479,52 @@ public sealed class Session : IDisposable
         return null;
     }
 
-    private TerminalVerificationResult? TryMatchAgainstFiles(
-        IReadOnlyList<FileInfo> files, string terminalText, bool isConfirmationRun)
+    private readonly record struct MatchResult(string SessionId, string FilePath, int MatchCount, int TotalPrompts);
+
+    /// <summary>
+    /// Score all JSONL files against terminal text and return the best match.
+    /// Uses both exact and whitespace-normalized matching to handle word wrapping.
+    /// Picks the file with the most prompt matches (not ratio), requiring at least 1 match.
+    /// </summary>
+    private MatchResult? FindBestMatch(
+        IReadOnlyList<FileInfo> allFiles, string terminalText, string normalizedTerminal)
     {
-        foreach (var file in files)
+        MatchResult? best = null;
+
+        foreach (var file in allFiles)
         {
             var prompts = ClaudeSessionReader.ExtractUserPrompts(file.FullName);
             if (prompts.Count == 0) continue;
 
-            int matchCount = prompts.Count(p => terminalText.Contains(p, StringComparison.Ordinal));
-            double matchRatio = (double)matchCount / prompts.Count;
+            int matchCount = 0;
+            foreach (var prompt in prompts)
+            {
+                // Try exact match first (fast)
+                if (terminalText.Contains(prompt, StringComparison.Ordinal))
+                {
+                    matchCount++;
+                    continue;
+                }
+
+                // Try whitespace-normalized match (handles word wrapping)
+                var normalizedPrompt = ClaudeSessionReader.NormalizeForMatching(prompt);
+                if (normalizedPrompt.Length > 10 && normalizedTerminal.Contains(normalizedPrompt, StringComparison.Ordinal))
+                {
+                    matchCount++;
+                }
+            }
 
             var fileName = Path.GetFileNameWithoutExtension(file.Name);
             var shortName = fileName.Length > 8 ? fileName[..8] : fileName;
-            FileLog.Write($"[Session.Verify] File={shortName}..., prompts={prompts.Count}, matched={matchCount}, ratio={matchRatio:P0}");
+            FileLog.Write($"[Session.Verify] File={shortName}..., prompts={prompts.Count}, matched={matchCount}");
 
-            if (matchRatio < 0.95) continue;
-
-            ClaudeSessionId = fileName;
-
-            if (isConfirmationRun)
+            if (matchCount > 0 && (best == null || matchCount > best.Value.MatchCount))
             {
-                SetTerminalVerificationStatus(TerminalVerificationStatus.Matched);
-                ExpectedFirstPrompt = ClaudeSessionReader.ReadFirstPromptFromJsonl(file.FullName);
-                VerifyClaudeSession();
-                return new TerminalVerificationResult { IsMatched = true, MatchedSessionId = fileName };
+                best = new MatchResult(fileName, file.FullName, matchCount, prompts.Count);
             }
-
-            SetTerminalVerificationStatus(TerminalVerificationStatus.Potential);
-            return new TerminalVerificationResult { IsPotential = true, MatchedSessionId = fileName };
         }
-        return null;
+
+        return best;
     }
 
     private void SetTerminalVerificationStatus(TerminalVerificationStatus status)
