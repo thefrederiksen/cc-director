@@ -101,6 +101,9 @@ public sealed class Session : IDisposable
     /// <summary>Links this session to a SessionHistoryEntry for persistent workspace tracking.</summary>
     public Guid? HistoryEntryId { get; set; }
 
+    /// <summary>Raw terminal output captured during Claude Code startup. Preserved for future parsing.</summary>
+    public string? RawStartupText { get; set; }
+
     /// <summary>Terminal-based verification status (matching terminal to .jsonl).</summary>
     public TerminalVerificationStatus TerminalVerificationStatus { get; private set; } = TerminalVerificationStatus.Waiting;
 
@@ -205,7 +208,7 @@ public sealed class Session : IDisposable
     public void SendInput(byte[] data)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
-        System.Diagnostics.Debug.WriteLine($"[Session.SendInput] {data.Length} bytes");
+        FileLog.Write($"[Session] SendInput: session={Id}, bytes={data.Length}, firstByte=0x{(data.Length > 0 ? data[0].ToString("X2") : "00")}");
         _backend.Write(data);
         SetActivityState(ActivityState.Working);
     }
@@ -215,7 +218,7 @@ public sealed class Session : IDisposable
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
 
-        System.Diagnostics.Debug.WriteLine($"[Session.SendTextAsync] text=\"{text}\" len={text.Length}");
+        FileLog.Write($"[Session] SendTextAsync: session={Id}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
         await _backend.SendTextAsync(text);
         SetActivityState(ActivityState.Working);
     }
@@ -238,6 +241,8 @@ public sealed class Session : IDisposable
     /// <summary>Process a hook event and transition activity state accordingly.</summary>
     public void HandlePipeEvent(PipeMessage msg)
     {
+        FileLog.Write($"[Session] HandlePipeEvent: session={Id}, event={msg.HookEventName}, tool={msg.ToolName ?? "n/a"}, currentState={ActivityState}");
+
         var newState = msg.HookEventName switch
         {
             "Stop" => ActivityState.WaitingForInput,
@@ -259,7 +264,10 @@ public sealed class Session : IDisposable
         };
 
         if (!newState.HasValue)
+        {
+            FileLog.Write($"[Session] HandlePipeEvent: no state change for event={msg.HookEventName}");
             return;
+        }
 
         // Once we're waiting for user input (green), only explicit user actions
         // or session end can change the state. This prevents late subagent stops
@@ -269,9 +277,13 @@ public sealed class Session : IDisposable
             var allowedFromWaiting = msg.HookEventName is "UserPromptSubmit" or "SessionEnd" or "PermissionRequest"
                 || (msg.HookEventName == "Notification" && msg.NotificationType == "permission_prompt");
             if (!allowedFromWaiting)
+            {
+                FileLog.Write($"[Session] HandlePipeEvent: blocked {msg.HookEventName} while WaitingForInput");
                 return;
+            }
         }
 
+        FileLog.Write($"[Session] HandlePipeEvent: session={Id}, {ActivityState}->{newState.Value}");
         SetActivityState(newState.Value);
     }
 
@@ -312,6 +324,7 @@ public sealed class Session : IDisposable
     /// </summary>
     public void VerifyClaudeSession()
     {
+        FileLog.Write($"[Session] VerifyClaudeSession: session={Id}, claudeSessionId={ClaudeSessionId ?? "null"}");
         var oldStatus = VerificationStatus;
 
         // Can't verify without a session ID
@@ -365,6 +378,7 @@ public sealed class Session : IDisposable
     /// <returns>Verification result with matched session ID or error.</returns>
     public TerminalVerificationResult VerifyWithTerminalContent(string terminalText, int lineCount)
     {
+        FileLog.Write($"[Session] VerifyWithTerminalContent: session={Id}, lineCount={lineCount}, textLen={terminalText.Length}");
         // Skip if already matched or exhausted all retry attempts
         if (TerminalVerificationStatus == TerminalVerificationStatus.Matched)
         {

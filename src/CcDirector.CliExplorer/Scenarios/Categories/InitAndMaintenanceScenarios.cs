@@ -11,6 +11,7 @@ public static class InitAndMaintenanceScenarios
                 "--init-only"),
 
             new("IM-02", "--maintenance flag", "Run maintenance tasks (cleanup, etc.)",
-                "--maintenance"),
+                "-p --maintenance",
+                StdinText: "done"),
         });
 }

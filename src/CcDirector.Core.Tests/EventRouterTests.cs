@@ -29,10 +29,12 @@ public class EventRouterTests : IDisposable
         var tempPath = Path.GetTempPath();
         var session = _manager.CreateSession(tempPath);
 
-        Assert.Null(session.ClaudeSessionId);
+        // New sessions get a preassigned ClaudeSessionId via --session-id
+        var preassignedId = session.ClaudeSessionId;
+        Assert.NotNull(preassignedId);
 
         // Unknown Claude session IDs should NOT be auto-registered;
-        // session ID discovery is handled by terminal content matching only.
+        // routing an event with a different session ID should not change the mapping.
         var msg = new PipeMessage
         {
             HookEventName = "SessionStart",
@@ -42,7 +44,8 @@ public class EventRouterTests : IDisposable
 
         _router.Route(msg);
 
-        Assert.Null(session.ClaudeSessionId);
+        // Session should keep its preassigned ID, not adopt the unknown one
+        Assert.Equal(preassignedId, session.ClaudeSessionId);
         Assert.Contains(_logs, l => l.Contains("No linked session"));
     }
 

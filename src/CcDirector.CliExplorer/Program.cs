@@ -139,7 +139,7 @@ internal static class Program
 
                 try
                 {
-                    var runResult = await runner.RunAsync(resolvedArgs, scenario.StdinText);
+                    var runResult = await runner.RunAsync(resolvedArgs, scenario.StdinText, scenario.TimeoutMs);
                     var outcome = EvaluateOutcome(scenario, runResult);
                     var notes = BuildNotes(scenario, runResult, outcome);
                     var testResult = new TestResult(scenario, runResult, outcome, notes);

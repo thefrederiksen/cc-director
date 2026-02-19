@@ -18,9 +18,10 @@ public sealed class ClaudeRunner
         _timeoutMs = timeoutMs;
     }
 
-    public async Task<RunResult> RunAsync(string arguments, string? stdinText = null)
+    public async Task<RunResult> RunAsync(string arguments, string? stdinText = null, int? timeoutMs = null)
     {
-        FileLog.Write($"[ClaudeRunner] RunAsync: args=\"{arguments}\", hasStdin={stdinText != null}");
+        var effectiveTimeout = timeoutMs ?? _timeoutMs;
+        FileLog.Write($"[ClaudeRunner] RunAsync: args=\"{arguments}\", hasStdin={stdinText != null}, timeout={effectiveTimeout}ms");
 
         var psi = new ProcessStartInfo
         {
@@ -53,12 +54,12 @@ public sealed class ClaudeRunner
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
 
-        var exited = await WaitForExitAsync(process, _timeoutMs);
+        var exited = await WaitForExitAsync(process, effectiveTimeout);
         sw.Stop();
 
         if (!exited)
         {
-            FileLog.Write($"[ClaudeRunner] Process timed out after {_timeoutMs}ms, killing PID={process.Id}");
+            FileLog.Write($"[ClaudeRunner] Process timed out after {effectiveTimeout}ms, killing PID={process.Id}");
             try
             {
                 process.Kill(entireProcessTree: true);

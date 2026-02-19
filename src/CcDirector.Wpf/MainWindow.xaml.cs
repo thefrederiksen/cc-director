@@ -433,21 +433,28 @@ public partial class MainWindow : Window
 
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        FileLog.Write("[MainWindow] BtnNewSession_Click: entered");
+
         var app = (App)Application.Current;
         var registry = app.RepositoryRegistry;
 
+        FileLog.Write("[MainWindow] BtnNewSession_Click: opening NewSessionDialog");
         var dialog = new NewSessionDialog(registry, app.SessionHistoryStore);
         dialog.Owner = this;
         if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
             var resumeSessionId = dialog.SelectedResumeSessionId;
+            FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog confirmed, path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, dialogTime={sw.ElapsedMilliseconds}ms");
 
-            // Create the session (with optional resume)
             var vm = CreateSession(dialog.SelectedPath, resumeSessionId);
             if (vm == null) return;
 
+            FileLog.Write($"[MainWindow] BtnNewSession_Click: session created, id={vm.Session.Id}, elapsed={sw.ElapsedMilliseconds}ms");
+
             if (!string.IsNullOrEmpty(resumeSessionId))
             {
+                FileLog.Write($"[MainWindow] BtnNewSession_Click: resume path - looking up history for claude={resumeSessionId}");
                 // Resume: copy name/color from history entry, update LastUsedAt
                 var historyEntry = app.SessionHistoryStore.FindByClaudeSessionId(resumeSessionId);
                 if (historyEntry != null)
@@ -458,39 +465,53 @@ public partial class MainWindow : Window
                     vm.NotifyDisplayChanged();
                     historyEntry.LastUsedAt = DateTimeOffset.UtcNow;
                     app.SessionHistoryStore.Save(historyEntry);
+                    FileLog.Write($"[MainWindow] BtnNewSession_Click: resumed with history entry {historyEntry.Id}, name={historyEntry.CustomName}");
                 }
                 else
                 {
                     // No history entry for this Claude session - show rename dialog
+                    FileLog.Write("[MainWindow] BtnNewSession_Click: no history entry found, showing rename dialog");
                     ShowRenameDialog(vm);
                     SaveSessionToHistory(vm);
                 }
             }
             else
             {
-                // New session: show rename dialog, then create history entry
+                // New session: show rename dialog, create history entry, capture startup text
+                FileLog.Write("[MainWindow] BtnNewSession_Click: new session path - showing rename dialog");
                 ShowRenameDialog(vm);
                 SaveSessionToHistory(vm);
+                _ = CaptureStartupTextAsync(vm.Session);
             }
 
             PersistSessionState();
+            FileLog.Write($"[MainWindow] BtnNewSession_Click: complete, totalTime={sw.ElapsedMilliseconds}ms");
+        }
+        else
+        {
+            FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog cancelled, elapsed={sw.ElapsedMilliseconds}ms");
         }
     }
 
     private SessionViewModel? CreateSession(string repoPath, string? resumeSessionId = null)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        FileLog.Write($"[MainWindow] CreateSession: repoPath={repoPath}, resume={resumeSessionId ?? "null"}");
         try
         {
             // Create session with ConPty backend (default mode)
             var session = _sessionManager.CreateSession(repoPath, null, SessionBackendType.ConPty, resumeSessionId);
+            FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}, elapsed={sw.ElapsedMilliseconds}ms");
             var vm = new SessionViewModel(session, Dispatcher);
             _sessions.Add(vm);
             SessionList.SelectedItem = vm;
             PersistSessionState();
+            FileLog.Write($"[MainWindow] CreateSession: added to UI, totalTime={sw.ElapsedMilliseconds}ms");
             return vm;
         }
         catch (Exception ex)
         {
+            FileLog.Write($"[MainWindow] CreateSession FAILED: {ex.Message}, elapsed={sw.ElapsedMilliseconds}ms");
             MessageBox.Show(this, $"Failed to create session:\n{ex.Message}",
                 "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             return null;
@@ -1282,6 +1303,9 @@ public partial class MainWindow : Window
 
     private void OnPipeMessageReceived(PipeMessage msg)
     {
+        var sessionSnippet = !string.IsNullOrEmpty(msg.SessionId) ? msg.SessionId[..Math.Min(8, msg.SessionId.Length)] + "..." : "none";
+        FileLog.Write($"[MainWindow] OnPipeMessageReceived: event={msg.HookEventName}, claudeSession={sessionSnippet}, tool={msg.ToolName ?? "n/a"}");
+
         Dispatcher.BeginInvoke(() =>
         {
             var vm = new PipeMessageViewModel(msg);
@@ -1428,6 +1452,72 @@ public partial class MainWindow : Window
         else
             MessageBox.Show(this, $"Log directory not found:\n{logDir}", "Logs",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    private void BtnOpenSessions_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnOpenSessions_Click: entered");
+        try
+        {
+            var app = (App)Application.Current;
+            var filePath = app.SessionStateStore.FilePath;
+
+            if (System.IO.File.Exists(filePath))
+                Process.Start(new ProcessStartInfo(filePath) { UseShellExecute = true });
+            else
+                MessageBox.Show(this, $"Sessions file not found:\n{filePath}", "Sessions",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnOpenSessions_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open sessions file:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BtnOpenHistory_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnOpenHistory_Click: entered");
+        try
+        {
+            var app = (App)Application.Current;
+            var folder = app.SessionHistoryStore.FolderPath;
+
+            if (System.IO.Directory.Exists(folder))
+                Process.Start(new ProcessStartInfo { FileName = folder, UseShellExecute = true });
+            else
+                MessageBox.Show(this, $"History folder not found:\n{folder}", "History",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnOpenHistory_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open history folder:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BtnOpenHistoryVsCode_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnOpenHistoryVsCode_Click: entered");
+        try
+        {
+            var app = (App)Application.Current;
+            var folder = app.SessionHistoryStore.FolderPath;
+
+            if (System.IO.Directory.Exists(folder))
+                Process.Start(new ProcessStartInfo("code", $"\"{folder}\"") { UseShellExecute = true });
+            else
+                MessageBox.Show(this, $"History folder not found:\n{folder}", "History",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnOpenHistoryVsCode_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open in VS Code:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void BtnClearPipeMessages_Click(object sender, RoutedEventArgs e)
@@ -1785,6 +1875,9 @@ public partial class MainWindow : Window
 
     private void BtnLaunchSessionFromRepo_Click(object sender, RoutedEventArgs e)
     {
+        FileLog.Write("[MainWindow] BtnLaunchSessionFromRepo_Click: entered");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         if (RepoManagerList.SelectedItem is not RepositoryConfig repo)
         {
             MessageBox.Show(this, "Select a repository first.", "Launch Session",
@@ -1799,15 +1892,19 @@ public partial class MainWindow : Window
             return;
         }
 
+        FileLog.Write($"[MainWindow] BtnLaunchSessionFromRepo_Click: creating session for {repo.Path}");
         var vm = CreateSession(repo.Path);
         if (vm == null) return;
 
+        FileLog.Write($"[MainWindow] BtnLaunchSessionFromRepo_Click: showing rename dialog, elapsed={sw.ElapsedMilliseconds}ms");
         ShowRenameDialog(vm);
         SaveSessionToHistory(vm);
+        _ = CaptureStartupTextAsync(vm.Session);
         PersistSessionState();
 
         // Switch to Terminal tab to show the new session
         SessionTabs.SelectedIndex = 0;
+        FileLog.Write($"[MainWindow] BtnLaunchSessionFromRepo_Click: complete, totalTime={sw.ElapsedMilliseconds}ms");
     }
 
     private void BtnRepoOpenExplorer_Click(object sender, RoutedEventArgs e)
@@ -1842,12 +1939,19 @@ public partial class MainWindow : Window
 
     private void ShowRenameDialog(SessionViewModel vm)
     {
+        FileLog.Write($"[MainWindow] ShowRenameDialog: opening for session {vm.Session.Id}, currentName={vm.DisplayName}");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var dialog = new RenameSessionDialog(vm.DisplayName, vm.Session.CustomColor) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             vm.Rename(dialog.SessionName, dialog.SelectedColor);
             PersistSessionState();
             UpdateSessionHistory(vm);
+            FileLog.Write($"[MainWindow] ShowRenameDialog: confirmed, newName={dialog.SessionName}, color={dialog.SelectedColor ?? "null"}, dialogTime={sw.ElapsedMilliseconds}ms");
+        }
+        else
+        {
+            FileLog.Write($"[MainWindow] ShowRenameDialog: cancelled, dialogTime={sw.ElapsedMilliseconds}ms");
         }
     }
 
@@ -1856,6 +1960,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void SaveSessionToHistory(SessionViewModel vm)
     {
+        FileLog.Write($"[MainWindow] SaveSessionToHistory: session={vm.Session.Id}, name={vm.Session.CustomName}, repo={vm.Session.RepoPath}");
         var app = (App)Application.Current;
         var entry = new SessionHistoryEntry
         {
@@ -1869,6 +1974,7 @@ public partial class MainWindow : Window
         };
         vm.Session.HistoryEntryId = entry.Id;
         app.SessionHistoryStore.Save(entry);
+        FileLog.Write($"[MainWindow] SaveSessionToHistory: saved historyEntryId={entry.Id}");
     }
 
     /// <summary>
@@ -1916,6 +2022,42 @@ public partial class MainWindow : Window
             entry.LastUsedAt = DateTimeOffset.UtcNow;
             entry.ClaudeSessionId = vm.Session.ClaudeSessionId ?? entry.ClaudeSessionId;
             app.SessionHistoryStore.Save(entry);
+        }
+    }
+
+    // --- Startup Text Capture ---
+
+    /// <summary>
+    /// Capture terminal startup text after a brief delay and persist it to the session.
+    /// Also writes a debug dump to %LOCALAPPDATA%\CcDirector\debug\.
+    /// </summary>
+    private async Task CaptureStartupTextAsync(Session session)
+    {
+        try
+        {
+            FileLog.Write($"[MainWindow] CaptureStartupTextAsync: waiting 3s for session {session.Id}");
+            await Task.Delay(TimeSpan.FromSeconds(3));
+
+            if (session.Buffer == null)
+            {
+                FileLog.Write($"[MainWindow] CaptureStartupTextAsync: no buffer for session {session.Id}");
+                return;
+            }
+
+            var startupInfo = TerminalOutputParser.Parse(session.Buffer);
+            session.RawStartupText = startupInfo.RawText;
+            FileLog.Write($"[MainWindow] CaptureStartupTextAsync: captured {startupInfo.RawText.Length} bytes, {startupInfo.Urls.Count} URLs for session {session.Id}");
+
+            var debugDir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CcDirector", "debug");
+            System.IO.Directory.CreateDirectory(debugDir);
+            var debugPath = System.IO.Path.Combine(debugDir, $"startup-{session.Id}.txt");
+            TerminalOutputParser.WriteDump(debugPath, startupInfo, session.Id, session.RepoPath, session.ProcessId);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] CaptureStartupTextAsync FAILED: {ex.Message}");
         }
     }
 

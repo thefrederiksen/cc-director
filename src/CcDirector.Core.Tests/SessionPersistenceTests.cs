@@ -116,6 +116,8 @@ public class SessionPersistenceTests : IDisposable
     {
         var store = CreateTempStore();
         var session = _manager.CreateSession(Path.GetTempPath());
+        // New sessions get a preassigned ClaudeSessionId; clear it to test this scenario
+        session.ClaudeSessionId = null;
         Assert.Null(session.ClaudeSessionId);
         Assert.Equal(SessionStatus.Running, session.Status);
 

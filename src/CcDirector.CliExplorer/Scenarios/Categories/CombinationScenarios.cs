@@ -8,7 +8,7 @@ public static class CombinationScenarios
         new List<TestScenario>
         {
             new("CB-01", "JSON schema + haiku", "Cheapest structured output: haiku + json schema",
-                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format json --json-schema '{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"]}'",
+                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format json --json-schema \"{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"answer\\\":{\\\"type\\\":\\\"string\\\"}},\\\"required\\\":[\\\"answer\\\"]}\"",
                 StdinText: "What is 2+2?",
                 CostsApiCredits: true),
 
@@ -42,8 +42,8 @@ public static class CombinationScenarios
                 StdinText: "Say just the word pong",
                 CostsApiCredits: true),
 
-            new("CB-08", "JSON input + JSON output", "Full JSON pipeline: stream-json in, json out",
-                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --input-format stream-json --output-format json",
+            new("CB-08", "JSON input + JSON output", "Full JSON pipeline: stream-json in and out",
+                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --input-format stream-json --output-format stream-json --verbose",
                 StdinText: "{\"type\":\"user_message\",\"content\":\"Say just the word pong\"}",
                 CostsApiCredits: true),
 

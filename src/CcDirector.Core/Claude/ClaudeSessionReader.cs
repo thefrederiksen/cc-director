@@ -175,8 +175,11 @@ public static class ClaudeSessionReader
         if (string.IsNullOrEmpty(claudeSessionId))
             return false;
 
-        var metadata = ReadSessionMetadata(claudeSessionId, repoPath);
-        return metadata != null;
+        // Check for the .jsonl file directly — sessions-index.json may not exist
+        // or may not be up-to-date. The .jsonl file IS the session data and is
+        // the authoritative indicator that a session can be resumed with --resume.
+        var jsonlPath = GetJsonlPath(claudeSessionId, repoPath);
+        return File.Exists(jsonlPath);
     }
 
     /// <summary>
@@ -638,6 +641,79 @@ public static class ClaudeSessionReader
             return dt;
 
         return DateTime.MinValue;
+    }
+
+    /// <summary>
+    /// Search all .jsonl files in a repo's Claude project folder for a GUID marker string.
+    /// Returns the Claude session ID (filename without .jsonl) of the matching file, or null.
+    /// Used to link a CC Director session to its Claude session after marker injection.
+    /// </summary>
+    public static string? FindSessionByMarker(string repoPath, string marker)
+    {
+        var projectFolder = GetProjectFolderPath(repoPath);
+        return FindSessionByMarkerInFolder(projectFolder, marker);
+    }
+
+    /// <summary>
+    /// Search all .jsonl files in a folder for a GUID marker string.
+    /// Returns the session ID (filename without .jsonl) of the matching file, or null.
+    /// </summary>
+    internal static string? FindSessionByMarkerInFolder(string folderPath, string marker)
+    {
+        FileLog.Write($"[ClaudeSessionReader] FindSessionByMarker: folder={folderPath}, marker={marker}");
+
+        if (string.IsNullOrEmpty(marker))
+            return null;
+
+        if (!Directory.Exists(folderPath))
+        {
+            FileLog.Write($"[ClaudeSessionReader] FindSessionByMarker: folder not found: {folderPath}");
+            return null;
+        }
+
+        // Scan newest files first - our file is the most recently created
+        var files = Directory.GetFiles(folderPath, "*.jsonl")
+            .Select(f => new FileInfo(f))
+            .OrderByDescending(f => f.LastWriteTimeUtc)
+            .ToList();
+
+        FileLog.Write($"[ClaudeSessionReader] FindSessionByMarker: scanning {files.Count} .jsonl files");
+
+        foreach (var file in files)
+        {
+            var content = ReadFileContentOrNull(file.FullName);
+            if (content == null) continue;
+
+            if (content.Contains(marker, StringComparison.Ordinal))
+            {
+                var sessionId = Path.GetFileNameWithoutExtension(file.Name);
+                FileLog.Write($"[ClaudeSessionReader] FindSessionByMarker: FOUND marker in {sessionId}");
+                return sessionId;
+            }
+        }
+
+        FileLog.Write("[ClaudeSessionReader] FindSessionByMarker: marker not found in any file");
+        return null;
+    }
+
+    /// <summary>
+    /// Read file content with ReadWrite sharing. Returns null if the file is locked or unreadable.
+    /// Isolated per-file error handling is necessary when scanning multiple external files —
+    /// a single locked file must not prevent scanning the rest.
+    /// </summary>
+    private static string? ReadFileContentOrNull(string filePath)
+    {
+        try
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(fs);
+            return reader.ReadToEnd();
+        }
+        catch (IOException ex)
+        {
+            FileLog.Write($"[ClaudeSessionReader] ReadFileContentOrNull: skipping {Path.GetFileName(filePath)}: {ex.Message}");
+            return null;
+        }
     }
 
     // Internal JSON models for sessions-index.json

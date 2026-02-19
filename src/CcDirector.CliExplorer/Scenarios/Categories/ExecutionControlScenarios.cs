@@ -7,11 +7,11 @@ public static class ExecutionControlScenarios
         "Controlling turn limits and budget constraints",
         new List<TestScenario>
         {
-            new("EC-01", "--max-turns 0", "Zero turns -- should return immediately or error",
+            new("EC-01", "--max-turns 0", "Zero turns -- Claude treats as 1 turn and succeeds",
                 "-p --dangerously-skip-permissions --max-turns 0 --model haiku",
                 StdinText: "Say just the word pong",
                 CostsApiCredits: true,
-                ExpectedExitCode: -1),
+                ExpectedExitCode: 0),
 
             new("EC-02", "--max-turns 1", "Single turn execution",
                 "-p --dangerously-skip-permissions --max-turns 1 --model haiku",

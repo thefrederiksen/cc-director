@@ -48,7 +48,9 @@ public class SessionLifecycleTests : IDisposable
     {
         var session = _manager.CreateSession(Path.GetTempPath());
 
-        Assert.Null(session.ClaudeSessionId);
+        // New sessions get a preassigned ClaudeSessionId via --session-id flag
+        Assert.NotNull(session.ClaudeSessionId);
+        Assert.True(Guid.TryParse(session.ClaudeSessionId, out _), "ClaudeSessionId should be a valid GUID");
         Assert.Null(session.CustomName);
         Assert.Null(session.CustomColor);
         Assert.Null(session.PendingPromptText);

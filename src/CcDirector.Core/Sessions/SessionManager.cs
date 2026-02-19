@@ -44,11 +44,23 @@ public sealed class SessionManager : IDisposable
         var id = Guid.NewGuid();
         string args = claudeArgs ?? _options.DefaultClaudeArgs ?? string.Empty;
 
-        // Add --resume flag if resuming a previous session
+        // For new sessions, generate a Claude session ID upfront via --session-id.
+        // This lets us link the Director session to the Claude session immediately
+        // without waiting for hooks or searching .jsonl files.
+        string? preassignedClaudeSessionId = null;
+
         if (!string.IsNullOrEmpty(resumeSessionId))
         {
+            // Resuming: use --resume flag with existing session ID
             args = $"{args} --resume {resumeSessionId}".Trim();
             _log?.Invoke($"Resuming Claude session {resumeSessionId}");
+        }
+        else
+        {
+            // New session: assign a Claude session ID upfront
+            preassignedClaudeSessionId = Guid.NewGuid().ToString();
+            args = $"{args} --session-id {preassignedClaudeSessionId}".Trim();
+            _log?.Invoke($"New session with preassigned ClaudeSessionId {preassignedClaudeSessionId}");
         }
 
         ISessionBackend backend = backendType switch
@@ -70,17 +82,19 @@ public sealed class SessionManager : IDisposable
 
             _sessions[id] = session;
 
-            // Pre-populate ClaudeSessionId if resuming - ensures it's saved for crash recovery
-            // even if Claude exits before sending SessionStart event.
-            // Also register in _claudeSessionMap so GetSessionByClaudeId can find it and
-            // prevent orphaned Claude processes from stealing this session ID.
-            if (!string.IsNullOrEmpty(resumeSessionId))
+            // Pre-populate ClaudeSessionId - either from --resume or --session-id.
+            // Ensures it's saved for crash recovery and registered in the lookup map
+            // so GetSessionByClaudeId can find it and hooks route correctly.
+            var knownClaudeId = resumeSessionId ?? preassignedClaudeSessionId;
+            if (!string.IsNullOrEmpty(knownClaudeId))
             {
-                session.ClaudeSessionId = resumeSessionId;
-                _claudeSessionMap[resumeSessionId] = id;
+                session.ClaudeSessionId = knownClaudeId;
+                _claudeSessionMap[knownClaudeId] = id;
+                session.MarkAsPreVerified();
             }
             var resumeInfo = !string.IsNullOrEmpty(resumeSessionId) ? $", Resume={resumeSessionId[..8]}..." : "";
-            _log?.Invoke($"Session {id} created for repo {repoPath} (PID {backend.ProcessId}, Backend={backendType}{resumeInfo}).");
+            var sessionIdInfo = !string.IsNullOrEmpty(preassignedClaudeSessionId) ? $", ClaudeSessionId={preassignedClaudeSessionId[..8]}..." : "";
+            _log?.Invoke($"Session {id} created for repo {repoPath} (PID {backend.ProcessId}, Backend={backendType}{resumeInfo}{sessionIdInfo}).");
 
             return session;
         }
@@ -230,14 +244,12 @@ public sealed class SessionManager : IDisposable
             session.ClaudeSessionId = claudeSessionId;
             // Refresh Claude metadata now that we have the session ID
             session.RefreshClaudeMetadata();
-            // Verify the session file exists
+            // Verify the session file exists (may fail early if .jsonl not written yet)
             session.VerifyClaudeSession();
-            // If file verification passed, also mark terminal verification as matched
-            // This handles the case where terminal matching found the right session
-            if (session.VerificationStatus == Claude.SessionVerificationStatus.Verified)
-            {
-                session.MarkAsPreVerified();
-            }
+            // Mark terminal verification as matched — receiving a session ID from hooks
+            // or marker search IS the verification. Don't gate on file check since
+            // the .jsonl may not have content yet when hooks fire early.
+            session.MarkAsPreVerified();
             // Notify listeners
             OnClaudeSessionRegistered?.Invoke(session, claudeSessionId);
         }
@@ -342,6 +354,7 @@ public sealed class SessionManager : IDisposable
                 SortOrder = s.SortOrder,
                 ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
                 HistoryEntryId = s.HistoryEntryId,
+                RawStartupText = s.RawStartupText,
             })
             .ToList();
     }
@@ -358,6 +371,7 @@ public sealed class SessionManager : IDisposable
         // Set expected first prompt BEFORE verification so it can be compared
         session.ExpectedFirstPrompt = ps.ExpectedFirstPrompt;
         session.HistoryEntryId = ps.HistoryEntryId;
+        session.RawStartupText = ps.RawStartupText;
 
         _sessions[session.Id] = session;
 

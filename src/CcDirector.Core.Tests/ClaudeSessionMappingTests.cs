@@ -59,13 +59,17 @@ public class ClaudeSessionMappingTests : IDisposable
         var s1 = _manager.CreateSession(Path.GetTempPath());
         var s2 = _manager.CreateSession(Path.GetTempPath());
 
+        // Both sessions get preassigned ClaudeSessionIds; remember s2's original
+        var s2OriginalId = s2.ClaudeSessionId;
+
         _manager.RegisterClaudeSession("same-claude-id", s1.Id);
         _manager.RegisterClaudeSession("same-claude-id", s2.Id); // Should be ignored
 
         // s1 should still own the mapping
         Assert.Equal(s1, _manager.GetSessionByClaudeId("same-claude-id"));
-        // s2 should NOT have the claude id set
-        Assert.Null(s2.ClaudeSessionId);
+        // s2 should keep its preassigned ID, not adopt the duplicate
+        Assert.Equal(s2OriginalId, s2.ClaudeSessionId);
+        Assert.NotEqual("same-claude-id", s2.ClaudeSessionId);
     }
 
     [Fact]
@@ -103,7 +107,8 @@ public class ClaudeSessionMappingTests : IDisposable
     public void RelinkClaudeSession_NoOldMapping_JustSetsNew()
     {
         var session = _manager.CreateSession(Path.GetTempPath());
-        Assert.Null(session.ClaudeSessionId);
+        // New sessions get a preassigned ClaudeSessionId; clear it to test relink from scratch
+        session.ClaudeSessionId = null;
 
         _manager.RelinkClaudeSession(session.Id, "new-claude-id");
 

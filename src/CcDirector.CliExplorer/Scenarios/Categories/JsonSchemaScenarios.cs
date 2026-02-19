@@ -8,13 +8,13 @@ public static class JsonSchemaScenarios
         new List<TestScenario>
         {
             new("JS-01", "--json-schema inline", "Structured output with inline JSON schema",
-                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format json --json-schema '{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"]}'",
+                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format json --json-schema \"{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"answer\\\":{\\\"type\\\":\\\"string\\\"}},\\\"required\\\":[\\\"answer\\\"]}\"",
                 StdinText: "What is 2+2? Respond with just the number.",
                 CostsApiCredits: true),
 
-            new("JS-02", "--json-schema from file", "Structured output with schema file reference",
-                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format json --json-schema @Resources/test-json-schema.json",
-                StdinText: "What is 2+2? Respond with just the number.",
+            new("JS-02", "--json-schema with multiple fields", "Structured output with multi-field schema",
+                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format json --json-schema \"{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"answer\\\":{\\\"type\\\":\\\"string\\\"},\\\"confidence\\\":{\\\"type\\\":\\\"number\\\"}},\\\"required\\\":[\\\"answer\\\",\\\"confidence\\\"]}\"",
+                StdinText: "What is 2+2? Rate your confidence from 0 to 1.",
                 CostsApiCredits: true),
         });
 }

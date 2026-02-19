@@ -17,13 +17,13 @@ public static class OutputFormatScenarios
                 StdinText: "Say just the word pong",
                 CostsApiCredits: true),
 
-            new("OF-03", "--output-format stream-json", "Streaming JSON output with newline-delimited messages",
-                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format stream-json",
+            new("OF-03", "--output-format stream-json", "Streaming JSON output (requires --verbose in print mode)",
+                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format stream-json --verbose",
                 StdinText: "Say just the word pong",
                 CostsApiCredits: true),
 
             new("OF-04", "stream-json + --include-partial-messages", "Includes partial token-by-token messages in stream",
-                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format stream-json --include-partial-messages",
+                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --output-format stream-json --verbose --include-partial-messages",
                 StdinText: "Say just the word pong",
                 CostsApiCredits: true),
 
@@ -32,8 +32,8 @@ public static class OutputFormatScenarios
                 StdinText: "Say just the word pong",
                 CostsApiCredits: true),
 
-            new("OF-06", "--input-format stream-json", "Stream-json input format with JSON message on stdin",
-                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --input-format stream-json",
+            new("OF-06", "--input-format stream-json", "Stream-json input requires output-format stream-json",
+                "-p --dangerously-skip-permissions --max-turns 1 --model haiku --input-format stream-json --output-format stream-json --verbose",
                 StdinText: "{\"type\":\"user_message\",\"content\":\"Say just the word pong\"}",
                 CostsApiCredits: true),
         });

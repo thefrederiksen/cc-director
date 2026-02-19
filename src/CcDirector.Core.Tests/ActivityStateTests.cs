@@ -125,11 +125,11 @@ public class ActivityStateTests : IDisposable
     }
 
     [Fact]
-    public void SendText_SetsWorking()
+    public async Task SendText_SetsWorking()
     {
         var session = CreateTestSession();
-        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
-        session.SendText("hello");
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" }); // → Idle
+        await session.SendTextAsync("hello");
         Assert.Equal(ActivityState.Working, session.ActivityState);
     }
 
@@ -137,7 +137,7 @@ public class ActivityStateTests : IDisposable
     public void HandlePipeEvent_PreToolUse_SetsWorking()
     {
         var session = CreateTestSession();
-        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" }); // → Idle
         session.HandlePipeEvent(new PipeMessage { HookEventName = "PreToolUse", ToolName = "Read" });
         Assert.Equal(ActivityState.Working, session.ActivityState);
     }
@@ -146,7 +146,7 @@ public class ActivityStateTests : IDisposable
     public void HandlePipeEvent_PostToolUse_SetsWorking()
     {
         var session = CreateTestSession();
-        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" }); // → Idle
         session.HandlePipeEvent(new PipeMessage { HookEventName = "PostToolUse", ToolName = "Read" });
         Assert.Equal(ActivityState.Working, session.ActivityState);
     }
@@ -155,7 +155,7 @@ public class ActivityStateTests : IDisposable
     public void HandlePipeEvent_PostToolUseFailure_SetsWorking()
     {
         var session = CreateTestSession();
-        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" }); // → Idle
         session.HandlePipeEvent(new PipeMessage { HookEventName = "PostToolUseFailure", ToolName = "Bash" });
         Assert.Equal(ActivityState.Working, session.ActivityState);
     }
@@ -172,7 +172,7 @@ public class ActivityStateTests : IDisposable
     public void HandlePipeEvent_SubagentStart_SetsWorking()
     {
         var session = CreateTestSession();
-        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" }); // → Idle
         session.HandlePipeEvent(new PipeMessage { HookEventName = "SubagentStart" });
         Assert.Equal(ActivityState.Working, session.ActivityState);
     }
@@ -181,7 +181,7 @@ public class ActivityStateTests : IDisposable
     public void HandlePipeEvent_SubagentStop_SetsWorking()
     {
         var session = CreateTestSession();
-        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" }); // → Idle
         session.HandlePipeEvent(new PipeMessage { HookEventName = "SubagentStop" });
         Assert.Equal(ActivityState.Working, session.ActivityState);
     }
@@ -190,7 +190,7 @@ public class ActivityStateTests : IDisposable
     public void HandlePipeEvent_TaskCompleted_SetsWorking()
     {
         var session = CreateTestSession();
-        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" }); // → WaitingForInput
+        session.HandlePipeEvent(new PipeMessage { HookEventName = "SessionStart" }); // → Idle
         session.HandlePipeEvent(new PipeMessage { HookEventName = "TaskCompleted" });
         Assert.Equal(ActivityState.Working, session.ActivityState);
     }

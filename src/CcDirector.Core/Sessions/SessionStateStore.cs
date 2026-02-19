@@ -30,6 +30,9 @@ public class PersistedSession
 
     /// <summary>Links this session to a SessionHistoryEntry for persistent workspace tracking.</summary>
     public Guid? HistoryEntryId { get; set; }
+
+    /// <summary>Raw terminal output captured during Claude Code startup.</summary>
+    public string? RawStartupText { get; set; }
 }
 
 /// <summary>Result of loading persisted sessions from disk.</summary>

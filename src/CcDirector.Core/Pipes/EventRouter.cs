@@ -39,6 +39,7 @@ public sealed class EventRouter
             return;
         }
 
+        _log?.Invoke($"Routing {msg.HookEventName} to session {session.Id} (claude={msg.SessionId[..Math.Min(8, msg.SessionId.Length)]}...)");
         session.HandlePipeEvent(msg);
     }
 }
