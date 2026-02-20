@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using CcDirector.Core.Claude;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.CliExplorer.Execution;
@@ -95,28 +96,6 @@ public sealed class ClaudeRunner
 
     public static string? FindClaudeOnPath()
     {
-        FileLog.Write("[ClaudeRunner] FindClaudeOnPath: searching...");
-
-        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var dir in pathVar.Split(Path.PathSeparator))
-        {
-            var full = Path.Combine(dir, "claude.exe");
-            if (File.Exists(full))
-            {
-                FileLog.Write($"[ClaudeRunner] FindClaudeOnPath: found at {full}");
-                return full;
-            }
-        }
-
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var npmPath = Path.Combine(appData, "npm", "claude.exe");
-        if (File.Exists(npmPath))
-        {
-            FileLog.Write($"[ClaudeRunner] FindClaudeOnPath: found at {npmPath}");
-            return npmPath;
-        }
-
-        FileLog.Write("[ClaudeRunner] FindClaudeOnPath: NOT FOUND");
-        return null;
+        return ClaudeClient.FindClaudePath();
     }
 }
