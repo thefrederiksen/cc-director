@@ -258,6 +258,8 @@
                     <TreeView x:Name="StagedTree"
                               Background="Transparent" BorderThickness="0"
                               Padding="0" Margin="4,0,0,0"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
                               Visibility="{Binding IsChecked, ElementName=StagedToggle,
                                            Converter={StaticResource BoolToVis}}" />
                 </StackPanel>
@@ -282,6 +284,8 @@
                     <TreeView x:Name="ChangesTree"
                               Background="Transparent" BorderThickness="0"
                               Padding="0" Margin="4,0,0,0"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
                               Visibility="{Binding IsChecked, ElementName=ChangesToggle,
                                            Converter={StaticResource BoolToVis}}" />
                 </StackPanel>

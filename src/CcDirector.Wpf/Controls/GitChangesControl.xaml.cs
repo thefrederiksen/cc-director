@@ -44,6 +44,7 @@ public partial class GitChangesControl : UserControl
     private DispatcherTimer? _syncTimer;
     private DateTime _lastFetchTime = DateTime.MinValue;
     private string? _repoPath;
+    private string? _lastRawOutput;
 
     public GitChangesControl()
     {
@@ -57,7 +58,7 @@ public partial class GitChangesControl : UserControl
 
         _pollTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(5)
+            Interval = TimeSpan.FromSeconds(15)
         };
         _pollTimer.Tick += PollTimer_Tick;
         _pollTimer.Start();
@@ -80,6 +81,7 @@ public partial class GitChangesControl : UserControl
         _syncTimer?.Stop();
         _syncTimer = null;
         _repoPath = null;
+        _lastRawOutput = null;
 
         StagedTree.ItemsSource = null;
         ChangesTree.ItemsSource = null;
@@ -92,6 +94,9 @@ public partial class GitChangesControl : UserControl
     {
         try
         {
+            // Skip polling when the control is not visible to the user
+            if (!IsVisible) return;
+
             await RefreshAsync();
         }
         catch (Exception ex)
@@ -180,6 +185,12 @@ public partial class GitChangesControl : UserControl
         var result = await _provider.GetStatusAsync(_repoPath);
         if (!result.Success) return;
 
+        // Skip expensive tree rebuild if git output hasn't changed
+        var rawOutput = _provider.GetCachedRawOutput(_repoPath);
+        if (rawOutput != null && rawOutput == _lastRawOutput)
+            return;
+        _lastRawOutput = rawOutput;
+
         var stagedNodes = BuildTree(result.StagedChanges);
         var unstagedNodes = BuildTree(result.UnstagedChanges);
 
@@ -205,6 +216,9 @@ public partial class GitChangesControl : UserControl
     internal static List<GitTreeNode> BuildTree(IReadOnlyList<GitFileEntry> files)
     {
         var root = new GitFolderNode();
+        // Dictionary lookup per folder level for O(1) child resolution instead of linear scan
+        var folderLookup = new Dictionary<GitFolderNode, Dictionary<string, GitFolderNode>>();
+        folderLookup[root] = new Dictionary<string, GitFolderNode>(StringComparer.Ordinal);
 
         foreach (var file in files)
         {
@@ -216,12 +230,13 @@ public partial class GitChangesControl : UserControl
             var current = root;
             foreach (var segment in segments)
             {
-                var existing = current.Children.OfType<GitFolderNode>()
-                    .FirstOrDefault(f => f.DisplayName == segment);
-                if (existing == null)
+                var childMap = folderLookup[current];
+                if (!childMap.TryGetValue(segment, out var existing))
                 {
                     existing = new GitFolderNode { DisplayName = segment };
                     current.Children.Add(existing);
+                    childMap[segment] = existing;
+                    folderLookup[existing] = new Dictionary<string, GitFolderNode>(StringComparer.Ordinal);
                 }
                 current = existing;
             }

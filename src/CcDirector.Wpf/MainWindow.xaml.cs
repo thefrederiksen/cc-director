@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using CcDirector.Core.Backends;
+using CcDirector.Core.Input;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Git;
@@ -351,11 +352,13 @@ public partial class MainWindow : Window
                 session.VerifyClaudeSession();
             }
 
-            session.OnTurnCompleted += OnSessionTurnCompleted;
+            // Turn summarization disabled — interesting feature but wasn't used in practice;
+            // better to just ask Claude for a summary when needed rather than spending tokens every turn.
+            // session.OnTurnCompleted += OnSessionTurnCompleted;
             var vm = new SessionViewModel(session, Dispatcher) { PendingPromptText = p.PendingPromptText ?? "" };
             _sessions.Add(vm);
 
-            LoadSavedSummaries(session);
+            // LoadSavedSummaries(session);
 
             var resumeInfo = resumeSessionId != null ? $"Resume={resumeSessionId[..8]}..." : "Fresh start";
             FileLog.Write($"[MainWindow] Restored session {session.Id} from {p.RepoPath} ({resumeInfo})");
@@ -497,7 +500,8 @@ public partial class MainWindow : Window
             // Create session with ConPty backend (default mode)
             var session = _sessionManager.CreateSession(repoPath, null, SessionBackendType.ConPty, resumeSessionId);
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}, elapsed={sw.ElapsedMilliseconds}ms");
-            session.OnTurnCompleted += OnSessionTurnCompleted;
+            // Turn summarization disabled — see comment in RestoreSingleSession
+            // session.OnTurnCompleted += OnSessionTurnCompleted;
             var vm = new SessionViewModel(session, Dispatcher);
             _sessions.Add(vm);
             SessionList.SelectedItem = vm;
@@ -665,8 +669,8 @@ public partial class MainWindow : Window
         // Show session header banner
         UpdateSessionHeader();
 
-        // Show summary panel for this session (if it has summaries)
-        RefreshSummaryPanel(session.Id);
+        // Turn summarization disabled — see comment in RestoreSingleSession
+        // RefreshSummaryPanel(session.Id);
 
         // Attach git changes polling
         GitChanges.Attach(session.RepoPath);
@@ -1164,6 +1168,16 @@ public partial class MainWindow : Window
             FileLog.Write($"[MainWindow] SendPromptAsync: cleared PendingPromptText for {_activeSession.Id}");
         }
 
+        // Notify user when large input is redirected to a temp file, otherwise clear
+        if (LargeInputHandler.IsLargeInput(text))
+        {
+            ShowNotification($"Text over {LargeInputHandler.LargeInputThreshold:N0} chars — saved to temp file and @filepath sent to Claude Code ({text.Length:N0} chars)");
+        }
+        else
+        {
+            ClearNotification();
+        }
+
         if (_activeSession.BackendType == SessionBackendType.Embedded && _activeEmbeddedBackend != null)
         {
             // Send keystrokes directly to the embedded console window
@@ -1177,6 +1191,19 @@ public partial class MainWindow : Window
         }
 
         PromptInput.Focus();
+    }
+
+    private void ShowNotification(string message)
+    {
+        FileLog.Write($"[MainWindow] ShowNotification: {message}");
+        NotificationText.Text = message;
+        NotificationIcon.Visibility = Visibility.Visible;
+    }
+
+    private void ClearNotification()
+    {
+        NotificationText.Text = string.Empty;
+        NotificationIcon.Visibility = Visibility.Collapsed;
     }
 
     private void ScheduleEnterRetry(Session session)
@@ -1826,12 +1853,8 @@ public partial class MainWindow : Window
                 try
                 {
                     if (!System.IO.Directory.Exists(repo.Path)) return;
-                    var result = await _gitStatusProvider.GetStatusAsync(repo.Path);
-                    if (result.Success)
-                    {
-                        int count = result.StagedChanges.Count + result.UnstagedChanges.Count;
-                        _ = Dispatcher.BeginInvoke(() => repo.UncommittedCount = count);
-                    }
+                    int count = await _gitStatusProvider.GetCountAsync(repo.Path);
+                    _ = Dispatcher.BeginInvoke(() => repo.UncommittedCount = count);
                 }
                 catch (Exception ex)
                 {
@@ -1873,12 +1896,8 @@ public partial class MainWindow : Window
                     var repoPath = vm.Session.RepoPath;
                     if (!System.IO.Directory.Exists(repoPath)) return;
 
-                    var result = await _gitStatusProvider.GetStatusAsync(repoPath);
-                    if (result.Success)
-                    {
-                        int count = result.StagedChanges.Count + result.UnstagedChanges.Count;
-                        _ = Dispatcher.BeginInvoke(() => vm.UncommittedCount = count);
-                    }
+                    int count = await _gitStatusProvider.GetCountAsync(repoPath);
+                    _ = Dispatcher.BeginInvoke(() => vm.UncommittedCount = count);
                 }
                 finally
                 {

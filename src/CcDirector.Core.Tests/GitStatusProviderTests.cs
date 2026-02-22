@@ -148,4 +148,64 @@ public class GitStatusProviderTests
         Assert.Equal("src/components", result.UnstagedChanges[0].FilePath);
         Assert.Equal("components", result.UnstagedChanges[0].FileName);
     }
+
+    // --- CountPorcelainLines tests ---
+
+    [Fact]
+    public void CountPorcelainLines_EmptyOutput_ReturnsZero()
+    {
+        Assert.Equal(0, GitStatusProvider.CountPorcelainLines(""));
+    }
+
+    [Fact]
+    public void CountPorcelainLines_WhitespaceOutput_ReturnsZero()
+    {
+        Assert.Equal(0, GitStatusProvider.CountPorcelainLines("   \n  "));
+    }
+
+    [Fact]
+    public void CountPorcelainLines_SingleUntracked_ReturnsOne()
+    {
+        Assert.Equal(1, GitStatusProvider.CountPorcelainLines("?? file.cs\n"));
+    }
+
+    [Fact]
+    public void CountPorcelainLines_SingleUnstagedModified_ReturnsOne()
+    {
+        Assert.Equal(1, GitStatusProvider.CountPorcelainLines(" M file.cs\n"));
+    }
+
+    [Fact]
+    public void CountPorcelainLines_SingleStagedModified_ReturnsOne()
+    {
+        Assert.Equal(1, GitStatusProvider.CountPorcelainLines("M  file.cs\n"));
+    }
+
+    [Fact]
+    public void CountPorcelainLines_BothStagedAndUnstaged_ReturnsTwo()
+    {
+        // MM means one staged entry + one unstaged entry for the same file
+        Assert.Equal(2, GitStatusProvider.CountPorcelainLines("MM file.cs\n"));
+    }
+
+    [Fact]
+    public void CountPorcelainLines_MultipleFiles_ReturnsCorrectCount()
+    {
+        // " M" = 1 unstaged, "A " = 1 staged, "??" = 1 unstaged, " D" = 1 unstaged
+        var output = " M src/File1.cs\nA  src/File2.cs\n?? README.md\n D old.txt\n";
+        Assert.Equal(4, GitStatusProvider.CountPorcelainLines(output));
+    }
+
+    [Fact]
+    public void CountPorcelainLines_MatchesParseOutput()
+    {
+        // Verify CountPorcelainLines matches the sum from ParsePorcelainOutput
+        var output = " M src/File1.cs\nA  src/File2.cs\n?? README.md\nMM both.cs\n D old.txt\n";
+
+        int countFromLines = GitStatusProvider.CountPorcelainLines(output);
+        var parsed = GitStatusProvider.ParsePorcelainOutput(output);
+        int countFromParse = parsed.StagedChanges.Count + parsed.UnstagedChanges.Count;
+
+        Assert.Equal(countFromParse, countFromLines);
+    }
 }
