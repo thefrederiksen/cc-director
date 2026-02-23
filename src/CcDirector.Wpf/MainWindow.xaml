@@ -397,6 +397,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <!-- Session header banner -->
@@ -750,8 +751,32 @@
                 </TabControl>
                 </Grid>
 
+                <!-- Notification info bar (always visible, between terminal and prompt) -->
+                <Border x:Name="NotificationBar" Grid.Row="2"
+                        Background="{StaticResource SidebarBackground}"
+                        BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
+                        Padding="8,4">
+                    <DockPanel>
+                        <!-- Info icon (left) -->
+                        <TextBlock x:Name="NotificationIcon" DockPanel.Dock="Left"
+                                   Text="&#x2139;"
+                                   Foreground="#3B82F6"
+                                   FontSize="14"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0"
+                                   Visibility="Collapsed" />
+                        <!-- Message text (fills remaining space) -->
+                        <TextBlock x:Name="NotificationText"
+                                   Text=""
+                                   Foreground="#CCCCCC"
+                                   FontSize="12"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                </Border>
+
                 <!-- Prompt bar (center column only) -->
-                <Border x:Name="PromptBar" Grid.Row="2" Background="{StaticResource SidebarBackground}"
+                <Border x:Name="PromptBar" Grid.Row="3" Background="{StaticResource SidebarBackground}"
                         BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8"
                         SizeChanged="PromptArea_SizeChanged"
                         Visibility="Collapsed">
