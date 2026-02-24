@@ -1,17 +1,17 @@
 ---
 name: ui-test
-description: Interact with and test the CC Director WPF app using the cc_click CLI tool. Use this to click buttons, read text, take screenshots, list elements, right-click session tabs, and navigate the UI.
+description: Interact with and test the CC Director WPF app using the cc-click CLI tool. Use this to click buttons, read text, take screenshots, list elements, right-click session tabs, and navigate the UI.
 disable-model-invocation: true
 argument-hint: [action or test description]
 ---
 
 # CC Director UI Automation
 
-Interact with the CC Director WPF application using the `cc_click` CLI tool (located at `src/CcClick`). Use this skill to test UI interactions, take screenshots, and verify app behavior.
+Interact with the CC Director WPF application using the `cc-click` CLI tool (located at `src/CcClick`). Use this skill to test UI interactions, take screenshots, and verify app behavior.
 
 ## Input: $ARGUMENTS
 
-## The cc_click CLI Tool
+## The cc-click CLI Tool
 
 Run all commands from the repo root via:
 ```

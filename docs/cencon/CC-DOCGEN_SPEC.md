@@ -1,4 +1,4 @@
-# cc_docgen - Architecture Diagram Generator
+# cc-docgen - Architecture Diagram Generator
 
 **Version:** 1.0.0
 **Status:** Specification (not yet implemented)
@@ -8,14 +8,14 @@
 
 ## Overview
 
-`cc_docgen` is a CLI tool that reads `architecture_manifest.yaml` and generates C4 model diagrams as PNG images. It automates the creation of context and container diagrams from the machine-readable manifest.
+`cc-docgen` is a CLI tool that reads `architecture_manifest.yaml` and generates C4 model diagrams as PNG images. It automates the creation of context and container diagrams from the machine-readable manifest.
 
 ---
 
 ## Command Interface
 
 ```bash
-cc_docgen generate [OPTIONS]
+cc-docgen generate [OPTIONS]
 
 Options:
   --manifest PATH    Path to architecture_manifest.yaml (default: ./docs/cencon/architecture_manifest.yaml)
@@ -30,16 +30,16 @@ Options:
 
 ```bash
 # Generate diagrams with defaults
-cc_docgen generate
+cc-docgen generate
 
 # Specify manifest and output
-cc_docgen generate --manifest ./docs/cencon/architecture_manifest.yaml --output ./docs/cencon/
+cc-docgen generate --manifest ./docs/cencon/architecture_manifest.yaml --output ./docs/cencon/
 
 # Generate SVG format
-cc_docgen generate --format svg
+cc-docgen generate --format svg
 
 # Verbose mode for debugging
-cc_docgen generate --verbose
+cc-docgen generate --verbose
 ```
 
 ---
@@ -225,7 +225,7 @@ containers:
 
 ## Integration Notes
 
-### When to Run cc_docgen
+### When to Run cc-docgen
 
 1. **After modifying architecture_manifest.yaml** - Regenerate diagrams
 2. **During CI/CD** - Ensure diagrams are current
@@ -236,7 +236,7 @@ containers:
 The `/review-code` skill checks if diagrams exist. If `context.png` or `container.png` are missing but `architecture_manifest.yaml` exists, it will add a SUGGESTION:
 
 ```
-SUGGESTION: Diagrams missing. Run 'cc_docgen generate' to create them.
+SUGGESTION: Diagrams missing. Run 'cc-docgen generate' to create them.
 ```
 
 ### CI/CD Integration Example
@@ -246,7 +246,7 @@ SUGGESTION: Diagrams missing. Run 'cc_docgen generate' to create them.
 - name: Generate architecture diagrams
   run: |
     pip install diagrams pyyaml
-    cc_docgen generate --manifest docs/cencon/architecture_manifest.yaml
+    cc-docgen generate --manifest docs/cencon/architecture_manifest.yaml
 
 - name: Verify diagrams generated
   run: |
@@ -266,13 +266,13 @@ SUGGESTION: Diagrams missing. Run 'cc_docgen generate' to create them.
 ### Install Tool
 
 ```bash
-pip install cc_docgen
+pip install cc-docgen
 ```
 
 Or from source:
 
 ```bash
-cd cc_tools/src/cc_docgen
+cd cc_tools/src/cc-docgen
 pip install -e .
 ```
 
@@ -281,7 +281,7 @@ pip install -e .
 ## Project Structure (When Implemented)
 
 ```
-cc_tools/src/cc_docgen/
+cc_tools/src/cc-docgen/
     __init__.py
     cli.py              # Click CLI entry point
     generator.py        # Diagram generation logic
@@ -306,4 +306,4 @@ cc_tools/src/cc_docgen/
 
 ---
 
-*Specification for cc_docgen v1.0 - Implementation by separate agent*
+*Specification for cc-docgen v1.0 - Implementation by separate agent*

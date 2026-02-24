@@ -290,7 +290,7 @@ Files created:
   docs/cencon/security_profile.yaml
   docs/cencon/INDEX.md
 
-To generate diagrams, run: cc_docgen generate
+To generate diagrams, run: cc-docgen generate
 ```
 
 ## Notes

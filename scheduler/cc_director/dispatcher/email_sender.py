@@ -142,7 +142,7 @@ class EmailSender:
     ) -> List[str]:
         """Build cc_outlook send command."""
         cmd = [
-            r"C:\cc-tools\cc_outlook.exe", "send",
+            r"C:\cc-tools\cc-outlook.exe", "send",
             "-t", to_email,
             "-s", subject,
             "-b", body,
@@ -170,7 +170,7 @@ class EmailSender:
     ) -> List[str]:
         """Build cc_gmail send command."""
         cmd = [
-            r"C:\cc-tools\cc_gmail.exe",
+            r"C:\cc-tools\cc-gmail.exe",
             "-a", account,
             "send",
             "-t", to_email,
