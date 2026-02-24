@@ -1,14 +1,18 @@
 # CC Director
 
-A Windows desktop application for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions simultaneously. Run, monitor, and switch between independent Claude Code instances — each working on its own repository — from a single unified interface.
+A desktop application for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions simultaneously. Run, monitor, and switch between independent Claude Code instances — each working on its own repository — from a single unified interface.
+
+> **Mac/Linux Support (Experimental):** Cross-platform backend support has been added but needs testing. See [Help Wanted: Mac Testers](#help-wanted-mac-testers) below.
 
 ![CC Director](images/cc-director-main.png)
 
-## Download
+## Download (Windows)
 
 **[Download cc_director.exe](releases/cc_director.exe)** - Pre-built Windows executable (no build required)
 
 Requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) installed on your machine.
+
+*Mac/Linux users: Build from source (see [Building](#building)). GUI not yet available — backend only.*
 
 ## Features
 
@@ -66,26 +70,42 @@ CcDirector.sln
 
 **How it works:**
 
-1. CC Director spawns `claude.exe` in native console windows and overlays them onto the WPF UI
-2. A PowerShell relay script is installed as a Claude Code hook — it forwards hook events (JSON) over a Windows named pipe
-3. A pipe server inside CC Director receives events, routes them to the correct session, and updates the activity state
-4. The WPF UI reflects state changes in real-time via data binding
+1. CC Director spawns Claude Code with a pseudo-terminal (ConPTY on Windows, PTY on Mac/Linux)
+2. A relay script is installed as a Claude Code hook — it forwards hook events (JSON) over IPC
+3. An IPC server inside CC Director receives events, routes them to the correct session, and updates the activity state
+4. The UI reflects state changes in real-time via data binding
 
 ```
-Claude Code ──hook──▶ PowerShell relay ──named pipe──▶ CC Director
-                                                          │
-                                              ┌───────────┴───────────┐
-                                          EventRouter          Session UI
-                                        (maps session_id)    (activity colors,
-                                                               status badges)
+                          Windows                              Mac/Linux
+                          -------                              ---------
+Claude Code ──hook──▶ PowerShell relay               Python relay script
+                            │                                   │
+                      Named pipe                         Unix domain socket
+                      (CC_ClaudeDirector)              (~/.cc_director/director.sock)
+                            │                                   │
+                            └──────────────┬────────────────────┘
+                                           ▼
+                                     CC Director
+                                           │
+                               ┌───────────┴───────────┐
+                           EventRouter          Session UI
+                         (maps session_id)    (activity colors,
+                                                status badges)
 ```
 
 ## Requirements
 
+### Windows
 - Windows 10/11
-- .NET 10 SDK (or later)
+- .NET 10 SDK (or Desktop Runtime for pre-built exe)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and available on PATH
 - **Windows Console Host** as default terminal (not Windows Terminal — a warning dialog will guide you if needed)
+
+### Mac/Linux (Experimental)
+- macOS 12+ or Linux with glibc
+- .NET 10 SDK
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and available on PATH
+- Python 3 (for hook relay script)
 
 ## Building
 
@@ -116,6 +136,52 @@ Edit `src/CcDirector.Wpf/appsettings.json` to configure:
 - **Repositories** — seed list of repository paths to register on first launch
 
 Session state and repository registry are persisted in `~/Documents/CcDirector/`.
+
+## Help Wanted: Mac Testers
+
+We've added experimental cross-platform support for macOS and Linux, but **we need help testing it** since we don't have regular access to Mac hardware.
+
+### What's Been Implemented
+
+| Component | Windows | Mac/Linux |
+|-----------|---------|-----------|
+| Terminal backend | ConPTY | Unix PTY (openpty) |
+| IPC for hooks | Named pipes | Unix domain sockets |
+| Hook relay | PowerShell | Python |
+| UI | WPF | Avalonia (planned) |
+
+The core backend (`CcDirector.Core`) is now cross-platform. The UI layer (`CcDirector.Wpf`) is Windows-only, but we plan to add an Avalonia UI for Mac/Linux.
+
+### How to Help Test
+
+1. **Clone and build on Mac:**
+   ```bash
+   git clone https://github.com/anthropics/cc_director.git
+   cd cc_director
+   dotnet build src/CcDirector.Core/
+   ```
+
+2. **Run the unit tests:**
+   ```bash
+   dotnet test src/CcDirector.Core.Tests/
+   ```
+
+3. **Test the Unix PTY manually** (if you're comfortable with C#):
+   - The `UnixPtyBackend` should spawn processes with proper terminal emulation
+   - The `UnixSocketServer` should accept connections at `~/.cc_director/director.sock`
+   - The Python hook relay should send JSON to the socket
+
+4. **Report issues:**
+   - Open an issue with your macOS/Linux version, .NET version, and any error messages
+   - Bonus points for stack traces and reproduction steps
+
+### Known Limitations (Mac/Linux)
+
+- **No GUI yet** — only the backend is cross-platform; UI requires Avalonia port
+- **Embedded console mode** (`SessionBackendType.Embedded`) is Windows-only
+- **Untested on Apple Silicon** — should work but needs verification
+
+See [docs/plan-mac-support.md](docs/plan-mac-support.md) for the full implementation plan.
 
 ## License
 

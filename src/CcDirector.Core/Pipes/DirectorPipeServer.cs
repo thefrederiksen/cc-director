@@ -7,8 +7,9 @@ namespace CcDirector.Core.Pipes;
 /// <summary>
 /// Listens on a named pipe for JSON messages from Claude Code hook relays.
 /// Each client writes one JSON line, then disconnects.
+/// Windows only - use UnixSocketServer on macOS/Linux.
 /// </summary>
-public sealed class DirectorPipeServer : IDisposable
+public sealed class DirectorPipeServer : IDirectorServer
 {
     public const string PipeName = "CC_ClaudeDirector";
 
@@ -90,9 +91,14 @@ public sealed class DirectorPipeServer : IDisposable
         }
     }
 
-    public void Dispose()
+    public void Stop()
     {
         _cts.Cancel();
+    }
+
+    public void Dispose()
+    {
+        Stop();
         _cts.Dispose();
     }
 }

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Configuration;
 
@@ -65,10 +66,18 @@ public sealed class SessionManager : IDisposable
 
         ISessionBackend backend = backendType switch
         {
-            SessionBackendType.ConPty => new ConPtyBackend(_options.DefaultBufferSizeBytes),
+            // ConPty on Windows, UnixPty on macOS/Linux
+            SessionBackendType.ConPty when RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                => new ConPtyBackend(_options.DefaultBufferSizeBytes),
+            SessionBackendType.ConPty
+                => new UnixPtyBackend(_options.DefaultBufferSizeBytes),
             SessionBackendType.Pipe => new PipeBackend(_options.DefaultBufferSizeBytes),
-            SessionBackendType.Embedded => throw new InvalidOperationException(
-                "Use CreateEmbeddedSession for embedded mode - requires WPF backend."),
+            SessionBackendType.Embedded when RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                => throw new InvalidOperationException(
+                    "Use CreateEmbeddedSession for embedded mode - requires WPF backend."),
+            SessionBackendType.Embedded
+                => throw new PlatformNotSupportedException(
+                    "Embedded mode is only supported on Windows."),
             _ => throw new ArgumentOutOfRangeException(nameof(backendType))
         };
 
