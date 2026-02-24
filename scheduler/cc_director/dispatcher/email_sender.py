@@ -1,4 +1,4 @@
-"""Email sender using cc_outlook and cc_gmail CLI tools."""
+"""Email sender using cc-outlook and cc-gmail CLI tools."""
 
 import asyncio
 import logging
@@ -21,7 +21,7 @@ class SendResult:
 
 
 class EmailSender:
-    """Send emails via cc_outlook (Microsoft 365) or cc_gmail (Google)."""
+    """Send emails via cc-outlook (Microsoft 365) or cc-gmail (Google)."""
 
     def __init__(self):
         """Initialize the email sender."""
@@ -75,9 +75,9 @@ class EmailSender:
             )
 
         # Build command based on tool
-        if account["tool"] == "cc_outlook":
+        if account["tool"] == "cc-outlook":
             cmd = self._build_outlook_command(to_email, subject, content, email_specific)
-        else:  # cc_gmail
+        else:  # cc-gmail
             cmd = self._build_gmail_command(
                 account["tool_account"],
                 to_email,
@@ -140,7 +140,7 @@ class EmailSender:
         body: str,
         email_specific: Dict[str, Any]
     ) -> List[str]:
-        """Build cc_outlook send command."""
+        """Build cc-outlook send command."""
         cmd = [
             r"C:\cc-tools\cc-outlook.exe", "send",
             "-t", to_email,
@@ -168,7 +168,7 @@ class EmailSender:
         body: str,
         email_specific: Dict[str, Any]
     ) -> List[str]:
-        """Build cc_gmail send command."""
+        """Build cc-gmail send command."""
         cmd = [
             r"C:\cc-tools\cc-gmail.exe",
             "-a", account,

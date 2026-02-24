@@ -1,4 +1,4 @@
-"""LinkedIn sender using cc_linkedin CLI tool."""
+"""LinkedIn sender using cc-linkedin CLI tool."""
 
 import asyncio
 import logging
@@ -26,7 +26,7 @@ class SendResult:
 
 
 class LinkedInSender:
-    """Send LinkedIn posts and comments via cc_linkedin CLI."""
+    """Send LinkedIn posts and comments via cc-linkedin CLI."""
 
     def __init__(self, db_path: Optional[Path] = None):
         """Initialize the LinkedIn sender.
@@ -39,7 +39,7 @@ class LinkedInSender:
 
     async def send(self, item: Dict[str, Any]) -> SendResult:
         """
-        Send LinkedIn content using cc_linkedin CLI.
+        Send LinkedIn content using cc-linkedin CLI.
 
         Args:
             item: Content item dictionary with platform=linkedin
@@ -187,7 +187,7 @@ class LinkedInSender:
         cmd: List[str],
         action_type: str
     ) -> SendResult:
-        """Execute cc_linkedin command.
+        """Execute cc-linkedin command.
 
         Args:
             cmd: Command and arguments
@@ -230,7 +230,7 @@ class LinkedInSender:
                 )
 
         except FileNotFoundError:
-            error_msg = f"cc_linkedin not found at {CC_LINKEDIN_PATH}"
+            error_msg = f"cc-linkedin not found at {CC_LINKEDIN_PATH}"
             logger.error(error_msg)
             return SendResult(
                 success=False,

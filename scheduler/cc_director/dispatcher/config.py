@@ -9,17 +9,17 @@ from typing import Dict, Optional
 SEND_FROM_ACCOUNTS: Dict[str, Dict[str, Optional[str]]] = {
     "mindzie": {
         "email": "soren.frederiksen@mindzie.com",
-        "tool": "cc_outlook",
-        "tool_account": None,  # cc_outlook uses default
+        "tool": "cc-outlook",
+        "tool_account": None,  # cc-outlook uses default
     },
     "personal": {
         "email": "soren@duksrevo.com",
-        "tool": "cc_gmail",
+        "tool": "cc-gmail",
         "tool_account": "personal",
     },
     "consulting": {
         "email": "soren@centerconsulting.com",
-        "tool": "cc_gmail",
+        "tool": "cc-gmail",
         "tool_account": "consulting",
     },
 }
