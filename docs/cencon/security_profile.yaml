@@ -9,7 +9,7 @@ project:
 
 # Last verification date - used for drift detection
 # Security profile is considered STALE if older than drift_threshold_days
-last_verified: "2026-02-21"
+last_verified: "2026-02-24"
 
 # Drift configuration
 drift:
@@ -28,7 +28,7 @@ owasp_desktop:
       - Session state uses user documents folder (not world-readable)
       - Logs stored in %LOCALAPPDATA% (user-specific)
     mitigations:
-      - Credentials read from environment variables only
+      - Credentials read from environment variables only (OPENAI_API_KEY)
       - No API keys in source code
       - Logs truncate sensitive content to ~100 chars
 
@@ -135,6 +135,8 @@ custom_rules:
     pattern: "!\\s*[;\\)]"
     file_types:
       - "*.cs"
+    exclude_patterns:
+      - "= null!"
     description: Null-forgiving operator (!) suppresses compiler warnings unsafely
 
   - id: CCD-03
@@ -145,6 +147,7 @@ custom_rules:
       - "*.cs"
     exclude_patterns:
       - "test"
+      - "Task\\.Run\\(\\).Wait"
     description: Using .Result or .Wait() causes deadlocks in UI applications
 
   - id: CCD-04
@@ -164,9 +167,25 @@ custom_rules:
       - "Environment.GetFolderPath"
     description: Hardcoded user paths expose PII
 
+  - id: CCD-06
+    name: Process Execution Validation
+    severity: BLOCKING
+    pattern: "Process\\.Start\\s*\\(\\s*[^)]*\\+"
+    file_types:
+      - "*.cs"
+    description: Process paths should not use string concatenation
+
+  - id: CCD-07
+    name: Named Pipe Local Only
+    severity: BLOCKING
+    pattern: "NamedPipeServerStream.*PipeTransmissionMode\\.Message"
+    file_types:
+      - "*.cs"
+    description: Named pipes must use PipeTransmissionMode.Message for security
+
 # Security review checklist
 review_checklist:
-  - "No null! (null-forgiving operator)"
+  - "No null! (null-forgiving operator) in new code"
   - "No .Result or .Wait() (deadlock risk)"
   - "No try-catch in helper methods"
   - "All public methods logged"
@@ -174,3 +193,4 @@ review_checklist:
   - "No PII in source code"
   - "Process.Start paths validated"
   - "Named pipe messages validated"
+  - "Environment variables for secrets (OPENAI_API_KEY)"

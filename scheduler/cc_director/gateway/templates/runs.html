@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Runs - CC Director{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <h1 class="text-2xl font-bold text-gray-900">Run History</h1>
+        <button onclick="loadRuns()" class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            Refresh
+        </button>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white shadow rounded-lg p-4">
+        <div class="flex flex-wrap items-center gap-4">
+            <div>
+                <label for="filter-job" class="block text-sm font-medium text-gray-700">Job</label>
+                <select id="filter-job" onchange="loadRuns()" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md">
+                    <option value="">All Jobs</option>
+                </select>
+            </div>
+            <div>
+                <label for="filter-limit" class="block text-sm font-medium text-gray-700">Show</label>
+                <select id="filter-limit" onchange="loadRuns()" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md">
+                    <option value="20">20 runs</option>
+                    <option value="50" selected>50 runs</option>
+                    <option value="100">100 runs</option>
+                </select>
+            </div>
+            <div class="flex items-center pt-6">
+                <label class="flex items-center">
+                    <input type="checkbox" id="filter-failed" onchange="loadRuns()" class="rounded border-gray-300 text-primary focus:ring-primary">
+                    <span class="ml-2 text-sm text-gray-600">Failed only</span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- Runs table -->
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Exit Code</th>
+                </tr>
+            </thead>
+            <tbody id="runs-tbody" class="bg-white divide-y divide-gray-200">
+                <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadJobsForFilter();
+    loadRuns();
+});
+
+async function loadJobsForFilter() {
+    try {
+        const response = await fetch('/api/jobs?include_disabled=true');
+        if (response.ok) {
+            const jobs = await response.json();
+            const select = document.getElementById('filter-job');
+            jobs.forEach(job => {
+                const option = document.createElement('option');
+                option.value = job.name;
+                option.textContent = job.name;
+                select.appendChild(option);
+            });
+        }
+    } catch (error) {
+        console.error('Failed to load jobs for filter:', error);
+    }
+}
+
+async function loadRuns() {
+    const jobName = document.getElementById('filter-job').value;
+    const limit = document.getElementById('filter-limit').value;
+    const failedOnly = document.getElementById('filter-failed').checked;
+
+    let url = `/api/runs?limit=${limit}&failed_only=${failedOnly}`;
+    if (jobName) {
+        url += `&job_name=${encodeURIComponent(jobName)}`;
+    }
+
+    try {
+        const response = await fetch(url);
+        if (response.ok) {
+            const runs = await response.json();
+            const tbody = document.getElementById('runs-tbody');
+            if (runs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">No runs found</td></tr>';
+            } else {
+                tbody.innerHTML = runs.map(run => `
+                    <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location.href='/runs/${run.id}'">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="text-sm font-medium text-primary">${run.job_name}</span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            ${formatTime(run.started_at)}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            ${formatDuration(run.duration_seconds)}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-${run.status}">
+                                ${run.status}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            ${run.exit_code !== null ? run.exit_code : '-'}
+                        </td>
+                    </tr>
+                `).join('');
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load runs:', error);
+    }
+}
+</script>
+{% endblock %}

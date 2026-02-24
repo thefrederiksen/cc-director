@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - CC Director{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <button onclick="location.reload()" class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            Refresh
+        </button>
+    </div>
+
+    <!-- Stats cards -->
+    <div id="stats-cards" class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-8 h-8 bg-blue-500 rounded-md flex items-center justify-center">
+                            <span class="text-white text-sm font-bold" id="stat-running">-</span>
+                        </div>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Running</dt>
+                            <dd class="text-lg font-semibold text-gray-900" id="stat-running-label">Jobs</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-8 h-8 bg-green-500 rounded-md flex items-center justify-center">
+                            <span class="text-white text-sm font-bold" id="stat-success">-</span>
+                        </div>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Successful</dt>
+                            <dd class="text-lg font-semibold text-gray-900">Today</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-8 h-8 bg-red-500 rounded-md flex items-center justify-center">
+                            <span class="text-white text-sm font-bold" id="stat-failed">-</span>
+                        </div>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Failed</dt>
+                            <dd class="text-lg font-semibold text-gray-900">Today</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-8 h-8 bg-gray-500 rounded-md flex items-center justify-center">
+                            <span class="text-white text-sm font-bold" id="stat-total">-</span>
+                        </div>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Total Runs</dt>
+                            <dd class="text-lg font-semibold text-gray-900">Today</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Recent Activity -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+                <h3 class="text-lg leading-6 font-medium text-gray-900">Recent Activity</h3>
+            </div>
+            <div id="recent-runs" class="divide-y divide-gray-200">
+                <div class="p-4 text-center text-gray-500">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Active Jobs -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+                <h3 class="text-lg leading-6 font-medium text-gray-900">Active Jobs</h3>
+            </div>
+            <div id="active-jobs" class="divide-y divide-gray-200">
+                <div class="p-4 text-center text-gray-500">Loading...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadDashboardData();
+    // Refresh every 30 seconds
+    setInterval(loadDashboardData, 30000);
+});
+
+async function loadDashboardData() {
+    try {
+        // Load stats
+        const statsResponse = await fetch('/api/runs/stats/today');
+        if (statsResponse.ok) {
+            const stats = await statsResponse.json();
+            document.getElementById('stat-running').textContent = stats.running_count;
+            document.getElementById('stat-success').textContent = stats.successful_runs_today;
+            document.getElementById('stat-failed').textContent = stats.failed_runs_today + stats.timeout_runs_today;
+            document.getElementById('stat-total').textContent = stats.total_runs_today;
+        }
+
+        // Load recent runs
+        const runsResponse = await fetch('/api/runs?limit=10');
+        if (runsResponse.ok) {
+            const runs = await runsResponse.json();
+            const runsContainer = document.getElementById('recent-runs');
+            if (runs.length === 0) {
+                runsContainer.innerHTML = '<div class="p-4 text-center text-gray-500">No recent runs</div>';
+            } else {
+                runsContainer.innerHTML = runs.map(run => `
+                    <a href="/runs/${run.id}" class="block hover:bg-gray-50">
+                        <div class="px-4 py-4 sm:px-6">
+                            <div class="flex items-center justify-between">
+                                <p class="text-sm font-medium text-primary truncate">${run.job_name}</p>
+                                <span class="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-${run.status}">
+                                    ${run.status}
+                                </span>
+                            </div>
+                            <div class="mt-2 sm:flex sm:justify-between">
+                                <div class="sm:flex">
+                                    <p class="text-sm text-gray-500">${formatDuration(run.duration_seconds)}</p>
+                                </div>
+                                <div class="mt-2 flex items-center text-sm text-gray-500 sm:mt-0">
+                                    ${formatTime(run.started_at)}
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                `).join('');
+            }
+        }
+
+        // Load active jobs
+        const jobsResponse = await fetch('/api/jobs');
+        if (jobsResponse.ok) {
+            const jobs = await jobsResponse.json();
+            const enabledJobs = jobs.filter(j => j.enabled);
+            const jobsContainer = document.getElementById('active-jobs');
+            if (enabledJobs.length === 0) {
+                jobsContainer.innerHTML = '<div class="p-4 text-center text-gray-500">No active jobs</div>';
+            } else {
+                jobsContainer.innerHTML = enabledJobs.slice(0, 10).map(job => `
+                    <a href="/jobs/${job.name}" class="block hover:bg-gray-50">
+                        <div class="px-4 py-4 sm:px-6">
+                            <div class="flex items-center justify-between">
+                                <p class="text-sm font-medium text-primary truncate">${job.name}</p>
+                                ${job.is_running ? '<span class="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-running">Running</span>' : ''}
+                            </div>
+                            <div class="mt-2 sm:flex sm:justify-between">
+                                <div class="sm:flex">
+                                    <p class="text-sm text-gray-500 font-mono">${job.cron}</p>
+                                </div>
+                                <div class="mt-2 flex items-center text-sm text-gray-500 sm:mt-0">
+                                    ${job.next_run ? 'Next: ' + formatTime(job.next_run) : 'Not scheduled'}
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                `).join('');
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load dashboard data:', error);
+    }
+}
+</script>
+{% endblock %}

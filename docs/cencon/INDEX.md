@@ -1,6 +1,6 @@
 # CC Director - CenCon Documentation Index
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Last Updated:** 2026-02-21
 **Schema:** CenCon Method v1.0
 
@@ -39,8 +39,9 @@ This document serves as the central reference combining product requirements, sy
 | MainWindow | Primary application window with session sidebar and content area |
 | EmbeddedBackend | Native console window overlay using Win32 SetParent |
 | EmbeddedConsoleHost | Control for hosting embedded console windows |
-| Dialogs | Modal dialogs (NewSession, Rename, Relink, Settings) |
-| Voice UI | Voice mode controls and status display |
+| TerminalControl | Custom control for terminal rendering with ANSI parsing |
+| Dialogs | Modal dialogs (NewSession, Rename, Relink, Close, Clone, GitHubRepoPicker) |
+| Voice UI | Voice mode controls and audio playback/recording |
 
 ### Core Services Layer (CcDirector.Core)
 
@@ -52,7 +53,9 @@ This document serves as the central reference combining product requirements, sy
 | EventRouter | Routes pipe messages to appropriate sessions |
 | HookInstaller | Manages Claude Code hooks in settings.json |
 | GitStatusProvider | Async git status polling |
+| GitSyncStatusProvider | Branch ahead/behind status tracking |
 | ClaudeSessionReader | Session verification via .jsonl matching |
+| ClaudeClient | Helper library for Claude CLI interactions |
 | VoiceModeController | Orchestrates voice interaction flow |
 | CircularTerminalBuffer | Thread-safe ring buffer for terminal output |
 | FileLog | Thread-safe async file logging |
@@ -118,6 +121,39 @@ claude.exe
 [Hook Event Flow above]
 ```
 
+### Voice Mode Flow
+
+```
+User activates voice mode
+        |
+        v
+AudioRecorder.StartAsync()
+        |
+        | Records audio to WAV
+        v
+OpenAiSttService.TranscribeAsync()
+        |
+        | Converts speech to text
+        v
+Session.SendInputAsync()
+        |
+        | Sends prompt to Claude
+        v
+ClaudeResponseExtractor.GetLatestResponse()
+        |
+        | Extracts response from terminal
+        v
+ClaudeSummarizer.SummarizeAsync()
+        |
+        | Condenses for speech
+        v
+OpenAiTtsService.SynthesizeAsync()
+        |
+        | Generates audio
+        v
+AudioPlayer.PlayAsync()
+```
+
 ---
 
 ## Security Profile Summary
@@ -128,7 +164,7 @@ claude.exe
 
 - **Process Isolation**: Each Claude session runs in isolated conhost.exe process
 - **IPC Boundary**: Named pipes local-only (no network exposure)
-- **Credential Handling**: No secrets in source; environment variables only
+- **Credential Handling**: No secrets in source; environment variables only (OPENAI_API_KEY)
 - **Input Validation**: All paths validated before Process.Start
 - **Logging**: Sensitive data truncated; no secrets logged
 
@@ -152,7 +188,6 @@ See [security_profile.yaml](security_profile.yaml) for full scan rules and drift
 | [security_profile.yaml](security_profile.yaml) | Security scan rules and drift config |
 | [CC_DOCGEN_SPEC.md](CC_DOCGEN_SPEC.md) | Diagram generator specification |
 | [../CodingStyle.md](../CodingStyle.md) | Coding standards |
-| [../CODE_REVIEW_GUIDE.md](../CODE_REVIEW_GUIDE.md) | Comprehensive review guide |
 
 ---
 

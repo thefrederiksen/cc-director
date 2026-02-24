@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+
+{% block title %}{{ job_name }} - CC Director{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <div class="flex items-center space-x-4">
+            <a href="/jobs" class="text-gray-500 hover:text-gray-700">&larr; Back to Jobs</a>
+            <h1 class="text-2xl font-bold text-gray-900" id="job-title">{{ job_name }}</h1>
+        </div>
+        <div class="space-x-2">
+            <button id="btn-trigger" onclick="triggerJob()" class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary hover:bg-blue-700">
+                Trigger Now
+            </button>
+            <button id="btn-toggle" onclick="toggleJob()" class="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                Disable
+            </button>
+            <button onclick="deleteJob()" class="inline-flex items-center px-4 py-2 border border-red-300 shadow-sm text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50">
+                Delete
+            </button>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Job Details -->
+        <div class="lg:col-span-2 space-y-6">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900">Job Details</h3>
+                </div>
+                <div class="px-4 py-5 sm:p-6">
+                    <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Name</dt>
+                            <dd class="mt-1 text-sm text-gray-900" id="detail-name">-</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Status</dt>
+                            <dd class="mt-1" id="detail-status">-</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Schedule</dt>
+                            <dd class="mt-1 text-sm text-gray-900 font-mono" id="detail-cron">-</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Next Run</dt>
+                            <dd class="mt-1 text-sm text-gray-900" id="detail-next-run">-</dd>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <dt class="text-sm font-medium text-gray-500">Command</dt>
+                            <dd class="mt-1 text-sm text-gray-900 font-mono bg-gray-50 p-2 rounded" id="detail-command">-</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Working Directory</dt>
+                            <dd class="mt-1 text-sm text-gray-900" id="detail-workdir">-</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Timeout</dt>
+                            <dd class="mt-1 text-sm text-gray-900" id="detail-timeout">-</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Tags</dt>
+                            <dd class="mt-1 text-sm text-gray-900" id="detail-tags">-</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500">Created</dt>
+                            <dd class="mt-1 text-sm text-gray-900" id="detail-created">-</dd>
+                        </div>
+                    </dl>
+                </div>
+            </div>
+
+            <!-- Edit Form -->
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900">Edit Job</h3>
+                </div>
+                <form id="edit-form" onsubmit="saveJob(event)" class="px-4 py-5 sm:p-6">
+                    <div class="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-2">
+                        <div>
+                            <label for="edit-cron" class="block text-sm font-medium text-gray-700">Schedule</label>
+                            <input type="text" id="edit-cron" name="cron" required
+                                class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm font-mono">
+                        </div>
+                        <div>
+                            <label for="edit-timeout" class="block text-sm font-medium text-gray-700">Timeout (seconds)</label>
+                            <input type="number" id="edit-timeout" name="timeout_seconds" min="1" max="86400"
+                                class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label for="edit-command" class="block text-sm font-medium text-gray-700">Command</label>
+                            <input type="text" id="edit-command" name="command" required
+                                class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm font-mono">
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label for="edit-workdir" class="block text-sm font-medium text-gray-700">Working Directory</label>
+                            <input type="text" id="edit-workdir" name="working_dir"
+                                class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                        <div>
+                            <label for="edit-tags" class="block text-sm font-medium text-gray-700">Tags</label>
+                            <input type="text" id="edit-tags" name="tags"
+                                class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                        </div>
+                    </div>
+                    <div class="mt-6">
+                        <button type="submit"
+                            class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary hover:bg-blue-700">
+                            Save Changes
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Recent Runs -->
+        <div class="lg:col-span-1">
+            <div class="bg-white shadow rounded-lg">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900">Recent Runs</h3>
+                </div>
+                <div id="recent-runs" class="divide-y divide-gray-200 max-h-96 overflow-y-auto">
+                    <div class="p-4 text-center text-gray-500">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const jobName = '{{ job_name }}';
+let currentJob = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadJob();
+    loadRuns();
+});
+
+async function loadJob() {
+    try {
+        const response = await fetch(`/api/jobs/${jobName}`);
+        if (response.ok) {
+            currentJob = await response.json();
+            updateJobDisplay(currentJob);
+        } else if (response.status === 404) {
+            alert('Job not found');
+            window.location.href = '/jobs';
+        }
+    } catch (error) {
+        console.error('Failed to load job:', error);
+    }
+}
+
+function updateJobDisplay(job) {
+    document.getElementById('detail-name').textContent = job.name;
+    document.getElementById('detail-cron').textContent = job.cron;
+    document.getElementById('detail-command').textContent = job.command;
+    document.getElementById('detail-workdir').textContent = job.working_dir || '-';
+    document.getElementById('detail-timeout').textContent = job.timeout_seconds + 's';
+    document.getElementById('detail-tags').textContent = job.tags || '-';
+    document.getElementById('detail-next-run').textContent = job.next_run ? formatTime(job.next_run) : '-';
+    document.getElementById('detail-created').textContent = job.created_at ? formatTime(job.created_at) : '-';
+
+    // Status
+    let statusHtml;
+    if (job.is_running) {
+        statusHtml = '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-running">Running</span>';
+    } else if (job.enabled) {
+        statusHtml = '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-success">Enabled</span>';
+    } else {
+        statusHtml = '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-pending">Disabled</span>';
+    }
+    document.getElementById('detail-status').innerHTML = statusHtml;
+
+    // Toggle button
+    const btnToggle = document.getElementById('btn-toggle');
+    btnToggle.textContent = job.enabled ? 'Disable' : 'Enable';
+
+    // Edit form
+    document.getElementById('edit-cron').value = job.cron;
+    document.getElementById('edit-command').value = job.command;
+    document.getElementById('edit-workdir').value = job.working_dir || '';
+    document.getElementById('edit-timeout').value = job.timeout_seconds;
+    document.getElementById('edit-tags').value = job.tags || '';
+}
+
+async function loadRuns() {
+    try {
+        const response = await fetch(`/api/runs/job/${jobName}?limit=20`);
+        if (response.ok) {
+            const runs = await response.json();
+            const container = document.getElementById('recent-runs');
+            if (runs.length === 0) {
+                container.innerHTML = '<div class="p-4 text-center text-gray-500">No runs yet</div>';
+            } else {
+                container.innerHTML = runs.map(run => `
+                    <a href="/runs/${run.id}" class="block hover:bg-gray-50 px-4 py-3">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-gray-500">${formatTime(run.started_at)}</span>
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-${run.status}">
+                                ${run.status}
+                            </span>
+                        </div>
+                        <div class="mt-1 text-xs text-gray-500">
+                            ${formatDuration(run.duration_seconds)}
+                        </div>
+                    </a>
+                `).join('');
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load runs:', error);
+    }
+}
+
+async function triggerJob() {
+    if (!confirm(`Trigger job "${jobName}" now?`)) return;
+
+    try {
+        const response = await fetch(`/api/jobs/${jobName}/trigger`, { method: 'POST' });
+        if (response.ok) {
+            alert('Job triggered successfully');
+            loadJob();
+        } else {
+            const error = await response.json();
+            alert('Failed to trigger job: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Failed to trigger job: ' + error.message);
+    }
+}
+
+async function toggleJob() {
+    const action = currentJob.enabled ? 'disable' : 'enable';
+    try {
+        const response = await fetch(`/api/jobs/${jobName}/${action}`, { method: 'POST' });
+        if (response.ok) {
+            loadJob();
+        }
+    } catch (error) {
+        alert('Failed to toggle job: ' + error.message);
+    }
+}
+
+async function deleteJob() {
+    if (!confirm(`Delete job "${jobName}"? This cannot be undone.`)) return;
+
+    try {
+        const response = await fetch(`/api/jobs/${jobName}`, { method: 'DELETE' });
+        if (response.ok) {
+            window.location.href = '/jobs';
+        } else {
+            const error = await response.json();
+            alert('Failed to delete job: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Failed to delete job: ' + error.message);
+    }
+}
+
+async function saveJob(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = {
+        cron: form.cron.value,
+        command: form.command.value,
+        working_dir: form.working_dir.value || null,
+        timeout_seconds: parseInt(form.timeout_seconds.value),
+        tags: form.tags.value || null,
+    };
+
+    try {
+        const response = await fetch(`/api/jobs/${jobName}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+
+        if (response.ok) {
+            alert('Job updated successfully');
+            loadJob();
+        } else {
+            const error = await response.json();
+            alert('Failed to update job: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Failed to update job: ' + error.message);
+    }
+}
+</script>
+{% endblock %}

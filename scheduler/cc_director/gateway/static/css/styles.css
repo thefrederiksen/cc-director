@@ -1,0 +1,41 @@
+/* CC Director Dashboard Custom Styles */
+
+/* Additional styles if needed beyond Tailwind */
+
+/* Code blocks */
+pre {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* Make tables responsive on small screens */
+@media (max-width: 640px) {
+    table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+}
+
+/* Smooth transitions */
+.tab-btn {
+    transition: border-color 0.15s ease-in-out, color 0.15s ease-in-out;
+}
+
+/* Focus styles */
+input:focus,
+select:focus,
+button:focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+}
+
+/* Loading spinner animation */
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.spinner {
+    animation: spin 1s linear infinite;
+}

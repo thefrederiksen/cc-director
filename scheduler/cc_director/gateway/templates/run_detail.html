@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Run #{{ run_id }} - CC Director{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <div class="flex items-center space-x-4">
+            <a href="/runs" class="text-gray-500 hover:text-gray-700">&larr; Back to Runs</a>
+            <h1 class="text-2xl font-bold text-gray-900">Run #{{ run_id }}</h1>
+        </div>
+    </div>
+
+    <!-- Run details -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Run Details</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-3">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Job</dt>
+                    <dd class="mt-1 text-sm text-gray-900">
+                        <a href="#" id="detail-job-link" class="text-primary hover:underline">-</a>
+                    </dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Status</dt>
+                    <dd class="mt-1" id="detail-status">-</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Exit Code</dt>
+                    <dd class="mt-1 text-sm text-gray-900" id="detail-exit-code">-</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Started</dt>
+                    <dd class="mt-1 text-sm text-gray-900" id="detail-started">-</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Ended</dt>
+                    <dd class="mt-1 text-sm text-gray-900" id="detail-ended">-</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Duration</dt>
+                    <dd class="mt-1 text-sm text-gray-900" id="detail-duration">-</dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Output tabs -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="border-b border-gray-200">
+            <nav class="-mb-px flex" aria-label="Tabs">
+                <button onclick="showTab('stdout')" id="tab-stdout"
+                    class="tab-btn w-1/2 py-4 px-1 text-center border-b-2 font-medium text-sm border-primary text-primary">
+                    Standard Output
+                </button>
+                <button onclick="showTab('stderr')" id="tab-stderr"
+                    class="tab-btn w-1/2 py-4 px-1 text-center border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                    Standard Error
+                </button>
+            </nav>
+        </div>
+        <div class="p-4">
+            <pre id="output-stdout" class="text-sm text-gray-800 bg-gray-50 p-4 rounded overflow-x-auto max-h-96 whitespace-pre-wrap">Loading...</pre>
+            <pre id="output-stderr" class="text-sm text-red-800 bg-red-50 p-4 rounded overflow-x-auto max-h-96 whitespace-pre-wrap hidden">Loading...</pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const runId = {{ run_id }};
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadRun();
+});
+
+async function loadRun() {
+    try {
+        const response = await fetch(`/api/runs/${runId}`);
+        if (response.ok) {
+            const run = await response.json();
+            updateRunDisplay(run);
+        } else if (response.status === 404) {
+            alert('Run not found');
+            window.location.href = '/runs';
+        }
+    } catch (error) {
+        console.error('Failed to load run:', error);
+    }
+}
+
+function updateRunDisplay(run) {
+    // Job link
+    const jobLink = document.getElementById('detail-job-link');
+    jobLink.textContent = run.job_name;
+    jobLink.href = `/jobs/${run.job_name}`;
+
+    // Status
+    let statusHtml = `<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-${run.status}">${run.status}</span>`;
+    document.getElementById('detail-status').innerHTML = statusHtml;
+
+    // Other fields
+    document.getElementById('detail-exit-code').textContent = run.exit_code !== null ? run.exit_code : '-';
+    document.getElementById('detail-started').textContent = formatTime(run.started_at);
+    document.getElementById('detail-ended').textContent = run.ended_at ? formatTime(run.ended_at) : '-';
+    document.getElementById('detail-duration').textContent = formatDuration(run.duration_seconds);
+
+    // Output
+    document.getElementById('output-stdout').textContent = run.stdout || '(no output)';
+    document.getElementById('output-stderr').textContent = run.stderr || '(no errors)';
+}
+
+function showTab(tab) {
+    // Update tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('border-primary', 'text-primary');
+        btn.classList.add('border-transparent', 'text-gray-500');
+    });
+    document.getElementById(`tab-${tab}`).classList.remove('border-transparent', 'text-gray-500');
+    document.getElementById(`tab-${tab}`).classList.add('border-primary', 'text-primary');
+
+    // Show/hide content
+    document.getElementById('output-stdout').classList.toggle('hidden', tab !== 'stdout');
+    document.getElementById('output-stderr').classList.toggle('hidden', tab !== 'stderr');
+}
+</script>
+{% endblock %}

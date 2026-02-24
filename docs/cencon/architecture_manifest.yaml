@@ -5,12 +5,12 @@
 schema_version: "1.0.0"
 project:
   name: CC Director
-  description: Windows desktop application for managing multiple Claude Code CLI sessions
+  description: Cross-platform application for managing multiple Claude Code CLI sessions
   version: "1.1.0"
   framework: ".NET 10"
-  platform: "Windows 10/11 (WPF)"
+  platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-02-22"
+last_updated: "2026-02-24"
 
 # C4 Level 1: System Context
 context:
@@ -69,15 +69,20 @@ containers:
       - name: EmbeddedConsoleHost
         description: WPF control for hosting embedded console windows
         file: Controls/EmbeddedConsoleHost.cs
+      - name: TerminalControl
+        description: Custom control for terminal rendering with ANSI parsing
+        file: Controls/TerminalControl.cs
       - name: Dialogs
         description: Modal dialogs for session management
         files:
           - NewSessionDialog.xaml
           - RenameSessionDialog.xaml
           - RelinkSessionDialog.xaml
-          - SettingsDialog.xaml
+          - CloseDialog.xaml
+          - CloneRepoDialog.xaml
+          - GitHubRepoPickerDialog.xaml
       - name: Voice UI
-        description: Voice mode controls and status display
+        description: Voice mode controls and audio playback/recording
         directory: Voice/
 
   - id: core_services
@@ -107,12 +112,18 @@ containers:
       - name: GitStatusProvider
         description: Async git status polling
         file: Git/GitStatusProvider.cs
+      - name: GitSyncStatusProvider
+        description: Branch ahead/behind status tracking
+        file: Git/GitSyncStatusProvider.cs
       - name: ClaudeSessionReader
         description: Session verification via .jsonl transcript matching
         file: Claude/ClaudeSessionReader.cs
+      - name: ClaudeClient
+        description: Helper library for Claude CLI interactions
+        file: Claude/ClaudeClient.cs
       - name: VoiceModeController
         description: Orchestrates voice interaction flow
-        file: Voice/VoiceModeController.cs
+        file: Voice/Controllers/VoiceModeController.cs
       - name: CircularTerminalBuffer
         description: Thread-safe ring buffer for terminal output
         file: Memory/CircularTerminalBuffer.cs
@@ -121,25 +132,36 @@ containers:
         file: Utilities/FileLog.cs
 
   - id: native_apis
-    name: Native Windows APIs
-    technology: Win32 / P/Invoke
-    description: Low-level Windows API integration
+    name: Platform-Specific APIs
+    technology: Win32 / P/Invoke / libc
+    description: Low-level platform API integration
     components:
-      - name: ConPTY
+      - name: ConPTY (Windows)
         description: Windows Pseudo Console (CreatePseudoConsole, ResizePseudoConsole)
         files:
           - ConPty/NativeMethods.cs
           - ConPty/PseudoConsole.cs
           - ConPty/ProcessHost.cs
-      - name: Window Management
+      - name: Unix PTY (Mac/Linux)
+        description: Unix pseudo-terminal (openpty, ioctl TIOCSWINSZ)
+        files:
+          - UnixPty/UnixNativeMethods.cs
+          - UnixPty/UnixPseudoConsole.cs
+          - UnixPty/UnixProcessHost.cs
+      - name: Window Management (Windows only)
         description: SetParent, MoveWindow for console embedding
         file: Backends/EmbeddedBackend.cs
-      - name: Named Pipes
-        description: NamedPipeServerStream for IPC
-        file: Pipes/DirectorPipeServer.cs
+      - name: IPC Server
+        description: Platform-appropriate IPC (Named Pipes on Windows, Unix Sockets on Mac/Linux)
+        files:
+          - Pipes/IDirectorServer.cs
+          - Pipes/DirectorPipeServer.cs
+          - Pipes/UnixSocketServer.cs
       - name: Process Management
-        description: CreateProcessW for process spawning
-        file: ConPty/ProcessHost.cs
+        description: CreateProcessW (Windows) or fork/exec (Unix)
+        files:
+          - ConPty/ProcessHost.cs
+          - UnixPty/UnixProcessHost.cs
 
 # Data flows
 data_flows:
@@ -148,9 +170,9 @@ data_flows:
     description: Claude Code hook events to Director UI
     path:
       - Claude Code (claude.exe)
-      - hook-relay.ps1 (PowerShell relay script)
-      - \\.\pipe\CC_ClaudeDirector (Named Pipe)
-      - DirectorPipeServer
+      - "hook-relay script (PowerShell on Windows, Python on Mac/Linux)"
+      - "IPC channel (Named Pipe on Windows, Unix Socket on Mac/Linux)"
+      - IDirectorServer
       - EventRouter
       - Session.HandlePipeEvent()
       - UI (INotifyPropertyChanged)
@@ -175,6 +197,18 @@ data_flows:
       - ClaudeSessionReader.VerifyWithTerminalContent()
       - Session verified/linked
 
+  - id: voice_flow
+    name: Voice Mode Flow
+    description: Voice input to Claude and spoken response
+    path:
+      - AudioRecorder.StartAsync()
+      - OpenAiSttService.TranscribeAsync()
+      - Session.SendInputAsync()
+      - ClaudeResponseExtractor.GetLatestResponse()
+      - ClaudeSummarizer.SummarizeAsync()
+      - OpenAiTtsService.SynthesizeAsync()
+      - AudioPlayer.PlayAsync()
+
 # Security boundaries
 security_boundaries:
   - id: process_isolation
@@ -186,10 +220,11 @@ security_boundaries:
 
   - id: ipc_boundary
     name: IPC Boundary
-    description: Named pipes are local-only, no network exposure
+    description: IPC channels are local-only, no network exposure
     components:
-      - \\.\pipe\CC_ClaudeDirector
-    security_note: Pipe accessible only on local machine
+      - "Windows: \\\\.\pipe\\CC_ClaudeDirector (Named Pipe)"
+      - "Mac/Linux: ~/.cc_director/director.sock (Unix Socket)"
+    security_note: IPC accessible only on local machine
 
   - id: file_system
     name: File System Locations
@@ -203,13 +238,14 @@ security_boundaries:
 # Design patterns used
 patterns:
   - name: Strategy Pattern
-    implementation: ISessionBackend interface with 3 implementations
-    purpose: Abstracts terminal hosting modes
+    implementation: ISessionBackend interface with 4 implementations
+    purpose: Abstracts terminal hosting modes across platforms
     files:
       - Backends/ISessionBackend.cs
       - Backends/EmbeddedBackend.cs
       - Backends/ConPtyBackend.cs
       - Backends/PipeBackend.cs
+      - Backends/UnixPtyBackend.cs
 
   - name: Observer Pattern
     implementation: Events (StatusChanged, OnActivityStateChanged)
@@ -231,8 +267,9 @@ patterns:
       - Utilities/FileLog.cs
 
   - name: Repository Pattern
-    implementation: RecentSessionStore, RepositoryRegistry
+    implementation: RecentSessionStore, RepositoryRegistry, SessionStateStore
     purpose: Persistence abstraction
     files:
       - Sessions/RecentSessionStore.cs
+      - Sessions/SessionStateStore.cs
       - Configuration/RepositoryRegistry.cs

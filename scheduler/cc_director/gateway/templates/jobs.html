@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs - CC Director{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <h1 class="text-2xl font-bold text-gray-900">Jobs</h1>
+        <button onclick="showCreateJobModal()" class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary hover:bg-blue-700">
+            + New Job
+        </button>
+    </div>
+
+    <!-- Filter -->
+    <div class="bg-white shadow rounded-lg p-4">
+        <div class="flex items-center space-x-4">
+            <label class="flex items-center">
+                <input type="checkbox" id="show-disabled" class="rounded border-gray-300 text-primary focus:ring-primary" onchange="loadJobs()">
+                <span class="ml-2 text-sm text-gray-600">Show disabled jobs</span>
+            </label>
+        </div>
+    </div>
+
+    <!-- Jobs table -->
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Schedule</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Next Run</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="jobs-tbody" class="bg-white divide-y divide-gray-200">
+                <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Create Job Modal -->
+<div id="create-job-modal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden overflow-y-auto h-full w-full z-50">
+    <div class="relative top-20 mx-auto p-5 border w-full max-w-lg shadow-lg rounded-md bg-white">
+        <div class="mt-3">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">Create New Job</h3>
+            <form id="create-job-form" onsubmit="createJob(event)">
+                <div class="space-y-4">
+                    <div>
+                        <label for="job-name" class="block text-sm font-medium text-gray-700">Name</label>
+                        <input type="text" id="job-name" name="name" required
+                            class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm"
+                            placeholder="my_job">
+                    </div>
+                    <div>
+                        <label for="job-cron" class="block text-sm font-medium text-gray-700">Cron Schedule</label>
+                        <input type="text" id="job-cron" name="cron" required
+                            class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm font-mono"
+                            placeholder="0 9 * * *">
+                        <p class="mt-1 text-xs text-gray-500">Format: minute hour day month weekday</p>
+                    </div>
+                    <div>
+                        <label for="job-command" class="block text-sm font-medium text-gray-700">Command</label>
+                        <input type="text" id="job-command" name="command" required
+                            class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm font-mono"
+                            placeholder="python script.py">
+                    </div>
+                    <div>
+                        <label for="job-workdir" class="block text-sm font-medium text-gray-700">Working Directory (optional)</label>
+                        <input type="text" id="job-workdir" name="working_dir"
+                            class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm"
+                            placeholder="C:\Projects\MyApp">
+                    </div>
+                    <div>
+                        <label for="job-timeout" class="block text-sm font-medium text-gray-700">Timeout (seconds)</label>
+                        <input type="number" id="job-timeout" name="timeout_seconds" value="300" min="1" max="86400"
+                            class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm">
+                    </div>
+                    <div>
+                        <label for="job-tags" class="block text-sm font-medium text-gray-700">Tags (optional)</label>
+                        <input type="text" id="job-tags" name="tags"
+                            class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary sm:text-sm"
+                            placeholder="tag1,tag2">
+                    </div>
+                </div>
+                <div class="mt-6 flex justify-end space-x-3">
+                    <button type="button" onclick="hideCreateJobModal()"
+                        class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                        class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-blue-700">
+                        Create
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadJobs();
+});
+
+async function loadJobs() {
+    const showDisabled = document.getElementById('show-disabled').checked;
+    try {
+        const response = await fetch(`/api/jobs?include_disabled=${showDisabled}`);
+        if (response.ok) {
+            const jobs = await response.json();
+            const tbody = document.getElementById('jobs-tbody');
+            if (jobs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">No jobs found</td></tr>';
+            } else {
+                tbody.innerHTML = jobs.map(job => `
+                    <tr class="${job.enabled ? '' : 'bg-gray-50'}">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <a href="/jobs/${job.name}" class="text-sm font-medium text-primary hover:underline">${job.name}</a>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="text-sm text-gray-900 font-mono">${job.cron}</span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            ${job.next_run ? formatTime(job.next_run) : '-'}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            ${job.is_running
+                                ? '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-running">Running</span>'
+                                : job.enabled
+                                    ? '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-success">Enabled</span>'
+                                    : '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-pending">Disabled</span>'
+                            }
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                            <button onclick="triggerJob('${job.name}')" class="text-primary hover:text-blue-900" ${job.enabled ? '' : 'disabled'}>
+                                Trigger
+                            </button>
+                            ${job.enabled
+                                ? `<button onclick="disableJob('${job.name}')" class="text-yellow-600 hover:text-yellow-900">Disable</button>`
+                                : `<button onclick="enableJob('${job.name}')" class="text-green-600 hover:text-green-900">Enable</button>`
+                            }
+                            <button onclick="deleteJob('${job.name}')" class="text-red-600 hover:text-red-900">Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load jobs:', error);
+    }
+}
+
+function showCreateJobModal() {
+    document.getElementById('create-job-modal').classList.remove('hidden');
+}
+
+function hideCreateJobModal() {
+    document.getElementById('create-job-modal').classList.add('hidden');
+    document.getElementById('create-job-form').reset();
+}
+
+async function createJob(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = {
+        name: form.name.value,
+        cron: form.cron.value,
+        command: form.command.value,
+        working_dir: form.working_dir.value || null,
+        timeout_seconds: parseInt(form.timeout_seconds.value),
+        tags: form.tags.value || null,
+        enabled: true,
+    };
+
+    try {
+        const response = await fetch('/api/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+
+        if (response.ok) {
+            hideCreateJobModal();
+            loadJobs();
+        } else {
+            const error = await response.json();
+            alert('Failed to create job: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Failed to create job: ' + error.message);
+    }
+}
+
+async function triggerJob(name) {
+    if (!confirm(`Trigger job "${name}" now?`)) return;
+
+    try {
+        const response = await fetch(`/api/jobs/${name}/trigger`, { method: 'POST' });
+        if (response.ok) {
+            alert('Job triggered successfully');
+            loadJobs();
+        } else {
+            const error = await response.json();
+            alert('Failed to trigger job: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Failed to trigger job: ' + error.message);
+    }
+}
+
+async function enableJob(name) {
+    try {
+        const response = await fetch(`/api/jobs/${name}/enable`, { method: 'POST' });
+        if (response.ok) {
+            loadJobs();
+        }
+    } catch (error) {
+        alert('Failed to enable job: ' + error.message);
+    }
+}
+
+async function disableJob(name) {
+    try {
+        const response = await fetch(`/api/jobs/${name}/disable`, { method: 'POST' });
+        if (response.ok) {
+            loadJobs();
+        }
+    } catch (error) {
+        alert('Failed to disable job: ' + error.message);
+    }
+}
+
+async function deleteJob(name) {
+    if (!confirm(`Delete job "${name}"? This cannot be undone.`)) return;
+
+    try {
+        const response = await fetch(`/api/jobs/${name}`, { method: 'DELETE' });
+        if (response.ok) {
+            loadJobs();
+        } else {
+            const error = await response.json();
+            alert('Failed to delete job: ' + (error.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Failed to delete job: ' + error.message);
+    }
+}
+</script>
+{% endblock %}
