@@ -31,3 +31,21 @@ cli-explorer-console*.txt
 cli-explorer-report.md
 json-schema-stderr.txt
 *_wpftmp.csproj
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+*.egg
+.Python
+
+# IDE
+.idea/
+*.swp
+*.swo
+.DS_Store
