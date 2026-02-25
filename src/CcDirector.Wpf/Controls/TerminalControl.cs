@@ -31,7 +31,7 @@ public class TerminalControl : FrameworkElement
     private static readonly Regex AbsoluteWindowsPathRegex = new(@"[A-Za-z]:[/\\][^\s""'<>|*?()\[\]]+", RegexOptions.Compiled, RegexTimeout);
     private static readonly Regex AbsoluteUnixPathRegex = new(@"/[a-z]/[^\s""'<>|*?()\[\]]+", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
     private static readonly Regex RelativePathRegex = new(@"\.{0,2}[/\\][^\s""'<>|*?:()\[\]]+|[A-Za-z_][A-Za-z0-9_\-]*[/\\][^\s""'<>|*?:()\[\]]+", RegexOptions.Compiled, RegexTimeout);
-    private static readonly Regex UrlRegex = new(@"https?://[^\s""'<>]+|git@[^\s""'<>]+", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+    private static readonly Regex UrlRegex = new(@"https?://[^\s""'<>()\[\]]+|git@[^\s""'<>()\[\]]+", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
 
     // Cached typefaces - avoid creating new Typeface per character (4 variants for normal/bold/italic combinations)
     private static readonly FontFamily _fontFamily = new("Cascadia Mono, Consolas, Courier New");
