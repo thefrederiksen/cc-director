@@ -155,6 +155,82 @@ public class SessionStateStoreTests
     }
 
     [Fact]
+    public void PersistedSession_QueuedPrompts_SurvivesRoundTrip()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"test_store_{Guid.NewGuid()}.json");
+        try
+        {
+            var store = new SessionStateStore(tempFile);
+            var queueItem1Id = Guid.NewGuid();
+            var queueItem2Id = Guid.NewGuid();
+
+            var session = new PersistedSession
+            {
+                Id = Guid.NewGuid(),
+                RepoPath = @"C:\test\repo",
+                WorkingDirectory = @"C:\test\repo",
+                ClaudeSessionId = "test-session-queue",
+                ActivityState = ActivityState.WaitingForInput,
+                CreatedAt = DateTimeOffset.UtcNow,
+                QueuedPrompts = new List<PersistedPromptQueueItem>
+                {
+                    new() { Id = queueItem1Id, Text = "fix the login bug", CreatedAt = DateTimeOffset.UtcNow },
+                    new() { Id = queueItem2Id, Text = "add unit tests", CreatedAt = DateTimeOffset.UtcNow }
+                }
+            };
+
+            // Act
+            store.Save(new[] { session });
+            var result = store.Load();
+
+            // Assert
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.NotNull(result.Sessions[0].QueuedPrompts);
+            Assert.Equal(2, result.Sessions[0].QueuedPrompts!.Count);
+            Assert.Equal("fix the login bug", result.Sessions[0].QueuedPrompts![0].Text);
+            Assert.Equal(queueItem1Id, result.Sessions[0].QueuedPrompts![0].Id);
+            Assert.Equal("add unit tests", result.Sessions[0].QueuedPrompts![1].Text);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void PersistedSession_NullQueuedPrompts_BackwardCompatible()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"test_store_{Guid.NewGuid()}.json");
+        try
+        {
+            // Simulate old JSON without QueuedPrompts field
+            File.WriteAllText(tempFile, """
+            [{
+                "Id": "11111111-1111-1111-1111-111111111111",
+                "RepoPath": "C:\\test\\repo",
+                "WorkingDirectory": "C:\\test\\repo",
+                "ActivityState": "Idle",
+                "CreatedAt": "2024-01-01T00:00:00+00:00"
+            }]
+            """);
+
+            var store = new SessionStateStore(tempFile);
+            var result = store.Load();
+
+            Assert.True(result.Success);
+            Assert.Single(result.Sessions);
+            Assert.Null(result.Sessions[0].QueuedPrompts);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
     public void Session_RestoreConstructor_SetsPendingPromptText()
     {
         // Arrange

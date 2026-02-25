@@ -26,13 +26,14 @@ public partial class MainWindow : Window
 {
     private readonly ObservableCollection<SessionViewModel> _sessions = new();
     private readonly ObservableCollection<PipeMessageViewModel> _pipeMessages = new();
+    private readonly ObservableCollection<QueueItemViewModel> _queueItems = new();
     private readonly ObservableCollection<TurnSummaryViewModel> _summaryItems = new();
     private readonly Dictionary<Guid, List<TurnSummaryViewModel>> _turnSummariesBySession = new();
     private readonly Dictionary<Guid, int> _turnCounters = new();
     private ClaudeClient? _claudeClient;
     private const int MaxPipeMessages = 500;
 
-    private bool _pipeMessagesExpanded;
+    private bool _pipeMessagesExpanded = true;
     private bool _updatingScrollBar;
     private SessionManager _sessionManager = null!;
     private TerminalControl? _terminalControl;
@@ -55,6 +56,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         SessionList.ItemsSource = _sessions;
         PipeMessageList.ItemsSource = _pipeMessages;
+        QueueItemsList.ItemsSource = _queueItems;
         SummaryItemsControl.ItemsSource = _summaryItems;
         Loaded += MainWindow_Loaded;
         LocationChanged += (_, _) => DeferConsolePositionUpdate();
@@ -218,7 +220,7 @@ public partial class MainWindow : Window
         try
         {
             // Get the exe path for single-file apps
-            var exePath = System.IO.Path.Combine(AppContext.BaseDirectory, "cc_director.exe");
+            var exePath = System.IO.Path.Combine(AppContext.BaseDirectory, "cc-director.exe");
             if (System.IO.File.Exists(exePath))
             {
                 var buildTime = System.IO.File.GetLastWriteTime(exePath);
@@ -228,7 +230,7 @@ public partial class MainWindow : Window
             else
             {
                 // Fallback to dll
-                var dllPath = System.IO.Path.Combine(AppContext.BaseDirectory, "cc_director.dll");
+                var dllPath = System.IO.Path.Combine(AppContext.BaseDirectory, "cc-director.dll");
                 if (System.IO.File.Exists(dllPath))
                 {
                     var buildTime = System.IO.File.GetLastWriteTime(dllPath);
@@ -345,6 +347,18 @@ public partial class MainWindow : Window
             session.CustomName = p.CustomName;
             session.CustomColor = p.CustomColor;
             session.HistoryEntryId = p.HistoryEntryId;
+
+            // Restore queued prompts
+            if (p.QueuedPrompts is { Count: > 0 })
+            {
+                session.PromptQueue.LoadFrom(p.QueuedPrompts.Select(q => new PromptQueueItem
+                {
+                    Id = q.Id,
+                    Text = q.Text,
+                    CreatedAt = q.CreatedAt
+                }));
+                FileLog.Write($"[MainWindow] Restored {p.QueuedPrompts.Count} queued prompt(s) for session {session.Id}");
+            }
 
             if (!string.IsNullOrEmpty(session.ClaudeSessionId))
             {
@@ -621,6 +635,9 @@ public partial class MainWindow : Window
         PromptInput.CaretIndex = PromptInput.Text.Length;
         FileLog.Write($"[MainWindow] SessionSwitch: restored prompt for {vm.Session.Id}");
 
+        // Refresh queue panel for the new session
+        RefreshQueuePanel();
+
         // Redirect focus back to terminal/prompt so the sidebar doesn't keep focus
         if (_terminalControl != null && SessionTabs.SelectedIndex == 0)
             Dispatcher.BeginInvoke(() => _terminalControl?.Focus());
@@ -706,6 +723,7 @@ public partial class MainWindow : Window
         PromptInput.Clear();
         PromptBar.Visibility = Visibility.Collapsed;
         PlaceholderText.Visibility = Visibility.Visible;
+        RefreshQueuePanel();
     }
 
     private void TerminalScrollBar_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -1139,7 +1157,12 @@ public partial class MainWindow : Window
 
     private async void PromptInput_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+        if (e.Key == Key.Enter && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            e.Handled = true;
+            QueueCurrentPrompt();
+        }
+        else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
         {
             e.Handled = true;
             await SendPromptAsync();
@@ -1707,6 +1730,140 @@ public partial class MainWindow : Window
         }
         DeferConsolePositionUpdate();
     }
+
+    // ── Prompt Queue ──────────────────────────────────────────────
+
+    private void BtnQueuePrompt_Click(object sender, RoutedEventArgs e)
+    {
+        QueueCurrentPrompt();
+    }
+
+    private void QueueCurrentPrompt()
+    {
+        if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text))
+            return;
+
+        var text = PromptInput.Text.Trim();
+        FileLog.Write($"[MainWindow] QueueCurrentPrompt: session={_activeSession.Id}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\"");
+        _activeSession.PromptQueue.Enqueue(text);
+        PromptInput.Clear();
+
+        // Clear saved pending prompt
+        var activeVm = _sessions.FirstOrDefault(s => s.Session.Id == _activeSession.Id);
+        if (activeVm != null)
+            activeVm.PendingPromptText = string.Empty;
+
+        RefreshQueuePanel();
+        PersistSessionState();
+
+        // Auto-open the right panel on Queue tab if not already open
+        if (!_pipeMessagesExpanded)
+            TogglePipeMessages_Click(this, new RoutedEventArgs());
+        RightPanelTabs.SelectedItem = QueueTab;
+    }
+
+    private void RefreshQueuePanel()
+    {
+        _queueItems.Clear();
+
+        if (_activeSession == null)
+        {
+            UpdateQueueBadge(0);
+            return;
+        }
+
+        var items = _activeSession.PromptQueue.Items;
+        for (int i = 0; i < items.Count; i++)
+        {
+            _queueItems.Add(new QueueItemViewModel
+            {
+                Id = items[i].Id,
+                Index = (i + 1).ToString(),
+                Preview = items[i].Text.Length > 120 ? items[i].Text[..120] + "..." : items[i].Text,
+                FullText = items[i].Text
+            });
+        }
+
+        UpdateQueueBadge(items.Count);
+    }
+
+    private void UpdateQueueBadge(int count)
+    {
+        QueueCountText.Text = count == 1 ? "1 item" : $"{count} items";
+        BtnQueuePrompt.Content = count > 0 ? $"Queue ({count})" : "Queue";
+        QueueTabHeader.Text = count > 0 ? $"Queue ({count})" : "Queue";
+    }
+
+    private void BtnClearQueue_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeSession == null) return;
+        FileLog.Write($"[MainWindow] BtnClearQueue_Click: session={_activeSession.Id}");
+        _activeSession.PromptQueue.Clear();
+        RefreshQueuePanel();
+        PersistSessionState();
+    }
+
+    private void QueueItemPop_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeSession == null) return;
+        if (sender is not System.Windows.Controls.Button btn || btn.Tag is not Guid itemId) return;
+
+        PopQueuedItem(itemId);
+    }
+
+    private void PopQueuedItem(Guid itemId)
+    {
+        if (_activeSession == null) return;
+
+        var item = _activeSession.PromptQueue.FindById(itemId);
+        if (item == null) return;
+
+        FileLog.Write($"[MainWindow] PopQueuedItem: session={_activeSession.Id}, itemId={itemId}");
+        PromptInput.Text = item.Text;
+        PromptInput.CaretIndex = PromptInput.Text.Length;
+        _activeSession.PromptQueue.Remove(itemId);
+        RefreshQueuePanel();
+        PersistSessionState();
+        PromptInput.Focus();
+    }
+
+    private void QueueItemMoveUp_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeSession == null) return;
+        if (sender is not System.Windows.Controls.Button btn || btn.Tag is not Guid itemId) return;
+        _activeSession.PromptQueue.MoveUp(itemId);
+        RefreshQueuePanel();
+        PersistSessionState();
+    }
+
+    private void QueueItemMoveDown_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeSession == null) return;
+        if (sender is not System.Windows.Controls.Button btn || btn.Tag is not Guid itemId) return;
+        _activeSession.PromptQueue.MoveDown(itemId);
+        RefreshQueuePanel();
+        PersistSessionState();
+    }
+
+    private void QueueItemRemove_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeSession == null) return;
+        if (sender is not System.Windows.Controls.Button btn || btn.Tag is not Guid itemId) return;
+        FileLog.Write($"[MainWindow] QueueItemRemove_Click: session={_activeSession.Id}, itemId={itemId}");
+        _activeSession.PromptQueue.Remove(itemId);
+        RefreshQueuePanel();
+        PersistSessionState();
+    }
+
+    private void QueueItemsList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_activeSession == null) return;
+        if (QueueItemsList.SelectedItem is not QueueItemViewModel vm) return;
+
+        PopQueuedItem(vm.Id);
+    }
+
+    // ── End Prompt Queue ─────────────────────────────────────────
 
     private void PromptArea_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -2674,6 +2831,14 @@ public class SessionViewModel : INotifyPropertyChanged
         brush.Freeze();
         return brush;
     }
+}
+
+public class QueueItemViewModel
+{
+    public Guid Id { get; init; }
+    public string Index { get; init; } = string.Empty;
+    public string Preview { get; init; } = string.Empty;
+    public string FullText { get; init; } = string.Empty;
 }
 
 public class PipeMessageViewModel

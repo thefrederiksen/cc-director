@@ -364,6 +364,14 @@ public sealed class SessionManager : IDisposable
                 ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
                 HistoryEntryId = s.HistoryEntryId,
                 RawStartupText = s.RawStartupText,
+                QueuedPrompts = s.PromptQueue.HasItems
+                    ? s.PromptQueue.Items.Select(q => new PersistedPromptQueueItem
+                    {
+                        Id = q.Id,
+                        Text = q.Text,
+                        CreatedAt = q.CreatedAt
+                    }).ToList()
+                    : null,
             })
             .ToList();
     }
@@ -381,6 +389,18 @@ public sealed class SessionManager : IDisposable
         session.ExpectedFirstPrompt = ps.ExpectedFirstPrompt;
         session.HistoryEntryId = ps.HistoryEntryId;
         session.RawStartupText = ps.RawStartupText;
+
+        // Restore queued prompts
+        if (ps.QueuedPrompts is { Count: > 0 })
+        {
+            session.PromptQueue.LoadFrom(ps.QueuedPrompts.Select(q => new PromptQueueItem
+            {
+                Id = q.Id,
+                Text = q.Text,
+                CreatedAt = q.CreatedAt
+            }));
+            _log?.Invoke($"Restored {ps.QueuedPrompts.Count} queued prompt(s) for session {session.Id}.");
+        }
 
         _sessions[session.Id] = session;
 

@@ -33,6 +33,16 @@ public class PersistedSession
 
     /// <summary>Raw terminal output captured during Claude Code startup.</summary>
     public string? RawStartupText { get; set; }
+
+    /// <summary>Queued prompts for this session. Null = no queued prompts (backward compatible).</summary>
+    public List<PersistedPromptQueueItem>? QueuedPrompts { get; set; }
+}
+
+public class PersistedPromptQueueItem
+{
+    public Guid Id { get; set; }
+    public string Text { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 /// <summary>Result of loading persisted sessions from disk.</summary>

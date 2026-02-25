@@ -136,6 +136,9 @@ public sealed class Session : IDisposable
     /// <summary>Prompt text the user was composing but hasn't sent yet. Persisted across switches and restarts.</summary>
     public string? PendingPromptText { get; set; }
 
+    /// <summary>Queue of prompts the user wants to send later. Persisted across switches and restarts.</summary>
+    public PromptQueue PromptQueue { get; } = new();
+
     /// <summary>Order in the session list, used to restore UI order after restart.</summary>
     public int SortOrder { get; set; }
 
