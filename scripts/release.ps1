@@ -107,7 +107,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # Locate published output
 $publishDir = Join-Path $repoRoot "src\CcDirector.Wpf\bin\$Configuration\net10.0-windows\win-x64\publish"
-$exePath = Join-Path $publishDir "cc_director.exe"
+$exePath = Join-Path $publishDir "cc-director.exe"
 
 if (-not (Test-Path $exePath)) {
     Write-Error "Published exe not found at $exePath"
@@ -119,7 +119,7 @@ $releasesDir = Join-Path $repoRoot "releases"
 if (-not (Test-Path $releasesDir)) {
     New-Item -ItemType Directory -Path $releasesDir | Out-Null
 }
-$destPath = Join-Path $releasesDir "cc_director.exe"
+$destPath = Join-Path $releasesDir "cc-director.exe"
 Copy-Item $exePath $destPath -Force
 
 $exeSize = (Get-Item $destPath).Length / 1MB
