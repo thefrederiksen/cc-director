@@ -443,6 +443,24 @@ public partial class MainWindow : Window
         app.RestoredPersistedData = null;
     }
 
+    private void BtnAppMenu_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnAppMenu_Click: opening application menu");
+        try
+        {
+            if (sender is Button btn && btn.ContextMenu is ContextMenu menu)
+            {
+                menu.PlacementTarget = btn;
+                menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+                menu.IsOpen = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnAppMenu_Click FAILED: {ex.Message}");
+        }
+    }
+
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();

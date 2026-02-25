@@ -16,68 +16,62 @@
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-            <!-- Left sidebar: sessions panel (full height) -->
+            <!-- Left sidebar: SessionNavigator (full height) -->
             <Border Grid.Column="0" Background="{StaticResource SidebarBackground}">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top"
-                               Text="SESSIONS"
-                               Foreground="{StaticResource TextForeground}"
-                               FontWeight="SemiBold"
-                               FontSize="12"
-                               Margin="12,12,12,8" />
+                    <!-- Header with hamburger menu and title -->
+                    <DockPanel DockPanel.Dock="Top" Margin="8,10,8,4">
+                        <Button x:Name="BtnAppMenu" Content="&#x2630;"
+                                Click="BtnAppMenu_Click"
+                                Focusable="False"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextForeground}"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                FontSize="16"
+                                Padding="4,0"
+                                VerticalAlignment="Center"
+                                ToolTip="Application menu">
+                            <Button.ContextMenu>
+                                <ContextMenu x:Name="AppMenu">
+                                    <MenuItem Header="Open Logs" Click="BtnOpenLogs_Click"
+                                              ToolTip="Open log directory in Explorer" />
+                                    <MenuItem Header="Open Sessions" Click="BtnOpenSessions_Click"
+                                              ToolTip="Open sessions.json in default editor" />
+                                    <Separator />
+                                    <MenuItem Header="Open History" Click="BtnOpenHistory_Click"
+                                              ToolTip="Open session history folder in Explorer" />
+                                    <MenuItem Header="History in VS Code" Click="BtnOpenHistoryVsCode_Click"
+                                              ToolTip="Open session history folder in VS Code" />
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
+                        <TextBlock Text="SESSIONS"
+                                   Foreground="{StaticResource TextForeground}"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"
+                                   VerticalAlignment="Center"
+                                   Margin="6,0,0,0" />
+                    </DockPanel>
 
-                    <StackPanel DockPanel.Dock="Bottom" Margin="8,4,8,8">
-                        <Button x:Name="BtnNewSession" Content="+ New Session"
-                                Click="BtnNewSession_Click"
-                                Focusable="False"
-                                Height="30" Margin="0,2"
-                                Background="{StaticResource AccentBrush}"
-                                Foreground="White"
-                                BorderThickness="0"
-                                Cursor="Hand" />
-                        <Button x:Name="BtnOpenLogs" Content="Open Logs"
-                                Click="BtnOpenLogs_Click"
-                                Focusable="False"
-                                Height="30" Margin="0,2"
-                                Background="{StaticResource ButtonBackground}"
-                                Foreground="{StaticResource TextForeground}"
-                                BorderThickness="0"
-                                Cursor="Hand"
-                                ToolTip="Open log directory in Explorer" />
-                        <Button x:Name="BtnOpenSessions" Content="Open Sessions"
-                                Click="BtnOpenSessions_Click"
-                                Focusable="False"
-                                Height="30" Margin="0,2"
-                                Background="{StaticResource ButtonBackground}"
-                                Foreground="{StaticResource TextForeground}"
-                                BorderThickness="0"
-                                Cursor="Hand"
-                                ToolTip="Open sessions.json in default editor" />
-                        <Button x:Name="BtnOpenHistory" Content="Open History"
-                                Click="BtnOpenHistory_Click"
-                                Focusable="False"
-                                Height="30" Margin="0,2"
-                                Background="{StaticResource ButtonBackground}"
-                                Foreground="{StaticResource TextForeground}"
-                                BorderThickness="0"
-                                Cursor="Hand"
-                                ToolTip="Open session history folder in Explorer" />
-                        <Button x:Name="BtnOpenHistoryVsCode" Content="History in VS Code"
-                                Click="BtnOpenHistoryVsCode_Click"
-                                Focusable="False"
-                                Height="30" Margin="0,2"
-                                Background="{StaticResource ButtonBackground}"
-                                Foreground="{StaticResource TextForeground}"
-                                BorderThickness="0"
-                                Cursor="Hand"
-                                ToolTip="Open session history folder in VS Code" />
-                        <TextBlock x:Name="BuildInfoText"
-                                   Text="Build: ---"
-                                   Foreground="#555555"
-                                   FontSize="9"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,4,0,0" />
-                    </StackPanel>
+                    <!-- New Session button -->
+                    <Button x:Name="BtnNewSession" DockPanel.Dock="Top"
+                            Content="+ New Session"
+                            Click="BtnNewSession_Click"
+                            Focusable="False"
+                            Height="30" Margin="8,2,8,6"
+                            Background="{StaticResource AccentBrush}"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand" />
+
+                    <!-- StatusFooter: build info at bottom -->
+                    <TextBlock x:Name="BuildInfoText" DockPanel.Dock="Bottom"
+                               Text="Build: ---"
+                               Foreground="#555555"
+                               FontSize="9"
+                               HorizontalAlignment="Center"
+                               Margin="0,4,0,8" />
 
                     <ListBox x:Name="SessionList"
                              SelectionChanged="SessionList_SelectionChanged"
@@ -389,13 +383,11 @@
                           HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" />
 
-            <!-- Center: header + terminal + prompt stacked vertically -->
+            <!-- Center: header + content area stacked vertically -->
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <!-- Session header banner -->
@@ -521,7 +513,7 @@
                     </Grid>
                 </Border>
 
-                <!-- Center top: tabbed terminal + source control + right panel -->
+                <!-- Content area: TerminalColumn | InspectorToggle | InspectorPanel -->
                 <Grid Grid.Row="1" Background="#1E1E1E">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -529,232 +521,324 @@
                         <ColumnDefinition x:Name="PipeMessagesColumn" Width="280" />
                     </Grid.ColumnDefinitions>
 
-                <TextBlock x:Name="PlaceholderText" Grid.Column="0"
-                           Text="Select or create a session to begin"
-                           Foreground="#555555"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           FontSize="16" />
+                    <!-- TerminalColumn: tabs + notification + command bar -->
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
-                <TabControl x:Name="SessionTabs" Grid.Column="0"
-                            Visibility="Collapsed"
-                            Background="#1E1E1E"
-                            BorderThickness="0">
-                    <TabControl.Resources>
-                        <Style TargetType="TabItem">
-                            <Setter Property="Background" Value="#2D2D2D" />
-                            <Setter Property="Foreground" Value="#888888" />
-                            <Setter Property="BorderThickness" Value="0" />
-                            <Setter Property="Padding" Value="12,6" />
-                            <Setter Property="Template">
-                                <Setter.Value>
-                                    <ControlTemplate TargetType="TabItem">
-                                        <Border x:Name="TabBorder"
-                                                Background="{TemplateBinding Background}"
-                                                Padding="{TemplateBinding Padding}">
-                                            <Grid>
-                                                <ContentPresenter ContentSource="Header"
-                                                                  HorizontalAlignment="Center"
-                                                                  VerticalAlignment="Center" />
-                                                <Border x:Name="BottomAccent"
-                                                        Height="2"
-                                                        VerticalAlignment="Bottom"
-                                                        Margin="0,0,0,-6"
-                                                        Background="Transparent" />
+                        <TextBlock x:Name="PlaceholderText" Grid.Row="0"
+                                   Text="Select or create a session to begin"
+                                   Foreground="#555555"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontSize="16" />
+
+                        <!-- ContentTabs: Terminal / Source Control / Repositories -->
+                        <TabControl x:Name="SessionTabs" Grid.Row="0"
+                                    Visibility="Collapsed"
+                                    Background="#1E1E1E"
+                                    BorderThickness="0">
+                            <TabControl.Resources>
+                                <Style TargetType="TabItem">
+                                    <Setter Property="Background" Value="#2D2D2D" />
+                                    <Setter Property="Foreground" Value="#888888" />
+                                    <Setter Property="BorderThickness" Value="0" />
+                                    <Setter Property="Padding" Value="12,6" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="TabItem">
+                                                <Border x:Name="TabBorder"
+                                                        Background="{TemplateBinding Background}"
+                                                        Padding="{TemplateBinding Padding}">
+                                                    <Grid>
+                                                        <ContentPresenter ContentSource="Header"
+                                                                          HorizontalAlignment="Center"
+                                                                          VerticalAlignment="Center" />
+                                                        <Border x:Name="BottomAccent"
+                                                                Height="2"
+                                                                VerticalAlignment="Bottom"
+                                                                Margin="0,0,0,-6"
+                                                                Background="Transparent" />
+                                                    </Grid>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter Property="Background" Value="#1E1E1E" />
+                                                        <Setter Property="Foreground" Value="#CCCCCC" />
+                                                        <Setter TargetName="BottomAccent" Property="Background" Value="#007ACC" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </TabControl.Resources>
+
+                            <TabItem Header="Terminal">
+                                <Grid Background="#1E1E1E">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition x:Name="SummaryColumn" Width="0" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border x:Name="TerminalArea" Grid.Column="0" Background="#1E1E1E" />
+                                    <ScrollBar x:Name="TerminalScrollBar" Grid.Column="1"
+                                               Orientation="Vertical"
+                                               Visibility="Collapsed"
+                                               Style="{StaticResource TerminalScrollBarStyle}"
+                                               ValueChanged="TerminalScrollBar_ValueChanged" />
+
+                                    <!-- Summary Panel Splitter -->
+                                    <GridSplitter x:Name="SummarySplitter" Grid.Column="2"
+                                                  Width="5" Background="#2D2D30"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Stretch"
+                                                  Visibility="Collapsed" />
+
+                                    <!-- SummaryPane -->
+                                    <Border x:Name="SummaryPanel" Grid.Column="3"
+                                            Background="#1E1E1E" BorderBrush="#3C3C3C"
+                                            BorderThickness="1,0,0,0"
+                                            Visibility="Collapsed">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+
+                                            <!-- Header -->
+                                            <Border Grid.Row="0" Background="#252526" Padding="8,6">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="SESSION SUMMARY"
+                                                               Foreground="#888888" FontSize="11"
+                                                               FontWeight="SemiBold"
+                                                               VerticalAlignment="Center" />
+                                                    <Button x:Name="CloseSummaryButton" Grid.Column="1"
+                                                            Content="✕" FontSize="10"
+                                                            Background="Transparent" Foreground="#888888"
+                                                            BorderThickness="0" Padding="4,2"
+                                                            Cursor="Hand"
+                                                            Click="CloseSummaryButton_Click"
+                                                            ToolTip="Hide summary panel" />
+                                                </Grid>
+                                            </Border>
+
+                                            <!-- Summary Content -->
+                                            <Grid Grid.Row="1">
+                                                <!-- Empty state message -->
+                                                <TextBlock x:Name="SummaryEmptyText"
+                                                           Text="No turns yet. Summaries will appear here as you interact with Claude."
+                                                           Foreground="#6B7280" FontSize="11"
+                                                           FontStyle="Italic"
+                                                           TextWrapping="Wrap"
+                                                           Margin="12,16"
+                                                           VerticalAlignment="Top" />
+
+                                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                              HorizontalScrollBarVisibility="Disabled"
+                                                              Background="#1E1E1E">
+                                                    <ItemsControl x:Name="SummaryItemsControl" Padding="8,4">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <StackPanel Margin="0,4,0,8">
+                                                                    <TextBlock Text="{Binding Header}"
+                                                                               Foreground="#569CD6" FontSize="11"
+                                                                               FontWeight="SemiBold"
+                                                                               Margin="0,0,0,2" />
+                                                                    <TextBlock Text="{Binding Summary}"
+                                                                               Foreground="#CCCCCC" FontSize="12"
+                                                                               TextWrapping="Wrap"
+                                                                               LineHeight="18" />
+                                                                </StackPanel>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </ScrollViewer>
                                             </Grid>
-                                        </Border>
-                                        <ControlTemplate.Triggers>
-                                            <Trigger Property="IsSelected" Value="True">
-                                                <Setter Property="Background" Value="#1E1E1E" />
-                                                <Setter Property="Foreground" Value="#CCCCCC" />
-                                                <Setter TargetName="BottomAccent" Property="Background" Value="#007ACC" />
-                                            </Trigger>
-                                        </ControlTemplate.Triggers>
-                                    </ControlTemplate>
-                                </Setter.Value>
-                            </Setter>
-                        </Style>
-                    </TabControl.Resources>
-
-                    <TabItem Header="Terminal">
-                        <Grid Background="#1E1E1E">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition x:Name="SummaryColumn" Width="0" />
-                            </Grid.ColumnDefinitions>
-                            <Border x:Name="TerminalArea" Grid.Column="0" Background="#1E1E1E" />
-                            <ScrollBar x:Name="TerminalScrollBar" Grid.Column="1"
-                                       Orientation="Vertical"
-                                       Visibility="Collapsed"
-                                       Style="{StaticResource TerminalScrollBarStyle}"
-                                       ValueChanged="TerminalScrollBar_ValueChanged" />
-
-                            <!-- Summary Panel Splitter -->
-                            <GridSplitter x:Name="SummarySplitter" Grid.Column="2"
-                                          Width="5" Background="#2D2D30"
-                                          HorizontalAlignment="Center"
-                                          VerticalAlignment="Stretch"
-                                          Visibility="Collapsed" />
-
-                            <!-- Session Summary Panel -->
-                            <Border x:Name="SummaryPanel" Grid.Column="3"
-                                    Background="#1E1E1E" BorderBrush="#3C3C3C"
-                                    BorderThickness="1,0,0,0"
-                                    Visibility="Collapsed">
-                                <Grid>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+                            </TabItem>
+                            <TabItem Header="Source Control">
+                                <controls:GitChangesControl x:Name="GitChanges" />
+                            </TabItem>
+                            <TabItem Header="Repositories">
+                                <Grid Margin="12">
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
 
-                                    <!-- Header -->
-                                    <Border Grid.Row="0" Background="#252526" Padding="8,6">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="SESSION SUMMARY"
-                                                       Foreground="#888888" FontSize="11"
-                                                       FontWeight="SemiBold"
-                                                       VerticalAlignment="Center" />
-                                            <Button x:Name="CloseSummaryButton" Grid.Column="1"
-                                                    Content="✕" FontSize="10"
-                                                    Background="Transparent" Foreground="#888888"
-                                                    BorderThickness="0" Padding="4,2"
-                                                    Cursor="Hand"
-                                                    Click="CloseSummaryButton_Click"
-                                                    ToolTip="Hide summary panel" />
-                                        </Grid>
-                                    </Border>
+                                    <TextBlock Grid.Row="0" Text="Registered Repositories"
+                                               Foreground="#CCCCCC" FontWeight="SemiBold"
+                                               FontSize="14" Margin="0,0,0,8" />
 
-                                    <!-- Summary Content -->
-                                    <Grid Grid.Row="1">
-                                        <!-- Empty state message -->
-                                        <TextBlock x:Name="SummaryEmptyText"
-                                                   Text="No turns yet. Summaries will appear here as you interact with Claude."
-                                                   Foreground="#6B7280" FontSize="11"
-                                                   FontStyle="Italic"
-                                                   TextWrapping="Wrap"
-                                                   Margin="12,16"
-                                                   VerticalAlignment="Top" />
+                                    <ListBox x:Name="RepoManagerList" Grid.Row="1"
+                                             Background="#1E1E1E"
+                                             Foreground="#CCCCCC"
+                                             BorderBrush="#3C3C3C"
+                                             BorderThickness="1">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="6,4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <TextBlock Text="{Binding Name}" FontWeight="Medium" />
+                                                        <TextBlock Text="{Binding Path}" FontSize="10" Opacity="0.6" />
+                                                    </StackPanel>
+                                                    <Border Grid.Column="1"
+                                                            Background="#D97706"
+                                                            CornerRadius="8"
+                                                            Padding="6,2"
+                                                            VerticalAlignment="Center"
+                                                            Margin="8,0,0,0">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding UncommittedCount}" Value="0">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <TextBlock Text="{Binding UncommittedCount}"
+                                                                   Foreground="White"
+                                                                   FontSize="11"
+                                                                   FontWeight="SemiBold"
+                                                                   HorizontalAlignment="Center" />
+                                                    </Border>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
 
-                                        <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                                      HorizontalScrollBarVisibility="Disabled"
-                                                      Background="#1E1E1E">
-                                            <ItemsControl x:Name="SummaryItemsControl" Padding="8,4">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <StackPanel Margin="0,4,0,8">
-                                                            <TextBlock Text="{Binding Header}"
-                                                                       Foreground="#569CD6" FontSize="11"
-                                                                       FontWeight="SemiBold"
-                                                                       Margin="0,0,0,2" />
-                                                            <TextBlock Text="{Binding Summary}"
-                                                                       Foreground="#CCCCCC" FontSize="12"
-                                                                       TextWrapping="Wrap"
-                                                                       LineHeight="18" />
-                                                        </StackPanel>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </ScrollViewer>
-                                    </Grid>
+                                    <WrapPanel Grid.Row="2" Margin="0,8,0,0" HorizontalAlignment="Left">
+                                        <Button Content="Clone Repo" Click="BtnCloneRepo_Click"
+                                                Height="28" Padding="12,0" Margin="0,0,6,0"
+                                                Background="{StaticResource AccentBrush}"
+                                                Foreground="White" BorderThickness="0" Cursor="Hand" />
+                                        <Button Content="Add Existing" Click="BtnAddExistingRepo_Click"
+                                                Height="28" Padding="12,0" Margin="0,0,6,0"
+                                                Background="{StaticResource ButtonBackground}"
+                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                                        <Button Content="Create New" Click="BtnCreateRepo_Click"
+                                                Height="28" Padding="12,0" Margin="0,0,6,0"
+                                                Background="{StaticResource ButtonBackground}"
+                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                                        <Button Content="Launch Session" Click="BtnLaunchSessionFromRepo_Click"
+                                                Height="28" Padding="12,0" Margin="0,0,6,0"
+                                                Background="{StaticResource AccentBrush}"
+                                                Foreground="White" BorderThickness="0" Cursor="Hand" />
+                                        <Button Content="Open in Explorer" Click="BtnRepoOpenExplorer_Click"
+                                                Height="28" Padding="12,0" Margin="0,0,6,0"
+                                                Background="{StaticResource ButtonBackground}"
+                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                                        <Button Content="Remove" Click="BtnRemoveRepo_Click"
+                                                Height="28" Padding="12,0" Margin="0,0,6,0"
+                                                Background="{StaticResource ButtonBackground}"
+                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
+                                    </WrapPanel>
                                 </Grid>
-                            </Border>
-                        </Grid>
-                    </TabItem>
-                    <TabItem Header="Source Control">
-                        <controls:GitChangesControl x:Name="GitChanges" />
-                    </TabItem>
-                    <TabItem Header="Repositories">
-                        <Grid Margin="12">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
+                            </TabItem>
+                        </TabControl>
 
-                            <TextBlock Grid.Row="0" Text="Registered Repositories"
-                                       Foreground="#CCCCCC" FontWeight="SemiBold"
-                                       FontSize="14" Margin="0,0,0,8" />
+                        <!-- NotificationStrip (inside TerminalColumn) -->
+                        <Border x:Name="NotificationBar" Grid.Row="1"
+                                Background="{StaticResource SidebarBackground}"
+                                BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
+                                Padding="8,4">
+                            <DockPanel>
+                                <!-- Info icon (left) -->
+                                <TextBlock x:Name="NotificationIcon" DockPanel.Dock="Left"
+                                           Text="&#x2139;"
+                                           Foreground="#3B82F6"
+                                           FontSize="14"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0"
+                                           Visibility="Collapsed" />
+                                <!-- Message text (fills remaining space) -->
+                                <TextBlock x:Name="NotificationText"
+                                           Text=""
+                                           Foreground="#CCCCCC"
+                                           FontSize="12"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis" />
+                            </DockPanel>
+                        </Border>
 
-                            <ListBox x:Name="RepoManagerList" Grid.Row="1"
-                                     Background="#1E1E1E"
-                                     Foreground="#CCCCCC"
-                                     BorderBrush="#3C3C3C"
-                                     BorderThickness="1">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="6,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Grid.Column="0">
-                                                <TextBlock Text="{Binding Name}" FontWeight="Medium" />
-                                                <TextBlock Text="{Binding Path}" FontSize="10" Opacity="0.6" />
-                                            </StackPanel>
-                                            <Border Grid.Column="1"
-                                                    Background="#D97706"
-                                                    CornerRadius="8"
-                                                    Padding="6,2"
-                                                    VerticalAlignment="Center"
-                                                    Margin="8,0,0,0">
-                                                <Border.Style>
-                                                    <Style TargetType="Border">
-                                                        <Setter Property="Visibility" Value="Visible" />
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding UncommittedCount}" Value="0">
-                                                                <Setter Property="Visibility" Value="Collapsed" />
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </Border.Style>
-                                                <TextBlock Text="{Binding UncommittedCount}"
-                                                           Foreground="White"
-                                                           FontSize="11"
-                                                           FontWeight="SemiBold"
-                                                           HorizontalAlignment="Center" />
-                                            </Border>
-                                        </Grid>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
+                        <!-- CommandBar (inside TerminalColumn) -->
+                        <Border x:Name="PromptBar" Grid.Row="2" Background="{StaticResource SidebarBackground}"
+                                BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8"
+                                SizeChanged="PromptArea_SizeChanged"
+                                Visibility="Collapsed">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="PromptInput"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MinLines="3"
+                                         MinHeight="65"
+                                         MaxHeight="160"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Background="#1E1E1E"
+                                         Foreground="#CCCCCC"
+                                         CaretBrush="#CCCCCC"
+                                         BorderBrush="#3C3C3C"
+                                         BorderThickness="1"
+                                         Padding="8,6"
+                                         FontFamily="Cascadia Mono, Consolas, Courier New"
+                                         FontSize="13"
+                                         KeyDown="PromptInput_KeyDown"
+                                         GotFocus="PromptInput_GotFocus" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                                    <Button Content="Send"
+                                            Click="BtnSendPrompt_Click"
+                                            Width="60" Margin="8,0,0,0"
+                                            Height="30"
+                                            Background="{StaticResource AccentBrush}"
+                                            Foreground="White"
+                                            BorderThickness="0"
+                                            Cursor="Hand" />
+                                    <Button x:Name="BtnQueuePrompt" Content="Queue"
+                                            Click="BtnQueuePrompt_Click"
+                                            Width="60" Margin="4,0,0,0"
+                                            Height="30"
+                                            Background="{StaticResource ButtonBackground}"
+                                            Foreground="{StaticResource TextForeground}"
+                                            BorderThickness="0"
+                                            Cursor="Hand"
+                                            ToolTip="Add to prompt queue (Ctrl+Shift+Enter)" />
+                                    <Button Content="&#x21bb;" Click="BtnRefreshConsole_Click"
+                                            Width="30" Margin="4,0,0,0"
+                                            Height="30"
+                                            Background="{StaticResource ButtonBackground}"
+                                            Foreground="{StaticResource TextForeground}"
+                                            BorderThickness="0"
+                                            Cursor="Hand"
+                                            ToolTip="Reposition console overlay"
+                                            FontSize="16" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Grid>
 
-                            <WrapPanel Grid.Row="2" Margin="0,8,0,0" HorizontalAlignment="Left">
-                                <Button Content="Clone Repo" Click="BtnCloneRepo_Click"
-                                        Height="28" Padding="12,0" Margin="0,0,6,0"
-                                        Background="{StaticResource AccentBrush}"
-                                        Foreground="White" BorderThickness="0" Cursor="Hand" />
-                                <Button Content="Add Existing" Click="BtnAddExistingRepo_Click"
-                                        Height="28" Padding="12,0" Margin="0,0,6,0"
-                                        Background="{StaticResource ButtonBackground}"
-                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                                <Button Content="Create New" Click="BtnCreateRepo_Click"
-                                        Height="28" Padding="12,0" Margin="0,0,6,0"
-                                        Background="{StaticResource ButtonBackground}"
-                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                                <Button Content="Launch Session" Click="BtnLaunchSessionFromRepo_Click"
-                                        Height="28" Padding="12,0" Margin="0,0,6,0"
-                                        Background="{StaticResource AccentBrush}"
-                                        Foreground="White" BorderThickness="0" Cursor="Hand" />
-                                <Button Content="Open in Explorer" Click="BtnRepoOpenExplorer_Click"
-                                        Height="28" Padding="12,0" Margin="0,0,6,0"
-                                        Background="{StaticResource ButtonBackground}"
-                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                                <Button Content="Remove" Click="BtnRemoveRepo_Click"
-                                        Height="28" Padding="12,0" Margin="0,0,6,0"
-                                        Background="{StaticResource ButtonBackground}"
-                                        Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                            </WrapPanel>
-                        </Grid>
-                    </TabItem>
-                </TabControl>
-
-                    <!-- Toggle strip for right panel -->
+                    <!-- InspectorToggle -->
                     <Border Grid.Column="1" Background="{StaticResource SidebarBackground}" Width="24">
                         <Button x:Name="PipeToggleButton" Content="&#x00BB;"
                                 Click="TogglePipeMessages_Click"
@@ -765,7 +849,7 @@
                                 ToolTip="Toggle right panel" />
                     </Border>
 
-                    <!-- Right panel: tabbed Queue and Pipe Messages -->
+                    <!-- InspectorPanel: tabbed Queue and Pipe Messages (full height) -->
                     <Border x:Name="PipeMessagesPanel" Grid.Column="2" Background="{StaticResource SidebarBackground}">
                         <TabControl x:Name="RightPanelTabs" Background="Transparent" BorderThickness="0" Margin="0,8,0,0">
                             <TabControl.Resources>
@@ -946,88 +1030,6 @@
                         </TabControl>
                     </Border>
                 </Grid>
-
-                <!-- Notification info bar (always visible, between terminal and prompt) -->
-                <Border x:Name="NotificationBar" Grid.Row="2"
-                        Background="{StaticResource SidebarBackground}"
-                        BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
-                        Padding="8,4">
-                    <DockPanel>
-                        <!-- Info icon (left) -->
-                        <TextBlock x:Name="NotificationIcon" DockPanel.Dock="Left"
-                                   Text="&#x2139;"
-                                   Foreground="#3B82F6"
-                                   FontSize="14"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,0"
-                                   Visibility="Collapsed" />
-                        <!-- Message text (fills remaining space) -->
-                        <TextBlock x:Name="NotificationText"
-                                   Text=""
-                                   Foreground="#CCCCCC"
-                                   FontSize="12"
-                                   VerticalAlignment="Center"
-                                   TextTrimming="CharacterEllipsis" />
-                    </DockPanel>
-                </Border>
-
-                <!-- Prompt bar (center column only) -->
-                <Border x:Name="PromptBar" Grid.Row="3" Background="{StaticResource SidebarBackground}"
-                        BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8"
-                        SizeChanged="PromptArea_SizeChanged"
-                        Visibility="Collapsed">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBox x:Name="PromptInput"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 MinLines="3"
-                                 MinHeight="65"
-                                 MaxHeight="160"
-                                 VerticalScrollBarVisibility="Auto"
-                                 Background="#1E1E1E"
-                                 Foreground="#CCCCCC"
-                                 CaretBrush="#CCCCCC"
-                                 BorderBrush="#3C3C3C"
-                                 BorderThickness="1"
-                                 Padding="8,6"
-                                 FontFamily="Cascadia Mono, Consolas, Courier New"
-                                 FontSize="13"
-                                 KeyDown="PromptInput_KeyDown"
-                                 GotFocus="PromptInput_GotFocus" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
-                            <Button Content="Send"
-                                    Click="BtnSendPrompt_Click"
-                                    Width="60" Margin="8,0,0,0"
-                                    Height="30"
-                                    Background="{StaticResource AccentBrush}"
-                                    Foreground="White"
-                                    BorderThickness="0"
-                                    Cursor="Hand" />
-                            <Button x:Name="BtnQueuePrompt" Content="Queue"
-                                    Click="BtnQueuePrompt_Click"
-                                    Width="60" Margin="4,0,0,0"
-                                    Height="30"
-                                    Background="{StaticResource ButtonBackground}"
-                                    Foreground="{StaticResource TextForeground}"
-                                    BorderThickness="0"
-                                    Cursor="Hand"
-                                    ToolTip="Add to prompt queue (Ctrl+Shift+Enter)" />
-                            <Button Content="&#x21bb;" Click="BtnRefreshConsole_Click"
-                                    Width="30" Margin="4,0,0,0"
-                                    Height="30"
-                                    Background="{StaticResource ButtonBackground}"
-                                    Foreground="{StaticResource TextForeground}"
-                                    BorderThickness="0"
-                                    Cursor="Hand"
-                                    ToolTip="Reposition console overlay"
-                                    FontSize="16" />
-                        </StackPanel>
-                    </Grid>
-                </Border>
             </Grid>
 
     </Grid>
