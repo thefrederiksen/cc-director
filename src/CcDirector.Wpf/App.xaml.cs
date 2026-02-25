@@ -18,6 +18,7 @@ public partial class App : Application
     public AgentOptions Options { get; private set; } = null!; // Initialized in OnStartup via LoadConfiguration
     public List<RepositoryConfig> Repositories { get; private set; } = new();
     public RepositoryRegistry RepositoryRegistry { get; private set; } = null!; // Initialized in OnStartup
+    public RootDirectoryStore RootDirectoryStore { get; private set; } = null!; // Initialized in OnStartup
     public IDirectorServer PipeServer { get; private set; } = null!; // Initialized in OnStartup
     public EventRouter EventRouter { get; private set; } = null!; // Initialized in OnStartup
     public SessionStateStore SessionStateStore { get; private set; } = null!; // Initialized in OnStartup
@@ -73,6 +74,9 @@ public partial class App : Application
         RepositoryRegistry = new RepositoryRegistry();
         RepositoryRegistry.Load();
         RepositoryRegistry.SeedFrom(Repositories);
+
+        RootDirectoryStore = new RootDirectoryStore();
+        RootDirectoryStore.Load();
 
         SessionStateStore = new SessionStateStore();
 

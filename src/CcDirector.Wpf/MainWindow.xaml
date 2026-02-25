@@ -34,6 +34,9 @@
                                 ToolTip="Application menu">
                             <Button.ContextMenu>
                                 <ContextMenu x:Name="AppMenu">
+                                    <MenuItem Header="Repositories..." Click="MenuRepositories_Click"
+                                              ToolTip="Manage root directories and repositories" />
+                                    <Separator />
                                     <MenuItem Header="Open Logs" Click="BtnOpenLogs_Click"
                                               ToolTip="Open log directory in Explorer" />
                                     <MenuItem Header="Open Sessions" Click="BtnOpenSessions_Click"
@@ -669,89 +672,6 @@
                             </TabItem>
                             <TabItem Header="Source Control">
                                 <controls:GitChangesControl x:Name="GitChanges" />
-                            </TabItem>
-                            <TabItem Header="Repositories">
-                                <Grid Margin="12">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-
-                                    <TextBlock Grid.Row="0" Text="Registered Repositories"
-                                               Foreground="#CCCCCC" FontWeight="SemiBold"
-                                               FontSize="14" Margin="0,0,0,8" />
-
-                                    <ListBox x:Name="RepoManagerList" Grid.Row="1"
-                                             Background="#1E1E1E"
-                                             Foreground="#CCCCCC"
-                                             BorderBrush="#3C3C3C"
-                                             BorderThickness="1">
-                                        <ListBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <Grid Margin="6,4">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*" />
-                                                        <ColumnDefinition Width="Auto" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel Grid.Column="0">
-                                                        <TextBlock Text="{Binding Name}" FontWeight="Medium" />
-                                                        <TextBlock Text="{Binding Path}" FontSize="10" Opacity="0.6" />
-                                                    </StackPanel>
-                                                    <Border Grid.Column="1"
-                                                            Background="#D97706"
-                                                            CornerRadius="8"
-                                                            Padding="6,2"
-                                                            VerticalAlignment="Center"
-                                                            Margin="8,0,0,0">
-                                                        <Border.Style>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="Visibility" Value="Visible" />
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding UncommittedCount}" Value="0">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Border.Style>
-                                                        <TextBlock Text="{Binding UncommittedCount}"
-                                                                   Foreground="White"
-                                                                   FontSize="11"
-                                                                   FontWeight="SemiBold"
-                                                                   HorizontalAlignment="Center" />
-                                                    </Border>
-                                                </Grid>
-                                            </DataTemplate>
-                                        </ListBox.ItemTemplate>
-                                    </ListBox>
-
-                                    <WrapPanel Grid.Row="2" Margin="0,8,0,0" HorizontalAlignment="Left">
-                                        <Button Content="Clone Repo" Click="BtnCloneRepo_Click"
-                                                Height="28" Padding="12,0" Margin="0,0,6,0"
-                                                Background="{StaticResource AccentBrush}"
-                                                Foreground="White" BorderThickness="0" Cursor="Hand" />
-                                        <Button Content="Add Existing" Click="BtnAddExistingRepo_Click"
-                                                Height="28" Padding="12,0" Margin="0,0,6,0"
-                                                Background="{StaticResource ButtonBackground}"
-                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                                        <Button Content="Create New" Click="BtnCreateRepo_Click"
-                                                Height="28" Padding="12,0" Margin="0,0,6,0"
-                                                Background="{StaticResource ButtonBackground}"
-                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                                        <Button Content="Launch Session" Click="BtnLaunchSessionFromRepo_Click"
-                                                Height="28" Padding="12,0" Margin="0,0,6,0"
-                                                Background="{StaticResource AccentBrush}"
-                                                Foreground="White" BorderThickness="0" Cursor="Hand" />
-                                        <Button Content="Open in Explorer" Click="BtnRepoOpenExplorer_Click"
-                                                Height="28" Padding="12,0" Margin="0,0,6,0"
-                                                Background="{StaticResource ButtonBackground}"
-                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                                        <Button Content="Remove" Click="BtnRemoveRepo_Click"
-                                                Height="28" Padding="12,0" Margin="0,0,6,0"
-                                                Background="{StaticResource ButtonBackground}"
-                                                Foreground="{StaticResource TextForeground}" BorderThickness="0" Cursor="Hand" />
-                                    </WrapPanel>
-                                </Grid>
                             </TabItem>
                         </TabControl>
 

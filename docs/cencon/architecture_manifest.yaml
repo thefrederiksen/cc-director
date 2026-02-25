@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-02-24"
+last_updated: "2026-02-25"
 
 # C4 Level 1: System Context
 context:
@@ -25,7 +25,7 @@ context:
       description: Software developer using Claude Code for coding tasks
       type: person
       relationship:
-        target: cc_director
+        target: cc-director
         description: Manages multiple Claude Code sessions
 
     - id: claude_code
@@ -33,7 +33,7 @@ context:
       description: Anthropic's CLI for Claude AI assistance
       type: external_system
       relationship:
-        target: cc_director
+        target: cc-director
         description: Spawned and monitored by Director via ConPTY
 
     - id: git
@@ -41,7 +41,7 @@ context:
       description: Version control system
       type: external_system
       relationship:
-        target: cc_director
+        target: cc-director
         description: Provides repository status information
 
     - id: openai_api
@@ -49,7 +49,7 @@ context:
       description: Cloud API for speech-to-text and text-to-speech
       type: external_system
       relationship:
-        target: cc_director
+        target: cc-director
         description: Voice mode transcription and synthesis
 
 # C4 Level 2: Container Diagram
@@ -81,6 +81,8 @@ containers:
           - CloseDialog.xaml
           - CloneRepoDialog.xaml
           - GitHubRepoPickerDialog.xaml
+          - RepositoryManagerDialog.xaml
+          - RootDirectoryDialog.xaml
       - name: Voice UI
         description: Voice mode controls and audio playback/recording
         directory: Voice/
@@ -115,6 +117,12 @@ containers:
       - name: GitSyncStatusProvider
         description: Branch ahead/behind status tracking
         file: Git/GitSyncStatusProvider.cs
+      - name: RemoteRepoProvider
+        description: GitHub and Azure DevOps remote repo listing via CLI
+        file: Git/RemoteRepoProvider.cs
+      - name: RemoteRepoInfo
+        description: Remote repository info model
+        file: Git/RemoteRepoInfo.cs
       - name: ClaudeSessionReader
         description: Session verification via .jsonl transcript matching
         file: Claude/ClaudeSessionReader.cs
@@ -223,7 +231,7 @@ security_boundaries:
     description: IPC channels are local-only, no network exposure
     components:
       - "Windows: \\\\.\pipe\\CC_ClaudeDirector (Named Pipe)"
-      - "Mac/Linux: ~/.cc_director/director.sock (Unix Socket)"
+      - "Mac/Linux: ~/.cc-director/director.sock (Unix Socket)"
     security_note: IPC accessible only on local machine
 
   - id: file_system
@@ -233,6 +241,7 @@ security_boundaries:
       - logs: "%LOCALAPPDATA%\\CcDirector\\logs\\"
       - sessions: "~/Documents/CcDirector/sessions.json"
       - repositories: "~/Documents/CcDirector/repositories.json"
+      - root_directories: "%LOCALAPPDATA%\\CcDirector\\root-directories.json"
       - hooks_config: "~/.claude/settings.json"
 
 # Design patterns used
@@ -267,9 +276,11 @@ patterns:
       - Utilities/FileLog.cs
 
   - name: Repository Pattern
-    implementation: RecentSessionStore, RepositoryRegistry, SessionStateStore
+    implementation: RecentSessionStore, RepositoryRegistry, SessionStateStore, RootDirectoryStore
     purpose: Persistence abstraction
     files:
       - Sessions/RecentSessionStore.cs
       - Sessions/SessionStateStore.cs
       - Configuration/RepositoryRegistry.cs
+      - Configuration/RootDirectoryStore.cs
+      - Configuration/RootDirectoryConfig.cs

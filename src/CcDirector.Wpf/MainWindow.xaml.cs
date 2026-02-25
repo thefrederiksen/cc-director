@@ -41,9 +41,7 @@ public partial class MainWindow : Window
     private Session? _activeSession;
     private CancellationTokenSource? _enterRetryCts;
     private SessionViewModel? _headerBoundVm;
-    private readonly System.Windows.Threading.DispatcherTimer _repoChangeTimer;
     private readonly GitStatusProvider _gitStatusProvider = new();
-    private bool _repoChangeRefreshRunning;
     private readonly System.Windows.Threading.DispatcherTimer _sessionGitTimer;
     private bool _sessionGitRefreshRunning;
     private CancellationTokenSource? _persistDebounceCts;
@@ -65,12 +63,6 @@ public partial class MainWindow : Window
         Activated += MainWindow_Activated;
         Deactivated += MainWindow_Deactivated;
         SessionTabs.SelectionChanged += SessionTabs_SelectionChanged;
-
-        _repoChangeTimer = new System.Windows.Threading.DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(30)
-        };
-        _repoChangeTimer.Tick += async (_, _) => await RefreshRepoChangeCountsAsync();
 
         _sessionGitTimer = new System.Windows.Threading.DispatcherTimer
         {
@@ -458,6 +450,33 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             FileLog.Write($"[MainWindow] BtnAppMenu_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private async void MenuRepositories_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] MenuRepositories_Click: opening Repository Manager");
+        try
+        {
+            var app = (App)Application.Current;
+            var dialog = new RepositoryManagerDialog(app.RootDirectoryStore) { Owner = this };
+            if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.LaunchSessionPath))
+            {
+                FileLog.Write($"[MainWindow] MenuRepositories_Click: launching session for {dialog.LaunchSessionPath}");
+                var vm = CreateSession(dialog.LaunchSessionPath);
+                if (vm != null)
+                {
+                    ShowRenameDialog(vm);
+                    SaveSessionToHistory(vm);
+                    SessionTabs.SelectedIndex = 0;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] MenuRepositories_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open Repository Manager:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1126,18 +1145,6 @@ public partial class MainWindow : Window
 
     private void SessionTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Refresh repo list when Repositories tab is selected (index 2)
-        if (SessionTabs.SelectedIndex == 2)
-        {
-            RefreshRepoManagerList();
-            _ = RefreshRepoChangeCountsAsync();
-            _repoChangeTimer.Start();
-        }
-        else
-        {
-            _repoChangeTimer.Stop();
-        }
-
         if (_activeEmbeddedBackend == null) return;
 
         // Terminal tab is index 0 — show overlay only when it's selected
@@ -2001,58 +2008,6 @@ public partial class MainWindow : Window
         }
     }
 
-    // --- Repository Management Tab ---
-
-    private void RefreshRepoManagerList()
-    {
-        var app = (App)Application.Current;
-        RepoManagerList.ItemsSource = app.RepositoryRegistry.Repositories
-            .OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private async Task RefreshRepoChangeCountsAsync()
-    {
-        if (_repoChangeRefreshRunning) return;
-        _repoChangeRefreshRunning = true;
-
-        try
-        {
-            var app = (App)Application.Current;
-            var repos = app.RepositoryRegistry.Repositories.ToList();
-
-            using var semaphore = new SemaphoreSlim(4);
-            var tasks = repos.Select(async repo =>
-            {
-                await semaphore.WaitAsync();
-                try
-                {
-                    if (!System.IO.Directory.Exists(repo.Path)) return;
-                    int count = await _gitStatusProvider.GetCountAsync(repo.Path);
-                    _ = Dispatcher.BeginInvoke(() => repo.UncommittedCount = count);
-                }
-                catch (Exception ex)
-                {
-                    FileLog.Write($"[RepoChanges] Error checking {repo.Path}: {ex.Message}");
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            });
-
-            await Task.WhenAll(tasks);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[RepoChanges] RefreshRepoChangeCounts error: {ex.Message}");
-        }
-        finally
-        {
-            _repoChangeRefreshRunning = false;
-        }
-    }
-
     private async Task RefreshSessionGitStatusAsync()
     {
         if (_sessionGitRefreshRunning) return;
@@ -2086,187 +2041,6 @@ public partial class MainWindow : Window
         {
             _sessionGitRefreshRunning = false;
         }
-    }
-
-    private async void BtnCloneRepo_Click(object sender, RoutedEventArgs e)
-    {
-        var urlDialog = new CloneRepoDialog { Owner = this };
-        if (urlDialog.ShowDialog() != true) return;
-
-        var url = urlDialog.RepoUrl;
-        var destination = urlDialog.Destination;
-
-        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(destination))
-            return;
-
-        try
-        {
-            var psi = new ProcessStartInfo("git", $"clone \"{url}\" \"{destination}\"")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            var process = Process.Start(psi);
-            if (process == null)
-            {
-                MessageBox.Show(this, "Failed to start git.", "Clone Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            await process.WaitForExitAsync();
-            var stderr = await process.StandardError.ReadToEndAsync();
-
-            if (process.ExitCode != 0)
-            {
-                MessageBox.Show(this, $"git clone failed:\n{stderr}", "Clone Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            var app = (App)Application.Current;
-            app.RepositoryRegistry.TryAdd(destination);
-            RefreshRepoManagerList();
-            _ = RefreshRepoChangeCountsAsync();
-
-            MessageBox.Show(this, $"Repository cloned to:\n{destination}", "Clone Complete",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Clone failed:\n{ex.Message}", "Clone Error",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void BtnAddExistingRepo_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new Microsoft.Win32.OpenFolderDialog
-        {
-            Title = "Select Repository Folder"
-        };
-
-        if (dialog.ShowDialog(this) == true)
-        {
-            var app = (App)Application.Current;
-            if (app.RepositoryRegistry.TryAdd(dialog.FolderName))
-            {
-                RefreshRepoManagerList();
-                _ = RefreshRepoChangeCountsAsync();
-            }
-            else
-                MessageBox.Show(this, "Repository is already registered.", "Add Repository",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-    }
-
-    private async void BtnCreateRepo_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new Microsoft.Win32.OpenFolderDialog
-        {
-            Title = "Select Folder for New Repository"
-        };
-
-        if (dialog.ShowDialog(this) != true) return;
-
-        try
-        {
-            var psi = new ProcessStartInfo("git", $"init \"{dialog.FolderName}\"")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            var process = Process.Start(psi);
-            if (process != null)
-                await process.WaitForExitAsync();
-
-            if (process?.ExitCode != 0)
-            {
-                MessageBox.Show(this, "git init failed.", "Create Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            var app = (App)Application.Current;
-            app.RepositoryRegistry.TryAdd(dialog.FolderName);
-            RefreshRepoManagerList();
-            _ = RefreshRepoChangeCountsAsync();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Create failed:\n{ex.Message}", "Create Error",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void BtnLaunchSessionFromRepo_Click(object sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[MainWindow] BtnLaunchSessionFromRepo_Click: entered");
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        if (RepoManagerList.SelectedItem is not RepositoryConfig repo)
-        {
-            MessageBox.Show(this, "Select a repository first.", "Launch Session",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (!System.IO.Directory.Exists(repo.Path))
-        {
-            MessageBox.Show(this, $"Repository path not found:\n{repo.Path}", "Launch Session",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        FileLog.Write($"[MainWindow] BtnLaunchSessionFromRepo_Click: creating session for {repo.Path}");
-        var vm = CreateSession(repo.Path);
-        if (vm == null) return;
-
-        FileLog.Write($"[MainWindow] BtnLaunchSessionFromRepo_Click: showing rename dialog, elapsed={sw.ElapsedMilliseconds}ms");
-        ShowRenameDialog(vm);
-        SaveSessionToHistory(vm);
-        _ = CaptureStartupTextAsync(vm.Session);
-        PersistSessionState();
-
-        // Switch to Terminal tab to show the new session
-        SessionTabs.SelectedIndex = 0;
-        FileLog.Write($"[MainWindow] BtnLaunchSessionFromRepo_Click: complete, totalTime={sw.ElapsedMilliseconds}ms");
-    }
-
-    private void BtnRepoOpenExplorer_Click(object sender, RoutedEventArgs e)
-    {
-        if (RepoManagerList.SelectedItem is RepositoryConfig repo &&
-            System.IO.Directory.Exists(repo.Path))
-        {
-            Process.Start("explorer.exe", repo.Path);
-        }
-    }
-
-    private void BtnRemoveRepo_Click(object sender, RoutedEventArgs e)
-    {
-        if (RepoManagerList.SelectedItem is not RepositoryConfig repo)
-        {
-            MessageBox.Show(this, "Select a repository first.", "Remove Repository",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var result = MessageBox.Show(this,
-            $"Remove \"{repo.Name}\" from the registry?\n\nThis does NOT delete files on disk.",
-            "Remove Repository", MessageBoxButton.YesNo, MessageBoxImage.Question);
-
-        if (result != MessageBoxResult.Yes) return;
-
-        var app = (App)Application.Current;
-        app.RepositoryRegistry.Remove(repo.Path);
-        RefreshRepoManagerList();
-        _ = RefreshRepoChangeCountsAsync();
     }
 
     private void ShowRenameDialog(SessionViewModel vm)
