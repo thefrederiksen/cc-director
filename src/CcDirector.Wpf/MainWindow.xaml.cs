@@ -474,11 +474,12 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
             var resumeSessionId = dialog.SelectedResumeSessionId;
+            // Build Claude arguments: subcommand first (remote-control), then flags
             var claudeArgs = "";
+            if (dialog.EnableRemoteControl)
+                claudeArgs = "remote-control ";  // Subcommand must come before flags
             if (dialog.BypassPermissions)
                 claudeArgs += "--dangerously-skip-permissions ";
-            if (dialog.EnableRemoteControl)
-                claudeArgs += "--remote-control";
             claudeArgs = claudeArgs.Trim();
             FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog confirmed, path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}, dialogTime={sw.ElapsedMilliseconds}ms");
 

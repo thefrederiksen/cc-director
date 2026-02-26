@@ -10,14 +10,148 @@
         WindowStartupLocation="CenterScreen">
 
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="264" MinWidth="180" />
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
+        <!-- Session header banner (spans full width at top) -->
+        <Border x:Name="SessionHeaderBanner" Grid.Row="0" Grid.ColumnSpan="3"
+                Background="#007ACC"
+                BorderBrush="#005A9E" BorderThickness="0,0,0,2"
+                MinHeight="48"
+                Visibility="Collapsed">
+            <Grid Margin="16,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Session name -->
+                <TextBlock x:Name="HeaderSessionName" Grid.Column="0" Grid.Row="0"
+                           Text=""
+                           Foreground="White"
+                           FontSize="27"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+
+                <!-- Activity state badge + message count -->
+                <StackPanel Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <!-- Message count badge -->
+                    <Border x:Name="HeaderMessageCountBadge"
+                            Background="#1E40AF"
+                            CornerRadius="4"
+                            Padding="8,4"
+                            Margin="0,0,8,0"
+                            VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="HeaderMessageCountText"
+                                       Text="0"
+                                       Foreground="White"
+                                       FontSize="12"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text=" msgs"
+                                       Foreground="White"
+                                       FontSize="12"
+                                       Opacity="0.8" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Activity state badge -->
+                    <Border x:Name="HeaderStateBadge"
+                            CornerRadius="4"
+                            Padding="10,4"
+                            VerticalAlignment="Center"
+                            Background="#005A9E">
+                        <TextBlock x:Name="HeaderStateBadgeText"
+                                   Text="Starting"
+                                   Foreground="White"
+                                   FontSize="12"
+                                   FontWeight="SemiBold" />
+                    </Border>
+                </StackPanel>
+
+
+                <!-- Session ID and verification row (right-aligned) -->
+                <StackPanel x:Name="HeaderSessionIdPanel" Grid.Column="1" Grid.Row="2"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            Margin="0,4,0,0"
+                            Visibility="Collapsed">
+                    <!-- Claude ID with aligned label -->
+                    <TextBlock Text="Claude ID:"
+                               Foreground="#87CEFA"
+                               FontSize="10"
+                               VerticalAlignment="Center" />
+                    <TextBlock x:Name="HeaderSessionId"
+                               Text="Not linked"
+                               Foreground="#E0E0E0"
+                               FontSize="10"
+                               FontFamily="Consolas, Courier New"
+                               Margin="4,0,0,0"
+                               VerticalAlignment="Center" />
+                    <!-- Verification badge -->
+                    <Border x:Name="HeaderVerificationBadge"
+                            CornerRadius="2"
+                            Padding="4,1"
+                            Margin="6,0,0,0"
+                            VerticalAlignment="Center">
+                        <TextBlock x:Name="HeaderVerificationText"
+                                   Text="OK"
+                                   FontSize="9"
+                                   FontWeight="SemiBold"
+                                   Foreground="White" />
+                    </Border>
+                    <!-- Re-link button -->
+                    <Button x:Name="BtnRelink"
+                            Content="Re-link"
+                            Click="BtnRelink_Click"
+                            Visibility="Collapsed"
+                            Margin="6,0,0,0"
+                            Padding="6,2"
+                            FontSize="10"
+                            Background="#005A9E"
+                            Foreground="#E0E0E0"
+                            BorderThickness="0"
+                            Cursor="Hand" />
+                    <!-- Separator -->
+                    <TextBlock Text="|"
+                               Foreground="#4A5568"
+                               FontSize="10"
+                               Margin="12,0"
+                               VerticalAlignment="Center" />
+                    <!-- Director ID with aligned label -->
+                    <TextBlock Text="Director ID:"
+                               Foreground="#87CEFA"
+                               FontSize="10"
+                               VerticalAlignment="Center" />
+                    <TextBlock x:Name="HeaderDirectorId"
+                               Foreground="#E0E0E0"
+                               FontSize="10"
+                               FontFamily="Consolas, Courier New"
+                               Margin="4,0,0,0"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
             <!-- Left sidebar: SessionNavigator (full height) -->
-            <Border Grid.Column="0" Background="{StaticResource SidebarBackground}">
+            <Border Grid.Row="1" Grid.Column="0" Background="{StaticResource SidebarBackground}"
+                    BorderBrush="#3C3C3C" BorderThickness="0,0,1,0">
                 <DockPanel>
                     <!-- Header with hamburger menu and title -->
                     <DockPanel DockPanel.Dock="Top" Margin="8,10,8,4">
@@ -380,144 +514,14 @@
             </Border>
 
             <!-- Splitter (left) -->
-            <GridSplitter Grid.Column="1" Width="3"
+            <GridSplitter Grid.Row="1" Grid.Column="1" Width="3"
                           Focusable="False"
                           Background="{StaticResource PanelBackground}"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" />
 
-            <!-- Center: header + content area stacked vertically -->
-            <Grid Grid.Column="2">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <!-- Session header banner -->
-                <Border x:Name="SessionHeaderBanner" Grid.Row="0"
-                        Background="#252526"
-                        BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
-                        MinHeight="48"
-                        Visibility="Collapsed">
-                    <Grid Margin="16,8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-
-                        <!-- Session name -->
-                        <TextBlock x:Name="HeaderSessionName" Grid.Column="0" Grid.Row="0"
-                                   Text=""
-                                   Foreground="White"
-                                   FontSize="18"
-                                   FontWeight="SemiBold"
-                                   VerticalAlignment="Center"
-                                   TextTrimming="CharacterEllipsis" />
-
-                        <!-- Activity state badge + message count -->
-                        <StackPanel Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
-                                    Orientation="Horizontal"
-                                    VerticalAlignment="Center">
-                            <!-- Message count badge -->
-                            <Border x:Name="HeaderMessageCountBadge"
-                                    Background="#3B82F6"
-                                    CornerRadius="4"
-                                    Padding="8,4"
-                                    Margin="0,0,8,0"
-                                    VerticalAlignment="Center"
-                                    Visibility="Collapsed">
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock x:Name="HeaderMessageCountText"
-                                               Text="0"
-                                               Foreground="White"
-                                               FontSize="12"
-                                               FontWeight="SemiBold" />
-                                    <TextBlock Text=" msgs"
-                                               Foreground="White"
-                                               FontSize="12"
-                                               Opacity="0.8" />
-                                </StackPanel>
-                            </Border>
-
-                            <!-- Activity state badge -->
-                            <Border x:Name="HeaderStateBadge"
-                                    CornerRadius="4"
-                                    Padding="10,4"
-                                    VerticalAlignment="Center"
-                                    Background="#336B7280">
-                                <TextBlock x:Name="HeaderStateBadgeText"
-                                           Text="Starting"
-                                           Foreground="White"
-                                           FontSize="12"
-                                           FontWeight="SemiBold" />
-                            </Border>
-                        </StackPanel>
-
-                        <!-- Claude summary text -->
-                        <TextBlock x:Name="HeaderClaudeSummary" Grid.Column="0" Grid.Row="1"
-                                   Text=""
-                                   Foreground="#9CA3AF"
-                                   FontSize="11"
-                                   TextTrimming="CharacterEllipsis"
-                                   Margin="0,2,16,0"
-                                   Visibility="Collapsed" />
-
-                        <!-- Session ID and verification row -->
-                        <StackPanel x:Name="HeaderSessionIdPanel" Grid.Column="0" Grid.Row="2"
-                                    Orientation="Horizontal"
-                                    Margin="0,4,0,0"
-                                    Visibility="Collapsed">
-                            <TextBlock Text="Claude ID: "
-                                       Foreground="#6B7280"
-                                       FontSize="10" />
-                            <TextBlock x:Name="HeaderSessionId"
-                                       Text="Not linked"
-                                       Foreground="#9CA3AF"
-                                       FontSize="10"
-                                       FontFamily="Consolas, Courier New" />
-                            <!-- Verification badge -->
-                            <Border x:Name="HeaderVerificationBadge"
-                                    CornerRadius="2"
-                                    Padding="4,1"
-                                    Margin="8,0,0,0"
-                                    VerticalAlignment="Center">
-                                <TextBlock x:Name="HeaderVerificationText"
-                                           Text="OK"
-                                           FontSize="9"
-                                           FontWeight="SemiBold"
-                                           Foreground="White" />
-                            </Border>
-                            <!-- Re-link button -->
-                            <Button x:Name="BtnRelink"
-                                    Content="Re-link"
-                                    Click="BtnRelink_Click"
-                                    Visibility="Collapsed"
-                                    Margin="8,0,0,0"
-                                    Padding="6,2"
-                                    FontSize="10"
-                                    Background="#374151"
-                                    Foreground="#D1D5DB"
-                                    BorderThickness="0"
-                                    Cursor="Hand" />
-                            <!-- Director ID -->
-                            <TextBlock Text="    Director ID: "
-                                       Foreground="#6B7280"
-                                       FontSize="10" />
-                            <TextBlock x:Name="HeaderDirectorId"
-                                       Foreground="#9CA3AF"
-                                       FontSize="10"
-                                       FontFamily="Consolas, Courier New" />
-                        </StackPanel>
-                    </Grid>
-                </Border>
-
-                <!-- Content area: TerminalColumn | InspectorToggle | InspectorPanel -->
-                <Grid Grid.Row="1" Background="#1E1E1E">
+            <!-- Center: content area -->
+            <Grid Grid.Row="1" Grid.Column="2" Background="#1E1E1E">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
@@ -770,7 +774,8 @@
                     </Border>
 
                     <!-- InspectorPanel: tabbed Queue and Pipe Messages (full height) -->
-                    <Border x:Name="PipeMessagesPanel" Grid.Column="2" Background="{StaticResource SidebarBackground}">
+                    <Border x:Name="PipeMessagesPanel" Grid.Column="2" Background="{StaticResource SidebarBackground}"
+                            BorderBrush="#3C3C3C" BorderThickness="1,0,0,0">
                         <TabControl x:Name="RightPanelTabs" Background="Transparent" BorderThickness="0" Margin="0,8,0,0">
                             <TabControl.Resources>
                                 <Style TargetType="TabItem">
@@ -950,7 +955,6 @@
                         </TabControl>
                     </Border>
                 </Grid>
-            </Grid>
 
     </Grid>
 </Window>

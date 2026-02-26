@@ -254,11 +254,19 @@ public partial class NewSessionDialog : Window
         (Color)ColorConverter.ConvertFromString("#22C55E"));
     private static readonly SolidColorBrush NewSessionButtonBrush = new(
         (Color)ColorConverter.ConvertFromString("#007ACC"));
+    private static readonly SolidColorBrush DisabledButtonBrush = new(
+        (Color)ColorConverter.ConvertFromString("#4A4A4A"));
+    private static readonly SolidColorBrush DisabledTextBrush = new(
+        (Color)ColorConverter.ConvertFromString("#AAAAAA"));
+    private static readonly SolidColorBrush EnabledTextBrush = new(Colors.White);
 
     static NewSessionDialog()
     {
         ResumeButtonBrush.Freeze();
         NewSessionButtonBrush.Freeze();
+        DisabledButtonBrush.Freeze();
+        DisabledTextBrush.Freeze();
+        EnabledTextBrush.Freeze();
     }
 
     private readonly RepositoryRegistry? _registry;
@@ -272,6 +280,12 @@ public partial class NewSessionDialog : Window
 
     /// <summary>The Claude session ID to resume (null for new session).</summary>
     public string? SelectedResumeSessionId { get; private set; }
+
+    /// <summary>Whether to bypass permission prompts (adds --dangerously-skip-permissions flag).</summary>
+    public bool BypassPermissions => BypassPermissionsCheckBox.IsChecked == true;
+
+    /// <summary>Whether to enable remote control mode (uses 'remote-control' subcommand).</summary>
+    public bool EnableRemoteControl => RemoteControlCheckBox.IsChecked == true;
 
     public NewSessionDialog(RepositoryRegistry? registry = null, SessionHistoryStore? historyStore = null)
     {
@@ -301,7 +315,7 @@ public partial class NewSessionDialog : Window
         // Load session history async after dialog is shown
         Loaded += async (_, _) =>
         {
-            SessionSearchBox.Focus();
+            RepoSearchBox.Focus();
             await LoadSessionHistoryAsync();
         };
 
@@ -376,17 +390,21 @@ public partial class NewSessionDialog : Window
 
     private void UpdateActionButton()
     {
-        if (MainTabs.SelectedIndex == 0) // Resume Session tab
-        {
-            BtnAction.Content = "Resume Selected";
-            BtnAction.Background = ResumeButtonBrush;
-            BtnAction.IsEnabled = SessionList.SelectedItem != null;
-        }
-        else // New Session tab
+        if (MainTabs.SelectedIndex == 0) // New Session tab
         {
             BtnAction.Content = "Start Session";
-            BtnAction.Background = NewSessionButtonBrush;
-            BtnAction.IsEnabled = !string.IsNullOrWhiteSpace(PathInput.Text);
+            var isEnabled = !string.IsNullOrWhiteSpace(PathInput.Text);
+            BtnAction.IsEnabled = isEnabled;
+            BtnAction.Background = isEnabled ? NewSessionButtonBrush : DisabledButtonBrush;
+            BtnAction.Foreground = isEnabled ? EnabledTextBrush : DisabledTextBrush;
+        }
+        else // Resume Session tab
+        {
+            BtnAction.Content = "Resume Selected";
+            var isEnabled = SessionList.SelectedItem != null;
+            BtnAction.IsEnabled = isEnabled;
+            BtnAction.Background = isEnabled ? ResumeButtonBrush : DisabledButtonBrush;
+            BtnAction.Foreground = isEnabled ? EnabledTextBrush : DisabledTextBrush;
         }
     }
 
@@ -413,6 +431,11 @@ public partial class NewSessionDialog : Window
     }
 
     private void RepoSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ApplyRepoFilter();
+    }
+
+    private void ApplyRepoFilter()
     {
         if (_allRepos == null)
             return;
@@ -492,9 +515,51 @@ public partial class NewSessionDialog : Window
         }
     }
 
+    private void BtnRemoveRepo_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string path)
+            return;
+
+        FileLog.Write($"[NewSessionDialog] BtnRemoveRepo_Click: {path}");
+
+        if (_registry != null)
+        {
+            _registry.Remove(path);
+            _allRepos = _registry.Repositories.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+
+            // Reapply the current search filter instead of showing all repos
+            ApplyRepoFilter();
+
+            // Clear selection and path input if the removed repo was selected
+            if (PathInput.Text == path)
+            {
+                PathInput.Text = string.Empty;
+                SelectedPath = null;
+                RepoList.SelectedItem = null;
+                UpdateActionButton();
+            }
+
+            FileLog.Write($"[NewSessionDialog] Removed repository: {path}");
+        }
+    }
+
     private void BtnAction_Click(object sender, RoutedEventArgs e)
     {
-        if (MainTabs.SelectedIndex == 0) // Resume Session tab
+        if (MainTabs.SelectedIndex == 0) // New Session tab
+        {
+            SelectedPath = PathInput.Text;
+            SelectedResumeSessionId = null; // Ensure we're starting a new session
+
+            if (string.IsNullOrWhiteSpace(SelectedPath))
+            {
+                FileLog.Write("[NewSessionDialog] BtnAction_Click: No path specified for new session");
+                return;
+            }
+
+            FileLog.Write($"[NewSessionDialog] BtnAction_Click: Starting new session at {SelectedPath}");
+            DialogResult = true;
+        }
+        else // Resume Session tab
         {
             if (SessionList.SelectedItem is not SessionHistoryViewModel vm)
             {
@@ -507,20 +572,6 @@ public partial class NewSessionDialog : Window
             SelectedPath = vm.ProjectPath;
 
             FileLog.Write($"[NewSessionDialog] BtnAction_Click: Resuming session claude={vm.ClaudeSessionId}, path={vm.ProjectPath}");
-            DialogResult = true;
-        }
-        else // New Session tab
-        {
-            SelectedPath = PathInput.Text;
-            SelectedResumeSessionId = null; // Ensure we're starting a new session
-
-            if (string.IsNullOrWhiteSpace(SelectedPath))
-            {
-                FileLog.Write("[NewSessionDialog] BtnAction_Click: No path specified for new session");
-                return;
-            }
-
-            FileLog.Write($"[NewSessionDialog] BtnAction_Click: Starting new session at {SelectedPath}");
             DialogResult = true;
         }
     }
