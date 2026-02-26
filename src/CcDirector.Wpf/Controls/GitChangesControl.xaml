@@ -9,8 +9,16 @@
         <!-- Folder node template -->
         <HierarchicalDataTemplate DataType="{x:Type local:GitFolderNode}"
                                    ItemsSource="{Binding Children}">
-            <TextBlock Text="{Binding DisplayName}"
-                       Foreground="#CCCCCC" FontSize="12" />
+            <Border Background="Transparent">
+                <Border.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Add folder to .gitignore"
+                                  Click="FolderNode_AddToGitignore_Click" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+                <TextBlock Text="{Binding DisplayName}"
+                           Foreground="#CCCCCC" FontSize="12" />
+            </Border>
         </HierarchicalDataTemplate>
 
         <!-- File leaf node template -->
@@ -25,6 +33,9 @@
                                   Click="FileNode_CopyFullPath_Click" />
                         <MenuItem Header="Copy Relative Path"
                                   Click="FileNode_CopyRelativePath_Click" />
+                        <Separator />
+                        <MenuItem Header="Add to .gitignore"
+                                  Click="FileNode_AddToGitignore_Click" />
                     </ContextMenu>
                 </Border.ContextMenu>
                 <DockPanel>

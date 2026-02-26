@@ -18,6 +18,7 @@ public abstract class GitTreeNode
 
 public class GitFolderNode : GitTreeNode
 {
+    public string RelativePath { get; set; } = "";
     public ObservableCollection<GitTreeNode> Children { get; } = new();
 }
 
@@ -228,12 +229,14 @@ public partial class GitChangesControl : UserControl
                 : dir.Split('\\');
 
             var current = root;
+            var pathSoFar = "";
             foreach (var segment in segments)
             {
+                pathSoFar = pathSoFar.Length == 0 ? segment : pathSoFar + "\\" + segment;
                 var childMap = folderLookup[current];
                 if (!childMap.TryGetValue(segment, out var existing))
                 {
-                    existing = new GitFolderNode { DisplayName = segment };
+                    existing = new GitFolderNode { DisplayName = segment, RelativePath = pathSoFar };
                     current.Children.Add(existing);
                     childMap[segment] = existing;
                     folderLookup[existing] = new Dictionary<string, GitFolderNode>(StringComparer.Ordinal);
@@ -261,10 +264,11 @@ public partial class GitChangesControl : UserControl
         {
             if (folder.Children[i] is not GitFolderNode child) continue;
 
-            // Merge single-child folder chains: src > controls → src\controls
+            // Merge single-child folder chains: src > controls -> src\controls
             while (child.Children.Count == 1 && child.Children[0] is GitFolderNode grandchild)
             {
                 child.DisplayName = child.DisplayName + "\\" + grandchild.DisplayName;
+                child.RelativePath = grandchild.RelativePath;
                 var items = grandchild.Children.ToList();
                 child.Children.Clear();
                 foreach (var item in items)
@@ -350,11 +354,67 @@ public partial class GitChangesControl : UserControl
         }
     }
 
+    internal async void FileNode_AddToGitignore_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_repoPath != null && GetNodeFromMenuItem(sender) is GitFileLeafNode node)
+            {
+                FileLog.Write($"[GitChangesControl] FileNode_AddToGitignore_Click: {node.RelativePath}");
+                var added = await GitIgnoreService.AddEntryAsync(_repoPath, node.RelativePath);
+                if (added)
+                {
+                    GitStatusProvider.InvalidateCache(_repoPath);
+                    _lastRawOutput = null;
+                    await RefreshAsync();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GitChangesControl] FileNode_AddToGitignore_Click FAILED: {ex.Message}");
+        }
+    }
+
+    internal async void FolderNode_AddToGitignore_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_repoPath != null && GetFolderNodeFromMenuItem(sender) is GitFolderNode node)
+            {
+                var entry = node.RelativePath + "/";
+                FileLog.Write($"[GitChangesControl] FolderNode_AddToGitignore_Click: {entry}");
+                var added = await GitIgnoreService.AddEntryAsync(_repoPath, entry);
+                if (added)
+                {
+                    GitStatusProvider.InvalidateCache(_repoPath);
+                    _lastRawOutput = null;
+                    await RefreshAsync();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GitChangesControl] FolderNode_AddToGitignore_Click FAILED: {ex.Message}");
+        }
+    }
+
     private static GitFileLeafNode? GetNodeFromMenuItem(object sender)
     {
         if (sender is MenuItem mi && mi.Parent is ContextMenu cm
             && cm.PlacementTarget is FrameworkElement fe
             && fe.DataContext is GitFileLeafNode node)
+        {
+            return node;
+        }
+        return null;
+    }
+
+    private static GitFolderNode? GetFolderNodeFromMenuItem(object sender)
+    {
+        if (sender is MenuItem mi && mi.Parent is ContextMenu cm
+            && cm.PlacementTarget is FrameworkElement fe
+            && fe.DataContext is GitFolderNode node)
         {
             return node;
         }

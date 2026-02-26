@@ -102,6 +102,18 @@ public class GitStatusProvider
     }
 
     /// <summary>
+    /// Removes the cached status for a repo so the next refresh fetches fresh data.
+    /// </summary>
+    public static void InvalidateCache(string repoPath)
+    {
+        FileLog.Write($"[GitStatusProvider] InvalidateCache: repoPath={repoPath}");
+        lock (_cacheLock)
+        {
+            _cache.Remove(repoPath);
+        }
+    }
+
+    /// <summary>
     /// Returns the raw porcelain output string from the last cached result for
     /// the given repo, or null if not cached. Used for change detection.
     /// </summary>
