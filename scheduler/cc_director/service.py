@@ -32,7 +32,7 @@ _sqlite_dispatcher: Optional[SQLiteDispatcher] = None
 _dispatcher_loop: Optional[asyncio.AbstractEventLoop] = None
 
 # SQLite database path for Communication Manager
-COMM_MANAGER_DB_PATH = Path(r"D:\ReposFred\cc_consult\tools\communication_manager\content\communications.db")
+COMM_MANAGER_DB_PATH = Path(r"D:\ReposFred\cc-consult\tools\communication_manager\content\communications.db")
 
 
 def setup_logging(log_dir: Path, log_level: str) -> logging.Logger:

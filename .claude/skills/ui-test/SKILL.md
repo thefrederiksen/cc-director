@@ -163,7 +163,7 @@ The dialog is a **modal child** of CC Director (not a separate top-level window)
    **Build and start CC Director:**
    ```
    dotnet build src/CcDirector.Wpf -c Debug
-   cmd.exe //c start "" "src\CcDirector.Wpf\bin\Debug\net10.0-windows\win-x64\cc_director.exe"
+   cmd.exe //c start "" "src\CcDirector.Wpf\bin\Debug\net10.0-windows\win-x64\cc-director.exe"
    ```
    Wait for startup then verify:
    ```
@@ -176,7 +176,7 @@ The dialog is a **modal child** of CC Director (not a separate top-level window)
    dotnet run --project src/CcClick -- click --window "CC Director" --id "Close"
    sleep 1
    dotnet build src/CcDirector.Wpf -c Debug
-   cmd.exe //c start "" "src\CcDirector.Wpf\bin\Debug\net10.0-windows\win-x64\cc_director.exe"
+   cmd.exe //c start "" "src\CcDirector.Wpf\bin\Debug\net10.0-windows\win-x64\cc-director.exe"
    sleep 2
    dotnet run --project src/CcClick -- list-windows --filter "CC Director"
    ```

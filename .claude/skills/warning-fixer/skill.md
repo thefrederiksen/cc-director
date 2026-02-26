@@ -45,10 +45,10 @@ User specifies file OR skill finds next file with warnings:
 
 ```bash
 # Build and capture warnings for specific file
-dotnet build cc_director.sln 2>&1 | grep "path/to/file.cs"
+dotnet build cc-director.sln 2>&1 | grep "path/to/file.cs"
 
 # Or find files with most warnings
-dotnet build cc_director.sln 2>&1 | grep "warning CS" | cut -d'(' -f1 | sort | uniq -c | sort -rn | head -20
+dotnet build cc-director.sln 2>&1 | grep "warning CS" | cut -d'(' -f1 | sort | uniq -c | sort -rn | head -20
 ```
 
 ### Step 2: Read and Understand the File
@@ -64,7 +64,7 @@ Group warnings by code and pick ONE type to fix first:
 
 ```bash
 # Count warnings by type in specific file
-dotnet build cc_director.sln 2>&1 | grep "path/to/file.cs" | grep -oP "warning CS\d+" | sort | uniq -c | sort -rn
+dotnet build cc-director.sln 2>&1 | grep "path/to/file.cs" | grep -oP "warning CS\d+" | sort | uniq -c | sort -rn
 ```
 
 ### Step 4: Analyze Test Coverage
@@ -86,7 +86,7 @@ Show the user:
 
 After approval:
 1. Make the changes
-2. Build the solution: `dotnet build cc_director.sln`
+2. Build the solution: `dotnet build cc-director.sln`
 3. Run tests: `dotnet test src/CcDirector.Tests`
 
 ### Step 7: Verify
@@ -194,7 +194,7 @@ Assert.Equal(expected, result.Data.Value);
 
 ```bash
 # Build full solution
-dotnet build cc_director.sln
+dotnet build cc-director.sln
 
 # Build specific project to see its warnings
 dotnet build src/CcDirector.Core/CcDirector.Core.csproj --no-incremental
@@ -203,10 +203,10 @@ dotnet build src/CcDirector.Core/CcDirector.Core.csproj --no-incremental
 dotnet test src/CcDirector.Tests
 
 # Count warnings by type in solution
-dotnet build cc_director.sln 2>&1 | grep -oP "warning CS\d+" | sort | uniq -c | sort -rn
+dotnet build cc-director.sln 2>&1 | grep -oP "warning CS\d+" | sort | uniq -c | sort -rn
 
 # Find files with most warnings
-dotnet build cc_director.sln 2>&1 | grep "warning CS" | cut -d'(' -f1 | sort | uniq -c | sort -rn | head -20
+dotnet build cc-director.sln 2>&1 | grep "warning CS" | cut -d'(' -f1 | sort | uniq -c | sort -rn | head -20
 ```
 
 ## Progress Tracking

@@ -106,7 +106,7 @@ The application uses Windows Pseudo Console (ConPTY) for terminal hosting, Windo
 ### Solution Layout
 
 ```
-cc_director.sln
+cc-director.sln
 |
 +-- src/
 |   +-- CcDirector.Core/              # Core business logic (no UI)
@@ -195,7 +195,7 @@ cc_director.sln
 |   +-- [Other design docs]
 |
 +-- releases/
-|   +-- cc_director.exe               # Pre-built executable
+|   +-- cc-director.exe               # Pre-built executable
 |
 +-- images/                           # Screenshots for README
 +-- CLAUDE.md                         # Project instructions for Claude

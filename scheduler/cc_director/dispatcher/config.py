@@ -30,7 +30,7 @@ class DispatcherConfig:
     """Configuration for the communication dispatcher."""
 
     # Path to communication manager content folder
-    content_path: Path = Path(r"D:\ReposFred\cc_consult\tools\communication_manager\content")
+    content_path: Path = Path(r"D:\ReposFred\cc-consult\tools\communication_manager\content")
 
     # Poll interval in seconds (for checking scheduled items)
     poll_interval: float = 30.0

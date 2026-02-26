@@ -2,10 +2,18 @@
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .config import SEND_FROM_ACCOUNTS
+
+# Regex to match URLs that are not already in an href
+URL_PATTERN = re.compile(
+    r'(?<!href=["\'])(?<!href=)'  # Not already in an href
+    r'(https?://[^\s<>"\']+)',     # Match http/https URLs
+    re.IGNORECASE
+)
 
 logger = logging.getLogger("cc_director.dispatcher.email")
 
@@ -26,6 +34,21 @@ class EmailSender:
     def __init__(self):
         """Initialize the email sender."""
         self.accounts = SEND_FROM_ACCOUNTS
+
+    def _linkify_urls(self, content: str) -> str:
+        """Convert plain URLs in content to clickable HTML links.
+
+        Args:
+            content: HTML content that may contain plain URLs
+
+        Returns:
+            Content with URLs wrapped in <a> tags
+        """
+        def replace_url(match):
+            url = match.group(1)
+            return f'<a href="{url}">{url}</a>'
+
+        return URL_PATTERN.sub(replace_url, content)
 
     async def send(self, item: Dict[str, Any]) -> SendResult:
         """
@@ -57,16 +80,20 @@ class EmailSender:
         # Get subject
         subject = email_specific.get("subject", "(No subject)")
 
-        # Get content
+        # Get content and linkify URLs
         content = item.get("content", "")
         if not content:
             return SendResult(
                 success=False,
                 message="Missing email content"
             )
+        content = self._linkify_urls(content)
 
-        # Get account config
-        account_key = item.get("send_from", "mindzie")  # Default to mindzie
+        # Get account config - try send_from first, then persona
+        account_key = item.get("send_from") or item.get("persona", "mindzie")
+        # Map persona names to account names
+        if account_key == "center_consulting":
+            account_key = "consulting"
         account = self.accounts.get(account_key)
         if not account:
             return SendResult(

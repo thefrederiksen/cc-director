@@ -146,7 +146,7 @@ Action: Review and delete if confirmed unused
 2. **Check git history** - Some code may be recently added and not yet integrated
 3. **Search for string references** - Some code is loaded dynamically by name
 4. **Check configuration files** - Services may be registered in config
-5. **Build after removal** - Always run `dotnet build cc_director.sln` after removing code
+5. **Build after removal** - Always run `dotnet build cc-director.sln` after removing code
 
 ## Removal Workflow
 
@@ -160,13 +160,13 @@ When you've confirmed code is dead:
 
 ```bash
 # Remove project from solution
-dotnet sln cc_director.sln remove "src/path/to/project.csproj"
+dotnet sln cc-director.sln remove "src/path/to/project.csproj"
 
 # Delete the project directory
 rm -rf "src/path/to/project"
 
 # Build to verify
-dotnet build cc_director.sln
+dotnet build cc-director.sln
 
 # Run tests
 dotnet test src/CcDirector.Core.Tests

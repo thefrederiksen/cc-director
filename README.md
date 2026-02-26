@@ -8,7 +8,7 @@ A desktop application for managing multiple [Claude Code](https://docs.anthropic
 
 ## Download (Windows)
 
-**[Download cc_director.exe](releases/cc_director.exe)** - Pre-built Windows executable (no build required)
+**[Download cc-director.exe](releases/cc-director.exe)** - Pre-built Windows executable (no build required)
 
 Requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) installed on your machine.
 
@@ -81,7 +81,7 @@ CcDirector.sln
 Claude Code ──hook──▶ PowerShell relay               Python relay script
                             │                                   │
                       Named pipe                         Unix domain socket
-                      (CC_ClaudeDirector)              (~/.cc_director/director.sock)
+                      (CC_ClaudeDirector)              (~/.cc-director/director.sock)
                             │                                   │
                             └──────────────┬────────────────────┘
                                            ▼
@@ -156,8 +156,8 @@ The core backend (`CcDirector.Core`) is now cross-platform. The UI layer (`CcDir
 
 1. **Clone and build on Mac:**
    ```bash
-   git clone https://github.com/anthropics/cc_director.git
-   cd cc_director
+   git clone https://github.com/anthropics/cc-director.git
+   cd cc-director
    dotnet build src/CcDirector.Core/
    ```
 
@@ -168,7 +168,7 @@ The core backend (`CcDirector.Core`) is now cross-platform. The UI layer (`CcDir
 
 3. **Test the Unix PTY manually** (if you're comfortable with C#):
    - The `UnixPtyBackend` should spawn processes with proper terminal emulation
-   - The `UnixSocketServer` should accept connections at `~/.cc_director/director.sock`
+   - The `UnixSocketServer` should accept connections at `~/.cc-director/director.sock`
    - The Python hook relay should send JSON to the socket
 
 4. **Report issues:**

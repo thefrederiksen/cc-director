@@ -244,7 +244,7 @@ Show Teams on a phone:
 
 **GitHub repo structure:**
 ```
-cc_director/
+cc-director/
   README.md           # Quick start, screenshots
   LICENSE             # MIT
   CONTRIBUTING.md     # How to contribute
@@ -253,7 +253,7 @@ cc_director/
     FEATURES.md       # Feature documentation
     ARCHITECTURE.md   # For contributors
   releases/
-    cc_director.exe   # Pre-built binary
+    cc-director.exe   # Pre-built binary
   src/
     ...
 ```

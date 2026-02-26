@@ -173,10 +173,10 @@ After approval:
    **CRITICAL: You MUST build the ENTIRE solution before committing. No exceptions.**
 
    ```bash
-   dotnet build cc_director.sln
+   dotnet build cc-director.sln
    ```
 
-   - Use the full solution file `cc_director.sln` - NEVER build individual projects
+   - Use the full solution file `cc-director.sln` - NEVER build individual projects
    - Wait for the build to complete fully
    - Check output for ANY errors or warnings that indicate problems
 
@@ -194,7 +194,7 @@ After approval:
 4. **If build fails:**
    - Analyze the error messages
    - Fix the issues in your code
-   - Run the full build again: `dotnet build cc_director.sln`
+   - Run the full build again: `dotnet build cc-director.sln`
    - Repeat until build succeeds with 0 errors
 
 **Why Full Build is Required:**
@@ -347,7 +347,7 @@ gh issue close {ID}
 
 ### Build Solution (MANDATORY before commit)
 ```bash
-dotnet build cc_director.sln
+dotnet build cc-director.sln
 ```
 **ALWAYS use the full solution file. NEVER build individual .csproj files.**
 
@@ -367,7 +367,7 @@ git push
 
 ## Important Notes
 
-1. **FULL SOLUTION BUILD IS MANDATORY** - Always run `dotnet build cc_director.sln` before committing. Never build individual projects. Never skip this step. Never commit if build fails.
+1. **FULL SOLUTION BUILD IS MANDATORY** - Always run `dotnet build cc-director.sln` before committing. Never build individual projects. Never skip this step. Never commit if build fails.
 2. **One issue per commit** - Keep commits focused on single issue fix
 3. **Reference issue in commit** - Include "Fixes #{id}" for auto-close
 4. **Update GitHub** - Always update issue state and add comment after fix
