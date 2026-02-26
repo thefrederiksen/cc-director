@@ -45,11 +45,6 @@ public partial class App : Application
     /// </summary>
     public RestoreSessionsResult? RestoredPersistedData { get; set; }
 
-    /// <summary>
-    /// Set to true by MainWindow when the user chooses "Keep Sessions" on close.
-    /// When true, OnExit detaches consoles instead of killing them.
-    /// </summary>
-    public bool KeepSessionsOnExit { get; set; }
 
     // Mutex for single-instance detection - second instances run in read-only mode
     private Mutex? _singleInstanceMutex;
@@ -119,12 +114,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        if (KeepSessionsOnExit)
-        {
-            // Sessions were already saved and detached by MainWindow.OnClosing
-            EmbeddedConsoleHost.DetachAll();
-        }
-        else
+        try
         {
             // Don't clear SessionStateStore - sessions.json should persist for crash recovery.
             // On next startup, sessions with ClaudeSessionId can be resumed with --resume flag.
@@ -134,29 +124,71 @@ public partial class App : Application
                 try
                 {
                     var killTask = SessionManager.KillAllSessionsAsync();
-                    if (!killTask.Wait(TimeSpan.FromSeconds(5)))
+                    if (!killTask.Wait(TimeSpan.FromSeconds(10)))
                     {
-                        FileLog.Write("[App] KillAllSessionsAsync timed out after 5 seconds");
+                        FileLog.Write("[App] KillAllSessionsAsync timed out after 10 seconds, force-killing remaining processes");
+                        ForceKillRemainingProcesses();
                     }
                 }
                 catch (Exception ex)
                 {
                     FileLog.Write($"[App] KillAllSessionsAsync FAILED: {ex.Message}");
+                    ForceKillRemainingProcesses();
                 }
             }
+
+            NulFileWatcher?.Dispose();
+            PipeServer?.Dispose();
+            SessionManager?.Dispose();
+
+            FileLog.Write("[CcDirector] Exiting");
+            FileLog.Stop();
+        }
+        finally
+        {
+            // Always release mutex to prevent "Another instance is running" on restart
+            try
+            {
+                _singleInstanceMutex?.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+                // Mutex was not owned by this thread - ignore
+            }
+            _singleInstanceMutex?.Dispose();
         }
 
-        NulFileWatcher?.Dispose();
-        PipeServer?.Dispose();
-        SessionManager?.Dispose();
-
-        _singleInstanceMutex?.ReleaseMutex();
-        _singleInstanceMutex?.Dispose();
-
-        FileLog.Write("[CcDirector] Exiting");
-        FileLog.Stop();
-
         base.OnExit(e);
+    }
+
+    /// <summary>
+    /// Force-kill any remaining session processes when graceful shutdown times out.
+    /// </summary>
+    private void ForceKillRemainingProcesses()
+    {
+        if (SessionManager == null) return;
+
+        var pids = SessionManager.GetTrackedProcessIds();
+        foreach (var pid in pids)
+        {
+            try
+            {
+                var process = System.Diagnostics.Process.GetProcessById(pid);
+                if (!process.HasExited)
+                {
+                    FileLog.Write($"[App] Force-killing process {pid}");
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (ArgumentException)
+            {
+                // Process already exited - this is expected
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[App] Failed to force-kill process {pid}: {ex.Message}");
+            }
+        }
     }
 
     private async Task InstallHooksAsync(Action<string> log)

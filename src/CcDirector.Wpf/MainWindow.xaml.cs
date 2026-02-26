@@ -132,45 +132,25 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Check for active running sessions
-        var activeSessions = _sessions
-            .Where(vm => vm.Session.Status is SessionStatus.Running or SessionStatus.Starting)
+        // Only warn if sessions are actively working (not just running/idle)
+        var workingSessions = _sessions
+            .Where(vm => vm.Session.ActivityState is ActivityState.Working or ActivityState.WaitingForInput)
             .ToList();
 
-        if (activeSessions.Count > 0)
+        if (workingSessions.Count > 0)
         {
-            var dialog = new CloseDialog(activeSessions.Count) { Owner = this };
+            var sessionNames = workingSessions
+                .Select(vm => vm.DisplayName ?? vm.Session.RepoPath)
+                .ToList();
+
+            var dialog = new CloseDialog(_sessionManager, sessionNames) { Owner = this };
             if (dialog.ShowDialog() != true)
             {
                 e.Cancel = true;
                 return;
             }
 
-            if (!dialog.ShutDownCommandWindows)
-            {
-                // Keep sessions alive — save state, detach consoles
-                app.SessionManager.SaveSessionState(app.SessionStateStore, sessionId =>
-                {
-                    var session = app.SessionManager.GetSession(sessionId);
-                    if (session?.Backend is EmbeddedBackend eb)
-                        return eb.ConsoleHwnd.ToInt64();
-                    return 0;
-                });
-
-                DetachTerminal();
-                var sessionsSnapshot = _sessions.ToList();
-                foreach (var vm in sessionsSnapshot)
-                {
-                    if (vm.Session.Backend is EmbeddedBackend eb)
-                        eb.Detach();
-                }
-
-                app.KeepSessionsOnExit = true;
-                base.OnClosing(e);
-                return;
-            }
-
-            // Checkbox checked — kill all (default behavior, falls through below)
+            // CloseDialog already killed all sessions, fall through to cleanup
         }
 
         DetachTerminal();
@@ -494,9 +474,15 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
             var resumeSessionId = dialog.SelectedResumeSessionId;
-            FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog confirmed, path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, dialogTime={sw.ElapsedMilliseconds}ms");
+            var claudeArgs = "";
+            if (dialog.BypassPermissions)
+                claudeArgs += "--dangerously-skip-permissions ";
+            if (dialog.EnableRemoteControl)
+                claudeArgs += "--remote-control";
+            claudeArgs = claudeArgs.Trim();
+            FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog confirmed, path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}, dialogTime={sw.ElapsedMilliseconds}ms");
 
-            var vm = CreateSession(dialog.SelectedPath, resumeSessionId);
+            var vm = CreateSession(dialog.SelectedPath, resumeSessionId, claudeArgs);
             if (vm == null) return;
 
             FileLog.Write($"[MainWindow] BtnNewSession_Click: session created, id={vm.Session.Id}, elapsed={sw.ElapsedMilliseconds}ms");
@@ -542,14 +528,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private SessionViewModel? CreateSession(string repoPath, string? resumeSessionId = null)
+    private SessionViewModel? CreateSession(string repoPath, string? resumeSessionId = null, string? claudeArgs = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        FileLog.Write($"[MainWindow] CreateSession: repoPath={repoPath}, resume={resumeSessionId ?? "null"}");
+        FileLog.Write($"[MainWindow] CreateSession: repoPath={repoPath}, resume={resumeSessionId ?? "null"}, args={claudeArgs ?? "default"}");
         try
         {
             // Create session with ConPty backend (default mode)
-            var session = _sessionManager.CreateSession(repoPath, null, SessionBackendType.ConPty, resumeSessionId);
+            var session = _sessionManager.CreateSession(repoPath, claudeArgs, SessionBackendType.ConPty, resumeSessionId);
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}, elapsed={sw.ElapsedMilliseconds}ms");
             // Turn summarization disabled — see comment in RestoreSingleSession
             // session.OnTurnCompleted += OnSessionTurnCompleted;
@@ -932,24 +918,10 @@ public partial class MainWindow : Window
             HeaderMessageCountBadge.Visibility = Visibility.Visible;
             HeaderMessageCountText.Text = vm.ClaudeMessageCount.ToString();
 
-            var summary = vm.ClaudeSummary ?? vm.ClaudeFirstPrompt;
-            if (!string.IsNullOrWhiteSpace(summary))
-            {
-                // Truncate if too long
-                if (summary.Length > 80)
-                    summary = summary[..80] + "...";
-                HeaderClaudeSummary.Text = summary;
-                HeaderClaudeSummary.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                HeaderClaudeSummary.Visibility = Visibility.Collapsed;
-            }
         }
         else
         {
             HeaderMessageCountBadge.Visibility = Visibility.Collapsed;
-            HeaderClaudeSummary.Visibility = Visibility.Collapsed;
         }
 
         // Update verification display
@@ -960,11 +932,12 @@ public partial class MainWindow : Window
     {
         // Show session ID panel
         HeaderSessionIdPanel.Visibility = Visibility.Visible;
-        HeaderSessionId.Text = vm.ClaudeSessionIdShort;
+        HeaderSessionId.Text = string.IsNullOrEmpty(vm.Session.ClaudeSessionId)
+            ? "Not linked"
+            : vm.Session.ClaudeSessionId;
 
-        // Show Director's internal session ID
-        var directorId = vm.Session.Id.ToString();
-        HeaderDirectorId.Text = directorId.Length > 8 ? directorId[..8] + "..." : directorId;
+        // Show Director's internal session ID (full GUID)
+        HeaderDirectorId.Text = vm.Session.Id.ToString();
 
         // Update verification badge
         if (vm.IsVerified)
