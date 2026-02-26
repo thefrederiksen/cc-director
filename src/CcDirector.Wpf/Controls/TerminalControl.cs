@@ -76,6 +76,7 @@ public class TerminalControl : FrameworkElement
     private long _bufferPosition;
     private DispatcherTimer? _pollTimer;
     private AnsiParser? _parser;
+    private bool _pendingLayoutAttach;
 
     // Cell grid
     private TerminalCell[,] _cells;
@@ -228,7 +229,24 @@ public class TerminalControl : FrameworkElement
 
         _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines);
 
-        // Load any existing buffer content
+        // If the control hasn't been laid out yet (ActualWidth/Height are 0),
+        // defer buffer parsing and poll timer until OnRenderSizeChanged provides real dimensions.
+        // Parsing now would use the default 120x30 grid, causing text to appear at wrong positions.
+        if (ActualWidth <= 0 || ActualHeight <= 0)
+        {
+            _pendingLayoutAttach = true;
+            // Advance buffer position past existing content so poll timer won't re-parse it
+            if (session.Buffer != null)
+            {
+                var (_, pos) = session.Buffer.GetWrittenSince(0);
+                _bufferPosition = pos;
+            }
+            FileLog.Write($"[TerminalControl] Attach deferred: waiting for layout, cols={_cols}, rows={_rows}");
+            InvalidateVisual();
+            return;
+        }
+
+        // Control already has real dimensions - parse buffer immediately (re-attach case)
         if (session.Buffer != null)
         {
             var (initial, pos) = session.Buffer.GetWrittenSince(0);
@@ -258,6 +276,7 @@ public class TerminalControl : FrameworkElement
         _pollTimer = null;
         _session = null;
         _parser = null;
+        _pendingLayoutAttach = false;
         _linkRegions.Clear();
         _pathExistsCache.Clear();
     }
@@ -470,17 +489,36 @@ public class TerminalControl : FrameworkElement
             _cells = new TerminalCell[_cols, _rows];
             InitializeCells();
 
-            // Copy existing content
-            int copyC = Math.Min(oldCols, _cols);
-            int copyR = Math.Min(oldRows, _rows);
-            for (int r = 0; r < copyR; r++)
-                for (int c = 0; c < copyC; c++)
-                    _cells[c, r] = oldCells[c, r];
+            if (!_pendingLayoutAttach)
+            {
+                // Normal resize: copy existing content
+                int copyC = Math.Min(oldCols, _cols);
+                int copyR = Math.Min(oldRows, _rows);
+                for (int r = 0; r < copyR; r++)
+                    for (int c = 0; c < copyC; c++)
+                        _cells[c, r] = oldCells[c, r];
+            }
+            // If _pendingLayoutAttach, DON'T copy old cells - they were for wrong dimensions
 
             _parser?.UpdateGrid(_cells, _cols, _rows);
             _session?.Resize((short)_cols, (short)_rows);
             InvalidateVisual();
             ScrollChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        // Complete deferred attach now that we have real dimensions
+        if (_pendingLayoutAttach)
+        {
+            _pendingLayoutAttach = false;
+            FileLog.Write($"[TerminalControl] Deferred attach completing: cols={_cols}, rows={_rows}");
+
+            // Start poll timer - new content from Claude's redraw will arrive here
+            _pollTimer = new DispatcherTimer(DispatcherPriority.Render)
+            {
+                Interval = TimeSpan.FromMilliseconds(PollIntervalMs)
+            };
+            _pollTimer.Tick += PollTimer_Tick;
+            _pollTimer.Start();
         }
     }
 
