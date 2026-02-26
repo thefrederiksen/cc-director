@@ -562,6 +562,33 @@ public class EmbeddedConsoleHost : IDisposable
             SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
     }
 
+    /// <summary>
+    /// Force a full redraw of the console window by hiding, re-showing,
+    /// re-asserting Z-order, and invalidating the entire client area.
+    /// This fixes garbled/corrupted terminal rendering.
+    /// </summary>
+    public void ForceRedraw()
+    {
+        FileLog.Write("[EmbeddedConsoleHost] ForceRedraw");
+        if (_consoleHwnd == IntPtr.Zero || !IsWindow(_consoleHwnd)) return;
+
+        // Hide and re-show to force Windows to fully repaint
+        ShowWindow(_consoleHwnd, SW_HIDE);
+        ShowWindow(_consoleHwnd, SW_SHOWNOACTIVATE);
+
+        // TOPMOST flash to ensure Z-order
+        SetWindowPos(_consoleHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+        SetWindowPos(_consoleHwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+
+        // Invalidate the entire client area to force a full repaint
+        InvalidateRect(_consoleHwnd, IntPtr.Zero, true);
+
+        _visible = true;
+        FileLog.Write("[EmbeddedConsoleHost] ForceRedraw completed");
+    }
+
     public void KillProcess()
     {
         try
@@ -949,6 +976,10 @@ public class EmbeddedConsoleHost : IDisposable
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, SENDINPUT[] pInputs, int cbSize);

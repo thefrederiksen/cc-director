@@ -1142,6 +1142,23 @@ public partial class MainWindow : Window
         }
     }
 
+    private void BtnRefreshTerminal_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            FileLog.Write("[MainWindow] BtnRefreshTerminal_Click");
+            if (_activeEmbeddedBackend != null)
+            {
+                _activeEmbeddedBackend.ForceRedraw();
+                UpdateConsolePosition();
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnRefreshTerminal_Click FAILED: {ex.Message}");
+        }
+    }
+
     private void PromptInput_GotFocus(object sender, RoutedEventArgs e)
     {
         // Re-show console overlay when text box gets focus — covers the case

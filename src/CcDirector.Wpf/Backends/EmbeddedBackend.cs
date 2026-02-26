@@ -206,6 +206,14 @@ public sealed class EmbeddedBackend : ISessionBackend
     }
 
     /// <summary>
+    /// Force a full redraw of the console window to fix garbled rendering.
+    /// </summary>
+    public void ForceRedraw()
+    {
+        _host?.ForceRedraw();
+    }
+
+    /// <summary>
     /// Detach from the console process without killing it.
     /// The process continues running independently.
     /// </summary>
