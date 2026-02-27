@@ -185,6 +185,11 @@ class EmailSender:
         for bcc in bcc_list:
             cmd.extend(["--bcc", bcc])
 
+        # Add attachments if present
+        attachments = email_specific.get("attachments", [])
+        for attachment in attachments:
+            cmd.extend(["--attach", attachment])
+
         return cmd
 
     def _build_gmail_command(
@@ -214,5 +219,10 @@ class EmailSender:
         bcc_list = email_specific.get("bcc", [])
         for bcc in bcc_list:
             cmd.extend(["--bcc", bcc])
+
+        # Add attachments if present
+        attachments = email_specific.get("attachments", [])
+        for attachment in attachments:
+            cmd.extend(["--attach", attachment])
 
         return cmd

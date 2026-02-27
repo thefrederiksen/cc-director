@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Hooks;
 using CcDirector.Core.Pipes;
@@ -25,6 +26,9 @@ public partial class App : Application
     public RecentSessionStore RecentSessionStore { get; private set; } = null!; // Initialized in OnStartup
     public SessionHistoryStore SessionHistoryStore { get; private set; } = null!; // Initialized in OnStartup
     public NulFileWatcher NulFileWatcher { get; private set; } = null!; // Initialized in OnStartup
+    public BackupCleaner BackupCleaner { get; private set; } = null!; // Initialized in OnStartup
+    public ClaudeAccountStore ClaudeAccountStore { get; private set; } = null!; // Initialized in OnStartup
+    public ClaudeUsageService ClaudeUsageService { get; private set; } = null!; // Initialized in OnStartup
 
     /// <summary>
     /// When true, sessions are not loaded or saved, and no exit dialog is shown.
@@ -110,6 +114,21 @@ public partial class App : Application
         NulFileWatcher.OnNulFileDeleted = path => log($"Deleted NUL file: {path}");
         NulFileWatcher.OnDeletionFailed = (path, ex) => log($"Failed to delete NUL file {path}: {ex.Message}");
         NulFileWatcher.Start();
+
+        // Start backup cleaner (removes corrupted Claude backup files)
+        BackupCleaner = new BackupCleaner(log: log);
+        BackupCleaner.OnCorruptedFileDeleted = path => log($"Deleted corrupted backup: {path}");
+        BackupCleaner.OnDeletionFailed = (path, ex) => log($"Failed to delete corrupted backup {path}: {ex.Message}");
+        BackupCleaner.Start();
+
+        // Initialize Claude account store and usage service
+        ClaudeAccountStore = new ClaudeAccountStore();
+        ClaudeAccountStore.Load();
+        log($"Claude accounts loaded: {ClaudeAccountStore.Accounts.Count}");
+
+        ClaudeUsageService = new ClaudeUsageService(ClaudeAccountStore);
+        ClaudeUsageService.Start();
+        log("Claude usage service started");
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -137,6 +156,8 @@ public partial class App : Application
                 }
             }
 
+            ClaudeUsageService?.Dispose();
+            BackupCleaner?.Dispose();
             NulFileWatcher?.Dispose();
             PipeServer?.Dispose();
             SessionManager?.Dispose();
