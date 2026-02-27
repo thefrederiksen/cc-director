@@ -46,6 +46,8 @@ public partial class MainWindow : Window
     private bool _sessionGitRefreshRunning;
     private CancellationTokenSource? _persistDebounceCts;
     private const int PersistDebounceMs = 250;
+    private List<Core.Claude.ClaudeUsageInfo> _latestUsage = new();
+    private readonly System.Windows.Threading.DispatcherTimer _usageCountdownTimer;
 
     /// <summary>Tracks whether the read-only mode warning has been shown to avoid repeated dialogs.</summary>
     private bool _readOnlyWarningShown;
@@ -69,6 +71,12 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(15)
         };
         _sessionGitTimer.Tick += async (_, _) => await RefreshSessionGitStatusAsync();
+
+        _usageCountdownTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(30)
+        };
+        _usageCountdownTimer.Tick += (_, _) => RefreshUsageBadges(_latestUsage);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -180,11 +188,27 @@ public partial class MainWindow : Window
         SetBuildInfo();
 
         // Restore sessions from previous run (crash recovery)
-        RestorePersistedSessions();
+        _ = RestorePersistedSessionsAsync();
 
         // Start session git status polling
         _sessionGitTimer.Start();
         _ = RefreshSessionGitStatusAsync();
+
+        // Subscribe to Claude usage updates and show initial sidebar state
+        if (app.ClaudeUsageService != null)
+        {
+            app.ClaudeUsageService.UsageUpdated += OnUsageUpdated;
+            _usageCountdownTimer.Start();
+
+            // Show account names immediately (before first API response)
+            InitializeSidebarUsage(app.ClaudeAccountStore);
+
+            // Trigger immediate poll (first poll may have fired before we subscribed)
+            _ = Task.Run(async () =>
+            {
+                await app.ClaudeUsageService.PollAllAccountsAsync();
+            });
+        }
     }
 
     private void SetBuildInfo()
@@ -223,10 +247,10 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Restore sessions from previous run that have a ClaudeSessionId.
+    /// Restore sessions from previous run via a modal dialog that starts sessions sequentially.
     /// Uses Claude's --resume flag to continue the conversation.
     /// </summary>
-    private void RestorePersistedSessions()
+    private async Task RestorePersistedSessionsAsync()
     {
         var app = (App)Application.Current;
         var restoreResult = app.RestoredPersistedData;
@@ -234,26 +258,37 @@ public partial class MainWindow : Window
         if (!ValidateRestoreResult(restoreResult, app, out var persisted))
             return;
 
-        FileLog.Write($"[MainWindow] RestorePersistedSessions: Found {persisted.Count} persisted session(s)");
+        var sorted = persisted.OrderBy(s => s.SortOrder).ToList();
+        FileLog.Write($"[MainWindow] RestorePersistedSessionsAsync: Found {sorted.Count} persisted session(s), showing dialog");
 
-        var failedRepos = new List<string>();
-        int restored = 0, skippedRepoNotFound = 0, failedToCreate = 0;
-
-        foreach (var p in persisted.OrderBy(s => s.SortOrder))
+        var dialog = new RestoreSessionsDialog(sorted, (p, startFresh) =>
         {
-            var result = RestoreSingleSession(p);
-            switch (result.Status)
-            {
-                case RestoreStatus.Success: restored++; break;
-                case RestoreStatus.RepoNotFound: skippedRepoNotFound++; failedRepos.Add(result.FailureReason ?? "unknown"); break;
-                case RestoreStatus.CreateFailed: failedToCreate++; failedRepos.Add(result.FailureReason ?? "unknown"); break;
-            }
+            // Delegate runs on background thread via Task.Run inside dialog,
+            // but CreateSession touches ObservableCollection so dispatch to UI
+            SingleRestoreResult result = null!;
+            Dispatcher.Invoke(() => result = RestoreSingleSession(p, startFresh));
+            return result;
+        })
+        {
+            Owner = this
+        };
+
+        var dialogResult = dialog.ShowDialog();
+
+        if (dialogResult == true)
+        {
+            // User clicked Done after restore completed
+            HandleRestoreResults(app, sorted.Count, dialog.RestoredCount, dialog.FailedCount, dialog.FailedRepos);
+        }
+        else
+        {
+            // User clicked Skip All - clear persisted data, start empty
+            FileLog.Write("[MainWindow] RestorePersistedSessionsAsync: User skipped all sessions");
+            app.SessionStateStore.Clear();
+            app.RestoredPersistedData = null;
         }
 
-        int totalFailed = skippedRepoNotFound + failedToCreate;
-        FileLog.Write($"[MainWindow] RestorePersistedSessions complete: restored={restored}, skipped={skippedRepoNotFound}, failed={failedToCreate}");
-
-        HandleRestoreResults(app, persisted.Count, restored, totalFailed, failedRepos);
+        await Task.CompletedTask;
     }
 
     private bool ValidateRestoreResult(
@@ -295,10 +330,10 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private enum RestoreStatus { Success, RepoNotFound, CreateFailed }
-    private record SingleRestoreResult(RestoreStatus Status, string? FailureReason = null);
+    internal enum RestoreStatus { Success, RepoNotFound, CreateFailed }
+    internal record SingleRestoreResult(RestoreStatus Status, string? FailureReason = null);
 
-    private SingleRestoreResult RestoreSingleSession(PersistedSession p)
+    private SingleRestoreResult RestoreSingleSession(PersistedSession p, bool startFresh)
     {
         string repoName = System.IO.Path.GetFileName(p.RepoPath.TrimEnd('\\', '/'));
 
@@ -308,7 +343,7 @@ public partial class MainWindow : Window
             return new SingleRestoreResult(RestoreStatus.RepoNotFound, $"{repoName} (path not found)");
         }
 
-        string? resumeSessionId = GetResumeSessionId(p);
+        string? resumeSessionId = startFresh ? null : GetResumeSessionId(p);
 
         try
         {
@@ -458,6 +493,338 @@ public partial class MainWindow : Window
             MessageBox.Show(this, $"Failed to open Repository Manager:\n{ex.Message}", "Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void MenuAccounts_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] MenuAccounts_Click: opening Accounts dialog");
+        try
+        {
+            var app = (App)Application.Current;
+            var dialog = new AccountsDialog(app.ClaudeAccountStore) { Owner = this };
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] MenuAccounts_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open Accounts dialog:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void InitializeSidebarUsage(Core.Claude.ClaudeAccountStore store)
+    {
+        SidebarUsagePanel.Children.Clear();
+        var accounts = store.GetAll();
+        if (accounts.Count == 0)
+        {
+            var setupLink = new System.Windows.Controls.TextBlock
+            {
+                Text = "Setup accounts...",
+                Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#569CD6")),
+                FontSize = 10,
+                Cursor = System.Windows.Input.Cursors.Hand,
+                Margin = new Thickness(0, 2, 0, 2),
+            };
+            setupLink.MouseLeftButtonDown += (_, _) => MenuAccounts_Click(this, new RoutedEventArgs());
+            SidebarUsagePanel.Children.Add(setupLink);
+        }
+        else
+        {
+            foreach (var account in accounts)
+            {
+                var text = new System.Windows.Controls.TextBlock
+                {
+                    Text = $"{account.Label}: loading...",
+                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#888888")),
+                    FontSize = 10,
+                    Margin = new Thickness(0, 1, 0, 1),
+                };
+                SidebarUsagePanel.Children.Add(text);
+            }
+        }
+    }
+
+    private void MenuAddToAccounts_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] MenuAddToAccounts_Click");
+        try
+        {
+            var app = (App)Application.Current;
+            var account = app.ClaudeAccountStore.CaptureFromCredentials();
+            if (account == null)
+            {
+                MessageBox.Show(this,
+                    "Could not read credentials. Make sure you have run 'claude login' first.",
+                    "Capture Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(account.Label))
+            {
+                // New account - open the Accounts dialog so user can label it
+                var dialog = new AccountsDialog(app.ClaudeAccountStore) { Owner = this };
+                dialog.ShowDialog();
+            }
+            else
+            {
+                MessageBox.Show(this,
+                    $"Token updated for existing account '{account.Label}'.",
+                    "Account Updated", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
+            // Trigger a fresh poll
+            if (app.ClaudeUsageService != null)
+            {
+                _ = Task.Run(async () => await app.ClaudeUsageService.PollAllAccountsAsync());
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] MenuAddToAccounts_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to capture account:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OnUsageUpdated(List<Core.Claude.ClaudeUsageInfo> usageList)
+    {
+        Dispatcher.BeginInvoke(() => RefreshUsageBadges(usageList));
+    }
+
+    private void RefreshUsageBadges(List<Core.Claude.ClaudeUsageInfo> usageList)
+    {
+        _latestUsage = usageList;
+
+        // Update header usage panel (visible when session selected)
+        HeaderUsagePanel.Children.Clear();
+        foreach (var usage in usageList)
+        {
+            var badge = CreateUsageBadge(usage, compact: false);
+            HeaderUsagePanel.Children.Add(badge);
+        }
+
+        // Update sidebar usage panel (always visible)
+        SidebarUsagePanel.Children.Clear();
+        if (usageList.Count == 0)
+        {
+            var setupLink = new System.Windows.Controls.TextBlock
+            {
+                Text = "Setup accounts...",
+                Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#569CD6")),
+                FontSize = 10,
+                Cursor = System.Windows.Input.Cursors.Hand,
+                Margin = new Thickness(0, 2, 0, 2),
+            };
+            setupLink.MouseLeftButtonDown += (_, _) => MenuAccounts_Click(this, new RoutedEventArgs());
+            SidebarUsagePanel.Children.Add(setupLink);
+        }
+        else
+        {
+            foreach (var usage in usageList)
+            {
+                var badge = CreateUsageBadge(usage, compact: true);
+                SidebarUsagePanel.Children.Add(badge);
+            }
+        }
+    }
+
+    private System.Windows.UIElement CreateUsageBadge(Core.Claude.ClaudeUsageInfo usage, bool compact)
+    {
+        var fiveColor = GetUtilizationColor(usage.FiveHourUtilization);
+        var sevenColor = GetUtilizationColor(usage.SevenDayUtilization);
+
+        // Format tier shorthand
+        var tierShort = FormatTierShort(usage.SubscriptionType, usage.RateLimitTier);
+
+        // Format reset countdown
+        var fiveHourReset = FormatCountdown(usage.FiveHourResetsAt);
+        var sevenDayReset = FormatCountdown(usage.SevenDayResetsAt);
+
+        if (compact)
+        {
+            // Sidebar: compact single-line per account
+            var panel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                Margin = new Thickness(0, 1, 0, 1),
+            };
+
+            var labelText = new System.Windows.Controls.TextBlock
+            {
+                Text = $"{usage.AccountLabel}: ",
+                Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#888888")),
+                FontSize = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(labelText);
+
+            var fiveText = new System.Windows.Controls.TextBlock
+            {
+                Text = $"5h:{usage.FiveHourUtilization:F0}%",
+                Foreground = new SolidColorBrush(fiveColor),
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0),
+            };
+            panel.Children.Add(fiveText);
+
+            var sevenText = new System.Windows.Controls.TextBlock
+            {
+                Text = $"7d:{usage.SevenDayUtilization:F0}%",
+                Foreground = new SolidColorBrush(sevenColor),
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(sevenText);
+
+            if (usage.IsStale)
+            {
+                var staleText = new System.Windows.Controls.TextBlock
+                {
+                    Text = " [stale]",
+                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#666666")),
+                    FontSize = 9,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                panel.Children.Add(staleText);
+            }
+
+            // Tooltip with full details
+            panel.ToolTip = BuildUsageTooltip(usage, fiveHourReset, sevenDayReset);
+
+            return panel;
+        }
+        else
+        {
+            // Header: badge style
+            var border = new System.Windows.Controls.Border
+            {
+                Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#40000000")),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 3, 8, 3),
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            var panel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+            };
+
+            var labelText = new System.Windows.Controls.TextBlock
+            {
+                Text = $"{usage.AccountLabel}: ",
+                Foreground = new SolidColorBrush(Colors.White),
+                FontSize = 11,
+                Opacity = 0.8,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(labelText);
+
+            var tierText = new System.Windows.Controls.TextBlock
+            {
+                Text = $"{tierShort} ",
+                Foreground = new SolidColorBrush(Colors.White),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(tierText);
+
+            var fiveText = new System.Windows.Controls.TextBlock
+            {
+                Text = $"5h:{usage.FiveHourUtilization:F0}%",
+                Foreground = new SolidColorBrush(fiveColor),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0),
+            };
+            panel.Children.Add(fiveText);
+
+            var sevenText = new System.Windows.Controls.TextBlock
+            {
+                Text = $"7d:{usage.SevenDayUtilization:F0}%",
+                Foreground = new SolidColorBrush(sevenColor),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(sevenText);
+
+            if (usage.IsStale)
+            {
+                var staleText = new System.Windows.Controls.TextBlock
+                {
+                    Text = " [stale]",
+                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#AAAAAA")),
+                    FontSize = 9,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                panel.Children.Add(staleText);
+            }
+
+            border.Child = panel;
+            border.ToolTip = BuildUsageTooltip(usage, fiveHourReset, sevenDayReset);
+
+            return border;
+        }
+    }
+
+    private static string BuildUsageTooltip(Core.Claude.ClaudeUsageInfo usage, string fiveHourReset, string sevenDayReset)
+    {
+        var lines = new List<string>
+        {
+            $"{usage.AccountLabel} ({FormatTierShort(usage.SubscriptionType, usage.RateLimitTier)})",
+            $"5-hour: {usage.FiveHourUtilization:F1}% (resets {fiveHourReset})",
+            $"7-day: {usage.SevenDayUtilization:F1}% (resets {sevenDayReset})",
+        };
+
+        if (usage.OpusUtilization.HasValue)
+        {
+            var opusReset = FormatCountdown(usage.OpusResetsAt);
+            lines.Add($"Opus 7-day: {usage.OpusUtilization:F1}% (resets {opusReset})");
+        }
+
+        lines.Add($"Fetched: {usage.FetchedAt.ToLocalTime():HH:mm:ss}");
+
+        if (usage.IsStale)
+            lines.Add("[!] Data may be outdated");
+
+        return string.Join("\n", lines);
+    }
+
+    private static Color GetUtilizationColor(double utilization)
+    {
+        if (utilization >= 80) return (Color)ColorConverter.ConvertFromString("#FF4444"); // Red
+        if (utilization >= 50) return (Color)ColorConverter.ConvertFromString("#FFAA00"); // Yellow/amber
+        return (Color)ColorConverter.ConvertFromString("#44CC44"); // Green
+    }
+
+    private static string FormatTierShort(string subscriptionType, string rateLimitTier)
+    {
+        var sub = (subscriptionType ?? "").ToUpperInvariant();
+        var tier = rateLimitTier ?? "";
+        if (tier.Contains("20x", StringComparison.OrdinalIgnoreCase))
+            return $"{sub}20x";
+        if (tier.Contains("5x", StringComparison.OrdinalIgnoreCase))
+            return $"{sub}5x";
+        return sub;
+    }
+
+    private static string FormatCountdown(DateTimeOffset? resetTime)
+    {
+        if (resetTime == null) return "N/A";
+
+        var remaining = resetTime.Value - DateTimeOffset.UtcNow;
+        if (remaining.TotalSeconds <= 0) return "now";
+        if (remaining.TotalMinutes < 1) return $"{remaining.Seconds}s";
+        if (remaining.TotalHours < 1) return $"{remaining.Minutes}m";
+        if (remaining.TotalDays < 1) return $"{(int)remaining.TotalHours}h{remaining.Minutes:D2}m";
+        return $"{(int)remaining.TotalDays}d{remaining.Hours}h";
     }
 
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
@@ -1795,12 +2162,16 @@ public partial class MainWindow : Window
             {
                 Id = items[i].Id,
                 Index = (i + 1).ToString(),
-                Preview = items[i].Text.Length > 120 ? items[i].Text[..120] + "..." : items[i].Text,
+                Preview = items[i].Text.Length > 300 ? items[i].Text[..300] + "..." : items[i].Text,
                 FullText = items[i].Text
             });
         }
 
         UpdateQueueBadge(items.Count);
+
+        var activeVm = _sessions.FirstOrDefault(s => s.Session.Id == _activeSession.Id);
+        if (activeVm != null)
+            activeVm.QueuedCount = items.Count;
     }
 
     private void UpdateQueueBadge(int count)
@@ -1835,8 +2206,9 @@ public partial class MainWindow : Window
         if (item == null) return;
 
         FileLog.Write($"[MainWindow] PopQueuedItem: session={_activeSession.Id}, itemId={itemId}");
-        PromptInput.Text = item.Text;
-        PromptInput.CaretIndex = PromptInput.Text.Length;
+        var insertPos = PromptInput.CaretIndex;
+        PromptInput.SelectedText = item.Text;
+        PromptInput.CaretIndex = insertPos + item.Text.Length;
         _activeSession.PromptQueue.Remove(itemId);
         RefreshQueuePanel();
         PersistSessionState();
@@ -2541,6 +2913,23 @@ public class SessionViewModel : INotifyPropertyChanged
     }
 
     public bool HasUncommittedChanges => _uncommittedCount > 0;
+
+    private int _queuedCount;
+    public int QueuedCount
+    {
+        get => _queuedCount;
+        set
+        {
+            if (_queuedCount != value)
+            {
+                _queuedCount = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(HasQueuedMessages));
+            }
+        }
+    }
+
+    public bool HasQueuedMessages => _queuedCount > 0;
 
     /// <summary>Refresh Claude metadata from sessions-index.json.</summary>
     public void RefreshClaudeMetadata()

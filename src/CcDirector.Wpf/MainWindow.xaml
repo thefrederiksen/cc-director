@@ -46,6 +46,12 @@
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis" />
 
+                <!-- Usage badges (one per Claude account) -->
+                <StackPanel x:Name="HeaderUsagePanel" Grid.Column="0" Grid.Row="1"
+                            Orientation="Horizontal" Margin="0,4,0,0">
+                    <!-- Populated dynamically by code-behind -->
+                </StackPanel>
+
                 <!-- Activity state badge + message count + refresh -->
                 <StackPanel Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
                             Orientation="Horizontal"
@@ -192,6 +198,8 @@
                                 <ContextMenu x:Name="AppMenu">
                                     <MenuItem Header="Repositories..." Click="MenuRepositories_Click"
                                               ToolTip="Manage root directories and repositories" />
+                                    <MenuItem Header="Accounts..." Click="MenuAccounts_Click"
+                                              ToolTip="Manage Claude subscription accounts" />
                                     <Separator />
                                     <MenuItem Header="Open Logs" Click="BtnOpenLogs_Click"
                                               ToolTip="Open log directory in Explorer" />
@@ -223,6 +231,12 @@
                             Foreground="White"
                             BorderThickness="0"
                             Cursor="Hand" />
+
+                    <!-- Usage summary panel (always visible in sidebar) -->
+                    <StackPanel x:Name="SidebarUsagePanel" DockPanel.Dock="Bottom"
+                                Margin="8,4,8,2">
+                        <!-- Populated dynamically; shows compact usage per account -->
+                    </StackPanel>
 
                     <!-- StatusFooter: build info at bottom -->
                     <TextBlock x:Name="BuildInfoText" DockPanel.Dock="Bottom"
@@ -265,6 +279,9 @@
                                             <MenuItem Header="Open in Explorer" Click="MenuOpenInExplorer_Click" />
                                             <MenuItem Header="Open in VS Code" Click="MenuOpenInVsCode_Click" />
                                             <MenuItem Header="GitHub Issues" Click="MenuGitHubIssues_Click" />
+                                            <Separator />
+                                            <MenuItem Header="Add to Accounts" Click="MenuAddToAccounts_Click"
+                                                      ToolTip="Capture current Claude credentials as a saved account" />
                                             <Separator />
                                             <MenuItem Header="Close Session" Click="MenuCloseSession_Click" />
                                         </ContextMenu>
@@ -519,6 +536,32 @@
                                                                        FontSize="9"
                                                                        FontWeight="SemiBold" />
                                                             <TextBlock Text=" uncommitted"
+                                                                       Foreground="White"
+                                                                       FontSize="9"
+                                                                       Opacity="0.8" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <!-- Queued messages badge (red) -->
+                                                    <Border Background="#DC2626"
+                                                            CornerRadius="8"
+                                                            Padding="6,2"
+                                                            VerticalAlignment="Center">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding HasQueuedMessages}" Value="False">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding QueuedCount}"
+                                                                       Foreground="White"
+                                                                       FontSize="9"
+                                                                       FontWeight="SemiBold" />
+                                                            <TextBlock Text=" queued"
                                                                        Foreground="White"
                                                                        FontSize="9"
                                                                        Opacity="0.8" />
@@ -895,7 +938,7 @@
                                                                 Foreground="{StaticResource TextForeground}"
                                                                 BorderThickness="0"
                                                                 Cursor="Hand" FontSize="9"
-                                                                ToolTip="Load into prompt input" />
+                                                                ToolTip="Insert into prompt at cursor" />
                                                         <Button Content="&#x25B2;" Tag="{Binding Id}"
                                                                 Click="QueueItemMoveUp_Click"
                                                                 Width="20" Height="20" Padding="0"
@@ -920,7 +963,7 @@
                                                     </StackPanel>
                                                     <TextBlock Text="{Binding Preview}" FontSize="11"
                                                                Foreground="#CCCCCC" TextWrapping="Wrap"
-                                                               MaxHeight="48" TextTrimming="CharacterEllipsis"
+                                                               MaxHeight="80" TextTrimming="CharacterEllipsis"
                                                                VerticalAlignment="Top" Margin="0,1,0,0" />
                                                 </DockPanel>
                                             </DataTemplate>
