@@ -6,6 +6,7 @@ publish/
 *.suo
 .vs/
 release/
+releases/
 nul
 tmp_build_output/appsettings.json
 tmp_build_output/cc-director.deps.json
