@@ -25,15 +25,16 @@ namespace CcDirector.Wpf;
 public partial class MainWindow : Window
 {
     private readonly ObservableCollection<SessionViewModel> _sessions = new();
-    private readonly ObservableCollection<PipeMessageViewModel> _pipeMessages = new();
+    private readonly ObservableCollection<HookEventViewModel> _hookEvents = new();
+    private readonly List<HookEventViewModel> _allHookEvents = new();
     private readonly ObservableCollection<QueueItemViewModel> _queueItems = new();
     private readonly ObservableCollection<TurnSummaryViewModel> _summaryItems = new();
     private readonly Dictionary<Guid, List<TurnSummaryViewModel>> _turnSummariesBySession = new();
     private readonly Dictionary<Guid, int> _turnCounters = new();
     private ClaudeClient? _claudeClient;
-    private const int MaxPipeMessages = 500;
+    private const int MaxHookEvents = 500;
 
-    private bool _pipeMessagesExpanded = true;
+    private bool _hookEventsExpanded = true;
     private bool _updatingScrollBar;
     private SessionManager _sessionManager = null!;
     private TerminalControl? _terminalControl;
@@ -55,7 +56,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         SessionList.ItemsSource = _sessions;
-        PipeMessageList.ItemsSource = _pipeMessages;
+        HookEventList.ItemsSource = _hookEvents;
         QueueItemsList.ItemsSource = _queueItems;
         SummaryItemsControl.ItemsSource = _summaryItems;
         Loaded += MainWindow_Loaded;
@@ -123,7 +124,7 @@ public partial class MainWindow : Window
 
         // Unsubscribe event handlers to prevent memory leaks
         if (app.EventRouter != null)
-            app.EventRouter.OnRawMessage -= OnPipeMessageReceived;
+            app.EventRouter.OnRawMessage -= OnHookEventReceived;
         _sessionManager.OnClaudeSessionRegistered -= OnClaudeSessionRegistered;
 
         // In sandbox mode, skip exit dialog and just kill all sessions
@@ -179,7 +180,7 @@ public partial class MainWindow : Window
         }
 
         if (app.EventRouter != null)
-            app.EventRouter.OnRawMessage += OnPipeMessageReceived;
+            app.EventRouter.OnRawMessage += OnHookEventReceived;
 
         // Subscribe to session registration for ClaudeSessionId persistence
         _sessionManager.OnClaudeSessionRegistered += OnClaudeSessionRegistered;
@@ -1205,6 +1206,9 @@ public partial class MainWindow : Window
         // Attach git changes polling
         GitChanges.Attach(session.RepoPath);
 
+        // Rebuild hook events panel for the new session
+        RefreshHookEventsPanel();
+
         // Select Terminal tab and focus
         SessionTabs.SelectedIndex = 0;
     }
@@ -1232,6 +1236,10 @@ public partial class MainWindow : Window
         UpdateSessionHeader();
 
         GitChanges.Detach();
+
+        // Show all hook events when no session is selected
+        RefreshHookEventsPanel();
+
         SessionTabs.Visibility = Visibility.Collapsed;
         PromptInput.Clear();
         PromptBar.Visibility = Visibility.Collapsed;
@@ -1355,10 +1363,10 @@ public partial class MainWindow : Window
 
     private static SolidColorBrush FreezeMainBrush(SolidColorBrush brush) { brush.Freeze(); return brush; }
 
-    private static readonly Dictionary<ActivityState, string> ActivityLabels = new()
+    internal static readonly Dictionary<ActivityState, string> ActivityLabels = new()
     {
         [ActivityState.Starting] = "Starting",
-        [ActivityState.Idle] = "Idle",
+        [ActivityState.Idle] = "Your Turn",
         [ActivityState.Working] = "Working",
         [ActivityState.WaitingForInput] = "Your Turn",
         [ActivityState.WaitingForPerm] = "Needs Permission",
@@ -1862,23 +1870,30 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnPipeMessageReceived(PipeMessage msg)
+    private void OnHookEventReceived(PipeMessage msg)
     {
         var sessionSnippet = !string.IsNullOrEmpty(msg.SessionId) ? msg.SessionId[..Math.Min(8, msg.SessionId.Length)] + "..." : "none";
-        FileLog.Write($"[MainWindow] OnPipeMessageReceived: event={msg.HookEventName}, claudeSession={sessionSnippet}, tool={msg.ToolName ?? "n/a"}");
+        FileLog.Write($"[MainWindow] OnHookEventReceived: event={msg.HookEventName}, claudeSession={sessionSnippet}, tool={msg.ToolName ?? "n/a"}");
 
         Dispatcher.BeginInvoke(() =>
         {
-            var vm = new PipeMessageViewModel(msg);
-            _pipeMessages.Add(vm);
+            var vm = new HookEventViewModel(msg);
 
-            // FIFO: remove oldest if over limit
-            while (_pipeMessages.Count > MaxPipeMessages)
-                _pipeMessages.RemoveAt(0);
+            // Always store in backing list (all sessions)
+            _allHookEvents.Add(vm);
+            while (_allHookEvents.Count > MaxHookEvents)
+                _allHookEvents.RemoveAt(0);
 
-            // Auto-scroll to bottom
-            if (_pipeMessages.Count > 0)
-                PipeMessageList.ScrollIntoView(_pipeMessages[^1]);
+            // Only add to displayed collection if it matches the active session (or no session selected)
+            var activeClaudeId = _activeSession?.ClaudeSessionId;
+            if (activeClaudeId == null || vm.SessionId == activeClaudeId)
+            {
+                _hookEvents.Add(vm);
+
+                // Auto-scroll to bottom
+                if (_hookEvents.Count > 0)
+                    HookEventList.ScrollIntoView(_hookEvents[^1]);
+            }
 
             // Refresh Claude metadata on Stop events (end of turn - metadata may have updated)
             if (msg.HookEventName == "Stop" && !string.IsNullOrEmpty(msg.SessionId))
@@ -1896,6 +1911,25 @@ public partial class MainWindow : Window
                 }
             }
         });
+    }
+
+    private void RefreshHookEventsPanel()
+    {
+        var claudeId = _activeSession?.ClaudeSessionId;
+        var snippet = claudeId != null ? claudeId[..Math.Min(8, claudeId.Length)] : "none";
+        FileLog.Write($"[MainWindow] RefreshHookEventsPanel: activeSession={snippet}");
+
+        _hookEvents.Clear();
+        var activeClaudeId = _activeSession?.ClaudeSessionId;
+        foreach (var evt in _allHookEvents)
+        {
+            if (activeClaudeId == null || evt.SessionId == activeClaudeId)
+                _hookEvents.Add(evt);
+        }
+
+        // Scroll to bottom after repopulating
+        if (_hookEvents.Count > 0)
+            HookEventList.ScrollIntoView(_hookEvents[^1]);
     }
 
     private async void OnSessionTurnCompleted(Session session, TurnData turnData)
@@ -2213,25 +2247,25 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnClearPipeMessages_Click(object sender, RoutedEventArgs e)
+    private void BtnClearHookEvents_Click(object sender, RoutedEventArgs e)
     {
-        _pipeMessages.Clear();
+        _hookEvents.Clear();
     }
 
-    private void TogglePipeMessages_Click(object sender, RoutedEventArgs e)
+    private void ToggleHookEvents_Click(object sender, RoutedEventArgs e)
     {
-        _pipeMessagesExpanded = !_pipeMessagesExpanded;
-        if (_pipeMessagesExpanded)
+        _hookEventsExpanded = !_hookEventsExpanded;
+        if (_hookEventsExpanded)
         {
-            PipeMessagesColumn.Width = new GridLength(280);
-            PipeMessagesPanel.Visibility = Visibility.Visible;
-            PipeToggleButton.Content = "\u00BB";
+            HookEventsColumn.Width = new GridLength(280);
+            HookEventsPanel.Visibility = Visibility.Visible;
+            HookToggleButton.Content = "\u00BB";
         }
         else
         {
-            PipeMessagesColumn.Width = new GridLength(0);
-            PipeMessagesPanel.Visibility = Visibility.Collapsed;
-            PipeToggleButton.Content = "\u00AB";
+            HookEventsColumn.Width = new GridLength(0);
+            HookEventsPanel.Visibility = Visibility.Collapsed;
+            HookToggleButton.Content = "\u00AB";
         }
         DeferConsolePositionUpdate();
     }
@@ -2262,8 +2296,8 @@ public partial class MainWindow : Window
         PersistSessionState();
 
         // Auto-open the right panel on Queue tab if not already open
-        if (!_pipeMessagesExpanded)
-            TogglePipeMessages_Click(this, new RoutedEventArgs());
+        if (!_hookEventsExpanded)
+            ToggleHookEvents_Click(this, new RoutedEventArgs());
         RightPanelTabs.SelectedItem = QueueTab;
     }
 
@@ -2918,7 +2952,7 @@ public class SessionViewModel : INotifyPropertyChanged
     /// <summary>Prompt text the user was composing but hasn't sent yet. Saved/restored on session switch.</summary>
     public string PendingPromptText { get; set; } = string.Empty;
 
-    public string StatusText => $"{Session.ActivityState} (PID {Session.ProcessId})";
+    public string StatusText => $"{MainWindow.ActivityLabels.GetValueOrDefault(Session.ActivityState, Session.ActivityState.ToString())} (PID {Session.ProcessId})";
     public SolidColorBrush ActivityBrush => ActivityBrushes.GetValueOrDefault(Session.ActivityState, ActivityBrushes[ActivityState.Starting]);
 
     /// <summary>Claude session summary (from sessions-index.json).</summary>
@@ -3135,7 +3169,7 @@ public class QueueItemViewModel
     public string FullText { get; init; } = string.Empty;
 }
 
-public class PipeMessageViewModel
+public class HookEventViewModel
 {
     private static readonly Dictionary<string, SolidColorBrush> EventBrushes = new()
     {
@@ -3149,14 +3183,16 @@ public class PipeMessageViewModel
     private static readonly SolidColorBrush DefaultEventBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)));
 
     public string Timestamp { get; }
+    public string? SessionId { get; }
     public string SessionIdShort { get; }
     public string EventName { get; }
     public string Detail { get; }
     public SolidColorBrush EventBrush { get; }
 
-    public PipeMessageViewModel(PipeMessage msg)
+    public HookEventViewModel(PipeMessage msg)
     {
         Timestamp = msg.ReceivedAt.ToLocalTime().ToString("HH:mm:ss");
+        SessionId = msg.SessionId;
         SessionIdShort = msg.SessionId?.Length >= 8 ? msg.SessionId[..8] : msg.SessionId ?? "unknown";
         EventName = msg.HookEventName ?? "unknown";
         EventBrush = EventBrushes.GetValueOrDefault(EventName, DefaultEventBrush);
