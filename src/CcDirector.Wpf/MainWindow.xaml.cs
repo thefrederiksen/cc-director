@@ -640,6 +640,20 @@ public partial class MainWindow : Window
         var fiveValue = noData ? "--" : $"{usage.FiveHourUtilization:F0}%";
         var sevenValue = noData ? "--" : $"{usage.SevenDayUtilization:F0}%";
 
+        // Format extra usage: "$72/$70"
+        var hasExtra = usage.ExtraUsageSpent.HasValue && usage.ExtraUsageLimit.HasValue;
+        var extraValue = hasExtra
+            ? $"${usage.ExtraUsageSpent:F0}/${usage.ExtraUsageLimit:F0}"
+            : "";
+        var extraColor = greyColor;
+        if (hasExtra && usage.ExtraUsageLimit.HasValue && usage.ExtraUsageSpent.HasValue)
+        {
+            var extraPct = usage.ExtraUsageLimit.Value > 0
+                ? (usage.ExtraUsageSpent.Value / usage.ExtraUsageLimit.Value) * 100.0
+                : 0;
+            extraColor = GetUtilizationColor(extraPct);
+        }
+
         // Format tier shorthand
         var tierShort = FormatTierShort(usage.SubscriptionType, usage.RateLimitTier);
 
@@ -647,10 +661,15 @@ public partial class MainWindow : Window
         var fiveHourReset = FormatCountdown(usage.FiveHourResetsAt);
         var sevenDayReset = FormatCountdown(usage.SevenDayResetsAt);
 
-        // Stale indicator: show specific reason in amber
+        // Stale indicator: show specific reason in amber (cap length for display)
         var staleDisplayText = "";
         if (usage.IsStale && !string.IsNullOrEmpty(usage.StaleReason))
-            staleDisplayText = $" [{usage.StaleReason}]";
+        {
+            var reason = usage.StaleReason.Length > 30
+                ? usage.StaleReason[..30] + "..."
+                : usage.StaleReason;
+            staleDisplayText = $" [{reason}]";
+        }
         else if (usage.IsStale)
             staleDisplayText = " [stale]";
 
@@ -690,8 +709,22 @@ public partial class MainWindow : Window
                 FontSize = 10,
                 FontWeight = FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0),
             };
             panel.Children.Add(sevenText);
+
+            if (hasExtra)
+            {
+                var extraText = new System.Windows.Controls.TextBlock
+                {
+                    Text = extraValue,
+                    Foreground = new SolidColorBrush(extraColor),
+                    FontSize = 10,
+                    FontWeight = FontWeights.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                panel.Children.Add(extraText);
+            }
 
             if (!string.IsNullOrEmpty(staleDisplayText))
             {
@@ -712,7 +745,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            // Header: badge style
+            // Header: badge style - single line with all 3 metrics
             var border = new System.Windows.Controls.Border
             {
                 Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#40000000")),
@@ -737,16 +770,6 @@ public partial class MainWindow : Window
             };
             panel.Children.Add(labelText);
 
-            var tierText = new System.Windows.Controls.TextBlock
-            {
-                Text = $"{tierShort} ",
-                Foreground = new SolidColorBrush(Colors.White),
-                FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            panel.Children.Add(tierText);
-
             var fiveText = new System.Windows.Controls.TextBlock
             {
                 Text = $"5h: {fiveValue}",
@@ -754,7 +777,7 @@ public partial class MainWindow : Window
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 6, 0),
+                Margin = new Thickness(0, 0, 8, 0),
             };
             panel.Children.Add(fiveText);
 
@@ -765,8 +788,22 @@ public partial class MainWindow : Window
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 8, 0),
             };
             panel.Children.Add(sevenText);
+
+            if (hasExtra)
+            {
+                var extraText = new System.Windows.Controls.TextBlock
+                {
+                    Text = extraValue,
+                    Foreground = new SolidColorBrush(extraColor),
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                panel.Children.Add(extraText);
+            }
 
             if (!string.IsNullOrEmpty(staleDisplayText))
             {
@@ -808,6 +845,11 @@ public partial class MainWindow : Window
         {
             var opusReset = FormatCountdown(usage.OpusResetsAt);
             lines.Add($"Opus 7-day: {usage.OpusUtilization:F1}% (resets {opusReset})");
+        }
+
+        if (usage.ExtraUsageSpent.HasValue && usage.ExtraUsageLimit.HasValue)
+        {
+            lines.Add($"Extra usage: ${usage.ExtraUsageSpent:F2} of ${usage.ExtraUsageLimit:F2} monthly limit");
         }
 
         lines.Add($"Fetched: {usage.FetchedAt.ToLocalTime():HH:mm:ss}");

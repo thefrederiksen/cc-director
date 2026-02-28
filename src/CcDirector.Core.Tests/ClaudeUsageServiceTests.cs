@@ -213,4 +213,156 @@ public class ClaudeUsageServiceTests
 
         service.Dispose();
     }
+
+    [Fact]
+    public void ParseUsageResponse_NullRootElement_Throws()
+    {
+        var json = "null";
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => ClaudeUsageService.ParseUsageResponse(json, account));
+        Assert.Contains("Null", ex.Message);
+        Assert.Contains("instead of Object", ex.Message);
+    }
+
+    [Fact]
+    public void ParseUsageResponse_NullOpusProperty_DoesNotThrow()
+    {
+        // This is the exact crash scenario: API returns "seven_day_opus": null
+        // TryGetProperty succeeds (property exists) but the value is JSON null,
+        // so calling TryGetProperty on it throws InvalidOperationException.
+        var json = """
+            {
+                "five_hour": { "utilization": 36.0, "resets_at": "2026-02-28T02:59:59Z" },
+                "seven_day": { "utilization": 23.0, "resets_at": "2026-03-06T03:00:00Z" },
+                "seven_day_opus": null
+            }
+            """;
+
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+        var result = ClaudeUsageService.ParseUsageResponse(json, account);
+
+        Assert.Equal(36.0, result.FiveHourUtilization);
+        Assert.Equal(23.0, result.SevenDayUtilization);
+        Assert.Null(result.OpusUtilization);
+        Assert.Null(result.OpusResetsAt);
+        Assert.True(result.HasData);
+    }
+
+    [Fact]
+    public void ParseUsageResponse_RealApiResponse_ParsesCorrectly()
+    {
+        // Actual response captured from https://api.anthropic.com/api/oauth/usage
+        var json = """
+            {
+                "five_hour": {"utilization": 36.0, "resets_at": "2026-02-28T02:59:59.760173+00:00"},
+                "seven_day": {"utilization": 23.0, "resets_at": "2026-03-06T03:00:00.760190+00:00"},
+                "seven_day_oauth_apps": null,
+                "seven_day_opus": null,
+                "seven_day_sonnet": {"utilization": 0.0, "resets_at": "2026-03-06T20:00:00.760198+00:00"},
+                "seven_day_cowork": null,
+                "iguana_necktie": null,
+                "extra_usage": {"is_enabled": true, "monthly_limit": 7000, "used_credits": 7155.0, "utilization": 100.0}
+            }
+            """;
+
+        var account = new ClaudeAccount
+        {
+            Id = "test-id",
+            Label = "TestOrg",
+            SubscriptionType = "max",
+            RateLimitTier = "default_claude_max_20x",
+        };
+
+        var result = ClaudeUsageService.ParseUsageResponse(json, account);
+
+        Assert.Equal(36.0, result.FiveHourUtilization);
+        Assert.NotNull(result.FiveHourResetsAt);
+        Assert.Equal(23.0, result.SevenDayUtilization);
+        Assert.NotNull(result.SevenDayResetsAt);
+        Assert.Null(result.OpusUtilization);
+        Assert.Null(result.OpusResetsAt);
+        // Extra usage: API returns cents, should be divided by 100
+        Assert.Equal(71.55, result.ExtraUsageSpent);
+        Assert.Equal(70.0, result.ExtraUsageLimit);
+        Assert.True(result.HasData);
+        Assert.False(result.IsStale);
+    }
+
+    [Fact]
+    public void ParseUsageResponse_ExtraUsage_ConvertsCentsToDollars()
+    {
+        var json = """
+            {
+                "five_hour": { "utilization": 10.0, "resets_at": "2025-11-04T04:59:59Z" },
+                "seven_day": { "utilization": 20.0, "resets_at": "2025-11-06T03:59:59Z" },
+                "extra_usage": { "is_enabled": true, "monthly_limit": 7000, "used_credits": 7155.0, "utilization": 100.0 }
+            }
+            """;
+
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+        var result = ClaudeUsageService.ParseUsageResponse(json, account);
+
+        Assert.Equal(71.55, result.ExtraUsageSpent);
+        Assert.Equal(70.0, result.ExtraUsageLimit);
+    }
+
+    [Fact]
+    public void ParseUsageResponse_NoExtraUsage_NullValues()
+    {
+        var json = """
+            {
+                "five_hour": { "utilization": 10.0, "resets_at": "2025-11-04T04:59:59Z" },
+                "seven_day": { "utilization": 20.0, "resets_at": "2025-11-06T03:59:59Z" }
+            }
+            """;
+
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+        var result = ClaudeUsageService.ParseUsageResponse(json, account);
+
+        Assert.Null(result.ExtraUsageSpent);
+        Assert.Null(result.ExtraUsageLimit);
+    }
+
+    [Fact]
+    public void ParseUsageResponse_NullExtraUsage_NullValues()
+    {
+        var json = """
+            {
+                "five_hour": { "utilization": 10.0, "resets_at": "2025-11-04T04:59:59Z" },
+                "seven_day": { "utilization": 20.0, "resets_at": "2025-11-06T03:59:59Z" },
+                "extra_usage": null
+            }
+            """;
+
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+        var result = ClaudeUsageService.ParseUsageResponse(json, account);
+
+        Assert.Null(result.ExtraUsageSpent);
+        Assert.Null(result.ExtraUsageLimit);
+    }
+
+    [Fact]
+    public void ParseUsageResponse_AllNullProperties_DefaultsToZero()
+    {
+        // All optional sections are null
+        var json = """
+            {
+                "five_hour": null,
+                "seven_day": null,
+                "seven_day_opus": null
+            }
+            """;
+
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+        var result = ClaudeUsageService.ParseUsageResponse(json, account);
+
+        Assert.Equal(0.0, result.FiveHourUtilization);
+        Assert.Null(result.FiveHourResetsAt);
+        Assert.Equal(0.0, result.SevenDayUtilization);
+        Assert.Null(result.SevenDayResetsAt);
+        Assert.Null(result.OpusUtilization);
+        Assert.True(result.HasData);
+    }
 }

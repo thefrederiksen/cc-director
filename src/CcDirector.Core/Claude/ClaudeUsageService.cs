@@ -261,6 +261,8 @@ public sealed class ClaudeUsageService : IDisposable
                 SevenDayResetsAt = lastKnown.SevenDayResetsAt,
                 OpusUtilization = lastKnown.OpusUtilization,
                 OpusResetsAt = lastKnown.OpusResetsAt,
+                ExtraUsageSpent = lastKnown.ExtraUsageSpent,
+                ExtraUsageLimit = lastKnown.ExtraUsageLimit,
                 FetchedAt = lastKnown.FetchedAt,
                 IsStale = true,
                 StaleReason = reason,
@@ -290,6 +292,9 @@ public sealed class ClaudeUsageService : IDisposable
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException($"API returned {root.ValueKind} instead of Object");
+
         double fiveHourUtil = 0;
         DateTimeOffset? fiveHourResets = null;
         double sevenDayUtil = 0;
@@ -297,22 +302,33 @@ public sealed class ClaudeUsageService : IDisposable
         double? opusUtil = null;
         DateTimeOffset? opusResets = null;
 
-        if (root.TryGetProperty("five_hour", out var fiveHour))
+        if (root.TryGetProperty("five_hour", out var fiveHour) && fiveHour.ValueKind == JsonValueKind.Object)
         {
             fiveHourUtil = fiveHour.TryGetProperty("utilization", out var u) ? u.GetDouble() : 0;
             fiveHourResets = ParseResetTime(fiveHour);
         }
 
-        if (root.TryGetProperty("seven_day", out var sevenDay))
+        if (root.TryGetProperty("seven_day", out var sevenDay) && sevenDay.ValueKind == JsonValueKind.Object)
         {
             sevenDayUtil = sevenDay.TryGetProperty("utilization", out var u) ? u.GetDouble() : 0;
             sevenDayResets = ParseResetTime(sevenDay);
         }
 
-        if (root.TryGetProperty("seven_day_opus", out var opus))
+        if (root.TryGetProperty("seven_day_opus", out var opus) && opus.ValueKind == JsonValueKind.Object)
         {
             opusUtil = opus.TryGetProperty("utilization", out var u) ? u.GetDouble() : 0;
             opusResets = ParseResetTime(opus);
+        }
+
+        // Parse extra_usage: API returns cents, convert to dollars
+        double? extraSpent = null;
+        double? extraLimit = null;
+        if (root.TryGetProperty("extra_usage", out var extra) && extra.ValueKind == JsonValueKind.Object)
+        {
+            if (extra.TryGetProperty("used_credits", out var uc))
+                extraSpent = uc.GetDouble() / 100.0;
+            if (extra.TryGetProperty("monthly_limit", out var ml))
+                extraLimit = ml.GetDouble() / 100.0;
         }
 
         return new ClaudeUsageInfo
@@ -327,6 +343,8 @@ public sealed class ClaudeUsageService : IDisposable
             SevenDayResetsAt = sevenDayResets,
             OpusUtilization = opusUtil,
             OpusResetsAt = opusResets,
+            ExtraUsageSpent = extraSpent,
+            ExtraUsageLimit = extraLimit,
             FetchedAt = DateTimeOffset.UtcNow,
             IsStale = false,
             HasData = true,

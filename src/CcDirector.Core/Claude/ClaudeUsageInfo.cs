@@ -12,6 +12,8 @@ public sealed class ClaudeUsageInfo
     public DateTimeOffset? SevenDayResetsAt { get; init; }
     public double? OpusUtilization { get; init; }
     public DateTimeOffset? OpusResetsAt { get; init; }
+    public double? ExtraUsageSpent { get; init; }
+    public double? ExtraUsageLimit { get; init; }
     public DateTimeOffset FetchedAt { get; init; }
     public bool IsStale { get; init; }
     public string StaleReason { get; init; } = "";
