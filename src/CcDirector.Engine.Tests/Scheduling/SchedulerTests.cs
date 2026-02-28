@@ -18,7 +18,8 @@ public sealed class SchedulerTests : IDisposable
 
     public void Dispose()
     {
-        try { File.Delete(_dbPath); } catch { }
+        try { File.Delete(_dbPath); }
+        catch (IOException) { /* Test temp file cleanup -- best effort */ }
     }
 
     [Fact]

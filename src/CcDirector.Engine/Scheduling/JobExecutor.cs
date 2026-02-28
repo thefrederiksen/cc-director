@@ -31,48 +31,47 @@ public sealed class JobExecutor
         {
             var processJob = new ProcessJob(job.Name, job.Command, job.WorkingDir, job.TimeoutSeconds);
             var result = await processJob.ExecuteAsync(cancellationToken);
-
             stopwatch.Stop();
 
-            run.EndedAt = DateTime.UtcNow;
-            run.ExitCode = result.Success ? 0 : 1;
-            run.Stdout = result.Output;
-            run.Stderr = result.Error;
-            run.TimedOut = result.Error?.StartsWith("Timed out") == true;
-            run.DurationSeconds = stopwatch.Elapsed.TotalSeconds;
-
-            _db.UpdateRun(run);
-
+            RecordResult(run, result, stopwatch.Elapsed);
             FileLog.Write($"[JobExecutor] Job completed: name={job.Name}, success={result.Success}, duration={run.DurationSeconds:F1}s");
         }
         catch (OperationCanceledException)
         {
-            stopwatch.Stop();
-            run.EndedAt = DateTime.UtcNow;
-            run.ExitCode = -1;
-            run.Stderr = "Cancelled";
-            run.DurationSeconds = stopwatch.Elapsed.TotalSeconds;
-            _db.UpdateRun(run);
-
+            RecordFailure(run, stopwatch, "Cancelled");
             FileLog.Write($"[JobExecutor] Job cancelled: name={job.Name}");
             throw;
         }
         catch (Exception ex)
         {
-            stopwatch.Stop();
-            run.EndedAt = DateTime.UtcNow;
-            run.ExitCode = -1;
-            run.Stderr = ex.Message;
-            run.DurationSeconds = stopwatch.Elapsed.TotalSeconds;
-            _db.UpdateRun(run);
-
+            RecordFailure(run, stopwatch, ex.Message);
             FileLog.Write($"[JobExecutor] Job FAILED: name={job.Name}, error={ex.Message}");
         }
 
-        // Update next_run for the job
         var nextRun = CronHelper.GetNextOccurrence(job.Cron, DateTime.UtcNow);
         _db.UpdateNextRun(job.Id, nextRun);
 
         return run;
+    }
+
+    private void RecordResult(RunRecord run, JobResult result, TimeSpan elapsed)
+    {
+        run.EndedAt = DateTime.UtcNow;
+        run.ExitCode = result.Success ? 0 : 1;
+        run.Stdout = result.Output;
+        run.Stderr = result.Error;
+        run.TimedOut = result.TimedOut;
+        run.DurationSeconds = elapsed.TotalSeconds;
+        _db.UpdateRun(run);
+    }
+
+    private void RecordFailure(RunRecord run, System.Diagnostics.Stopwatch stopwatch, string error)
+    {
+        stopwatch.Stop();
+        run.EndedAt = DateTime.UtcNow;
+        run.ExitCode = -1;
+        run.Stderr = error;
+        run.DurationSeconds = stopwatch.Elapsed.TotalSeconds;
+        _db.UpdateRun(run);
     }
 }

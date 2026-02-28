@@ -16,7 +16,8 @@ public sealed class EngineDatabaseTests : IDisposable
 
     public void Dispose()
     {
-        try { File.Delete(_dbPath); } catch { }
+        try { File.Delete(_dbPath); }
+        catch (IOException) { /* Test temp file cleanup -- best effort */ }
     }
 
     // -- Job CRUD --
@@ -100,13 +101,15 @@ public sealed class EngineDatabaseTests : IDisposable
     public void UpdateJob_ModifiesFields()
     {
         var id = _db.AddJob(MakeJob("update-me"));
-        var job = _db.GetJobById(id)!;
+        var job = _db.GetJobById(id);
+        Assert.NotNull(job);
 
         job.Command = "echo updated";
         job.TimeoutSeconds = 600;
         _db.UpdateJob(job);
 
-        var updated = _db.GetJobById(id)!;
+        var updated = _db.GetJobById(id);
+        Assert.NotNull(updated);
         Assert.Equal("echo updated", updated.Command);
         Assert.Equal(600, updated.TimeoutSeconds);
     }
@@ -135,10 +138,14 @@ public sealed class EngineDatabaseTests : IDisposable
         _db.AddJob(MakeJob("toggle-me"));
 
         _db.SetJobEnabled("toggle-me", false);
-        Assert.False(_db.GetJob("toggle-me")!.Enabled);
+        var disabled = _db.GetJob("toggle-me");
+        Assert.NotNull(disabled);
+        Assert.False(disabled.Enabled);
 
         _db.SetJobEnabled("toggle-me", true);
-        Assert.True(_db.GetJob("toggle-me")!.Enabled);
+        var enabled = _db.GetJob("toggle-me");
+        Assert.NotNull(enabled);
+        Assert.True(enabled.Enabled);
     }
 
     // -- Due Jobs --
@@ -216,7 +223,8 @@ public sealed class EngineDatabaseTests : IDisposable
         run.DurationSeconds = 1.5;
         _db.UpdateRun(run);
 
-        var loaded = _db.GetRun(run.Id)!;
+        var loaded = _db.GetRun(run.Id);
+        Assert.NotNull(loaded);
         Assert.NotNull(loaded.EndedAt);
         Assert.Equal(0, loaded.ExitCode);
         Assert.Equal("output", loaded.Stdout);
@@ -269,7 +277,8 @@ public sealed class EngineDatabaseTests : IDisposable
 
         Assert.Equal(1, count);
 
-        var cleaned = _db.GetRun(run.Id)!;
+        var cleaned = _db.GetRun(run.Id);
+        Assert.NotNull(cleaned);
         Assert.NotNull(cleaned.EndedAt);
         Assert.Equal(-1, cleaned.ExitCode);
         Assert.Equal("Interrupted by shutdown", cleaned.Stderr);

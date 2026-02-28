@@ -5,7 +5,7 @@ It contains every color, font, spacing value, and layout measurement extracted f
 approved Pencil design file. An implementing agent should be able to produce a pixel-accurate
 WPF application from this document alone.
 
-Reference screenshots are in `Screenshots/` alongside this file.
+Reference design: the approved Pencil design file (see UI_Redesign_Handover.md).
 
 ---
 
@@ -232,7 +232,7 @@ Contents:
 - **Layout:** Horizontal, center-aligned, gap 16px
 
 Contents:
-- "CenterConsulting:" -- JetBrains Mono 11px Medium, `TextSecondary`
+- "AcmeCorp:" -- JetBrains Mono 11px Medium, `TextSecondary`
 - 5h stat group (gap 4): "5h:" `TextTertiary`, "71%" `AccentBlue` SemiBold, "(25m)" `TextMuted`
 - 7d stat group (gap 4): "7d:" `TextTertiary`, "31%" `TextSecondary` Medium, "(6d, Mar 5)" `TextMuted`
 - Spent group (gap 4): "Spent:" `TextTertiary`, "$71" `AccentWarning` SemiBold, "/ Limit: $200" `TextMuted`
@@ -383,7 +383,7 @@ Contents:
 - **Layout:** Horizontal, center-aligned, gap 16px
 
 Contents:
-- "CenterConsulting:" -- JetBrains Mono 10px Medium, `TextTertiary`
+- "AcmeCorp:" -- JetBrains Mono 10px Medium, `TextTertiary`
 - "5h:" `TextMuted` + "71%" `AccentBlue` SemiBold (gap 4)
 - "7d:" `TextMuted` + "31%" `TextSecondary` Medium (gap 4)
 - "Spent:" `TextMuted` + "$71" `AccentWarning` Medium + "/ Limit: $200" `TextMuted` (gap 4)

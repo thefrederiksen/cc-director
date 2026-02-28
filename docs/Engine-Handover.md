@@ -92,10 +92,10 @@ These folders from the design doc do not exist yet -- they are in later phases:
 ### 2a. Build the Dispatcher (in CcDirector.Engine)
 
 Port the Python dispatcher to C#. The Python source to reference:
-- `D:\ReposFred\cc-director\scheduler\cc_director\dispatcher\email_sender.py`
-- `D:\ReposFred\cc-director\scheduler\cc_director\dispatcher\linkedin_sender.py`
-- `D:\ReposFred\cc-director\scheduler\cc_director\dispatcher\sqlite_watcher.py`
-- `D:\ReposFred\cc-director\scheduler\cc_director\dispatcher\config.py`
+- `{repo}\scheduler\cc_director\dispatcher\email_sender.py`
+- `{repo}\scheduler\cc_director\dispatcher\linkedin_sender.py`
+- `{repo}\scheduler\cc_director\dispatcher\sqlite_watcher.py`
+- `{repo}\scheduler\cc_director\dispatcher\config.py`
 
 Create these files:
 - `src/CcDirector.Engine/Dispatcher/CommunicationDispatcher.cs` -- Polls communications table every 5 seconds for `status='approved'` items with `send_timing IN ('immediate','asap')` or `scheduled_for <= now`. Dispatches by platform, marks as `posted`.
@@ -117,13 +117,13 @@ Wire the dispatcher into EngineHost.Start() as a second background loop (alongsi
 Three tools currently write to/read from `communications.db` at the old path. They need to point at `engine.db` in `%LOCALAPPDATA%\cc-myvault\`.
 
 **1. cc-comm-queue** (Python CLI -- WRITER)
-- `D:\ReposFred\cc-tools\src\cc-comm-queue\src\queue_manager.py` line 66
+- `{cc-tools}\src\cc-comm-queue\src\queue_manager.py` line 66
   - Change: `self.db_path = queue_path / "communications.db"` -> `self.db_path = queue_path / "engine.db"`
-- `D:\ReposFred\cc-tools\src\cc_shared\config.py` line 173
-  - Change: `queue_path` default from `"D:/ReposFred/cc-consult/tools/communication_manager/content"` to `%LOCALAPPDATA%/cc-myvault`
+- `{cc-tools}\src\cc_shared\config.py` line 173
+  - Change: `queue_path` default from the old communication_manager content path to `%LOCALAPPDATA%/cc-myvault`
 
 **2. Communication Manager WPF App** (C# -- REVIEWER)
-- `D:\ReposFred\cc-consult\tools\communication_manager\src\CommunicationManager\Services\DatabaseService.cs` line 22
+- `{cc-consult}\tools\communication_manager\src\CommunicationManager\Services\DatabaseService.cs` line 22
   - Change: `"communications.db"` -> `"engine.db"` and update content path to cc-myvault directory
 
 **3. /write Skill** -- No change needed. It calls `cc-comm-queue`, which handles the path.
@@ -132,7 +132,7 @@ Three tools currently write to/read from `communications.db` at the old path. Th
 
 ### 2c. Optional: Migrate Old Data
 
-If `D:\ReposFred\cc-consult\tools\communication_manager\content\communications.db` has data worth keeping, it can be migrated with:
+If `{cc-consult}\tools\communication_manager\content\communications.db` has data worth keeping, it can be migrated with:
 
 ```sql
 ATTACH DATABASE 'old_communications.db' AS comm;
@@ -189,7 +189,7 @@ This is nice-to-have -- the old records are mostly historical (posted/rejected).
 
 ```bash
 # Build entire solution
-cd D:/ReposFred/cc-director
+cd {repo}
 dotnet build cc-director.sln
 
 # Build Engine only

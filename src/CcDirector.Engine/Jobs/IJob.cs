@@ -9,5 +9,6 @@ public interface IJob
 public record JobResult(
     bool Success,
     string Output,
-    string? Error = null
+    string? Error = null,
+    bool TimedOut = false
 );

@@ -71,7 +71,7 @@ public sealed class EngineHost : IDisposable
 
         var nextRun = enabledJobs
             .Where(j => j.NextRun.HasValue)
-            .Select(j => j.NextRun!.Value)
+            .Select(j => j.NextRun.GetValueOrDefault())
             .OrderBy(t => t)
             .Cast<DateTime?>()
             .FirstOrDefault();

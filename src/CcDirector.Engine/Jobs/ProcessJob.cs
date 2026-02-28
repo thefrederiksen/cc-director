@@ -38,12 +38,9 @@ public sealed class ProcessJob : IJob
 
         using var process = new Process { StartInfo = startInfo };
 
-        var stdoutTask = Task.CompletedTask as Task<string>;
-        var stderrTask = Task.CompletedTask as Task<string>;
-
         process.Start();
-        stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(_timeoutSeconds));
@@ -58,7 +55,7 @@ public sealed class ProcessJob : IJob
             KillProcess(process);
             var stdout = await ReadSafe(stdoutTask);
             var stderr = await ReadSafe(stderrTask);
-            return new JobResult(false, stdout, $"Timed out after {_timeoutSeconds} seconds. {stderr}");
+            return new JobResult(false, stdout, $"Timed out after {_timeoutSeconds} seconds. {stderr}", TimedOut: true);
         }
 
         var finalStdout = await ReadSafe(stdoutTask);
@@ -74,25 +71,31 @@ public sealed class ProcessJob : IJob
         );
     }
 
+    // Kill may race with natural exit -- InvalidOperationException is expected
     private static void KillProcess(Process process)
     {
         try
         {
             process.Kill(entireProcessTree: true);
         }
-        catch (Exception ex)
+        catch (InvalidOperationException)
         {
-            FileLog.Write($"[ProcessJob] Failed to kill process: {ex.Message}");
+            // Process already exited before kill -- expected race condition
         }
     }
 
+    // Stream reads may fail when process is killed -- expected after timeout
     private static async Task<string> ReadSafe(Task<string> task)
     {
         try
         {
             return await task;
         }
-        catch
+        catch (OperationCanceledException)
+        {
+            return string.Empty;
+        }
+        catch (ObjectDisposedException)
         {
             return string.Empty;
         }
