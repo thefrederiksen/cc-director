@@ -12,6 +12,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
@@ -20,19 +21,63 @@
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <!-- Session header banner (spans full width at top) -->
-        <Border x:Name="SessionHeaderBanner" Grid.Row="0" Grid.ColumnSpan="3"
+        <!-- APP BAR: Application-global strip (always visible, right of sidebar) -->
+        <Border Grid.Row="0" Grid.Column="2"
+                Background="{StaticResource SidebarBackground}"
+                BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                MinHeight="36">
+            <DockPanel Margin="12,6">
+                <!-- Right side: Settings + Help buttons -->
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Button x:Name="BtnSettings"
+                            Click="BtnSettings_Click"
+                            ToolTip="Settings"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Padding="6,4"
+                            Margin="4,0,0,0"
+                            VerticalAlignment="Center">
+                        <Path Data="M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94c0,-0.32 -0.02,-0.64 -0.07,-0.94l2.03,-1.58c0.18,-0.14 0.23,-0.41 0.12,-0.61l-1.92,-3.32c-0.12,-0.22 -0.37,-0.29 -0.59,-0.22l-2.39,0.96c-0.5,-0.38 -1.03,-0.7 -1.62,-0.94L14.4,2.81c-0.04,-0.24 -0.24,-0.41 -0.48,-0.41h-3.84c-0.24,0 -0.43,0.17 -0.47,0.41L9.25,5.35C8.66,5.59 8.12,5.92 7.63,6.29L5.24,5.33c-0.22,-0.08 -0.47,0 -0.59,0.22L2.74,8.87C2.62,9.08 2.66,9.34 2.86,9.48l2.03,1.58C4.84,11.36 4.8,11.69 4.8,12s0.02,0.64 0.07,0.94l-2.03,1.58c-0.18,0.14 -0.23,0.41 -0.12,0.61l1.92,3.32c0.12,0.22 0.37,0.29 0.59,0.22l2.39,-0.96c0.5,0.38 1.03,0.7 1.62,0.94l0.36,2.54c0.05,0.24 0.24,0.41 0.48,0.41h3.84c0.24,0 0.44,-0.17 0.47,-0.41l0.36,-2.54c0.59,-0.24 1.13,-0.56 1.62,-0.94l2.39,0.96c0.22,0.08 0.47,0 0.59,-0.22l1.92,-3.32c0.12,-0.22 0.07,-0.47 -0.12,-0.61L19.14,12.94z M12,15.6c-1.98,0 -3.6,-1.62 -3.6,-3.6s1.62,-3.6 3.6,-3.6s3.6,1.62 3.6,3.6S13.98,15.6 12,15.6z"
+                              Fill="#888888" Width="16" Height="16"
+                              Stretch="Uniform" />
+                    </Button>
+                    <Button x:Name="BtnHelp"
+                            Click="BtnHelp_Click"
+                            ToolTip="About CC Director"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Padding="6,4"
+                            Margin="4,0,0,0"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="?"
+                                   Foreground="#888888"
+                                   FontSize="14"
+                                   FontWeight="Bold" />
+                    </Button>
+                </StackPanel>
+                <!-- Left side: Usage badges (always visible, all accounts) -->
+                <StackPanel x:Name="AppBarUsagePanel" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <!-- Populated dynamically by code-behind -->
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- SESSION BAR: Session-specific header (only visible when session selected) -->
+        <Border x:Name="SessionHeaderBanner" Grid.Row="1" Grid.Column="2"
                 Background="#007ACC"
                 BorderBrush="#005A9E" BorderThickness="0,0,0,2"
-                MinHeight="48"
+                MinHeight="42"
                 Visibility="Collapsed">
-            <Grid Margin="16,8">
+            <Grid Margin="12,6">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
@@ -41,19 +86,13 @@
                 <TextBlock x:Name="HeaderSessionName" Grid.Column="0" Grid.Row="0"
                            Text=""
                            Foreground="White"
-                           FontSize="27"
+                           FontSize="20"
                            FontWeight="SemiBold"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis" />
 
-                <!-- Usage badges (one per Claude account) -->
-                <StackPanel x:Name="HeaderUsagePanel" Grid.Column="0" Grid.Row="1"
-                            Orientation="Horizontal" Margin="0,4,0,0">
-                    <!-- Populated dynamically by code-behind -->
-                </StackPanel>
-
                 <!-- Activity state badge + message count + refresh -->
-                <StackPanel Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
+                <StackPanel Grid.Column="1" Grid.Row="0"
                             Orientation="Horizontal"
                             VerticalAlignment="Center">
                     <!-- Refresh terminal button -->
@@ -113,9 +152,8 @@
                     </Border>
                 </StackPanel>
 
-
                 <!-- Session ID and verification row (right-aligned) -->
-                <StackPanel x:Name="HeaderSessionIdPanel" Grid.Column="1" Grid.Row="2"
+                <StackPanel x:Name="HeaderSessionIdPanel" Grid.Column="1" Grid.Row="1"
                             Orientation="Horizontal"
                             HorizontalAlignment="Right"
                             Margin="0,4,0,0"
@@ -177,8 +215,8 @@
             </Grid>
         </Border>
 
-            <!-- Left sidebar: SessionNavigator (full height) -->
-            <Border Grid.Row="1" Grid.Column="0" Background="{StaticResource SidebarBackground}"
+            <!-- SIDEBAR: Session navigation (full height, spans all rows) -->
+            <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="0" Background="{StaticResource SidebarBackground}"
                     BorderBrush="#3C3C3C" BorderThickness="0,0,1,0">
                 <DockPanel>
                     <!-- Header with hamburger menu and title -->
@@ -579,18 +617,18 @@
             </Border>
 
             <!-- Splitter (left) -->
-            <GridSplitter Grid.Row="1" Grid.Column="1" Width="3"
+            <GridSplitter Grid.Row="0" Grid.RowSpan="3" Grid.Column="1" Width="3"
                           Focusable="False"
                           Background="{StaticResource PanelBackground}"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" />
 
-            <!-- Center: content area -->
-            <Grid Grid.Row="1" Grid.Column="2" Background="#1E1E1E">
+            <!-- CENTER WORKSPACE: content area -->
+            <Grid Grid.Row="2" Grid.Column="2" Background="#1E1E1E">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition x:Name="PipeMessagesColumn" Width="280" />
+                        <ColumnDefinition x:Name="HookEventsColumn" Width="280" />
                     </Grid.ColumnDefinitions>
 
                     <!-- TerminalColumn: tabs + notification + command bar -->
@@ -739,7 +777,8 @@
                                     </Border>
                                 </Grid>
                             </TabItem>
-                            <TabItem Header="Source Control">
+                            <TabItem x:Name="SourceControlTab" Header="Source Control"
+                                     Visibility="Collapsed">
                                 <controls:GitChangesControl x:Name="GitChanges" />
                             </TabItem>
                         </TabControl>
@@ -829,8 +868,8 @@
 
                     <!-- InspectorToggle -->
                     <Border Grid.Column="1" Background="{StaticResource SidebarBackground}" Width="24">
-                        <Button x:Name="PipeToggleButton" Content="&#x00BB;"
-                                Click="TogglePipeMessages_Click"
+                        <Button x:Name="HookToggleButton" Content="&#x00BB;"
+                                Click="ToggleHookEvents_Click"
                                 Focusable="False"
                                 Background="Transparent" Foreground="#888888"
                                 BorderThickness="0" Cursor="Hand"
@@ -838,8 +877,8 @@
                                 ToolTip="Toggle right panel" />
                     </Border>
 
-                    <!-- InspectorPanel: tabbed Queue and Pipe Messages (full height) -->
-                    <Border x:Name="PipeMessagesPanel" Grid.Column="2" Background="{StaticResource SidebarBackground}"
+                    <!-- InspectorPanel: tabbed Queue and Hook Events (full height) -->
+                    <Border x:Name="HookEventsPanel" Grid.Column="2" Background="{StaticResource SidebarBackground}"
                             BorderBrush="#3C3C3C" BorderThickness="1,0,0,0">
                         <TabControl x:Name="RightPanelTabs" Background="Transparent" BorderThickness="0" Margin="0,8,0,0">
                             <TabControl.Resources>
@@ -972,16 +1011,16 @@
                                 </DockPanel>
                             </TabItem>
 
-                            <!-- Pipe Messages Tab -->
-                            <TabItem Header="Pipes">
+                            <!-- Hook Events Tab -->
+                            <TabItem Header="Hooks">
                                 <DockPanel>
                                     <DockPanel DockPanel.Dock="Top" Margin="8,8,8,4">
-                                        <TextBlock Text="PIPE MESSAGES"
+                                        <TextBlock Text="HOOK EVENTS"
                                                    Foreground="{StaticResource TextForeground}"
                                                    FontWeight="SemiBold" FontSize="10"
                                                    VerticalAlignment="Center" />
-                                        <Button x:Name="BtnClearPipeMessages" Content="Clear"
-                                                Click="BtnClearPipeMessages_Click"
+                                        <Button x:Name="BtnClearHookEvents" Content="Clear"
+                                                Click="BtnClearHookEvents_Click"
                                                 HorizontalAlignment="Right"
                                                 Padding="8,2"
                                                 Background="{StaticResource ButtonBackground}"
@@ -989,7 +1028,7 @@
                                                 BorderThickness="0" Cursor="Hand" FontSize="10" />
                                     </DockPanel>
 
-                                    <ListBox x:Name="PipeMessageList"
+                                    <ListBox x:Name="HookEventList"
                                              Background="Transparent" BorderThickness="0"
                                              Foreground="{StaticResource TextForeground}"
                                              Margin="4,0"

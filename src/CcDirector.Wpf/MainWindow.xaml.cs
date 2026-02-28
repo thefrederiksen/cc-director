@@ -513,6 +513,33 @@ public partial class MainWindow : Window
         }
     }
 
+    private void BtnSettings_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnSettings_Click: opening settings");
+        // Phase 5: Will open SettingsDialog. For now, open Accounts as placeholder.
+        MenuAccounts_Click(sender, e);
+    }
+
+    private void BtnHelp_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnHelp_Click: showing about info");
+        try
+        {
+            var exePath = System.IO.Path.Combine(AppContext.BaseDirectory, "cc-director.exe");
+            var buildTime = System.IO.File.Exists(exePath)
+                ? System.IO.File.GetLastWriteTime(exePath).ToString("yyyy-MM-dd HH:mm:ss")
+                : "unknown";
+
+            MessageBox.Show(this,
+                $"CC Director v2\n\nBuild: {buildTime}\nPath: {AppContext.BaseDirectory}",
+                "About CC Director", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnHelp_Click FAILED: {ex.Message}");
+        }
+    }
+
     private void InitializeSidebarUsage(Core.Claude.ClaudeAccountStore store)
     {
         SidebarUsagePanel.Children.Clear();
@@ -597,12 +624,12 @@ public partial class MainWindow : Window
     {
         _latestUsage = usageList;
 
-        // Update header usage panel (visible when session selected)
-        HeaderUsagePanel.Children.Clear();
+        // Update App Bar usage panel (always visible at top)
+        AppBarUsagePanel.Children.Clear();
         foreach (var usage in usageList)
         {
             var badge = CreateUsageBadge(usage, compact: false);
-            HeaderUsagePanel.Children.Add(badge);
+            AppBarUsagePanel.Children.Add(badge);
         }
 
         // Update sidebar usage panel (always visible)
@@ -1203,8 +1230,9 @@ public partial class MainWindow : Window
         // Turn summarization disabled — see comment in RestoreSingleSession
         // RefreshSummaryPanel(session.Id);
 
-        // Attach git changes polling
+        // Attach git changes polling and conditionally show Source Control tab
         GitChanges.Attach(session.RepoPath);
+        UpdateSourceControlTabVisibility(session.RepoPath);
 
         // Rebuild hook events panel for the new session
         RefreshHookEventsPanel();
@@ -1236,6 +1264,7 @@ public partial class MainWindow : Window
         UpdateSessionHeader();
 
         GitChanges.Detach();
+        SourceControlTab.Visibility = Visibility.Collapsed;
 
         // Show all hook events when no session is selected
         RefreshHookEventsPanel();
@@ -1245,6 +1274,21 @@ public partial class MainWindow : Window
         PromptBar.Visibility = Visibility.Collapsed;
         PlaceholderText.Visibility = Visibility.Visible;
         RefreshQueuePanel();
+    }
+
+    private void UpdateSourceControlTabVisibility(string repoPath)
+    {
+        FileLog.Write($"[MainWindow] UpdateSourceControlTabVisibility: checking {repoPath}");
+        var gitDir = System.IO.Path.Combine(repoPath, ".git");
+        var hasGit = System.IO.Directory.Exists(gitDir) || System.IO.File.Exists(gitDir);
+        SourceControlTab.Visibility = hasGit ? Visibility.Visible : Visibility.Collapsed;
+
+        // If Source Control tab was selected but is now hidden, switch to Terminal
+        if (!hasGit && SessionTabs.SelectedItem == SourceControlTab)
+        {
+            SessionTabs.SelectedIndex = 0;
+        }
+        FileLog.Write($"[MainWindow] UpdateSourceControlTabVisibility: hasGit={hasGit}");
     }
 
     private void TerminalScrollBar_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
