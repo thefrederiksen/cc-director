@@ -285,6 +285,128 @@ public class ClaudeAccountStoreTests : IDisposable
         Assert.Empty(store.Accounts);
     }
 
+    [Fact]
+    public void RefreshActiveTokenFromCredentials_BothTokensChanged_MatchesSingleAccount()
+    {
+        // Regression test for root cause: when Claude Code refreshes tokens,
+        // BOTH accessToken and refreshToken change, so no match was found.
+        var store = new ClaudeAccountStore(_filePath);
+        store.Load();
+
+        // Add account with original tokens
+        var account = new ClaudeAccount
+        {
+            Label = "Personal",
+            AccessToken = "sk-ant-oat01-original",
+            RefreshToken = "sk-ant-ort01-original",
+            ExpiresAt = 100,
+            SubscriptionType = "max",
+            RateLimitTier = "default_claude_max_20x",
+            IsActive = true,
+        };
+        store.Add(account);
+
+        // Write credentials with completely new tokens (simulating Claude Code refresh)
+        var credPath = Path.Combine(_tempDir, ".credentials.json");
+        File.WriteAllText(credPath, """
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-refreshed",
+                    "refreshToken": "sk-ant-ort01-refreshed",
+                    "expiresAt": 9999999999999,
+                    "subscriptionType": "max",
+                    "rateLimitTier": "default_claude_max_20x"
+                }
+            }
+            """);
+
+        store.RefreshActiveTokenFromCredentials(credPath);
+
+        // With the fix, the single-account shortcut should match
+        Assert.Single(store.Accounts);
+        Assert.Equal("sk-ant-oat01-refreshed", store.Accounts[0].AccessToken);
+        Assert.Equal("sk-ant-ort01-refreshed", store.Accounts[0].RefreshToken);
+        Assert.Equal(9999999999999, store.Accounts[0].ExpiresAt);
+    }
+
+    [Fact]
+    public void RefreshActiveTokenFromCredentials_TokensRefreshedEventFires()
+    {
+        var store = new ClaudeAccountStore(_filePath);
+        store.Load();
+
+        var account = new ClaudeAccount
+        {
+            Label = "Test",
+            AccessToken = "sk-ant-oat01-old",
+            RefreshToken = "sk-ant-ort01-old",
+            ExpiresAt = 100,
+            SubscriptionType = "max",
+            RateLimitTier = "default_claude_max_20x",
+            IsActive = true,
+        };
+        store.Add(account);
+
+        var credPath = Path.Combine(_tempDir, ".credentials.json");
+        File.WriteAllText(credPath, """
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-new",
+                    "refreshToken": "sk-ant-ort01-new",
+                    "expiresAt": 9999999999999,
+                    "subscriptionType": "max",
+                    "rateLimitTier": "default_claude_max_20x"
+                }
+            }
+            """);
+
+        var eventFired = false;
+        store.TokensRefreshed += () => eventFired = true;
+
+        store.RefreshActiveTokenFromCredentials(credPath);
+
+        Assert.True(eventFired);
+    }
+
+    [Fact]
+    public void RefreshActiveTokenFromCredentials_SameToken_EventDoesNotFire()
+    {
+        var store = new ClaudeAccountStore(_filePath);
+        store.Load();
+
+        var account = new ClaudeAccount
+        {
+            Label = "Test",
+            AccessToken = "sk-ant-oat01-same",
+            RefreshToken = "sk-ant-ort01-same",
+            ExpiresAt = 100,
+            SubscriptionType = "max",
+            RateLimitTier = "default_claude_max_20x",
+            IsActive = true,
+        };
+        store.Add(account);
+
+        var credPath = Path.Combine(_tempDir, ".credentials.json");
+        File.WriteAllText(credPath, """
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-same",
+                    "refreshToken": "sk-ant-ort01-same",
+                    "expiresAt": 100,
+                    "subscriptionType": "max",
+                    "rateLimitTier": "default_claude_max_20x"
+                }
+            }
+            """);
+
+        var eventFired = false;
+        store.TokensRefreshed += () => eventFired = true;
+
+        store.RefreshActiveTokenFromCredentials(credPath);
+
+        Assert.False(eventFired);
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); }

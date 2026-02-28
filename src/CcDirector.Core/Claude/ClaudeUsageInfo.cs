@@ -14,4 +14,6 @@ public sealed class ClaudeUsageInfo
     public DateTimeOffset? OpusResetsAt { get; init; }
     public DateTimeOffset FetchedAt { get; init; }
     public bool IsStale { get; init; }
+    public string StaleReason { get; init; } = "";
+    public bool HasData { get; init; }
 }

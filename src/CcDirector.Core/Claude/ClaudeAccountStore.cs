@@ -18,6 +18,11 @@ public class ClaudeAccountStore
     public string FilePath { get; }
     public IReadOnlyList<ClaudeAccount> Accounts => _accounts.AsReadOnly();
 
+    /// <summary>
+    /// Fired after RefreshActiveTokenFromCredentials successfully updates an account's tokens.
+    /// </summary>
+    public event Action? TokensRefreshed;
+
     public ClaudeAccountStore(string? filePath = null)
     {
         FilePath = filePath ?? Path.Combine(
@@ -188,13 +193,42 @@ public class ClaudeAccountStore
             var creds = ParseCredentialsJson(json);
             if (creds == null) return;
 
-            // Find matching account by token prefix or refresh token
+            // Find matching account: try exact token match first, then fuzzy strategies
             var matching = _accounts.Find(a => a.RefreshToken == creds.RefreshToken)
                         ?? _accounts.Find(a => a.AccessToken == creds.AccessToken);
 
+            // Single-account shortcut: if only 1 account exists, that's the one
+            if (matching == null && _accounts.Count == 1)
+            {
+                matching = _accounts[0];
+                FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: single-account shortcut -> '{matching.Label}'");
+            }
+
+            // Match active account with same SubscriptionType + RateLimitTier
+            if (matching == null)
+            {
+                matching = _accounts.Find(a => a.IsActive
+                    && a.SubscriptionType == creds.SubscriptionType
+                    && a.RateLimitTier == creds.RateLimitTier);
+                if (matching != null)
+                    FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: active tier match -> '{matching.Label}'");
+            }
+
+            // Match any account by SubscriptionType + RateLimitTier
+            if (matching == null)
+            {
+                matching = _accounts.Find(a => a.SubscriptionType == creds.SubscriptionType
+                    && a.RateLimitTier == creds.RateLimitTier);
+                if (matching != null)
+                    FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: tier match -> '{matching.Label}'");
+            }
+
             if (matching != null)
             {
-                FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: updating account '{matching.Label}'");
+                var tokenChanged = matching.AccessToken != creds.AccessToken
+                    || matching.RefreshToken != creds.RefreshToken;
+
+                FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: updating account '{matching.Label}', tokenChanged={tokenChanged}");
                 matching.AccessToken = creds.AccessToken;
                 matching.RefreshToken = creds.RefreshToken;
                 matching.ExpiresAt = creds.ExpiresAt;
@@ -202,6 +236,9 @@ public class ClaudeAccountStore
                 matching.RateLimitTier = creds.RateLimitTier;
                 SetActiveAccount(matching.Id);
                 Save();
+
+                if (tokenChanged)
+                    TokensRefreshed?.Invoke();
             }
             else
             {

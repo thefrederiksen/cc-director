@@ -36,6 +36,8 @@ public class ClaudeUsageServiceTests
         Assert.Equal(12.5, result.OpusUtilization);
         Assert.NotNull(result.OpusResetsAt);
         Assert.False(result.IsStale);
+        Assert.True(result.HasData);
+        Assert.Equal("", result.StaleReason);
     }
 
     [Fact]
@@ -174,5 +176,41 @@ public class ClaudeUsageServiceTests
 
         Assert.NotNull(result.SevenDayResetsAt);
         Assert.Equal(2025, result.SevenDayResetsAt!.Value.Year);
+    }
+
+    [Fact]
+    public void ParseUsageResponse_FullResponse_HasDataIsTrue()
+    {
+        var json = """
+            {
+                "five_hour": { "utilization": 10.0, "resets_at": "2025-11-04T04:59:59Z" },
+                "seven_day": { "utilization": 20.0, "resets_at": "2025-11-06T03:59:59Z" }
+            }
+            """;
+
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+        var result = ClaudeUsageService.ParseUsageResponse(json, account);
+
+        Assert.True(result.HasData);
+        Assert.False(result.IsStale);
+        Assert.Equal("", result.StaleReason);
+    }
+
+    [Fact]
+    public void CreateStaleInfo_NeverFetched_HasDataIsFalse()
+    {
+        var store = new ClaudeAccountStore(Path.Combine(Path.GetTempPath(), $"usage_test_{Guid.NewGuid():N}", "accounts.json"));
+        store.Load();
+        var service = new ClaudeUsageService(store);
+
+        var account = new ClaudeAccount { Id = "test", Label = "Test" };
+        var result = service.CreateStaleInfo(account, "Token expired");
+
+        Assert.False(result.HasData);
+        Assert.True(result.IsStale);
+        Assert.Equal("Token expired", result.StaleReason);
+        Assert.Equal("test", result.AccountId);
+
+        service.Dispose();
     }
 }

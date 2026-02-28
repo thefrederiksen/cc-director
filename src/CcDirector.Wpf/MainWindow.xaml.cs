@@ -631,8 +631,14 @@ public partial class MainWindow : Window
 
     private System.Windows.UIElement CreateUsageBadge(Core.Claude.ClaudeUsageInfo usage, bool compact)
     {
-        var fiveColor = GetUtilizationColor(usage.FiveHourUtilization);
-        var sevenColor = GetUtilizationColor(usage.SevenDayUtilization);
+        // When no data has been fetched, show "--" in grey instead of fake "0%"
+        var noData = !usage.HasData;
+        var greyColor = (Color)ColorConverter.ConvertFromString("#888888");
+        var fiveColor = noData ? greyColor : GetUtilizationColor(usage.FiveHourUtilization);
+        var sevenColor = noData ? greyColor : GetUtilizationColor(usage.SevenDayUtilization);
+
+        var fiveValue = noData ? "--" : $"{usage.FiveHourUtilization:F0}%";
+        var sevenValue = noData ? "--" : $"{usage.SevenDayUtilization:F0}%";
 
         // Format tier shorthand
         var tierShort = FormatTierShort(usage.SubscriptionType, usage.RateLimitTier);
@@ -640,6 +646,13 @@ public partial class MainWindow : Window
         // Format reset countdown
         var fiveHourReset = FormatCountdown(usage.FiveHourResetsAt);
         var sevenDayReset = FormatCountdown(usage.SevenDayResetsAt);
+
+        // Stale indicator: show specific reason in amber
+        var staleDisplayText = "";
+        if (usage.IsStale && !string.IsNullOrEmpty(usage.StaleReason))
+            staleDisplayText = $" [{usage.StaleReason}]";
+        else if (usage.IsStale)
+            staleDisplayText = " [stale]";
 
         if (compact)
         {
@@ -653,7 +666,7 @@ public partial class MainWindow : Window
             var labelText = new System.Windows.Controls.TextBlock
             {
                 Text = $"{usage.AccountLabel}: ",
-                Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#888888")),
+                Foreground = new SolidColorBrush(greyColor),
                 FontSize = 10,
                 VerticalAlignment = VerticalAlignment.Center,
             };
@@ -661,7 +674,7 @@ public partial class MainWindow : Window
 
             var fiveText = new System.Windows.Controls.TextBlock
             {
-                Text = $"5h:{usage.FiveHourUtilization:F0}%",
+                Text = $"5h: {fiveValue}",
                 Foreground = new SolidColorBrush(fiveColor),
                 FontSize = 10,
                 FontWeight = FontWeights.SemiBold,
@@ -672,7 +685,7 @@ public partial class MainWindow : Window
 
             var sevenText = new System.Windows.Controls.TextBlock
             {
-                Text = $"7d:{usage.SevenDayUtilization:F0}%",
+                Text = $"7d: {sevenValue}",
                 Foreground = new SolidColorBrush(sevenColor),
                 FontSize = 10,
                 FontWeight = FontWeights.SemiBold,
@@ -680,12 +693,12 @@ public partial class MainWindow : Window
             };
             panel.Children.Add(sevenText);
 
-            if (usage.IsStale)
+            if (!string.IsNullOrEmpty(staleDisplayText))
             {
                 var staleText = new System.Windows.Controls.TextBlock
                 {
-                    Text = " [stale]",
-                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#666666")),
+                    Text = staleDisplayText,
+                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FFAA00")),
                     FontSize = 9,
                     VerticalAlignment = VerticalAlignment.Center,
                 };
@@ -736,7 +749,7 @@ public partial class MainWindow : Window
 
             var fiveText = new System.Windows.Controls.TextBlock
             {
-                Text = $"5h:{usage.FiveHourUtilization:F0}%",
+                Text = $"5h: {fiveValue}",
                 Foreground = new SolidColorBrush(fiveColor),
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
@@ -747,7 +760,7 @@ public partial class MainWindow : Window
 
             var sevenText = new System.Windows.Controls.TextBlock
             {
-                Text = $"7d:{usage.SevenDayUtilization:F0}%",
+                Text = $"7d: {sevenValue}",
                 Foreground = new SolidColorBrush(sevenColor),
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
@@ -755,12 +768,12 @@ public partial class MainWindow : Window
             };
             panel.Children.Add(sevenText);
 
-            if (usage.IsStale)
+            if (!string.IsNullOrEmpty(staleDisplayText))
             {
                 var staleText = new System.Windows.Controls.TextBlock
                 {
-                    Text = " [stale]",
-                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#AAAAAA")),
+                    Text = staleDisplayText,
+                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FFAA00")),
                     FontSize = 9,
                     VerticalAlignment = VerticalAlignment.Center,
                 };
@@ -779,9 +792,17 @@ public partial class MainWindow : Window
         var lines = new List<string>
         {
             $"{usage.AccountLabel} ({FormatTierShort(usage.SubscriptionType, usage.RateLimitTier)})",
-            $"5-hour: {usage.FiveHourUtilization:F1}% (resets {fiveHourReset})",
-            $"7-day: {usage.SevenDayUtilization:F1}% (resets {sevenDayReset})",
         };
+
+        if (usage.HasData)
+        {
+            lines.Add($"5-hour: {usage.FiveHourUtilization:F1}% (resets {fiveHourReset})");
+            lines.Add($"7-day: {usage.SevenDayUtilization:F1}% (resets {sevenDayReset})");
+        }
+        else
+        {
+            lines.Add("No usage data available");
+        }
 
         if (usage.OpusUtilization.HasValue)
         {
@@ -791,7 +812,9 @@ public partial class MainWindow : Window
 
         lines.Add($"Fetched: {usage.FetchedAt.ToLocalTime():HH:mm:ss}");
 
-        if (usage.IsStale)
+        if (usage.IsStale && !string.IsNullOrEmpty(usage.StaleReason))
+            lines.Add($"[!] {usage.StaleReason}");
+        else if (usage.IsStale)
             lines.Add("[!] Data may be outdated");
 
         return string.Join("\n", lines);

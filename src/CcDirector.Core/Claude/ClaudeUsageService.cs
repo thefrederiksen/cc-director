@@ -12,12 +12,14 @@ public sealed class ClaudeUsageService : IDisposable
     private readonly Timer _pollTimer;
     private FileSystemWatcher? _credentialsWatcher;
     private readonly Dictionary<string, ClaudeUsageInfo> _lastKnownUsage = new();
+    private readonly Dictionary<string, int> _consecutiveFailures = new();
     private bool _disposed;
 
     private const string UsageEndpoint = "https://api.anthropic.com/api/oauth/usage";
     private const string BetaHeader = "oauth-2025-04-20";
     private const string UserAgent = "claude-code/2.0.32";
     private const int PollIntervalMs = 60_000;
+    private const int MaxConsecutiveFailures = 3;
 
     public event Action<List<ClaudeUsageInfo>>? UsageUpdated;
 
@@ -26,13 +28,40 @@ public sealed class ClaudeUsageService : IDisposable
         _store = store;
         _httpClient = httpClient ?? new HttpClient();
         _pollTimer = new Timer(OnPollTimer, null, Timeout.Infinite, Timeout.Infinite);
+        _store.TokensRefreshed += OnTokensRefreshed;
     }
 
     public void Start()
     {
         FileLog.Write("[ClaudeUsageService] Start: beginning usage polling");
+
+        // Check for expired tokens at startup and proactively refresh
+        CheckAndRefreshExpiredTokens();
+
         _pollTimer.Change(0, PollIntervalMs);
         StartCredentialsWatcher();
+    }
+
+    private void CheckAndRefreshExpiredTokens()
+    {
+        FileLog.Write("[ClaudeUsageService] CheckAndRefreshExpiredTokens");
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        foreach (var account in _store.GetAll())
+        {
+            if (account.ExpiresAt > 0 && account.ExpiresAt < now)
+            {
+                FileLog.Write($"[ClaudeUsageService] CheckAndRefreshExpiredTokens: account '{account.Label}' token expired, refreshing from credentials");
+                _store.RefreshActiveTokenFromCredentials();
+                break; // RefreshActiveTokenFromCredentials updates the active account
+            }
+        }
+    }
+
+    private void OnTokensRefreshed()
+    {
+        FileLog.Write("[ClaudeUsageService] OnTokensRefreshed: clearing failure counts, triggering immediate poll");
+        _consecutiveFailures.Clear();
+        _pollTimer.Change(1000, PollIntervalMs);
     }
 
     public void Stop()
@@ -120,6 +149,14 @@ public sealed class ClaudeUsageService : IDisposable
 
         foreach (var account in accounts)
         {
+            // Skip accounts with too many consecutive failures
+            if (_consecutiveFailures.TryGetValue(account.Id, out var failures) && failures >= MaxConsecutiveFailures)
+            {
+                FileLog.Write($"[ClaudeUsageService] PollAllAccountsAsync: skipping account '{account.Label}' ({failures} consecutive failures)");
+                results.Add(CreateStaleInfo(account, "Token expired"));
+                continue;
+            }
+
             var usage = await FetchUsageForAccountAsync(account);
             results.Add(usage);
         }
@@ -128,13 +165,14 @@ public sealed class ClaudeUsageService : IDisposable
         UsageUpdated?.Invoke(results);
     }
 
-    internal async Task<ClaudeUsageInfo> FetchUsageForAccountAsync(ClaudeAccount account)
+    internal async Task<ClaudeUsageInfo> FetchUsageForAccountAsync(ClaudeAccount account, bool isRetry = false)
     {
-        FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: account={account.Label}");
+        FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: account={account.Label}, isRetry={isRetry}");
 
         if (string.IsNullOrEmpty(account.AccessToken))
         {
             FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: no token for account '{account.Label}'");
+            TrackFailure(account.Id);
             return CreateStaleInfo(account, "No token");
         }
 
@@ -151,6 +189,22 @@ public sealed class ClaudeUsageService : IDisposable
             if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: 401 for account '{account.Label}' - token expired");
+
+                // Try to recover by reading fresh credentials (only once)
+                if (!isRetry)
+                {
+                    FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: attempting token recovery for '{account.Label}'");
+                    var oldToken = account.AccessToken;
+                    _store.RefreshActiveTokenFromCredentials();
+
+                    if (account.AccessToken != oldToken)
+                    {
+                        FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: token changed, retrying for '{account.Label}'");
+                        return await FetchUsageForAccountAsync(account, isRetry: true);
+                    }
+                }
+
+                TrackFailure(account.Id);
                 return CreateStaleInfo(account, "Token expired");
             }
 
@@ -159,27 +213,38 @@ public sealed class ClaudeUsageService : IDisposable
             var json = await response.Content.ReadAsStringAsync();
             var info = ParseUsageResponse(json, account);
             _lastKnownUsage[account.Id] = info;
+            _consecutiveFailures.Remove(account.Id);
             FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: account={account.Label}, 5h={info.FiveHourUtilization}%, 7d={info.SevenDayUtilization}%");
             return info;
         }
         catch (HttpRequestException ex)
         {
             FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync FAILED: {ex.Message}");
+            TrackFailure(account.Id);
             return CreateStaleInfo(account, ex.Message);
         }
         catch (TaskCanceledException)
         {
             FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync: timeout for account '{account.Label}'");
+            TrackFailure(account.Id);
             return CreateStaleInfo(account, "Timeout");
         }
         catch (Exception ex)
         {
             FileLog.Write($"[ClaudeUsageService] FetchUsageForAccountAsync FAILED: {ex.Message}");
+            TrackFailure(account.Id);
             return CreateStaleInfo(account, ex.Message);
         }
     }
 
-    private ClaudeUsageInfo CreateStaleInfo(ClaudeAccount account, string reason)
+    private void TrackFailure(string accountId)
+    {
+        _consecutiveFailures.TryGetValue(accountId, out var count);
+        _consecutiveFailures[accountId] = count + 1;
+        FileLog.Write($"[ClaudeUsageService] TrackFailure: account={accountId}, consecutiveFailures={count + 1}");
+    }
+
+    internal ClaudeUsageInfo CreateStaleInfo(ClaudeAccount account, string reason)
     {
         // Return last known data if available, marked as stale
         if (_lastKnownUsage.TryGetValue(account.Id, out var lastKnown))
@@ -198,6 +263,8 @@ public sealed class ClaudeUsageService : IDisposable
                 OpusResetsAt = lastKnown.OpusResetsAt,
                 FetchedAt = lastKnown.FetchedAt,
                 IsStale = true,
+                StaleReason = reason,
+                HasData = true,
             };
         }
 
@@ -208,6 +275,8 @@ public sealed class ClaudeUsageService : IDisposable
             SubscriptionType = account.SubscriptionType,
             RateLimitTier = account.RateLimitTier,
             IsStale = true,
+            StaleReason = reason,
+            HasData = false,
             FetchedAt = DateTimeOffset.UtcNow,
         };
     }
@@ -260,6 +329,7 @@ public sealed class ClaudeUsageService : IDisposable
             OpusResetsAt = opusResets,
             FetchedAt = DateTimeOffset.UtcNow,
             IsStale = false,
+            HasData = true,
         };
     }
 
@@ -283,6 +353,7 @@ public sealed class ClaudeUsageService : IDisposable
         if (_disposed) return;
         _disposed = true;
 
+        _store.TokensRefreshed -= OnTokensRefreshed;
         Stop();
         _pollTimer.Dispose();
         _httpClient.Dispose();
