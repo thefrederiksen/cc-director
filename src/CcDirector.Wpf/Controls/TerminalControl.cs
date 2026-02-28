@@ -99,6 +99,9 @@ public class TerminalControl : FrameworkElement
     private string? _detectedLink;
     private LinkType _detectedLinkType;
 
+    // Paste state
+    private bool _isPasting;
+
     // Path existence cache - avoids disk I/O in OnRender
     private readonly ConcurrentDictionary<string, bool> _pathExistsCache = new();
     private int _pathCacheInvalidateNeeded;
@@ -638,6 +641,15 @@ public class TerminalControl : FrameworkElement
                 return;
             }
 
+            // Ctrl+Shift+V = paste clipboard as slow keystrokes
+            if (ctrl && shift && e.Key == Key.V)
+            {
+                FileLog.Write("[TerminalControl] Ctrl+Shift+V detected, pasting to terminal");
+                _ = PasteToTerminalAsync();
+                e.Handled = true;
+                return;
+            }
+
             if (_session == null) return;
 
             byte[]? data = MapKeyToBytes(e.Key, Keyboard.Modifiers);
@@ -662,10 +674,40 @@ public class TerminalControl : FrameworkElement
             // Right-click with selection copies to clipboard
             if (_hasSelection)
             {
-                FileLog.Write($"[TerminalControl] Right-click with selection, copying to clipboard");
+                FileLog.Write("[TerminalControl] Right-click with selection, copying to clipboard");
                 CopySelectionToClipboard();
                 ClearSelection();
                 InvalidateVisual();
+                e.Handled = true;
+                return;
+            }
+
+            // Right-click without selection: show context menu with Paste option
+            if (_session != null && Clipboard.ContainsText())
+            {
+                var menu = new ContextMenu();
+                var pasteItem = new MenuItem
+                {
+                    Header = "Paste to Terminal",
+                    IsEnabled = !_isPasting,
+                };
+                pasteItem.Click += (_, _) => _ = PasteToTerminalAsync();
+                menu.Items.Add(pasteItem);
+
+                if (_isPasting)
+                {
+                    var cancelItem = new MenuItem { Header = "Cancel Paste" };
+                    cancelItem.Click += (_, _) =>
+                    {
+                        FileLog.Write("[TerminalControl] Paste cancelled by user");
+                        _isPasting = false;
+                    };
+                    menu.Items.Add(cancelItem);
+                }
+
+                menu.PlacementTarget = this;
+                menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+                menu.IsOpen = true;
                 e.Handled = true;
             }
         }
@@ -1083,6 +1125,57 @@ public class TerminalControl : FrameworkElement
     {
         _hasSelection = false;
         _isSelecting = false;
+    }
+
+    /// <summary>
+    /// Paste clipboard text to the terminal as slow keystrokes.
+    /// Sends each character individually with a small delay so the terminal
+    /// can process them (required for interactive prompts like claude /login).
+    /// </summary>
+    private async Task PasteToTerminalAsync()
+    {
+        if (_session == null || _isPasting) return;
+
+        string text;
+        try
+        {
+            text = Clipboard.GetText();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TerminalControl] PasteToTerminalAsync: clipboard read failed: {ex.Message}");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(text)) return;
+
+        // Strip trailing newlines - user can press Enter themselves
+        text = text.TrimEnd('\r', '\n');
+
+        FileLog.Write($"[TerminalControl] PasteToTerminalAsync: pasting {text.Length} chars");
+        _isPasting = true;
+
+        try
+        {
+            foreach (var ch in text)
+            {
+                if (!_isPasting) break; // Cancelled
+
+                var bytes = Encoding.UTF8.GetBytes(new[] { ch });
+                _session.SendInput(bytes);
+                await Task.Delay(15);
+            }
+
+            FileLog.Write($"[TerminalControl] PasteToTerminalAsync: complete ({text.Length} chars sent)");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TerminalControl] PasteToTerminalAsync FAILED: {ex.Message}");
+        }
+        finally
+        {
+            _isPasting = false;
+        }
     }
 
     /// <summary>

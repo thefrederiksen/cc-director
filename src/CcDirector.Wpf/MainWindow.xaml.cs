@@ -713,17 +713,27 @@ public partial class MainWindow : Window
             };
             panel.Children.Add(sevenText);
 
-            if (hasExtra)
+            if (hasExtra && usage.ExtraUsageSpent.HasValue && usage.ExtraUsageLimit.HasValue)
             {
-                var extraText = new System.Windows.Controls.TextBlock
+                var spentText = new System.Windows.Controls.TextBlock
                 {
-                    Text = extraValue,
+                    Text = $"Spent: ${usage.ExtraUsageSpent:F0}",
                     Foreground = new SolidColorBrush(extraColor),
                     FontSize = 10,
                     FontWeight = FontWeights.SemiBold,
                     VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 3, 0),
                 };
-                panel.Children.Add(extraText);
+                panel.Children.Add(spentText);
+
+                var limitText = new System.Windows.Controls.TextBlock
+                {
+                    Text = $"/ Limit: ${usage.ExtraUsageLimit:F0}",
+                    Foreground = new SolidColorBrush(greyColor),
+                    FontSize = 10,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                panel.Children.Add(limitText);
             }
 
             if (!string.IsNullOrEmpty(staleDisplayText))
@@ -777,9 +787,26 @@ public partial class MainWindow : Window
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 8, 0),
             };
             panel.Children.Add(fiveText);
+
+            // Show time remaining until 5h window resets
+            if (!noData && fiveHourReset != "N/A")
+            {
+                var fiveResetText = new System.Windows.Controls.TextBlock
+                {
+                    Text = $" ({fiveHourReset})",
+                    Foreground = new SolidColorBrush(greyColor),
+                    FontSize = 10,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 10, 0),
+                };
+                panel.Children.Add(fiveResetText);
+            }
+            else
+            {
+                fiveText.Margin = new Thickness(0, 0, 10, 0);
+            }
 
             var sevenText = new System.Windows.Controls.TextBlock
             {
@@ -788,21 +815,51 @@ public partial class MainWindow : Window
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 8, 0),
             };
             panel.Children.Add(sevenText);
 
-            if (hasExtra)
+            // Show days remaining + date when 7d window resets
+            if (!noData && usage.SevenDayResetsAt.HasValue)
             {
-                var extraText = new System.Windows.Controls.TextBlock
+                var resetDate = usage.SevenDayResetsAt.Value.ToLocalTime();
+                var daysLeft = (int)Math.Ceiling((usage.SevenDayResetsAt.Value - DateTimeOffset.UtcNow).TotalDays);
+                if (daysLeft < 0) daysLeft = 0;
+                var sevenResetText = new System.Windows.Controls.TextBlock
                 {
-                    Text = extraValue,
+                    Text = $" ({daysLeft}d, {resetDate:MMM d})",
+                    Foreground = new SolidColorBrush(greyColor),
+                    FontSize = 10,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 10, 0),
+                };
+                panel.Children.Add(sevenResetText);
+            }
+            else
+            {
+                sevenText.Margin = new Thickness(0, 0, 10, 0);
+            }
+
+            if (hasExtra && usage.ExtraUsageSpent.HasValue && usage.ExtraUsageLimit.HasValue)
+            {
+                var spentText = new System.Windows.Controls.TextBlock
+                {
+                    Text = $"Spent: ${usage.ExtraUsageSpent:F0}",
                     Foreground = new SolidColorBrush(extraColor),
                     FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
                     VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 4, 0),
                 };
-                panel.Children.Add(extraText);
+                panel.Children.Add(spentText);
+
+                var limitText = new System.Windows.Controls.TextBlock
+                {
+                    Text = $"/ Limit: ${usage.ExtraUsageLimit:F0}",
+                    Foreground = new SolidColorBrush(greyColor),
+                    FontSize = 11,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                panel.Children.Add(limitText);
             }
 
             if (!string.IsNullOrEmpty(staleDisplayText))
