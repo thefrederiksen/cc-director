@@ -18,6 +18,7 @@ tmp_build_output/CcDirector.Core.deps.json
 tmp_build_output/CcDirector.Core.dll
 tmp_build_output/CcDirector.Core.pdb
 .claude/sounds/.current_session
+.claude/settings.local.json
 supabase-credentials.txt
 code-review-log.json
 tmp_build_output/after_click.png

@@ -1,0 +1,22 @@
+namespace CcDirector.Engine;
+
+public sealed class EngineOptions
+{
+    public string DatabasePath { get; set; } = GetDefaultDatabasePath();
+    public string LogDirectory { get; set; } = GetDefaultLogDirectory();
+    public int CheckIntervalSeconds { get; set; } = 60;
+    public int ShutdownTimeoutSeconds { get; set; } = 30;
+    public int RunRetentionDays { get; set; } = 30;
+
+    private static string GetDefaultDatabasePath()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return Path.Combine(localAppData, "cc-myvault", "engine.db");
+    }
+
+    private static string GetDefaultLogDirectory()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return Path.Combine(localAppData, "cc-myvault", "logs");
+    }
+}

@@ -4,6 +4,8 @@ This is **enterprise-level software** requiring robust error handling, comprehen
 
 **Full coding standards:** [docs/CodingStyle.md](docs/CodingStyle.md)
 
+**UI style guide:** [docs/VisualStyle.md](docs/VisualStyle.md) -- All UI changes must comply with this guide.
+
 ---
 
 ## Critical Rules
