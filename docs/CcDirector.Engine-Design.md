@@ -42,7 +42,7 @@ These decisions were made during the design interview and are final:
 | Run history | Auto-purge after 30 days | Keeps DB lean (~2,900 runs/month for 15-min jobs) |
 | Orphaned runs | Mark failed, don't retry | Safe, no duplicate risk for side-effect jobs |
 | Database location | `%LOCALAPPDATA%\cc-myvault\engine.db` | Co-located with vault.db in one data directory |
-| Communications DB | Merged into engine.db | One operational database; communications table lives alongside jobs/runs |
+| Communications DB | Merged into engine.db | One operational database; communications table lives alongside jobs/runs. cc-comm-queue and Communication Manager updated to point at engine.db. |
 | Vault integration | Hybrid approach | engine.db for plumbing, vault.db for knowledge (contacts, interactions, decisions) |
 | Vault writes | Via cc-vault.exe CLI | Respects all Vault logic, FTS5 indexing, validation |
 | Auto-start | At Windows login, minimized to tray | User-level startup shortcut, no admin required |
@@ -82,7 +82,7 @@ These decisions were made during the design interview and are final:
 Data:
   %LOCALAPPDATA%\cc-myvault\
     vault.db      -- Personal knowledge (contacts, tasks, goals, ideas, documents)
-    engine.db     -- Operational (jobs, runs, communications)
+    engine.db     -- Operational (jobs, runs, communications, media)
 ```
 
 ### Project Structure
@@ -442,13 +442,13 @@ Once the Engine is working and validated:
 - Implement 30-day run history auto-purge
 - Unit tests for all of the above
 
-### Phase 2: Communication Dispatcher
+### Phase 2: Communication Dispatcher + Tool Migration
 - Implement `EmailSender` (cc-outlook / cc-gmail shell-out)
 - Implement `LinkedInSender` (cc-linkedin shell-out)
 - Implement `CommunicationDispatcher` (poll communications table, dispatch approved items)
 - Implement account routing config
-- Migrate data from external `communications.db` into `engine.db`
-- Update Communication Manager to write to `engine.db` instead
+- Update dependent tools to point at engine.db (see "Dependent Tools Migration" below)
+- Migrate existing communication records from old `communications.db` if available (nice-to-have)
 - Unit tests
 
 ### Phase 3: Director Integration
@@ -477,6 +477,35 @@ Once the Engine is working and validated:
 
 ---
 
+## Dependent Tools Migration
+
+These external tools currently read from or write to `communications.db` at the old path (`D:\ReposFred\cc-consult\tools\communication_manager\content\`). They must be updated to point at `engine.db` in `%LOCALAPPDATA%\cc-myvault\`.
+
+### 1. cc-comm-queue (WRITER -- queues new communications)
+
+The `/write` skill calls this CLI to add emails and LinkedIn posts to the queue. It's the primary way communications enter the system.
+
+**Files to change:**
+- `D:\ReposFred\cc-tools\src\cc-comm-queue\src\queue_manager.py` line 66: change `self.db_path = queue_path / "communications.db"` to `self.db_path = queue_path / "engine.db"`
+- `D:\ReposFred\cc-tools\src\cc_shared\config.py` line 173: change `CommManagerConfig.queue_path` default from `"D:/ReposFred/cc-consult/tools/communication_manager/content"` to the cc-myvault directory
+
+### 2. Communication Manager WPF App (REVIEWER -- approve/reject queue)
+
+The approval UI where communications are reviewed before sending.
+
+**Files to change:**
+- `D:\ReposFred\cc-consult\tools\communication_manager\src\CommunicationManager\Services\DatabaseService.cs` line 22: change `"communications.db"` to `"engine.db"` and update the content path
+
+### 3. /write Skill (ORCHESTRATOR -- no change needed)
+
+The skill at `~/.claude/skills/write/skill.md` calls `cc-comm-queue add ...` and does not reference the database path directly. As long as cc-comm-queue is updated, the skill works without changes.
+
+### 4. Python Scheduler Dispatcher (REPLACED -- deleted)
+
+The old dispatcher at `D:\ReposFred\cc-director\scheduler\cc_director\` is entirely replaced by the C# Engine. No update needed -- it gets deleted in Phase 5.
+
+---
+
 ## Data Migration
 
 ### Jobs and Runs
@@ -490,14 +519,14 @@ INSERT INTO runs SELECT * FROM old.runs;
 DETACH DATABASE old;
 ```
 
-### Communications
+### Communications (Nice-to-Have)
 
-Migrate from the external `communications.db`:
+Existing records in the old `communications.db` can optionally be migrated. These are historical (already posted/rejected) so losing them is not critical. If the old DB is available:
 
 ```sql
-ATTACH DATABASE 'communications.db' AS comm;
-INSERT INTO communications SELECT * FROM comm.communications;
-INSERT INTO media SELECT * FROM comm.media;
+ATTACH DATABASE 'old_communications.db' AS comm;
+INSERT OR IGNORE INTO communications SELECT * FROM comm.communications;
+INSERT OR IGNORE INTO media SELECT * FROM comm.media;
 DETACH DATABASE comm;
 ```
 

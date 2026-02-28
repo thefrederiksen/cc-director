@@ -1,5 +1,7 @@
+using System.Collections;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 using CcDirector.Core.Memory;
 using Microsoft.Win32.SafeHandles;
 using static CcDirector.Core.ConPty.NativeMethods;
@@ -81,19 +83,32 @@ public sealed class ProcessHost : IDisposable
                 lpAttributeList = attributeList
             };
 
-            if (!CreateProcessW(
-                    null,
-                    commandLine,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    false, // bInheritHandles = false - ConPTY attribute list is the mechanism
-                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                    IntPtr.Zero,
-                    workingDir,
-                    ref startupInfo,
-                    out _processInfo))
+            // Build a Unicode environment block with CLAUDECODE removed so that
+            // Claude Code launched inside the terminal does not see itself as nested.
+            var envBlock = IntPtr.Zero;
+            try
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcess failed.");
+                envBlock = BuildEnvironmentBlock();
+
+                if (!CreateProcessW(
+                        null,
+                        commandLine,
+                        IntPtr.Zero,
+                        IntPtr.Zero,
+                        false, // bInheritHandles = false - ConPTY attribute list is the mechanism
+                        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                        envBlock,
+                        workingDir,
+                        ref startupInfo,
+                        out _processInfo))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcess failed.");
+                }
+            }
+            finally
+            {
+                if (envBlock != IntPtr.Zero)
+                    Marshal.FreeHGlobal(envBlock);
             }
 
             // Close the thread handle immediately - we only need the process handle
@@ -109,6 +124,41 @@ public sealed class ProcessHost : IDisposable
             DeleteProcThreadAttributeList(attributeList);
             Marshal.FreeHGlobal(attributeList);
         }
+    }
+
+    /// <summary>
+    /// Build a Unicode environment block from the current process environment,
+    /// stripping variables that would cause child processes to malfunction
+    /// (e.g. CLAUDECODE which prevents Claude Code from starting).
+    /// The returned IntPtr must be freed with Marshal.FreeHGlobal.
+    /// </summary>
+    private static IntPtr BuildEnvironmentBlock()
+    {
+        var vars = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            var key = entry.Key as string;
+            var value = entry.Value as string;
+            if (key is null || value is null)
+                continue;
+            if (key.Equals("CLAUDECODE", StringComparison.OrdinalIgnoreCase))
+                continue;
+            vars[key] = value;
+        }
+
+        // Format: KEY=VALUE\0KEY=VALUE\0\0  (double-null terminated)
+        var sb = new StringBuilder();
+        foreach (var kvp in vars)
+        {
+            sb.Append(kvp.Key).Append('=').Append(kvp.Value).Append('\0');
+        }
+        sb.Append('\0'); // trailing null to double-terminate
+
+        var block = sb.ToString();
+        var byteCount = block.Length * sizeof(char);
+        var ptr = Marshal.AllocHGlobal(byteCount);
+        Marshal.Copy(block.ToCharArray(), 0, ptr, block.Length);
+        return ptr;
     }
 
     /// <summary>
