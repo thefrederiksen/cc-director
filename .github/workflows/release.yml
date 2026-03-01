@@ -344,24 +344,25 @@ jobs:
 
       - name: Collect release files
         run: |
-          mkdir -p release-files
+          RELEASE_DIR="$(pwd)/release-files"
+          mkdir -p "$RELEASE_DIR"
 
           # Main app
-          cp release-artifacts/cc-director/cc-director.exe release-files/
+          cp release-artifacts/cc-director/cc-director.exe "$RELEASE_DIR/"
 
           # Installer
-          cp release-artifacts/installer/cc-director-setup.exe release-files/
+          cp release-artifacts/installer/cc-director-setup.exe "$RELEASE_DIR/"
 
           # Python tools (individual .exe files)
           if [ -d "release-artifacts/python-tools" ]; then
-            cp release-artifacts/python-tools/*.exe release-files/ 2>/dev/null || true
+            cp release-artifacts/python-tools/*.exe "$RELEASE_DIR/" 2>/dev/null || true
           fi
 
           # .NET tools - zip each tool directory
           for dir in release-artifacts/dotnet-tools/_cc-*; do
             if [ -d "$dir" ]; then
               tool_name=$(basename "$dir" | sed 's/^_//')
-              (cd "$dir" && zip -r "../../release-files/${tool_name}.zip" .)
+              (cd "$dir" && zip -r "$RELEASE_DIR/${tool_name}.zip" .)
             fi
           done
 
@@ -369,13 +370,13 @@ jobs:
           for dir in release-artifacts/node-tools/_cc-*; do
             if [ -d "$dir" ]; then
               tool_name=$(basename "$dir" | sed 's/^_//')
-              (cd "$dir" && zip -r "../../release-files/${tool_name}.zip" .)
+              (cd "$dir" && zip -r "$RELEASE_DIR/${tool_name}.zip" .)
             fi
           done
 
           echo ""
           echo "Release files:"
-          ls -lh release-files/
+          ls -lh "$RELEASE_DIR/"
 
       - name: Extract version from tag
         id: version
