@@ -7,7 +7,7 @@ using CcDirector.Wpf.Helpers;
 
 namespace CcDirector.Wpf.Controls;
 
-public partial class MarkdownViewerControl : UserControl
+public partial class MarkdownViewerControl : UserControl, IFileViewer
 {
     private string? _filePath;
     private string _rawContent = "";

@@ -47,8 +47,8 @@ public partial class GitChangesControl : UserControl
     private string? _repoPath;
     private string? _lastRawOutput;
 
-    /// <summary>Raised when the user requests to view a markdown file in the built-in viewer.</summary>
-    public event Action<string>? ViewMarkdownRequested;
+    /// <summary>Raised when the user requests to view a file in the built-in viewer.</summary>
+    public event Action<string>? ViewFileRequested;
 
     public GitChangesControl()
     {
@@ -305,9 +305,9 @@ public partial class GitChangesControl : UserControl
         {
             if (e.ClickCount == 2 && sender is FrameworkElement fe && fe.DataContext is GitFileLeafNode node)
             {
-                // Open .md files in built-in viewer, everything else in VS Code
-                if (IsMarkdownFile(node.RelativePath))
-                    RaiseViewMarkdown(node.RelativePath);
+                // Open viewable files in built-in viewer, everything else in VS Code
+                if (FileExtensions.IsViewable(node.RelativePath))
+                    RaiseViewFile(node.RelativePath);
                 else
                     OpenFileInVsCode(node.RelativePath);
                 e.Handled = true;
@@ -327,12 +327,12 @@ public partial class GitChangesControl : UserControl
                 menu.PlacementTarget is FrameworkElement fe &&
                 fe.DataContext is GitFileLeafNode node)
             {
-                // Show "View Markdown" only for .md files
+                // Show "View File" only for viewable files
                 foreach (var item in menu.Items)
                 {
-                    if (item is MenuItem mi && mi.Header is string header && header == "View Markdown")
+                    if (item is MenuItem mi && mi.Header is string header && header == "View File")
                     {
-                        mi.Visibility = IsMarkdownFile(node.RelativePath)
+                        mi.Visibility = FileExtensions.IsViewable(node.RelativePath)
                             ? Visibility.Visible
                             : Visibility.Collapsed;
                         break;
@@ -346,16 +346,16 @@ public partial class GitChangesControl : UserControl
         }
     }
 
-    internal void FileNode_ViewMarkdown_Click(object sender, RoutedEventArgs e)
+    internal void FileNode_ViewFile_Click(object sender, RoutedEventArgs e)
     {
         try
         {
             if (GetNodeFromMenuItem(sender) is GitFileLeafNode node)
-                RaiseViewMarkdown(node.RelativePath);
+                RaiseViewFile(node.RelativePath);
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[GitChangesControl] FileNode_ViewMarkdown_Click FAILED: {ex.Message}");
+            FileLog.Write($"[GitChangesControl] FileNode_ViewFile_Click FAILED: {ex.Message}");
         }
     }
 
@@ -488,13 +488,11 @@ public partial class GitChangesControl : UserControl
         }
     }
 
-    private void RaiseViewMarkdown(string relativePath)
+    private void RaiseViewFile(string relativePath)
     {
         if (_repoPath == null || string.IsNullOrEmpty(relativePath)) return;
         var fullPath = Path.Combine(_repoPath, relativePath);
-        FileLog.Write($"[GitChangesControl] RaiseViewMarkdown: {fullPath}");
-        ViewMarkdownRequested?.Invoke(fullPath);
+        FileLog.Write($"[GitChangesControl] RaiseViewFile: {fullPath}");
+        ViewFileRequested?.Invoke(fullPath);
     }
-
-    private static bool IsMarkdownFile(string path) => Helpers.FileExtensions.IsMarkdown(path);
 }

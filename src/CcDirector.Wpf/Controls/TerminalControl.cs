@@ -109,8 +109,8 @@ public class TerminalControl : FrameworkElement
     /// <summary>Raised when scroll position or scrollback changes.</summary>
     public event EventHandler? ScrollChanged;
 
-    /// <summary>Raised when the user requests to view a markdown file from a terminal link.</summary>
-    public event Action<string>? ViewMarkdownRequested;
+    /// <summary>Raised when the user requests to view a file from a terminal link.</summary>
+    public event Action<string>? ViewFileRequested;
 
     /// <summary>Number of lines scrolled up from bottom. 0 = current view.</summary>
     public int ScrollOffset
@@ -1205,12 +1205,12 @@ public class TerminalControl : FrameworkElement
             vscodeItem.Click += (_, _) => OpenInVsCode();
             _linkContextMenu.Items.Add(vscodeItem);
 
-            // Add "View Markdown" for .md files
-            if (IsMarkdownFile(link))
+            // Add "View File" for viewable file types
+            if (FileExtensions.IsViewable(link))
             {
-                var mdItem = new MenuItem { Header = "View Markdown" };
-                mdItem.Click += (_, _) => OpenMarkdownViewer();
-                _linkContextMenu.Items.Insert(0, mdItem);
+                var viewItem = new MenuItem { Header = "View File" };
+                viewItem.Click += (_, _) => OpenFileViewer();
+                _linkContextMenu.Items.Insert(0, viewItem);
                 _linkContextMenu.Items.Insert(1, new Separator());
             }
         }
@@ -1318,18 +1318,16 @@ public class TerminalControl : FrameworkElement
     }
 
     /// <summary>
-    /// Open a markdown file in the built-in viewer.
+    /// Open a file in the built-in viewer.
     /// </summary>
-    private void OpenMarkdownViewer()
+    private void OpenFileViewer()
     {
         if (string.IsNullOrEmpty(_detectedLink)) return;
 
         string path = ResolvePath(_detectedLink);
-        FileLog.Write($"[TerminalControl] OpenMarkdownViewer: {path}");
-        ViewMarkdownRequested?.Invoke(path);
+        FileLog.Write($"[TerminalControl] OpenFileViewer: {path}");
+        ViewFileRequested?.Invoke(path);
     }
-
-    private static bool IsMarkdownFile(string path) => Helpers.FileExtensions.IsMarkdown(path);
 
     /// <summary>
     /// Resolve a detected path to an absolute Windows path.

@@ -796,7 +796,7 @@
                                 VerticalAlignment="Top"
                                 Visibility="Collapsed"
                                 ToolTip="Close all document tabs"
-                                Click="CloseAllMarkdownTabs_Click">
+                                Click="CloseAllDocumentTabs_Click">
                             <Button.Style>
                                 <Style TargetType="Button">
                                     <Style.Triggers>
