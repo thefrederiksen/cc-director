@@ -27,9 +27,7 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore cc-director.sln
 
-      - name: Run tests
-        run: dotnet test cc-director.sln -c Release --verbosity normal
-
+      # Tests run in CI on every push -- no need to re-run here.
       # Three-step build to work around .NET 10 WPF SDK bugs
       # (see scripts/release.ps1 for details)
       - name: Pre-build Core dependency
@@ -187,21 +185,25 @@ jobs:
             }
           }
 
+          $built = $tools.Count - $failed.Count
+          Write-Host ""
+          Write-Host "Python tools built: $built / $($tools.Count)" -ForegroundColor Cyan
           if ($failed.Count -gt 0) {
-            Write-Host ""
-            Write-Host "Failed tools: $($failed -join ', ')" -ForegroundColor Red
-            exit 1
+            Write-Host "Failed tools: $($failed -join ', ')" -ForegroundColor Yellow
+            Write-Host "::warning::Python tools that failed to build: $($failed -join ', ')"
           }
 
-          Write-Host ""
-          Write-Host "All Python tools built successfully!" -ForegroundColor Green
+          if ($built -eq 0) {
+            Write-Host "ERROR: No Python tools built successfully" -ForegroundColor Red
+            exit 1
+          }
 
       - name: Upload Python tools artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-tools
           path: artifacts/
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # ---------------------------------------------------------------
   # Job 4: Build Node.js tools

@@ -10,16 +10,16 @@ block_cipher = None
 # Get paths
 src_path = Path('src')
 cc_shared_path = os.path.abspath('../cc_shared')
-cc-vault_path = os.path.abspath('../cc-vault/src')
+cc_vault_path = os.path.abspath('../cc-vault/src')
 
 a = Analysis(
     ['main.py'],
-    pathex=[str(src_path), cc_shared_path, cc-vault_path],
+    pathex=[str(src_path), cc_shared_path, cc_vault_path],
     binaries=[],
     datas=[
         (cc_shared_path + '/*.py', 'cc_shared'),
         (cc_shared_path + '/providers/*.py', 'cc_shared/providers'),
-        (cc-vault_path + '/*.py', 'cc-vault/src'),
+        (cc_vault_path + '/*.py', 'cc-vault/src'),
     ],
     hiddenimports=[
         'cc_shared.providers',

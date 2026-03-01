@@ -35,15 +35,15 @@ dev = [
 ]
 
 [project.scripts]
-cc-docgen = "cc-docgen.cli:cli"
+cc-docgen = "cc_docgen.cli:cli"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["cc-docgen"]
-package-dir = {"cc-docgen" = "."}
+packages = ["cc_docgen"]
+package-dir = {"cc_docgen" = "."}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
