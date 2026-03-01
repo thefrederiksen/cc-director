@@ -13,6 +13,7 @@ public sealed class DirectorPipeServer : IDirectorServer
 {
     public const string PipeName = "CC_ClaudeDirector";
 
+    private readonly string _pipeName;
     private readonly CancellationTokenSource _cts = new();
     private readonly Action<string>? _log;
     private Task? _acceptLoop;
@@ -21,7 +22,13 @@ public sealed class DirectorPipeServer : IDirectorServer
     public event Action<PipeMessage>? OnMessageReceived;
 
     public DirectorPipeServer(Action<string>? log = null)
+        : this(PipeName, log)
     {
+    }
+
+    internal DirectorPipeServer(string pipeName, Action<string>? log = null)
+    {
+        _pipeName = pipeName;
         _log = log;
     }
 
@@ -38,7 +45,7 @@ public sealed class DirectorPipeServer : IDirectorServer
             try
             {
                 server = new NamedPipeServerStream(
-                    PipeName,
+                    _pipeName,
                     PipeDirection.In,
                     NamedPipeServerStream.MaxAllowedServerInstances,
                     PipeTransmissionMode.Byte,

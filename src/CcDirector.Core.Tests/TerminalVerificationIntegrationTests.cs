@@ -24,7 +24,7 @@ public class TerminalVerificationIntegrationTests
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         // Walk up until we find the .sln file (repo root)
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "cc_director.sln")))
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "cc-director.sln")))
             dir = dir.Parent;
         return dir?.FullName ?? throw new InvalidOperationException("Could not find repo root from test output directory");
     }

@@ -8,11 +8,13 @@ namespace CcDirector.Core.Tests;
 
 public class DirectorPipeServerTests : IDisposable
 {
+    private readonly string _testPipeName;
     private readonly DirectorPipeServer _server;
 
     public DirectorPipeServerTests()
     {
-        _server = new DirectorPipeServer(msg => System.Diagnostics.Debug.WriteLine($"[Test] {msg}"));
+        _testPipeName = $"CC_Test_{Guid.NewGuid():N}";
+        _server = new DirectorPipeServer(_testPipeName, msg => System.Diagnostics.Debug.WriteLine($"[Test] {msg}"));
     }
 
     [Fact]
@@ -35,7 +37,7 @@ public class DirectorPipeServerTests : IDisposable
 
         var json = JsonSerializer.Serialize(msg);
 
-        using (var client = new NamedPipeClientStream(".", DirectorPipeServer.PipeName, PipeDirection.Out))
+        using (var client = new NamedPipeClientStream(".", _testPipeName, PipeDirection.Out))
         {
             await client.ConnectAsync(2000);
             var writer = new StreamWriter(client, Encoding.UTF8);
@@ -78,7 +80,7 @@ public class DirectorPipeServerTests : IDisposable
 
             var json = JsonSerializer.Serialize(msg);
 
-            using (var client = new NamedPipeClientStream(".", DirectorPipeServer.PipeName, PipeDirection.Out))
+            using (var client = new NamedPipeClientStream(".", _testPipeName, PipeDirection.Out))
             {
                 await client.ConnectAsync(2000);
                 var writer = new StreamWriter(client, Encoding.UTF8);
