@@ -1,0 +1,91 @@
+{
+  "url": "https://example.com",
+  "hostname": "example.com",
+  "date": "2026-02-26",
+  "pagesCrawled": 25,
+  "overall": { "score": 62, "grade": "D" },
+  "categories": {
+    "technical-seo": {
+      "name": "Technical SEO",
+      "score": 69,
+      "grade": "D+",
+      "weight": 0.20,
+      "checks": [
+        { "id": "robots-txt", "name": "robots.txt", "status": "PASS", "detail": "robots.txt found and valid", "impact": 4, "effort": 1 },
+        { "id": "xml-sitemap", "name": "XML Sitemap", "status": "FAIL", "detail": "No XML sitemap found at /sitemap.xml", "impact": 4, "effort": 2 },
+        { "id": "canonicals", "name": "Canonical Tags", "status": "WARN", "detail": "3 pages missing canonical tags", "impact": 3, "effort": 2 },
+        { "id": "https", "name": "HTTPS", "status": "PASS", "detail": "HTTPS properly configured", "impact": 5, "effort": 2 },
+        { "id": "redirect-chains", "name": "Redirect Chains", "status": "WARN", "detail": "2 redirect chains found (3+ hops)", "impact": 3, "effort": 2 },
+        { "id": "status-codes", "name": "HTTP Status Codes", "status": "FAIL", "detail": "5 pages returning 404", "impact": 4, "effort": 2 },
+        { "id": "crawl-depth", "name": "Crawl Depth", "status": "PASS", "detail": "All pages within 3 clicks of homepage", "impact": 3, "effort": 3 },
+        { "id": "url-structure", "name": "URL Structure", "status": "PASS", "detail": "URLs are clean and descriptive", "impact": 2, "effort": 3 }
+      ]
+    },
+    "on-page-seo": {
+      "name": "On-Page SEO",
+      "score": 56,
+      "grade": "F",
+      "weight": 0.20,
+      "checks": [
+        { "id": "title-tags", "name": "Title Tags", "status": "WARN", "detail": "8 pages have duplicate title tags", "impact": 4, "effort": 1 },
+        { "id": "meta-descriptions", "name": "Meta Descriptions", "status": "FAIL", "detail": "15 pages missing meta descriptions", "impact": 3, "effort": 1 },
+        { "id": "heading-hierarchy", "name": "Heading Hierarchy", "status": "WARN", "detail": "4 pages have multiple H1 tags", "impact": 3, "effort": 2 },
+        { "id": "image-alt-text", "name": "Image Alt Text", "status": "FAIL", "detail": "32 images missing alt text", "impact": 3, "effort": 1 },
+        { "id": "internal-linking", "name": "Internal Linking", "status": "WARN", "detail": "6 orphan pages detected", "impact": 3, "effort": 2 },
+        { "id": "content-length", "name": "Content Length", "status": "FAIL", "detail": "10 pages under 300 words", "impact": 3, "effort": 3 },
+        { "id": "duplicate-content", "name": "Duplicate Content", "status": "PASS", "detail": "No significant duplicates found", "impact": 3, "effort": 3 },
+        { "id": "open-graph", "name": "Open Graph / Social", "status": "FAIL", "detail": "No Open Graph tags found on any page", "impact": 2, "effort": 1 }
+      ]
+    },
+    "security": {
+      "name": "Security",
+      "score": 50,
+      "grade": "F",
+      "weight": 0.10,
+      "checks": [
+        { "id": "hsts", "name": "HSTS", "status": "FAIL", "detail": "No HSTS header found", "impact": 4, "effort": 1 },
+        { "id": "csp", "name": "Content-Security-Policy", "status": "FAIL", "detail": "No CSP header found", "impact": 4, "effort": 3 },
+        { "id": "x-content-type-options", "name": "X-Content-Type-Options", "status": "PASS", "detail": "nosniff header present", "impact": 3, "effort": 1 },
+        { "id": "x-frame-options", "name": "X-Frame-Options", "status": "PASS", "detail": "DENY header present", "impact": 3, "effort": 1 },
+        { "id": "referrer-policy", "name": "Referrer-Policy", "status": "FAIL", "detail": "No Referrer-Policy header", "impact": 2, "effort": 1 },
+        { "id": "permissions-policy", "name": "Permissions-Policy", "status": "PASS", "detail": "Permissions-Policy configured", "impact": 2, "effort": 1 }
+      ]
+    },
+    "structured-data": {
+      "name": "Structured Data",
+      "score": 42,
+      "grade": "F",
+      "weight": 0.10,
+      "checks": [
+        { "id": "json-ld-present", "name": "JSON-LD Structured Data", "status": "WARN", "detail": "JSON-LD found on homepage only", "impact": 5, "effort": 2 },
+        { "id": "organization-schema", "name": "Organization Schema", "status": "PASS", "detail": "Organization schema on homepage", "impact": 4, "effort": 2 },
+        { "id": "article-schema", "name": "Article/BlogPosting Schema", "status": "FAIL", "detail": "No Article schema on blog posts", "impact": 3, "effort": 2 },
+        { "id": "faq-schema", "name": "FAQPage Schema", "status": "FAIL", "detail": "No FAQ schema found", "impact": 5, "effort": 1 },
+        { "id": "breadcrumb-schema", "name": "BreadcrumbList Schema", "status": "FAIL", "detail": "No breadcrumb markup", "impact": 2, "effort": 1 },
+        { "id": "schema-validity", "name": "Schema Validity", "status": "WARN", "detail": "2 schema validation warnings", "impact": 3, "effort": 2 }
+      ]
+    },
+    "ai-readiness": {
+      "name": "AI Readiness",
+      "score": 64,
+      "grade": "D",
+      "weight": 0.20,
+      "checks": [
+        { "id": "llms-txt", "name": "llms.txt", "status": "FAIL", "detail": "No llms.txt file found", "impact": 4, "effort": 1 },
+        { "id": "ai-crawler-access", "name": "AI Crawler Access", "status": "PASS", "detail": "AI crawlers not blocked", "impact": 5, "effort": 1 },
+        { "id": "content-citability", "name": "Content Citability", "status": "WARN", "detail": "Content lacks clear attributable statements", "impact": 4, "effort": 3 },
+        { "id": "passage-structure", "name": "Passage Structure", "status": "WARN", "detail": "Inconsistent passage structure", "impact": 3, "effort": 3 },
+        { "id": "semantic-html", "name": "Semantic HTML", "status": "PASS", "detail": "Good use of semantic elements", "impact": 3, "effort": 2 },
+        { "id": "entity-clarity", "name": "Entity Clarity", "status": "WARN", "detail": "Brand entity inconsistently defined", "impact": 4, "effort": 2 },
+        { "id": "question-coverage", "name": "Question Coverage", "status": "FAIL", "detail": "No question-based content found", "impact": 4, "effort": 2 }
+      ]
+    }
+  },
+  "quickWins": [
+    { "id": "hsts", "name": "HSTS", "status": "FAIL", "detail": "No HSTS header found", "impact": 4, "effort": 1, "category": "Security", "priority": 4 },
+    { "id": "llms-txt", "name": "llms.txt", "status": "FAIL", "detail": "No llms.txt file found", "impact": 4, "effort": 1, "category": "AI Readiness", "priority": 4 },
+    { "id": "faq-schema", "name": "FAQPage Schema", "status": "FAIL", "detail": "No FAQ schema found", "impact": 5, "effort": 1, "category": "Structured Data", "priority": 5 },
+    { "id": "title-tags", "name": "Title Tags", "status": "WARN", "detail": "8 pages have duplicate title tags", "impact": 4, "effort": 1, "category": "On-Page SEO", "priority": 4 },
+    { "id": "meta-descriptions", "name": "Meta Descriptions", "status": "FAIL", "detail": "15 pages missing meta descriptions", "impact": 3, "effort": 1, "category": "On-Page SEO", "priority": 3 }
+  ]
+}

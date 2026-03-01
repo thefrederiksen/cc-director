@@ -1,0 +1,12 @@
+{
+  "description": "Expected type inference results for sales.csv",
+  "columns": {
+    "Quarter": "TEXT",
+    "Product": "TEXT",
+    "Revenue": "CURRENCY",
+    "Units Sold": "INTEGER",
+    "Growth": "PERCENTAGE",
+    "Date": "DATE"
+  },
+  "row_count": 8
+}

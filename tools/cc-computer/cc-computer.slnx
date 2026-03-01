@@ -1,0 +1,4 @@
+ComputerAgent/ComputerAgent.csproj
+ComputerAgent.Tests/ComputerAgent.Tests.csproj
+ComputerApp/ComputerApp.csproj
+../cc-trisight/TrisightCore/TrisightCore.csproj

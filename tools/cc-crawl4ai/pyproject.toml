@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-crawl4ai"
+version = "0.1.0"
+description = "AI-ready web crawler: crawl pages to clean markdown, batch processing, sessions, LLM extraction"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "CC Director Contributors"}]
+requires-python = ">=3.11"
+keywords = ["crawler", "scraper", "web", "markdown", "llm", "ai", "rag"]
+dependencies = [
+    "crawl4ai>=0.4.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "pyinstaller>=6.0.0"]
+
+[project.scripts]
+cc-crawl4ai = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>reCAPTCHA v2 Test Page</title>
+  <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+</head>
+<body>
+  <h1>reCAPTCHA v2 Test</h1>
+  <p>This page uses the Google test sitekey that always shows and always passes.</p>
+  <form id="test-form">
+    <div class="g-recaptcha" data-sitekey="6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"></div>
+    <br>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="result"></div>
+  <script>
+    document.getElementById('test-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var response = grecaptcha.getResponse();
+      document.getElementById('result').textContent = response ? 'CAPTCHA solved' : 'CAPTCHA not solved';
+    });
+  </script>
+</body>
+</html>

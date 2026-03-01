@@ -1,0 +1,30 @@
+{
+  "name": "cc-websiteaudit",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Website audit tool for SEO, security, structured data, and AI readiness",
+  "bin": {
+    "cc-websiteaudit": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "bundle": "esbuild src/cli.mjs --bundle --platform=node --format=cjs --outfile=build/cli.cjs",
+    "build": "npm run bundle && pkg build/cli.cjs --targets node18-win-x64 --output dist/cc-websiteaudit.exe",
+    "test": "node --test test/**/*.test.mjs"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "commander": "^13.1.0",
+    "puppeteer-core": "^24.37.5",
+    "undici": "^7.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3",
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "targets": [
+      "node18-win-x64"
+    ]
+  }
+}

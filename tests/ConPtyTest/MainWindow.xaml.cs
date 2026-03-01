@@ -13,8 +13,8 @@ public partial class MainWindow : Window
     private readonly ClaudeSession[] _sessions = new ClaudeSession[SessionCount];
     private int _activeSession = 0;
 
-    // Hardcoded working directory
-    private const string WorkingDir = @"D:\ReposFred\cc_director";
+    // Working directory - defaults to repo root
+    private static readonly string WorkingDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 
     // UI elements for each session
     private Border[] _sessionBorders = null!;

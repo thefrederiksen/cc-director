@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc_comm_queue"
+version = "0.1.0"
+description = "CLI tool for adding content to the Communication Manager approval queue"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "CC Director Contributors"}]
+requires-python = ">=3.11"
+keywords = ["communication", "queue", "cli", "social-media", "approval"]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "pyinstaller>=6.0.0"]
+
+[project.scripts]
+cc_comm_queue = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

@@ -1,0 +1,6 @@
+# cc-tools-setup dependencies
+# Note: Uses only stdlib for minimal footprint
+# requests is NOT needed - we use urllib
+
+# Dev dependencies (for building)
+pyinstaller>=6.0.0

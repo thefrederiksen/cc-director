@@ -1,0 +1,5 @@
+{
+  "llm": {
+    "default_provider": "claude_code"
+  }
+}

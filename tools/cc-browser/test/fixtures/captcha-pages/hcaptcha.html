@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>hCaptcha Test Page</title>
+  <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+</head>
+<body>
+  <h1>hCaptcha Test</h1>
+  <p>This page uses the hCaptcha test sitekey that always passes.</p>
+  <form id="test-form">
+    <div class="h-captcha" data-sitekey="10000000-ffff-ffff-ffff-000000000001"></div>
+    <br>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="result"></div>
+  <script>
+    document.getElementById('test-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var response = document.querySelector('[name="h-captcha-response"]');
+      document.getElementById('result').textContent = (response && response.value) ? 'CAPTCHA solved' : 'CAPTCHA not solved';
+    });
+  </script>
+</body>
+</html>

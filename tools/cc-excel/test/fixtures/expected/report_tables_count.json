@@ -1,0 +1,24 @@
+{
+  "description": "Expected table extraction from report-tables.md",
+  "total_tables": 3,
+  "tables": [
+    {
+      "index": 0,
+      "name": "Revenue Summary",
+      "columns": ["Quarter", "Revenue", "Expenses", "Profit", "Margin"],
+      "rows": 4
+    },
+    {
+      "index": 1,
+      "name": "Employee Metrics",
+      "columns": ["Department", "Headcount", "Avg Tenure", "Satisfaction"],
+      "rows": 4
+    },
+    {
+      "index": 2,
+      "name": "Product Performance",
+      "columns": ["Product", "Units", "Revenue", "Return Rate"],
+      "rows": 3
+    }
+  ]
+}

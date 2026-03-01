@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Text CAPTCHA Test Page</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    #captcha-canvas {
+      border: 2px solid #999;
+      margin: 20px 0;
+      display: block;
+    }
+    input { padding: 8px; font-size: 16px; width: 200px; }
+    button { padding: 8px 24px; font-size: 16px; margin-left: 8px; }
+    #result { margin-top: 20px; font-size: 18px; font-weight: bold; }
+    .success { color: #4caf50; }
+    .fail { color: #f44336; }
+  </style>
+</head>
+<body>
+  <h1>Text CAPTCHA Test</h1>
+  <p>Type the text shown in the image below.</p>
+  <canvas id="captcha-canvas" width="300" height="80"></canvas>
+  <div>
+    <input type="text" id="captcha-input" placeholder="Enter the text above" aria-label="CAPTCHA answer">
+    <button id="verify-btn" onclick="verify()">Verify</button>
+  </div>
+  <div id="result"></div>
+
+  <script>
+    // Known answer for testing
+    var captchaText = 'AB7X2';
+
+    // Render distorted text on canvas
+    var canvas = document.getElementById('captcha-canvas');
+    var ctx = canvas.getContext('2d');
+
+    // Background noise
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Random noise lines
+    for (var i = 0; i < 8; i++) {
+      ctx.beginPath();
+      ctx.moveTo(Math.random() * canvas.width, Math.random() * canvas.height);
+      ctx.lineTo(Math.random() * canvas.width, Math.random() * canvas.height);
+      ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Draw each character with slight rotation and offset
+    ctx.textBaseline = 'middle';
+    for (var i = 0; i < captchaText.length; i++) {
+      ctx.save();
+      var x = 40 + i * 50;
+      var y = 40 + (Math.random() - 0.5) * 10;
+      var angle = (Math.random() - 0.5) * 0.4;
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.font = (28 + Math.floor(Math.random() * 8)) + 'px monospace';
+      ctx.fillStyle = 'rgba(0,0,0,' + (0.6 + Math.random() * 0.4) + ')';
+      ctx.fillText(captchaText[i], 0, 0);
+      ctx.restore();
+    }
+
+    // Store answer as data attribute for test verification
+    canvas.setAttribute('data-answer', captchaText);
+
+    function verify() {
+      var input = document.getElementById('captcha-input').value.trim().toUpperCase();
+      var result = document.getElementById('result');
+      if (input === captchaText) {
+        result.textContent = 'CAPTCHA solved';
+        result.className = 'success';
+      } else {
+        result.textContent = 'Failed - wrong text';
+        result.className = 'fail';
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+Expected console output format for cc-websiteaudit
+===================================================
+
+The console reporter produces output in this structure:
+
+Line 1: Empty line
+Line 2: "Website Audit: <url>"
+Line 3: "Date: <date>"
+Line 4: "Pages Crawled: <number>"
+Line 5: Empty line
+Line 6: "Overall Grade: <grade> (<score>/100)"
+Line 7: Separator line (dashes)
+
+Per category:
+"<Category Name>: <grade> (<score>/100)"
+  For each check:
+  "[+] <check name> - <detail>"     (PASS)
+  "[!] <check name> - <detail>"     (WARN)
+  "[X] <check name> - <detail>"     (FAIL)
+  "[-] <check name> - <detail>"     (SKIP)
+
+Quick Wins section:
+"Quick Wins:"
+  "1. <check name> (impact: <n>, effort: <n>)"
+  "2. <check name> (impact: <n>, effort: <n>)"
+  ...

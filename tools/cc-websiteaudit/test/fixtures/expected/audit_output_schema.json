@@ -1,0 +1,52 @@
+{
+  "description": "Expected JSON output schema for cc-websiteaudit",
+  "required_top_level_fields": ["url", "hostname", "date", "pagesCrawled", "overall", "categories"],
+  "overall_schema": {
+    "score": "number (0-100)",
+    "grade": "string (A+ through F)"
+  },
+  "category_schema": {
+    "name": "string",
+    "score": "number (0-100)",
+    "grade": "string (A+ through F)",
+    "weight": "number (0.0-1.0)",
+    "checks": "array of check objects"
+  },
+  "check_schema": {
+    "id": "string (kebab-case identifier)",
+    "name": "string (human-readable name)",
+    "status": "string (PASS|WARN|FAIL|SKIP)",
+    "detail": "string (explanation)",
+    "impact": "number (1-5)",
+    "effort": "number (1-5)"
+  },
+  "expected_categories": [
+    "technical-seo",
+    "on-page-seo",
+    "security",
+    "structured-data",
+    "ai-readiness"
+  ],
+  "expected_checks_per_category": {
+    "technical-seo": ["robots-txt", "xml-sitemap", "canonicals", "https", "redirect-chains", "status-codes", "crawl-depth", "url-structure"],
+    "on-page-seo": ["title-tags", "meta-descriptions", "heading-hierarchy", "image-alt-text", "internal-linking", "content-length", "duplicate-content", "open-graph"],
+    "security": ["hsts", "csp", "x-content-type-options", "x-frame-options", "referrer-policy", "permissions-policy"],
+    "structured-data": ["json-ld", "organization-schema", "article-schema", "faq-schema", "breadcrumb-schema", "schema-validity"],
+    "ai-readiness": ["llms-txt", "ai-crawler-access", "content-citability", "passage-structure", "semantic-html", "entity-clarity", "question-coverage"]
+  },
+  "grade_scale": {
+    "A+": [97, 100],
+    "A": [93, 96],
+    "A-": [90, 92],
+    "B+": [87, 89],
+    "B": [83, 86],
+    "B-": [80, 82],
+    "C+": [77, 79],
+    "C": [73, 76],
+    "C-": [70, 72],
+    "D+": [67, 69],
+    "D": [63, 66],
+    "D-": [60, 62],
+    "F": [0, 59]
+  }
+}

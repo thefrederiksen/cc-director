@@ -1,0 +1,15 @@
+{
+  "_note": "Live demo URLs for opt-in integration testing. Only used when --live flag is passed.",
+  "recaptcha_v2": {
+    "url": "https://www.google.com/recaptcha/api2/demo",
+    "description": "Google reCAPTCHA v2 official demo"
+  },
+  "hcaptcha": {
+    "url": "https://accounts.hcaptcha.com/demo",
+    "description": "hCaptcha official demo page"
+  },
+  "turnstile": {
+    "url": "https://demo.turnstile.workers.dev/",
+    "description": "Cloudflare Turnstile official demo"
+  }
+}

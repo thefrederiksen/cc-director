@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Slider CAPTCHA Test Page</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    .slider-container {
+      position: relative;
+      width: 400px;
+      height: 60px;
+      background: #e0e0e0;
+      border-radius: 4px;
+      margin: 20px 0;
+      user-select: none;
+    }
+    .slider-track {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      background: #4caf50;
+      border-radius: 4px 0 0 4px;
+      width: 0;
+      transition: none;
+    }
+    .slider-handle {
+      position: absolute;
+      top: 5px;
+      left: 0;
+      width: 50px;
+      height: 50px;
+      background: #fff;
+      border: 2px solid #999;
+      border-radius: 4px;
+      cursor: grab;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      color: #666;
+    }
+    .slider-handle:active { cursor: grabbing; }
+    .slider-target {
+      position: absolute;
+      top: 0;
+      right: 50px;
+      width: 4px;
+      height: 100%;
+      background: rgba(0,0,0,0.1);
+    }
+    .slider-label {
+      position: absolute;
+      width: 100%;
+      text-align: center;
+      line-height: 60px;
+      color: #999;
+      pointer-events: none;
+    }
+    #result { margin-top: 20px; font-size: 18px; font-weight: bold; }
+    .success { color: #4caf50; }
+    .fail { color: #f44336; }
+  </style>
+</head>
+<body>
+  <h1>Slider CAPTCHA Test</h1>
+  <p>Drag the handle to the target position (right side).</p>
+  <div class="slider-container" id="slider-container">
+    <div class="slider-track" id="slider-track"></div>
+    <div class="slider-target"></div>
+    <div class="slider-label">Slide to verify -></div>
+    <div class="slider-handle" id="slider-handle">=</div>
+  </div>
+  <div id="result"></div>
+
+  <script>
+    var handle = document.getElementById('slider-handle');
+    var track = document.getElementById('slider-track');
+    var container = document.getElementById('slider-container');
+    var result = document.getElementById('result');
+    var targetX = 300; // Known target position
+    var tolerance = 15;
+    var dragging = false;
+    var startX = 0;
+    var handleLeft = 0;
+
+    handle.addEventListener('mousedown', function(e) {
+      dragging = true;
+      startX = e.clientX;
+      handleLeft = handle.offsetLeft;
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', function(e) {
+      if (!dragging) return;
+      var dx = e.clientX - startX;
+      var newLeft = Math.max(0, Math.min(350, handleLeft + dx));
+      handle.style.left = newLeft + 'px';
+      track.style.width = (newLeft + 25) + 'px';
+    });
+
+    document.addEventListener('mouseup', function(e) {
+      if (!dragging) return;
+      dragging = false;
+      var finalPos = parseInt(handle.style.left) || 0;
+      if (Math.abs(finalPos - targetX) <= tolerance) {
+        result.textContent = 'CAPTCHA solved';
+        result.className = 'success';
+        handle.style.background = '#4caf50';
+        handle.style.color = '#fff';
+        handle.textContent = 'OK';
+      } else {
+        result.textContent = 'Failed - try again (off by ' + Math.abs(finalPos - targetX) + 'px)';
+        result.className = 'fail';
+        handle.style.left = '0px';
+        track.style.width = '0px';
+      }
+    });
+  </script>
+</body>
+</html>

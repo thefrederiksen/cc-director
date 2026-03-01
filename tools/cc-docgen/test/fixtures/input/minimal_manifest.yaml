@@ -1,0 +1,11 @@
+schema_version: "1.0.0"
+
+project:
+  name: "Minimal Project"
+  description: "Bare minimum manifest for testing"
+
+context:
+  system:
+    name: "Minimal System"
+    description: "Simplest valid system"
+    technology: "Python"

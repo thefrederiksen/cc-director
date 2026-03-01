@@ -1,0 +1,45 @@
+schema_version: "1.0.0"
+
+project:
+  name: "Test Project"
+  description: "A sample project for testing cc-docgen"
+  version: "1.0.0"
+
+context:
+  system:
+    name: "Test System"
+    description: "A test system for validating diagram generation"
+    technology: "Python, PostgreSQL"
+
+  actors:
+    - id: developer
+      name: Developer
+      type: person
+      description: "Software developer using the system"
+      relationship:
+        target: test_system
+        description: "Develops and maintains"
+
+    - id: external_api
+      name: External API
+      type: external_system
+      description: "Third-party API service"
+      relationship:
+        target: test_system
+        description: "Provides data to"
+
+containers:
+  - id: web_ui
+    name: "Web UI"
+    technology: "React"
+    description: "User-facing web application"
+
+  - id: api_server
+    name: "API Server"
+    technology: "Python FastAPI"
+    description: "REST API backend"
+
+  - id: database
+    name: "Database"
+    technology: "PostgreSQL"
+    description: "Persistent data storage"

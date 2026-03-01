@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-vault"
+version = "0.1.0"
+description = "Personal Vault CLI: manage contacts, tasks, goals, ideas, documents and more"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "CC Director Contributors"}]
+requires-python = ">=3.11"
+keywords = ["vault", "personal", "cli", "tasks", "goals", "documents", "rag", "vector-search"]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "openai>=1.0.0",
+    "tiktoken>=0.5.0",
+    "jellyfish>=1.0.0",
+    "rapidfuzz>=3.0.0",
+]
+
+[project.optional-dependencies]
+full = [
+    "python-docx>=0.8.0",
+    "pymupdf>=1.23.0",
+]
+dev = ["pytest>=7.0.0", "pyinstaller>=6.0.0"]
+
+[project.scripts]
+cc-vault = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

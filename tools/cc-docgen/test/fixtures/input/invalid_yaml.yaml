@@ -1,0 +1,3 @@
+this is not valid yaml: {{{
+  broken: [unclosed
+  missing: quotes

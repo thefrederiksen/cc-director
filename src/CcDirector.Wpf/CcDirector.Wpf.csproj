@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
+    <ProjectReference Include="..\CcDirector.Engine\CcDirector.Engine.csproj" />
   </ItemGroup>
 
   <ItemGroup>

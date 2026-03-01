@@ -1,5 +1,6 @@
 """Configuration for the communication dispatcher."""
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -8,17 +9,17 @@ from typing import Dict, Optional
 # Email account mapping - defines which tool/account to use for each identifier
 SEND_FROM_ACCOUNTS: Dict[str, Dict[str, Optional[str]]] = {
     "mindzie": {
-        "email": "soren.frederiksen@mindzie.com",
+        "email": "user@company.com",
         "tool": "cc-outlook",
         "tool_account": None,  # cc-outlook uses default
     },
     "personal": {
-        "email": "soren@duksrevo.com",
+        "email": "user@personal.com",
         "tool": "cc-gmail",
         "tool_account": "personal",
     },
     "consulting": {
-        "email": "soren@centerconsulting.com",
+        "email": "user@consulting.com",
         "tool": "cc-gmail",
         "tool_account": "consulting",
     },
@@ -30,7 +31,10 @@ class DispatcherConfig:
     """Configuration for the communication dispatcher."""
 
     # Path to communication manager content folder
-    content_path: Path = Path(r"D:\ReposFred\cc-consult\tools\communication_manager\content")
+    content_path: Path = Path(
+        os.environ.get("LOCALAPPDATA", str(Path.home())),
+        "cc-tools", "data", "comm_manager", "content"
+    )
 
     # Poll interval in seconds (for checking scheduled items)
     poll_interval: float = 30.0

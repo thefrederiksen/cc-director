@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>REST API Documentation</title>
+    <style>
+        /* Base styles for all themes */
+        
+        * {
+            box-sizing: border-box;
+        }
+        
+        html {
+            font-size: 16px;
+            line-height: 1.6;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+        }
+        
+        .markdown-body {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        /* Typography */
+        h1, h2, h3, h4, h5, h6 {
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+            font-weight: 600;
+            line-height: 1.25;
+        }
+        
+        h1 { font-size: 2em; }
+        h2 { font-size: 1.5em; }
+        h3 { font-size: 1.25em; }
+        h4 { font-size: 1em; }
+        h5 { font-size: 0.875em; }
+        h6 { font-size: 0.85em; }
+        
+        p {
+            margin: 1em 0;
+        }
+        
+        /* Links */
+        a {
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+        
+        /* Lists */
+        ul, ol {
+            margin: 1em 0;
+            padding-left: 2em;
+        }
+        
+        li {
+            margin: 0.25em 0;
+        }
+        
+        /* Code */
+        code {
+            font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, "Courier New", monospace;
+            font-size: 0.9em;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+        }
+        
+        pre {
+            margin: 1em 0;
+            padding: 1em;
+            overflow-x: auto;
+            border-radius: 6px;
+        }
+        
+        pre code {
+            padding: 0;
+            background: transparent;
+        }
+        
+        /* Blockquotes */
+        blockquote {
+            margin: 1em 0;
+            padding: 0.5em 1em;
+            border-left: 4px solid;
+        }
+        
+        blockquote p {
+            margin: 0.5em 0;
+        }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1em 0;
+        }
+        
+        th, td {
+            padding: 0.75em;
+            text-align: left;
+            border: 1px solid;
+        }
+        
+        th {
+            font-weight: 600;
+        }
+        
+        /* Horizontal rule */
+        hr {
+            border: none;
+            height: 1px;
+            margin: 2em 0;
+        }
+        
+        /* Images */
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+        
+        /* Task lists */
+        .task-list-item {
+            list-style-type: none;
+        }
+        
+        .task-list-item input[type="checkbox"] {
+            margin-right: 0.5em;
+        }
+        
+        
+        /* Terminal Theme - Technical, monospace */
+        
+        :root {
+            --color-primary: #22c55e;
+            --color-text: #e5e5e5;
+            --color-heading: #22c55e;
+            --color-link: #60a5fa;
+            --color-code-bg: #0a0a0a;
+            --color-code-text: #22c55e;
+            --color-border: #404040;
+            --color-blockquote: #a3a3a3;
+            --color-table-header: #1a1a1a;
+            --color-bg: #0f0f0f;
+        }
+        
+        body {
+            font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+            color: var(--color-text);
+            background: var(--color-bg);
+            font-size: 14px;
+        }
+        
+        .markdown-body {
+            background: var(--color-bg);
+        }
+        
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--color-heading);
+            font-weight: 700;
+        }
+        
+        h1::before { content: "# "; }
+        h2::before { content: "## "; }
+        h3::before { content: "### "; }
+        
+        a {
+            color: var(--color-link);
+        }
+        
+        code {
+            background: var(--color-code-bg);
+            color: var(--color-code-text);
+            border: 1px solid var(--color-border);
+        }
+        
+        pre {
+            background: var(--color-code-bg);
+            border: 1px solid var(--color-border);
+        }
+        
+        pre code {
+            border: none;
+        }
+        
+        blockquote {
+            color: var(--color-blockquote);
+            border-color: var(--color-primary);
+        }
+        
+        th, td {
+            border-color: var(--color-border);
+        }
+        
+        th {
+            background: var(--color-table-header);
+            color: var(--color-primary);
+        }
+        
+        hr {
+            background: var(--color-border);
+        }
+        
+        /* Terminal-style list markers */
+        ul {
+            list-style-type: none;
+        }
+        
+        ul li::before {
+            content: "> ";
+            color: var(--color-primary);
+        }
+        
+    </style>
+</head>
+<body>
+    <article class="markdown-body">
+        <h1>REST API Documentation</h1>
+        <h2>Authentication</h2>
+        <p>All API requests require authentication via Bearer token.</p>
+        <pre><code class="language-bash">curl -H &quot;Authorization: Bearer YOUR_TOKEN&quot; https://api.example.com/v1/users
+        </code></pre>
+        <h2>Endpoints</h2>
+        <h3>GET /users</h3>
+        <p>Retrieve a list of all users.</p>
+        <p><strong>Parameters:</strong></p>
+        <table>
+        <thead>
+        <tr>
+        <th>Parameter</th>
+        <th>Type</th>
+        <th>Required</th>
+        <th>Description</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>limit</td>
+        <td>integer</td>
+        <td>No</td>
+        <td>Max results (default: 20)</td>
+        </tr>
+        <tr>
+        <td>offset</td>
+        <td>integer</td>
+        <td>No</td>
+        <td>Pagination offset</td>
+        </tr>
+        <tr>
+        <td>status</td>
+        <td>string</td>
+        <td>No</td>
+        <td>Filter by status</td>
+        </tr>
+        </tbody>
+        </table>
+        <p><strong>Response:</strong></p>
+        <pre><code class="language-json">{
+          &quot;data&quot;: [
+            {
+              &quot;id&quot;: &quot;usr_123&quot;,
+              &quot;email&quot;: &quot;user@example.com&quot;,
+              &quot;created_at&quot;: &quot;2025-01-15T10:30:00Z&quot;
+            }
+          ],
+          &quot;meta&quot;: {
+            &quot;total&quot;: 150,
+            &quot;limit&quot;: 20,
+            &quot;offset&quot;: 0
+          }
+        }
+        </code></pre>
+        <h3>POST /users</h3>
+        <p>Create a new user account.</p>
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{
+          &quot;email&quot;: &quot;newuser@example.com&quot;,
+          &quot;name&quot;: &quot;John Doe&quot;,
+          &quot;role&quot;: &quot;member&quot;
+        }
+        </code></pre>
+        <p><strong>Response Codes:</strong></p>
+        <table>
+        <thead>
+        <tr>
+        <th>Code</th>
+        <th>Description</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>201</td>
+        <td>User created successfully</td>
+        </tr>
+        <tr>
+        <td>400</td>
+        <td>Invalid request body</td>
+        </tr>
+        <tr>
+        <td>409</td>
+        <td>Email already exists</td>
+        </tr>
+        </tbody>
+        </table>
+        <h2>Rate Limits</h2>
+        <ul>
+        <li><strong>Standard tier:</strong> 100 requests/minute</li>
+        <li><strong>Pro tier:</strong> 1000 requests/minute</li>
+        <li><strong>Enterprise:</strong> Unlimited</li>
+        </ul>
+        <blockquote>
+        <p>Exceeding rate limits returns HTTP 429 with a <code>Retry-After</code> header.</p>
+        </blockquote>
+        <h2>Error Handling</h2>
+        <p>All errors follow this format:</p>
+        <pre><code class="language-json">{
+          &quot;error&quot;: {
+            &quot;code&quot;: &quot;INVALID_TOKEN&quot;,
+            &quot;message&quot;: &quot;The provided token has expired&quot;,
+            &quot;details&quot;: {}
+          }
+        }
+        </code></pre>
+        <hr />
+        <p>Version 2.1.0 | Last updated: January 2025</p>
+        
+    </article>
+</body>
+</html>

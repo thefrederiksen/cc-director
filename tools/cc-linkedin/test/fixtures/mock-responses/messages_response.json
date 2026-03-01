@@ -1,0 +1,16 @@
+[
+  {
+    "thread_id": "thread_001",
+    "participant": "John Doe",
+    "last_message": "Thanks for connecting! Looking forward to chatting.",
+    "timestamp": "2026-02-25T10:30:00Z",
+    "unread": true
+  },
+  {
+    "thread_id": "thread_002",
+    "participant": "Sarah Connor",
+    "last_message": "The meeting is scheduled for next Tuesday.",
+    "timestamp": "2026-02-24T15:45:00Z",
+    "unread": false
+  }
+]

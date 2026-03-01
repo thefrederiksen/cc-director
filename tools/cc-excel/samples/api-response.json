@@ -1,0 +1,18 @@
+{
+  "status": "success",
+  "meta": {
+    "total": 8,
+    "page": 1,
+    "per_page": 50
+  },
+  "data": [
+    {"id": 1, "name": "Alice Johnson", "department": "Engineering", "salary": 95000, "start_date": "2022-03-15", "active": true},
+    {"id": 2, "name": "Bob Smith", "department": "Marketing", "salary": 78000, "start_date": "2021-06-01", "active": true},
+    {"id": 3, "name": "Charlie Brown", "department": "Engineering", "salary": 102000, "start_date": "2020-01-10", "active": true},
+    {"id": 4, "name": "Diana Ross", "department": "Sales", "salary": 88000, "start_date": "2023-09-20", "active": false},
+    {"id": 5, "name": "Eve Wilson", "department": "Engineering", "salary": 115000, "start_date": "2019-11-05", "active": true},
+    {"id": 6, "name": "Frank Lee", "department": "Marketing", "salary": 72000, "start_date": "2024-01-08", "active": true},
+    {"id": 7, "name": "Grace Kim", "department": "Sales", "salary": 91000, "start_date": "2022-07-22", "active": true},
+    {"id": 8, "name": "Henry Chen", "department": "Engineering", "salary": 108000, "start_date": "2021-03-30", "active": true}
+  ]
+}

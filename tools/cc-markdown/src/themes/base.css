@@ -1,0 +1,129 @@
+/* Base styles for all themes */
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 16px;
+    line-height: 1.6;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+}
+
+.markdown-body {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+h1 { font-size: 2em; }
+h2 { font-size: 1.5em; }
+h3 { font-size: 1.25em; }
+h4 { font-size: 1em; }
+h5 { font-size: 0.875em; }
+h6 { font-size: 0.85em; }
+
+p {
+    margin: 1em 0;
+}
+
+/* Links */
+a {
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Lists */
+ul, ol {
+    margin: 1em 0;
+    padding-left: 2em;
+}
+
+li {
+    margin: 0.25em 0;
+}
+
+/* Code */
+code {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, "Courier New", monospace;
+    font-size: 0.9em;
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+}
+
+pre {
+    margin: 1em 0;
+    padding: 1em;
+    overflow-x: auto;
+    border-radius: 6px;
+}
+
+pre code {
+    padding: 0;
+    background: transparent;
+}
+
+/* Blockquotes */
+blockquote {
+    margin: 1em 0;
+    padding: 0.5em 1em;
+    border-left: 4px solid;
+}
+
+blockquote p {
+    margin: 0.5em 0;
+}
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em 0;
+}
+
+th, td {
+    padding: 0.75em;
+    text-align: left;
+    border: 1px solid;
+}
+
+th {
+    font-weight: 600;
+}
+
+/* Horizontal rule */
+hr {
+    border: none;
+    height: 1px;
+    margin: 2em 0;
+}
+
+/* Images */
+img {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Task lists */
+.task-list-item {
+    list-style-type: none;
+}
+
+.task-list-item input[type="checkbox"] {
+    margin-right: 0.5em;
+}

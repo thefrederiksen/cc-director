@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import threading
@@ -32,7 +33,16 @@ _sqlite_dispatcher: Optional[SQLiteDispatcher] = None
 _dispatcher_loop: Optional[asyncio.AbstractEventLoop] = None
 
 # SQLite database path for Communication Manager
-COMM_MANAGER_DB_PATH = Path(r"D:\ReposFred\cc-consult\tools\communication_manager\content\communications.db")
+def _get_comm_manager_db_path() -> Path:
+    """Get Communication Manager database path from config or default location."""
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        default = Path(local) / "cc-tools" / "data" / "comm_manager" / "content" / "communications.db"
+    else:
+        default = Path.home() / "cc_communication_manager" / "content" / "communications.db"
+    return default
+
+COMM_MANAGER_DB_PATH = _get_comm_manager_db_path()
 
 
 def setup_logging(log_dir: Path, log_level: str) -> logging.Logger:

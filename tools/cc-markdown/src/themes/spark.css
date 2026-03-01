@@ -1,0 +1,75 @@
+/* Spark Theme - Creative, colorful, modern */
+
+:root {
+    --color-primary: #8b5cf6;
+    --color-secondary: #ec4899;
+    --color-text: #374151;
+    --color-heading: #1f2937;
+    --color-link: #8b5cf6;
+    --color-code-bg: #faf5ff;
+    --color-code-text: #7c3aed;
+    --color-border: #e5e7eb;
+    --color-blockquote: #6b7280;
+    --color-table-header: linear-gradient(135deg, #8b5cf6, #ec4899);
+}
+
+body {
+    font-family: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: var(--color-text);
+    background: #ffffff;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: var(--color-heading);
+    font-weight: 700;
+}
+
+h1 {
+    background: linear-gradient(135deg, #8b5cf6, #ec4899);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+a {
+    color: var(--color-link);
+    font-weight: 500;
+}
+
+a:hover {
+    color: var(--color-secondary);
+}
+
+code {
+    background: var(--color-code-bg);
+    color: var(--color-code-text);
+    border-radius: 6px;
+}
+
+pre {
+    background: linear-gradient(135deg, #faf5ff, #fdf4ff);
+    border: 1px solid #e9d5ff;
+    border-radius: 12px;
+}
+
+blockquote {
+    color: var(--color-blockquote);
+    border-color: var(--color-primary);
+    border-radius: 0 8px 8px 0;
+    background: #faf5ff;
+}
+
+th, td {
+    border-color: var(--color-border);
+}
+
+th {
+    background: var(--color-table-header);
+    color: #ffffff;
+}
+
+hr {
+    background: linear-gradient(135deg, #8b5cf6, #ec4899);
+    height: 3px;
+    border-radius: 2px;
+}

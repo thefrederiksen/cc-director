@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "windowTitle": "Example Window",
+  "elementCount": 10,
+  "uiaCount": 8,
+  "ocrCount": 3,
+  "pixelCount": 1,
+  "detectionTimeMs": 1250,
+  "annotatedScreenshot": "output/annotated.png",
+  "elements": [
+    {
+      "id": 1,
+      "type": "Button",
+      "name": "OK",
+      "bounds": {"x": 100, "y": 200, "width": 80, "height": 30},
+      "center": [140, 215],
+      "automationId": "btnOK",
+      "isEnabled": true,
+      "interactable": true,
+      "state": null,
+      "source": "Uia",
+      "confidence": 1.0
+    }
+  ]
+}

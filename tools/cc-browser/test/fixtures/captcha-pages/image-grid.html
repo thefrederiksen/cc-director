@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Image Grid CAPTCHA Test Page</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    .captcha-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 120px);
+      gap: 4px;
+      margin: 20px 0;
+    }
+    .captcha-cell {
+      width: 120px;
+      height: 120px;
+      border: 3px solid #ddd;
+      cursor: pointer;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 48px;
+      background: #f5f5f5;
+    }
+    .captcha-cell.selected {
+      border-color: #1976d2;
+      background: #e3f2fd;
+    }
+    .captcha-cell.selected::after {
+      content: 'X';
+      position: absolute;
+      top: 4px;
+      right: 8px;
+      color: #1976d2;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    button { padding: 10px 24px; font-size: 16px; margin-top: 10px; }
+    #result { margin-top: 20px; font-size: 18px; font-weight: bold; }
+    .success { color: #4caf50; }
+    .fail { color: #f44336; }
+  </style>
+</head>
+<body>
+  <h1>Image Grid CAPTCHA Test</h1>
+  <p>Select all cells containing a <strong>star</strong>.</p>
+  <div class="captcha-grid" id="grid"></div>
+  <button id="verify-btn" onclick="verify()">Verify</button>
+  <div id="result"></div>
+
+  <script>
+    // Known correct cells: indices 0, 3, 7 (0-indexed)
+    var correctCells = [0, 3, 7];
+    var icons = ['*', '#', '+', '*', '#', '+', '#', '*', '+'];
+    var labels = ['star', 'hash', 'plus', 'star', 'hash', 'plus', 'hash', 'star', 'plus'];
+    var selected = new Set();
+
+    var grid = document.getElementById('grid');
+    for (var i = 0; i < 9; i++) {
+      var cell = document.createElement('div');
+      cell.className = 'captcha-cell';
+      cell.textContent = icons[i];
+      cell.setAttribute('data-index', i);
+      cell.setAttribute('data-label', labels[i]);
+      cell.setAttribute('aria-label', 'Cell ' + (i + 1) + ': ' + labels[i]);
+      cell.addEventListener('click', function() {
+        var idx = parseInt(this.getAttribute('data-index'));
+        if (selected.has(idx)) {
+          selected.delete(idx);
+          this.classList.remove('selected');
+        } else {
+          selected.add(idx);
+          this.classList.add('selected');
+        }
+      });
+      grid.appendChild(cell);
+    }
+
+    function verify() {
+      var result = document.getElementById('result');
+      var sel = Array.from(selected).sort();
+      var correct = correctCells.slice().sort();
+      if (sel.length === correct.length && sel.every(function(v, i) { return v === correct[i]; })) {
+        result.textContent = 'CAPTCHA solved';
+        result.className = 'success';
+      } else {
+        result.textContent = 'Failed - wrong selection';
+        result.className = 'fail';
+      }
+    }
+  </script>
+</body>
+</html>

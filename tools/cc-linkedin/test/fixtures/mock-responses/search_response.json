@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Alice Johnson",
+    "headline": "Product Manager at StartupXYZ",
+    "location": "New York",
+    "profile_url": "https://www.linkedin.com/in/alicejohnson",
+    "mutual_connections": 3
+  },
+  {
+    "name": "Bob Williams",
+    "headline": "CTO at InnovateCo",
+    "location": "Austin, TX",
+    "profile_url": "https://www.linkedin.com/in/bobwilliams",
+    "mutual_connections": 7
+  }
+]

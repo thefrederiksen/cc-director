@@ -1,0 +1,70 @@
+{
+  "url": "https://perfect-site.com",
+  "hostname": "perfect-site.com",
+  "date": "2026-02-26",
+  "pagesCrawled": 50,
+  "overall": { "score": 97, "grade": "A+" },
+  "categories": {
+    "technical-seo": {
+      "name": "Technical SEO", "score": 100, "grade": "A+", "weight": 0.20,
+      "checks": [
+        { "id": "robots-txt", "name": "robots.txt", "status": "PASS", "detail": "OK", "impact": 4, "effort": 1 },
+        { "id": "xml-sitemap", "name": "XML Sitemap", "status": "PASS", "detail": "OK", "impact": 4, "effort": 2 },
+        { "id": "canonicals", "name": "Canonical Tags", "status": "PASS", "detail": "OK", "impact": 3, "effort": 2 },
+        { "id": "https", "name": "HTTPS", "status": "PASS", "detail": "OK", "impact": 5, "effort": 2 },
+        { "id": "redirect-chains", "name": "Redirect Chains", "status": "PASS", "detail": "OK", "impact": 3, "effort": 2 },
+        { "id": "status-codes", "name": "HTTP Status Codes", "status": "PASS", "detail": "OK", "impact": 4, "effort": 2 },
+        { "id": "crawl-depth", "name": "Crawl Depth", "status": "PASS", "detail": "OK", "impact": 3, "effort": 3 },
+        { "id": "url-structure", "name": "URL Structure", "status": "PASS", "detail": "OK", "impact": 2, "effort": 3 }
+      ]
+    },
+    "on-page-seo": {
+      "name": "On-Page SEO", "score": 100, "grade": "A+", "weight": 0.20,
+      "checks": [
+        { "id": "title-tags", "name": "Title Tags", "status": "PASS", "detail": "OK", "impact": 4, "effort": 1 },
+        { "id": "meta-descriptions", "name": "Meta Descriptions", "status": "PASS", "detail": "OK", "impact": 3, "effort": 1 },
+        { "id": "heading-hierarchy", "name": "Heading Hierarchy", "status": "PASS", "detail": "OK", "impact": 3, "effort": 2 },
+        { "id": "image-alt-text", "name": "Image Alt Text", "status": "PASS", "detail": "OK", "impact": 3, "effort": 1 },
+        { "id": "internal-linking", "name": "Internal Linking", "status": "PASS", "detail": "OK", "impact": 3, "effort": 2 },
+        { "id": "content-length", "name": "Content Length", "status": "PASS", "detail": "OK", "impact": 3, "effort": 3 },
+        { "id": "duplicate-content", "name": "Duplicate Content", "status": "PASS", "detail": "OK", "impact": 3, "effort": 3 },
+        { "id": "open-graph", "name": "Open Graph / Social", "status": "PASS", "detail": "OK", "impact": 2, "effort": 1 }
+      ]
+    },
+    "security": {
+      "name": "Security", "score": 100, "grade": "A+", "weight": 0.10,
+      "checks": [
+        { "id": "hsts", "name": "HSTS", "status": "PASS", "detail": "OK", "impact": 4, "effort": 1 },
+        { "id": "csp", "name": "Content-Security-Policy", "status": "PASS", "detail": "OK", "impact": 4, "effort": 3 },
+        { "id": "x-content-type-options", "name": "X-Content-Type-Options", "status": "PASS", "detail": "OK", "impact": 3, "effort": 1 },
+        { "id": "x-frame-options", "name": "X-Frame-Options", "status": "PASS", "detail": "OK", "impact": 3, "effort": 1 },
+        { "id": "referrer-policy", "name": "Referrer-Policy", "status": "PASS", "detail": "OK", "impact": 2, "effort": 1 },
+        { "id": "permissions-policy", "name": "Permissions-Policy", "status": "PASS", "detail": "OK", "impact": 2, "effort": 1 }
+      ]
+    },
+    "structured-data": {
+      "name": "Structured Data", "score": 100, "grade": "A+", "weight": 0.10,
+      "checks": [
+        { "id": "json-ld-present", "name": "JSON-LD", "status": "PASS", "detail": "OK", "impact": 5, "effort": 2 },
+        { "id": "organization-schema", "name": "Organization Schema", "status": "PASS", "detail": "OK", "impact": 4, "effort": 2 },
+        { "id": "article-schema", "name": "Article Schema", "status": "PASS", "detail": "OK", "impact": 3, "effort": 2 },
+        { "id": "faq-schema", "name": "FAQ Schema", "status": "PASS", "detail": "OK", "impact": 5, "effort": 1 },
+        { "id": "breadcrumb-schema", "name": "Breadcrumb Schema", "status": "PASS", "detail": "OK", "impact": 2, "effort": 1 },
+        { "id": "schema-validity", "name": "Schema Validity", "status": "PASS", "detail": "OK", "impact": 3, "effort": 2 }
+      ]
+    },
+    "ai-readiness": {
+      "name": "AI Readiness", "score": 100, "grade": "A+", "weight": 0.20,
+      "checks": [
+        { "id": "llms-txt", "name": "llms.txt", "status": "PASS", "detail": "OK", "impact": 4, "effort": 1 },
+        { "id": "ai-crawler-access", "name": "AI Crawler Access", "status": "PASS", "detail": "OK", "impact": 5, "effort": 1 },
+        { "id": "content-citability", "name": "Content Citability", "status": "PASS", "detail": "OK", "impact": 4, "effort": 3 },
+        { "id": "passage-structure", "name": "Passage Structure", "status": "PASS", "detail": "OK", "impact": 3, "effort": 3 },
+        { "id": "semantic-html", "name": "Semantic HTML", "status": "PASS", "detail": "OK", "impact": 3, "effort": 2 },
+        { "id": "entity-clarity", "name": "Entity Clarity", "status": "PASS", "detail": "OK", "impact": 4, "effort": 2 },
+        { "id": "question-coverage", "name": "Question Coverage", "status": "PASS", "detail": "OK", "impact": 4, "effort": 2 }
+      ]
+    }
+  },
+  "quickWins": []
+}

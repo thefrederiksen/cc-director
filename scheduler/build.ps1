@@ -1,5 +1,5 @@
 # build.ps1 - Build cc_director_service executable
-# Run from: D:\ReposFred\cc_director\scheduler\
+# Run from the scheduler\ directory
 
 $ErrorActionPreference = "Stop"
 

@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TrisightCore\TrisightCore.csproj" />
+  <Project Path="TrisightCli\TrisightCli.csproj" />
+  <Project Path="TrisightCore.Tests\TrisightCore.Tests.csproj" />
+</Solution>

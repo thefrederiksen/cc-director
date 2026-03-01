@@ -1,0 +1,272 @@
+/**
+ * Markdown formatter -- produces an 8-section report compatible with
+ * cc-markdown --theme boardroom for PDF conversion.
+ */
+
+import { effortToHours } from '../weekly-planner.mjs';
+
+/**
+ * Format the weekly plan as a markdown report.
+ */
+export function formatMarkdown(plan, audit, context) {
+  const lines = [];
+
+  // Title
+  lines.push('# Branding Recommendations: ' + audit.hostname);
+  lines.push('');
+  lines.push('**Generated:** ' + new Date().toISOString().split('T')[0]);
+  lines.push('**Audit Date:** ' + audit.date);
+  lines.push('**Audit Score:** ' + audit.overall.grade + ' (' + audit.overall.score + '/100)');
+  lines.push('**Budget:** ' + plan.budget + ' (' + plan.weeklyCapacity + ' hrs/week)');
+  if (context.industry) lines.push('**Industry:** ' + context.industry);
+  if (context.keywords) lines.push('**Target Keywords:** ' + context.keywords);
+  if (context.competitors) lines.push('**Competitors:** ' + context.competitors);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  // Section 1: Executive Summary
+  lines.push('## 1. Executive Summary');
+  lines.push('');
+  lines.push(buildExecutiveSummary(plan, audit));
+  lines.push('');
+
+  // Section 2: Quick Wins
+  lines.push('## 2. Quick Wins (Weeks 1-2)');
+  lines.push('');
+  const quickWins = plan.phases.find(p => p.name === 'Quick Wins');
+  if (quickWins && quickWins.recCount > 0) {
+    lines.push('These high-impact, low-effort items deliver the fastest results.');
+    lines.push('');
+    lines.push(formatPhaseRecs(quickWins.recs));
+  } else {
+    lines.push('No quick wins identified -- your site is in good shape on the basics.');
+    lines.push('');
+  }
+
+  // Section 3: Structured Data Roadmap
+  lines.push('## 3. Structured Data Roadmap');
+  lines.push('');
+  const sdRecs = getAllRecsByCategory(plan, 'structured-data');
+  if (sdRecs.length > 0) {
+    lines.push('Structured data enables rich results in search and improves how AI systems understand your brand.');
+    lines.push('');
+    lines.push(formatPhaseRecs(sdRecs));
+  } else {
+    lines.push('No structured data recommendations at this time.');
+    lines.push('');
+  }
+
+  // Section 4: Content Strategy
+  lines.push('## 4. Content Strategy');
+  lines.push('');
+  const contentRecs = getAllRecsByCategory(plan, 'content-strategy');
+  const onPageRecs = getAllRecsByCategory(plan, 'on-page-seo');
+  const allContent = [...contentRecs, ...onPageRecs];
+  if (allContent.length > 0) {
+    lines.push('Content improvements that build topical authority and improve search visibility.');
+    lines.push('');
+    lines.push(formatPhaseRecs(allContent));
+  } else {
+    lines.push('No content strategy recommendations at this time.');
+    lines.push('');
+  }
+
+  // Section 5: Social Media Plan
+  lines.push('## 5. Social Media Plan');
+  lines.push('');
+  const socialRecs = getAllRecsByCategory(plan, 'social-presence');
+  if (socialRecs.length > 0) {
+    lines.push('Social media recommendations to strengthen your brand presence and drive referral traffic.');
+    lines.push('');
+    lines.push(formatPhaseRecs(socialRecs));
+  } else {
+    lines.push('No social media recommendations at this time.');
+    lines.push('');
+  }
+
+  // Section 6: Technical SEO Fixes
+  lines.push('## 6. Technical SEO Fixes');
+  lines.push('');
+  const techRecs = getAllRecsByCategory(plan, 'technical-seo');
+  const secRecs = getAllRecsByCategory(plan, 'security');
+  const allTech = [...techRecs, ...secRecs];
+  if (allTech.length > 0) {
+    lines.push('Technical foundation improvements for better crawling, indexing, and security.');
+    lines.push('');
+    lines.push(formatPhaseRecs(allTech));
+  } else {
+    lines.push('No technical SEO fixes needed at this time.');
+    lines.push('');
+  }
+
+  // Section 7: AI Visibility Roadmap
+  lines.push('## 7. AI Visibility Roadmap');
+  lines.push('');
+  const aiRecs = getAllRecsByCategory(plan, 'ai-readiness');
+  if (aiRecs.length > 0) {
+    lines.push('Recommendations to improve how AI systems discover, understand, and cite your content.');
+    lines.push('');
+    lines.push(formatPhaseRecs(aiRecs));
+  } else {
+    lines.push('No AI visibility recommendations at this time.');
+    lines.push('');
+  }
+
+  // Section 8: Backlink Opportunities
+  lines.push('## 8. Backlink Opportunities');
+  lines.push('');
+  const backlinkRecs = getAllRecsByCategory(plan, 'backlinks');
+  if (backlinkRecs.length > 0) {
+    lines.push('Strategies to build authoritative backlinks and increase domain authority.');
+    lines.push('');
+    lines.push(formatPhaseRecs(backlinkRecs));
+  } else {
+    lines.push('No backlink recommendations at this time.');
+    lines.push('');
+  }
+
+  // Weekly Schedule appendix
+  lines.push('---');
+  lines.push('');
+  lines.push('## Appendix: Weekly Schedule');
+  lines.push('');
+  lines.push(formatWeeklySchedule(plan));
+
+  // Footer
+  lines.push('---');
+  lines.push('');
+  lines.push('*Generated by cc-brandingrecommendations v1.0.0*');
+
+  return lines.join('\n');
+}
+
+/**
+ * Build executive summary text.
+ */
+function buildExecutiveSummary(plan, audit) {
+  const lines = [];
+
+  lines.push('Your website **' + audit.hostname + '** scored **' + audit.overall.grade
+    + ' (' + audit.overall.score + '/100)** in the most recent audit.');
+  lines.push('');
+
+  // Category breakdown
+  lines.push('**Category Scores:**');
+  lines.push('');
+  lines.push('| Category | Score | Grade |');
+  lines.push('|----------|-------|-------|');
+  for (const [id, cat] of Object.entries(audit.categories)) {
+    lines.push('| ' + cat.name + ' | ' + cat.score + '/100 | ' + cat.grade + ' |');
+  }
+  lines.push('');
+
+  // Plan overview
+  lines.push('This report contains **' + plan.totalRecs + ' recommendations** requiring an estimated **'
+    + plan.totalHours.toFixed(1) + ' hours** of work, distributed across a 12-week action plan at **'
+    + plan.weeklyCapacity + ' hours/week** (' + plan.budget + ' budget).');
+  lines.push('');
+
+  // Phase summary
+  lines.push('**Action Plan Phases:**');
+  lines.push('');
+  for (const phase of plan.phases) {
+    if (phase.recCount === 0) continue;
+    lines.push('- **' + phase.name + '** (Weeks ' + phase.weeks + '): '
+      + phase.recCount + ' tasks, ' + phase.totalHours.toFixed(1) + 'h estimated');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format recommendations as markdown list with details.
+ */
+function formatPhaseRecs(recs) {
+  const lines = [];
+
+  for (const rec of recs) {
+    const hours = effortToHours(rec.effort);
+    lines.push('### ' + rec.title);
+    lines.push('');
+    lines.push('**Priority:** ' + rec.priority
+      + ' | **Impact:** ' + rec.impact + '/5'
+      + ' | **Effort:** ' + rec.effort + '/5'
+      + ' | **Est. Hours:** ' + hours.toFixed(1) + 'h');
+    lines.push('');
+    lines.push('**What:** ' + rec.what);
+    lines.push('');
+    lines.push('**Why:** ' + rec.why);
+    lines.push('');
+    lines.push('**How:**');
+    lines.push('');
+    for (const step of rec.how) {
+      lines.push('1. ' + step);
+    }
+    lines.push('');
+    if (rec.measures && rec.measures.length > 0) {
+      lines.push('**Success Measures:**');
+      lines.push('');
+      for (const m of rec.measures) {
+        lines.push('- ' + m);
+      }
+      lines.push('');
+    }
+    if (rec.citation) {
+      lines.push('*Source: ' + rec.citation + '*');
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Get all recommendations from a plan that match a category.
+ */
+function getAllRecsByCategory(plan, category) {
+  const recs = [];
+  for (const phase of plan.phases) {
+    for (const rec of phase.recs) {
+      if (rec.category === category) {
+        recs.push(rec);
+      }
+    }
+  }
+  return recs;
+}
+
+/**
+ * Format the weekly schedule as markdown.
+ */
+function formatWeeklySchedule(plan) {
+  const lines = [];
+  const weekNums = Object.keys(plan.weeks).map(Number).sort((a, b) => a - b);
+
+  if (weekNums.length === 0) {
+    lines.push('No scheduled tasks.');
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  for (const weekNum of weekNums) {
+    const week = plan.weeks[weekNum];
+    lines.push('**Week ' + weekNum + '** (' + week.totalHours.toFixed(1) + 'h):');
+    lines.push('');
+    for (const rec of week.recs) {
+      lines.push('- ' + rec.title + ' (' + rec.priority + ', ' + effortToHours(rec.effort).toFixed(1) + 'h)');
+    }
+    lines.push('');
+  }
+
+  if (plan.maintenance.length > 0) {
+    lines.push('**Ongoing Maintenance:**');
+    lines.push('');
+    for (const rec of plan.maintenance) {
+      lines.push('- ' + rec.title);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}

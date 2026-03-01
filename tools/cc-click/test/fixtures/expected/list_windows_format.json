@@ -1,0 +1,8 @@
+[
+  {
+    "title": "Example Window Title",
+    "processName": "example.exe",
+    "processId": 12345,
+    "handle": 1234567890
+  }
+]

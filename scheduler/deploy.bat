@@ -1,6 +1,6 @@
 @echo off
 REM deploy.bat - One command to build and deploy cc_director_service
-REM Run as Administrator from: D:\ReposFred\cc_director\scheduler\
+REM Run as Administrator from the scheduler\ directory
 REM
 REM This script:
 REM   1. Stops the service (if running)

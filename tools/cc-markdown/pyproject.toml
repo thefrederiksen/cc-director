@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-markdown"
+version = "0.1.0"
+description = "Convert Markdown to PDF, Word, and HTML with beautiful themes"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "CC Director Contributors"}]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+keywords = ["markdown", "pdf", "word", "docx", "html", "converter", "cli"]
+dependencies = [
+    "markdown-it-py>=3.0.0",
+    "mdit-py-plugins>=0.4.0",
+    "linkify-it-py>=2.0.0",
+    "pygments>=2.17.0",
+    "python-docx>=1.1.0",
+    "beautifulsoup4>=4.12.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pyinstaller>=6.0.0",
+]
+
+[project.scripts]
+cc-markdown = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

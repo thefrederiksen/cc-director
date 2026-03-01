@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Team Meeting Notes</title>
+    <style>
+        /* Base styles for all themes */
+        
+        * {
+            box-sizing: border-box;
+        }
+        
+        html {
+            font-size: 16px;
+            line-height: 1.6;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+        }
+        
+        .markdown-body {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        /* Typography */
+        h1, h2, h3, h4, h5, h6 {
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+            font-weight: 600;
+            line-height: 1.25;
+        }
+        
+        h1 { font-size: 2em; }
+        h2 { font-size: 1.5em; }
+        h3 { font-size: 1.25em; }
+        h4 { font-size: 1em; }
+        h5 { font-size: 0.875em; }
+        h6 { font-size: 0.85em; }
+        
+        p {
+            margin: 1em 0;
+        }
+        
+        /* Links */
+        a {
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+        
+        /* Lists */
+        ul, ol {
+            margin: 1em 0;
+            padding-left: 2em;
+        }
+        
+        li {
+            margin: 0.25em 0;
+        }
+        
+        /* Code */
+        code {
+            font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, "Courier New", monospace;
+            font-size: 0.9em;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+        }
+        
+        pre {
+            margin: 1em 0;
+            padding: 1em;
+            overflow-x: auto;
+            border-radius: 6px;
+        }
+        
+        pre code {
+            padding: 0;
+            background: transparent;
+        }
+        
+        /* Blockquotes */
+        blockquote {
+            margin: 1em 0;
+            padding: 0.5em 1em;
+            border-left: 4px solid;
+        }
+        
+        blockquote p {
+            margin: 0.5em 0;
+        }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1em 0;
+        }
+        
+        th, td {
+            padding: 0.75em;
+            text-align: left;
+            border: 1px solid;
+        }
+        
+        th {
+            font-weight: 600;
+        }
+        
+        /* Horizontal rule */
+        hr {
+            border: none;
+            height: 1px;
+            margin: 2em 0;
+        }
+        
+        /* Images */
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+        
+        /* Task lists */
+        .task-list-item {
+            list-style-type: none;
+        }
+        
+        .task-list-item input[type="checkbox"] {
+            margin-right: 0.5em;
+        }
+        
+        
+        /* Obsidian Theme - Dark theme with subtle highlights */
+        
+        :root {
+            --color-primary: #a855f7;
+            --color-text: #d4d4d4;
+            --color-heading: #e5e5e5;
+            --color-link: #a855f7;
+            --color-code-bg: #1e1e1e;
+            --color-code-text: #d4d4d4;
+            --color-border: #404040;
+            --color-blockquote: #a3a3a3;
+            --color-table-header: #262626;
+            --color-bg: #0f0f0f;
+        }
+        
+        body {
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: var(--color-text);
+            background: var(--color-bg);
+        }
+        
+        .markdown-body {
+            background: var(--color-bg);
+        }
+        
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--color-heading);
+        }
+        
+        h1 {
+            color: var(--color-primary);
+        }
+        
+        a {
+            color: var(--color-link);
+        }
+        
+        a:hover {
+            color: #c084fc;
+        }
+        
+        code {
+            background: var(--color-code-bg);
+            color: var(--color-code-text);
+            border: 1px solid var(--color-border);
+        }
+        
+        pre {
+            background: var(--color-code-bg);
+            border: 1px solid var(--color-border);
+        }
+        
+        pre code {
+            border: none;
+        }
+        
+        blockquote {
+            color: var(--color-blockquote);
+            border-color: var(--color-primary);
+            background: rgba(168, 85, 247, 0.1);
+        }
+        
+        th, td {
+            border-color: var(--color-border);
+        }
+        
+        th {
+            background: var(--color-table-header);
+            color: var(--color-primary);
+        }
+        
+        hr {
+            background: var(--color-border);
+        }
+        
+        /* Subtle glow on headings */
+        h1, h2 {
+            text-shadow: 0 0 30px rgba(168, 85, 247, 0.3);
+        }
+        
+    </style>
+</head>
+<body>
+    <article class="markdown-body">
+        <h1>Team Meeting Notes</h1>
+        <p><strong>Date:</strong> January 10, 2025
+        <strong>Attendees:</strong> Sarah, Mike, Lisa, Tom</p>
+        <h2>Agenda</h2>
+        <ol>
+        <li>Sprint review</li>
+        <li>Upcoming deadlines</li>
+        <li>Resource allocation</li>
+        </ol>
+        <h2>Discussion</h2>
+        <h3>Sprint Review</h3>
+        <p>The team completed <strong>12 out of 15</strong> planned stories. Three items were moved to the next sprint due to dependency issues.</p>
+        <p>Completed items:</p>
+        <ul>
+        <li>User authentication flow</li>
+        <li>Database migration scripts</li>
+        <li>Performance monitoring setup</li>
+        </ul>
+        <h3>Blockers</h3>
+        <table>
+        <thead>
+        <tr>
+        <th>Issue</th>
+        <th>Owner</th>
+        <th>Status</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+        <td>AWS permissions</td>
+        <td>Mike</td>
+        <td>In progress</td>
+        </tr>
+        <tr>
+        <td>Design review</td>
+        <td>Lisa</td>
+        <td>Waiting</td>
+        </tr>
+        <tr>
+        <td>Test data setup</td>
+        <td>Tom</td>
+        <td>Blocked</td>
+        </tr>
+        </tbody>
+        </table>
+        <h3>Action Items</h3>
+        <ul class="contains-task-list">
+        <li class="task-list-item"><input class="task-list-item-checkbox" checked="checked" disabled="disabled" type="checkbox"> Sarah to schedule design review</li>
+        <li class="task-list-item"><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Mike to submit AWS ticket</li>
+        <li class="task-list-item"><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Lisa to update wireframes</li>
+        <li class="task-list-item"><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Tom to coordinate with QA team</li>
+        </ul>
+        <h2>Decisions Made</h2>
+        <blockquote>
+        <p>We agreed to postpone the mobile release by two weeks to ensure quality.</p>
+        </blockquote>
+        <p>Key points:</p>
+        <ol>
+        <li><strong>Budget approved</strong> for additional testing resources</li>
+        <li><strong>Timeline adjusted</strong> for Q1 deliverables</li>
+        <li><strong>New process</strong> for code reviews implemented</li>
+        </ol>
+        <h2>Next Meeting</h2>
+        <p>Scheduled for <strong>January 17, 2025</strong> at 2:00 PM.</p>
+        <hr />
+        <p><em>Notes taken by Sarah</em></p>
+        
+    </article>
+</body>
+</html>

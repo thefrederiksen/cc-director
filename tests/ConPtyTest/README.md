@@ -33,7 +33,7 @@ dotnet run
 
 Working directory is hardcoded in MainWindow.xaml.cs:
 ```csharp
-private const string WorkingDir = @"D:\ReposFred\cc_director";
+private static readonly string WorkingDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 ```
 
 Edit this to change the directory where claude starts.

@@ -61,7 +61,7 @@ internal static class Program
 
         // 4. Start claude in pipe mode
         const string prompt = "Say hello";
-        var workDir = @"D:\ReposFred\cc_director";
+        var workDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 
         var psi = new ProcessStartInfo
         {

@@ -1,0 +1,2843 @@
+{
+  "theme": "boardroom",
+  "sheets": [
+    {
+      "name": "INPUT",
+      "columns": [
+        30,
+        15,
+        25
+      ],
+      "freeze": [
+        4,
+        0
+      ],
+      "rows": [
+        {
+          "merge": 3,
+          "value": "INPUT VARIABLES",
+          "style": "title"
+        },
+        {
+          "merge": 3,
+          "value": "Change values in yellow cells to update all calculations",
+          "style": "subtitle"
+        },
+        null,
+        {
+          "style": "header",
+          "cells": [
+            "Parameter",
+            "Value",
+            "Unit/Description"
+          ]
+        },
+        {
+          "cells": [
+            "Annual Driving Distance",
+            {
+              "style": "input",
+              "v": 20000
+            },
+            "km/year"
+          ]
+        },
+        {
+          "cells": [
+            "Lease Term",
+            {
+              "style": "input",
+              "v": 36
+            },
+            "months"
+          ]
+        },
+        {
+          "cells": [
+            "Gas Price",
+            {
+              "fmt": "$#,##0.00",
+              "style": "input",
+              "v": 1.5
+            },
+            "$/liter"
+          ]
+        },
+        {
+          "cells": [
+            "Electricity Rate",
+            {
+              "fmt": "$#,##0.00",
+              "style": "input",
+              "v": 0.13
+            },
+            "$/kWh"
+          ]
+        },
+        {
+          "cells": [
+            "Ontario Electricity Rebate",
+            {
+              "fmt": "0%",
+              "style": "input",
+              "v": 0.17
+            },
+            "decimal (0.17 = 17%)"
+          ]
+        },
+        {
+          "cells": [
+            "Tire Swap Cost",
+            {
+              "fmt": "$#,##0.00",
+              "style": "input",
+              "v": 80
+            },
+            "$/visit"
+          ]
+        },
+        {
+          "cells": [
+            "Tire Swaps Per Year",
+            {
+              "style": "input",
+              "v": 2
+            },
+            "times/year"
+          ]
+        },
+        {
+          "cells": [
+            "EV Charger Install (Toronto)",
+            {
+              "fmt": "$#,##0.00",
+              "style": "input",
+              "v": 2500
+            },
+            "$"
+          ]
+        },
+        {
+          "cells": [
+            "EV Charger Install (Cottage)",
+            {
+              "fmt": "$#,##0.00",
+              "style": "input",
+              "v": 700
+            },
+            "$"
+          ]
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "ROUTE DISTANCES",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Toronto to Cottage",
+            {
+              "fmt": "#,##0",
+              "style": "input",
+              "v": 250
+            },
+            "km one-way"
+          ]
+        },
+        {
+          "cells": [
+            "Grey Highlands",
+            {
+              "fmt": "#,##0",
+              "style": "input",
+              "v": 180
+            },
+            "km"
+          ]
+        },
+        {
+          "cells": [
+            "Winter Range Buffer",
+            {
+              "fmt": "#,##0",
+              "style": "input",
+              "v": 50
+            },
+            "km safety margin"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "VEHICLES",
+      "columns": [
+        18,
+        8,
+        14,
+        14,
+        14,
+        20,
+        14,
+        14,
+        14,
+        14,
+        20,
+        16
+      ],
+      "freeze": [
+        3,
+        0
+      ],
+      "rows": [
+        {
+          "merge": 12,
+          "value": "VEHICLE SPECIFICATIONS",
+          "style": "title"
+        },
+        null,
+        {
+          "style": "header",
+          "cells": [
+            "Vehicle",
+            "Type",
+            "Monthly Lease",
+            "Battery (kWh)",
+            "Fuel Tank (L)",
+            "Efficiency",
+            "Annual Service",
+            "Annual Insurance",
+            "Winter Tires",
+            "DC Fast Rate",
+            "Annual Public Charging",
+            "Winter Range (km)"
+          ]
+        },
+        {
+          "cells": [
+            "Cadillac Lyriq",
+            "EV",
+            {
+              "fmt": "$#,##0",
+              "v": 1100
+            },
+            {
+              "fmt": "#,##0",
+              "v": 102
+            },
+            "-",
+            "22.5 kWh/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 200
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1950
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 2000
+            },
+            {
+              "fmt": "$#,##0.00",
+              "v": 0.45
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 300
+            },
+            {
+              "fmt": "#,##0",
+              "v": 380
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Kia EV6",
+            "EV",
+            {
+              "fmt": "$#,##0",
+              "v": 750
+            },
+            {
+              "fmt": "#,##0",
+              "v": 84
+            },
+            "-",
+            "18.5 kWh/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 150
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1625
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1400
+            },
+            {
+              "fmt": "$#,##0.00",
+              "v": 0.45
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 250
+            },
+            {
+              "fmt": "#,##0",
+              "v": 320
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Cadillac XT5",
+            "Gas",
+            {
+              "fmt": "$#,##0",
+              "v": 875
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 83
+            },
+            "11.5 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 600
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1430
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1800
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 600
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Kia Sorento",
+            "Gas",
+            {
+              "fmt": "$#,##0",
+              "v": 650
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 67
+            },
+            "10.2 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 500
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1170
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1200
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 550
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Volvo XC60",
+            "Gas",
+            {
+              "fmt": "$#,##0",
+              "v": 799
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 71
+            },
+            "10.0 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 550
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1500
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1800
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 700
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Lexus RX 350h",
+            "Hybrid",
+            {
+              "fmt": "$#,##0",
+              "v": 850
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 65
+            },
+            "6.7 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 450
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1600
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1600
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 900
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Toyota bZ4X",
+            "EV",
+            {
+              "fmt": "$#,##0",
+              "v": 650
+            },
+            {
+              "fmt": "#,##0",
+              "v": 72.8
+            },
+            "-",
+            "16.2 kWh/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 200
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1550
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1400
+            },
+            {
+              "fmt": "$#,##0.00",
+              "v": 0.45
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 200
+            },
+            {
+              "fmt": "#,##0",
+              "v": 215
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Toyota Crown Signia",
+            "Hybrid",
+            {
+              "fmt": "$#,##0",
+              "v": 900
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 57
+            },
+            "6.4 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 400
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1500
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1500
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 890
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Ford Mustang Mach-E",
+            "EV",
+            {
+              "fmt": "$#,##0",
+              "v": 700
+            },
+            {
+              "fmt": "#,##0",
+              "v": 88
+            },
+            "-",
+            "19.5 kWh/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 200
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1700
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1500
+            },
+            {
+              "fmt": "$#,##0.00",
+              "v": 0.45
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 250
+            },
+            {
+              "fmt": "#,##0",
+              "v": 350
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Lincoln Nautilus",
+            "Gas",
+            {
+              "fmt": "$#,##0",
+              "v": 850
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 76
+            },
+            "7.8 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 550
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1700
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1800
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 950
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Buick Envision",
+            "Gas",
+            {
+              "fmt": "$#,##0",
+              "v": 650
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 57
+            },
+            "9.3 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 550
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1350
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1400
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 610
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Toyota Prius",
+            "Hybrid",
+            {
+              "fmt": "$#,##0",
+              "v": 500
+            },
+            "-",
+            {
+              "fmt": "#,##0",
+              "v": 40
+            },
+            "4.8 L/100km",
+            {
+              "fmt": "$#,##0",
+              "v": 350
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1300
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 1200
+            },
+            "-",
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "#,##0",
+              "v": 665
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "MONTHLY COSTS",
+      "columns": [
+        22,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+      ],
+      "freeze": [
+        5,
+        1
+      ],
+      "rows": [
+        {
+          "merge": 13,
+          "value": "MONTHLY COST COMPARISON",
+          "style": "title"
+        },
+        {
+          "merge": 13,
+          "value": "All values calculated from INPUT and VEHICLES tabs",
+          "style": "subtitle"
+        },
+        null,
+        {
+          "style": "header",
+          "cells": [
+            "Cost Category",
+            "Cadillac Lyriq",
+            "Kia EV6",
+            "Cadillac XT5",
+            "Kia Sorento",
+            "Volvo XC60",
+            "Lexus RX 350h",
+            "Toyota bZ4X",
+            "Toyota Crown Signia",
+            "Ford Mustang Mach-E",
+            "Lincoln Nautilus",
+            "Buick Envision",
+            "Toyota Prius"
+          ]
+        },
+        {
+          "style": "subheader",
+          "cells": [
+            "Vehicle Type",
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            "Gas",
+            "Gas",
+            "Gas",
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            "Gas",
+            "Gas",
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Lease Payment",
+            {
+              "f": "=VEHICLES!C4",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C5",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C6",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C8",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C9",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C10",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C11",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C13",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C14",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!C15",
+              "fmt": "$#,##0.00"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Fuel/Electricity",
+            {
+              "f": "=(INPUT!$B$5/12)*(22.5/100)*INPUT!$B$8*(1-INPUT!$B$9)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(18.5/100)*INPUT!$B$8*(1-INPUT!$B$9)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(11.5/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(10.2/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(10.0/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(6.7/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(16.2/100)*INPUT!$B$8*(1-INPUT!$B$9)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(6.4/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(19.5/100)*INPUT!$B$8*(1-INPUT!$B$9)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(7.8/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(9.3/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=(INPUT!$B$5/12)*(4.8/100)*INPUT!$B$7",
+              "fmt": "$#,##0.00"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Service",
+            {
+              "f": "=VEHICLES!G4/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G5/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G6/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G7/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G8/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G9/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G10/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G12/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G13/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G14/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!G15/12",
+              "fmt": "$#,##0.00"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Insurance",
+            {
+              "f": "=VEHICLES!H4/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H5/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H6/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H7/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H8/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H9/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H10/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H12/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H13/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H14/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=VEHICLES!H15/12",
+              "fmt": "$#,##0.00"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Tire Swaps",
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=INPUT!$B$10*INPUT!$B$11/12",
+              "fmt": "$#,##0.00"
+            }
+          ]
+        },
+        {
+          "style": "total",
+          "cells": [
+            "TOTAL MONTHLY",
+            {
+              "f": "=SUM(B6:B10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(C6:C10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(D6:D10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(E6:E10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(F6:F10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(G6:G10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(H6:H10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(I6:I10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(J6:J10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(K6:K10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(L6:L10)",
+              "fmt": "$#,##0.00"
+            },
+            {
+              "f": "=SUM(M6:M10)",
+              "fmt": "$#,##0.00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3-YEAR TOTAL",
+      "columns": [
+        28,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+      ],
+      "freeze": [
+        5,
+        1
+      ],
+      "rows": [
+        {
+          "merge": 13,
+          "value": "3-YEAR TOTAL COST OF OWNERSHIP",
+          "style": "title"
+        },
+        {
+          "merge": 13,
+          "value": "Based on lease term from INPUT tab",
+          "style": "subtitle"
+        },
+        null,
+        {
+          "style": "header",
+          "cells": [
+            "Cost Category",
+            "Cadillac Lyriq",
+            "Kia EV6",
+            "Cadillac XT5",
+            "Kia Sorento",
+            "Volvo XC60",
+            "Lexus RX 350h",
+            "Toyota bZ4X",
+            "Toyota Crown Signia",
+            "Ford Mustang Mach-E",
+            "Lincoln Nautilus",
+            "Buick Envision",
+            "Toyota Prius"
+          ]
+        },
+        {
+          "style": "subheader",
+          "cells": [
+            "Vehicle Type",
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            "Gas",
+            "Gas",
+            "Gas",
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            "Gas",
+            "Gas",
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Lease Payments",
+            {
+              "f": "='MONTHLY COSTS'!B6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!C6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!D6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!E6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!F6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!G6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!H6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!I6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!J6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!K6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!L6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!M6*INPUT!$B$6",
+              "fmt": "$#,##0"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Fuel/Electricity",
+            {
+              "f": "='MONTHLY COSTS'!B7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!C7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!D7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!E7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!F7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!G7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!H7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!I7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!J7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!K7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!L7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!M7*INPUT!$B$6",
+              "fmt": "$#,##0"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Service",
+            {
+              "f": "='MONTHLY COSTS'!B8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!C8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!D8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!E8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!F8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!G8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!H8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!I8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!J8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!K8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!L8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!M8*INPUT!$B$6",
+              "fmt": "$#,##0"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Insurance",
+            {
+              "f": "='MONTHLY COSTS'!B9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!C9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!D9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!E9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!F9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!G9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!H9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!I9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!J9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!K9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!L9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!M9*INPUT!$B$6",
+              "fmt": "$#,##0"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Tire Swaps",
+            {
+              "f": "='MONTHLY COSTS'!B10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!C10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!D10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!E10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!F10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!G10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!H10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!I10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!J10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!K10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!L10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "='MONTHLY COSTS'!M10*INPUT!$B$6",
+              "fmt": "$#,##0"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Winter Tire Set",
+            {
+              "f": "=VEHICLES!I4",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I5",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I6",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I7",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I8",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I9",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I10",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I11",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I12",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I14",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=VEHICLES!I15",
+              "fmt": "$#,##0"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "EV Charger Install",
+            {
+              "f": "=INPUT!$B$12+INPUT!$B$13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=INPUT!$B$12+INPUT!$B$13",
+              "fmt": "$#,##0"
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "f": "=INPUT!$B$12+INPUT!$B$13",
+              "fmt": "$#,##0"
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "f": "=INPUT!$B$12+INPUT!$B$13",
+              "fmt": "$#,##0"
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            },
+            {
+              "fmt": "$#,##0",
+              "v": 0
+            }
+          ]
+        },
+        {
+          "style": "total",
+          "cells": [
+            "TOTAL 3-YEAR COST",
+            {
+              "f": "=SUM(B6:B12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(C6:C12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(D6:D12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(E6:E12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(F6:F12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(G6:G12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(H6:H12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(I6:I12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(J6:J12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(K6:K12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(L6:L12)",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=SUM(M6:M12)",
+              "fmt": "$#,##0"
+            }
+          ]
+        },
+        null,
+        {
+          "style": "subheader",
+          "cells": [
+            "Savings vs Most Expensive",
+            {
+              "f": "=MAX(B13:M13)-B13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-C13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-D13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-E13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-F13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-G13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-H13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-I13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-J13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-K13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-L13",
+              "fmt": "$#,##0"
+            },
+            {
+              "f": "=MAX(B13:M13)-M13",
+              "fmt": "$#,##0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "RANKINGS",
+      "columns": [
+        25,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+      ],
+      "freeze": [
+        4,
+        1
+      ],
+      "rows": [
+        {
+          "merge": 13,
+          "value": "RANKINGS - SUMMARY SCORECARD",
+          "style": "title"
+        },
+        null,
+        {
+          "style": "header",
+          "cells": [
+            "Category",
+            "Cadillac Lyriq",
+            "Kia EV6",
+            "Cadillac XT5",
+            "Kia Sorento",
+            "Volvo XC60",
+            "Lexus RX 350h",
+            "Toyota bZ4X",
+            "Toyota Crown Signia",
+            "Ford Mustang Mach-E",
+            "Lincoln Nautilus",
+            "Buick Envision",
+            "Toyota Prius"
+          ]
+        },
+        {
+          "style": "subheader",
+          "cells": [
+            "Vehicle Type",
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            "Gas",
+            "Gas",
+            "Gas",
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            },
+            {
+              "style": "best",
+              "v": "EV"
+            },
+            "Gas",
+            "Gas",
+            {
+              "style": "accent",
+              "v": "Hybrid"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Rank: Monthly Cost",
+            {
+              "f": "=RANK('MONTHLY COSTS'!B11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!C11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!D11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!E11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!F11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!G11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!H11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!I11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!J11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!K11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!L11,'MONTHLY COSTS'!B11:M11,1)"
+            },
+            {
+              "f": "=RANK('MONTHLY COSTS'!M11,'MONTHLY COSTS'!B11:M11,1)"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Rank: 3-Year Total",
+            {
+              "f": "=RANK('3-YEAR TOTAL'!B13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!C13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!D13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!E13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!F13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!G13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!H13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!I13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!J13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!K13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!L13,'3-YEAR TOTAL'!B13:M13,1)"
+            },
+            {
+              "f": "=RANK('3-YEAR TOTAL'!M13,'3-YEAR TOTAL'!B13:M13,1)"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Rank: Winter Range",
+            2,
+            4,
+            1,
+            1,
+            1,
+            1,
+            5,
+            1,
+            3,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "cells": [
+            "Rank: Service Cost",
+            {
+              "f": "=RANK(VEHICLES!G4,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G5,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G6,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G7,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G8,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G9,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G10,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G11,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G12,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G13,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G14,VEHICLES!G4:G15,1)"
+            },
+            {
+              "f": "=RANK(VEHICLES!G15,VEHICLES!G4:G15,1)"
+            }
+          ]
+        },
+        null,
+        {
+          "style": "total",
+          "cells": [
+            "AVERAGE RANK",
+            {
+              "f": "=AVERAGE(B5:B8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(C5:C8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(D5:D8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(E5:E8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(F5:F8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(G5:G8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(H5:H8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(I5:I8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(J5:J8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(K5:K8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(L5:L8)",
+              "fmt": "0.00"
+            },
+            {
+              "f": "=AVERAGE(M5:M8)",
+              "fmt": "0.00"
+            }
+          ]
+        },
+        {
+          "style": "total",
+          "cells": [
+            "OVERALL RANK",
+            {
+              "f": "=RANK(B10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(C10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(D10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(E10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(F10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(G10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(H10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(I10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(J10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(K10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(L10,B10:M10,1)"
+            },
+            {
+              "f": "=RANK(M10,B10:M10,1)"
+            }
+          ]
+        },
+        null,
+        null,
+        {
+          "merge": 13,
+          "value": "KEY INSIGHTS",
+          "style": "subheader"
+        },
+        {
+          "merge": 13,
+          "value": "1. Rank 1 = Best (lowest cost, best range, lowest service cost)"
+        },
+        {
+          "merge": 13,
+          "value": "2. Average Rank combines all 4 categories equally"
+        },
+        {
+          "merge": 13,
+          "value": "3. Winter Range: Gas/Hybrid vehicles all rank 1 (no range anxiety)"
+        },
+        {
+          "merge": 13,
+          "value": "4. Color scale: Green = best ranking, Red = worst ranking"
+        },
+        {
+          "merge": 13,
+          "value": "5. Change INPUT values to see how rankings shift"
+        }
+      ],
+      "conditional_formats": [
+        {
+          "range": "B5:M5",
+          "type": "2_color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        },
+        {
+          "range": "B6:M6",
+          "type": "2_color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        },
+        {
+          "range": "B7:M7",
+          "type": "2_color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        },
+        {
+          "range": "B8:M8",
+          "type": "2_color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        },
+        {
+          "range": "B10:M10",
+          "type": "2_color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        },
+        {
+          "range": "B11:M11",
+          "type": "2_color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        }
+      ]
+    },
+    {
+      "name": "ROUTE ANALYSIS",
+      "columns": [
+        55,
+        20,
+        25
+      ],
+      "rows": [
+        {
+          "merge": 3,
+          "value": "EV RANGE ANALYSIS FOR KEY ROUTES",
+          "style": "title"
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "YOUR CHARGING SETUP",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Toronto Home",
+            "Level 2 Charger",
+            {
+              "style": "best",
+              "v": "Full charge overnight"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Parry Sound Cottage",
+            "Level 2 Charger",
+            {
+              "style": "best",
+              "v": "Full charge overnight"
+            }
+          ]
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "GAS/HYBRID VEHICLES",
+          "style": "subheader"
+        },
+        {
+          "merge": 3,
+          "value": "No range considerations - gas stations available on all routes"
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "EV RANGE ANALYSIS",
+          "style": "subheader"
+        },
+        {
+          "style": "header",
+          "cells": [
+            "Route / Vehicle",
+            "Assessment",
+            "Details"
+          ]
+        },
+        {
+          "merge": 3,
+          "value": "Cadillac Lyriq (Winter Range: 380 km)",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Toronto to Cottage (250 km)",
+            {
+              "style": "best",
+              "v": "NO PROBLEM"
+            },
+            "130 km buffer remaining"
+          ]
+        },
+        {
+          "cells": [
+            "Grey Highlands Day Trip (360 km round trip)",
+            "DOABLE - tight",
+            "Only 20 km buffer"
+          ]
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "Kia EV6 (Winter Range: 320 km)",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Toronto to Cottage (250 km)",
+            {
+              "style": "best",
+              "v": "NO PROBLEM"
+            },
+            "70 km buffer remaining"
+          ]
+        },
+        {
+          "cells": [
+            "Grey Highlands Day Trip (360 km round trip)",
+            {
+              "style": "worst",
+              "v": "QUICK CHARGE NEEDED"
+            },
+            "40 km short"
+          ]
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "Toyota bZ4X (Winter Range: 215 km)",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Toronto to Cottage (250 km)",
+            {
+              "style": "worst",
+              "v": "QUICK CHARGE NEEDED"
+            },
+            "35 km short"
+          ]
+        },
+        {
+          "cells": [
+            "Grey Highlands Day Trip (360 km round trip)",
+            {
+              "style": "worst",
+              "v": "QUICK CHARGE NEEDED"
+            },
+            "145 km short"
+          ]
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "Ford Mustang Mach-E (Winter Range: 350 km)",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Toronto to Cottage (250 km)",
+            {
+              "style": "best",
+              "v": "NO PROBLEM"
+            },
+            "100 km buffer remaining"
+          ]
+        },
+        {
+          "cells": [
+            "Grey Highlands Day Trip (360 km round trip)",
+            {
+              "style": "worst",
+              "v": "QUICK CHARGE NEEDED"
+            },
+            "10 km short"
+          ]
+        },
+        null,
+        {
+          "merge": 3,
+          "value": "BOTTOM LINE",
+          "style": "subheader"
+        },
+        {
+          "merge": 3,
+          "value": "Cadillac Lyriq handles all routes comfortably. Kia EV6 good for cottage, needs charge for Grey Highlands."
+        },
+        {
+          "merge": 3,
+          "value": "Toyota bZ4X cannot reach cottage without charging. Ford Mach-E good for cottage, tight for Grey Highlands."
+        }
+      ]
+    },
+    {
+      "name": "INTERVIEW DATA",
+      "columns": [
+        25,
+        60
+      ],
+      "rows": [
+        {
+          "merge": 2,
+          "value": "INTERVIEW DATA - REFERENCE",
+          "style": "title"
+        },
+        null,
+        {
+          "merge": 2,
+          "value": "DRIVER PROFILE",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Primary Driver",
+            "Gitte"
+          ]
+        },
+        {
+          "cells": [
+            "Residence",
+            "Toronto (primary), Parry Sound cottage"
+          ]
+        },
+        {
+          "cells": [
+            "Driving Pattern",
+            "Weekend cottage trips, local city driving"
+          ]
+        },
+        {
+          "cells": [
+            "Annual Mileage Est.",
+            "15,000-20,000 km"
+          ]
+        },
+        {
+          "cells": [
+            "Vehicle Registration",
+            "Parry Sound (lower insurance rates)"
+          ]
+        },
+        null,
+        {
+          "merge": 2,
+          "value": "CHARGING INFRASTRUCTURE",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Toronto Home",
+            "Requires Level 2 charger installation (~$2,500)"
+          ]
+        },
+        {
+          "cells": [
+            "Cottage",
+            "Pre-wired, needs connection (~$700)"
+          ]
+        },
+        {
+          "cells": [
+            "Route Charging",
+            "Gravenhurst Supercharger, various DC fast chargers"
+          ]
+        },
+        {
+          "cells": [
+            "Typical Charge Time",
+            "30-45 min DC fast charge, overnight at home"
+          ]
+        },
+        null,
+        {
+          "merge": 2,
+          "value": "KEY CONSIDERATIONS",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Winter Range",
+            "Must handle 250 km cottage trip in winter conditions"
+          ]
+        },
+        {
+          "cells": [
+            "Insurance",
+            "Registration in Parry Sound reduces rates"
+          ]
+        },
+        {
+          "cells": [
+            "Service Costs",
+            "EVs significantly cheaper to service"
+          ]
+        },
+        {
+          "cells": [
+            "Total Cost",
+            "3-year lease total is primary comparison metric"
+          ]
+        },
+        {
+          "cells": [
+            "Resale/Buyout",
+            "Lease residual values vary significantly"
+          ]
+        },
+        null,
+        {
+          "merge": 2,
+          "value": "DEALERSHIP CONTACTS",
+          "style": "subheader"
+        },
+        {
+          "cells": [
+            "Cadillac",
+            "Local dealer, Lyriq and XT5 available"
+          ]
+        },
+        {
+          "cells": [
+            "Kia",
+            "EV6 and Sorento available"
+          ]
+        },
+        {
+          "cells": [
+            "Volvo",
+            "XC60 B5 AWD available"
+          ]
+        },
+        {
+          "cells": [
+            "Lexus",
+            "RX 350h, Mark (sales), 4.9% lease rate"
+          ]
+        },
+        {
+          "cells": [
+            "Ford",
+            "Mustang Mach-E available"
+          ]
+        },
+        {
+          "cells": [
+            "Lincoln",
+            "Nautilus available"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SAFETY RATINGS",
+      "columns": [
+        25,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18
+      ],
+      "freeze": [
+        3,
+        1
+      ],
+      "rows": [
+        {
+          "merge": 10,
+          "value": "VEHICLE SAFETY RATINGS",
+          "style": "title"
+        },
+        {
+          "merge": 10,
+          "value": "Data from NHTSA (nhtsa.gov) and IIHS (iihs.org)",
+          "style": "subtitle"
+        },
+        null,
+        {
+          "style": "header",
+          "cells": [
+            "Category",
+            "Cadillac Lyriq",
+            "Kia EV6",
+            "Cadillac XT5",
+            "Kia Sorento",
+            "Volvo XC60",
+            "Lexus RX 350h",
+            "Ford Mustang Mach-E",
+            "Lincoln Nautilus",
+            "Buick Envision"
+          ]
+        },
+        {
+          "cells": [
+            "NHTSA Overall (5-Star)",
+            {
+              "style": "best",
+              "v": "5 Stars"
+            },
+            {
+              "style": "best",
+              "v": "5 Stars"
+            },
+            {
+              "style": "best",
+              "v": "5 Stars"
+            },
+            {
+              "style": "best",
+              "v": "5 Stars"
+            },
+            {
+              "style": "best",
+              "v": "5 Stars"
+            },
+            {
+              "style": "best",
+              "v": "5 Stars"
+            },
+            {
+              "style": "best",
+              "v": "5 Stars"
+            },
+            "-",
+            {
+              "style": "best",
+              "v": "5 Stars"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "IIHS Safety Award",
+            {
+              "style": "worst",
+              "v": "None"
+            },
+            {
+              "style": "worst",
+              "v": "None"
+            },
+            "Former TSP+",
+            {
+              "style": "best",
+              "v": "Top Safety Pick"
+            },
+            {
+              "style": "best",
+              "v": "Top Safety Pick"
+            },
+            "Lost TSP 2025",
+            {
+              "style": "best",
+              "v": "Top Safety Pick"
+            },
+            "Partial Testing",
+            {
+              "style": "worst",
+              "v": "None"
+            }
+          ]
+        },
+        {
+          "cells": [
+            "Notable",
+            "Poor headlights",
+            "Marginal moderate overlap",
+            "Marginal headlights",
+            "Marginal moderate overlap",
+            "All Good IIHS ratings",
+            "Best reliability",
+            "All Good IIHS, most reliable EV",
+            "MotorTrend 2025 SUV of Year",
+            "Acceptable headlights"
+          ]
+        },
+        null,
+        {
+          "merge": 10,
+          "value": "COLOR LEGEND",
+          "style": "subheader"
+        },
+        {
+          "merge": 10,
+          "value": "Green = Top rating or award  |  Red = No award or poor rating"
+        },
+        null,
+        {
+          "merge": 10,
+          "value": "NOTE: Toyota bZ4X, Crown Signia, and Prius not included in safety summary"
+        }
+      ]
+    },
+    {
+      "name": "OTHER MODELS",
+      "columns": [
+        30,
+        22,
+        35,
+        50
+      ],
+      "freeze": [
+        4,
+        0
+      ],
+      "rows": [
+        {
+          "merge": 4,
+          "value": "OTHER MODELS RESEARCHED",
+          "style": "title"
+        },
+        {
+          "merge": 4,
+          "value": "Models evaluated during the vehicle selection process",
+          "style": "subtitle"
+        },
+        null,
+        {
+          "merge": 4,
+          "value": "MODELS NOT ADDED TO COMPARISON",
+          "style": "subheader"
+        },
+        {
+          "style": "header",
+          "cells": [
+            "Vehicle",
+            "Type",
+            "Why Researched",
+            "Why Not Included"
+          ]
+        },
+        {
+          "cells": [
+            "Toyota RAV4 AWD",
+            "Gas",
+            "Popular SUV",
+            "Less refined than shortlisted options"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Hyundai Ioniq 5 AWD",
+            "EV",
+            "Award-winning EV",
+            "Higher insurance, supply constraints"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Hyundai Santa Fe AWD",
+            "Gas",
+            "Practical SUV",
+            "Less premium feel"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Volvo EX40",
+            "EV",
+            "Premium compact EV",
+            "Small for needs, limited range"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Genesis GV60 AWD",
+            "EV",
+            "Luxury compact EV",
+            "Too small, limited dealer network"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Genesis Electrified GV70",
+            "EV",
+            "Luxury EV SUV",
+            "Very expensive lease"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "BMW iX xDrive50",
+            "EV",
+            "Premium EV",
+            "Very expensive, over budget"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Mercedes EQE SUV AWD",
+            "EV",
+            "Premium EV",
+            "Very expensive, over budget"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Audi Q8 e-tron",
+            "EV",
+            "Premium EV",
+            "Expensive, older platform"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Chevrolet Equinox EV AWD",
+            "EV",
+            "Budget EV",
+            "Too new, unproven reliability"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Nissan Ariya e-4ORCE",
+            "EV",
+            "Mid-range EV",
+            "Supply issues, slow charging"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "VW ID.4 AWD",
+            "EV",
+            "Mid-range EV",
+            "Software issues, slow charging"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Polestar 3",
+            "EV",
+            "Premium EV",
+            "Not yet available in Canada"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Rivian R1S",
+            "EV",
+            "Adventure EV",
+            "Very expensive, limited service"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Subaru Solterra AWD",
+            "EV",
+            "Budget EV",
+            "Same platform as bZ4X, limited range"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Jeep Grand Cherokee 4xe",
+            "PHEV",
+            "Plug-in hybrid",
+            "Reliability concerns"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Acura MDX AWD",
+            "Gas",
+            "Premium SUV",
+            "Higher fuel consumption"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Mazda CX-90 PHEV",
+            "PHEV",
+            "Plug-in hybrid",
+            "Complex drivetrain, mixed reviews"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Honda CR-V Hybrid AWD",
+            "Hybrid",
+            "Efficient hybrid",
+            "Less premium, smaller"
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            "Subaru Outback AWD",
+            "Gas",
+            "Reliable wagon",
+            "Lower premium feel"
+          ],
+          "height": 30
+        },
+        null,
+        {
+          "merge": 4,
+          "value": "MODELS ADDED TO COMPARISON",
+          "style": "subheader"
+        },
+        {
+          "style": "header",
+          "cells": [
+            "Vehicle",
+            "Type",
+            "Why Researched",
+            "Why Added"
+          ]
+        },
+        {
+          "cells": [
+            {
+              "style": "best",
+              "v": "Volvo XC60 B5 AWD"
+            },
+            "Gas",
+            "Premium SUV",
+            {
+              "style": "best",
+              "v": "Top Safety Pick, best gas reliability"
+            }
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            {
+              "style": "best",
+              "v": "Lexus RX 350h AWD"
+            },
+            "Hybrid",
+            "Premium hybrid",
+            {
+              "style": "best",
+              "v": "Best overall reliability"
+            }
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            {
+              "style": "best",
+              "v": "Ford Mustang Mach-E AWD"
+            },
+            "EV",
+            "Mid-range EV",
+            {
+              "style": "best",
+              "v": "Most reliable EV (Consumer Reports)"
+            }
+          ],
+          "height": 30
+        },
+        {
+          "cells": [
+            {
+              "style": "best",
+              "v": "Lincoln Nautilus Hybrid"
+            },
+            "Gas",
+            "Premium SUV",
+            {
+              "style": "best",
+              "v": "MotorTrend 2025 SUV of Year"
+            }
+          ],
+          "height": 30
+        },
+        null,
+        {
+          "merge": 4,
+          "value": "RESEARCH SUMMARY",
+          "style": "subheader"
+        },
+        {
+          "merge": 4,
+          "value": "Total vehicles researched: 25+ models across EV, Hybrid, and Gas categories"
+        },
+        {
+          "merge": 4,
+          "value": "Final shortlist: 12 vehicles selected for detailed comparison"
+        },
+        {
+          "merge": 4,
+          "value": "Key finding: Hybrid and efficient gas vehicles often beat EVs on total cost"
+        }
+      ]
+    }
+  ]
+}

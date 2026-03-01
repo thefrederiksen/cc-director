@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cloudflare Turnstile Test Page</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
+<body>
+  <h1>Turnstile Test</h1>
+  <p>This page uses the Cloudflare Turnstile test sitekey that always challenges.</p>
+  <form id="test-form">
+    <div class="cf-turnstile" data-sitekey="2x00000000000000000000AB"></div>
+    <br>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="result"></div>
+  <script>
+    document.getElementById('test-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var response = document.querySelector('[name="cf-turnstile-response"]');
+      document.getElementById('result').textContent = (response && response.value) ? 'CAPTCHA solved' : 'CAPTCHA not solved';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "cc-browser",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Fast browser automation daemon for Claude Code",
+  "main": "src/daemon.mjs",
+  "bin": {
+    "cc-browser": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/daemon.mjs",
+    "dev": "node --watch src/daemon.mjs",
+    "deploy": "node deploy.mjs",
+    "test": "node --test test/**/*.test.mjs",
+    "test:unit": "node --test test/unit/**/*.test.mjs",
+    "test:captcha": "node --test test/captcha/**/*.test.mjs",
+    "test:integration": "node --test test/integration/**/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.52.0"
+  },
+  "devDependencies": {}
+}

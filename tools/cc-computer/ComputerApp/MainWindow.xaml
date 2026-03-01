@@ -1,0 +1,279 @@
+<Window x:Class="CCComputer.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:CCComputer.App"
+        mc:Ignorable="d"
+        Title="CC Computer"
+        Height="600"
+        Width="900"
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1E1E">
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <TextBlock Grid.Row="0"
+                   Text="What would you like me to do?"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   Foreground="#E0E0E0"
+                   Margin="0,0,0,8"/>
+
+        <!-- Input Area -->
+        <Grid Grid.Row="1" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBox Grid.Column="0"
+                     x:Name="InputTextBox"
+                     Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+                     FontSize="14"
+                     Padding="12,10"
+                     Background="#2D2D2D"
+                     Foreground="#E0E0E0"
+                     BorderBrush="#3D3D3D"
+                     BorderThickness="1"
+                     VerticalContentAlignment="Center">
+                <TextBox.InputBindings>
+                    <KeyBinding Key="Enter" Command="{Binding SendCommand}"/>
+                </TextBox.InputBindings>
+            </TextBox>
+
+            <Button Grid.Column="1"
+                    Content="Send"
+                    Command="{Binding SendCommand}"
+                    Width="80"
+                    Margin="8,0,0,0"
+                    FontSize="14"
+                    FontWeight="SemiBold"
+                    Background="#0078D4"
+                    Foreground="White"
+                    BorderThickness="0"
+                    Cursor="Hand">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="4"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#1084D8"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Background" Value="#4D4D4D"/>
+                                <Setter Property="Foreground" Value="#808080"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+        </Grid>
+
+        <!-- Test Buttons (Phase 2 - Manual Testing) -->
+        <Border Grid.Row="2"
+                Background="#2D2D2D"
+                BorderBrush="#3D3D3D"
+                BorderThickness="1"
+                CornerRadius="4"
+                Margin="0,0,0,16"
+                Padding="8">
+            <StackPanel>
+                <TextBlock Text="Manual Tool Testing (Phase 2)"
+                           FontSize="11"
+                           Foreground="#808080"
+                           Margin="0,0,0,8"/>
+                <WrapPanel>
+                    <Button Content="List Windows"
+                            Command="{Binding TestListWindowsCommand}"
+                            Margin="0,0,8,4"
+                            Padding="8,4"
+                            Background="#3D3D3D"
+                            Foreground="#E0E0E0"
+                            BorderThickness="0"/>
+                    <Button Content="Screenshot"
+                            Command="{Binding TestScreenshotCommand}"
+                            Margin="0,0,8,4"
+                            Padding="8,4"
+                            Background="#3D3D3D"
+                            Foreground="#E0E0E0"
+                            BorderThickness="0"/>
+                    <Button Content="Launch Notepad"
+                            Command="{Binding TestLaunchNotepadCommand}"
+                            Margin="0,0,8,4"
+                            Padding="8,4"
+                            Background="#3D3D3D"
+                            Foreground="#E0E0E0"
+                            BorderThickness="0"/>
+                    <Button Content="List Elements (Notepad)"
+                            Command="{Binding TestListElementsCommand}"
+                            Margin="0,0,8,4"
+                            Padding="8,4"
+                            Background="#3D3D3D"
+                            Foreground="#E0E0E0"
+                            BorderThickness="0"/>
+                    <Button Content="Click File Menu"
+                            Command="{Binding TestClickCommand}"
+                            Margin="0,0,8,4"
+                            Padding="8,4"
+                            Background="#3D3D3D"
+                            Foreground="#E0E0E0"
+                            BorderThickness="0"/>
+                    <Button Content="Type Hello"
+                            Command="{Binding TestTypeCommand}"
+                            Margin="0,0,8,4"
+                            Padding="8,4"
+                            Background="#3D3D3D"
+                            Foreground="#E0E0E0"
+                            BorderThickness="0"/>
+                </WrapPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Activity Log -->
+        <Border Grid.Row="3"
+                Background="#252526"
+                BorderBrush="#3D3D3D"
+                BorderThickness="1"
+                CornerRadius="4">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0"
+                           Text="Agent Activity"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="#808080"
+                           Margin="12,8,12,4"/>
+
+                <ListBox Grid.Row="1"
+                         x:Name="LogListBox"
+                         ItemsSource="{Binding LogEntries}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         Padding="8,0,8,8">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Padding" Value="4,2"/>
+                            <Setter Property="Margin" Value="0"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Setter Property="BorderThickness" Value="0"/>
+                            <Setter Property="Focusable" Value="False"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <ContentPresenter Margin="{TemplateBinding Padding}"/>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="70"/>
+                                    <ColumnDefinition Width="70"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Column="0"
+                                           Text="{Binding TimestampFormatted}"
+                                           Foreground="#606060"
+                                           FontFamily="Consolas"
+                                           FontSize="12"/>
+
+                                <Border Grid.Column="1"
+                                        Background="{Binding CategoryColor}"
+                                        CornerRadius="2"
+                                        Padding="4,1"
+                                        Margin="0,0,8,0"
+                                        HorizontalAlignment="Left">
+                                    <TextBlock Text="{Binding Category}"
+                                               Foreground="White"
+                                               FontFamily="Consolas"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"/>
+                                </Border>
+
+                                <TextBlock Grid.Column="2"
+                                           Text="{Binding Message}"
+                                           Foreground="#D4D4D4"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+
+        <!-- STOP Button -->
+        <Button Grid.Row="4"
+                Content="STOP"
+                Command="{Binding StopCommand}"
+                Height="60"
+                Margin="0,16,0,0"
+                FontSize="24"
+                FontWeight="Bold"
+                Foreground="White"
+                Cursor="Hand">
+            <Button.Style>
+                <Style TargetType="Button">
+                    <Setter Property="Background" Value="#C42B1C"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="Button">
+                                <Border Background="{TemplateBinding Background}"
+                                        CornerRadius="6"
+                                        BorderBrush="#A52A2A"
+                                        BorderThickness="2">
+                                    <ContentPresenter HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"/>
+                                </Border>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                    <Style.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#D83B2B"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter Property="Background" Value="#A52A2A"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Background" Value="#4D4D4D"/>
+                            <Setter Property="Foreground" Value="#808080"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </Button.Style>
+        </Button>
+    </Grid>
+</Window>

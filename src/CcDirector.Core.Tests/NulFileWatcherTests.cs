@@ -96,9 +96,8 @@ public class NulFileWatcherTests : IDisposable
         // Known locations where nul files commonly appear
         var knownPaths = new[]
         {
-            @"D:\ReposFred\cc_director\nul",
-            @"D:\ReposFred\cc_computer\nul",
-            @"C:\ReposFred\cc_director\nul",
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "nul"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "nul"),
         };
 
         string? foundPath = null;

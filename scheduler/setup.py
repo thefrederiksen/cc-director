@@ -4,7 +4,7 @@ setup(
     name="cc_director",
     version="0.1.0",
     description="Cross-platform job scheduler with cron-style scheduling",
-    author="Soren Frederiksen",
+    author="CC Director Contributors",
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[

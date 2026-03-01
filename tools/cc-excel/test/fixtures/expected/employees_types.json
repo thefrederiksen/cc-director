@@ -1,0 +1,12 @@
+{
+  "description": "Expected type inference results for employees.json (using --json-path data)",
+  "columns": {
+    "id": "INTEGER",
+    "name": "TEXT",
+    "department": "TEXT",
+    "salary": "INTEGER",
+    "start_date": "DATE",
+    "active": "BOOLEAN"
+  },
+  "row_count": 5
+}

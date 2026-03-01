@@ -7,6 +7,7 @@ using CcDirector.Core.Hooks;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
+using CcDirector.Engine;
 using CcDirector.Wpf.Controls;
 using static CcDirector.Core.Utilities.FileLog;
 
@@ -29,6 +30,7 @@ public partial class App : Application
     public BackupCleaner BackupCleaner { get; private set; } = null!; // Initialized in OnStartup
     public ClaudeAccountStore ClaudeAccountStore { get; private set; } = null!; // Initialized in OnStartup
     public ClaudeUsageService ClaudeUsageService { get; private set; } = null!; // Initialized in OnStartup
+    public EngineHost? EngineHost { get; private set; }
 
     /// <summary>
     /// When true, sessions are not loaded or saved, and no exit dialog is shown.
@@ -129,6 +131,9 @@ public partial class App : Application
         ClaudeUsageService = new ClaudeUsageService(ClaudeAccountStore);
         ClaudeUsageService.Start();
         log("Claude usage service started");
+
+        // Start Engine (communication dispatcher + scheduler)
+        StartEngine(log);
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -154,6 +159,24 @@ public partial class App : Application
                     FileLog.Write($"[App] KillAllSessionsAsync FAILED: {ex.Message}");
                     ForceKillRemainingProcesses();
                 }
+            }
+
+            if (EngineHost != null)
+            {
+                try
+                {
+                    // OnExit is synchronous (WPF framework) -- .Wait() is required here
+                    var engineStopTask = EngineHost.StopAsync();
+                    if (!engineStopTask.Wait(TimeSpan.FromSeconds(5)))
+                    {
+                        FileLog.Write("[App] Engine stop timed out after 5 seconds");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[App] Engine stop error: {ex.Message}");
+                }
+                EngineHost.Dispose();
             }
 
             ClaudeUsageService?.Dispose();
@@ -223,6 +246,41 @@ public partial class App : Application
         catch (Exception ex)
         {
             log($"Failed to install hooks: {ex.Message}");
+        }
+    }
+
+    private void StartEngine(Action<string> log)
+    {
+        try
+        {
+            var engineOptions = new EngineOptions();
+
+            // Load engine config from appsettings.json
+            var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+            if (File.Exists(configPath))
+            {
+                var json = File.ReadAllText(configPath);
+                using var doc = JsonDocument.Parse(json);
+
+                if (doc.RootElement.TryGetProperty("Engine", out var engineSection))
+                {
+                    if (engineSection.TryGetProperty("CommunicationsDbPath", out var dbPath))
+                        engineOptions.CommunicationsDbPath = dbPath.GetString();
+                    if (engineSection.TryGetProperty("CcOutlookPath", out var outlookPath))
+                        engineOptions.CcOutlookPath = outlookPath.GetString() ?? engineOptions.CcOutlookPath;
+                    if (engineSection.TryGetProperty("DispatcherPollIntervalSeconds", out var poll))
+                        engineOptions.DispatcherPollIntervalSeconds = poll.GetInt32();
+                }
+            }
+
+            EngineHost = new EngineHost(engineOptions);
+            EngineHost.OnEvent += e => log($"[Engine] {e.Type}: {e.Message}");
+            EngineHost.Start();
+            log("Engine started");
+        }
+        catch (Exception ex)
+        {
+            log($"Engine failed to start: {ex.Message}");
         }
     }
 

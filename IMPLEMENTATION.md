@@ -13,7 +13,7 @@ Claude Code Director is a WPF desktop application that manages multiple `claude.
 ## 2. Project Structure
 
 ```
-D:\ReposFred\cc_director\
+cc-director\
 +-- cc_director.sln
 +-- src/
 |   +-- CcDirector.Core/                    Core logic, no UI dependency

@@ -1,4 +1,5 @@
 using CcDirector.Core.Utilities;
+using CcDirector.Engine.Dispatcher;
 using CcDirector.Engine.Events;
 using CcDirector.Engine.Scheduling;
 using CcDirector.Engine.Storage;
@@ -10,6 +11,7 @@ public sealed class EngineHost : IDisposable
     private readonly EngineOptions _options;
     private EngineDatabase? _db;
     private Scheduler? _scheduler;
+    private CommunicationDispatcher? _dispatcher;
     private DateTime _startedAt;
 
     public bool IsRunning { get; private set; }
@@ -35,6 +37,27 @@ public sealed class EngineHost : IDisposable
         };
 
         _scheduler.Start();
+
+        // Start communication dispatcher if configured
+        if (!string.IsNullOrEmpty(_options.CommunicationsDbPath))
+        {
+            FileLog.Write($"[EngineHost] Starting communication dispatcher: db={_options.CommunicationsDbPath}");
+            _dispatcher = new CommunicationDispatcher(
+                _options.CommunicationsDbPath,
+                _options.CcOutlookPath,
+                _options.DispatcherPollIntervalSeconds);
+            _dispatcher.OnEvent += e =>
+            {
+                try { OnEvent?.Invoke(e); }
+                catch (Exception ex) { FileLog.Write($"[EngineHost] Event handler error: {ex.Message}"); }
+            };
+            _dispatcher.Start();
+        }
+        else
+        {
+            FileLog.Write("[EngineHost] Communication dispatcher not configured (no CommunicationsDbPath)");
+        }
+
         _startedAt = DateTime.UtcNow;
         IsRunning = true;
 
@@ -46,6 +69,8 @@ public sealed class EngineHost : IDisposable
     {
         FileLog.Write("[EngineHost] Stopping engine");
         RaiseEvent(new EngineEvent(EngineEventType.EngineStopping, Message: "Engine stopping"));
+
+        _dispatcher?.Stop();
 
         if (_scheduler != null)
             await _scheduler.StopAsync(_options.ShutdownTimeoutSeconds);
@@ -104,6 +129,7 @@ public sealed class EngineHost : IDisposable
 
     public void Dispose()
     {
+        _dispatcher?.Dispose();
         _scheduler?.Dispose();
     }
 }

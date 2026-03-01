@@ -1,0 +1,16 @@
+{
+  "name": "cc-brandingrecommendations",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Branding recommendations engine - reads cc-websiteaudit JSON and produces prioritized action plans",
+  "bin": {
+    "cc-brandingrecommendations": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node --test test/**/*.test.mjs"
+  },
+  "dependencies": {
+    "commander": "^13.1.0"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "cpu": {
+    "model": "STRING",
+    "physical_cores": "INT > 0",
+    "logical_cores": "INT > 0",
+    "usage_percent": "FLOAT 0-100"
+  },
+  "ram": {
+    "total_gb": "FLOAT > 0",
+    "used_gb": "FLOAT >= 0",
+    "available_gb": "FLOAT >= 0",
+    "percent": "FLOAT 0-100"
+  },
+  "gpu": "LIST (may be empty if no NVIDIA GPU)",
+  "disk": [
+    {
+      "device": "STRING",
+      "mountpoint": "STRING",
+      "fstype": "STRING",
+      "total_gb": "FLOAT > 0",
+      "used_gb": "FLOAT >= 0",
+      "free_gb": "FLOAT >= 0",
+      "percent": "FLOAT 0-100"
+    }
+  ],
+  "os": {
+    "system": "STRING (Windows/Linux/Darwin)",
+    "release": "STRING",
+    "version": "STRING",
+    "architecture": "STRING",
+    "hostname": "STRING"
+  },
+  "network": "LIST of {interface, ipv4, ipv6}",
+  "battery": "DICT or null"
+}

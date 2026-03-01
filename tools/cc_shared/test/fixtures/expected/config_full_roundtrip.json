@@ -1,0 +1,40 @@
+{
+  "llm": {
+    "default_provider": "openai",
+    "providers": {
+      "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "default_model": "gpt-4o-mini",
+        "vision_model": "gpt-4o"
+      },
+      "claude_code": {
+        "enabled": true
+      }
+    }
+  },
+  "photos": {
+    "database_path": "~/.cc-tools/photos.db",
+    "sources": [
+      {
+        "path": "D:/Photos/Family",
+        "category": "private",
+        "label": "Family",
+        "priority": 1
+      },
+      {
+        "path": "D:/Photos/Work",
+        "category": "work",
+        "label": "Work",
+        "priority": 5
+      }
+    ]
+  },
+  "vault": {
+    "vault_path": "D:/Vault"
+  },
+  "comm_manager": {
+    "queue_path": "content",
+    "default_persona": "personal",
+    "default_created_by": "claude_code"
+  }
+}

@@ -1,0 +1,5 @@
+markdown-it-py>=3.0.0
+mdit-py-plugins>=0.4.0
+python-pptx>=1.0.0
+typer>=0.9.0
+rich>=13.0.0

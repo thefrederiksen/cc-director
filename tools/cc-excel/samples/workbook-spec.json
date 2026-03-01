@@ -1,0 +1,97 @@
+{
+  "theme": "boardroom",
+  "named_ranges": {
+    "annual_km": "INPUT!$B$5",
+    "gas_price": "INPUT!$B$6",
+    "elec_rate": "INPUT!$B$7"
+  },
+  "sheets": [
+    {
+      "name": "INPUT",
+      "columns": [30, 15, 25],
+      "freeze": [4, 0],
+      "rows": [
+        {"merge": 3, "value": "VEHICLE COMPARISON - INPUT VARIABLES", "style": "title"},
+        {"merge": 3, "value": "Change the yellow cells to update all calculations", "style": "subtitle"},
+        null,
+        {"style": "header", "cells": ["Parameter", "Value", "Unit"]},
+        {"cells": ["Annual Driving Distance", {"v": 20000, "fmt": "#,##0", "style": "input"}, "km/year"]},
+        {"cells": ["Gas Price", {"v": 1.50, "fmt": "$#,##0.00", "style": "input"}, "$/liter"]},
+        {"cells": ["Electricity Rate", {"v": 0.12, "fmt": "$#,##0.00", "style": "input"}, "$/kWh"]}
+      ]
+    },
+    {
+      "name": "COSTS",
+      "columns": [22, 15, 15, 15],
+      "freeze": [1, 1],
+      "rows": [
+        {"style": "header", "cells": ["Cost Item", "SUV (Gas)", "Sedan (Gas)", "EV"]},
+        {"cells": [
+          "Fuel / Energy (monthly)",
+          {"f": "=(INPUT!$B$5/12)*(12.5/100)*INPUT!$B$6", "fmt": "$#,##0.00"},
+          {"f": "=(INPUT!$B$5/12)*(8.0/100)*INPUT!$B$6", "fmt": "$#,##0.00"},
+          {"f": "=(INPUT!$B$5/12)*(18/100)*INPUT!$B$7", "fmt": "$#,##0.00"}
+        ]},
+        {"cells": ["Lease Payment", 1100, 750, 875]},
+        {"cells": ["Insurance", 250, 180, 200]},
+        {"cells": ["Maintenance", 150, 100, 50]},
+        null,
+        {"style": "total", "cells": [
+          "MONTHLY TOTAL",
+          {"f": "=SUM(B2:B5)", "fmt": "$#,##0.00"},
+          {"f": "=SUM(C2:C5)", "fmt": "$#,##0.00"},
+          {"f": "=SUM(D2:D5)", "fmt": "$#,##0.00"}
+        ]},
+        {"style": "total", "cells": [
+          "ANNUAL TOTAL",
+          {"f": "=B7*12", "fmt": "$#,##0.00"},
+          {"f": "=C7*12", "fmt": "$#,##0.00"},
+          {"f": "=D7*12", "fmt": "$#,##0.00"}
+        ]}
+      ],
+      "conditional_formats": [
+        {
+          "range": "B7:D7",
+          "type": "color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        }
+      ]
+    },
+    {
+      "name": "SUMMARY",
+      "columns": [25, 15, 15, 15],
+      "rows": [
+        {"merge": 4, "value": "Vehicle Comparison Summary", "style": "title"},
+        null,
+        {"style": "header", "cells": ["Metric", "SUV (Gas)", "Sedan (Gas)", "EV"]},
+        {"cells": [
+          "Monthly Cost",
+          {"f": "=COSTS!B7", "fmt": "$#,##0.00"},
+          {"f": "=COSTS!C7", "fmt": "$#,##0.00"},
+          {"f": "=COSTS!D7", "fmt": "$#,##0.00"}
+        ]},
+        {"cells": [
+          "Annual Cost",
+          {"f": "=COSTS!B8", "fmt": "$#,##0.00"},
+          {"f": "=COSTS!C8", "fmt": "$#,##0.00"},
+          {"f": "=COSTS!D8", "fmt": "$#,##0.00"}
+        ]},
+        {"cells": [
+          "5-Year Cost",
+          {"f": "=COSTS!B8*5", "fmt": "$#,##0.00"},
+          {"f": "=COSTS!C8*5", "fmt": "$#,##0.00"},
+          {"f": "=COSTS!D8*5", "fmt": "$#,##0.00"}
+        ]}
+      ],
+      "conditional_formats": [
+        {
+          "range": "B4:D6",
+          "type": "color_scale",
+          "min_color": "#63BE7B",
+          "max_color": "#F8696B"
+        }
+      ]
+    }
+  ]
+}
