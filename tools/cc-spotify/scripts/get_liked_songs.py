@@ -70,7 +70,8 @@ def collect_visible(client, all_tracks):
             all_tracks[key] = t
 
 
-client = BrowserClient(workspace="chrome-personal")
+workspace = sys.argv[1] if len(sys.argv) > 1 else "chrome-personal"
+client = BrowserClient(workspace=workspace)
 all_tracks = {}
 
 # Scroll to top
