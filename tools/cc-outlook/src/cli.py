@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List
 
@@ -927,6 +927,33 @@ def profile() -> None:
 
 
 # =============================================================================
+# Calendar Helpers
+# =============================================================================
+
+def _print_event(event: dict) -> None:
+    """Print a single calendar event in standard format."""
+    console.print(f"  [bold]{event.get('subject', '(No subject)')}[/bold]")
+    console.print(f"    ID: [dim]{event.get('id', '')[:40]}...[/dim]")
+    console.print(f"    Start: {event.get('start', '')}")
+    console.print(f"    End: {event.get('end', '')}")
+    if event.get('location'):
+        console.print(f"    Location: {event.get('location')}")
+    if event.get('organizer'):
+        console.print(f"    Organizer: {event.get('organizer')}")
+    if event.get('is_online_meeting'):
+        join_url = event.get('join_url', '')
+        if join_url:
+            console.print(f"    [blue]Teams Meeting:[/blue] {join_url}")
+    if event.get('attendees'):
+        att_list = event['attendees']
+        att_display = ', '.join([a.get('email', a) if isinstance(a, dict) else a for a in att_list[:3]])
+        console.print(f"    Attendees: {att_display}{'...' if len(att_list) > 3 else ''}")
+    if event.get('my_response'):
+        console.print(f"    My Response: {event.get('my_response')}")
+    console.print()
+
+
+# =============================================================================
 # Calendar Commands
 # =============================================================================
 
@@ -963,40 +990,55 @@ def calendar_list() -> None:
 
 @calendar_app.command("events")
 def calendar_events(
-    days: int = typer.Option(7, "-d", "--days", help="Days ahead to show"),
+    days: int = typer.Option(7, "-d", "--days", help="Number of days to show"),
+    start_date: str = typer.Option(None, "--start", "-s", help="Start date (YYYY-MM-DD). Default: today"),
+    end_date: str = typer.Option(None, "--end", "-e", help="End date (YYYY-MM-DD). Default: start + days"),
     calendar_name: str = typer.Option(None, "-c", "--calendar", help="Specific calendar name"),
 ):
-    """View upcoming calendar events."""
+    """View calendar events for any date range."""
     client = get_client()
 
+    # Parse start/end dates
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            console.print("[red]Error:[/red] Invalid start date format. Use YYYY-MM-DD.")
+            raise typer.Exit(1)
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        except ValueError:
+            console.print("[red]Error:[/red] Invalid end date format. Use YYYY-MM-DD.")
+            raise typer.Exit(1)
+
     try:
-        events = client.get_events(days_ahead=days, calendar_name=calendar_name)
+        events = client.get_events(
+            days_ahead=days,
+            calendar_name=calendar_name,
+            start_date=start_dt,
+            end_date=end_dt,
+        )
 
         if not events:
-            console.print(f"[yellow]No events in the next {days} days[/yellow]")
+            if start_dt or end_dt:
+                console.print("[yellow]No events found in the specified date range[/yellow]")
+            else:
+                console.print(f"[yellow]No events in the next {days} days[/yellow]")
             return
 
         acct = resolve_account(_current_account)
-        console.print(f"\n[cyan]Upcoming Events ({acct})[/cyan]\n")
+        if start_dt or end_dt:
+            range_start = start_date or "today"
+            range_end = end_date or f"{range_start} + {days} days"
+            console.print(f"\n[cyan]Events ({acct}) - {range_start} to {range_end}[/cyan]\n")
+        else:
+            console.print(f"\n[cyan]Upcoming Events ({acct})[/cyan]\n")
 
         for event in events:
-            console.print(f"  [bold]{event.get('subject', '(No subject)')}[/bold]")
-            console.print(f"    ID: [dim]{event.get('id', '')[:40]}...[/dim]")
-            console.print(f"    Start: {event.get('start', '')}")
-            console.print(f"    End: {event.get('end', '')}")
-            if event.get('location'):
-                console.print(f"    Location: {event.get('location')}")
-            if event.get('is_online_meeting'):
-                join_url = event.get('join_url', '')
-                if join_url:
-                    console.print(f"    [blue]Teams Meeting:[/blue] {join_url}")
-            if event.get('attendees'):
-                att_list = event['attendees']
-                att_display = ', '.join([a.get('email', a) if isinstance(a, dict) else a for a in att_list[:3]])
-                console.print(f"    Attendees: {att_display}{'...' if len(att_list) > 3 else ''}")
-            if event.get('my_response'):
-                console.print(f"    My Response: {event.get('my_response')}")
-            console.print()
+            _print_event(event)
 
     except ValueError as e:
         logger.error(f"Error getting events: {e}")
@@ -1227,6 +1269,252 @@ def calendar_update(
 
     except ValueError as e:
         logger.error(f"Error updating event: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except (ConnectionError, OSError) as e:
+        logger.error(f"Network error: {e}")
+        console.print(f"[red]Error:[/red] Network error: {e}")
+        raise typer.Exit(1)
+
+
+@calendar_app.command("today")
+def calendar_today(
+    calendar_name: str = typer.Option(None, "-c", "--calendar", help="Specific calendar name"),
+):
+    """Show today's agenda."""
+    client = get_client()
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow = today + timedelta(days=1)
+
+    try:
+        events = client.get_events(
+            start_date=today,
+            end_date=tomorrow,
+            calendar_name=calendar_name,
+        )
+
+        acct = resolve_account(_current_account)
+        date_str = today.strftime("%A, %B %d, %Y")
+        console.print(f"\n[cyan]Today's Agenda ({acct}) - {date_str}[/cyan]\n")
+
+        if not events:
+            console.print("  [yellow]No events today[/yellow]")
+            return
+
+        for event in events:
+            _print_event(event)
+
+    except ValueError as e:
+        logger.error(f"Error getting today's events: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except (ConnectionError, OSError) as e:
+        logger.error(f"Network error: {e}")
+        console.print(f"[red]Error:[/red] Network error: {e}")
+        raise typer.Exit(1)
+
+
+@calendar_app.command("week")
+def calendar_week(
+    calendar_name: str = typer.Option(None, "-c", "--calendar", help="Specific calendar name"),
+):
+    """Show this week's events (Monday through Sunday)."""
+    client = get_client()
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = today - timedelta(days=today.weekday())
+    sunday_end = monday + timedelta(days=7)
+
+    try:
+        events = client.get_events(
+            start_date=monday,
+            end_date=sunday_end,
+            calendar_name=calendar_name,
+        )
+
+        acct = resolve_account(_current_account)
+        mon_str = monday.strftime("%b %d")
+        sun_str = (sunday_end - timedelta(days=1)).strftime("%b %d, %Y")
+        console.print(f"\n[cyan]This Week ({acct}) - {mon_str} to {sun_str}[/cyan]\n")
+
+        if not events:
+            console.print("  [yellow]No events this week[/yellow]")
+            return
+
+        for event in events:
+            _print_event(event)
+
+    except ValueError as e:
+        logger.error(f"Error getting week events: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except (ConnectionError, OSError) as e:
+        logger.error(f"Network error: {e}")
+        console.print(f"[red]Error:[/red] Network error: {e}")
+        raise typer.Exit(1)
+
+
+@calendar_app.command("search")
+def calendar_search(
+    query: str = typer.Argument(..., help="Search text (matches event subject)"),
+    start_date: str = typer.Option(None, "--start", "-s", help="Start date (YYYY-MM-DD). Default: 1 year ago"),
+    end_date: str = typer.Option(None, "--end", "-e", help="End date (YYYY-MM-DD). Default: today"),
+    calendar_name: str = typer.Option(None, "-c", "--calendar", help="Specific calendar name"),
+    limit: int = typer.Option(25, "-n", "--limit", help="Max results to show"),
+):
+    """Search calendar events by subject."""
+    client = get_client()
+
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            console.print("[red]Error:[/red] Invalid start date format. Use YYYY-MM-DD.")
+            raise typer.Exit(1)
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        except ValueError:
+            console.print("[red]Error:[/red] Invalid end date format. Use YYYY-MM-DD.")
+            raise typer.Exit(1)
+
+    try:
+        events = client.search_events(
+            query=query,
+            start_date=start_dt,
+            end_date=end_dt,
+            calendar_name=calendar_name,
+            limit=limit,
+        )
+
+        acct = resolve_account(_current_account)
+        console.print(f"\n[cyan]Search Results for \"{query}\" ({acct})[/cyan]\n")
+
+        if not events:
+            console.print("  [yellow]No matching events found[/yellow]")
+            return
+
+        console.print(f"  Found {len(events)} matching event(s)\n")
+
+        for event in events:
+            _print_event(event)
+
+    except ValueError as e:
+        logger.error(f"Error searching events: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except (ConnectionError, OSError) as e:
+        logger.error(f"Network error: {e}")
+        console.print(f"[red]Error:[/red] Network error: {e}")
+        raise typer.Exit(1)
+
+
+@calendar_app.command("freebusy")
+def calendar_freebusy(
+    emails: str = typer.Argument(..., help="Email addresses, comma-separated"),
+    date: str = typer.Option(None, "-d", "--date", help="Date to check (YYYY-MM-DD). Default: today"),
+    start_time: str = typer.Option("08:00", "--start", "-s", help="Start time (HH:MM). Default: 08:00"),
+    end_time: str = typer.Option("18:00", "--end", "-e", help="End time (HH:MM). Default: 18:00"),
+):
+    """Check free/busy availability for one or more people."""
+    client = get_client()
+
+    # Parse date
+    check_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if date:
+        try:
+            check_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            console.print("[red]Error:[/red] Invalid date format. Use YYYY-MM-DD.")
+            raise typer.Exit(1)
+
+    # Parse start/end times
+    try:
+        start_h, start_m = map(int, start_time.split(':'))
+        end_h, end_m = map(int, end_time.split(':'))
+    except ValueError:
+        console.print("[red]Error:[/red] Invalid time format. Use HH:MM.")
+        raise typer.Exit(1)
+
+    start_dt = check_date.replace(hour=start_h, minute=start_m)
+    end_dt = check_date.replace(hour=end_h, minute=end_m)
+
+    email_list = [e.strip() for e in emails.split(',')]
+
+    try:
+        schedules = client.get_free_busy(
+            emails=email_list,
+            start=start_dt,
+            end=end_dt,
+        )
+
+        date_str = check_date.strftime("%A, %B %d, %Y")
+        console.print(f"\n[cyan]Availability for {date_str} ({start_time} - {end_time})[/cyan]\n")
+
+        for sched in schedules:
+            console.print(f"  [bold]{sched['email']}[/bold]")
+
+            if not sched['items']:
+                console.print("    [green]Free (no events)[/green]")
+            else:
+                table = Table(show_header=True, box=None, padding=(0, 2))
+                table.add_column("Time", style="cyan", width=25)
+                table.add_column("Status", width=12)
+                table.add_column("Subject")
+
+                for item in sched['items']:
+                    status = item.get('status', '')
+                    status_display = {
+                        'busy': '[red]Busy[/red]',
+                        'tentative': '[yellow]Tentative[/yellow]',
+                        'oof': '[magenta]OOF[/magenta]',
+                        'free': '[green]Free[/green]',
+                        'workingElsewhere': '[blue]Working Elsewhere[/blue]',
+                    }.get(status, status)
+
+                    start_str = item.get('start', '')[:16].replace('T', ' ')
+                    end_str = item.get('end', '')[:16].replace('T', ' ')
+                    time_range = f"{start_str} - {end_str}"
+
+                    table.add_row(time_range, status_display, item.get('subject', ''))
+
+                console.print(table)
+            console.print()
+
+    except ValueError as e:
+        logger.error(f"Error getting free/busy: {e}")
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except (ConnectionError, OSError) as e:
+        logger.error(f"Network error: {e}")
+        console.print(f"[red]Error:[/red] Network error: {e}")
+        raise typer.Exit(1)
+
+
+@calendar_app.command("forward")
+def calendar_forward(
+    event_id: str = typer.Argument(..., help="Event ID to forward"),
+    to: str = typer.Option(..., "-t", "--to", help="Recipient email(s), comma-separated"),
+    comment: str = typer.Option(None, "-m", "--message", help="Optional message to include"),
+):
+    """Forward a calendar event to someone."""
+    client = get_client()
+
+    to_list = [e.strip() for e in to.split(',')]
+
+    try:
+        client.forward_event(
+            event_id=event_id,
+            to_emails=to_list,
+            comment=comment,
+        )
+        console.print(f"[green]Event forwarded to: {', '.join(to_list)}[/green]")
+
+    except ValueError as e:
+        logger.error(f"Error forwarding event: {e}")
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
     except (ConnectionError, OSError) as e:

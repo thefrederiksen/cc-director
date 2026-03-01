@@ -415,8 +415,17 @@ cc-outlook send -t "to@example.com" -s "Report" -b "See attached" --attach repor
 cc-outlook search "project update"
 
 # Calendar
-cc-outlook calendar events          # Next 7 days
-cc-outlook calendar events -d 14    # Next 14 days
+cc-outlook calendar events                           # Next 7 days
+cc-outlook calendar events -d 14                     # Next 14 days
+cc-outlook calendar events --start 2025-06-01 --end 2025-12-31  # Date range
+cc-outlook calendar events --start 2025-01-01 -d 365            # Past year
+cc-outlook calendar today                            # Today's agenda
+cc-outlook calendar week                             # This week (Mon-Sun)
+cc-outlook calendar search "standup"                 # Search by subject
+cc-outlook calendar search "review" --start 2025-01-01 --end 2025-06-30
+cc-outlook calendar freebusy "john@company.com"      # Check availability
+cc-outlook calendar freebusy "a@co.com,b@co.com" -d 2026-03-05
+cc-outlook calendar forward "EVENT_ID" -t "colleague@company.com" -m "FYI"
 cc-outlook calendar create -s "Meeting" -d 2024-12-25 -t 14:00
 
 # Profile

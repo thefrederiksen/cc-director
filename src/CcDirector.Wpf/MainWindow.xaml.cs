@@ -18,6 +18,7 @@ using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Wpf.Backends;
+using System.IO;
 using CcDirector.Wpf.Controls;
 
 namespace CcDirector.Wpf;
@@ -52,6 +53,19 @@ public partial class MainWindow : Window
 
     /// <summary>Tracks whether the read-only mode warning has been shown to avoid repeated dialogs.</summary>
     private bool _readOnlyWarningShown;
+
+    private readonly List<MarkdownTabInfo> _markdownTabs = new();
+    private record MarkdownTabInfo(string FilePath, TabItem TabItem, MarkdownViewerControl Viewer);
+
+    // Cached frozen brushes for markdown tab headers
+    private static readonly SolidColorBrush TabHeaderBrush = FreezeBrush(0xCC, 0xCC, 0xCC);
+    private static readonly SolidColorBrush TabHeaderDimBrush = FreezeBrush(0x88, 0x88, 0x88);
+    private static SolidColorBrush FreezeBrush(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
     public MainWindow()
     {
         InitializeComponent();
@@ -66,6 +80,11 @@ public partial class MainWindow : Window
         Activated += MainWindow_Activated;
         Deactivated += MainWindow_Deactivated;
         SessionTabs.SelectionChanged += SessionTabs_SelectionChanged;
+        GitChanges.ViewMarkdownRequested += path =>
+        {
+            try { OpenMarkdownFile(path); }
+            catch (Exception ex) { FileLog.Write($"[MainWindow] GitChanges.ViewMarkdownRequested FAILED: {ex.Message}"); }
+        };
 
         _sessionGitTimer = new System.Windows.Threading.DispatcherTimer
         {
@@ -1220,6 +1239,11 @@ public partial class MainWindow : Window
             _terminalControl = new TerminalControl();
             TerminalArea.Child = _terminalControl;
             _terminalControl.ScrollChanged += OnTerminalScrollChanged;
+            _terminalControl.ViewMarkdownRequested += path =>
+            {
+                try { OpenMarkdownFile(path); }
+                catch (Exception ex) { FileLog.Write($"[MainWindow] TerminalControl.ViewMarkdownRequested FAILED: {ex.Message}"); }
+            };
             _terminalControl.Attach(session);
             UpdateScrollBar();
         }
@@ -1266,6 +1290,12 @@ public partial class MainWindow : Window
         GitChanges.Detach();
         SourceControlTab.Visibility = Visibility.Collapsed;
 
+        // Close all markdown tabs without prompting to save
+        foreach (var mdTab in _markdownTabs)
+            SessionTabs.Items.Remove(mdTab.TabItem);
+        _markdownTabs.Clear();
+        UpdateCloseAllMarkdownButton();
+
         // Show all hook events when no session is selected
         RefreshHookEventsPanel();
 
@@ -1290,6 +1320,183 @@ public partial class MainWindow : Window
         }
         FileLog.Write($"[MainWindow] UpdateSourceControlTabVisibility: hasGit={hasGit}");
     }
+
+    // ── Markdown tab management ──────────────────────────────────────
+
+    public void OpenMarkdownFile(string filePath)
+    {
+        FileLog.Write($"[MainWindow] OpenMarkdownFile: {filePath}");
+
+        // If already open, just select the existing tab
+        var existing = _markdownTabs.Find(t =>
+            string.Equals(t.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            SessionTabs.SelectedItem = existing.TabItem;
+            FileLog.Write($"[MainWindow] OpenMarkdownFile: reusing existing tab for {filePath}");
+            return;
+        }
+
+        // Create the viewer control
+        var viewer = new MarkdownViewerControl();
+
+        // Create the tab header with filename and close button
+        var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
+        var headerText = new TextBlock
+        {
+            Text = Path.GetFileName(filePath),
+            Foreground = TabHeaderBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0)
+        };
+        var closeBtn = new Button
+        {
+            Content = "x",
+            FontSize = 10,
+            Background = Brushes.Transparent,
+            Foreground = TabHeaderDimBrush,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 0, 4, 0),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "Close"
+        };
+        closeBtn.MouseEnter += (_, _) => closeBtn.Foreground = TabHeaderBrush;
+        closeBtn.MouseLeave += (_, _) => closeBtn.Foreground = TabHeaderDimBrush;
+
+        headerPanel.Children.Add(headerText);
+        headerPanel.Children.Add(closeBtn);
+
+        var tabItem = new TabItem
+        {
+            Header = headerPanel,
+            Content = viewer
+        };
+
+        // Wire close button (async void is correct here: event handler boundary)
+        closeBtn.Click += async (_, e) =>
+        {
+            try
+            {
+                await CloseMarkdownTabAsync(tabItem);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] CloseMarkdownTab_Click FAILED: {ex.Message}");
+            }
+            e.Handled = true;
+        };
+
+        SessionTabs.Items.Add(tabItem);
+        _markdownTabs.Add(new MarkdownTabInfo(filePath, tabItem, viewer));
+
+        // Select the new tab and load content in the background
+        SessionTabs.SelectedItem = tabItem;
+        LoadMarkdownContentInBackground(viewer, filePath);
+
+        UpdateCloseAllMarkdownButton();
+        FileLog.Write($"[MainWindow] OpenMarkdownFile: created tab for {filePath}");
+    }
+
+    private async Task CloseMarkdownTabAsync(TabItem tab)
+    {
+        var info = _markdownTabs.Find(t => t.TabItem == tab);
+        if (info == null) return;
+
+        FileLog.Write($"[MainWindow] CloseMarkdownTabAsync: {info.FilePath}");
+
+        // Prompt to save if dirty
+        if (info.Viewer.IsDirty)
+        {
+            var result = MessageBox.Show(
+                $"Save changes to {Path.GetFileName(info.FilePath)}?",
+                "Unsaved Changes",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question);
+
+            if (result == MessageBoxResult.Cancel)
+                return;
+            if (result == MessageBoxResult.Yes)
+                await info.Viewer.SaveAsync();
+        }
+
+        // Remove tab
+        SessionTabs.Items.Remove(tab);
+        _markdownTabs.Remove(info);
+
+        // Select Terminal tab if nothing else is selected
+        if (SessionTabs.SelectedItem == null)
+            SessionTabs.SelectedIndex = 0;
+
+        UpdateCloseAllMarkdownButton();
+    }
+
+    private async Task CloseAllMarkdownTabsAsync()
+    {
+        FileLog.Write($"[MainWindow] CloseAllMarkdownTabsAsync: count={_markdownTabs.Count}");
+
+        // Work on a copy since we're modifying the collection
+        var tabsCopy = _markdownTabs.ToList();
+        foreach (var info in tabsCopy)
+        {
+            // Prompt to save if dirty
+            if (info.Viewer.IsDirty)
+            {
+                var result = MessageBox.Show(
+                    $"Save changes to {Path.GetFileName(info.FilePath)}?",
+                    "Unsaved Changes",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Cancel)
+                    return; // Stop closing
+                if (result == MessageBoxResult.Yes)
+                    await info.Viewer.SaveAsync();
+            }
+
+            SessionTabs.Items.Remove(info.TabItem);
+            _markdownTabs.Remove(info);
+        }
+
+        SessionTabs.SelectedIndex = 0;
+        UpdateCloseAllMarkdownButton();
+    }
+
+    private async void CloseAllMarkdownTabs_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await CloseAllMarkdownTabsAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] CloseAllMarkdownTabs_Click FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Async boundary for fire-and-forget markdown content loading.
+    /// </summary>
+    private async void LoadMarkdownContentInBackground(MarkdownViewerControl viewer, string filePath)
+    {
+        try
+        {
+            await viewer.LoadFileAsync(filePath);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] LoadMarkdownContent FAILED for {filePath}: {ex.Message}");
+            viewer.ShowLoadError(ex.Message);
+        }
+    }
+
+    private void UpdateCloseAllMarkdownButton()
+    {
+        if (FindName("CloseAllDocsButton") is Button btn)
+            btn.Visibility = _markdownTabs.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ── End markdown tab management ──────────────────────────────────
 
     private void TerminalScrollBar_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {

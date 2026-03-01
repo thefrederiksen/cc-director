@@ -47,6 +47,9 @@ public partial class GitChangesControl : UserControl
     private string? _repoPath;
     private string? _lastRawOutput;
 
+    /// <summary>Raised when the user requests to view a markdown file in the built-in viewer.</summary>
+    public event Action<string>? ViewMarkdownRequested;
+
     public GitChangesControl()
     {
         InitializeComponent();
@@ -302,13 +305,57 @@ public partial class GitChangesControl : UserControl
         {
             if (e.ClickCount == 2 && sender is FrameworkElement fe && fe.DataContext is GitFileLeafNode node)
             {
-                OpenFileInVsCode(node.RelativePath);
+                // Open .md files in built-in viewer, everything else in VS Code
+                if (IsMarkdownFile(node.RelativePath))
+                    RaiseViewMarkdown(node.RelativePath);
+                else
+                    OpenFileInVsCode(node.RelativePath);
                 e.Handled = true;
             }
         }
         catch (Exception ex)
         {
             FileLog.Write($"[GitChangesControl] FileNode_MouseLeftButtonDown FAILED: {ex.Message}");
+        }
+    }
+
+    internal void FileContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (sender is ContextMenu menu &&
+                menu.PlacementTarget is FrameworkElement fe &&
+                fe.DataContext is GitFileLeafNode node)
+            {
+                // Show "View Markdown" only for .md files
+                foreach (var item in menu.Items)
+                {
+                    if (item is MenuItem mi && mi.Header is string header && header == "View Markdown")
+                    {
+                        mi.Visibility = IsMarkdownFile(node.RelativePath)
+                            ? Visibility.Visible
+                            : Visibility.Collapsed;
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GitChangesControl] FileContextMenu_Opened FAILED: {ex.Message}");
+        }
+    }
+
+    internal void FileNode_ViewMarkdown_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (GetNodeFromMenuItem(sender) is GitFileLeafNode node)
+                RaiseViewMarkdown(node.RelativePath);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GitChangesControl] FileNode_ViewMarkdown_Click FAILED: {ex.Message}");
         }
     }
 
@@ -440,4 +487,14 @@ public partial class GitChangesControl : UserControl
             FileLog.Write($"[GitChangesControl] OpenFileInVsCode FAILED for {relativePath}: {ex.Message}");
         }
     }
+
+    private void RaiseViewMarkdown(string relativePath)
+    {
+        if (_repoPath == null || string.IsNullOrEmpty(relativePath)) return;
+        var fullPath = Path.Combine(_repoPath, relativePath);
+        FileLog.Write($"[GitChangesControl] RaiseViewMarkdown: {fullPath}");
+        ViewMarkdownRequested?.Invoke(fullPath);
+    }
+
+    private static bool IsMarkdownFile(string path) => Helpers.FileExtensions.IsMarkdown(path);
 }

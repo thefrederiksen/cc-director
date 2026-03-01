@@ -109,6 +109,9 @@ public class TerminalControl : FrameworkElement
     /// <summary>Raised when scroll position or scrollback changes.</summary>
     public event EventHandler? ScrollChanged;
 
+    /// <summary>Raised when the user requests to view a markdown file from a terminal link.</summary>
+    public event Action<string>? ViewMarkdownRequested;
+
     /// <summary>Number of lines scrolled up from bottom. 0 = current view.</summary>
     public int ScrollOffset
     {
@@ -1201,6 +1204,15 @@ public class TerminalControl : FrameworkElement
             var vscodeItem = new MenuItem { Header = "Open in VS Code" };
             vscodeItem.Click += (_, _) => OpenInVsCode();
             _linkContextMenu.Items.Add(vscodeItem);
+
+            // Add "View Markdown" for .md files
+            if (IsMarkdownFile(link))
+            {
+                var mdItem = new MenuItem { Header = "View Markdown" };
+                mdItem.Click += (_, _) => OpenMarkdownViewer();
+                _linkContextMenu.Items.Insert(0, mdItem);
+                _linkContextMenu.Items.Insert(1, new Separator());
+            }
         }
         else if (type == LinkType.Url)
         {
@@ -1304,6 +1316,20 @@ public class TerminalControl : FrameworkElement
                 "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    /// <summary>
+    /// Open a markdown file in the built-in viewer.
+    /// </summary>
+    private void OpenMarkdownViewer()
+    {
+        if (string.IsNullOrEmpty(_detectedLink)) return;
+
+        string path = ResolvePath(_detectedLink);
+        FileLog.Write($"[TerminalControl] OpenMarkdownViewer: {path}");
+        ViewMarkdownRequested?.Invoke(path);
+    }
+
+    private static bool IsMarkdownFile(string path) => Helpers.FileExtensions.IsMarkdown(path);
 
     /// <summary>
     /// Resolve a detected path to an absolute Windows path.

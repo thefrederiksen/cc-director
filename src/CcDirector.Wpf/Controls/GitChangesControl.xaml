@@ -26,7 +26,9 @@
             <Border Background="Transparent"
                     MouseLeftButtonDown="FileNode_MouseLeftButtonDown">
                 <Border.ContextMenu>
-                    <ContextMenu>
+                    <ContextMenu Opened="FileContextMenu_Opened">
+                        <MenuItem x:Name="ViewMarkdownItem" Header="View Markdown"
+                                  Click="FileNode_ViewMarkdown_Click" />
                         <MenuItem Header="Open in VS Code"
                                   Click="FileNode_OpenInVsCode_Click" />
                         <MenuItem Header="Copy Path"

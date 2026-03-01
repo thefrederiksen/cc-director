@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 class OutlookClient:
     """Client for Outlook operations using O365 library."""
 
+    GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0'
+
     def __init__(self, account: Account):
         """
         Initialize the client with an authenticated account.
@@ -398,13 +400,16 @@ class OutlookClient:
 
         return result
 
-    def get_events(self, days_ahead: int = 7, calendar_name: str = None) -> list:
+    def get_events(self, days_ahead: int = 7, calendar_name: str = None,
+                   start_date: datetime = None, end_date: datetime = None) -> list:
         """
         Get calendar events.
 
         Args:
-            days_ahead: Number of days ahead to fetch
+            days_ahead: Number of days to span from start_date
             calendar_name: Specific calendar name (optional)
+            start_date: Start of date range (default: now)
+            end_date: End of date range (default: start_date + days_ahead)
 
         Returns:
             List of event dicts
@@ -423,13 +428,15 @@ class OutlookClient:
         else:
             calendar = schedule.get_default_calendar()
 
-        start = datetime.now()
-        end = start + timedelta(days=days_ahead)
+        start = start_date if start_date else datetime.now()
+        end = end_date if end_date else start + timedelta(days=days_ahead)
 
-        query = calendar.new_query('start').greater_equal(start)
-        query.chain('and').on_attribute('end').less_equal(end)
-
-        events = calendar.get_events(query=query, include_recurring=True)
+        events = calendar.get_events(
+            limit=250,
+            include_recurring=True,
+            start_recurring=start,
+            end_recurring=end,
+        )
 
         result = []
         for event in events:
@@ -800,6 +807,141 @@ class OutlookClient:
 
         return True
 
+    def search_events(self, query: str, start_date: datetime = None,
+                      end_date: datetime = None, calendar_name: str = None,
+                      limit: int = 25) -> list:
+        """
+        Search calendar events by subject text within a date range.
+
+        Args:
+            query: Search text (matched against event subject, case-insensitive)
+            start_date: Start of date range (default: 1 year ago)
+            end_date: End of date range (default: now)
+            calendar_name: Specific calendar name (optional)
+            limit: Max results to return
+
+        Returns:
+            List of matching event dicts
+        """
+        if not start_date:
+            start_date = datetime.now() - timedelta(days=365)
+        if not end_date:
+            end_date = datetime.now()
+
+        events = self.get_events(
+            start_date=start_date,
+            end_date=end_date,
+            calendar_name=calendar_name,
+        )
+
+        query_lower = query.lower()
+        matched = []
+        for event in events:
+            subject = event.get('subject', '') or ''
+            if query_lower in subject.lower():
+                matched.append(event)
+                if len(matched) >= limit:
+                    break
+
+        return matched
+
+    def get_free_busy(self, emails: list, start: datetime, end: datetime) -> list:
+        """
+        Check free/busy availability for one or more people.
+
+        Uses the Microsoft Graph getSchedule endpoint.
+
+        Args:
+            emails: List of email addresses to check
+            start: Start of availability window
+            end: End of availability window
+
+        Returns:
+            List of dicts with schedule info per person
+        """
+        # Use direct Graph API call for getSchedule
+        url = f'{self.GRAPH_API_BASE}/me/calendar/getSchedule'
+
+        data = {
+            'schedules': emails,
+            'startTime': {
+                'dateTime': start.isoformat(),
+                'timeZone': 'UTC',
+            },
+            'endTime': {
+                'dateTime': end.isoformat(),
+                'timeZone': 'UTC',
+            },
+            'availabilityViewInterval': 30,
+        }
+
+        con = self.account.connection
+        response = con.post(url, data=data)
+
+        if not response:
+            raise ConnectionError(f"Failed to get schedule: {response.status_code}")
+
+        result_data = response.json()
+        schedules = result_data.get('value', [])
+
+        result = []
+        for sched in schedules:
+            email = sched.get('scheduleId', '')
+            items = []
+            for item in sched.get('scheduleItems', []):
+                items.append({
+                    'subject': item.get('subject', ''),
+                    'status': item.get('status', ''),
+                    'start': item.get('start', {}).get('dateTime', ''),
+                    'end': item.get('end', {}).get('dateTime', ''),
+                    'location': item.get('location', ''),
+                })
+            result.append({
+                'email': email,
+                'availability_view': sched.get('availabilityView', ''),
+                'items': items,
+            })
+
+        return result
+
+    def forward_event(self, event_id: str, to_emails: list, comment: str = None) -> bool:
+        """
+        Forward a calendar event to recipients.
+
+        Uses the Microsoft Graph event forward action.
+
+        Args:
+            event_id: Event ID to forward
+            to_emails: List of recipient email addresses
+            comment: Optional message to include
+
+        Returns:
+            True if forwarded successfully
+        """
+        url = f'{self.GRAPH_API_BASE}/me/events/{event_id}/forward'
+
+        to_recipients = []
+        for email in to_emails:
+            to_recipients.append({
+                'emailAddress': {
+                    'address': email,
+                }
+            })
+
+        data = {
+            'ToRecipients': to_recipients,
+        }
+        if comment:
+            data['Comment'] = comment
+
+        con = self.account.connection
+        response = con.post(url, data=data)
+
+        if not response:
+            raise ConnectionError(f"Failed to forward event: {response.status_code}")
+
+        return True
+
     def _format_event(self, event) -> dict:
         """Format an event object into a dict with full details."""
         result = {
@@ -839,14 +981,16 @@ class OutlookClient:
                 }
                 response_status = getattr(att, 'response_status', None)
                 if response_status:
-                    att_info['response'] = response_status.get('response', 'none')
+                    status_val = getattr(response_status, 'status', None)
+                    att_info['response'] = str(status_val) if status_val else 'none'
                 attendees.append(att_info)
         result['attendees'] = attendees
 
         # User's response status
         response_status = getattr(event, 'response_status', None)
         if response_status:
-            result['my_response'] = response_status.get('response', 'none')
+            status_val = getattr(response_status, 'status', None)
+            result['my_response'] = str(status_val) if status_val else 'none'
 
         return result
 

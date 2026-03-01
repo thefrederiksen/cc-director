@@ -783,6 +783,31 @@
                             </TabItem>
                         </TabControl>
 
+                        <!-- Close All Docs button (floats top-right of tab strip) -->
+                        <Button x:Name="CloseAllDocsButton" Grid.Row="0"
+                                Content="Close All"
+                                FontSize="10"
+                                Background="Transparent"
+                                Foreground="#888888"
+                                BorderThickness="0"
+                                Padding="6,4"
+                                Cursor="Hand"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Visibility="Collapsed"
+                                ToolTip="Close all document tabs"
+                                Click="CloseAllMarkdownTabs_Click">
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Foreground" Value="#CCCCCC" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+
                         <!-- NotificationStrip (inside TerminalColumn) -->
                         <Border x:Name="NotificationBar" Grid.Row="1"
                                 Background="{StaticResource SidebarBackground}"
