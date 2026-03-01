@@ -279,6 +279,18 @@ public partial class App : Application
                         engineOptions.CommunicationsDbPath = dbPath.GetString() ?? engineOptions.CommunicationsDbPath;
                     if (engineSection.TryGetProperty("CcOutlookPath", out var outlookPath))
                         engineOptions.CcOutlookPath = outlookPath.GetString() ?? engineOptions.CcOutlookPath;
+                    if (engineSection.TryGetProperty("CcGmailPath", out var gmailPath))
+                        engineOptions.CcGmailPath = gmailPath.GetString() ?? engineOptions.CcGmailPath;
+                    if (engineSection.TryGetProperty("GmailSendFromAccounts", out var gmailAccounts))
+                    {
+                        var accounts = new List<string>();
+                        foreach (var account in gmailAccounts.EnumerateArray())
+                        {
+                            var val = account.GetString();
+                            if (val != null) accounts.Add(val);
+                        }
+                        if (accounts.Count > 0) engineOptions.GmailSendFromAccounts = accounts;
+                    }
                     if (engineSection.TryGetProperty("DispatcherPollIntervalSeconds", out var poll))
                         engineOptions.DispatcherPollIntervalSeconds = poll.GetInt32();
                 }

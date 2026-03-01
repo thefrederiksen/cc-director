@@ -9,8 +9,12 @@ namespace CcDirector.Engine.Dispatcher;
 
 public sealed class CommunicationDispatcher : IDisposable
 {
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
     private readonly string _communicationsDbPath;
     private readonly string _ccOutlookPath;
+    private readonly string _ccGmailPath;
+    private readonly HashSet<string> _gmailSendFromAccounts;
     private readonly int _pollIntervalSeconds;
     private readonly VaultArchiver _archiver = new();
     private Timer? _timer;
@@ -18,11 +22,21 @@ public sealed class CommunicationDispatcher : IDisposable
 
     public event Action<EngineEvent>? OnEvent;
 
-    public CommunicationDispatcher(string communicationsDbPath, string ccOutlookPath, int pollIntervalSeconds = 5)
+    public CommunicationDispatcher(
+        string communicationsDbPath,
+        string ccOutlookPath,
+        string ccGmailPath,
+        IEnumerable<string> gmailSendFromAccounts,
+        int pollIntervalSeconds = 5)
     {
         _communicationsDbPath = communicationsDbPath;
         _ccOutlookPath = ccOutlookPath;
+        _ccGmailPath = ccGmailPath;
+        _gmailSendFromAccounts = new HashSet<string>(
+            gmailSendFromAccounts, StringComparer.OrdinalIgnoreCase);
         _pollIntervalSeconds = pollIntervalSeconds;
+
+        FileLog.Write($"[CommunicationDispatcher] Gmail accounts: [{string.Join(", ", _gmailSendFromAccounts)}]");
     }
 
     public void Start()
@@ -77,7 +91,7 @@ public sealed class CommunicationDispatcher : IDisposable
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, ticket_number, content, email_specific, persona
+            SELECT id, ticket_number, content, email_specific, persona, send_from
             FROM communications
             WHERE status = 'approved' AND platform = 'email'
             """;
@@ -90,11 +104,11 @@ public sealed class CommunicationDispatcher : IDisposable
             var body = reader.IsDBNull(2) ? "" : reader.GetString(2);
             var emailSpecific = reader.IsDBNull(3) ? "" : reader.GetString(3);
             var persona = reader.IsDBNull(4) ? "personal" : reader.GetString(4);
+            var sendFrom = reader.IsDBNull(5) ? null : reader.GetString(5);
 
             try
             {
-                var spec = JsonSerializer.Deserialize<EmailSpecific>(emailSpecific,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var spec = JsonSerializer.Deserialize<EmailSpecific>(emailSpecific, JsonOptions);
 
                 if (spec?.To != null && spec.To.Count > 0)
                 {
@@ -108,7 +122,8 @@ public sealed class CommunicationDispatcher : IDisposable
                         Bcc = spec.Bcc != null && spec.Bcc.Count > 0 ? string.Join(",", spec.Bcc) : null,
                         Subject = spec.Subject ?? "(no subject)",
                         Attachments = spec.Attachments ?? new List<string>(),
-                        Persona = persona
+                        Persona = persona,
+                        SendFrom = sendFrom
                     });
                 }
             }
@@ -121,89 +136,50 @@ public sealed class CommunicationDispatcher : IDisposable
         return emails;
     }
 
+    /// <summary>
+    /// Determines whether to use cc-gmail or cc-outlook for this email.
+    /// Routes to Gmail if send_from is in the configured Gmail accounts list,
+    /// or if send_from contains "@gmail.com".
+    /// </summary>
+    private bool IsGmailEmail(ApprovedEmail email)
+    {
+        var sendFrom = email.SendFrom ?? email.Persona;
+
+        // Check configured Gmail accounts
+        if (_gmailSendFromAccounts.Contains(sendFrom))
+            return true;
+
+        // Check if send_from looks like a Gmail address
+        if (sendFrom.Contains("@gmail.com", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
     private async Task DispatchEmailAsync(ApprovedEmail email)
     {
-        FileLog.Write($"[CommunicationDispatcher] Sending ticket #{email.TicketNumber} to {email.To}");
+        var useGmail = IsGmailEmail(email);
+        var toolName = useGmail ? "cc-gmail" : "cc-outlook";
+        var toolPath = useGmail ? _ccGmailPath : _ccOutlookPath;
+
+        FileLog.Write($"[CommunicationDispatcher] Sending ticket #{email.TicketNumber} to {email.To} via {toolName} (send_from={email.SendFrom ?? "null"}, persona={email.Persona})");
 
         try
         {
-            var args = new List<string>
+            var args = BuildSendArgs(email, useGmail);
+            var result = await RunToolProcessAsync(toolPath, args);
+
+            if (result.ExitCode == 0)
             {
-                "send",
-                "-t", email.To,
-                "-s", email.Subject,
-                "-b", email.Body,
-                "--html"
-            };
-
-            if (!string.IsNullOrEmpty(email.Cc))
-            {
-                args.Add("--cc");
-                args.Add(email.Cc);
-            }
-
-            if (!string.IsNullOrEmpty(email.Bcc))
-            {
-                args.Add("--bcc");
-                args.Add(email.Bcc);
-            }
-
-            foreach (var attachment in email.Attachments)
-            {
-                if (File.Exists(attachment))
-                {
-                    args.Add("-a");
-                    args.Add(attachment);
-                }
-            }
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = _ccOutlookPath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            foreach (var arg in args)
-                psi.ArgumentList.Add(arg);
-
-            using var process = Process.Start(psi);
-            if (process == null)
-            {
-                MarkFailed(email.Id, "Failed to start cc-outlook process");
-                return;
-            }
-
-            // Read both streams concurrently to avoid deadlock when both buffers fill
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            var stdout = await process.StandardOutput.ReadToEndAsync();
-            var stderr = await stderrTask;
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode == 0)
-            {
-                MarkPosted(email.Id);
-                try
-                {
-                    _archiver.ArchiveEmail(email.To, email.Subject, email.Body);
-                }
-                catch (Exception archiveEx)
-                {
-                    FileLog.Write($"[CommunicationDispatcher] Vault archive FAILED (email still sent): {archiveEx.Message}");
-                }
-                FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} sent OK");
-                RaiseEvent(new EngineEvent(EngineEventType.CommunicationDispatched,
-                    Message: $"Email ticket #{email.TicketNumber} sent to {email.To}"));
+                HandleSendSuccess(email, toolName);
             }
             else
             {
-                var error = string.IsNullOrEmpty(stderr) ? stdout : stderr;
+                var error = string.IsNullOrEmpty(result.Stderr) ? result.Stdout : result.Stderr;
                 MarkFailed(email.Id, error);
-                FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} FAILED: {error}");
+                FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} FAILED via {toolName}: {error}");
                 RaiseEvent(new EngineEvent(EngineEventType.Error,
-                    Message: $"Email ticket #{email.TicketNumber} failed: {error}"));
+                    Message: $"Email ticket #{email.TicketNumber} failed via {toolName}: {error}"));
             }
         }
         catch (Exception ex)
@@ -211,6 +187,86 @@ public sealed class CommunicationDispatcher : IDisposable
             MarkFailed(email.Id, ex.Message);
             FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} exception: {ex.Message}");
         }
+    }
+
+    private static List<string> BuildSendArgs(ApprovedEmail email, bool useGmail)
+    {
+        var args = new List<string>
+        {
+            "send",
+            "-t", email.To,
+            "-s", email.Subject,
+            "-b", email.Body,
+            "--html"
+        };
+
+        if (!string.IsNullOrEmpty(email.Cc))
+        {
+            args.Add("--cc");
+            args.Add(email.Cc);
+        }
+
+        if (!string.IsNullOrEmpty(email.Bcc))
+        {
+            args.Add("--bcc");
+            args.Add(email.Bcc);
+        }
+
+        // Attachment flag differs: cc-outlook uses "-a", cc-gmail uses "--attach"
+        var attachFlag = useGmail ? "--attach" : "-a";
+        foreach (var attachment in email.Attachments)
+        {
+            if (File.Exists(attachment))
+            {
+                args.Add(attachFlag);
+                args.Add(attachment);
+            }
+        }
+
+        return args;
+    }
+
+    private static async Task<ToolProcessResult> RunToolProcessAsync(string toolPath, List<string> args)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = toolPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+
+        using var process = Process.Start(psi);
+        if (process == null)
+            throw new InvalidOperationException($"Failed to start process: {toolPath}");
+
+        // Read both streams concurrently to avoid deadlock when both buffers fill
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await stderrTask;
+        await process.WaitForExitAsync();
+
+        return new ToolProcessResult(process.ExitCode, stdout, stderr);
+    }
+
+    private void HandleSendSuccess(ApprovedEmail email, string toolName)
+    {
+        MarkPosted(email.Id);
+        try
+        {
+            _archiver.ArchiveEmail(email.To, email.Subject, email.Body);
+        }
+        catch (Exception archiveEx)
+        {
+            FileLog.Write($"[CommunicationDispatcher] Vault archive FAILED (email still sent): {archiveEx.Message}");
+        }
+        FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} sent OK via {toolName}");
+        RaiseEvent(new EngineEvent(EngineEventType.CommunicationDispatched,
+            Message: $"Email ticket #{email.TicketNumber} sent to {email.To} via {toolName}"));
     }
 
     private void MarkPosted(string id)
@@ -265,6 +321,7 @@ public sealed class CommunicationDispatcher : IDisposable
         public string Subject { get; set; } = "";
         public List<string> Attachments { get; set; } = new();
         public string Persona { get; set; } = "personal";
+        public string? SendFrom { get; set; }
     }
 
     private class EmailSpecific

@@ -45,6 +45,8 @@ public sealed class EngineHost : IDisposable
             _dispatcher = new CommunicationDispatcher(
                 _options.CommunicationsDbPath,
                 _options.CcOutlookPath,
+                _options.CcGmailPath,
+                _options.GmailSendFromAccounts,
                 _options.DispatcherPollIntervalSeconds);
             _dispatcher.OnEvent += e =>
             {
