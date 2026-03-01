@@ -1,0 +1,391 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------
+  # Job 1: Build the main CC Director WPF app
+  # ---------------------------------------------------------------
+  build-director:
+    name: Build CC Director
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore cc-director.sln
+
+      - name: Run tests
+        run: dotnet test cc-director.sln -c Release --verbosity normal
+
+      # Three-step build to work around .NET 10 WPF SDK bugs
+      # (see scripts/release.ps1 for details)
+      - name: Pre-build Core dependency
+        run: dotnet build src/CcDirector.Core/CcDirector.Core.csproj -c Release --nologo -v q
+
+      - name: Build WPF with RID
+        run: dotnet build src/CcDirector.Wpf/CcDirector.Wpf.csproj -c Release -r win-x64 --self-contained false --nologo -v q
+
+      - name: Publish single-file executable
+        run: >
+          dotnet msbuild src/CcDirector.Wpf/CcDirector.Wpf.csproj
+          -t:Publish
+          -p:Configuration=Release
+          -p:RuntimeIdentifier=win-x64
+          -p:SelfContained=false
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:NoBuild=true
+
+      - name: Upload cc-director artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-director
+          path: src/CcDirector.Wpf/bin/Release/net10.0-windows/win-x64/publish/cc-director.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 2: Build .NET CLI tools
+  # ---------------------------------------------------------------
+  build-dotnet-tools:
+    name: Build .NET Tools
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Create artifacts directory
+        run: New-Item -ItemType Directory -Path artifacts -Force
+
+      # cc-click
+      - name: Build cc-click
+        working-directory: tools/cc-click
+        run: dotnet publish -c Release -o ../../artifacts/_cc-click
+
+      # cc-trisight
+      - name: Build cc-trisight
+        working-directory: tools/cc-trisight
+        run: dotnet publish -c Release -o ../../artifacts/_cc-trisight
+
+      # cc-computer
+      - name: Build cc-computer
+        working-directory: tools/cc-computer
+        run: dotnet publish ComputerApp -c Release -o ../../artifacts/_cc-computer
+
+      - name: Upload .NET tools artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-tools
+          path: artifacts/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 3: Build Python tools
+  # ---------------------------------------------------------------
+  build-python-tools:
+    name: Build Python Tools
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create artifacts directory
+        run: New-Item -ItemType Directory -Path artifacts -Force
+
+      - name: Build all Python tools
+        shell: pwsh
+        run: |
+          $tools = @(
+            "cc-comm-queue",
+            "cc-crawl4ai",
+            "cc-docgen",
+            "cc-excel",
+            "cc-gmail",
+            "cc-hardware",
+            "cc-image",
+            "cc-linkedin",
+            "cc-markdown",
+            "cc-outlook",
+            "cc-personresearch",
+            "cc-photos",
+            "cc-powerpoint",
+            "cc-reddit",
+            "cc-setup",
+            "cc-spotify",
+            "cc-transcribe",
+            "cc-vault",
+            "cc-video",
+            "cc-voice",
+            "cc-whisper",
+            "cc-youtube-info"
+          )
+
+          $failed = @()
+
+          foreach ($tool in $tools) {
+            $toolDir = "tools/$tool"
+            $buildScript = "$toolDir/build.ps1"
+
+            if (-not (Test-Path $buildScript)) {
+              Write-Host "[SKIP] $tool - no build.ps1" -ForegroundColor Yellow
+              continue
+            }
+
+            Write-Host ""
+            Write-Host "============================================" -ForegroundColor Cyan
+            Write-Host "Building $tool..." -ForegroundColor Cyan
+            Write-Host "============================================" -ForegroundColor Cyan
+
+            Push-Location $toolDir
+            try {
+              & powershell -ExecutionPolicy Bypass -File build.ps1
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "[FAIL] $tool build failed" -ForegroundColor Red
+                $failed += $tool
+                continue
+              }
+
+              # Determine exe name
+              if ($tool -eq "cc-setup") {
+                $exeName = "cc-director-setup.exe"
+              } else {
+                $exeName = "$tool.exe"
+              }
+
+              $exePath = "dist/$exeName"
+              if (Test-Path $exePath) {
+                Copy-Item $exePath "../../artifacts/$exeName" -Force
+                Write-Host "[OK] $exeName" -ForegroundColor Green
+              } else {
+                Write-Host "[FAIL] $exeName not found after build" -ForegroundColor Red
+                $failed += $tool
+              }
+            } finally {
+              Pop-Location
+            }
+          }
+
+          if ($failed.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Failed tools: $($failed -join ', ')" -ForegroundColor Red
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "All Python tools built successfully!" -ForegroundColor Green
+
+      - name: Upload Python tools artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-tools
+          path: artifacts/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 4: Build Node.js tools
+  # ---------------------------------------------------------------
+  build-node-tools:
+    name: Build Node.js Tools
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Create artifacts directory
+        run: New-Item -ItemType Directory -Path artifacts -Force
+
+      - name: Build Node.js tools
+        shell: pwsh
+        run: |
+          $tools = @("cc-browser", "cc-brandingrecommendations", "cc-websiteaudit")
+          $failed = @()
+
+          foreach ($tool in $tools) {
+            $toolDir = "tools/$tool"
+            $buildScript = "$toolDir/build.ps1"
+
+            if (-not (Test-Path $buildScript)) {
+              Write-Host "[SKIP] $tool - no build.ps1" -ForegroundColor Yellow
+              continue
+            }
+
+            Write-Host ""
+            Write-Host "============================================" -ForegroundColor Cyan
+            Write-Host "Building $tool..." -ForegroundColor Cyan
+            Write-Host "============================================" -ForegroundColor Cyan
+
+            Push-Location $toolDir
+            try {
+              & powershell -ExecutionPolicy Bypass -File build.ps1
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "[FAIL] $tool build failed" -ForegroundColor Red
+                $failed += $tool
+                continue
+              }
+
+              $distDir = "dist"
+              if (Test-Path $distDir) {
+                $destDir = "../../artifacts/_$tool"
+                Copy-Item $distDir $destDir -Recurse -Force
+                Write-Host "[OK] $tool -> _$tool/" -ForegroundColor Green
+              } else {
+                Write-Host "[FAIL] dist/ not found after build" -ForegroundColor Red
+                $failed += $tool
+              }
+            } finally {
+              Pop-Location
+            }
+          }
+
+          if ($failed.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Failed tools: $($failed -join ', ')" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: Upload Node.js tools artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-tools
+          path: artifacts/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 5: Build self-contained installer wizard
+  # ---------------------------------------------------------------
+  build-installer:
+    name: Build Installer Wizard
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build cc-setup (installer wizard)
+        working-directory: tools/cc-setup
+        shell: pwsh
+        run: |
+          & powershell -ExecutionPolicy Bypass -File build.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          if (-not (Test-Path "dist/cc-director-setup.exe")) {
+            Write-Error "cc-director-setup.exe not found after build"
+            exit 1
+          }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: tools/cc-setup/dist/cc-director-setup.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Final Job: Create GitHub Release
+  # ---------------------------------------------------------------
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-director
+      - build-dotnet-tools
+      - build-python-tools
+      - build-node-tools
+      - build-installer
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: List artifacts
+        run: find release-artifacts -type f | head -100
+
+      - name: Collect release files
+        run: |
+          mkdir -p release-files
+
+          # Main app
+          cp release-artifacts/cc-director/cc-director.exe release-files/
+
+          # Installer
+          cp release-artifacts/installer/cc-director-setup.exe release-files/
+
+          # Python tools (individual .exe files)
+          if [ -d "release-artifacts/python-tools" ]; then
+            cp release-artifacts/python-tools/*.exe release-files/ 2>/dev/null || true
+          fi
+
+          # .NET tools - zip each tool directory
+          for dir in release-artifacts/dotnet-tools/_cc-*; do
+            if [ -d "$dir" ]; then
+              tool_name=$(basename "$dir" | sed 's/^_//')
+              (cd "$dir" && zip -r "../../release-files/${tool_name}.zip" .)
+            fi
+          done
+
+          # Node.js tools - zip each tool directory
+          for dir in release-artifacts/node-tools/_cc-*; do
+            if [ -d "$dir" ]; then
+              tool_name=$(basename "$dir" | sed 's/^_//')
+              (cd "$dir" && zip -r "../../release-files/${tool_name}.zip" .)
+            fi
+          done
+
+          echo ""
+          echo "Release files:"
+          ls -lh release-files/
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CC Director v${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,8 +10,8 @@ from typing import Optional
 
 GITHUB_API_BASE = "https://api.github.com"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com"
-REPO_OWNER = "cc-director"
-REPO_NAME = "cc-tools"
+REPO_OWNER = "thefrederiksen"
+REPO_NAME = "cc-director"
 
 
 def get_latest_release() -> Optional[dict]:

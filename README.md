@@ -8,11 +8,15 @@ A desktop application for managing multiple [Claude Code](https://docs.anthropic
 
 ## Download (Windows)
 
-**[Download cc-director.exe](releases/cc-director.exe)** - Pre-built Windows executable (no build required)
+**[Download the latest release](https://github.com/thefrederiksen/cc-director/releases/latest)** from the GitHub Releases page.
 
-Requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) installed on your machine.
+| File | Description |
+|------|-------------|
+| `cc-director-setup.exe` | Installer wizard (recommended -- downloads and installs everything) |
+| `cc-director.exe` | Main application (requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)) |
+| `cc-*.exe` | Individual CLI tools (cc-markdown, cc-transcribe, cc-outlook, etc.) |
 
-*Mac/Linux users: Build from source (see [Building](#building)). GUI not yet available — backend only.*
+*Mac/Linux users: Build from source (see [Building](#building)). GUI not yet available -- backend only.*
 
 ## Features
 

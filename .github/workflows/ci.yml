@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test (.NET)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore cc-director.sln
+
+      - name: Build solution
+        run: dotnet build cc-director.sln -c Release --no-restore
+
+      - name: Run tests
+        run: dotnet test cc-director.sln -c Release --no-build --verbosity normal
