@@ -276,7 +276,7 @@ public partial class App : Application
                 if (doc.RootElement.TryGetProperty("Engine", out var engineSection))
                 {
                     if (engineSection.TryGetProperty("CommunicationsDbPath", out var dbPath))
-                        engineOptions.CommunicationsDbPath = dbPath.GetString();
+                        engineOptions.CommunicationsDbPath = dbPath.GetString() ?? engineOptions.CommunicationsDbPath;
                     if (engineSection.TryGetProperty("CcOutlookPath", out var outlookPath))
                         engineOptions.CcOutlookPath = outlookPath.GetString() ?? engineOptions.CcOutlookPath;
                     if (engineSection.TryGetProperty("DispatcherPollIntervalSeconds", out var poll))

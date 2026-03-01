@@ -9,7 +9,7 @@ public sealed class EngineOptions
     public int CheckIntervalSeconds { get; set; } = 60;
     public int ShutdownTimeoutSeconds { get; set; } = 30;
     public int RunRetentionDays { get; set; } = 30;
-    public string? CommunicationsDbPath { get; set; }
+    public string CommunicationsDbPath { get; set; } = CcStorage.CommQueueDb();
     public string CcOutlookPath { get; set; } = Path.Combine(CcStorage.Bin(), "cc-outlook.exe");
     public int DispatcherPollIntervalSeconds { get; set; } = 5;
 }
