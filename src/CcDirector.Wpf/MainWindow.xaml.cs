@@ -20,6 +20,8 @@ using CcDirector.Core.Utilities;
 using CcDirector.Wpf.Backends;
 using System.IO;
 using CcDirector.Wpf.Controls;
+using CcDirector.Wpf.Voice;
+using CcDirector.VoskStt;
 
 namespace CcDirector.Wpf;
 
@@ -53,6 +55,15 @@ public partial class MainWindow : Window
 
     /// <summary>Tracks whether the read-only mode warning has been shown to avoid repeated dialogs.</summary>
     private bool _readOnlyWarningShown;
+
+    // Voice input
+    private VoskSttService? _voskStt;
+    private CustomDictionary? _customDictionary;
+    private AudioRecorder? _micRecorder;
+    private bool _isVoiceRecording;
+    private string _voiceTextBeforeRecording = string.Empty;
+    private static readonly SolidColorBrush RecordingBrush = FreezeBrush(0xC0, 0x20, 0x20);
+    private static readonly SolidColorBrush RecordingForegroundBrush = FreezeBrush(0xFF, 0xFF, 0xFF);
 
     private readonly List<DocumentTabInfo> _documentTabs = new();
     private record DocumentTabInfo(Guid SessionId, string FilePath, TabItem TabItem, IFileViewer Viewer);
@@ -97,6 +108,38 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(30)
         };
         _usageCountdownTimer.Tick += (_, _) => RefreshUsageBadges(_latestUsage);
+
+        // Subscribe to communications pending count for sidebar badge
+        CommunicationsView.ViewModel.PropertyChanged += (s, e) =>
+        {
+            if (e.PropertyName == nameof(CommunicationManager.ViewModels.MainViewModel.PendingCount))
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    var count = CommunicationsView.ViewModel.PendingCount;
+                    if (count > 0)
+                    {
+                        SidebarCommsBadge.Visibility = Visibility.Visible;
+                        SidebarCommsBadgeText.Text = count.ToString();
+                    }
+                    else
+                    {
+                        SidebarCommsBadge.Visibility = Visibility.Collapsed;
+                    }
+                });
+            }
+        };
+
+        // Ctrl+J to toggle Quick Actions panel
+        InputBindings.Add(new KeyBinding(
+            new RelayInputCommand(() =>
+            {
+                if (_activeSidebarPanel == SidebarPanel.QuickActions)
+                    HideSidebarPanel();
+                else
+                    ShowSidebarPanel(SidebarPanel.QuickActions);
+            }),
+            new KeyGesture(Key.J, ModifierKeys.Control)));
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -130,6 +173,9 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
+        // Dispose Communications Manager (polling timer)
+        CommunicationsView.Dispose();
+
         // Cancel any pending debounced persist and flush immediately
         _persistDebounceCts?.Cancel();
         _sessionGitTimer.Stop();
@@ -996,41 +1042,74 @@ public partial class MainWindow : Window
         return $"{(int)remaining.TotalDays}d{remaining.Hours}h";
     }
 
-    private bool _quickActionsActive;
+    // --- Sidebar Panel (QA / Communications full-area takeover) ---
+    private enum SidebarPanel { None, QuickActions, Communications }
+    private SidebarPanel _activeSidebarPanel = SidebarPanel.None;
 
     private void BtnQuickActions_Click(object sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnQuickActions_Click");
-        ShowQuickActions();
+        if (_activeSidebarPanel == SidebarPanel.QuickActions)
+            HideSidebarPanel();
+        else
+            ShowSidebarPanel(SidebarPanel.QuickActions);
     }
 
-    private void ShowQuickActions()
+    private void BtnCommunications_Click(object sender, RoutedEventArgs e)
     {
-        FileLog.Write("[MainWindow] ShowQuickActions: switching to Quick Actions view");
+        FileLog.Write("[MainWindow] BtnCommunications_Click");
+        if (_activeSidebarPanel == SidebarPanel.Communications)
+            HideSidebarPanel();
+        else
+            ShowSidebarPanel(SidebarPanel.Communications);
+    }
 
-        _quickActionsActive = true;
+    private void ShowSidebarPanel(SidebarPanel panel)
+    {
+        FileLog.Write($"[MainWindow] ShowSidebarPanel: {panel}");
+        _activeSidebarPanel = panel;
 
         // Deselect any active session
         SessionList.SelectedIndex = -1;
 
-        // Hide session UI
+        // Hide all session UI
         _activeEmbeddedBackend?.Hide();
         SessionTabs.Visibility = Visibility.Collapsed;
         PromptBar.Visibility = Visibility.Collapsed;
         SessionHeaderBanner.Visibility = Visibility.Collapsed;
         PlaceholderText.Visibility = Visibility.Collapsed;
 
-        // Show Quick Actions
-        QuickActionsView.Visibility = Visibility.Visible;
+        // Show the requested panel, hide the other
+        QuickActionsView.Visibility = panel == SidebarPanel.QuickActions
+            ? Visibility.Visible : Visibility.Collapsed;
+        CommunicationsView.Visibility = panel == SidebarPanel.Communications
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        // Start/stop CM polling
+        if (panel == SidebarPanel.Communications)
+            CommunicationsView.StartPolling();
+        else
+            CommunicationsView.StopPolling();
     }
 
-    private void HideQuickActions()
+    private void HideSidebarPanel()
     {
-        if (!_quickActionsActive) return;
+        if (_activeSidebarPanel == SidebarPanel.None) return;
 
-        FileLog.Write("[MainWindow] HideQuickActions: switching back to session view");
-        _quickActionsActive = false;
+        FileLog.Write("[MainWindow] HideSidebarPanel");
+
+        // Stop CM polling
+        CommunicationsView.StopPolling();
+
+        _activeSidebarPanel = SidebarPanel.None;
         QuickActionsView.Visibility = Visibility.Collapsed;
+        CommunicationsView.Visibility = Visibility.Collapsed;
+
+        // Restore placeholder if no session selected
+        if (SessionList.SelectedItem == null)
+        {
+            PlaceholderText.Visibility = Visibility.Visible;
+        }
     }
 
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
@@ -1235,8 +1314,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Hide Quick Actions if active
-        HideQuickActions();
+        // Hide QA/CM panel if active -- selecting a session restores terminal view
+        HideSidebarPanel();
 
         AttachTerminal(vm.Session);
         SwitchDocumentTabsToSession(vm.Session.Id);
@@ -1978,14 +2057,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnRefreshConsole_Click(object sender, RoutedEventArgs e)
-    {
-        if (_activeEmbeddedBackend != null)
-        {
-            _activeEmbeddedBackend.Show();
-            UpdateConsolePosition();
-        }
-    }
+    // BtnRefreshConsole removed -- functionality unused
 
     private void BtnRefreshTerminal_Click(object sender, RoutedEventArgs e)
     {
@@ -2018,6 +2090,13 @@ public partial class MainWindow : Window
 
     private async void PromptInput_KeyDown(object sender, KeyEventArgs e)
     {
+        // Any keypress stops voice recording (Microsoft-style)
+        if (_isVoiceRecording)
+        {
+            StopVoiceRecording();
+            return;
+        }
+
         if (e.Key == Key.Enter && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
         {
             e.Handled = true;
@@ -2032,8 +2111,274 @@ public partial class MainWindow : Window
 
     private async void BtnSendPrompt_Click(object sender, RoutedEventArgs e)
     {
-        await SendPromptAsync();
+        try
+        {
+            if (_isVoiceRecording)
+                StopVoiceRecording();
+            await SendPromptAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnSendPrompt_Click FAILED: {ex.Message}");
+        }
     }
+
+    // ── Voice Input (Mic Button) ─────────────────────────────────
+
+    private async void BtnMic_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_isVoiceRecording)
+            {
+                StopVoiceRecording();
+                return;
+            }
+
+            await StartVoiceRecordingAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnMic_Click FAILED: {ex.Message}");
+            ResetMicButtonVisual();
+        }
+    }
+
+    private async Task StartVoiceRecordingAsync()
+    {
+        FileLog.Write("[MainWindow] StartVoiceRecordingAsync");
+
+        // Lazy-init Vosk model on first use
+        if (_voskStt == null)
+        {
+            _voskStt = new VoskSttService();
+            _customDictionary = new CustomDictionary();
+        }
+
+        if (!_voskStt.IsAvailable)
+        {
+            // Show loading state on button
+            BtnMic.Content = "...";
+            BtnMic.IsEnabled = false;
+            try
+            {
+                await _voskStt.InitializeAsync();
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] Vosk init FAILED: {ex.Message}");
+                ResetMicButtonVisual();
+                BtnMic.IsEnabled = true;
+                MessageBox.Show(
+                    $"Voice input failed to initialize:\n{ex.Message}",
+                    "Voice Input",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+            BtnMic.IsEnabled = true;
+        }
+
+        // Init audio recorder
+        _micRecorder = new AudioRecorder();
+        if (!_micRecorder.IsAvailable)
+        {
+            FileLog.Write($"[MainWindow] Mic not available: {_micRecorder.UnavailableReason}");
+            MessageBox.Show(
+                _micRecorder.UnavailableReason ?? "No microphone detected.",
+                "Voice Input",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            _micRecorder.Dispose();
+            _micRecorder = null;
+            return;
+        }
+
+        // Remember existing text so we append after it
+        _voiceTextBeforeRecording = PromptInput.Text;
+
+        // Wire audio chunks to Vosk and start recording
+        // If anything fails here, clean up so we don't leave half-started state
+        try
+        {
+            _voskStt.StartSession();
+            _voskStt.OnPartialResult += OnVoskPartialResult;
+            _micRecorder.OnAudioDataAvailable += OnMicAudioData;
+            _micRecorder.StartRecording();
+        }
+        catch
+        {
+            _voskStt.OnPartialResult -= OnVoskPartialResult;
+            _micRecorder.OnAudioDataAvailable -= OnMicAudioData;
+            _micRecorder.Dispose();
+            _micRecorder = null;
+            throw;
+        }
+
+        _isVoiceRecording = true;
+
+        // Visual: red recording state
+        BtnMic.Background = RecordingBrush;
+        BtnMic.Foreground = RecordingForegroundBrush;
+        BtnMic.Content = "REC";
+
+        // Listen for clicks anywhere to stop recording
+        Mouse.Capture(BtnMic, CaptureMode.SubTree);
+        AddHandler(Mouse.PreviewMouseDownEvent, new MouseButtonEventHandler(OnGlobalMouseDown), true);
+
+        FileLog.Write("[MainWindow] Voice recording started");
+    }
+
+    private void StopVoiceRecording()
+    {
+        if (!_isVoiceRecording)
+            return;
+
+        FileLog.Write("[MainWindow] StopVoiceRecording");
+        _isVoiceRecording = false;
+
+        // Stop listening for global clicks
+        try
+        {
+            Mouse.Capture(null);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] Mouse.Capture(null) FAILED: {ex.Message}");
+        }
+        RemoveHandler(Mouse.PreviewMouseDownEvent, new MouseButtonEventHandler(OnGlobalMouseDown));
+
+        // Unhook events
+        if (_voskStt != null)
+            _voskStt.OnPartialResult -= OnVoskPartialResult;
+        if (_micRecorder != null)
+            _micRecorder.OnAudioDataAvailable -= OnMicAudioData;
+
+        // Stop recording (fire-and-forget the WAV file, we don't need it)
+        if (_micRecorder is { IsRecording: true })
+        {
+            _ = _micRecorder.StopRecordingAsync().ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                    FileLog.Write($"[MainWindow] StopRecordingAsync FAILED: {t.Exception?.InnerException?.Message}");
+                _micRecorder?.Dispose();
+                _micRecorder = null;
+            });
+        }
+        else
+        {
+            _micRecorder?.Dispose();
+            _micRecorder = null;
+        }
+
+        // Get final transcription
+        string finalText;
+        try
+        {
+            finalText = _voskStt?.EndSession() ?? string.Empty;
+            if (_customDictionary != null && !string.IsNullOrWhiteSpace(finalText))
+                finalText = _customDictionary.CorrectTranscription(finalText);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] EndSession FAILED: {ex.Message}");
+            finalText = string.Empty;
+        }
+
+        // Set final text in prompt
+        var capturedFinal = finalText;
+        Dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                var prefix = string.IsNullOrEmpty(_voiceTextBeforeRecording)
+                    ? string.Empty
+                    : _voiceTextBeforeRecording.TrimEnd() + " ";
+                PromptInput.Text = prefix + capturedFinal;
+                PromptInput.CaretIndex = PromptInput.Text.Length;
+                PromptInput.Focus();
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] StopVoiceRecording UI update FAILED: {ex.Message}");
+            }
+
+            ResetMicButtonVisual();
+        });
+
+        FileLog.Write($"[MainWindow] Voice recording stopped. Final: \"{finalText}\"");
+    }
+
+    private void ResetMicButtonVisual()
+    {
+        BtnMic.Background = (Brush)FindResource("ButtonBackground");
+        BtnMic.Foreground = (Brush)FindResource("TextForeground");
+        BtnMic.Content = "Mic";
+    }
+
+    private void OnMicAudioData(byte[] audioData)
+    {
+        try
+        {
+            _voskStt?.ProcessAudioChunk(audioData);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OnMicAudioData FAILED: {ex.Message}");
+        }
+    }
+
+    private void OnVoskPartialResult(string partialText)
+    {
+        try
+        {
+            if (_customDictionary != null && !string.IsNullOrWhiteSpace(partialText))
+                partialText = _customDictionary.CorrectTranscription(partialText);
+
+            var text = partialText;
+            Dispatcher.BeginInvoke(() =>
+            {
+                try
+                {
+                    if (!_isVoiceRecording)
+                        return;
+                    var prefix = string.IsNullOrEmpty(_voiceTextBeforeRecording)
+                        ? string.Empty
+                        : _voiceTextBeforeRecording.TrimEnd() + " ";
+                    PromptInput.Text = prefix + text;
+                    PromptInput.CaretIndex = PromptInput.Text.Length;
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[MainWindow] OnVoskPartialResult UI update FAILED: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OnVoskPartialResult FAILED: {ex.Message}");
+        }
+    }
+
+    private void OnGlobalMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        try
+        {
+            // If click is on the mic button itself, the BtnMic_Click handler will toggle it off
+            if (BtnMic.IsMouseOver)
+                return;
+
+            // Click anywhere else stops recording
+            if (_isVoiceRecording)
+                StopVoiceRecording();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OnGlobalMouseDown FAILED: {ex.Message}");
+        }
+    }
+
+    // ── Send / Queue ─────────────────────────────────────────────
 
     private async Task SendPromptAsync()
     {
@@ -2622,6 +2967,8 @@ public partial class MainWindow : Window
 
     private void BtnQueuePrompt_Click(object sender, RoutedEventArgs e)
     {
+        if (_isVoiceRecording)
+            StopVoiceRecording();
         QueueCurrentPrompt();
     }
 
@@ -3571,4 +3918,20 @@ public class TurnSummaryViewModel
         Header = header;
         Summary = summary;
     }
+}
+
+/// <summary>
+/// Simple ICommand implementation for keyboard bindings.
+/// </summary>
+internal sealed class RelayInputCommand : ICommand
+{
+    private readonly Action _execute;
+
+    public RelayInputCommand(Action execute) => _execute = execute;
+
+    public event EventHandler? CanExecuteChanged { add { } remove { } }
+
+    public bool CanExecute(object? parameter) => true;
+
+    public void Execute(object? parameter) => _execute();
 }

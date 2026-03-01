@@ -17,6 +17,8 @@
   <ItemGroup>
     <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
     <ProjectReference Include="..\CcDirector.Engine\CcDirector.Engine.csproj" />
+    <ProjectReference Include="..\CcDirector.VoskStt\CcDirector.VoskStt.csproj" />
+    <ProjectReference Include="..\CcDirector.CommunicationManager\CcDirector.CommunicationManager.csproj" />
   </ItemGroup>
 
   <ItemGroup>

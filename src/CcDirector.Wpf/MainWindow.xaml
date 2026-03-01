@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:CcDirector.Wpf.Controls"
+        xmlns:cm="clr-namespace:CommunicationManager;assembly=CcDirector.CommunicationManager"
         Title="CC Director v2"
         Icon="app.ico"
         Width="1400" Height="700"
@@ -259,17 +260,6 @@
                                    Margin="6,0,0,0" />
                     </DockPanel>
 
-                    <!-- Quick Actions button -->
-                    <Button x:Name="BtnQuickActions" DockPanel.Dock="Top"
-                            Content="Quick Actions"
-                            Click="BtnQuickActions_Click"
-                            Focusable="False"
-                            Height="30" Margin="8,2,8,2"
-                            Background="#68217A"
-                            Foreground="White"
-                            BorderThickness="0"
-                            Cursor="Hand" />
-
                     <!-- New Session button -->
                     <Button x:Name="BtnNewSession" DockPanel.Dock="Top"
                             Content="+ New Session"
@@ -280,6 +270,46 @@
                             Foreground="White"
                             BorderThickness="0"
                             Cursor="Hand" />
+
+                    <!-- Quick Actions button (bottom of sidebar) -->
+                    <Button x:Name="BtnQuickActions" DockPanel.Dock="Bottom"
+                            Content="Quick Actions"
+                            Click="BtnQuickActions_Click"
+                            Focusable="False"
+                            Height="30" Margin="8,2,8,2"
+                            Background="#68217A"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand" />
+
+                    <!-- Communications button (bottom of sidebar) -->
+                    <Grid DockPanel.Dock="Bottom" Margin="8,2,8,2">
+                        <Button x:Name="BtnCommunications"
+                                Content="Communications"
+                                Click="BtnCommunications_Click"
+                                Focusable="False"
+                                Height="30"
+                                Background="#2D7D46"
+                                Foreground="White"
+                                BorderThickness="0"
+                                Cursor="Hand" />
+                        <!-- Pending count badge overlaid on button -->
+                        <Border x:Name="SidebarCommsBadge"
+                                Background="#DC2626"
+                                CornerRadius="8"
+                                Padding="5,1"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center"
+                                Margin="0,0,8,0"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed">
+                            <TextBlock x:Name="SidebarCommsBadgeText"
+                                       Text="0"
+                                       Foreground="White"
+                                       FontSize="10"
+                                       FontWeight="SemiBold" />
+                        </Border>
+                    </Grid>
 
                     <!-- Usage summary panel (always visible in sidebar) -->
                     <StackPanel x:Name="SidebarUsagePanel" DockPanel.Dock="Bottom"
@@ -870,7 +900,7 @@
                                          FontSize="13"
                                          KeyDown="PromptInput_KeyDown"
                                          GotFocus="PromptInput_GotFocus" />
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                                <StackPanel Grid.Column="1" Orientation="Vertical" VerticalAlignment="Bottom">
                                     <Button Content="Send"
                                             Click="BtnSendPrompt_Click"
                                             Width="60" Margin="8,0,0,0"
@@ -879,32 +909,31 @@
                                             Foreground="White"
                                             BorderThickness="0"
                                             Cursor="Hand" />
+                                    <Button x:Name="BtnMic"
+                                            Click="BtnMic_Click"
+                                            Width="60" Margin="8,4,0,0"
+                                            Height="30"
+                                            Background="{StaticResource ButtonBackground}"
+                                            Foreground="{StaticResource TextForeground}"
+                                            BorderThickness="0"
+                                            Cursor="Hand"
+                                            FontFamily="Segoe UI Symbol"
+                                            FontSize="14"
+                                            Content="Mic"
+                                            ToolTip="Voice input (click to start, click again or type to stop)" />
                                     <Button x:Name="BtnQueuePrompt" Content="Queue"
                                             Click="BtnQueuePrompt_Click"
-                                            Width="60" Margin="4,0,0,0"
+                                            Width="60" Margin="8,4,0,0"
                                             Height="30"
                                             Background="{StaticResource ButtonBackground}"
                                             Foreground="{StaticResource TextForeground}"
                                             BorderThickness="0"
                                             Cursor="Hand"
                                             ToolTip="Add to prompt queue (Ctrl+Shift+Enter)" />
-                                    <Button Content="&#x21bb;" Click="BtnRefreshConsole_Click"
-                                            Width="30" Margin="4,0,0,0"
-                                            Height="30"
-                                            Background="{StaticResource ButtonBackground}"
-                                            Foreground="{StaticResource TextForeground}"
-                                            BorderThickness="0"
-                                            Cursor="Hand"
-                                            ToolTip="Reposition console overlay"
-                                            FontSize="16" />
                                 </StackPanel>
                             </Grid>
                         </Border>
                     </Grid>
-
-                    <!-- Quick Actions View (overlays terminal column when active) -->
-                    <controls:QuickActionsView x:Name="QuickActionsView" Grid.Column="0"
-                                                Visibility="Collapsed" />
 
                     <!-- InspectorToggle -->
                     <Border Grid.Column="1" Background="{StaticResource SidebarBackground}" Width="24">
@@ -1098,6 +1127,15 @@
                             </TabItem>
                         </TabControl>
                     </Border>
+                    <!-- Quick Actions (full-area overlay, spans all columns) -->
+                    <controls:QuickActionsView x:Name="QuickActionsView"
+                                                Grid.ColumnSpan="3"
+                                                Visibility="Collapsed" />
+
+                    <!-- Communications Manager (full-area overlay, spans all columns) -->
+                    <cm:CommunicationManagerView x:Name="CommunicationsView"
+                                                  Grid.ColumnSpan="3"
+                                                  Visibility="Collapsed" />
                 </Grid>
 
     </Grid>
