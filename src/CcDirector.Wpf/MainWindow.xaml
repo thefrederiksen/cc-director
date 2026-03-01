@@ -259,6 +259,17 @@
                                    Margin="6,0,0,0" />
                     </DockPanel>
 
+                    <!-- Quick Actions button -->
+                    <Button x:Name="BtnQuickActions" DockPanel.Dock="Top"
+                            Content="Quick Actions"
+                            Click="BtnQuickActions_Click"
+                            Focusable="False"
+                            Height="30" Margin="8,2,8,2"
+                            Background="#68217A"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand" />
+
                     <!-- New Session button -->
                     <Button x:Name="BtnNewSession" DockPanel.Dock="Top"
                             Content="+ New Session"
@@ -890,6 +901,10 @@
                             </Grid>
                         </Border>
                     </Grid>
+
+                    <!-- Quick Actions View (overlays terminal column when active) -->
+                    <controls:QuickActionsView x:Name="QuickActionsView" Grid.Column="0"
+                                                Visibility="Collapsed" />
 
                     <!-- InspectorToggle -->
                     <Border Grid.Column="1" Background="{StaticResource SidebarBackground}" Width="24">

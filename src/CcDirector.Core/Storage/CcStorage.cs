@@ -82,6 +82,9 @@ public static class CcStorage
     /// <summary>Job scheduler state database: vault/engine.db</summary>
     public static string EngineDb() => Path.Combine(Vault(), "engine.db");
 
+    /// <summary>Quick Actions chat database: vault/quick_actions.db</summary>
+    public static string QuickActionsDb() => Path.Combine(Vault(), "quick_actions.db");
+
     /// <summary>Imported files: vault/documents/</summary>
     public static string VaultDocuments() => Path.Combine(Vault(), "documents");
 

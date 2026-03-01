@@ -996,6 +996,43 @@ public partial class MainWindow : Window
         return $"{(int)remaining.TotalDays}d{remaining.Hours}h";
     }
 
+    private bool _quickActionsActive;
+
+    private void BtnQuickActions_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnQuickActions_Click");
+        ShowQuickActions();
+    }
+
+    private void ShowQuickActions()
+    {
+        FileLog.Write("[MainWindow] ShowQuickActions: switching to Quick Actions view");
+
+        _quickActionsActive = true;
+
+        // Deselect any active session
+        SessionList.SelectedIndex = -1;
+
+        // Hide session UI
+        _activeEmbeddedBackend?.Hide();
+        SessionTabs.Visibility = Visibility.Collapsed;
+        PromptBar.Visibility = Visibility.Collapsed;
+        SessionHeaderBanner.Visibility = Visibility.Collapsed;
+        PlaceholderText.Visibility = Visibility.Collapsed;
+
+        // Show Quick Actions
+        QuickActionsView.Visibility = Visibility.Visible;
+    }
+
+    private void HideQuickActions()
+    {
+        if (!_quickActionsActive) return;
+
+        FileLog.Write("[MainWindow] HideQuickActions: switching back to session view");
+        _quickActionsActive = false;
+        QuickActionsView.Visibility = Visibility.Collapsed;
+    }
+
     private void BtnNewSession_Click(object sender, RoutedEventArgs e)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1197,6 +1234,9 @@ public partial class MainWindow : Window
             DetachTerminal();
             return;
         }
+
+        // Hide Quick Actions if active
+        HideQuickActions();
 
         AttachTerminal(vm.Session);
         SwitchDocumentTabsToSession(vm.Session.Id);
