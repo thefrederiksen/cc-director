@@ -1,18 +1,18 @@
 # cc-setup
 
-Windows installer for the cc-tools CLI suite. Downloads tools from GitHub releases, configures PATH, and installs Claude Code skill integration.
+Windows installer for the cc-director tools suite. Downloads tools from GitHub releases, configures PATH, and installs Claude Code skill integration.
 
 ## Usage
 
 ```bash
-cc-tools-setup
+cc-director-setup
 ```
 
 No arguments required. Runs a 5-step automated installation.
 
 ## Installation Steps
 
-1. **Create install directory** - `%LOCALAPPDATA%\cc-tools`
+1. **Create install directory** - `%LOCALAPPDATA%\cc-director`
 2. **Check latest release** - Fetches from GitHub API
 3. **Download tools** - Downloads executables from release assets
 4. **Add to PATH** - Modifies Windows user PATH via registry
@@ -29,7 +29,7 @@ No arguments required. Runs a 5-step automated installation.
 
 ```
 ============================================================
-  cc-tools Setup
+  cc-director Setup
   https://github.com/cc-director/cc-director
 ============================================================
 
@@ -41,7 +41,7 @@ No arguments required. Runs a 5-step automated installation.
 
 ============================================================
   Installation complete!
-  Restart your terminal to use cc-tools.
+  Restart your terminal to use cc-director tools.
 ============================================================
 ```
 
@@ -59,9 +59,10 @@ Runtime: Python stdlib only (urllib, winreg, pathlib, ctypes)
 ## Install Directory
 
 ```
-%LOCALAPPDATA%\cc-tools\
-  cc-markdown.exe
-  cc-transcribe.exe
-  cc-image.exe
-  ...
+%LOCALAPPDATA%\cc-director\
+  bin\
+    cc-markdown.exe
+    cc-transcribe.exe
+    cc-image.exe
+    ...
 ```

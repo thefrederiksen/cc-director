@@ -1,16 +1,16 @@
 @echo off
-REM Build all cc-tools and copy to %LOCALAPPDATA%\cc-tools\bin
+REM Build all cc-tools and copy to %LOCALAPPDATA%\cc-director\bin
 REM Usage: scripts\build-tools.bat (from cc-director monorepo root)
 
 setlocal enabledelayedexpansion
 
 echo ============================================
-echo Building all cc-tools
+echo Building all cc-tools to cc-director\bin
 echo ============================================
 echo.
 
 set "REPO_DIR=%~dp0.."
-set "INSTALL_DIR=%LOCALAPPDATA%\cc-tools\bin"
+set "INSTALL_DIR=%LOCALAPPDATA%\cc-director\bin"
 set "FAILED="
 set "SUCCESS_COUNT=0"
 set "FAIL_COUNT=0"
@@ -25,7 +25,7 @@ REM ============================================
 REM Python tools (built with PyInstaller)
 REM Directory names use underscores, exe names use dashes
 REM ============================================
-set "PYTHON_TOOLS=cc-comm-queue cc-crawl4ai cc-gmail cc-hardware cc-image cc-linkedin cc-markdown cc-outlook cc-photos cc-powerpoint cc-reddit cc-setup cc-transcribe cc-vault cc-video cc-voice cc-whisper cc-youtube-info"
+set "PYTHON_TOOLS=cc-comm-queue cc-crawl4ai cc-gmail cc-hardware cc-image cc-linkedin cc-markdown cc-outlook cc-photos cc-powerpoint cc-reddit cc-setup cc-spotify cc-transcribe cc-vault cc-video cc-voice cc-whisper cc-youtube-info"
 
 for %%T in (%PYTHON_TOOLS%) do (
     echo.
@@ -45,14 +45,14 @@ for %%T in (%PYTHON_TOOLS%) do (
 
         if !errorlevel! equ 0 (
             REM Copy exe to install directory
-            REM Handle special case: cc-setup builds as cc-tools-setup.exe
+            REM Handle special case: cc-setup builds as cc-director-setup.exe
             if "%%T"=="cc-setup" (
-                if exist "dist\cc-tools-setup.exe" (
-                    copy /Y "dist\cc-tools-setup.exe" "%INSTALL_DIR%\" >nul
-                    echo [OK] cc-tools-setup.exe copied to %INSTALL_DIR%
+                if exist "dist\cc-director-setup.exe" (
+                    copy /Y "dist\cc-director-setup.exe" "%INSTALL_DIR%\" >nul
+                    echo [OK] cc-director-setup.exe copied to %INSTALL_DIR%
                     set /a SUCCESS_COUNT+=1
                 ) else (
-                    echo [FAIL] cc-tools-setup.exe not found after build
+                    echo [FAIL] cc-director-setup.exe not found after build
                     set "FAILED=!FAILED! %%T"
                     set /a FAIL_COUNT+=1
                 )

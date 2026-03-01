@@ -64,7 +64,7 @@ PERSONA_DISPLAY_MAP = {
 }
 
 # Email account mapping - defines which tool/account to use for each identifier
-# Configure actual email addresses in %LOCALAPPDATA%\cc-tools\data\config.json
+# Configure actual email addresses in %LOCALAPPDATA%\cc-director\config\config.json
 SEND_FROM_ACCOUNTS = {
     "mindzie": {
         "email": "user@company.com",

@@ -17,7 +17,7 @@ Photo organization tool: scan, categorize, detect duplicates and screenshots, AI
 pip install -e .
 ```
 
-Or use the pre-built executable `cc-photos` (on PATH, installed to `%LOCALAPPDATA%\cc-tools\bin\`).
+Or use the pre-built executable `cc-photos` (on PATH, installed to `%LOCALAPPDATA%\cc-director\bin\`).
 
 ## Prerequisites
 

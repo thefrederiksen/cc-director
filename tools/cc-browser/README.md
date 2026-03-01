@@ -279,7 +279,7 @@ cd <repo-root>
 scripts\build-tools.bat
 ```
 
-This runs `build.ps1` then copies `dist/` contents to `%LOCALAPPDATA%\cc-tools\bin\_cc-browser\`.
+This runs `build.ps1` then copies `dist/` contents to `%LOCALAPPDATA%\cc-director\bin\_cc-browser\`.
 
 ### Build-only (cc-browser individually)
 
@@ -295,7 +295,7 @@ Then manually copy from `dist/` to the install location if needed.
 ### What Gets Deployed
 
 ```
-%LOCALAPPDATA%\cc-tools\bin\
+%LOCALAPPDATA%\cc-director\bin\
   cc-browser.cmd                    # Windows launcher: @node "%~dp0_cc-browser\src\cli.mjs" %*
   cc-browser                        # Git Bash launcher (used by Claude Code)
   _cc-browser\                      # Underscore prefix avoids file/dir name collision

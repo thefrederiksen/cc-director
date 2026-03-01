@@ -2,7 +2,7 @@
 
 Command-line tools for document conversion, media processing, email, and AI workflows.
 
-**Install location:** `%LOCALAPPDATA%\cc-tools\bin\` (tools are on PATH)
+**Install location:** `%LOCALAPPDATA%\cc-director\bin\` (tools are on PATH)
 
 **Shell compatibility:** Tools work in CMD, PowerShell, and Git Bash (used by Claude Code).
 Node.js and .NET tools include both `.cmd` (Windows) and extensionless (Git Bash) launchers.
@@ -30,6 +30,7 @@ Node.js and .NET tools include both `.cmd` (Windows) and extensionless (Git Bash
 | cc-powerpoint | Markdown to PowerPoint presentations | None |
 | cc-photos | Photo organization: duplicates, screenshots, AI | OpenAI API key |
 | cc-reddit | Reddit automation | Playwright browsers |
+| cc-spotify | Spotify web player control via browser | cc-browser |
 | cc-setup | Windows installer for cc-tools suite | None |
 | cc-transcribe | Video/audio transcription with screenshots | FFmpeg, OpenAI API key |
 | cc-trisight | Windows screen detection and automation | Windows, .NET |
@@ -884,13 +885,62 @@ cc-reddit reply URL "Reply text"
 
 ---
 
+## cc-spotify
+
+Spotify CLI via browser automation. Controls Spotify Web Player (open.spotify.com) through cc-browser.
+
+```bash
+# Setup
+cc-spotify config --workspace edge-personal
+# Then: cc-browser start --workspace edge-personal
+# Navigate to open.spotify.com and log in (one-time)
+
+# Status
+cc-spotify status
+cc-spotify now
+
+# Playback
+cc-spotify play
+cc-spotify pause
+cc-spotify next
+cc-spotify prev
+
+# Controls
+cc-spotify shuffle --on
+cc-spotify shuffle --off
+cc-spotify repeat off                    # off, context, track
+cc-spotify volume 75                     # 0-100
+cc-spotify like                          # Heart current track
+
+# Browse
+cc-spotify search "Miles Davis"
+cc-spotify playlists                     # List sidebar playlists
+cc-spotify playlist "Chill Vibes"        # Play by name
+cc-spotify queue                         # Show queue
+cc-spotify goto URL                      # Navigate to Spotify URL
+
+# Vault recommendations
+cc-spotify recommend
+cc-spotify recommend --mood "chill jazz"
+
+# Config
+cc-spotify config --workspace NAME       # Set default workspace
+cc-spotify config --show                 # Show config
+```
+
+**Global options:** `--workspace, -w` (override per-call), `--format text|json`, `--verbose`
+
+**Note:** Requires cc-browser daemon running with Spotify open. Premium recommended for full playback control.
+
+---
+
 ## cc-setup
 
 Windows installer for the cc-tools suite.
 
 ```bash
 # Run installer (no arguments)
-cc-tools-setup
+cc-director-setup
 ```
 
 Downloads tools from GitHub releases, configures PATH, installs Claude Code skill. No admin privileges required.
@@ -997,6 +1047,7 @@ set OPENAI_API_KEY=your-key-here
 | cc-photos | OPENAI_API_KEY (for AI analysis) |
 | cc-powerpoint | None |
 | cc-reddit | Playwright browsers, cc-browser |
+| cc-spotify | cc-browser workspace with Spotify open |
 | cc-setup | None (internet for GitHub downloads) |
 | cc-transcribe | FFmpeg in PATH, OPENAI_API_KEY |
 | cc-trisight | Windows, .NET runtime |

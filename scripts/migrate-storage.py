@@ -47,9 +47,9 @@ def _new_base() -> str:
 # ---------------------------------------------------------------------------
 
 def find_backup() -> str:
-    """Find the most recent backup directory. Returns path or empty string."""
+    """Find the most recent backup zip file. Returns path or empty string."""
     backup_base = os.environ.get("CC_BACKUP_DIR", str(Path.home() / "Backups"))
-    pattern = os.path.join(backup_base, "cc-director-migration-*")
+    pattern = os.path.join(backup_base, "cc-director-migration-*.zip")
     matches = sorted(glob.glob(pattern))
     return matches[-1] if matches else ""
 
@@ -165,6 +165,7 @@ def run_migration(dry_run: bool = True) -> None:
     if old_director:
         rules.append(("accounts.json", os.path.join(old_director, "accounts.json"), os.path.join(new_director_cfg, "accounts.json"), False))
         rules.append(("root-directories.json", os.path.join(old_director, "root-directories.json"), os.path.join(new_director_cfg, "root-directories.json"), False))
+        rules.append(("whisper-models", os.path.join(old_director, "whisper-models"), os.path.join(base, "models", "whisper"), True))
 
     # --- Director config (from Documents\CcDirector) ---
     old_docs_dir = os.path.join(docs, "CcDirector")
@@ -314,7 +315,7 @@ def _print_cleanup_list():
     dirs.append(os.path.join(docs, "CcDirector"))
 
     print()
-    print("  KEEP: %LOCALAPPDATA%\\cc-tools\\bin\\  (executables live here)")
+    print("  NOTE: Executables now live at %LOCALAPPDATA%\\cc-director\\bin\\")
     print()
     for d in dirs:
         if os.path.exists(d):

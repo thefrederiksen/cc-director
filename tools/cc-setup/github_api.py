@@ -28,7 +28,7 @@ def get_latest_release() -> Optional[dict]:
             url,
             headers={
                 "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "cc-tools-setup"
+                "User-Agent": "cc-director-setup"
             }
         )
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -73,7 +73,7 @@ def download_file(url: str, dest_path: str, show_progress: bool = True) -> bool:
     try:
         request = urllib.request.Request(
             url,
-            headers={"User-Agent": "cc-tools-setup"}
+            headers={"User-Agent": "cc-director-setup"}
         )
 
         with urllib.request.urlopen(request, timeout=300) as response:

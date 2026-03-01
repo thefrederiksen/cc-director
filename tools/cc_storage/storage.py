@@ -8,7 +8,7 @@ Storage categories:
     config  - Tool settings, OAuth tokens, credentials, app state
     output  - Generated files: PDFs, reports, transcripts, exports
     logs    - All application and tool logs
-    bin     - Installed executables (cc-tools binaries)
+    bin     - Installed executables (tool binaries)
 
 Environment variable overrides:
     CC_DIRECTOR_ROOT - Override the base directory (default: %LOCALAPPDATA%/cc-director)
@@ -63,11 +63,11 @@ class CcStorage:
 
     @staticmethod
     def bin() -> Path:
-        """Installed executables (cc-tools binaries). Unchanged location."""
+        """Installed executables (tool binaries)."""
         local = os.environ.get("LOCALAPPDATA")
         if local:
-            return Path(local) / "cc-tools" / "bin"
-        return Path.home() / ".cc-tools" / "bin"
+            return Path(local) / "cc-director" / "bin"
+        return Path.home() / ".cc-director" / "bin"
 
     # -- Tool-specific shortcuts --
 

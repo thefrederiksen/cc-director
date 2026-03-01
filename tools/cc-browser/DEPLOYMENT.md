@@ -25,7 +25,7 @@ cc-browser is a **CLI + daemon pair**, NOT a standalone executable.
 ## What Gets Deployed
 
 ```
-%LOCALAPPDATA%\cc-tools\bin\
+%LOCALAPPDATA%\cc-director\bin\
   cc-browser.cmd              <- Windows entry point (CMD/PowerShell)
   cc-browser                  <- Git Bash entry point (Claude Code)
   _cc-browser\                <- underscore prefix avoids file/dir name collision
@@ -68,8 +68,8 @@ Windows cannot have a file and directory with the same name.
 
 ### Manual
 
-1. Copy entire `cc-browser/` directory (src + node_modules + package.json) to `%LOCALAPPDATA%\cc-tools\bin\_cc-browser\`
-2. Ensure `cc-browser.cmd` and `cc-browser` (extensionless) exist at `%LOCALAPPDATA%\cc-tools\bin\`
+1. Copy entire `cc-browser/` directory (src + node_modules + package.json) to `%LOCALAPPDATA%\cc-director\bin\_cc-browser\`
+2. Ensure `cc-browser.cmd` and `cc-browser` (extensionless) exist at `%LOCALAPPDATA%\cc-director\bin\`
 3. Delete any `cc-browser.exe` in that directory -- it will take precedence over `.cmd` and cause confusion
 4. After deploying updated source, restart any running daemon:
    ```bash

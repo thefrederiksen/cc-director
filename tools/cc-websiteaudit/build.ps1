@@ -21,8 +21,8 @@ npx esbuild src/cli.mjs --bundle --platform=node --format=cjs --outfile=build/cl
 Write-Host "[*] Packaging with pkg..."
 npx pkg build/cli.cjs --targets node18-win-x64 --output dist/cc-websiteaudit.exe
 
-# Copy to cc-tools bin directory
-$binDir = "$env:LOCALAPPDATA\cc-tools\bin"
+# Copy to cc-director bin directory
+$binDir = "$env:LOCALAPPDATA\cc-director\bin"
 if (Test-Path $binDir) {
     Write-Host "[*] Copying to $binDir..."
     Copy-Item dist/cc-websiteaudit.exe $binDir/

@@ -25,7 +25,7 @@ pip install -e ".[full]"
 
 ```powershell
 .\build.ps1
-copy dist\cc-vault.exe %LOCALAPPDATA%\cc-tools\bin\
+copy dist\cc-vault.exe %LOCALAPPDATA%\cc-director\bin\
 ```
 
 ## Configuration

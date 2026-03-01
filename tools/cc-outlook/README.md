@@ -12,7 +12,7 @@ Outlook CLI for Claude Code: read, send, search emails and manage calendar from 
 
 2. The executable will be at `dist\cc-outlook.exe`
 
-3. Run the central build script to copy to `%LOCALAPPDATA%\cc-tools\bin\`:
+3. Run the central build script to copy to `%LOCALAPPDATA%\cc-director\bin\`:
    ```batch
    scripts\build.bat
    ```

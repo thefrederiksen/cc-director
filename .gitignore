@@ -19,7 +19,9 @@ tmp_build_output/CcDirector.Core.dll
 tmp_build_output/CcDirector.Core.pdb
 .claude/sounds/.current_session
 .claude/settings.local.json
+scripts/.claude/
 supabase-credentials.txt
+docs/MACHINE_AUDIT_*.md
 code-review-log.json
 tmp_build_output/after_click.png
 tmp_build_output/dialog_check.png
@@ -38,6 +40,7 @@ json-schema-stderr.txt
 
 # Python
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *$py.class
 *.egg-info/

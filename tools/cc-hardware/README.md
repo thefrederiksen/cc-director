@@ -14,7 +14,7 @@ System hardware information CLI tool.
 
 ## Installation
 
-Built executable is installed to `%LOCALAPPDATA%\cc-tools\bin\cc-hardware.exe`
+Built executable is installed to `%LOCALAPPDATA%\cc-director\bin\cc-hardware.exe`
 
 ## Usage
 

@@ -1,6 +1,6 @@
 # Tools Overview
 
-CC Director includes 25+ command-line tools for document conversion, media processing, email, browser automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-tools\bin\` and are available on your PATH.
+CC Director includes 25+ command-line tools for document conversion, media processing, email, browser automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
 
 ## Quick Reference
 
@@ -24,6 +24,7 @@ CC Director includes 25+ command-line tools for document conversion, media proce
 | cc-powerpoint | Markdown to PowerPoint presentations | None |
 | cc-reddit | Reddit automation with human-like delays | Playwright browsers |
 | cc-setup | Windows installer for cc-tools suite | None |
+| cc-spotify | Spotify playback control via browser automation | cc-browser, Spotify Premium |
 | cc-transcribe | Video/audio transcription with screenshots | FFmpeg, OpenAI API key |
 | cc-trisight | Windows screen detection and automation | Windows, .NET |
 | cc-vault | Secure credential and data storage | None |
@@ -144,6 +145,24 @@ cc-reddit comment URL "Comment text"
 ```
 
 **Important:** Always use cc-reddit for Reddit operations. Never use cc-browser directly with Reddit.
+
+### cc-spotify
+
+Spotify playback control via browser automation. Controls Spotify Web Player through a cc-browser workspace.
+
+```bash
+cc-spotify config --workspace edge-personal
+cc-spotify status
+cc-spotify now
+cc-spotify play / pause / next / prev
+cc-spotify shuffle --on
+cc-spotify search "Miles Davis"
+cc-spotify playlists
+cc-spotify volume 75
+cc-spotify recommend --mood "chill"
+```
+
+**Setup:** Requires a cc-browser workspace with Spotify Web Player open and logged in.
 
 ### cc-crawl4ai
 

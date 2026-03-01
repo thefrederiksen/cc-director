@@ -33,7 +33,7 @@ class DispatcherConfig:
     # Path to communication manager content folder
     content_path: Path = Path(
         os.environ.get("LOCALAPPDATA", str(Path.home())),
-        "cc-tools", "data", "comm_manager", "content"
+        "cc-director", "config", "comm-queue"
     )
 
     # Poll interval in seconds (for checking scheduled items)

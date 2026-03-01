@@ -49,17 +49,17 @@ class TestGetInstallDir:
     """Tests for install directory resolution via CcStorage."""
 
     def test_localappdata_path(self, tmp_path):
-        """Install dir resolves to LOCALAPPDATA/cc-tools/bin."""
+        """Install dir resolves to LOCALAPPDATA/cc-director/bin."""
         with patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}):
             result = get_install_dir()
-        assert result == tmp_path / "cc-tools" / "bin"
+        assert result == tmp_path / "cc-director" / "bin"
 
     def test_fallback_without_localappdata(self):
-        """Falls back to ~/.cc-tools/bin without LOCALAPPDATA."""
+        """Falls back to ~/.cc-director/bin without LOCALAPPDATA."""
         env = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
         with patch.dict(os.environ, env, clear=True):
             result = get_install_dir()
-        assert result == Path.home() / ".cc-tools" / "bin"
+        assert result == Path.home() / ".cc-director" / "bin"
 
 
 class TestCCToolsConfig:

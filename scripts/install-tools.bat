@@ -1,13 +1,13 @@
 @echo off
-REM Add %LOCALAPPDATA%\cc-tools\bin to user PATH (one-time setup)
+REM Add %LOCALAPPDATA%\cc-director\bin to user PATH (one-time setup)
 REM Usage: scripts\install.bat
 
 setlocal
 
-set "INSTALL_DIR=%LOCALAPPDATA%\cc-tools\bin"
+set "INSTALL_DIR=%LOCALAPPDATA%\cc-director\bin"
 
 echo ============================================
-echo cc-tools PATH Installation
+echo cc-director PATH Installation
 echo ============================================
 echo.
 
@@ -27,7 +27,7 @@ if %errorlevel% equ 0 (
 REM Add to user PATH using PowerShell
 echo Adding %INSTALL_DIR% to user PATH...
 
-powershell -Command "$p=[Environment]::GetEnvironmentVariable('Path','User'); $old='C:\cc-tools'; $new=$env:LOCALAPPDATA+'\cc-tools\bin'; $parts=$p -split ';' | Where-Object {$_ -ne $old -and $_ -ne ''}; if($parts -notcontains $new){$parts+=$new}; [Environment]::SetEnvironmentVariable('Path',($parts -join ';'),'User'); Write-Host '[OK] PATH updated: removed legacy C:\cc-tools, added' $new"
+powershell -Command "$p=[Environment]::GetEnvironmentVariable('Path','User'); $oldLegacy='C:\cc-tools'; $oldBin=$env:LOCALAPPDATA+'\cc-tools\bin'; $new=$env:LOCALAPPDATA+'\cc-director\bin'; $parts=$p -split ';' | Where-Object {$_ -ne $oldLegacy -and $_ -ne $oldBin -and $_ -ne ''}; if($parts -notcontains $new){$parts+=$new}; [Environment]::SetEnvironmentVariable('Path',($parts -join ';'),'User'); Write-Host '[OK] PATH updated: removed legacy cc-tools entries, added' $new"
 
 if %errorlevel% neq 0 (
     echo [FAIL] Could not add to PATH
@@ -53,7 +53,7 @@ if exist "%INSTALL_DIR%\cc-linkedin.exe" echo   - cc-linkedin
 if exist "%INSTALL_DIR%\cc-markdown.exe" echo   - cc-markdown
 if exist "%INSTALL_DIR%\cc-outlook.exe" echo   - cc-outlook
 if exist "%INSTALL_DIR%\cc-reddit.exe" echo   - cc-reddit
-if exist "%INSTALL_DIR%\cc-tools-setup.exe" echo   - cc-tools-setup
+if exist "%INSTALL_DIR%\cc-director-setup.exe" echo   - cc-director-setup
 if exist "%INSTALL_DIR%\cc-transcribe.exe" echo   - cc-transcribe
 if exist "%INSTALL_DIR%\cc-vault.exe" echo   - cc-vault
 if exist "%INSTALL_DIR%\cc-video.exe" echo   - cc-video

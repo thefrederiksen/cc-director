@@ -9,7 +9,7 @@ namespace CcDirector.Core.Storage;
 ///   Config - Tool settings, OAuth tokens, credentials, app state
 ///   Output - Generated files: PDFs, reports, transcripts, exports
 ///   Logs   - All application and tool logs
-///   Bin    - Installed executables (cc-tools binaries)
+///   Bin    - Installed executables (tool binaries)
 ///
 /// Environment variable overrides:
 ///   CC_DIRECTOR_ROOT - Override the base directory (default: %LOCALAPPDATA%\cc-director)
@@ -56,11 +56,11 @@ public static class CcStorage
     /// <summary>All application and tool logs.</summary>
     public static string Logs() => Path.Combine(Base(), "logs");
 
-    /// <summary>Installed executables (cc-tools binaries). Unchanged location.</summary>
+    /// <summary>Installed executables (tool binaries).</summary>
     public static string Bin()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "cc-tools", "bin");
+        return Path.Combine(localAppData, "cc-director", "bin");
     }
 
     // -- Tool-specific shortcuts --

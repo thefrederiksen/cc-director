@@ -83,7 +83,7 @@ Layouts are automatically detected from content:
 .\build.ps1
 ```
 
-Produces `dist\cc-powerpoint.exe` and deploys to `%LOCALAPPDATA%\cc-tools\bin\`.
+Produces `dist\cc-powerpoint.exe` and deploys to `%LOCALAPPDATA%\cc-director\bin\`.
 
 ## Development
 

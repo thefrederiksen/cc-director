@@ -1,29 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec file for cc-director-setup
+
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    ['src\\__main__.py'],
+    pathex=['.'],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=collect_data_files('rich'),
+    hiddenimports=[
+        'typer',
+        'rich',
+        'httpx',
+        'pydantic',
+    ] + collect_submodules('rich'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        # Exclude only modules definitely not needed
-        # urllib has many dependencies - don't exclude those
-        'tkinter',
-        'unittest',
-        'pydoc',
-        'doctest',
-        'sqlite3',
-    ],
+    excludes=[],
     noarchive=False,
-    optimize=2,
+    optimize=0,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=None)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -31,7 +29,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='cc-director-setup',
+    name='cc-spotify',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -44,6 +42,4 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
-    version_info=None,
 )

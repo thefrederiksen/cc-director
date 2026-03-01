@@ -1,9 +1,9 @@
-# Build script for cc-tools-setup executable
+# Build script for cc-director-setup executable
 # Usage: .\build.ps1
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "Building cc-tools-setup executable..." -ForegroundColor Cyan
+Write-Host "Building cc-director-setup executable..." -ForegroundColor Cyan
 
 # Check for Python
 $python = Get-Command python -ErrorAction SilentlyContinue
@@ -31,7 +31,7 @@ Write-Host "Building executable with PyInstaller..." -ForegroundColor Yellow
 pyinstaller cc-setup.spec --clean --noconfirm
 
 # Check result
-$exePath = "dist\cc-tools-setup.exe"
+$exePath = "dist\cc-director-setup.exe"
 if (Test-Path $exePath) {
     $size = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
     Write-Host "SUCCESS: Built $exePath ($size MB)" -ForegroundColor Green

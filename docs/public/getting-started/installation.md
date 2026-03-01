@@ -29,7 +29,7 @@ The fastest way to get the CLI tools is with the installer:
 cc-setup
 ```
 
-This downloads all tools from GitHub releases, places them in `%LOCALAPPDATA%\cc-tools\bin\`, and adds them to your PATH. No admin privileges required.
+This downloads all tools from GitHub releases, places them in `%LOCALAPPDATA%\cc-director\bin\`, and adds them to your PATH. No admin privileges required.
 
 ### Verify installation
 

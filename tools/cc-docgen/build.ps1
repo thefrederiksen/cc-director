@@ -36,8 +36,8 @@ if (Test-Path $exePath) {
     $size = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
     Write-Host "SUCCESS: Built $exePath ($size MB)" -ForegroundColor Green
 
-    # Copy to %LOCALAPPDATA%\cc-tools\bin
-    $targetPath = "$env:LOCALAPPDATA\cc-tools\bin\cc-docgen.exe"
+    # Copy to %LOCALAPPDATA%\cc-director\bin
+    $targetPath = "$env:LOCALAPPDATA\cc-director\bin\cc-docgen.exe"
     Write-Host "Copying to $targetPath..." -ForegroundColor Yellow
     Copy-Item $exePath $targetPath -Force
     Write-Host "SUCCESS: Copied to $targetPath" -ForegroundColor Green

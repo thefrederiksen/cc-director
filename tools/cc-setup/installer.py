@@ -1,5 +1,5 @@
 """
-Core installer logic for cc-tools.
+Core installer logic for cc-director tools.
 """
 
 import os
@@ -31,7 +31,7 @@ class CCToolsInstaller:
     """Installer for cc-tools suite."""
 
     def __init__(self):
-        self.install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "cc-tools"
+        self.install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "cc-director"
         self.skill_dir = Path(os.environ.get("USERPROFILE", "")) / ".claude" / "skills" / "cc-tools"
 
     def install(self) -> bool:

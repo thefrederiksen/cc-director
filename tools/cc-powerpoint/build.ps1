@@ -36,8 +36,8 @@ if (Test-Path $exePath) {
     $size = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
     Write-Host "SUCCESS: Built $exePath ($size MB)" -ForegroundColor Green
 
-    # Copy to cc-tools bin directory
-    $binDir = "$env:LOCALAPPDATA\cc-tools\bin"
+    # Copy to cc-director bin directory
+    $binDir = "$env:LOCALAPPDATA\cc-director\bin"
     if (Test-Path $binDir) {
         Copy-Item $exePath "$binDir\cc-powerpoint.exe" -Force
         Write-Host "Deployed to $binDir\cc-powerpoint.exe" -ForegroundColor Green
