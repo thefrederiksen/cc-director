@@ -1344,6 +1344,7 @@ public partial class MainWindow : Window
             FileViewerCategory.Markdown => new MarkdownViewerControl(),
             FileViewerCategory.Image => new ImageViewerControl(),
             FileViewerCategory.Text => new TextViewerControl(),
+            FileViewerCategory.Pdf => new PdfViewerControl(),
             _ => new TextViewerControl() // Fallback to text for unknown viewable types
         };
 
