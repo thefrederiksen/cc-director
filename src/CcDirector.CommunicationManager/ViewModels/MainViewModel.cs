@@ -4,6 +4,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Utilities;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CommunicationManager.Models;
@@ -69,6 +70,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     public MainViewModel()
     {
+        FileLog.Write("[CommunicationManager.VM] Constructor");
         // Get content path - look for content folder relative to exe or use default
         var contentPath = GetContentPath();
 
@@ -91,10 +93,29 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     public async Task InitializeAsync()
     {
+        FileLog.Write("[CommunicationManager.VM] InitializeAsync");
         await _contentService.InitializeAsync();
         await RefreshAsync();
         // Start polling after initial load
         _pollTimer.Start();
+    }
+
+    /// <summary>
+    /// Start the polling timer. Call when the panel becomes visible.
+    /// </summary>
+    public void StartPolling()
+    {
+        FileLog.Write("[CommunicationManager.VM] StartPolling");
+        _pollTimer.Start();
+    }
+
+    /// <summary>
+    /// Stop the polling timer. Call when the panel is hidden to save resources.
+    /// </summary>
+    public void StopPolling()
+    {
+        FileLog.Write("[CommunicationManager.VM] StopPolling");
+        _pollTimer.Stop();
     }
 
     [RelayCommand]
@@ -140,6 +161,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            FileLog.Write($"[CommunicationManager.VM] RefreshAsync FAILED: {ex.Message}");
             StatusMessage = $"Error: {ex.Message}";
         }
         finally
@@ -237,6 +259,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (SelectedItem == null) return;
 
         var result = MessageBox.Show(
+            Application.Current.MainWindow,
             $"Are you sure you want to permanently delete this item?\n\n{SelectedItem.DisplayTitle}",
             "Confirm Delete",
             MessageBoxButton.YesNo,
@@ -333,7 +356,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Failed to open URL: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(Application.Current.MainWindow, $"Failed to open URL: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -444,13 +467,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             else
             {
                 StatusMessage = $"LinkedIn posting failed: {error}";
-                MessageBox.Show($"LinkedIn posting failed:\n\n{error}\n\n{output}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(Application.Current.MainWindow, $"LinkedIn posting failed:\n\n{error}\n\n{output}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
         catch (Exception ex)
         {
             StatusMessage = $"Error: {ex.Message}";
-            MessageBox.Show($"Failed to post to LinkedIn: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(Application.Current.MainWindow, $"Failed to post to LinkedIn: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

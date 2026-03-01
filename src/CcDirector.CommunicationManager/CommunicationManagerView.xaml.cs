@@ -1,31 +1,62 @@
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
+using CcDirector.Core.Utilities;
 using CommunicationManager.ViewModels;
 
 namespace CommunicationManager;
 
-public partial class MainWindow : Window
+public partial class CommunicationManagerView : UserControl
 {
     private readonly MainViewModel _viewModel;
     private bool _isInitialized;
 
-    public MainWindow()
+    public CommunicationManagerView()
     {
+        FileLog.Write("[CommunicationManagerView] Constructor");
         InitializeComponent();
         _viewModel = new MainViewModel();
         DataContext = _viewModel;
-        Loaded += MainWindow_Loaded;
-        Closed += MainWindow_Closed;
+        Loaded += CommunicationManagerView_Loaded;
     }
 
-    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// The ViewModel exposed for external access (e.g. pending count badge).
+    /// </summary>
+    public MainViewModel ViewModel => _viewModel;
+
+    private async void CommunicationManagerView_Loaded(object sender, RoutedEventArgs e)
     {
+        FileLog.Write("[CommunicationManagerView] Loaded");
+        if (_isInitialized) return;
         _isInitialized = true;
         await _viewModel.InitializeAsync();
     }
 
-    private void MainWindow_Closed(object? sender, EventArgs e)
+    /// <summary>
+    /// Start polling for new items. Call when the panel becomes visible.
+    /// </summary>
+    public void StartPolling()
     {
+        FileLog.Write("[CommunicationManagerView] StartPolling");
+        _viewModel.StartPolling();
+    }
+
+    /// <summary>
+    /// Stop polling to save resources. Call when the panel is hidden.
+    /// </summary>
+    public void StopPolling()
+    {
+        FileLog.Write("[CommunicationManagerView] StopPolling");
+        _viewModel.StopPolling();
+    }
+
+    /// <summary>
+    /// Clean up resources. Call when the host window is closing.
+    /// </summary>
+    public void Dispose()
+    {
+        FileLog.Write("[CommunicationManagerView] Dispose");
         _viewModel.Dispose();
     }
 
