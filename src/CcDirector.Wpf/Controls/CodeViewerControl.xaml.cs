@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -288,5 +289,57 @@ public partial class CodeViewerControl : UserControl, IFileViewer
     private void SaveCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
         e.CanExecute = _isDirty;
+    }
+
+    private void OpenExternalButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (sender is Button btn && btn.ContextMenu is ContextMenu menu)
+            {
+                menu.PlacementTarget = btn;
+                menu.IsOpen = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CodeViewer] OpenExternalButton_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private void OpenDefault_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(FilePath)) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo(FilePath) { UseShellExecute = true });
+            FileLog.Write($"[CodeViewer] Opened with default app: {FilePath}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CodeViewer] OpenDefault FAILED: {ex.Message}");
+            MessageBox.Show($"Failed to open file:\n{ex.Message}",
+                "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenWith_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(FilePath)) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "rundll32.exe",
+                Arguments = $"shell32.dll,OpenAs_RunDLL \"{FilePath}\""
+            });
+            FileLog.Write($"[CodeViewer] Opened 'Open with' dialog: {FilePath}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CodeViewer] OpenWith FAILED: {ex.Message}");
+            MessageBox.Show($"Failed to open file:\n{ex.Message}",
+                "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 }

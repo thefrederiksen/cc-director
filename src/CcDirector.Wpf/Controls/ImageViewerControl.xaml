@@ -93,6 +93,32 @@
                             </Style>
                         </Button.Style>
                     </Button>
+
+                    <!-- Open in external application -->
+                    <Button x:Name="OpenExternalButton" Content="Open"
+                            FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Margin="8,0,0,0"
+                            Click="OpenExternalButton_Click">
+                        <Button.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Open with default application"
+                                          Click="OpenDefault_Click" />
+                                <MenuItem Header="Open with..."
+                                          Click="OpenWith_Click" />
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Background" Value="#505050" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
                 </StackPanel>
             </Grid>
         </Border>
