@@ -21,12 +21,13 @@ public static class FileExtensions
 {
     private static readonly HashSet<string> MarkdownExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".md", ".markdown"
+        ".md", ".markdown", ".mdx"
     };
 
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp"
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
+        ".tiff", ".tif"
     };
 
     private static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -38,7 +39,10 @@ public static class FileExtensions
         ".ps1", ".bat", ".sh",
         ".yaml", ".yml", ".toml",
         ".rs", ".go", ".java", ".cpp", ".c", ".h", ".hpp",
-        ".rb", ".php", ".swift", ".kt"
+        ".rb", ".php", ".swift", ".kt",
+        ".fs", ".fsx", ".lua", ".r", ".dart", ".scala", ".groovy", ".gradle",
+        ".pl", ".pm", ".ex", ".exs", ".clj", ".zig",
+        ".tf", ".hcl", ".graphql", ".gql", ".proto"
     };
 
     private static readonly HashSet<string> TextExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -46,7 +50,8 @@ public static class FileExtensions
         ".txt", ".log", ".csv",
         ".ini", ".cfg", ".conf",
         ".gitignore", ".editorconfig",
-        ".dockerignore", ".env", ".gitattributes", ".prettierrc", ".eslintrc"
+        ".dockerignore", ".env", ".gitattributes", ".prettierrc", ".eslintrc",
+        ".lock", ".pid", ".diff", ".patch"
     };
 
     private static readonly HashSet<string> TextFileNames = new(StringComparer.OrdinalIgnoreCase)
