@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -305,11 +304,7 @@ public partial class GitChangesControl : UserControl
         {
             if (e.ClickCount == 2 && sender is FrameworkElement fe && fe.DataContext is GitFileLeafNode node)
             {
-                // Open viewable files in built-in viewer, everything else in VS Code
-                if (FileExtensions.IsViewable(node.RelativePath))
-                    RaiseViewFile(node.RelativePath);
-                else
-                    OpenFileInVsCode(node.RelativePath);
+                RaiseViewFile(node.RelativePath);
                 e.Handled = true;
             }
         }
@@ -356,19 +351,6 @@ public partial class GitChangesControl : UserControl
         catch (Exception ex)
         {
             FileLog.Write($"[GitChangesControl] FileNode_ViewFile_Click FAILED: {ex.Message}");
-        }
-    }
-
-    internal void FileNode_OpenInVsCode_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (GetNodeFromMenuItem(sender) is GitFileLeafNode node)
-                OpenFileInVsCode(node.RelativePath);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GitChangesControl] FileNode_OpenInVsCode_Click FAILED: {ex.Message}");
         }
     }
 
@@ -466,26 +448,6 @@ public partial class GitChangesControl : UserControl
             return node;
         }
         return null;
-    }
-
-    private void OpenFileInVsCode(string relativePath)
-    {
-        if (_repoPath == null || string.IsNullOrEmpty(relativePath)) return;
-        var fullPath = Path.Combine(_repoPath, relativePath);
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "code",
-                Arguments = $"--goto \"{fullPath}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[GitChangesControl] OpenFileInVsCode FAILED for {relativePath}: {ex.Message}");
-        }
     }
 
     private void RaiseViewFile(string relativePath)

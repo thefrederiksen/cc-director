@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -26,12 +25,7 @@ public class TerminalControl : FrameworkElement
     private const int ScrollbackLines = 1000;
     private const double PollIntervalMs = 50;
 
-    // Link detection patterns with 50ms timeout to prevent catastrophic backtracking
-    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(50);
-    private static readonly Regex AbsoluteWindowsPathRegex = new(@"[A-Za-z]:[/\\][^\s""'<>|*?()\[\]]+", RegexOptions.Compiled, RegexTimeout);
-    private static readonly Regex AbsoluteUnixPathRegex = new(@"/[a-z]/[^\s""'<>|*?()\[\]]+", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
-    private static readonly Regex RelativePathRegex = new(@"\.{0,2}[/\\][^\s""'<>|*?:()\[\]]+|[A-Za-z_][A-Za-z0-9_\-]*[/\\][^\s""'<>|*?:()\[\]]+", RegexOptions.Compiled, RegexTimeout);
-    private static readonly Regex UrlRegex = new(@"https?://[^\s""'<>()\[\]]+|git@[^\s""'<>()\[\]]+", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+    // Link detection delegated to LinkDetector (CcDirector.Core) for testability
 
     // Cached typefaces - avoid creating new Typeface per character (4 variants for normal/bold/italic combinations)
     private static readonly FontFamily _fontFamily = new("Cascadia Mono, Consolas, Courier New");
@@ -66,10 +60,8 @@ public class TerminalControl : FrameworkElement
         return _typefaceNormal;
     }
 
-    private enum LinkType { None, Path, Url }
-
     // Link region for hover detection
-    private readonly record struct LinkRegion(Rect Bounds, string Text, LinkType Type);
+    private readonly record struct LinkRegion(Rect Bounds, string Text, LinkDetector.LinkType Type);
     private readonly List<LinkRegion> _linkRegions = new();
 
     private Session? _session;
@@ -97,7 +89,7 @@ public class TerminalControl : FrameworkElement
     // Link detection state
     private ContextMenu? _linkContextMenu;
     private string? _detectedLink;
-    private LinkType _detectedLinkType;
+    private LinkDetector.LinkType _detectedLinkType;
 
     // Paste state
     private bool _isPasting;
@@ -349,7 +341,7 @@ public class TerminalControl : FrameworkElement
             var linkMatches = FindAllLinkMatches(lineText);
 
             // Create a lookup for which columns are part of a link
-            var columnToLink = new Dictionary<int, LinkMatch>();
+            var columnToLink = new Dictionary<int, LinkDetector.LinkMatch>();
             foreach (var match in linkMatches)
             {
                 for (int c = match.StartCol; c < match.EndCol && c < _cols; c++)
@@ -864,163 +856,54 @@ public class TerminalControl : FrameworkElement
     }
 
     /// <summary>
-    /// Represents a detected link match with its column range.
+    /// Find all link matches (paths and URLs) in a line of text.
+    /// Delegates to LinkDetector with cache-backed path existence checking.
     /// </summary>
-    private readonly record struct LinkMatch(int StartCol, int EndCol, string Text, LinkType Type);
+    private List<LinkDetector.LinkMatch> FindAllLinkMatches(string lineText)
+    {
+        return LinkDetector.FindAllLinkMatches(lineText, _session?.RepoPath, PathExistsCheckForRender);
+    }
 
     /// <summary>
-    /// Find all link matches (paths and URLs) in a line of text.
+    /// Path existence check for render context: uses cache, schedules background check on miss.
     /// </summary>
-    private List<LinkMatch> FindAllLinkMatches(string lineText)
+    private bool PathExistsCheckForRender(string fullPath)
     {
-        var matches = new List<LinkMatch>();
-        if (string.IsNullOrWhiteSpace(lineText))
-            return matches;
+        if (_pathExistsCache.TryGetValue(fullPath, out bool exists))
+            return exists;
 
-        // Collect URL matches
-        foreach (Match m in UrlRegex.Matches(lineText))
+        // Cache miss - schedule background check, return false for now (don't block render)
+        var capturedPath = fullPath;
+        _ = Task.Run(() =>
         {
-            matches.Add(new LinkMatch(m.Index, m.Index + m.Length, m.Value, LinkType.Url));
-        }
+            bool found = File.Exists(capturedPath) || Directory.Exists(capturedPath);
+            _pathExistsCache[capturedPath] = found;
+            if (found && Interlocked.CompareExchange(ref _pathCacheInvalidateNeeded, 1, 0) == 0)
+                Dispatcher.BeginInvoke(InvalidateVisual);
+        });
+        return false;
+    }
 
-        // Collect absolute Windows path matches
-        foreach (Match m in AbsoluteWindowsPathRegex.Matches(lineText))
-        {
-            string path = StripLineNumber(m.Value);
-            matches.Add(new LinkMatch(m.Index, m.Index + m.Length, path, LinkType.Path));
-        }
+    /// <summary>
+    /// Path existence check for click context: uses cache, falls back to synchronous check.
+    /// </summary>
+    private bool PathExistsCheckForClick(string fullPath)
+    {
+        if (_pathExistsCache.TryGetValue(fullPath, out bool exists))
+            return exists;
 
-        // Collect Unix-style path matches
-        foreach (Match m in AbsoluteUnixPathRegex.Matches(lineText))
-        {
-            string path = StripLineNumber(m.Value);
-            matches.Add(new LinkMatch(m.Index, m.Index + m.Length, path, LinkType.Path));
-        }
-
-        // Collect relative path matches (only if session has repo path and path exists in cache)
-        if (_session?.RepoPath != null)
-        {
-            foreach (Match m in RelativePathRegex.Matches(lineText))
-            {
-                string relativePath = StripLineNumber(m.Value);
-                string fullPath = Path.Combine(_session.RepoPath, relativePath.Replace('/', '\\'));
-
-                if (_pathExistsCache.TryGetValue(fullPath, out bool exists))
-                {
-                    // Cache hit
-                    if (exists)
-                        matches.Add(new LinkMatch(m.Index, m.Index + m.Length, relativePath, LinkType.Path));
-                }
-                else
-                {
-                    // Cache miss — don't block render; check in background
-                    var capturedPath = fullPath;
-                    var capturedRelative = relativePath;
-                    _ = Task.Run(() =>
-                    {
-                        bool found = File.Exists(capturedPath) || Directory.Exists(capturedPath);
-                        _pathExistsCache[capturedPath] = found;
-                        if (found && Interlocked.CompareExchange(ref _pathCacheInvalidateNeeded, 1, 0) == 0)
-                            Dispatcher.BeginInvoke(InvalidateVisual);
-                    });
-                }
-            }
-        }
-
-        return matches;
+        bool found = File.Exists(fullPath) || Directory.Exists(fullPath);
+        _pathExistsCache[fullPath] = found;
+        return found;
     }
 
     /// <summary>
     /// Detect if there's a path or URL at the specified cell position.
     /// </summary>
-    private (string? text, LinkType type) DetectLinkAtCell(int col, int row)
+    private (string? text, LinkDetector.LinkType type) DetectLinkAtCell(int col, int row)
     {
         string lineText = GetLineText(row);
-        if (string.IsNullOrWhiteSpace(lineText))
-            return (null, LinkType.None);
-
-        // Try URL first (more specific)
-        var urlMatch = UrlRegex.Match(lineText);
-        while (urlMatch.Success)
-        {
-            if (col >= urlMatch.Index && col < urlMatch.Index + urlMatch.Length)
-            {
-                return (urlMatch.Value, LinkType.Url);
-            }
-            urlMatch = urlMatch.NextMatch();
-        }
-
-        // Try absolute Windows path
-        var winPathMatch = AbsoluteWindowsPathRegex.Match(lineText);
-        while (winPathMatch.Success)
-        {
-            if (col >= winPathMatch.Index && col < winPathMatch.Index + winPathMatch.Length)
-            {
-                string path = StripLineNumber(winPathMatch.Value);
-                return (path, LinkType.Path);
-            }
-            winPathMatch = winPathMatch.NextMatch();
-        }
-
-        // Try Unix-style absolute path (/c/path -> C:\path)
-        var unixPathMatch = AbsoluteUnixPathRegex.Match(lineText);
-        while (unixPathMatch.Success)
-        {
-            if (col >= unixPathMatch.Index && col < unixPathMatch.Index + unixPathMatch.Length)
-            {
-                string path = StripLineNumber(unixPathMatch.Value);
-                return (path, LinkType.Path);
-            }
-            unixPathMatch = unixPathMatch.NextMatch();
-        }
-
-        // Try relative path (only if we have a session with a repo path)
-        if (_session?.RepoPath != null)
-        {
-            var relPathMatch = RelativePathRegex.Match(lineText);
-            while (relPathMatch.Success)
-            {
-                if (col >= relPathMatch.Index && col < relPathMatch.Index + relPathMatch.Length)
-                {
-                    string relativePath = StripLineNumber(relPathMatch.Value);
-                    string fullPath = Path.Combine(_session.RepoPath, relativePath.Replace('/', '\\'));
-
-                    // Check cache first, fall back to synchronous check (click context, not render)
-                    if (_pathExistsCache.TryGetValue(fullPath, out bool exists))
-                    {
-                        if (exists) return (relativePath, LinkType.Path);
-                    }
-                    else
-                    {
-                        bool found = File.Exists(fullPath) || Directory.Exists(fullPath);
-                        _pathExistsCache[fullPath] = found;
-                        if (found) return (relativePath, LinkType.Path);
-                    }
-                }
-                relPathMatch = relPathMatch.NextMatch();
-            }
-        }
-
-        return (null, LinkType.None);
-    }
-
-    /// <summary>
-    /// Strip line number suffix from path (e.g., "file.cs:42" -> "file.cs").
-    /// </summary>
-    private static string StripLineNumber(string path)
-    {
-        // Match :number or :number:number at the end
-        int colonIndex = path.LastIndexOf(':');
-        if (colonIndex > 0 && colonIndex < path.Length - 1)
-        {
-            string afterColon = path.Substring(colonIndex + 1);
-            // Check if everything after colon is digits (possibly with another :number)
-            if (afterColon.All(c => char.IsDigit(c) || c == ':'))
-            {
-                return path.Substring(0, colonIndex);
-            }
-        }
-        return path;
+        return LinkDetector.DetectLinkAtPosition(lineText, col, _session?.RepoPath, PathExistsCheckForClick);
     }
 
     /// <summary>
@@ -1184,15 +1067,24 @@ public class TerminalControl : FrameworkElement
     /// <summary>
     /// Show context menu for detected link.
     /// </summary>
-    private void ShowLinkContextMenu(Point position, string link, LinkType type)
+    private void ShowLinkContextMenu(Point position, string link, LinkDetector.LinkType type)
     {
         _detectedLink = link;
         _detectedLinkType = type;
 
         _linkContextMenu = new ContextMenu();
 
-        if (type == LinkType.Path)
+        if (type == LinkDetector.LinkType.Path)
         {
+            // Add "View File" first for viewable file types
+            if (FileExtensions.IsViewable(link))
+            {
+                var viewItem = new MenuItem { Header = "View File" };
+                viewItem.Click += (_, _) => OpenFileViewer();
+                _linkContextMenu.Items.Add(viewItem);
+                _linkContextMenu.Items.Add(new Separator());
+            }
+
             var copyItem = new MenuItem { Header = "Copy Path" };
             copyItem.Click += (_, _) => CopyLinkToClipboard();
             _linkContextMenu.Items.Add(copyItem);
@@ -1200,21 +1092,8 @@ public class TerminalControl : FrameworkElement
             var explorerItem = new MenuItem { Header = "Open in Explorer" };
             explorerItem.Click += (_, _) => OpenInExplorer();
             _linkContextMenu.Items.Add(explorerItem);
-
-            var vscodeItem = new MenuItem { Header = "Open in VS Code" };
-            vscodeItem.Click += (_, _) => OpenInVsCode();
-            _linkContextMenu.Items.Add(vscodeItem);
-
-            // Add "View File" for viewable file types
-            if (FileExtensions.IsViewable(link))
-            {
-                var viewItem = new MenuItem { Header = "View File" };
-                viewItem.Click += (_, _) => OpenFileViewer();
-                _linkContextMenu.Items.Insert(0, viewItem);
-                _linkContextMenu.Items.Insert(1, new Separator());
-            }
         }
-        else if (type == LinkType.Url)
+        else if (type == LinkDetector.LinkType.Url)
         {
             var copyItem = new MenuItem { Header = "Copy URL" };
             copyItem.Click += (_, _) => CopyLinkToClipboard();
@@ -1237,7 +1116,7 @@ public class TerminalControl : FrameworkElement
     {
         if (string.IsNullOrEmpty(_detectedLink)) return;
 
-        string textToCopy = _detectedLinkType == LinkType.Path
+        string textToCopy = _detectedLinkType == LinkDetector.LinkType.Path
             ? ResolvePath(_detectedLink)
             : _detectedLink;
 
@@ -1257,38 +1136,13 @@ public class TerminalControl : FrameworkElement
             string path = ResolvePath(_detectedLink);
             string target = File.Exists(path) ? Path.GetDirectoryName(path) ?? path : path;
 
-            Process.Start("explorer.exe", target);
+            Process.Start("explorer.exe", $"\"{target}\"");
             FileLog.Write($"[TerminalControl] Opened in Explorer: {target}");
         }
         catch (Exception ex)
         {
             FileLog.Write($"[TerminalControl] OpenInExplorer FAILED: {ex.Message}");
             MessageBox.Show($"Failed to open in Explorer:\n{ex.Message}",
-                "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    /// <summary>
-    /// Open path in VS Code.
-    /// </summary>
-    private void OpenInVsCode()
-    {
-        if (string.IsNullOrEmpty(_detectedLink)) return;
-
-        try
-        {
-            string path = ResolvePath(_detectedLink);
-            var startInfo = new ProcessStartInfo("code", $"\"{path}\"")
-            {
-                UseShellExecute = true
-            };
-            Process.Start(startInfo);
-            FileLog.Write($"[TerminalControl] Opened in VS Code: {path}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[TerminalControl] OpenInVsCode FAILED: {ex.Message}");
-            MessageBox.Show($"Failed to open in VS Code:\n{ex.Message}",
                 "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -1334,29 +1188,7 @@ public class TerminalControl : FrameworkElement
     /// </summary>
     private string ResolvePath(string path)
     {
-        // Unix-style path /c/path -> C:\path
-        if (path.StartsWith("/") && path.Length >= 3 && path[2] == '/')
-        {
-            char driveLetter = char.ToUpper(path[1]);
-            string remainder = path.Substring(3).Replace('/', '\\');
-            return $"{driveLetter}:\\{remainder}";
-        }
-
-        // Already an absolute Windows path
-        if (path.Length >= 2 && path[1] == ':')
-        {
-            return path;
-        }
-
-        // Relative path - resolve against session's repo path
-        if (_session?.RepoPath != null)
-        {
-            string normalized = path.Replace('/', '\\');
-            return Path.GetFullPath(Path.Combine(_session.RepoPath, normalized));
-        }
-
-        // No session, return as-is
-        return path;
+        return LinkDetector.ResolvePath(path, _session?.RepoPath);
     }
 
     private static byte[]? MapKeyToBytes(Key key, ModifierKeys modifiers)
