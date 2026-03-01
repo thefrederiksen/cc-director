@@ -332,4 +332,6 @@ public sealed class CommunicationDispatcher : IDisposable
         public string? Subject { get; set; }
         public List<string>? Attachments { get; set; }
     }
+
+    private record ToolProcessResult(int ExitCode, string Stdout, string Stderr);
 }

@@ -6,7 +6,7 @@ using CommunicationManager.ViewModels;
 
 namespace CommunicationManager;
 
-public partial class CommunicationManagerView : UserControl
+public partial class CommunicationManagerView : UserControl, IDisposable
 {
     private readonly MainViewModel _viewModel;
     private bool _isInitialized;
