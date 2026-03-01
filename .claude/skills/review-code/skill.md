@@ -114,6 +114,47 @@ If docs/cencon/security_profile.yaml EXISTS:
 6. If within threshold:
    - Set SECURITY_DRIFT = PASS
 
+STEP 3.7: Documentation Coverage
+
+Check if public documentation needs updating based on the changes being reviewed.
+
+1. Read docs/public/index.json using the Read tool to get the current documentation manifest
+2. Examine the changed files from STEP 1 to classify the change type:
+
+IF the changes include NEW tools (new cc-* tool directories, new CLI executables):
+   - Check if docs/public/tools/overview.md was updated to include the new tool
+   - Check if docs/public/index.json references any new dedicated tool pages (if applicable)
+   - If the new tool is NOT documented:
+     - Add BLOCKING issue: "New tool [tool-name] added without documentation update"
+     - Include: "Run /update-docs to generate documentation for the new tool"
+     - Set DOCS_COVERAGE = FAIL
+
+IF the changes include NEW features or NEW commands (new skills in .claude/skills/, new CLI subcommands, new major functionality):
+   - Check if corresponding docs/public/ pages exist or were updated
+   - If NOT documented:
+     - Add BLOCKING issue: "New feature [feature-name] added without documentation"
+     - Include: "Run /update-docs before committing"
+     - Set DOCS_COVERAGE = FAIL
+
+IF the changes are BUG FIXES or REFACTORS:
+   - Check if the fix changes user-visible behavior (command syntax, output format, default values)
+   - If behavior changed but docs not updated:
+     - Add WARNING: "Bug fix changes user-visible behavior but docs not updated"
+     - Set DOCS_COVERAGE = WARN
+   - If internal-only change:
+     - Set DOCS_COVERAGE = PASS
+
+IF docs/public/ files were modified:
+   - Verify docs/public/index.json is still valid:
+     - Every "file" path in index.json must point to an actual file in docs/public/
+     - No orphaned pages (files in docs/public/ without index.json entries, except index.json itself)
+   - If invalid references found:
+     - Add BLOCKING issue: "docs/public/index.json has broken file references"
+     - Set DOCS_COVERAGE = FAIL
+
+IF none of the above conditions apply (no tool/feature/behavior changes):
+   - Set DOCS_COVERAGE = SKIPPED
+
 STEP 4: Code style review
 
 For each .cs, .xaml, and .xaml.cs file from Step 1:
@@ -176,14 +217,16 @@ SUGGESTION_COUNT: [number]
 PII_COUNT: [number]
 CENCON_STATUS: PASS, FAIL, or SKIPPED
 SECURITY_DRIFT: PASS, FAIL, or SKIPPED
+DOCS_COVERAGE: PASS, FAIL, WARN, or SKIPPED
 
 FAIL if any of:
 - BLOCKING issues exist
 - PII issues exist
 - CENCON_STATUS is FAIL
 - SECURITY_DRIFT is FAIL
+- DOCS_COVERAGE is FAIL
 
-PASS if none of the above conditions are true. SKIPPED status does NOT cause FAIL.
+PASS if none of the above conditions are true. SKIPPED and WARN status do NOT cause FAIL.
 
 ## Common Issues from CodingStyle.md
 
@@ -224,7 +267,8 @@ PII scan applies to ALL file types, not just code files.
 
 ---
 
-**Skill Version:** 3.0
-**Last Updated:** 2026-02-21
-**Adapted from:** mindzieWeb review-code skill
+**Skill Version:** 4.0
+**Last Updated:** 2026-03-01
+**Adapted from:** internal review-code skill
 **CenCon Integration:** Added STEP 3.5 (Documentation Check) and STEP 3.6 (Security Drift Check)
+**Docs Enforcement:** Added STEP 3.7 (Documentation Coverage) - blocks on new tools/features without docs

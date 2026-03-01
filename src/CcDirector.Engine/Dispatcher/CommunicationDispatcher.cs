@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using CcDirector.Core.Utilities;
+using CcDirector.Engine.Archival;
 using CcDirector.Engine.Events;
 using Microsoft.Data.Sqlite;
 
@@ -11,6 +12,7 @@ public sealed class CommunicationDispatcher : IDisposable
     private readonly string _communicationsDbPath;
     private readonly string _ccOutlookPath;
     private readonly int _pollIntervalSeconds;
+    private readonly VaultArchiver _archiver = new();
     private Timer? _timer;
     private int _polling; // 0 = idle, 1 = polling (used with Interlocked for thread safety)
 
@@ -183,6 +185,14 @@ public sealed class CommunicationDispatcher : IDisposable
             if (process.ExitCode == 0)
             {
                 MarkPosted(email.Id);
+                try
+                {
+                    _archiver.ArchiveEmail(email.To, email.Subject, email.Body);
+                }
+                catch (Exception archiveEx)
+                {
+                    FileLog.Write($"[CommunicationDispatcher] Vault archive FAILED (email still sent): {archiveEx.Message}");
+                }
                 FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} sent OK");
                 RaiseEvent(new EngineEvent(EngineEventType.CommunicationDispatched,
                     Message: $"Email ticket #{email.TicketNumber} sent to {email.To}"));

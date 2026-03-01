@@ -15,9 +15,9 @@ Claude Code stores session data in:
 %USERPROFILE%\.claude\projects\{sanitized-repo-path}\
 ```
 
-For example, `D:\ReposFred\cc_director` becomes:
+For example, `D:\Projects\my-project` becomes:
 ```
-C:\Users\soren\.claude\projects\D--ReposFred-cc-director\
+%USERPROFILE%\.claude\projects\D--Projects-my-project\
 ```
 
 ### Files in Each Project Folder
@@ -32,11 +32,11 @@ C:\Users\soren\.claude\projects\D--ReposFred-cc-director\
 ```json
 {
   "version": 1,
-  "originalPath": "D:\\ReposFred\\cc_director",
+  "originalPath": "D:\\Projects\\my-project",
   "entries": [
     {
       "sessionId": "abc123-def456-...",
-      "fullPath": "C:\\Users\\soren\\.claude\\projects\\D--ReposFred-cc-director\\abc123-def456-....jsonl",
+      "fullPath": "%USERPROFILE%\\.claude\\projects\\D--Projects-my-project\\abc123-def456-....jsonl",
       "firstPrompt": "Fix the session persistence bug...",
       "summary": "Session persistence fix",
       "messageCount": 42,
@@ -87,7 +87,7 @@ Change from cramped single-line to expanded multi-line format:
 
 ```
 +------------------------------------------+
-| mindzieWeb - Data Designer               |
+| MyProject - Data Designer                |
 | Status: Working                          |
 | Claude: 89d90716... [Verified] [Open]    |
 | Messages: 15  |  Tokens: 2.3k            |

@@ -88,6 +88,17 @@ public partial class App : Application
         MigrateRecentSessionsToHistory();
 
         FileLog.Start();
+        try
+        {
+            CcDirector.Core.Storage.CcStorageMigration.EnsureMigrated();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[App] Storage migration FAILED: {ex}");
+            System.Windows.MessageBox.Show(
+                $"Data migration failed. Some settings may be missing.\n\n{ex.Message}",
+                "Migration Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
         Action<string> log = msg => FileLog.Write($"[CcDirector] {msg}");
         log($"CC Director starting (SandboxMode={SandboxMode}, ReadOnlyMode={ReadOnlyMode}), log file: {FileLog.CurrentLogPath}");
 

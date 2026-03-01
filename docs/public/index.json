@@ -1,0 +1,24 @@
+{
+  "title": "CC Director Documentation",
+  "baseUrl": "https://raw.githubusercontent.com/cc-director/cc-director/main/docs/public",
+  "categories": [
+    {
+      "id": "getting-started",
+      "title": "Getting Started",
+      "description": "Installation and first steps",
+      "pages": [
+        { "id": "introduction", "title": "Introduction", "file": "getting-started/introduction.md" },
+        { "id": "installation", "title": "Installation", "file": "getting-started/installation.md" },
+        { "id": "quick-start", "title": "Quick Start", "file": "getting-started/quick-start.md" }
+      ]
+    },
+    {
+      "id": "tools",
+      "title": "Tools Reference",
+      "description": "All available tools",
+      "pages": [
+        { "id": "overview", "title": "Tools Overview", "file": "tools/overview.md" }
+      ]
+    }
+  ]
+}
