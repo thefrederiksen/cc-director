@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Sessions;
@@ -21,8 +22,7 @@ public class SessionHistoryStore
     public SessionHistoryStore(string? folderPath = null)
     {
         FolderPath = folderPath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "CcDirector",
+            CcStorage.ToolConfig("director"),
             "sessions");
     }
 

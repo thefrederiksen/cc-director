@@ -22,7 +22,14 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 import keyring
 
-from cc_shared.config import get_data_dir
+try:
+    from cc_storage import CcStorage
+except ImportError:
+    import sys
+    _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+    if _tools_dir not in sys.path:
+        sys.path.insert(0, _tools_dir)
+    from cc_storage import CcStorage
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +57,8 @@ SCOPES = GMAIL_SCOPES + CALENDAR_SCOPES + CONTACTS_SCOPES
 # Keyring service name for storing app passwords
 KEYRING_SERVICE = "cc-gmail"
 
-# Config directory - uses shared data directory for service compatibility
-CONFIG_DIR = get_data_dir() / "gmail"
+# Config directory - uses centralized cc-director storage
+CONFIG_DIR = CcStorage.tool_config("gmail")
 ACCOUNTS_DIR = CONFIG_DIR / "accounts"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 

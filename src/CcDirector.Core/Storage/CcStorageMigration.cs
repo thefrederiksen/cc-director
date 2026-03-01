@@ -41,8 +41,8 @@ public static class CcStorageMigration
         if (!Directory.Exists(oldDir))
             return;
 
-        CopyFileIfMissing(Path.Combine(oldDir, "accounts.json"), Path.Combine(newDir, "accounts.json"));
-        CopyFileIfMissing(Path.Combine(oldDir, "root-directories.json"), Path.Combine(newDir, "root-directories.json"));
+        CopyFileIfNewer(Path.Combine(oldDir, "accounts.json"), Path.Combine(newDir, "accounts.json"));
+        CopyFileIfNewer(Path.Combine(oldDir, "root-directories.json"), Path.Combine(newDir, "root-directories.json"));
     }
 
     /// <summary>
@@ -59,14 +59,14 @@ public static class CcStorageMigration
         if (!Directory.Exists(oldDir))
             return;
 
-        CopyFileIfMissing(Path.Combine(oldDir, "sessions.json"), Path.Combine(newDir, "sessions.json"));
-        CopyFileIfMissing(Path.Combine(oldDir, "recent-sessions.json"), Path.Combine(newDir, "recent-sessions.json"));
-        CopyFileIfMissing(Path.Combine(oldDir, "repositories.json"), Path.Combine(newDir, "repositories.json"));
+        CopyFileIfNewer(Path.Combine(oldDir, "sessions.json"), Path.Combine(newDir, "sessions.json"));
+        CopyFileIfNewer(Path.Combine(oldDir, "recent-sessions.json"), Path.Combine(newDir, "recent-sessions.json"));
+        CopyFileIfNewer(Path.Combine(oldDir, "repositories.json"), Path.Combine(newDir, "repositories.json"));
 
         // Migrate sessions folder (individual history files)
         var oldSessions = Path.Combine(oldDir, "sessions");
         var newSessions = Path.Combine(newDir, "sessions");
-        CopyDirectoryIfMissing(oldSessions, newSessions);
+        CopyDirectoryIfNewer(oldSessions, newSessions);
     }
 
     /// <summary>
@@ -83,13 +83,13 @@ public static class CcStorageMigration
         if (!Directory.Exists(oldDir))
             return;
 
-        CopyFileIfMissing(Path.Combine(oldDir, "vault.db"), Path.Combine(newDir, "vault.db"));
-        CopyFileIfMissing(Path.Combine(oldDir, "engine.db"), Path.Combine(newDir, "engine.db"));
-        CopyDirectoryIfMissing(Path.Combine(oldDir, "vectors"), Path.Combine(newDir, "vectors"));
-        CopyDirectoryIfMissing(Path.Combine(oldDir, "documents"), Path.Combine(newDir, "documents"));
-        CopyDirectoryIfMissing(Path.Combine(oldDir, "health"), Path.Combine(newDir, "health"));
-        CopyDirectoryIfMissing(Path.Combine(oldDir, "media"), Path.Combine(newDir, "media"));
-        CopyDirectoryIfMissing(Path.Combine(oldDir, "backups"), Path.Combine(newDir, "backups"));
+        CopyFileIfNewer(Path.Combine(oldDir, "vault.db"), Path.Combine(newDir, "vault.db"));
+        CopyFileIfNewer(Path.Combine(oldDir, "engine.db"), Path.Combine(newDir, "engine.db"));
+        CopyDirectoryIfNewer(Path.Combine(oldDir, "vectors"), Path.Combine(newDir, "vectors"));
+        CopyDirectoryIfNewer(Path.Combine(oldDir, "documents"), Path.Combine(newDir, "documents"));
+        CopyDirectoryIfNewer(Path.Combine(oldDir, "health"), Path.Combine(newDir, "health"));
+        CopyDirectoryIfNewer(Path.Combine(oldDir, "media"), Path.Combine(newDir, "media"));
+        CopyDirectoryIfNewer(Path.Combine(oldDir, "backups"), Path.Combine(newDir, "backups"));
     }
 
     /// <summary>
@@ -101,7 +101,7 @@ public static class CcStorageMigration
         var oldDir = Path.Combine(localAppData, "CcDirector", "logs");
         var newDir = CcStorage.ToolLogs("director");
 
-        CopyDirectoryIfMissing(oldDir, newDir);
+        CopyDirectoryIfNewer(oldDir, newDir);
     }
 
     /// <summary>
@@ -113,31 +113,56 @@ public static class CcStorageMigration
         var oldDir = Path.Combine(localAppData, "cc-tools", "data", "comm_manager", "content");
         var newDir = CcStorage.ToolConfig("comm-queue");
 
-        CopyDirectoryIfMissing(oldDir, newDir);
+        CopyDirectoryIfNewer(oldDir, newDir);
     }
 
-    private static void CopyFileIfMissing(string source, string destination)
+    /// <summary>
+    /// Copy file using "newer wins" strategy:
+    /// - Copy if destination doesn't exist
+    /// - Copy if source is newer (by last-write-time)
+    /// - Copy if destination is suspiciously small (&lt;10 bytes) and source is larger
+    /// </summary>
+    private static void CopyFileIfNewer(string source, string destination)
     {
         if (!File.Exists(source))
-            return;
-
-        if (File.Exists(destination))
             return;
 
         var dir = Path.GetDirectoryName(destination);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        File.Copy(source, destination);
-        FileLog.Write($"[CcStorageMigration] Copied: {source} -> {destination}");
+        if (!File.Exists(destination))
+        {
+            File.Copy(source, destination);
+            FileLog.Write($"[CcStorageMigration] Copied (missing): {source} -> {destination}");
+            return;
+        }
+
+        var srcInfo = new FileInfo(source);
+        var dstInfo = new FileInfo(destination);
+
+        // Destination is suspiciously small (empty/stale) and source has real data
+        if (dstInfo.Length < 10 && srcInfo.Length >= 10)
+        {
+            File.Copy(source, destination, overwrite: true);
+            FileLog.Write($"[CcStorageMigration] Copied (dest empty, src={srcInfo.Length}b): {source} -> {destination}");
+            return;
+        }
+
+        // Source is newer
+        if (srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc)
+        {
+            File.Copy(source, destination, overwrite: true);
+            FileLog.Write($"[CcStorageMigration] Copied (newer): {source} -> {destination}");
+        }
     }
 
-    private static void CopyDirectoryIfMissing(string source, string destination)
+    /// <summary>
+    /// Copy directory recursively using "newer wins" strategy for each file.
+    /// </summary>
+    private static void CopyDirectoryIfNewer(string source, string destination)
     {
         if (!Directory.Exists(source))
-            return;
-
-        if (Directory.Exists(destination) && Directory.GetFileSystemEntries(destination).Length > 0)
             return;
 
         Directory.CreateDirectory(destination);
@@ -145,16 +170,13 @@ public static class CcStorageMigration
         foreach (var file in Directory.GetFiles(source))
         {
             var destFile = Path.Combine(destination, Path.GetFileName(file));
-            if (!File.Exists(destFile))
-                File.Copy(file, destFile);
+            CopyFileIfNewer(file, destFile);
         }
 
         foreach (var dir in Directory.GetDirectories(source))
         {
             var destDir = Path.Combine(destination, Path.GetFileName(dir));
-            CopyDirectoryIfMissing(dir, destDir);
+            CopyDirectoryIfNewer(dir, destDir);
         }
-
-        FileLog.Write($"[CcStorageMigration] Copied directory: {source} -> {destination}");
     }
 }

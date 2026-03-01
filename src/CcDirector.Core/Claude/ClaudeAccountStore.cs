@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Claude;
@@ -26,8 +27,7 @@ public class ClaudeAccountStore
     public ClaudeAccountStore(string? filePath = null)
     {
         FilePath = filePath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CcDirector",
+            CcStorage.ToolConfig("director"),
             "accounts.json");
     }
 

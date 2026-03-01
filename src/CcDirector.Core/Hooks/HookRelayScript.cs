@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CcDirector.Core.Storage;
 
 namespace CcDirector.Core.Hooks;
 
@@ -12,8 +13,7 @@ public static class HookRelayScript
     /// <summary>
     /// Directory where the relay script is written at runtime.
     /// </summary>
-    public static string ScriptDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "CcDirector");
+    public static string ScriptDirectory => CcStorage.ToolConfig("director");
 
     /// <summary>
     /// Full path to the relay script on disk.

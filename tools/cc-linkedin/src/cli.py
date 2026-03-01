@@ -33,7 +33,16 @@ console = Console()
 
 def get_config_dir() -> Path:
     """Get cc-linkedin config directory."""
-    return Path.home() / ".cc-linkedin"
+    try:
+        from cc_storage import CcStorage
+        return CcStorage.tool_config("linkedin")
+    except ImportError:
+        import sys
+        _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+        if _tools_dir not in sys.path:
+            sys.path.insert(0, _tools_dir)
+        from cc_storage import CcStorage
+        return CcStorage.tool_config("linkedin")
 
 
 def load_default_workspace() -> str:

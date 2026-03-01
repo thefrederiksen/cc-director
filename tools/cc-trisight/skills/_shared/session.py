@@ -4,14 +4,24 @@ Every skill logs to the same session folder via CC_SESSION_DIR env var.
 If unset, a new session is created automatically (for standalone testing).
 
 Session layout:
-    %APPDATA%/CCComputer/sessions/{timestamp}/
+    {cc-director output}/screenshots/sessions/{timestamp}/
     ├── activity.jsonl         # Append-only log
     └── screenshots/           # Sequential: 001_143025.png, 002_143030.png, ...
 """
 import json
 import os
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
+
+try:
+    from cc_storage import CcStorage
+except ImportError:
+    _tools_dir = str(Path(__file__).resolve().parent.parent.parent.parent)
+    if _tools_dir not in sys.path:
+        sys.path.insert(0, _tools_dir)
+    from cc_storage import CcStorage
 
 
 def _get_session_dir() -> str:
@@ -22,8 +32,7 @@ def _get_session_dir() -> str:
         os.makedirs(os.path.join(env, "screenshots"), exist_ok=True)
         return env
 
-    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-    base = os.path.join(appdata, "CCComputer", "sessions")
+    base = os.path.join(str(CcStorage.output_screenshots()), "sessions")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = os.path.join(base, ts)
     os.makedirs(session, exist_ok=True)

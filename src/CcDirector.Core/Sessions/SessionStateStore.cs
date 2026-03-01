@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Sessions;
@@ -85,8 +86,7 @@ public class SessionStateStore
     public SessionStateStore(string? filePath = null)
     {
         FilePath = filePath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "CcDirector",
+            CcStorage.ToolConfig("director"),
             "sessions.json");
         FileLog.Write($"[SessionStateStore] Initialized: FilePath={FilePath}");
     }

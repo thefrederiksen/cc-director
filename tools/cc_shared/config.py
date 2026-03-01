@@ -1,11 +1,7 @@
 """Shared configuration for cc-tools.
 
-Configuration is stored in the cc-tools data directory.
-Resolution order:
-1. CC_TOOLS_DATA environment variable (if set)
-2. %LOCALAPPDATA%\\cc-tools\\data (preferred, no admin needed)
-3. C:\\cc-tools\\data (legacy, for backward compat during transition)
-4. ~/.cc-tools/ (final fallback)
+Configuration is stored in the cc-director config directory.
+All path resolution is delegated to cc_storage.CcStorage.
 """
 
 import json
@@ -17,37 +13,29 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Import cc_storage for centralized path resolution
+try:
+    from cc_storage import CcStorage
+except ImportError:
+    # Allow standalone usage when cc_storage is not installed
+    import sys
+    _tools_dir = str(Path(__file__).resolve().parent.parent)
+    if _tools_dir not in sys.path:
+        sys.path.insert(0, _tools_dir)
+    from cc_storage import CcStorage
+
 
 def get_data_dir() -> Path:
-    """Get the cc-tools data directory.
+    """Get the cc-director config directory.
 
-    Priority:
-    1. CC_TOOLS_DATA environment variable
-    2. %LOCALAPPDATA%\\cc-tools\\data (preferred, no admin needed)
-    3. C:\\cc-tools\\data (legacy, backward compat during transition)
-    4. ~/.cc-tools (final fallback)
+    Delegates to CcStorage.config() for centralized path resolution.
+    Legacy callers that used this for tool data storage will now get
+    the unified config directory.
 
     Returns:
-        Path to the data directory
+        Path to the config directory
     """
-    # 1. Check environment variable
-    if env_path := os.environ.get("CC_TOOLS_DATA"):
-        return Path(env_path)
-
-    # 2. Check %LOCALAPPDATA%\cc-tools\data (new default)
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        local_path = Path(local) / "cc-tools" / "data"
-        if local_path.exists():
-            return local_path
-
-    # 3. Check legacy system-wide location
-    system_path = Path(r"C:\cc-tools\data")
-    if system_path.exists():
-        return system_path
-
-    # 4. Fallback to user home directory
-    return Path.home() / ".cc-tools"
+    return CcStorage.config()
 
 
 def get_install_dir() -> Path:
@@ -56,21 +44,17 @@ def get_install_dir() -> Path:
     Returns:
         Path to the bin directory containing cc-tools executables.
     """
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local) / "cc-tools" / "bin"
-    return Path("C:/cc-tools")  # legacy fallback
+    return CcStorage.bin()
 
 
 def get_config_path() -> Path:
     """Get the path to the cc-tools config file."""
-    return get_data_dir() / "config.json"
+    return CcStorage.config_json()
 
 
 def ensure_config_dir() -> Path:
     """Ensure the config directory exists and return the config path."""
-    data_dir = get_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
+    CcStorage.ensure(CcStorage.config())
     return get_config_path()
 
 
@@ -131,23 +115,9 @@ class PhotoSource:
 def _default_vault_path() -> str:
     """Compute the default vault path.
 
-    Checks existence so tools keep working during transition:
-    - If %LOCALAPPDATA%\\cc-myvault exists, use it (post-migration)
-    - If D:/Vault exists, use it (pre-migration, legacy)
-    - Otherwise, prefer %LOCALAPPDATA%\\cc-myvault (new installs)
+    Delegates to CcStorage.vault() for centralized path resolution.
     """
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        new_path = Path(local) / "cc-myvault"
-        if new_path.exists():
-            return local.replace("\\", "/") + "/cc-myvault"
-    legacy = Path("D:/Vault")
-    if legacy.exists():
-        return "D:/Vault"
-    # No vault exists yet; prefer new location for fresh installs
-    if local:
-        return local.replace("\\", "/") + "/cc-myvault"
-    return "D:/Vault"
+    return str(CcStorage.vault()).replace("\\", "/")
 
 
 @dataclass
@@ -170,25 +140,9 @@ class VaultConfig:
 def _default_comm_manager_path() -> str:
     """Compute the default Communication Manager content path.
 
-    Resolution order:
-    1. %LOCALAPPDATA%\\cc-tools\\data\\comm_manager\\content (preferred)
-    2. ~/cc_communication_manager/content (legacy fallback)
+    Delegates to CcStorage.tool_config("comm-queue") for centralized path resolution.
     """
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        new_path = Path(local) / "cc-tools" / "data" / "comm_manager" / "content"
-        if new_path.exists():
-            return str(new_path).replace("\\", "/")
-
-    # Legacy path for backward compat during transition
-    legacy = Path.home() / "cc_communication_manager" / "content"
-    if legacy.exists():
-        return str(legacy).replace("\\", "/")
-
-    # Default to new location for fresh installs
-    if local:
-        return (local.replace("\\", "/") + "/cc-tools/data/comm_manager/content")
-    return str(Path.home() / "cc_communication_manager" / "content").replace("\\", "/")
+    return str(CcStorage.tool_config("comm-queue")).replace("\\", "/")
 
 
 @dataclass
@@ -238,11 +192,23 @@ class CommManagerConfig:
         )
 
 
+def _default_photos_db_path() -> str:
+    """Compute the default photos database path.
+
+    Delegates to CcStorage.tool_config("photos") for centralized path resolution.
+    """
+    return str(CcStorage.tool_config("photos") / "photos.db").replace("\\", "/")
+
+
 @dataclass
 class PhotosConfig:
     """Photos tool configuration."""
-    database_path: str = "~/.cc-tools/photos.db"
+    database_path: str = ""
     sources: List[PhotoSource] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.database_path:
+            self.database_path = _default_photos_db_path()
 
     def get_database_path(self) -> Path:
         """Get the expanded database path."""
@@ -258,7 +224,7 @@ class PhotosConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "PhotosConfig":
         sources = [PhotoSource.from_dict(s) for s in data.get("sources", [])]
         return cls(
-            database_path=data.get("database_path", "~/.cc-tools/photos.db"),
+            database_path=data.get("database_path", _default_photos_db_path()),
             sources=sources,
         )
 

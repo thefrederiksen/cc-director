@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using CcDirector.Core.Storage;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CommunicationManager.Models;
@@ -83,58 +84,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private static string GetContentPath()
     {
-        // Check environment variable first
-        var envPath = Environment.GetEnvironmentVariable("CC_COMM_CONTENT_PATH");
-        if (!string.IsNullOrEmpty(envPath) && Directory.Exists(envPath))
-        {
-            return envPath;
-        }
-
-        // Check %LOCALAPPDATA%\cc-tools\data\comm_manager\content
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var appDataPath = Path.Combine(localAppData, "cc-tools", "data", "comm_manager", "content");
-        if (Directory.Exists(appDataPath))
-        {
-            return appDataPath;
-        }
-
-        // Check current working directory
-        var cwdPath = Path.Combine(Directory.GetCurrentDirectory(), "content");
-        if (Directory.Exists(cwdPath))
-        {
-            return cwdPath;
-        }
-
-        // Check relative to exe (for published apps)
-        var exeDir = AppDomain.CurrentDomain.BaseDirectory;
-        var relativeContentPath = Path.Combine(exeDir, "content");
-        if (Directory.Exists(relativeContentPath))
-        {
-            return relativeContentPath;
-        }
-
-        // Check parent directories for repo structure
-        var currentDir = exeDir;
-        for (int i = 0; i < 8; i++)
-        {
-            var potentialContentPath = Path.Combine(currentDir, "content");
-            if (Directory.Exists(potentialContentPath))
-            {
-                return potentialContentPath;
-            }
-            var parent = Directory.GetParent(currentDir);
-            if (parent == null) break;
-            currentDir = parent.FullName;
-        }
-
-        // Default to user's documents
-        var defaultPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "cc_communication_manager",
-            "content"
-        );
-        Directory.CreateDirectory(defaultPath);
-        return defaultPath;
+        var path = CcStorage.ToolConfig("comm-queue");
+        Directory.CreateDirectory(path);
+        return path;
     }
 
     public async Task InitializeAsync()
@@ -457,9 +409,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Run cc_linkedin create command
             var startInfo = new ProcessStartInfo
             {
-                FileName = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "cc-tools", "bin", "cc-linkedin.exe"),
+                FileName = Path.Combine(CcStorage.Bin(), "cc-linkedin.exe"),
                 Arguments = string.Join(" ", args),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,

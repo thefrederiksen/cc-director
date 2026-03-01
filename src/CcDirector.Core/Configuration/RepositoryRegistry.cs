@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Storage;
 
 namespace CcDirector.Core.Configuration;
 
@@ -18,8 +19,7 @@ public class RepositoryRegistry
     public RepositoryRegistry(string? filePath = null)
     {
         FilePath = filePath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "CcDirector",
+            CcStorage.ToolConfig("director"),
             "repositories.json");
     }
 

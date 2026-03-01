@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Configuration;
@@ -20,8 +21,7 @@ public class RootDirectoryStore
     public RootDirectoryStore(string? filePath = null)
     {
         FilePath = filePath ?? System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CcDirector",
+            CcStorage.ToolConfig("director"),
             "root-directories.json");
     }
 

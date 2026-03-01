@@ -57,12 +57,19 @@ import msal
 from O365 import Account
 from O365.utils import BaseTokenBackend
 
-from cc_shared.config import get_data_dir
+try:
+    from cc_storage import CcStorage
+except ImportError:
+    import sys
+    _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+    if _tools_dir not in sys.path:
+        sys.path.insert(0, _tools_dir)
+    from cc_storage import CcStorage
 
 logger = logging.getLogger(__name__)
 
-# Configuration - uses shared data directory for service compatibility
-CONFIG_DIR = get_data_dir() / 'outlook'
+# Configuration - uses centralized cc-director storage
+CONFIG_DIR = CcStorage.tool_config('outlook')
 PROFILES_FILE = CONFIG_DIR / 'profiles.json'
 TOKENS_DIR = CONFIG_DIR / 'tokens'
 

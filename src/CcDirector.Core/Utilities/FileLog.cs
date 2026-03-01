@@ -1,15 +1,14 @@
 using System.Collections.Concurrent;
+using CcDirector.Core.Storage;
 
 namespace CcDirector.Core.Utilities;
 
 /// <summary>
-/// Simple thread-safe file logger. Writes to %LOCALAPPDATA%\CcDirector\logs\director-YYYY-MM-DD.log.
+/// Simple thread-safe file logger. Writes to cc-director logs/director/ directory.
 /// </summary>
 public static class FileLog
 {
-    private static readonly string LogDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "CcDirector", "logs");
+    private static readonly string LogDir = CcStorage.ToolLogs("director");
 
     private static readonly BlockingCollection<string> _queue = new(1024);
     private static Thread? _writerThread;
@@ -73,7 +72,9 @@ public static class FileLog
                     writer = new StreamWriter(path, append: true) { AutoFlush = false };
                 }
 
-                writer!.WriteLine(line);
+                if (writer == null)
+                    continue;
+                writer.WriteLine(line);
 
                 // Flush if queue is empty (no more pending writes)
                 if (_queue.Count == 0)

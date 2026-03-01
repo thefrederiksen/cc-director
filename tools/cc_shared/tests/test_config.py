@@ -28,47 +28,25 @@ from cc_shared.config import (
 
 
 class TestGetDataDir:
-    """Tests for data directory resolution."""
+    """Tests for data directory resolution via CcStorage."""
 
-    def test_env_variable_takes_priority(self, tmp_path):
-        """CC_TOOLS_DATA env var should override all other paths."""
-        custom = str(tmp_path / "custom-data")
-        with patch.dict(os.environ, {"CC_TOOLS_DATA": custom}):
+    def test_delegates_to_ccstorage_config(self, tmp_path):
+        """get_data_dir returns CcStorage.config() path."""
+        with patch.dict(os.environ, {"CC_DIRECTOR_ROOT": str(tmp_path)}):
             result = get_data_dir()
-        assert result == Path(custom)
+        assert result == tmp_path / "config"
 
-    def test_localappdata_used_when_exists(self, tmp_path):
-        """LOCALAPPDATA/cc-tools/data used when directory exists."""
-        data_dir = tmp_path / "cc-tools" / "data"
-        data_dir.mkdir(parents=True)
-        env = {"LOCALAPPDATA": str(tmp_path)}
-        # Remove CC_TOOLS_DATA if set
-        env_clean = {k: v for k, v in os.environ.items() if k != "CC_TOOLS_DATA"}
-        env_clean.update(env)
-        with patch.dict(os.environ, env_clean, clear=True):
+    def test_localappdata_path(self, tmp_path):
+        """Uses LOCALAPPDATA/cc-director/config when LOCALAPPDATA is set."""
+        env = {k: v for k, v in os.environ.items() if k != "CC_DIRECTOR_ROOT"}
+        env["LOCALAPPDATA"] = str(tmp_path)
+        with patch.dict(os.environ, env, clear=True):
             result = get_data_dir()
-        assert result == data_dir
-
-    def test_home_fallback(self, tmp_path):
-        """Falls back to ~/.cc-tools when nothing else matches."""
-        env = {}
-        # Clear all relevant env vars
-        for key in ["CC_TOOLS_DATA", "LOCALAPPDATA"]:
-            env[key] = ""
-        with patch.dict(os.environ, env):
-            # Also mock that legacy path doesn't exist
-            with patch("cc_shared.config.Path") as MockPath:
-                # Make system path not exist
-                mock_system = MockPath.return_value
-                mock_system.exists.return_value = False
-                # But use real Path for the home fallback
-                MockPath.home.return_value = tmp_path
-                # This test verifies the fallback logic exists
-                # Actual path depends on system state
+        assert result == tmp_path / "cc-director" / "config"
 
 
 class TestGetInstallDir:
-    """Tests for install directory resolution."""
+    """Tests for install directory resolution via CcStorage."""
 
     def test_localappdata_path(self, tmp_path):
         """Install dir resolves to LOCALAPPDATA/cc-tools/bin."""
@@ -77,11 +55,11 @@ class TestGetInstallDir:
         assert result == tmp_path / "cc-tools" / "bin"
 
     def test_fallback_without_localappdata(self):
-        """Falls back to C:/cc-tools without LOCALAPPDATA."""
+        """Falls back to ~/.cc-tools/bin without LOCALAPPDATA."""
         env = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
         with patch.dict(os.environ, env, clear=True):
             result = get_install_dir()
-        assert result == Path("C:/cc-tools")
+        assert result == Path.home() / ".cc-tools" / "bin"
 
 
 class TestCCToolsConfig:
@@ -335,9 +313,16 @@ class TestVaultConfig:
 class TestPhotosConfig:
     """Tests for PhotosConfig."""
 
+    def test_default_database_path_uses_ccstorage(self):
+        """Default database path resolves through CcStorage, not hardcoded ~/.cc-tools."""
+        cfg = PhotosConfig()
+        assert "photos.db" in cfg.database_path
+        assert ".cc-tools" not in cfg.database_path
+        assert "config/photos" in cfg.database_path.replace("\\", "/")
+
     def test_database_path_expansion(self):
         """Database path with ~ expands to home directory."""
-        cfg = PhotosConfig(database_path="~/.cc-tools/photos.db")
+        cfg = PhotosConfig(database_path="~/custom/photos.db")
         expanded = cfg.get_database_path()
         assert "~" not in str(expanded)
         assert str(expanded).endswith("photos.db")

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CcDirector.Core.Storage;
 
 namespace CcDirector.Core.Sessions;
 
@@ -28,8 +29,7 @@ public class RecentSessionStore
     public RecentSessionStore(string? filePath = null)
     {
         FilePath = filePath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "CcDirector",
+            CcStorage.ToolConfig("director"),
             "recent-sessions.json");
     }
 

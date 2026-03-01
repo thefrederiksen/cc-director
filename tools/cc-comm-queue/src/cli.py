@@ -47,45 +47,31 @@ console = Console()
 def get_config():
     """Get configuration, handling both installed and frozen modes."""
     try:
-        # Try to import from cc_shared (installed package)
         from cc_shared.config import get_config as get_cc_config
         return get_cc_config()
     except ImportError:
-        # Fallback: read directly from config file
-        config_path = Path.home() / ".cc_tools" / "config.json"
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # Create a simple object with the needed attributes
-            class SimpleConfig:
-                pass
-            class CommManager:
-                def __init__(self, d):
-                    cm = d.get("comm_manager", {})
-                    local = os.environ.get("LOCALAPPDATA", "")
-                    default_qp = (local.replace("\\", "/") + "/cc-tools/data/comm_manager/content") if local else str(Path.home() / "cc_communication_manager" / "content")
-                    self.queue_path = cm.get("queue_path", default_qp)
-                    self.default_persona = cm.get("default_persona", "personal")
-                    self.default_created_by = cm.get("default_created_by", "claude_code")
-                def get_queue_path(self):
-                    return Path(self.queue_path)
-            cfg = SimpleConfig()
-            cfg.comm_manager = CommManager(data)
-            return cfg
-        else:
-            # Return defaults
-            class SimpleConfig:
-                pass
-            class CommManager:
-                _local = os.environ.get("LOCALAPPDATA", "")
-                queue_path = (_local.replace("\\", "/") + "/cc-tools/data/comm_manager/content") if _local else str(Path.home() / "cc_communication_manager" / "content")
-                default_persona = "personal"
-                default_created_by = "claude_code"
-                def get_queue_path(self):
-                    return Path(self.queue_path)
-            cfg = SimpleConfig()
-            cfg.comm_manager = CommManager()
-            return cfg
+        pass
+
+    # Fallback: use cc_storage directly
+    try:
+        from cc_storage import CcStorage
+    except ImportError:
+        _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+        if _tools_dir not in sys.path:
+            sys.path.insert(0, _tools_dir)
+        from cc_storage import CcStorage
+
+    class SimpleConfig:
+        pass
+    class CommManager:
+        queue_path = str(CcStorage.tool_config("comm-queue"))
+        default_persona = "personal"
+        default_created_by = "claude_code"
+        def get_queue_path(self):
+            return Path(self.queue_path)
+    cfg = SimpleConfig()
+    cfg.comm_manager = CommManager()
+    return cfg
 
 
 def get_queue_manager() -> QueueManager:

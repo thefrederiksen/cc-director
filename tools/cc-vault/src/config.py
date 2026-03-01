@@ -2,18 +2,24 @@
 Vault Configuration Module
 
 Central configuration for the Vault 2.0 personal data platform.
-Supports configuration via (in priority order):
-1. CC_VAULT_PATH environment variable
-2. Shared cc-tools config (from cc_shared)
-3. Legacy ~/.cc-vault/config.json (deprecated)
-4. %LOCALAPPDATA%\\cc-myvault (default)
+All path resolution is delegated to cc_storage.CcStorage.
 """
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+
+# Import cc_storage for centralized path resolution
+try:
+    from cc_storage import CcStorage
+except ImportError:
+    _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+    if _tools_dir not in sys.path:
+        sys.path.insert(0, _tools_dir)
+    from cc_storage import CcStorage
 
 
 @dataclass
@@ -38,7 +44,7 @@ class VaultConfig:
 
 def get_config_dir() -> Path:
     """Get the config directory for cc-vault."""
-    return Path.home() / ".cc-vault"
+    return CcStorage.tool_config("vault")
 
 
 def get_config_file() -> Path:
@@ -47,49 +53,8 @@ def get_config_file() -> Path:
 
 
 def get_vault_path() -> Path:
-    """
-    Get the vault path from (in order of priority):
-    1. CC_VAULT_PATH environment variable
-    2. Shared cc-tools config (from cc_shared)
-    3. Legacy ~/.cc-vault/config.json (deprecated)
-    4. %LOCALAPPDATA%\\cc-myvault (default)
-    """
-    # 1. Check environment variable first (highest priority)
-    env_path = os.environ.get("CC_VAULT_PATH")
-    if env_path:
-        return Path(env_path).resolve()
-
-    # 2. Check shared cc-tools config (preferred)
-    try:
-        from cc_shared.config import get_config as get_shared_config
-        shared = get_shared_config()
-        if hasattr(shared, 'vault') and shared.vault.vault_path:
-            return Path(shared.vault.vault_path).resolve()
-    except ImportError:
-        pass  # cc_shared not available, try legacy config
-
-    # 3. Check legacy config file (deprecated)
-    config_file = get_config_file()
-    if config_file.exists():
-        try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                if 'vault_path' in config:
-                    return Path(config['vault_path']).resolve()
-        except json.JSONDecodeError as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Invalid config file format: {e}")
-        except IOError as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Could not read config file: {e}")
-
-    # 4. Default: %LOCALAPPDATA%\cc-myvault
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local) / "cc-myvault"
-
-    # Final fallback if LOCALAPPDATA not set
-    return Path.home() / ".cc-myvault"
+    """Get the vault path. Delegates to CcStorage.vault()."""
+    return CcStorage.vault()
 
 
 def get_config() -> VaultConfig:

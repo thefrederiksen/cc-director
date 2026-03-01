@@ -24,7 +24,16 @@ console = Console()
 
 def get_config_dir() -> Path:
     """Get cc-reddit config directory."""
-    return Path.home() / ".cc-reddit"
+    try:
+        from cc_storage import CcStorage
+        return CcStorage.tool_config("reddit")
+    except ImportError:
+        import sys
+        _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+        if _tools_dir not in sys.path:
+            sys.path.insert(0, _tools_dir)
+        from cc_storage import CcStorage
+        return CcStorage.tool_config("reddit")
 
 
 def load_default_workspace() -> str:
