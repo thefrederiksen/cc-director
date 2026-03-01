@@ -55,7 +55,7 @@ public partial class MainWindow : Window
     private bool _readOnlyWarningShown;
 
     private readonly List<DocumentTabInfo> _documentTabs = new();
-    private record DocumentTabInfo(string FilePath, TabItem TabItem, IFileViewer Viewer);
+    private record DocumentTabInfo(Guid SessionId, string FilePath, TabItem TabItem, IFileViewer Viewer);
 
     // Cached frozen brushes for document tab headers
     private static readonly SolidColorBrush TabHeaderBrush = FreezeBrush(0xCC, 0xCC, 0xCC);
@@ -1140,6 +1140,16 @@ public partial class MainWindow : Window
             _activeEmbeddedBackend = null;
             DetachTerminal();
         }
+        else
+        {
+            // Clean up document tabs for a non-active session being closed
+            var closingTabs = _documentTabs.Where(t => t.SessionId == vm.Session.Id).ToList();
+            foreach (var docTab in closingTabs)
+            {
+                SessionTabs.Items.Remove(docTab.TabItem);
+                _documentTabs.Remove(docTab);
+            }
+        }
         _sessions.Remove(vm);
         PersistSessionState();
 
@@ -1189,6 +1199,7 @@ public partial class MainWindow : Window
         }
 
         AttachTerminal(vm.Session);
+        SwitchDocumentTabsToSession(vm.Session.Id);
 
         // Restore prompt text for incoming session
         PromptInput.Text = vm.PendingPromptText;
@@ -1267,6 +1278,7 @@ public partial class MainWindow : Window
 
     private void DetachTerminal()
     {
+        var detachingSessionId = _activeSession?.Id;
         _activeSession = null;
         if (_terminalControl != null)
         {
@@ -1290,10 +1302,16 @@ public partial class MainWindow : Window
         GitChanges.Detach();
         SourceControlTab.Visibility = Visibility.Collapsed;
 
-        // Close all document tabs without prompting to save
-        foreach (var docTab in _documentTabs)
-            SessionTabs.Items.Remove(docTab.TabItem);
-        _documentTabs.Clear();
+        // Close document tabs for the detaching session only
+        if (detachingSessionId != null)
+        {
+            var sessionTabs = _documentTabs.Where(t => t.SessionId == detachingSessionId.Value).ToList();
+            foreach (var docTab in sessionTabs)
+            {
+                SessionTabs.Items.Remove(docTab.TabItem);
+                _documentTabs.Remove(docTab);
+            }
+        }
         UpdateCloseAllDocumentsButton();
 
         // Show all hook events when no session is selected
@@ -1304,6 +1322,24 @@ public partial class MainWindow : Window
         PromptBar.Visibility = Visibility.Collapsed;
         PlaceholderText.Visibility = Visibility.Visible;
         RefreshQueuePanel();
+    }
+
+    private void SwitchDocumentTabsToSession(Guid sessionId)
+    {
+        foreach (var info in _documentTabs)
+        {
+            if (info.SessionId == sessionId)
+            {
+                if (!SessionTabs.Items.Contains(info.TabItem))
+                    SessionTabs.Items.Add(info.TabItem);
+            }
+            else
+            {
+                if (SessionTabs.Items.Contains(info.TabItem))
+                    SessionTabs.Items.Remove(info.TabItem);
+            }
+        }
+        UpdateCloseAllDocumentsButton();
     }
 
     private void UpdateSourceControlTabVisibility(string repoPath)
@@ -1327,8 +1363,16 @@ public partial class MainWindow : Window
     {
         FileLog.Write($"[MainWindow] OpenDocumentFile: {filePath}");
 
-        // If already open, just select the existing tab
+        if (_activeSession == null)
+        {
+            FileLog.Write($"[MainWindow] OpenDocumentFile: no active session, ignoring");
+            return;
+        }
+        var sessionId = _activeSession.Id;
+
+        // If already open for this session, just select the existing tab
         var existing = _documentTabs.Find(t =>
+            t.SessionId == sessionId &&
             string.Equals(t.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
         if (existing != null)
         {
@@ -1343,6 +1387,7 @@ public partial class MainWindow : Window
         {
             FileViewerCategory.Markdown => new MarkdownViewerControl(),
             FileViewerCategory.Image => new ImageViewerControl(),
+            FileViewerCategory.Code => new CodeViewerControl(),
             FileViewerCategory.Text => new TextViewerControl(),
             FileViewerCategory.Pdf => new PdfViewerControl(),
             _ => new TextViewerControl() // Fallback to text for unknown viewable types
@@ -1396,7 +1441,7 @@ public partial class MainWindow : Window
         };
 
         SessionTabs.Items.Add(tabItem);
-        _documentTabs.Add(new DocumentTabInfo(filePath, tabItem, viewer));
+        _documentTabs.Add(new DocumentTabInfo(sessionId, filePath, tabItem, viewer));
 
         // Select the new tab and load content in the background
         SessionTabs.SelectedItem = tabItem;
@@ -1441,10 +1486,12 @@ public partial class MainWindow : Window
 
     private async Task CloseAllDocumentTabsAsync()
     {
-        FileLog.Write($"[MainWindow] CloseAllDocumentTabsAsync: count={_documentTabs.Count}");
+        var sessionId = _activeSession?.Id;
+        if (sessionId == null) return;
 
-        // Work on a copy since we're modifying the collection
-        var tabsCopy = _documentTabs.ToList();
+        var tabsCopy = _documentTabs.Where(t => t.SessionId == sessionId.Value).ToList();
+        FileLog.Write($"[MainWindow] CloseAllDocumentTabsAsync: count={tabsCopy.Count} for session {sessionId.Value}");
+
         foreach (var info in tabsCopy)
         {
             // Prompt to save if dirty
@@ -1500,8 +1547,10 @@ public partial class MainWindow : Window
 
     private void UpdateCloseAllDocumentsButton()
     {
+        var hasDocTabs = _activeSession != null &&
+            _documentTabs.Any(t => t.SessionId == _activeSession.Id);
         if (FindName("CloseAllDocsButton") is Button btn)
-            btn.Visibility = _documentTabs.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            btn.Visibility = hasDocTabs ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // ── End document tab management ──────────────────────────────────

@@ -9,6 +9,7 @@ public enum FileViewerCategory
     Markdown,
     Image,
     Text,
+    Code,
     Pdf
 }
 
@@ -28,16 +29,23 @@ public static class FileExtensions
         ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp"
     };
 
+    private static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".cs", ".py", ".js", ".ts", ".tsx", ".jsx",
+        ".json", ".xml", ".xaml", ".csproj", ".fsproj", ".vbproj", ".props", ".targets", ".sln",
+        ".html", ".css", ".svg",
+        ".sql",
+        ".ps1", ".bat", ".sh",
+        ".yaml", ".yml", ".toml",
+        ".rs", ".go", ".java", ".cpp", ".c", ".h", ".hpp",
+        ".rb", ".php", ".swift", ".kt"
+    };
+
     private static readonly HashSet<string> TextExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".txt", ".log", ".csv", ".json", ".xml", ".yaml", ".yml",
-        ".ini", ".cfg", ".conf", ".toml",
+        ".txt", ".log", ".csv",
+        ".ini", ".cfg", ".conf",
         ".gitignore", ".editorconfig",
-        ".cs", ".py", ".js", ".ts", ".ps1", ".bat", ".sh", ".sql",
-        ".html", ".css", ".svg", ".tsx", ".jsx",
-        ".rs", ".go", ".java", ".cpp", ".c", ".h", ".hpp",
-        ".rb", ".php",
-        ".sln", ".csproj", ".fsproj", ".vbproj", ".props", ".targets",
         ".dockerignore", ".env", ".gitattributes", ".prettierrc", ".eslintrc"
     };
 
@@ -63,6 +71,12 @@ public static class FileExtensions
         return ImageExtensions.Contains(ext);
     }
 
+    public static bool IsCodeFile(string path)
+    {
+        var ext = Path.GetExtension(path);
+        return CodeExtensions.Contains(ext);
+    }
+
     public static bool IsTextFile(string path)
     {
         var ext = Path.GetExtension(path);
@@ -83,13 +97,14 @@ public static class FileExtensions
 
     public static bool IsViewable(string path)
     {
-        return IsMarkdown(path) || IsImage(path) || IsTextFile(path) || IsPdf(path);
+        return IsMarkdown(path) || IsImage(path) || IsCodeFile(path) || IsTextFile(path) || IsPdf(path);
     }
 
     public static FileViewerCategory GetViewerCategory(string path)
     {
         if (IsMarkdown(path)) return FileViewerCategory.Markdown;
         if (IsImage(path)) return FileViewerCategory.Image;
+        if (IsCodeFile(path)) return FileViewerCategory.Code;
         if (IsTextFile(path)) return FileViewerCategory.Text;
         if (IsPdf(path)) return FileViewerCategory.Pdf;
         return FileViewerCategory.None;
