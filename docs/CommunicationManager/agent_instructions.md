@@ -4,30 +4,33 @@ This document provides instructions for AI agents that need to submit content fo
 
 ## Overview
 
-The **cc_comm_queue** CLI tool allows agents to add content to the Communication Manager approval queue. A human reviewer will approve, edit, or reject the content before it is posted.
+The **cc-comm-queue** CLI tool allows agents to add content to the Communication Manager approval queue. A human reviewer will approve, edit, or reject the content before it is posted.
 
 ## Tool Location
 
-- **Executable:** `C:\cc-tools\cc_comm_queue.exe`
-- **Documentation:** `C:\cc-tools\CC_TOOLS.md` (search for "cc_comm_queue" section)
+- **Executable:** `%LOCALAPPDATA%\cc-director\bin\cc-comm-queue.exe`
+- **Documentation:** `docs/CC_TOOLS.md` (search for "cc-comm-queue" section)
 
 ## Quick Reference
 
 ```bash
 # Add a LinkedIn post
-cc_comm_queue add linkedin post "Your post content here" --persona mindzie --tags "tag1,tag2"
+cc-comm-queue add linkedin post "Your post content here" --persona mindzie --tags "tag1,tag2"
 
 # Add a LinkedIn comment
-cc_comm_queue add linkedin comment "Your comment" --context-url "https://linkedin.com/posts/..."
+cc-comm-queue add linkedin comment "Your comment" --context-url "https://linkedin.com/posts/..."
 
 # Add an email
-cc_comm_queue add email email "Email body" --email-to "recipient@example.com" --email-subject "Subject line"
+cc-comm-queue add email email "Email body" --email-to "recipient@example.com" --email-subject "Subject line"
+
+# Add an email with attachment
+cc-comm-queue add email email "Email body" --email-to "recipient@example.com" --email-subject "Subject line" --email-attach "path/to/file.pdf"
 
 # Add a Reddit post
-cc_comm_queue add reddit post "Post content" --reddit-subreddit "r/subreddit" --reddit-title "Post Title"
+cc-comm-queue add reddit post "Post content" --reddit-subreddit "r/subreddit" --reddit-title "Post Title"
 
 # Check queue status
-cc_comm_queue status
+cc-comm-queue status
 ```
 
 ## Supported Platforms
@@ -55,12 +58,12 @@ Always specify the correct persona:
 
 ### LinkedIn Post
 ```bash
-cc_comm_queue add linkedin post "Content" --persona mindzie
+cc-comm-queue add linkedin post "Content" --persona mindzie
 ```
 
 ### LinkedIn Comment (responding to something)
 ```bash
-cc_comm_queue add linkedin comment "Comment text" \
+cc-comm-queue add linkedin comment "Comment text" \
     --persona personal \
     --context-url "https://linkedin.com/posts/..." \
     --context-title "Title of post we're responding to"
@@ -68,15 +71,33 @@ cc_comm_queue add linkedin comment "Comment text" \
 
 ### Email
 ```bash
-cc_comm_queue add email email "Email body text" \
+cc-comm-queue add email email "Email body text" \
     --persona mindzie \
     --email-to "recipient@example.com" \
     --email-subject "Subject line"
 ```
 
+### Email with Attachment
+```bash
+cc-comm-queue add email email "Email body text" \
+    --persona mindzie \
+    --email-to "recipient@example.com" \
+    --email-subject "Subject line" \
+    --email-attach "path/to/report.pdf"
+```
+
+Multiple attachments can be specified by repeating the flag:
+```bash
+cc-comm-queue add email email "Email body" \
+    --email-to "recipient@example.com" \
+    --email-subject "Subject" \
+    --email-attach "file1.pdf" \
+    --email-attach "file2.xlsx"
+```
+
 ### Reddit Post
 ```bash
-cc_comm_queue add reddit post "Post content" \
+cc-comm-queue add reddit post "Post content" \
     --persona personal \
     --reddit-subreddit "r/processimprovement" \
     --reddit-title "Post title goes here"
@@ -87,7 +108,7 @@ cc_comm_queue add reddit post "Post content" \
 Use `--json` flag to get machine-readable output:
 
 ```bash
-cc_comm_queue add linkedin post "Hello world" --json
+cc-comm-queue add linkedin post "Hello world" --json
 ```
 
 Output:
@@ -116,7 +137,7 @@ Output:
 ## Example: Full LinkedIn Post
 
 ```bash
-cc_comm_queue add linkedin post "Process mining has evolved significantly in 2024. Here are 3 trends I'm seeing:
+cc-comm-queue add linkedin post "Process mining has evolved significantly in 2024. Here are 3 trends I'm seeing:
 
 1. AI-powered process discovery
 2. Real-time process monitoring

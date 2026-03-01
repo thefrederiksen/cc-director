@@ -1,4 +1,4 @@
-"""CLI for cc_comm_queue - Communication Manager Queue Tool."""
+"""CLI for cc-comm-queue - Communication Manager Queue Tool."""
 
 import json
 import logging
@@ -33,7 +33,7 @@ logging.basicConfig(level=logging.WARNING, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
-    name="cc_comm_queue",
+    name="cc-comm-queue",
     help="CLI tool for adding content to the Communication Manager approval queue.",
     add_completion=False,
 )
@@ -45,33 +45,9 @@ console = Console()
 
 
 def get_config():
-    """Get configuration, handling both installed and frozen modes."""
-    try:
-        from cc_shared.config import get_config as get_cc_config
-        return get_cc_config()
-    except ImportError:
-        pass
-
-    # Fallback: use cc_storage directly
-    try:
-        from cc_storage import CcStorage
-    except ImportError:
-        _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
-        if _tools_dir not in sys.path:
-            sys.path.insert(0, _tools_dir)
-        from cc_storage import CcStorage
-
-    class SimpleConfig:
-        pass
-    class CommManager:
-        queue_path = str(CcStorage.tool_config("comm-queue"))
-        default_persona = "personal"
-        default_created_by = "claude_code"
-        def get_queue_path(self):
-            return Path(self.queue_path)
-    cfg = SimpleConfig()
-    cfg.comm_manager = CommManager()
-    return cfg
+    """Get configuration using cc_shared."""
+    from cc_shared.config import get_config as get_cc_config
+    return get_cc_config()
 
 
 def get_queue_manager() -> QueueManager:
@@ -84,7 +60,7 @@ def get_queue_manager() -> QueueManager:
 def version_callback(value: bool) -> None:
     """Print version and exit if --version flag is set."""
     if value:
-        console.print(f"cc_comm_queue version {__version__}")
+        console.print(f"cc-comm-queue version {__version__}")
         raise typer.Exit()
 
 

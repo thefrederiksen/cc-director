@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for cc_comm_queue."""
+"""PyInstaller spec for cc-comm-queue."""
 
 import os
 import sys
@@ -12,6 +12,7 @@ spec_dir = SPECPATH
 
 # Add src to the path for module discovery
 src_path = os.path.join(spec_dir, 'src')
+tools_dir = os.path.dirname(spec_dir)
 
 # Collect source files to be bundled (as data that we'll import at runtime)
 src_files = []
@@ -19,6 +20,20 @@ src_dir_full = os.path.join(spec_dir, 'src')
 for f in os.listdir(src_dir_full):
     if f.endswith('.py') and f not in ['cli.py', '__main__.py']:
         src_files.append((os.path.join(src_dir_full, f), '.'))
+
+# Collect cc_storage package files
+cc_storage_dir = os.path.join(tools_dir, 'cc_storage')
+cc_storage_files = []
+for f in os.listdir(cc_storage_dir):
+    if f.endswith('.py'):
+        cc_storage_files.append((os.path.join(cc_storage_dir, f), 'cc_storage'))
+
+# Collect cc_shared package files
+cc_shared_dir = os.path.join(tools_dir, 'cc_shared')
+cc_shared_files = []
+for f in os.listdir(cc_shared_dir):
+    if f.endswith('.py'):
+        cc_shared_files.append((os.path.join(cc_shared_dir, f), 'cc_shared'))
 
 # Collect Rich Unicode data files
 rich_unicode_data = collect_data_files('rich._unicode_data', include_py_files=True)
@@ -28,9 +43,9 @@ runtime_hook_path = os.path.join(spec_dir, 'pyi_rth_paths.py')
 
 a = Analysis(
     [os.path.join(src_dir_full, 'cli.py')],
-    pathex=[src_path, spec_dir],
+    pathex=[src_path, spec_dir, tools_dir],
     binaries=[],
-    datas=src_files + rich_unicode_data,
+    datas=src_files + cc_storage_files + cc_shared_files + rich_unicode_data,
     hiddenimports=[
         'typer',
         'typer.core',
@@ -41,6 +56,10 @@ a = Analysis(
         'pydantic',
         'pydantic.deprecated.decorator',
         'pydantic_core',
+        'cc_storage',
+        'cc_storage.storage',
+        'cc_shared',
+        'cc_shared.config',
     ],
     hookspath=[],
     hooksconfig={},
@@ -61,7 +80,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='cc_comm_queue',
+    name='cc-comm-queue',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

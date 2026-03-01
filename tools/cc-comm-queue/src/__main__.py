@@ -1,4 +1,4 @@
-"""Entry point for running cc_comm_queue as a module."""
+"""Entry point for running cc-comm-queue as a module."""
 
 from .cli import app
 

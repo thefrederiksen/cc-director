@@ -1,16 +1,16 @@
 @echo off
-REM Release script for cc_comm_queue
-REM Builds and deploys to C:\cc-tools
+REM Release script for cc-comm-queue
+REM Builds and deploys to %LOCALAPPDATA%\cc-director\bin
 
 setlocal
 
 echo ============================================
-echo Releasing cc_comm_queue
+echo Releasing cc-comm-queue
 echo ============================================
 echo.
 
 set "SCRIPT_DIR=%~dp0"
-set "INSTALL_DIR=C:\cc-tools"
+set "INSTALL_DIR=%LOCALAPPDATA%\cc-director\bin"
 
 REM Check for Python
 where python >nul 2>&1
@@ -40,7 +40,7 @@ if %errorlevel% neq 0 (
 )
 
 REM Check if exe was created
-if not exist "%SCRIPT_DIR%dist\cc_comm_queue.exe" (
+if not exist "%SCRIPT_DIR%dist\cc-comm-queue.exe" (
     echo ERROR: Executable not found after build
     exit /b 1
 )
@@ -53,14 +53,14 @@ if not exist "%INSTALL_DIR%" (
 
 REM Copy executable
 echo Deploying to %INSTALL_DIR%...
-copy /Y "%SCRIPT_DIR%dist\cc_comm_queue.exe" "%INSTALL_DIR%\" >nul
+copy /Y "%SCRIPT_DIR%dist\cc-comm-queue.exe" "%INSTALL_DIR%\" >nul
 
 echo.
 echo ============================================
 echo Release complete!
 echo ============================================
 echo.
-echo Executable: %INSTALL_DIR%\cc_comm_queue.exe
+echo Executable: %INSTALL_DIR%\cc-comm-queue.exe
 echo.
-echo Test with: cc_comm_queue --version
+echo Test with: cc-comm-queue --version
 echo.
