@@ -4,16 +4,18 @@ import os
 
 src_dir = 'src'
 cc_shared_path = os.path.abspath('../cc_shared')
+cc_storage_path = os.path.abspath('../cc_storage')
 
 a = Analysis(
     ['main.py'],
-    pathex=['.', 'src', '../cc_shared'],
+    pathex=['.', 'src', '../cc_shared', '../cc_storage'],
     binaries=[],
     datas=[
         (cc_shared_path + '/*.py', 'cc_shared'),
         (cc_shared_path + '/providers/*.py', 'cc_shared/providers'),
+        (cc_storage_path + '/*.py', 'cc_storage'),
     ],
-    hiddenimports=['cli', 'auth', 'outlook_api', 'utils', 'cc_shared', 'cc_shared.config', 'cc_shared.llm', 'cc_shared.providers', 'rich._unicode_data', 'rich._unicode_data.unicode17-0-0'],
+    hiddenimports=['cli', 'auth', 'outlook_api', 'utils', 'cc_shared', 'cc_shared.config', 'cc_shared.llm', 'cc_shared.providers', 'cc_storage', 'rich._unicode_data', 'rich._unicode_data.unicode17-0-0'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

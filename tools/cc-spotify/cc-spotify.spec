@@ -1,17 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+cc_storage_path = os.path.abspath('../cc_storage')
 
 a = Analysis(
     ['src\\__main__.py'],
-    pathex=['.'],
+    pathex=['.', '../cc_storage'],
     binaries=[],
-    datas=collect_data_files('rich'),
+    datas=collect_data_files('rich') + [(cc_storage_path + '/*.py', 'cc_storage')],
     hiddenimports=[
         'typer',
         'rich',
         'httpx',
         'pydantic',
+        'cc_storage',
     ] + collect_submodules('rich'),
     hookspath=[],
     hooksconfig={},

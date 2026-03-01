@@ -77,18 +77,35 @@ def get_repeat_state_js() -> str:
 
 
 def get_playlists_js() -> str:
-    """Extract playlist names from sidebar."""
+    """Extract library items from sidebar.
+
+    Spotify sidebar uses nav[aria-label='Main'] with div[role='row'] items.
+    Each row has a title span (class contains 'ListRowTitle') and subtitle text.
+    """
     return """
     (() => {
-        const items = document.querySelectorAll('[data-testid="rootlist-item"]');
-        const playlists = [];
-        items.forEach((item, i) => {
-            const nameEl = item.querySelector('[data-testid="listrow-title"]') ||
-                          item.querySelector('span');
-            const name = nameEl ? nameEl.textContent.trim() : "";
-            if (name) playlists.push({name: name, index: i});
+        const nav = document.querySelector('nav[aria-label="Main"]');
+        if (!nav) return JSON.stringify([]);
+        const rows = nav.querySelectorAll('[role="row"]');
+        const items = [];
+        rows.forEach((row) => {
+            const idx = row.getAttribute("aria-rowindex") || "";
+            const titleEl = row.querySelector('[class*="ListRowTitle"]');
+            const name = titleEl ? titleEl.textContent.trim() : "";
+            if (!name) return;
+            const fullText = row.textContent.trim();
+            const subtitle = fullText.startsWith(name) ?
+                fullText.substring(name.length).trim() : "";
+            let itemType = "";
+            if (subtitle.startsWith("Playlist")) itemType = "playlist";
+            else if (subtitle.startsWith("Podcast")) itemType = "podcast";
+            else if (subtitle.startsWith("Artist")) itemType = "artist";
+            else if (subtitle.startsWith("Album") || subtitle.includes("album")) itemType = "album";
+            else if (subtitle.startsWith("Single")) itemType = "album";
+            else if (subtitle.includes("Pinned")) itemType = "playlist";
+            items.push({name: name, index: parseInt(idx) || items.length, type: itemType, subtitle: subtitle});
         });
-        return JSON.stringify(playlists);
+        return JSON.stringify(items);
     })()
     """
 
@@ -153,6 +170,57 @@ def get_queue_js() -> str:
         });
         return JSON.stringify(tracks);
     })()
+    """
+
+
+def get_tracklist_rows_js() -> str:
+    """Extract all currently rendered tracklist rows with name, artist, album."""
+    return """
+    (() => {
+        const rows = document.querySelectorAll('[data-testid="tracklist-row"]');
+        const tracks = [];
+        rows.forEach((row) => {
+            const nameEl = row.querySelector('[data-testid="internal-track-link"]');
+            const name = nameEl ? nameEl.textContent.trim() : "";
+            const artistLinks = row.querySelectorAll('a[href*="/artist/"]');
+            const artists = [];
+            artistLinks.forEach(a => {
+                const text = a.textContent.trim();
+                if (text && !artists.includes(text)) artists.push(text);
+            });
+            const albumLink = row.querySelector('a[href*="/album/"]');
+            const album = albumLink ? albumLink.textContent.trim() : "";
+            const ariaIdx = row.getAttribute("aria-rowindex") || "";
+            if (name) tracks.push({idx: ariaIdx, name: name, artist: artists.join(", "), album: album});
+        });
+        return JSON.stringify(tracks);
+    })()
+    """
+
+
+def scroll_main_view_js(pixels: int = 3000) -> str:
+    """Scroll the main content area by given pixels."""
+    return f"""
+    (() => {{
+        const child = document.querySelector('.main-view-container__scroll-node-child');
+        const c = child ? child.parentElement : null;
+        if (!c) return JSON.stringify({{error: "No scroll container"}});
+        c.scrollBy(0, {pixels});
+        return JSON.stringify({{scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight}});
+    }})()
+    """
+
+
+def scroll_main_view_to_js(position: int) -> str:
+    """Scroll the main content area to an absolute position."""
+    return f"""
+    (() => {{
+        const child = document.querySelector('.main-view-container__scroll-node-child');
+        const c = child ? child.parentElement : null;
+        if (!c) return JSON.stringify({{error: "No scroll container"}});
+        c.scrollTop = {position};
+        return JSON.stringify({{scrollTop: c.scrollTop, scrollHeight: c.scrollHeight}});
+    }})()
     """
 
 

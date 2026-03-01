@@ -10,6 +10,7 @@ from pathlib import Path
 from .browser_client import BrowserClient, BrowserError, WorkspaceError
 from .selectors import SpotifyKeys, SpotifySelectors, SpotifyURLs
 from .delays import jittered_sleep
+import time
 from .spotify_js import (
     get_now_playing_js,
     get_shuffle_state_js,
@@ -17,6 +18,9 @@ from .spotify_js import (
     get_playlists_js,
     get_search_results_js,
     get_queue_js,
+    get_tracklist_rows_js,
+    scroll_main_view_js,
+    scroll_main_view_to_js,
     set_volume_js,
 )
 
@@ -657,8 +661,13 @@ def search(
 # =============================================================================
 
 @app.command()
-def playlists():
-    """List playlists from the sidebar."""
+def playlists(
+    filter_type: Optional[str] = typer.Option(
+        None, "--type", "-t",
+        help="Filter by type: playlist, podcast, artist, album"
+    ),
+):
+    """List library items from the sidebar."""
     _ensure_workspace()
 
     try:
@@ -669,25 +678,36 @@ def playlists():
 
         verbose_snapshot(client)
 
+        if not isinstance(data, list):
+            console.print("Unexpected result format.")
+            return
+
+        # Apply type filter
+        if filter_type:
+            data = [p for p in data if p.get("type", "") == filter_type.lower()]
+
         if app_config.format == "json":
             console.print_json(json.dumps(data))
             return
 
-        if isinstance(data, list):
-            if not data:
-                console.print("No playlists found in sidebar.")
-                console.print("Make sure the sidebar is visible and playlists are loaded.")
-                return
+        if not data:
+            console.print("No items found in sidebar.")
+            if filter_type:
+                console.print(f"Try without --type filter, or check type: playlist, podcast, artist, album")
+            return
 
-            table = Table(title="Your Playlists")
-            table.add_column("#", style="dim", width=4)
-            table.add_column("Name", style="bold")
+        table = Table(title="Your Library")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Name", style="bold")
+        table.add_column("Type", style="cyan", width=10)
 
-            for i, p in enumerate(data, 1):
-                table.add_row(str(i), p.get("name", ""))
-            console.print(table)
-        else:
-            console.print("Unexpected result format.")
+        for i, p in enumerate(data, 1):
+            table.add_row(
+                str(i),
+                p.get("name", ""),
+                p.get("type", ""),
+            )
+        console.print(table)
 
     except BrowserError as e:
         error(str(e))
@@ -793,6 +813,215 @@ def queue():
                 console.print(f"[dim]... and {len(data) - 30} more tracks[/dim]")
         else:
             console.print("Unexpected result format.")
+
+    except BrowserError as e:
+        error(str(e))
+        raise typer.Exit(1)
+
+
+# =============================================================================
+# Liked Songs
+# =============================================================================
+
+def _collect_visible_tracks(client: BrowserClient, all_tracks: dict):
+    """Extract currently visible tracklist rows and merge into all_tracks.
+
+    Uses aria-rowindex as primary key to avoid missing tracks with
+    duplicate name+artist combinations.
+    """
+    result = client.evaluate(get_tracklist_rows_js())
+    data = parse_js_result(result)
+    if isinstance(data, list):
+        for t in data:
+            key = t.get("idx") or (t.get("name", "") + "|" + t.get("artist", ""))
+            if key and key not in all_tracks:
+                all_tracks[key] = t
+
+
+def _hover_on_content_area(client: BrowserClient):
+    """Position the Playwright cursor over the main content area.
+
+    Required before mouse wheel scrolling -- page.mouse.wheel() dispatches
+    events at the cursor position, so we need the cursor over the scroll
+    container. Uses the accessibility snapshot to find a track link ref.
+    """
+    import re
+
+    snap = client.snapshot()
+    snapshot_text = snap.get("snapshot", "")
+
+    # Find a track link ref in the content area
+    for line in snapshot_text.split("\n"):
+        m = re.search(r'link ".+?" \[ref=(e\d+)\]', line)
+        if m and any(kw in line for kw in ["Play ", "link \"Knock", "link \"Without"]):
+            continue  # Skip play buttons
+        if m and "link" in line and "[nth=" not in line:
+            # Found a link -- check it's in the track area (high ref number)
+            ref_num = int(m.group(1)[1:])
+            if ref_num > 70:  # Track area refs start after sidebar/controls
+                client._post("/hover", {"ref": m.group(1)})
+                return True
+    return False
+
+
+def _check_at_bottom(client: BrowserClient) -> bool:
+    """Check if main content scroll is at the bottom."""
+    result = client.evaluate("""(() => {
+        const child = document.querySelector('.main-view-container__scroll-node-child');
+        const c = child ? child.parentElement : null;
+        if (!c) return JSON.stringify({atBottom: true});
+        return JSON.stringify({atBottom: c.scrollTop + c.clientHeight >= c.scrollHeight - 20});
+    })()""")
+    data = parse_js_result(result)
+    return data.get("atBottom", False)
+
+
+def _scroll_liked_js(client: BrowserClient, all_tracks: dict, limit: int):
+    """Scroll Liked Songs using JS scrollBy (fast, ~2 min)."""
+    prev_count = 0
+    stale_rounds = 0
+
+    for scroll_num in range(500):
+        time.sleep(1.2)
+        _collect_visible_tracks(client, all_tracks)
+        current_count = len(all_tracks)
+
+        if limit and current_count >= limit:
+            break
+
+        if current_count == prev_count:
+            stale_rounds += 1
+            if stale_rounds >= 3:
+                break
+        else:
+            stale_rounds = 0
+        prev_count = current_count
+
+        # Half-page scroll for maximum overlap with virtual list
+        result = client.evaluate("""
+        (() => {
+            const child = document.querySelector('.main-view-container__scroll-node-child');
+            const c = child ? child.parentElement : null;
+            if (!c) return JSON.stringify({atBottom: true});
+            c.scrollBy(0, Math.floor(c.clientHeight * 0.5));
+            return JSON.stringify({atBottom: c.scrollTop + c.clientHeight >= c.scrollHeight - 20});
+        })()
+        """)
+        scroll_data = parse_js_result(result)
+        if scroll_data.get("atBottom"):
+            time.sleep(1.5)
+            _collect_visible_tracks(client, all_tracks)
+            break
+
+
+def _scroll_liked_wheel(client: BrowserClient, all_tracks: dict, limit: int):
+    """Scroll Liked Songs using real mouse wheel events (~6 min).
+
+    Uses the cc-browser daemon's scroll endpoint which calls
+    page.mouse.wheel(). In human mode, each scroll is broken into
+    3-6 smaller wheel events with random 30-100ms delays between them.
+    """
+    # Position cursor over the content area first
+    if not _hover_on_content_area(client):
+        console.print("[yellow]Could not position cursor. Falling back to JS scroll.[/yellow]")
+        _scroll_liked_js(client, all_tracks, limit)
+        return
+
+    prev_count = 0
+    stale_rounds = 0
+
+    for tick in range(1500):
+        _collect_visible_tracks(client, all_tracks)
+        current_count = len(all_tracks)
+
+        if limit and current_count >= limit:
+            break
+
+        if current_count == prev_count:
+            stale_rounds += 1
+            if stale_rounds >= 8:
+                break
+        else:
+            stale_rounds = 0
+        prev_count = current_count
+
+        # Small wheel scroll -- 200px is ~2 mouse wheel ticks
+        client.scroll("down", amount=200)
+        time.sleep(0.4)
+
+        # Check bottom every 5 ticks
+        if tick % 5 == 0 and _check_at_bottom(client):
+            time.sleep(1.0)
+            _collect_visible_tracks(client, all_tracks)
+            break
+
+
+@app.command()
+def liked(
+    limit: int = typer.Option(
+        0, "--limit", "-n",
+        help="Max tracks to show (0 = all)"
+    ),
+    wheel: bool = typer.Option(
+        False, "--wheel",
+        help="Use real mouse wheel scrolling (slower but more realistic)"
+    ),
+):
+    """List your Liked Songs by scrolling through the collection.
+
+    By default uses JS scrollBy (fast, ~2 min). With --wheel, uses real
+    mouse wheel events via the daemon (slower, ~6 min, but behaves like
+    a human scrolling). Both methods typically capture 96%+ of tracks.
+    """
+    _ensure_workspace()
+
+    try:
+        client = get_client()
+
+        # Navigate to Liked Songs
+        client.navigate(SpotifyURLs.collection_tracks())
+        time.sleep(3.0)
+
+        # Scroll to top
+        client.evaluate(scroll_main_view_to_js(0))
+        time.sleep(1.0)
+
+        all_tracks: dict = {}
+
+        if wheel:
+            console.print("[dim]Scrolling with mouse wheel (slower, more realistic)...[/dim]")
+            _scroll_liked_wheel(client, all_tracks, limit)
+        else:
+            console.print("[dim]Scrolling through Liked Songs...[/dim]")
+            _scroll_liked_js(client, all_tracks, limit)
+
+        # Sort by aria-rowindex
+        sorted_tracks = sorted(
+            all_tracks.values(),
+            key=lambda t: int(t.get("idx") or "0")
+        )
+
+        if limit:
+            sorted_tracks = sorted_tracks[:limit]
+
+        if app_config.format == "json":
+            console.print_json(json.dumps(sorted_tracks))
+            return
+
+        table = Table(title=f"Liked Songs ({len(sorted_tracks)} tracks)")
+        table.add_column("#", style="dim", width=5)
+        table.add_column("Title", style="bold")
+        table.add_column("Artist")
+        table.add_column("Album", style="dim")
+
+        for i, t in enumerate(sorted_tracks, 1):
+            table.add_row(
+                str(i),
+                t.get("name", ""),
+                t.get("artist", ""),
+                t.get("album", ""),
+            )
+        console.print(table)
 
     except BrowserError as e:
         error(str(e))

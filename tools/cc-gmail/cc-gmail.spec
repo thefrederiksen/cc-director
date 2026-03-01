@@ -2,18 +2,21 @@
 
 import os
 
-# Get cc_shared path
+# Get cc_shared and cc_storage paths
 cc_shared_path = os.path.abspath('../cc_shared')
+cc_storage_path = os.path.abspath('../cc_storage')
 
 a = Analysis(
     ['src\\cli.py'],
-    pathex=['../cc_shared'],
+    pathex=['../cc_shared', '../cc_storage'],
     binaries=[],
     datas=[
         (cc_shared_path + '/*.py', 'cc_shared'),
         (cc_shared_path + '/providers/*.py', 'cc_shared/providers'),
+        (cc_storage_path + '/*.py', 'cc_storage'),
     ],
     hiddenimports=[
+        'cc_storage',
         'src.calendar_api',
         'src.contacts_api',
         'src.auth',

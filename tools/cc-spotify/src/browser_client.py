@@ -221,11 +221,22 @@ class BrowserClient:
         """Execute JavaScript."""
         return self._post("/evaluate", {"js": js})
 
-    def scroll(self, direction: str = "down", ref: Optional[str] = None) -> dict:
-        """Scroll page or element."""
+    def scroll(self, direction: str = "down", ref: Optional[str] = None,
+               amount: Optional[int] = None) -> dict:
+        """Scroll page or element.
+
+        Args:
+            direction: "up", "down", "left", "right"
+            ref: Element ref to scroll into view (overrides direction scroll)
+            amount: Pixels to scroll (default 500 in daemon). In human mode,
+                    the daemon breaks this into 3-6 smaller wheel events with
+                    random delays, simulating real mouse wheel behavior.
+        """
         data = {"direction": direction}
         if ref:
             data["ref"] = ref
+        if amount is not None:
+            data["amount"] = amount
         return self._post("/scroll", data)
 
     def text(self, selector: Optional[str] = None) -> dict:

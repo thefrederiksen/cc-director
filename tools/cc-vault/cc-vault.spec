@@ -2,15 +2,19 @@
 
 import os
 src_dir = 'src'
+cc_storage_path = os.path.abspath('../cc_storage')
 
 a = Analysis(
     ['main.py'],
-    pathex=['.', 'src'],
+    pathex=['.', 'src', '../cc_storage'],
     binaries=[],
-    datas=[],
+    datas=[
+        (cc_storage_path + '/*.py', 'cc_storage'),
+    ],
     hiddenimports=[
         'cli', 'config', 'db', 'vectors', 'chunker', 'converters', 'importer', 'rag', 'utils', 'fuzzy_search',
         'jellyfish',
+        'cc_storage',
         'rich._unicode_data', 'rich._unicode_data.unicode17-0-0',
         'tiktoken_ext.openai_public',
         'tiktoken_ext',

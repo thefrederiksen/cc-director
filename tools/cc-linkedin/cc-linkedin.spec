@@ -1,16 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # rich dynamically imports _unicode_data modules at runtime
 rich_hiddenimports = collect_submodules('rich._unicode_data')
+cc_storage_path = os.path.abspath('../cc_storage')
 
 a = Analysis(
     ['src\\cli.py'],
-    pathex=['src'],
+    pathex=['src', '../cc_storage'],
     binaries=[],
-    datas=collect_data_files('rich'),
-    hiddenimports=rich_hiddenimports,
+    datas=collect_data_files('rich') + [(cc_storage_path + '/*.py', 'cc_storage')],
+    hiddenimports=rich_hiddenimports + ['cc_storage'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
