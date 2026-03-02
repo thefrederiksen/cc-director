@@ -850,17 +850,15 @@ def list_emails(
     try:
         if auth_method == "app_password":
             client = _get_imap_client(acct)
-            messages = client.list_messages(
+            messages = client.list_all_messages(
                 label_ids=label_ids,
                 max_results=count,
-                include_spam_trash=include_spam,
             )
         else:
             api_client = get_client()
-            messages = api_client.list_messages(
+            messages = api_client.list_all_messages(
                 label_ids=label_ids,
                 max_results=count,
-                include_spam_trash=include_spam,
             )
 
         if not messages:
@@ -1221,7 +1219,7 @@ def count(
     query: str = typer.Argument(None, help="Gmail search query (optional)"),
     label: str = typer.Option(None, "-l", "--label", help="Label to count (e.g., INBOX)"),
 ):
-    """Count emails matching a query (fast server-side estimate)."""
+    """Count emails matching a query (exact count, paginates all results)."""
     acct, auth_method = _resolve_and_get_auth()
 
     try:

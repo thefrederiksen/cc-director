@@ -544,25 +544,39 @@ class GmailClient:
         query: Optional[str] = None,
     ) -> int:
         """
-        Get estimated count of messages matching criteria.
+        Get accurate count of messages matching criteria.
 
-        Uses Gmail's resultSizeEstimate for instant server-side count.
-        No pagination required - returns immediately.
+        Paginates through all results to get an exact count.
+        For large mailboxes this may take a few seconds.
 
         Args:
             label_ids: Filter by label IDs (e.g., ["INBOX", "UNREAD"])
             query: Gmail search query string
 
         Returns:
-            Estimated count of matching messages.
+            Exact count of matching messages.
         """
-        kwargs = {"userId": self.user_id}
-        if label_ids:
-            kwargs["labelIds"] = label_ids
-        if query:
-            kwargs["q"] = query
-        results = self.service.users().messages().list(**kwargs).execute()
-        return int(results.get("resultSizeEstimate", 0))
+        total = 0
+        page_token = None
+
+        while True:
+            kwargs = {"userId": self.user_id, "maxResults": 500}
+            if label_ids:
+                kwargs["labelIds"] = label_ids
+            if query:
+                kwargs["q"] = query
+            if page_token:
+                kwargs["pageToken"] = page_token
+
+            results = self.service.users().messages().list(**kwargs).execute()
+            messages = results.get("messages", [])
+            total += len(messages)
+
+            page_token = results.get("nextPageToken")
+            if not page_token:
+                break
+
+        return total
 
     def get_mailbox_stats(self) -> Dict[str, Any]:
         """
