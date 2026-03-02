@@ -163,7 +163,7 @@ export async function reloadViaPlaywright(opts) {
 }
 
 export async function goBackViaPlaywright(opts) {
-  const { cdpUrl, targetId, waitUntil = 'load', timeoutMs } = opts;
+  const { cdpUrl, targetId, waitUntil = 'domcontentloaded', timeoutMs } = opts;
   const page = await getPageForTargetId({ cdpUrl, targetId });
   ensurePageState(page);
 
@@ -177,7 +177,7 @@ export async function goBackViaPlaywright(opts) {
 }
 
 export async function goForwardViaPlaywright(opts) {
-  const { cdpUrl, targetId, waitUntil = 'load', timeoutMs } = opts;
+  const { cdpUrl, targetId, waitUntil = 'domcontentloaded', timeoutMs } = opts;
   const page = await getPageForTargetId({ cdpUrl, targetId });
   ensurePageState(page);
 

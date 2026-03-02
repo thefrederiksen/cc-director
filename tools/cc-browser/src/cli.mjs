@@ -781,8 +781,10 @@ INTERACTIONS:
   cc-browser hover --ref <e1>                  Hover over element
   cc-browser hover --text "Menu"               Hover by text content
   cc-browser select --ref <e1> --value "opt"   Select dropdown option
+  cc-browser drag --from <e1> --to <e5>        Drag element to another
   cc-browser scroll [--direction down]         Scroll viewport
   cc-browser scroll --ref <e1>                 Scroll element into view
+  cc-browser resize --width 1280 --height 720  Resize browser viewport
 
 SCREENSHOTS:
   cc-browser screenshot [--fullPage]           Take screenshot (base64)
@@ -806,6 +808,7 @@ RECORD & REPLAY:
   cc-browser record start                          Start recording interactions
   cc-browser record status                         Check if recording is active
   cc-browser record stop --output login-flow.json  Stop and save recording
+  cc-browser recordings                            List saved recordings
   cc-browser replay --file login-flow.json         Replay a recording
   cc-browser replay --file flow.json --mode fast   Replay at full speed
 
@@ -979,12 +982,21 @@ MULTI-WORKSPACE (SIMULTANEOUS BROWSERS):
 
   // Get favorites from workspace.json
   favorites: async (args) => {
-    const browser = args.browser || 'edge';
-    const workspace = args.workspace;
+    let browser = args.browser || 'edge';
+    let workspace = args.workspace;
 
     if (!workspace) {
       output({ success: false, error: 'Workspace name required. Use --workspace <name>' });
       return;
+    }
+
+    // Resolve alias if no explicit browser was provided
+    if (!args.browser) {
+      const resolved = resolveAlias(workspace);
+      if (resolved) {
+        browser = resolved.browser;
+        workspace = resolved.workspace;
+      }
     }
 
     const workspaceDir = getWorkspaceDir(browser, workspace);

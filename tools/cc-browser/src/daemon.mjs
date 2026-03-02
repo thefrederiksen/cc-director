@@ -472,12 +472,15 @@ const routes = {
       cdpUrl,
       targetId: body.tab || body.targetId,
       ref: body.ref,
+      text: body.text,
+      selector: body.selector,
+      exact: body.exact,
       doubleClick: body.doubleClick || body.double,
       button: body.button,
       modifiers: body.modifiers,
       timeoutMs: body.timeout,
     });
-    jsonSuccess(res, { clicked: body.ref });
+    jsonSuccess(res, { clicked: body.ref || body.text || body.selector });
   },
 
   // Type
@@ -489,12 +492,15 @@ const routes = {
       cdpUrl,
       targetId: body.tab || body.targetId,
       ref: body.ref,
+      textContent: body.textContent,
+      selector: body.selector,
+      exact: body.exact,
       text: body.text,
       submit: body.submit,
       slowly: body.slowly,
       timeoutMs: body.timeout,
     });
-    jsonSuccess(res, { typed: body.text, ref: body.ref });
+    jsonSuccess(res, { typed: body.text, ref: body.ref || body.textContent || body.selector });
   },
 
   // Press key
@@ -520,9 +526,12 @@ const routes = {
       cdpUrl,
       targetId: body.tab || body.targetId,
       ref: body.ref,
+      text: body.text,
+      selector: body.selector,
+      exact: body.exact,
       timeoutMs: body.timeout,
     });
-    jsonSuccess(res, { hovered: body.ref });
+    jsonSuccess(res, { hovered: body.ref || body.text || body.selector });
   },
 
   // Drag
