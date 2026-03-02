@@ -10,12 +10,28 @@
   },
   "tools": [
     {
-      "name": "cc-markdown",
+      "name": "cc-pdf",
       "category": "documents",
       "type": "python",
-      "description": "Convert Markdown to PDF, Word, or HTML with themes",
+      "description": "Convert Markdown to PDF with themes",
       "built": true,
       "requirements": ["Chrome/Chromium"]
+    },
+    {
+      "name": "cc-html",
+      "category": "documents",
+      "type": "python",
+      "description": "Convert Markdown to HTML with themes",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-word",
+      "category": "documents",
+      "type": "python",
+      "description": "Convert Markdown to Word documents with themes",
+      "built": true,
+      "requirements": []
     },
     {
       "name": "cc-excel",
@@ -233,6 +249,22 @@
       "description": "Person research aggregation tool",
       "built": true,
       "requirements": []
+    },
+    {
+      "name": "cc-settings",
+      "category": "data-utilities",
+      "type": "python",
+      "description": "Manage cc-director configuration and system settings",
+      "built": false,
+      "requirements": []
+    },
+    {
+      "name": "cc-posthog",
+      "category": "data-utilities",
+      "type": "python",
+      "description": "PostHog analytics CLI: page views, funnels, events, recordings",
+      "built": false,
+      "requirements": ["PostHog account + API key"]
     }
   ]
 }

@@ -1,6 +1,6 @@
 # Tools Overview
 
-CC Director includes 28 command-line tools for document conversion, media processing, email, browser automation, desktop automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
+CC Director includes 29 command-line tools for document conversion, media processing, email, browser automation, desktop automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
 
 ## Quick Reference
 
@@ -61,6 +61,7 @@ CC Director includes 28 command-line tools for document conversion, media proces
 | cc-docgen | C4 architecture diagrams from YAML | Graphviz (not yet built) |
 | cc-director-setup | Windows installer for CC Director | None |
 | cc-personresearch | Person research aggregation | (not yet built) |
+| cc-posthog | PostHog analytics: page views, funnels, events, recordings | PostHog account + API key |
 
 ---
 
@@ -418,6 +419,32 @@ Generate C4 architecture diagrams from YAML manifest files.
 ```bash
 cc-docgen generate --manifest ./docs/architecture.yaml
 ```
+
+### cc-posthog
+
+PostHog analytics CLI for querying page views, funnels, events, and session recordings.
+
+```bash
+cc-posthog init                          # Configure API key and project
+cc-posthog status                        # Project status and connection health
+cc-posthog views --last 7d               # Page view counts by URL
+cc-posthog sources --last 30d            # Traffic sources
+cc-posthog visitors --last 30d           # Daily unique visitors
+cc-posthog pages --last 7d               # Top pages by path
+cc-posthog funnel --last 30d             # Conversion funnel analysis
+cc-posthog events --last 7d              # Recent events
+cc-posthog event-counts --last 7d        # Event counts by name
+cc-posthog recordings --last 7d          # Session recordings
+cc-posthog recording <id>               # Events in a recording
+cc-posthog report --last 30d --json      # Comprehensive report
+cc-posthog compare views --projects a,b  # Cross-project comparison
+cc-posthog export events --json          # Export raw events
+cc-posthog export funnel --csv           # Export funnel data
+```
+
+**Global options:** `--project` / `-p`, `--last` / `-l`, `--json` / `-j`, `--csv`, `--count` / `-n`
+
+**Setup:** Requires a PostHog account and Personal API Key. Run `cc-posthog init` to configure.
 
 ### cc-director-setup
 
