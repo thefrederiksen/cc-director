@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
 using CcDirector.Core.Storage;
@@ -9,6 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CommunicationManager.Models;
 using CommunicationManager.Services;
+using Microsoft.Data.Sqlite;
 
 namespace CommunicationManager.ViewModels;
 
@@ -60,6 +62,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private bool _isPreviewMode = true;
+
+    [ObservableProperty]
+    private bool _isSending;
 
     [ObservableProperty]
     private string _selectedPlatformFilter = "All";
@@ -621,6 +626,282 @@ public partial class MainViewModel : ObservableObject, IDisposable
             StatusMessage = $"Error: {ex.Message}";
             MessageBox.Show(Application.Current.MainWindow, $"Failed to post to LinkedIn: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private enum DispatchResult { Sent, Failed, Skipped }
+
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private static readonly HashSet<string> _gmailAccounts = new(StringComparer.OrdinalIgnoreCase) { "personal" };
+
+    [RelayCommand]
+    private async Task SendAllAsync()
+    {
+        FileLog.Write("[CommunicationManager.VM] SendAllAsync: starting manual dispatch");
+        IsSending = true;
+        StatusMessage = "Sending approved items...";
+
+        var sent = 0;
+        var failed = 0;
+        var skipped = 0;
+
+        try
+        {
+            var dbPath = CcStorage.CommQueueDb();
+            if (!File.Exists(dbPath))
+            {
+                StatusMessage = "No communications database found";
+                return;
+            }
+
+            var items = await GetApprovedItemsAsync(dbPath);
+            FileLog.Write($"[CommunicationManager.VM] SendAllAsync: found {items.Count} approved items");
+
+            if (items.Count == 0)
+            {
+                StatusMessage = "No approved items to send";
+                return;
+            }
+
+            for (var i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                StatusMessage = $"Dispatching {i + 1}/{items.Count}: [{item.Platform}] ticket #{item.TicketNumber}";
+
+                var result = await DispatchItemAsync(item, dbPath);
+                switch (result)
+                {
+                    case DispatchResult.Sent: sent++; break;
+                    case DispatchResult.Failed: failed++; break;
+                    case DispatchResult.Skipped: skipped++; break;
+                }
+            }
+
+            var resultMsg = $"Dispatch complete: {sent} sent";
+            if (failed > 0)
+                resultMsg += $", {failed} failed";
+            if (skipped > 0)
+                resultMsg += $", {skipped} skipped";
+
+            StatusMessage = resultMsg;
+            FileLog.Write($"[CommunicationManager.VM] SendAllAsync: {resultMsg}");
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CommunicationManager.VM] SendAllAsync FAILED: {ex.Message}");
+            StatusMessage = $"Send error: {ex.Message}";
+        }
+        finally
+        {
+            IsSending = false;
+        }
+    }
+
+    private static async Task<List<QueuedItem>> GetApprovedItemsAsync(string dbPath)
+    {
+        FileLog.Write($"[CommunicationManager.VM] GetApprovedItemsAsync: reading from {dbPath}");
+        var items = new List<QueuedItem>();
+        var connectionString = $"Data Source={dbPath};Mode=ReadOnly";
+
+        await using var conn = new SqliteConnection(connectionString);
+        await conn.OpenAsync();
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, ticket_number, platform, type, content, persona, send_from,
+                   email_specific, linkedin_specific, reddit_specific,
+                   destination_url, context_url
+            FROM communications
+            WHERE status = 'approved'
+            AND (send_timing IS NULL OR send_timing != 'hold')
+            """;
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            items.Add(new QueuedItem
+            {
+                Id = reader.GetString(0),
+                TicketNumber = reader.IsDBNull(1) ? 0 : reader.GetInt32(1),
+                Platform = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                Type = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                Content = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                Persona = reader.IsDBNull(5) ? "personal" : reader.GetString(5),
+                SendFrom = reader.IsDBNull(6) ? null : reader.GetString(6),
+                EmailSpecificJson = reader.IsDBNull(7) ? null : reader.GetString(7),
+                LinkedInSpecificJson = reader.IsDBNull(8) ? null : reader.GetString(8),
+                RedditSpecificJson = reader.IsDBNull(9) ? null : reader.GetString(9),
+                DestinationUrl = reader.IsDBNull(10) ? null : reader.GetString(10),
+                ContextUrl = reader.IsDBNull(11) ? null : reader.GetString(11)
+            });
+        }
+
+        FileLog.Write($"[CommunicationManager.VM] GetApprovedItemsAsync: found {items.Count} items");
+        return items;
+    }
+
+    private static async Task<DispatchResult> DispatchItemAsync(QueuedItem item, string dbPath)
+    {
+        FileLog.Write($"[CommunicationManager.VM] DispatchItemAsync: ticket #{item.TicketNumber}, platform={item.Platform}");
+
+        switch (item.Platform.ToLowerInvariant())
+        {
+            case "email":
+                var success = await DispatchEmailItemAsync(item, dbPath);
+                return success ? DispatchResult.Sent : DispatchResult.Failed;
+
+            default:
+                FileLog.Write($"[CommunicationManager.VM] DispatchItemAsync: platform '{item.Platform}' not yet supported, skipping ticket #{item.TicketNumber}");
+                return DispatchResult.Skipped;
+        }
+    }
+
+    private static async Task<bool> DispatchEmailItemAsync(QueuedItem item, string dbPath)
+    {
+        FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: ticket #{item.TicketNumber}");
+
+        if (string.IsNullOrEmpty(item.EmailSpecificJson))
+        {
+            FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: no email_specific data for ticket #{item.TicketNumber}");
+            return false;
+        }
+
+        EmailSpecificDto? spec;
+        try
+        {
+            spec = JsonSerializer.Deserialize<EmailSpecificDto>(item.EmailSpecificJson, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: failed to parse email_specific for ticket #{item.TicketNumber}: {ex.Message}");
+            return false;
+        }
+
+        if (spec?.To == null || spec.To.Count == 0)
+        {
+            FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: no recipients for ticket #{item.TicketNumber}");
+            return false;
+        }
+
+        var sendFrom = item.SendFrom ?? item.Persona;
+        var useGmail = _gmailAccounts.Contains(sendFrom) ||
+                       sendFrom.Contains("@gmail.com", StringComparison.OrdinalIgnoreCase);
+        var toolName = useGmail ? "cc-gmail" : "cc-outlook";
+        var toolPath = Path.Combine(CcStorage.Bin(), useGmail ? "cc-gmail.exe" : "cc-outlook.exe");
+
+        var to = string.Join(",", spec.To);
+        var subject = spec.Subject ?? "(no subject)";
+
+        FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: ticket #{item.TicketNumber} to {to} via {toolName}");
+
+        var args = new List<string> { "send", "-t", to, "-s", subject, "-b", item.Content, "--html" };
+
+        if (spec.Cc != null && spec.Cc.Count > 0)
+        {
+            args.Add("--cc");
+            args.Add(string.Join(",", spec.Cc));
+        }
+        if (spec.Bcc != null && spec.Bcc.Count > 0)
+        {
+            args.Add("--bcc");
+            args.Add(string.Join(",", spec.Bcc));
+        }
+
+        var attachFlag = useGmail ? "--attach" : "-a";
+        if (spec.Attachments != null)
+        {
+            foreach (var attachment in spec.Attachments)
+            {
+                if (File.Exists(attachment))
+                {
+                    args.Add(attachFlag);
+                    args.Add(attachment);
+                }
+            }
+        }
+
+        return await RunToolAndMarkPostedAsync(toolPath, args, item, dbPath, toolName);
+    }
+
+    private static async Task<bool> RunToolAndMarkPostedAsync(
+        string toolPath, List<string> args, QueuedItem item, string dbPath, string toolName)
+    {
+        FileLog.Write($"[CommunicationManager.VM] RunToolAndMarkPostedAsync: ticket #{item.TicketNumber} via {toolName}");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = toolPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+
+        using var process = Process.Start(psi);
+        if (process == null)
+        {
+            FileLog.Write($"[CommunicationManager.VM] RunToolAndMarkPostedAsync: failed to start {toolPath}");
+            return false;
+        }
+
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await stderrTask;
+        await process.WaitForExitAsync();
+
+        if (process.ExitCode == 0)
+        {
+            MarkPosted(item.Id, dbPath);
+            FileLog.Write($"[CommunicationManager.VM] RunToolAndMarkPostedAsync: ticket #{item.TicketNumber} sent OK via {toolName}");
+            return true;
+        }
+
+        var error = string.IsNullOrEmpty(stderr) ? stdout : stderr;
+        FileLog.Write($"[CommunicationManager.VM] RunToolAndMarkPostedAsync: ticket #{item.TicketNumber} FAILED via {toolName}: {error}");
+        return false;
+    }
+
+    private static void MarkPosted(string id, string dbPath)
+    {
+        FileLog.Write($"[CommunicationManager.VM] MarkPosted: id={id}");
+        using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadWrite");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE communications
+            SET status = 'posted', posted_at = @now, posted_by = 'cc-director-manual'
+            WHERE id = @id
+            """;
+        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Parameters.AddWithValue("@now", DateTime.UtcNow.ToString("o"));
+        cmd.ExecuteNonQuery();
+    }
+
+    private class QueuedItem
+    {
+        public string Id { get; set; } = "";
+        public int TicketNumber { get; set; }
+        public string Platform { get; set; } = "";
+        public string Type { get; set; } = "";
+        public string Content { get; set; } = "";
+        public string Persona { get; set; } = "personal";
+        public string? SendFrom { get; set; }
+        public string? EmailSpecificJson { get; set; }
+        public string? LinkedInSpecificJson { get; set; }
+        public string? RedditSpecificJson { get; set; }
+        public string? DestinationUrl { get; set; }
+        public string? ContextUrl { get; set; }
+    }
+
+    private class EmailSpecificDto
+    {
+        public List<string>? To { get; set; }
+        public List<string>? Cc { get; set; }
+        public List<string>? Bcc { get; set; }
+        public string? Subject { get; set; }
+        public List<string>? Attachments { get; set; }
     }
 
     private void SelectNextItem()

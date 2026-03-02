@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-03-01"
+last_updated: "2026-03-02"
 
 # C4 Level 1: System Context
 context:
@@ -171,6 +171,78 @@ containers:
           - ConPty/ProcessHost.cs
           - UnixPty/UnixProcessHost.cs
 
+  - id: communication_manager
+    name: Communication Manager
+    technology: C# / WPF / SQLite
+    description: Multi-platform outbound communication queue with approval workflow
+    project: CcDirector.CommunicationManager
+    dependencies:
+      - CcDirector.Core
+    components:
+      - name: MainViewModel
+        description: MVVM view model for queue management and multi-platform dispatch
+        file: ViewModels/MainViewModel.cs
+      - name: ContentService
+        description: Service layer for communication approval/rejection/posting workflows
+        file: Services/ContentService.cs
+      - name: DatabaseService
+        description: SQLite persistence for communications and media attachments
+        file: Services/DatabaseService.cs
+      - name: ContentItem
+        description: Domain model supporting 8 platform types with platform-specific metadata
+        file: Models/ContentItem.cs
+      - name: PlatformTemplateSelector
+        description: WPF DataTemplateSelector routing items to platform-specific XAML templates
+        file: Views/PlatformTemplateSelector.cs
+      - name: TimelineView
+        description: Visual timeline rendering of scheduled communications
+        file: Views/TimelineView.xaml
+
+  - id: engine
+    name: Engine (Scheduler + Dispatcher)
+    technology: C# / SQLite / Cronos
+    description: Background scheduling engine for cron jobs and automated communication dispatch
+    project: CcDirector.Engine
+    dependencies:
+      - CcDirector.Core
+    components:
+      - name: EngineHost
+        description: Main controller that starts/stops scheduler and dispatcher
+        file: EngineHost.cs
+      - name: Scheduler
+        description: Background loop checking due jobs every N seconds with cron expressions
+        file: Scheduling/Scheduler.cs
+      - name: JobExecutor
+        description: Executes a single job, records results, updates next_run
+        file: Scheduling/JobExecutor.cs
+      - name: CommunicationDispatcher
+        description: Polls approved communications and dispatches via cc-outlook or cc-gmail
+        file: Dispatcher/CommunicationDispatcher.cs
+      - name: EngineDatabase
+        description: SQLite wrapper for jobs and runs tables
+        file: Storage/EngineDatabase.cs
+      - name: VaultArchiver
+        description: Archives sent communications to vault (interactions and social posts)
+        file: Archival/VaultArchiver.cs
+      - name: ProcessJob
+        description: Implements IJob to execute shell commands with timeout and output capture
+        file: Jobs/ProcessJob.cs
+
+  - id: vosk_stt
+    name: Vosk Speech-to-Text
+    technology: C# / Vosk
+    description: Offline speech-to-text service using Vosk library
+    project: CcDirector.VoskStt
+    dependencies:
+      - CcDirector.Core
+    components:
+      - name: VoskSttService
+        description: Speech recognition service using Vosk for offline transcription
+        file: VoskSttService.cs
+      - name: CustomDictionary
+        description: Custom vocabulary configuration for improved recognition
+        file: CustomDictionary.cs
+
 # Data flows
 data_flows:
   - id: hook_event_flow
@@ -216,6 +288,18 @@ data_flows:
       - ClaudeSummarizer.SummarizeAsync()
       - OpenAiTtsService.SynthesizeAsync()
       - AudioPlayer.PlayAsync()
+
+  - id: communication_dispatch_flow
+    name: Communication Dispatch Flow
+    description: Approved communications dispatched to platform-specific CLI tools
+    path:
+      - User approves item in Communication Manager
+      - "SendAllAsync() fetches all approved non-hold items"
+      - "DispatchItemAsync() routes by platform"
+      - "Email: DispatchEmailItemAsync() -> cc-gmail or cc-outlook"
+      - "Other platforms: logged as skipped (not yet supported)"
+      - "RunToolAndMarkPostedAsync() executes CLI tool"
+      - "MarkPosted() updates DB status to 'posted'"
 
 # Security boundaries
 security_boundaries:

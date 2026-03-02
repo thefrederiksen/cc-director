@@ -1,7 +1,7 @@
 # CC Director - CenCon Documentation Index
 
 **Version:** 1.1.0
-**Last Updated:** 2026-02-21
+**Last Updated:** 2026-03-02
 **Schema:** CenCon Method v1.0
 
 ---
@@ -59,6 +59,36 @@ This document serves as the central reference combining product requirements, sy
 | VoiceModeController | Orchestrates voice interaction flow |
 | CircularTerminalBuffer | Thread-safe ring buffer for terminal output |
 | FileLog | Thread-safe async file logging |
+
+### Communication Manager (CcDirector.CommunicationManager)
+
+| Component | Purpose |
+|-----------|---------|
+| MainViewModel | MVVM view model for queue management and multi-platform dispatch |
+| ContentService | Communication approval/rejection/posting workflows |
+| DatabaseService | SQLite persistence for communications and media |
+| ContentItem | Domain model supporting 8 platform types |
+| PlatformTemplateSelector | Routes items to platform-specific XAML templates |
+| TimelineView | Visual timeline rendering of scheduled communications |
+
+### Engine (CcDirector.Engine)
+
+| Component | Purpose |
+|-----------|---------|
+| EngineHost | Main controller for scheduler and dispatcher |
+| Scheduler | Background cron job execution loop |
+| JobExecutor | Single job execution with result recording |
+| CommunicationDispatcher | Polls approved comms, dispatches via cc-outlook/cc-gmail |
+| EngineDatabase | SQLite wrapper for jobs and runs tables |
+| VaultArchiver | Archives sent communications to vault |
+| ProcessJob | Shell command execution with timeout and output capture |
+
+### Vosk STT (CcDirector.VoskStt)
+
+| Component | Purpose |
+|-----------|---------|
+| VoskSttService | Offline speech-to-text using Vosk library |
+| CustomDictionary | Custom vocabulary for improved recognition |
 
 ### Native Windows APIs
 
@@ -152,6 +182,35 @@ OpenAiTtsService.SynthesizeAsync()
         | Generates audio
         v
 AudioPlayer.PlayAsync()
+```
+
+### Communication Dispatch Flow
+
+```
+User approves item in Communication Manager
+        |
+        v
+SendAllAsync() fetches all approved non-hold items
+        |
+        v
+DispatchItemAsync() routes by platform
+        |
+        +-- "email" --> DispatchEmailItemAsync()
+        |                   |
+        |                   v
+        |               Parse email_specific JSON
+        |                   |
+        |                   v
+        |               Route: personal -> cc-gmail
+        |                      mindzie  -> cc-outlook
+        |                   |
+        |                   v
+        |               RunToolAndMarkPostedAsync()
+        |                   |
+        |                   v
+        |               MarkPosted() -> DB status='posted'
+        |
+        +-- other --> Logged as "skipped" (not yet supported)
 ```
 
 ---
