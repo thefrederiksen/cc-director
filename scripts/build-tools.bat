@@ -1,11 +1,11 @@
 @echo off
-REM Build all cc-tools and copy to %LOCALAPPDATA%\cc-director\bin
+REM Build all cc-director tools and copy to %LOCALAPPDATA%\cc-director\bin
 REM Usage: scripts\build-tools.bat (from cc-director monorepo root)
 
 setlocal enabledelayedexpansion
 
 echo ============================================
-echo Building all cc-tools to cc-director\bin
+echo Building all cc-director tools to cc-director\bin
 echo ============================================
 echo.
 
@@ -25,7 +25,7 @@ REM ============================================
 REM Python tools (built with PyInstaller)
 REM Directory names use underscores, exe names use dashes
 REM ============================================
-set "PYTHON_TOOLS=cc-comm-queue cc-crawl4ai cc-gmail cc-hardware cc-image cc-linkedin cc-markdown cc-outlook cc-photos cc-powerpoint cc-reddit cc-setup cc-spotify cc-transcribe cc-vault cc-video cc-voice cc-whisper cc-youtube-info"
+set "PYTHON_TOOLS=cc-comm-queue cc-crawl4ai cc-docgen cc-excel cc-gmail cc-hardware cc-image cc-linkedin cc-markdown cc-outlook cc-personresearch cc-photos cc-powerpoint cc-reddit cc-setup cc-spotify cc-transcribe cc-vault cc-video cc-voice cc-whisper cc-youtube-info"
 
 for %%T in (%PYTHON_TOOLS%) do (
     echo.
@@ -179,6 +179,55 @@ if exist "%BRANDREC_SRC%\build.ps1" (
     popd
 ) else (
     echo [SKIP] No build.ps1 found for cc-brandingrecommendations
+)
+
+REM ============================================
+REM Node.js tools (cc-websiteaudit)
+REM ============================================
+echo.
+echo --------------------------------------------
+echo Building cc-websiteaudit (Node.js)...
+echo --------------------------------------------
+
+set "WSAUDIT_SRC=%REPO_DIR%\tools\cc-websiteaudit"
+set "WSAUDIT_DEST=%INSTALL_DIR%\_cc-websiteaudit"
+
+if exist "%WSAUDIT_SRC%\build.ps1" (
+    pushd "%WSAUDIT_SRC%"
+    powershell -ExecutionPolicy Bypass -File build.ps1
+
+    if !errorlevel! equ 0 (
+        REM Create destination directory
+        if not exist "%WSAUDIT_DEST%" mkdir "%WSAUDIT_DEST%"
+        if not exist "%WSAUDIT_DEST%\src" mkdir "%WSAUDIT_DEST%\src"
+        if not exist "%WSAUDIT_DEST%\src\analyzers" mkdir "%WSAUDIT_DEST%\src\analyzers"
+
+        REM Copy built files from dist
+        copy /Y "dist\package.json" "%WSAUDIT_DEST%\" >nul
+        copy /Y "dist\src\*.mjs" "%WSAUDIT_DEST%\src\" >nul
+        copy /Y "dist\src\analyzers\*.mjs" "%WSAUDIT_DEST%\src\analyzers\" >nul
+
+        REM Copy node_modules
+        if exist "%WSAUDIT_DEST%\node_modules" rmdir /S /Q "%WSAUDIT_DEST%\node_modules"
+        xcopy /E /I /Q /Y "dist\node_modules" "%WSAUDIT_DEST%\node_modules" >nul
+
+        REM Create launcher scripts in install dir (.cmd for Windows, extensionless for Git Bash)
+        echo @node "%%~dp0_cc-websiteaudit\src\cli.mjs" %%*> "%INSTALL_DIR%\cc-websiteaudit.cmd"
+        > "%INSTALL_DIR%\cc-websiteaudit" (
+            echo #^^!/bin/sh
+            echo node "$(dirname "$0")/_cc-websiteaudit/src/cli.mjs" "$@"
+        )
+
+        echo [OK] cc-websiteaudit installed to %WSAUDIT_DEST%
+        set /a SUCCESS_COUNT+=1
+    ) else (
+        echo [FAIL] Build failed for cc-websiteaudit
+        set "FAILED=!FAILED! cc-websiteaudit"
+        set /a FAIL_COUNT+=1
+    )
+    popd
+) else (
+    echo [SKIP] No build.ps1 found for cc-websiteaudit
 )
 
 REM ============================================
