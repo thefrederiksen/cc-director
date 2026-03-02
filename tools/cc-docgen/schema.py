@@ -101,6 +101,22 @@ def _validate_structure(manifest: dict[str, Any]) -> None:
                     raise SchemaError(f"Missing required field: containers[{i}].{field}")
 
 
+def validate_manifest(manifest: dict[str, Any]) -> bool:
+    """Validate manifest structure against schema.
+
+    Args:
+        manifest: Parsed YAML dictionary.
+
+    Returns:
+        True if valid.
+
+    Raises:
+        SchemaError: If required fields are missing.
+    """
+    _validate_structure(manifest)
+    return True
+
+
 def get_project_info(manifest: dict[str, Any]) -> dict[str, str]:
     """Extract project information from manifest.
 

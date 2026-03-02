@@ -154,6 +154,28 @@ class TestContacts:
         with pytest.raises(ValueError, match="Invalid field"):
             db.list_contacts(missing_fields=["bobby_tables; DROP TABLE contacts"])
 
+    def test_delete_contact(self, test_vault):
+        """Test deleting a contact."""
+        _, db = test_vault
+
+        contact_id = db.add_contact(
+            email="delete-me@example.com",
+            name="Delete Me",
+            account="personal",
+        )
+        assert db.get_contact_by_id(contact_id) is not None
+
+        result = db.delete_contact(contact_id)
+        assert result is True
+        assert db.get_contact_by_id(contact_id) is None
+
+    def test_delete_contact_not_found(self, test_vault):
+        """Test deleting a non-existent contact returns False."""
+        _, db = test_vault
+
+        result = db.delete_contact(999999)
+        assert result is False
+
 
 class TestTasks:
     """Test task operations."""

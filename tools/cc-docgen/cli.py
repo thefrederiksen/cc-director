@@ -9,9 +9,15 @@ from pathlib import Path
 
 import click
 
-from cc_docgen import __version__
-from cc_docgen.generator import generate_all
-from cc_docgen.schema import SchemaError, load_manifest
+try:
+    from cc_docgen import __version__
+    from cc_docgen.generator import generate_all
+    from cc_docgen.schema import SchemaError, load_manifest
+except ImportError:
+    # When running as frozen exe, use direct imports
+    __version__ = "1.0.0"
+    from generator import generate_all
+    from schema import SchemaError, load_manifest
 
 # Exit codes
 EXIT_SUCCESS = 0

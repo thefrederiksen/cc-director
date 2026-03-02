@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.schema import load_manifest, validate_manifest
+from schema import load_manifest, validate_manifest, SchemaError
 
 
 FIXTURES_DIR = Path(__file__).parent.parent / "test" / "fixtures" / "input"
@@ -34,7 +34,7 @@ class TestLoadManifest:
         """Invalid YAML syntax raises error."""
         invalid_path = FIXTURES_DIR / "invalid_yaml.yaml"
         if invalid_path.exists():
-            with pytest.raises((yaml.YAMLError, SystemExit)):
+            with pytest.raises((yaml.YAMLError, SchemaError, SystemExit)):
                 load_manifest(invalid_path)
 
 
@@ -70,7 +70,7 @@ class TestValidateManifest:
                 }
             },
         }
-        with pytest.raises((ValueError, KeyError, SystemExit)):
+        with pytest.raises((ValueError, KeyError, SchemaError, SystemExit)):
             validate_manifest(manifest)
 
     def test_missing_system_fails(self):
@@ -79,5 +79,5 @@ class TestValidateManifest:
             "project": {"name": "Test", "description": "Test"},
             "context": {},
         }
-        with pytest.raises((ValueError, KeyError, SystemExit)):
+        with pytest.raises((ValueError, KeyError, SchemaError, SystemExit)):
             validate_manifest(manifest)

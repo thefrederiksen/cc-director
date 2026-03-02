@@ -1057,6 +1057,18 @@ def list_contacts(
     return results
 
 
+def delete_contact(contact_id: int) -> bool:
+    """Delete a contact by ID. Returns True if deleted, False if not found."""
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def update_contact(contact_id: int, **kwargs) -> bool:
     """
     Update a contact's fields by contact ID.

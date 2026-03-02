@@ -1568,6 +1568,39 @@ def contacts_update(
         raise typer.Exit(1)
 
 
+@contacts_app.command("delete")
+def contacts_delete(
+    contact_id: int = typer.Argument(..., help="Contact ID"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+):
+    """Delete a contact."""
+    db = get_db()
+
+    try:
+        contact = db.get_contact_by_id(contact_id)
+        if not contact:
+            console.print(f"[red]Contact #{contact_id} not found[/red]")
+            raise typer.Exit(1)
+
+        display_name = contact.get('name') or contact.get('email') or f"#{contact_id}"
+        if not force:
+            confirm = typer.confirm(f"Delete contact {display_name} (#{contact_id})?")
+            if not confirm:
+                console.print("Cancelled.")
+                return
+
+        deleted = db.delete_contact(contact_id)
+        if deleted:
+            console.print(f"[green]Contact {display_name} (#{contact_id}) deleted[/green]")
+        else:
+            console.print(f"[red]Failed to delete contact #{contact_id}[/red]")
+            raise typer.Exit(1)
+
+    except sqlite3.Error as e:
+        console.print(f"[red]Error deleting contact:[/red] {e}")
+        raise typer.Exit(1)
+
+
 @contacts_app.command("enrich")
 def contacts_enrich(
     contact_id: int = typer.Argument(..., help="Contact ID to enrich"),
