@@ -3,8 +3,16 @@
 import json
 import logging
 import sqlite3
+import os
 import sys
 import zipfile
+
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+# Fix Windows console encoding for non-ASCII characters (e.g. Turkish names)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
@@ -65,7 +73,7 @@ app.add_typer(health_app, name="health")
 app.add_typer(posts_app, name="posts")
 app.add_typer(lists_app, name="lists")
 
-console = Console()
+console = Console(force_terminal=True)
 
 
 def version_callback(value: bool) -> None:
@@ -1272,15 +1280,28 @@ def contacts_list(
     account: Optional[str] = typer.Option(None, "-a", "--account", help="Filter by account: consulting, personal, both"),
     category: Optional[str] = typer.Option(None, "-c", "--category", help="Filter by category"),
     relationship: Optional[str] = typer.Option(None, "-r", "--relationship", help="Filter by relationship"),
+    has: Optional[List[str]] = typer.Option(None, "--has", help="Only show contacts where field is non-empty (repeatable)"),
+    missing: Optional[List[str]] = typer.Option(None, "--missing", help="Only show contacts where field is empty/null (repeatable)"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text, json"),
 ):
     """List contacts."""
     db = get_db()
 
     try:
-        contacts = db.list_contacts(account=account, category=category, relationship=relationship)
+        contacts = db.list_contacts(
+            account=account,
+            category=category,
+            relationship=relationship,
+            has_fields=has,
+            missing_fields=missing,
+        )
 
         if not contacts:
             console.print("[yellow]No contacts found[/yellow]")
+            return
+
+        if format == "json":
+            print(json.dumps(contacts, indent=2, default=str))
             return
 
         table = Table(title="Contacts")
@@ -1301,6 +1322,9 @@ def contacts_list(
 
         console.print(table)
 
+    except ValueError as e:
+        console.print(f"[red]Invalid filter:[/red] {e}")
+        raise typer.Exit(1)
     except sqlite3.Error as e:
         console.print(f"[red]Error listing contacts:[/red] {e}")
         raise typer.Exit(1)
@@ -1349,28 +1373,107 @@ def contacts_show(
             raise typer.Exit(1)
 
         # Header
-        console.print(f"\n[bold cyan]{contact['name']}[/bold cyan]")
+        display_name = contact.get('name') or "(no name)"
+        console.print(f"\n[bold cyan]{display_name}[/bold cyan]")
         console.print(f"[dim]Contact #{contact_id}[/dim]\n")
 
-        # Details
+        # Basic info
         table = Table(show_header=False, box=None)
-        table.add_column("Property", style="cyan", width=15)
+        table.add_column("Property", style="cyan", width=20)
         table.add_column("Value")
 
-        if contact.get('email'):
-            table.add_row("Email", contact['email'])
-        if contact.get('phone'):
-            table.add_row("Phone", contact['phone'])
-        if contact.get('company'):
-            table.add_row("Company", contact['company'])
-        if contact.get('role'):
-            table.add_row("Role", contact['role'])
+        basic_fields = [
+            ('email', 'Email'),
+            ('phone', 'Phone'),
+            ('company', 'Company'),
+            ('title', 'Title'),
+            ('location', 'Location'),
+            ('account', 'Account'),
+            ('category', 'Category'),
+            ('relationship', 'Relationship'),
+            ('priority', 'Priority'),
+            ('lead_source', 'Lead Source'),
+            ('lead_status', 'Lead Status'),
+        ]
+        for field, label in basic_fields:
+            val = contact.get(field)
+            if val:
+                table.add_row(label, str(val))
+
+        # Social links
+        social_fields = [
+            ('linkedin', 'LinkedIn'),
+            ('twitter', 'Twitter'),
+            ('github', 'GitHub'),
+            ('website', 'Website'),
+            ('whatsapp', 'WhatsApp'),
+            ('instagram', 'Instagram'),
+            ('facebook', 'Facebook'),
+            ('telegram', 'Telegram'),
+            ('signal', 'Signal'),
+            ('skype', 'Skype'),
+        ]
+        for field, label in social_fields:
+            val = contact.get(field)
+            if val:
+                table.add_row(label, str(val))
+
+        # Personal details
+        personal_fields = [
+            ('birthday', 'Birthday'),
+            ('spouse_name', 'Spouse'),
+            ('children', 'Children'),
+            ('pets', 'Pets'),
+            ('hobbies', 'Hobbies'),
+            ('address', 'Address'),
+            ('timezone', 'Timezone'),
+        ]
+        for field, label in personal_fields:
+            val = contact.get(field)
+            if val:
+                table.add_row(label, str(val))
+
+        # Contact preferences
+        pref_fields = [
+            ('best_contact_method', 'Best Contact'),
+            ('best_time', 'Best Time'),
+            ('response_speed', 'Response Speed'),
+            ('contact_frequency', 'Frequency'),
+            ('style', 'Style'),
+            ('greeting', 'Greeting'),
+            ('signoff', 'Sign-off'),
+        ]
+        for field, label in pref_fields:
+            val = contact.get(field)
+            if val and val != 'casual' and val != 'normal':
+                table.add_row(label, str(val))
+
+        # Dates
+        if contact.get('first_contact'):
+            table.add_row("First Contact", contact['first_contact'][:10])
         if contact.get('last_contact'):
             table.add_row("Last Contact", contact['last_contact'][:10])
-        if contact.get('notes'):
-            table.add_row("Notes", contact['notes'])
+
+        # Context/notes
+        if contact.get('context'):
+            table.add_row("Notes", contact['context'])
 
         console.print(table)
+
+        # Tags
+        tags = db.get_tags(contact_id)
+        if tags:
+            console.print(f"\n[cyan]Tags:[/cyan] {', '.join(tags)}")
+
+        # Memories
+        memories = db.get_memories(contact_id)
+        if memories:
+            console.print("\n[cyan]Memories:[/cyan]")
+            for m in memories:
+                cat = f"[dim][{m.get('category', '')}][/dim] " if m.get('category') else ""
+                console.print(f"  {cat}{m.get('fact', '')}")
+                if m.get('detail'):
+                    console.print(f"    [dim]{m['detail']}[/dim]")
 
         # Recent interactions (if contact has email)
         if contact.get('email'):
@@ -1396,23 +1499,19 @@ def contacts_memory(
     db = get_db()
 
     try:
-        # Get contact to find email
         contact = db.get_contact_by_id(contact_id)
         if not contact:
             console.print(f"[red]Contact #{contact_id} not found[/red]")
             raise typer.Exit(1)
 
-        if not contact.get('email'):
-            console.print(f"[red]Contact #{contact_id} has no email address[/red]")
-            raise typer.Exit(1)
-
         db.add_memory(
-            email=contact['email'],
+            contact_id=contact_id,
             category=category,
             fact=fact,
             detail=detail,
         )
-        console.print(f"[green]Memory added for {contact['name']}[/green]")
+        display_name = contact.get('name') or f"#{contact_id}"
+        console.print(f"[green]Memory added for {display_name}[/green]")
 
     except sqlite3.Error as e:
         console.print(f"[red]Error adding memory:[/red] {e}")
@@ -1423,39 +1522,142 @@ def contacts_memory(
 def contacts_update(
     contact_id: int = typer.Argument(..., help="Contact ID"),
     name: Optional[str] = typer.Option(None, "--name", help="Name"),
+    email: Optional[str] = typer.Option(None, "-e", "--email", help="Email address"),
     phone: Optional[str] = typer.Option(None, "-p", "--phone", help="Phone number"),
     company: Optional[str] = typer.Option(None, "-c", "--company", help="Company"),
     title: Optional[str] = typer.Option(None, "-t", "--title", help="Title/role"),
+    location: Optional[str] = typer.Option(None, "-l", "--location", help="Location"),
+    linkedin: Optional[str] = typer.Option(None, "--linkedin", help="LinkedIn URL"),
+    account: Optional[str] = typer.Option(None, "-a", "--account", help="Account: consulting, personal, both"),
     category: Optional[str] = typer.Option(None, "--category", help="Category"),
     relationship: Optional[str] = typer.Option(None, "-r", "--relationship", help="Relationship"),
+    notes: Optional[str] = typer.Option(None, "--notes", help="Notes"),
+    lead_source: Optional[str] = typer.Option(None, "--lead-source", help="Lead source"),
+    lead_status: Optional[str] = typer.Option(None, "--lead-status", help="Lead status"),
 ):
     """Update a contact."""
     db = get_db()
 
     try:
-        # Get contact to find email
         contact = db.get_contact_by_id(contact_id)
         if not contact:
             console.print(f"[red]Contact #{contact_id} not found[/red]")
             raise typer.Exit(1)
 
-        if not contact.get('email'):
-            console.print(f"[red]Contact #{contact_id} has no email address[/red]")
-            raise typer.Exit(1)
-
         db.update_contact(
-            contact['email'],
+            contact_id,
             name=name,
+            email=email,
             phone=phone,
             company=company,
             title=title,
+            location=location,
+            linkedin=linkedin,
+            account=account,
             category=category,
             relationship=relationship,
+            context=notes,
+            lead_source=lead_source,
+            lead_status=lead_status,
         )
-        console.print(f"[green]Contact #{contact_id} updated[/green]")
+        display_name = name or contact.get('name') or f"#{contact_id}"
+        console.print(f"[green]Contact {display_name} updated[/green]")
 
     except sqlite3.Error as e:
         console.print(f"[red]Error updating contact:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@contacts_app.command("enrich")
+def contacts_enrich(
+    contact_id: int = typer.Argument(..., help="Contact ID to enrich"),
+    data: str = typer.Argument(..., help="JSON string with profile data from cc-linkedin enrich"),
+):
+    """Enrich a contact with data from LinkedIn profile extraction."""
+    db = get_db()
+
+    try:
+        contact = db.get_contact_by_id(contact_id)
+        if not contact:
+            console.print(f"[red]Contact #{contact_id} not found[/red]")
+            raise typer.Exit(1)
+
+        profile = json.loads(data)
+
+        if not profile.get("profile_exists", False):
+            db.add_memory(
+                contact_id=contact_id,
+                category="linkedin",
+                fact="LinkedIn profile not found or unavailable",
+                source="cc-linkedin enrich",
+            )
+            console.print(f"[yellow]Contact #{contact_id}: profile not found, memory added[/yellow]")
+            return
+
+        # Update vault contact fields from profile data
+        update_fields = {}
+        if profile.get("name") and not contact.get("name"):
+            update_fields["name"] = profile["name"]
+        elif profile.get("name") and contact.get("name") == "":
+            update_fields["name"] = profile["name"]
+
+        if profile.get("current_company") and not contact.get("company"):
+            update_fields["company"] = profile["current_company"]
+
+        if profile.get("current_title") and not contact.get("title"):
+            update_fields["title"] = profile["current_title"]
+
+        if profile.get("location") and not contact.get("location"):
+            update_fields["location"] = profile["location"]
+
+        if update_fields:
+            db.update_contact(contact_id, **update_fields)
+
+        # Store headline as context/notes if empty
+        if profile.get("headline") and not contact.get("context"):
+            db.update_contact(contact_id, context=profile["headline"])
+
+        # Store extra info as memories
+        if profile.get("about"):
+            db.add_memory(
+                contact_id=contact_id,
+                category="about",
+                fact=profile["about"],
+                source="cc-linkedin enrich",
+            )
+
+        if profile.get("education"):
+            db.add_memory(
+                contact_id=contact_id,
+                category="education",
+                fact=profile["education"],
+                source="cc-linkedin enrich",
+            )
+
+        if profile.get("pronouns"):
+            db.add_memory(
+                contact_id=contact_id,
+                category="personal",
+                fact=f"Pronouns: {profile['pronouns']}",
+                source="cc-linkedin enrich",
+            )
+
+        if profile.get("connections"):
+            db.add_memory(
+                contact_id=contact_id,
+                category="linkedin",
+                fact=f"Connections: {profile['connections']}",
+                source="cc-linkedin enrich",
+            )
+
+        display_name = update_fields.get("name") or contact.get("name") or f"#{contact_id}"
+        console.print(f"[green]Enriched: {display_name}[/green]")
+
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Invalid JSON data:[/red] {e}")
+        raise typer.Exit(1)
+    except sqlite3.Error as e:
+        console.print(f"[red]Error enriching contact:[/red] {e}")
         raise typer.Exit(1)
 
 

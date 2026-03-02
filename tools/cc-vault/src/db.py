@@ -987,9 +987,31 @@ def get_contact_by_id(contact_id: int) -> Optional[dict]:
 def list_contacts(
     account: Optional[str] = None,
     category: Optional[str] = None,
-    relationship: Optional[str] = None
+    relationship: Optional[str] = None,
+    has_fields: Optional[List[str]] = None,
+    missing_fields: Optional[List[str]] = None,
 ) -> List[dict]:
-    """List contacts with optional filtering."""
+    """List contacts with optional filtering.
+
+    Args:
+        account: Filter by account type.
+        category: Filter by category.
+        relationship: Filter by relationship.
+        has_fields: Only return contacts where these fields are non-empty.
+        missing_fields: Only return contacts where these fields are empty/null.
+    """
+    valid_fields = [
+        'name', 'nickname', 'pronunciation', 'account', 'category', 'relationship',
+        'priority', 'style', 'greeting', 'signoff', 'best_contact_method',
+        'best_time', 'timezone', 'response_speed', 'context', 'company',
+        'title', 'location', 'birthday', 'spouse_name', 'children', 'pets',
+        'hobbies', 'phone', 'linkedin', 'twitter', 'website', 'address',
+        'first_contact', 'last_contact', 'contact_frequency',
+        'whatsapp', 'instagram', 'facebook', 'github', 'skype', 'telegram', 'signal',
+        'lead_source', 'referred_by', 'lead_status', 'client_since', 'contract_value', 'next_followup',
+        'relationship_strength', 'email',
+    ]
+
     init_db(silent=True)
     conn = get_db()
     cursor = conn.cursor()
@@ -998,8 +1020,11 @@ def list_contacts(
     params = []
 
     if account:
-        sql += " AND (account = ? OR account = 'both')"
-        params.append(account)
+        if account == 'both':
+            sql += " AND account IN ('consulting', 'personal', 'both')"
+        else:
+            sql += " AND (account = ? OR account = 'both')"
+            params.append(account)
 
     if category:
         sql += " AND category = ?"
@@ -1008,6 +1033,20 @@ def list_contacts(
     if relationship:
         sql += " AND relationship = ?"
         params.append(relationship)
+
+    if has_fields:
+        for field in has_fields:
+            if field not in valid_fields:
+                conn.close()
+                raise ValueError(f"Invalid field: {field}")
+            sql += f" AND ({field} IS NOT NULL AND {field} != '')"
+
+    if missing_fields:
+        for field in missing_fields:
+            if field not in valid_fields:
+                conn.close()
+                raise ValueError(f"Invalid field: {field}")
+            sql += f" AND ({field} IS NULL OR {field} = '')"
 
     sql += " ORDER BY name"
 
@@ -1018,12 +1057,12 @@ def list_contacts(
     return results
 
 
-def update_contact(email: str, **kwargs) -> bool:
+def update_contact(contact_id: int, **kwargs) -> bool:
     """
-    Update a contact's fields.
+    Update a contact's fields by contact ID.
     Returns True if updated, False if contact not found.
     """
-    contact = get_contact(email)
+    contact = get_contact_by_id(contact_id)
     if not contact:
         return False
 
@@ -1039,14 +1078,16 @@ def update_contact(email: str, **kwargs) -> bool:
         # CRM fields
         'lead_source', 'referred_by', 'lead_status', 'client_since', 'contract_value', 'next_followup',
         # Relationship
-        'relationship_strength'
+        'relationship_strength',
+        # Email
+        'email',
     ]
 
     updates = []
     params = []
 
     for field in valid_fields:
-        if field in kwargs:
+        if field in kwargs and kwargs[field] is not None:
             updates.append(f"{field} = ?")
             params.append(kwargs[field])
 
@@ -1055,7 +1096,7 @@ def update_contact(email: str, **kwargs) -> bool:
 
     updates.append("updated_at = CURRENT_TIMESTAMP")
     sql = f"UPDATE contacts SET {', '.join(updates)} WHERE id = ?"
-    params.append(contact['id'])
+    params.append(contact_id)
 
     conn = get_db()
     cursor = conn.cursor()
@@ -1182,18 +1223,14 @@ def remove_tag(email: str, tag: str) -> bool:
     return removed
 
 
-def get_tags(email: str) -> List[str]:
-    """Get all tags for a contact."""
-    contact = get_contact(email)
-    if not contact:
-        return []
-
+def get_tags(contact_id: int) -> List[str]:
+    """Get all tags for a contact by contact ID."""
     conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute(
         "SELECT tag FROM contact_tags WHERE contact_id = ? ORDER BY tag",
-        (contact['id'],)
+        (contact_id,)
     )
 
     tags = [row[0] for row in cursor.fetchall()]
@@ -1561,7 +1598,7 @@ def remove_list_members_by_query(list_name: str, where_clause: str, params: Opti
 # ===========================================
 
 def add_memory(
-    email: str,
+    contact_id: int,
     category: str,
     fact: str,
     detail: Optional[str] = None,
@@ -1571,12 +1608,12 @@ def add_memory(
     confidence: str = 'confirmed'
 ) -> int:
     """
-    Add a memory about a contact.
+    Add a memory about a contact by contact ID.
     Returns the memory ID.
     """
-    contact = get_contact(email)
+    contact = get_contact_by_id(contact_id)
     if not contact:
-        raise ValueError(f"Contact not found: {email}")
+        raise ValueError(f"Contact not found: #{contact_id}")
 
     conn = get_db()
     cursor = conn.cursor()
@@ -1584,7 +1621,7 @@ def add_memory(
     cursor.execute("""
         INSERT INTO memories (contact_id, category, fact, detail, source, source_date, source_ref, confidence)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (contact['id'], category, fact, detail, source, source_date, source_ref, confidence))
+    """, (contact_id, category, fact, detail, source, source_date, source_ref, confidence))
 
     memory_id = cursor.lastrowid
     conn.commit()
@@ -1593,17 +1630,13 @@ def add_memory(
     return memory_id
 
 
-def get_memories(email: str, category: Optional[str] = None) -> List[dict]:
-    """Get memories for a contact, optionally filtered by category."""
-    contact = get_contact(email)
-    if not contact:
-        return []
-
+def get_memories(contact_id: int, category: Optional[str] = None) -> List[dict]:
+    """Get memories for a contact by contact ID, optionally filtered by category."""
     conn = get_db()
     cursor = conn.cursor()
 
     sql = "SELECT * FROM memories WHERE contact_id = ? AND still_valid = 1"
-    params = [contact['id']]
+    params = [contact_id]
 
     if category:
         sql += " AND category = ?"

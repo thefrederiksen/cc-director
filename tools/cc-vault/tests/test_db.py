@@ -80,9 +80,13 @@ class TestContacts:
         """Test updating a contact."""
         _, db = test_vault
 
-        # Update contact
+        # Look up contact ID first
+        contact = db.get_contact("john@example.com")
+        assert contact is not None
+
+        # Update contact by ID
         result = db.update_contact(
-            "john@example.com",
+            contact["id"],
             title="CEO"
         )
 
@@ -91,6 +95,64 @@ class TestContacts:
         # Verify update
         contact = db.get_contact("john@example.com")
         assert contact["title"] == "CEO"
+
+    def test_list_contacts_has_fields(self, test_vault):
+        """Test filtering contacts by field presence."""
+        _, db = test_vault
+
+        # Add a contact with linkedin
+        db.add_contact(
+            email="linked@example.com",
+            name="LinkedIn User",
+            account="personal",
+        )
+        linked = db.get_contact("linked@example.com")
+        db.update_contact(linked["id"], linkedin="https://linkedin.com/in/test")
+
+        # Filter by has linkedin
+        contacts = db.list_contacts(has_fields=["linkedin"])
+        assert len(contacts) >= 1
+        for c in contacts:
+            assert c["linkedin"] is not None and c["linkedin"] != ""
+
+    def test_list_contacts_missing_fields(self, test_vault):
+        """Test filtering contacts by field absence."""
+        _, db = test_vault
+
+        # Filter by missing linkedin (john and jane don't have it)
+        contacts = db.list_contacts(missing_fields=["linkedin"])
+        for c in contacts:
+            assert c["linkedin"] is None or c["linkedin"] == ""
+
+    def test_list_contacts_has_and_missing_combined(self, test_vault):
+        """Test combining has and missing filters."""
+        _, db = test_vault
+
+        # Add a contact with linkedin but no company
+        db.add_contact(
+            email="nocompany@example.com",
+            name="",
+            account="consulting",
+        )
+        nc = db.get_contact("nocompany@example.com")
+        db.update_contact(nc["id"], linkedin="https://linkedin.com/in/nocompany")
+
+        # Find contacts with linkedin but missing company
+        contacts = db.list_contacts(has_fields=["linkedin"], missing_fields=["company"])
+        assert len(contacts) >= 1
+        for c in contacts:
+            assert c["linkedin"] is not None and c["linkedin"] != ""
+            assert c["company"] is None or c["company"] == ""
+
+    def test_list_contacts_invalid_field_raises(self, test_vault):
+        """Test that invalid field names raise ValueError."""
+        _, db = test_vault
+
+        with pytest.raises(ValueError, match="Invalid field"):
+            db.list_contacts(has_fields=["not_a_real_field"])
+
+        with pytest.raises(ValueError, match="Invalid field"):
+            db.list_contacts(missing_fields=["bobby_tables; DROP TABLE contacts"])
 
 
 class TestTasks:
@@ -261,9 +323,13 @@ class TestMemories:
         except Exception:
             pass  # Contact may already exist
 
+        # Look up contact ID
+        contact = db.get_contact("memory@example.com")
+        assert contact is not None
+
         # Add memory
         memory_id = db.add_memory(
-            email="memory@example.com",
+            contact["id"],
             category="preference",
             fact="Prefers morning meetings"
         )
@@ -274,7 +340,9 @@ class TestMemories:
         """Test getting memories for a contact."""
         _, db = test_vault
 
-        memories = db.get_memories("memory@example.com")
+        contact = db.get_contact("memory@example.com")
+        assert contact is not None
+        memories = db.get_memories(contact["id"])
         assert len(memories) >= 1
 
 
