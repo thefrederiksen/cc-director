@@ -1,0 +1,238 @@
+{
+  "$schema": "Tool registry for CC Director. Single source of truth for all tools.",
+  "categories": {
+    "documents": "Document conversion and generation",
+    "email": "Email and calendar management",
+    "web-social": "Browser automation, web crawling, and social media",
+    "desktop-automation": "Windows UI automation and AI desktop agent",
+    "media": "Image, audio, video, and photo processing",
+    "data-utilities": "Data storage, system info, and developer tools"
+  },
+  "tools": [
+    {
+      "name": "cc-markdown",
+      "category": "documents",
+      "type": "python",
+      "description": "Convert Markdown to PDF, Word, or HTML with themes",
+      "built": true,
+      "requirements": ["Chrome/Chromium"]
+    },
+    {
+      "name": "cc-excel",
+      "category": "documents",
+      "type": "python",
+      "description": "Convert CSV, JSON, and Markdown tables to formatted Excel workbooks",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-powerpoint",
+      "category": "documents",
+      "type": "python",
+      "description": "Convert Markdown to PowerPoint presentations with themes",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-gmail",
+      "category": "email",
+      "type": "python",
+      "description": "Gmail CLI: read, send, search, labels, calendar, contacts",
+      "built": true,
+      "requirements": ["Google OAuth"]
+    },
+    {
+      "name": "cc-outlook",
+      "category": "email",
+      "type": "python",
+      "description": "Outlook CLI: email, calendar, attachments, folders",
+      "built": true,
+      "requirements": ["Azure OAuth"]
+    },
+    {
+      "name": "cc-browser",
+      "category": "web-social",
+      "type": "nodejs",
+      "description": "Persistent browser automation with workspaces and profiles",
+      "built": true,
+      "requirements": ["Node.js", "Playwright"]
+    },
+    {
+      "name": "cc-linkedin",
+      "category": "web-social",
+      "type": "python",
+      "description": "LinkedIn automation with human-like delays",
+      "built": true,
+      "requirements": ["Playwright browsers", "cc-browser"]
+    },
+    {
+      "name": "cc-reddit",
+      "category": "web-social",
+      "type": "python",
+      "description": "Reddit automation with human-like delays",
+      "built": true,
+      "requirements": ["Playwright browsers", "cc-browser"]
+    },
+    {
+      "name": "cc-spotify",
+      "category": "web-social",
+      "type": "python",
+      "description": "Spotify playback control via browser automation",
+      "built": true,
+      "requirements": ["cc-browser"]
+    },
+    {
+      "name": "cc-crawl4ai",
+      "category": "web-social",
+      "type": "python",
+      "description": "AI-ready web crawler to clean markdown for LLM/RAG",
+      "built": true,
+      "requirements": ["Playwright browsers"]
+    },
+    {
+      "name": "cc-websiteaudit",
+      "category": "web-social",
+      "type": "nodejs",
+      "description": "Comprehensive website SEO, security, and AI readiness audit",
+      "built": true,
+      "requirements": ["Node.js", "Chrome/Chromium"]
+    },
+    {
+      "name": "cc-brandingrecommendations",
+      "category": "web-social",
+      "type": "nodejs",
+      "description": "Branding action plans from website audit data",
+      "built": true,
+      "requirements": ["Node.js", "cc-websiteaudit JSON output"]
+    },
+    {
+      "name": "cc-click",
+      "category": "desktop-automation",
+      "type": "dotnet",
+      "description": "Windows UI automation: click, type, screenshot, read text",
+      "built": true,
+      "requirements": ["Windows", ".NET runtime"]
+    },
+    {
+      "name": "cc-trisight",
+      "category": "desktop-automation",
+      "type": "dotnet",
+      "description": "3-tier UI element detection: UI Automation + OCR + pixel analysis",
+      "built": true,
+      "requirements": ["Windows", ".NET runtime"]
+    },
+    {
+      "name": "cc-computer",
+      "category": "desktop-automation",
+      "type": "dotnet",
+      "description": "AI desktop automation agent with screenshot-in-the-loop",
+      "built": true,
+      "requirements": ["Windows", ".NET runtime", "OPENAI_API_KEY"]
+    },
+    {
+      "name": "cc-image",
+      "category": "media",
+      "type": "python",
+      "description": "Image generation, analysis, and OCR using OpenAI",
+      "built": true,
+      "requirements": ["OPENAI_API_KEY"]
+    },
+    {
+      "name": "cc-voice",
+      "category": "media",
+      "type": "python",
+      "description": "Text-to-speech using OpenAI TTS",
+      "built": true,
+      "requirements": ["OPENAI_API_KEY"]
+    },
+    {
+      "name": "cc-whisper",
+      "category": "media",
+      "type": "python",
+      "description": "Audio transcription and translation using OpenAI Whisper",
+      "built": true,
+      "requirements": ["OPENAI_API_KEY"]
+    },
+    {
+      "name": "cc-video",
+      "category": "media",
+      "type": "python",
+      "description": "Video utilities: info, audio extraction, screenshots, frames",
+      "built": true,
+      "requirements": ["FFmpeg"]
+    },
+    {
+      "name": "cc-transcribe",
+      "category": "media",
+      "type": "python",
+      "description": "Video/audio transcription with timestamps and screenshots",
+      "built": true,
+      "requirements": ["FFmpeg", "OPENAI_API_KEY"]
+    },
+    {
+      "name": "cc-photos",
+      "category": "media",
+      "type": "python",
+      "description": "Photo organization: scan, duplicates, screenshots, AI descriptions",
+      "built": true,
+      "requirements": ["OPENAI_API_KEY"]
+    },
+    {
+      "name": "cc-youtube-info",
+      "category": "media",
+      "type": "python",
+      "description": "YouTube transcript, metadata, and chapter extraction",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-vault",
+      "category": "data-utilities",
+      "type": "python",
+      "description": "Personal data vault: contacts, tasks, goals, ideas, documents, RAG search",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-hardware",
+      "category": "data-utilities",
+      "type": "python",
+      "description": "System hardware info: RAM, CPU, GPU, disk, network, battery",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-comm-queue",
+      "category": "data-utilities",
+      "type": "python",
+      "description": "Communication Manager approval queue CLI",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-docgen",
+      "category": "data-utilities",
+      "type": "python",
+      "description": "C4 architecture diagram generator from YAML manifests",
+      "built": true,
+      "requirements": ["Graphviz"]
+    },
+    {
+      "name": "cc-director-setup",
+      "category": "data-utilities",
+      "type": "python",
+      "source_dir": "cc-setup",
+      "description": "Windows installer for CC Director tools suite",
+      "built": true,
+      "requirements": []
+    },
+    {
+      "name": "cc-personresearch",
+      "category": "data-utilities",
+      "type": "python",
+      "description": "Person research aggregation tool",
+      "built": true,
+      "requirements": []
+    }
+  ]
+}
