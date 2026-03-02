@@ -4,7 +4,7 @@ Downloads and installs all tool executables, adds to PATH, installs SKILL.md
 """
 
 import sys
-from installer import CCToolsInstaller
+from installer import CCDirectorInstaller
 
 
 def main():
@@ -15,7 +15,7 @@ def main():
     print("=" * 60)
     print()
 
-    installer = CCToolsInstaller()
+    installer = CCDirectorInstaller()
 
     try:
         success = installer.install()

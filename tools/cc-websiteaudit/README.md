@@ -22,7 +22,7 @@ Comprehensive website auditing CLI that analyzes sites across technical SEO, on-
 
 ## Installation
 
-Built as part of cc-tools suite:
+Built as part of cc-director suite:
 
 ```powershell
 .\build.ps1

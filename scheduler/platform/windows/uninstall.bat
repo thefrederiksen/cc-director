@@ -5,7 +5,7 @@ REM Run as Administrator
 setlocal enabledelayedexpansion
 
 set SERVICE_NAME=cc_director
-set DEPLOY_DIR=C:\cc-tools\cc_director_service
+set DEPLOY_DIR=%LOCALAPPDATA%\cc-director\service
 
 echo cc_director Service Uninstaller
 echo ================================

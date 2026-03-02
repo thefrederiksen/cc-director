@@ -5,14 +5,14 @@ REM
 REM This script:
 REM   1. Stops the service (if running)
 REM   2. Builds the executable
-REM   3. Deploys to C:\cc-tools\cc_director_service\
+REM   3. Deploys to %LOCALAPPDATA%\cc-director\service\
 REM   4. Installs service (if not installed)
 REM   5. Starts the service
 
 setlocal
 
 set SERVICE_NAME=cc_director
-set DEPLOY_DIR=C:\cc-tools\cc_director_service
+set DEPLOY_DIR=%LOCALAPPDATA%\cc-director\service
 set SOURCE_DIR=%~dp0
 
 echo.
@@ -61,14 +61,14 @@ echo [3/5] Deploying to %DEPLOY_DIR%...
 if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
 if not exist "%DEPLOY_DIR%\logs" mkdir "%DEPLOY_DIR%\logs"
 if not exist "%DEPLOY_DIR%\data" mkdir "%DEPLOY_DIR%\data"
-REM Ensure shared data directory exists for cc_tools tokens
-if not exist "C:\cc-tools\data" mkdir "C:\cc-tools\data"
-if not exist "C:\cc-tools\data\gmail" mkdir "C:\cc-tools\data\gmail"
-if not exist "C:\cc-tools\data\gmail\accounts" mkdir "C:\cc-tools\data\gmail\accounts"
-if not exist "C:\cc-tools\data\outlook" mkdir "C:\cc-tools\data\outlook"
-if not exist "C:\cc-tools\data\outlook\tokens" mkdir "C:\cc-tools\data\outlook\tokens"
+REM Ensure shared data directory exists for tool tokens
+if not exist "%LOCALAPPDATA%\cc-director\data" mkdir "%LOCALAPPDATA%\cc-director\data"
+if not exist "%LOCALAPPDATA%\cc-director\data\gmail" mkdir "%LOCALAPPDATA%\cc-director\data\gmail"
+if not exist "%LOCALAPPDATA%\cc-director\data\gmail\accounts" mkdir "%LOCALAPPDATA%\cc-director\data\gmail\accounts"
+if not exist "%LOCALAPPDATA%\cc-director\data\outlook" mkdir "%LOCALAPPDATA%\cc-director\data\outlook"
+if not exist "%LOCALAPPDATA%\cc-director\data\outlook\tokens" mkdir "%LOCALAPPDATA%\cc-director\data\outlook\tokens"
 REM Set permissions for SYSTEM account
-icacls "C:\cc-tools\data" /grant "SYSTEM:(OI)(CI)F" /Q >nul 2>&1
+icacls "%LOCALAPPDATA%\cc-director\data" /grant "SYSTEM:(OI)(CI)F" /Q >nul 2>&1
 
 REM Copy executable
 copy /Y "%SOURCE_DIR%dist\cc_director_service.exe" "%DEPLOY_DIR%\" >nul
@@ -92,11 +92,11 @@ if %ERRORLEVEL% neq 0 (
     nssm set %SERVICE_NAME% Description "cc_director - Job scheduler and communication dispatch"
     nssm set %SERVICE_NAME% AppEnvironmentExtra CC_DIRECTOR_DB=%DEPLOY_DIR%\data\cc_director.db
     nssm set %SERVICE_NAME% AppEnvironmentExtra+ CC_DIRECTOR_LOG_DIR=%DEPLOY_DIR%\logs
-    nssm set %SERVICE_NAME% AppEnvironmentExtra+ CC_TOOLS_DATA=C:\cc-tools\data
+    nssm set %SERVICE_NAME% AppEnvironmentExtra+ CC_DIRECTOR_DATA=%LOCALAPPDATA%\cc-director\data
 ) else (
     echo      Service already configured.
-    REM Ensure CC_TOOLS_DATA is set even for existing service
-    nssm set %SERVICE_NAME% AppEnvironmentExtra+ CC_TOOLS_DATA=C:\cc-tools\data >nul 2>&1
+    REM Ensure CC_DIRECTOR_DATA is set even for existing service
+    nssm set %SERVICE_NAME% AppEnvironmentExtra+ CC_DIRECTOR_DATA=%LOCALAPPDATA%\cc-director\data >nul 2>&1
 )
 
 REM Start service

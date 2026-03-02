@@ -37,7 +37,7 @@ def _get_comm_manager_db_path() -> Path:
     """Get Communication Manager database path from config or default location."""
     local = os.environ.get("LOCALAPPDATA", "")
     if local:
-        default = Path(local) / "cc-tools" / "data" / "comm_manager" / "content" / "communications.db"
+        default = Path(local) / "cc-director" / "data" / "comm_manager" / "content" / "communications.db"
     else:
         default = Path.home() / "cc_communication_manager" / "content" / "communications.db"
     return default

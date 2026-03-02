@@ -2,7 +2,7 @@
 
 Resolution order for cc-click path:
   1. CC_CLICK_PATH environment variable
-  2. Default path in cc-tools
+  2. Default path in cc-director
 """
 import os
 

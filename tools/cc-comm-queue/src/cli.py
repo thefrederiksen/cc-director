@@ -469,7 +469,7 @@ def config_set(
     value: str = typer.Argument(..., help="Config value"),
 ):
     """Set a configuration value."""
-    config_path = Path.home() / ".cc_tools" / "config.json"
+    config_path = Path.home() / ".cc-director" / "config.json"
 
     # Load existing config
     if config_path.exists():

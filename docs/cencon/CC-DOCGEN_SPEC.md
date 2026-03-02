@@ -272,7 +272,7 @@ pip install cc-docgen
 Or from source:
 
 ```bash
-cd cc_tools/src/cc-docgen
+cd cc_director/src/cc-docgen
 pip install -e .
 ```
 
@@ -281,7 +281,7 @@ pip install -e .
 ## Project Structure (When Implemented)
 
 ```
-cc_tools/src/cc-docgen/
+cc_director/src/cc-docgen/
     __init__.py
     cli.py              # Click CLI entry point
     generator.py        # Diagram generation logic

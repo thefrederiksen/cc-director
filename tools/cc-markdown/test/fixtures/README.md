@@ -4,7 +4,7 @@
 
 Markdown input files for testing PDF, Word, and HTML conversion across all themes.
 
-NOTE: cc-markdown also has fixtures at `tests/fixtures/` (unit test level) and `../../tests/integration/fixtures/` (integration test level). This directory follows the cc-tools-manager standard fixture layout.
+NOTE: cc-markdown also has fixtures at `tests/fixtures/` (unit test level) and `../../tests/integration/fixtures/` (integration test level). This directory follows the cc-director-manager standard fixture layout.
 
 ## Fixtures
 

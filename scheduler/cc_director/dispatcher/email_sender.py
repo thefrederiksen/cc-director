@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .config import SEND_FROM_ACCOUNTS
@@ -16,6 +18,14 @@ URL_PATTERN = re.compile(
 )
 
 logger = logging.getLogger("cc_director.dispatcher.email")
+
+
+def _bin_dir() -> Path:
+    """Resolve the cc-director bin directory."""
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / "cc-director" / "bin"
+    return Path.home() / ".cc-director" / "bin"
 
 
 @dataclass
@@ -169,7 +179,7 @@ class EmailSender:
     ) -> List[str]:
         """Build cc-outlook send command."""
         cmd = [
-            r"C:\cc-tools\cc-outlook.exe", "send",
+            str(_bin_dir() / "cc-outlook.exe"), "send",
             "-t", to_email,
             "-s", subject,
             "-b", body,
@@ -202,7 +212,7 @@ class EmailSender:
     ) -> List[str]:
         """Build cc-gmail send command."""
         cmd = [
-            r"C:\cc-tools\cc-gmail.exe",
+            str(_bin_dir() / "cc-gmail.exe"),
             "-a", account,
             "send",
             "-t", to_email,

@@ -10,7 +10,15 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("cc_director.dispatcher.linkedin")
 
-CC_LINKEDIN_PATH = Path(r"C:\cc-tools\cc-linkedin.exe")
+def _bin_dir() -> Path:
+    """Resolve the cc-director bin directory."""
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / "cc-director" / "bin"
+    return Path.home() / ".cc-director" / "bin"
+
+
+CC_LINKEDIN_PATH = _bin_dir() / "cc-linkedin.exe"
 TEMP_MEDIA_DIR = Path(os.environ.get("TEMP", r"C:\temp")) / "cc_director_media"
 
 

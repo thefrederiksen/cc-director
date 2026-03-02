@@ -1,42 +1,70 @@
 # Tools Overview
 
-CC Director includes 25+ command-line tools for document conversion, media processing, email, browser automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
+CC Director includes 28 command-line tools for document conversion, media processing, email, browser automation, desktop automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
 
 ## Quick Reference
 
+### Documents
+
 | Tool | Description | Requirements |
 |------|-------------|--------------|
-| cc-brandingrecommendations | Branding recommendations from website audit | Node.js |
-| cc-browser | Persistent browser automation with profiles | Node.js, Playwright |
-| cc-click | Windows UI automation (click, type, inspect) | Windows, .NET |
-| cc-comm-queue | Communication Manager queue CLI | None |
-| cc-computer | AI desktop automation agent | Windows, .NET, OpenAI API key |
-| cc-crawl4ai | AI-ready web crawler to clean markdown | Playwright browsers |
-| cc-docgen | C4 architecture diagram generator | Graphviz |
-| cc-excel | CSV/JSON/Markdown to formatted Excel | None |
-| cc-gmail | Gmail CLI: read, send, search | Google OAuth |
-| cc-hardware | System hardware info (RAM, CPU, GPU, disk) | None |
-| cc-image | Image generation/analysis/OCR | OpenAI API key |
-| cc-linkedin | LinkedIn automation with human-like delays | Playwright browsers |
-| cc-markdown | Markdown to PDF/Word/HTML | Chrome/Chromium |
-| cc-outlook | Outlook CLI: email and calendar | Azure OAuth |
-| cc-photos | Photo organization: duplicates, AI | OpenAI API key |
+| cc-markdown | Markdown to PDF/Word/HTML with themes | Chrome/Chromium |
+| cc-excel | CSV/JSON/Markdown to formatted Excel workbooks | None (not yet built) |
 | cc-powerpoint | Markdown to PowerPoint presentations | None |
-| cc-reddit | Reddit automation with human-like delays | Playwright browsers |
-| cc-setup | Windows installer for cc-tools suite | None |
-| cc-spotify | Spotify playback control via browser automation | cc-browser, Spotify Premium |
-| cc-transcribe | Video/audio transcription with screenshots | FFmpeg, OpenAI API key |
-| cc-trisight | Windows screen detection and automation | Windows, .NET |
-| cc-vault | Secure credential and data storage | None |
-| cc-video | Video utilities | FFmpeg |
-| cc-voice | Text-to-speech | OpenAI API key |
-| cc-websiteaudit | Website SEO/security/AI audit | Node.js, Chrome |
-| cc-whisper | Audio transcription | OpenAI API key |
+
+### Email
+
+| Tool | Description | Requirements |
+|------|-------------|--------------|
+| cc-gmail | Gmail CLI: read, send, search, labels, calendar, contacts | Google OAuth |
+| cc-outlook | Outlook CLI: email, calendar, attachments, folders | Azure OAuth |
+
+### Web and Social
+
+| Tool | Description | Requirements |
+|------|-------------|--------------|
+| cc-browser | Persistent browser automation with workspaces | Node.js, Playwright |
+| cc-linkedin | LinkedIn automation with human-like delays | Playwright, cc-browser |
+| cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
+| cc-spotify | Spotify playback control via browser | cc-browser |
+| cc-crawl4ai | AI-ready web crawler to clean markdown | Playwright browsers |
+| cc-websiteaudit | Website SEO/security/AI readiness audit | Node.js, Chrome (not yet built) |
+| cc-brandingrecommendations | Branding action plans from audit data | Node.js |
+
+### Desktop Automation
+
+| Tool | Description | Requirements |
+|------|-------------|--------------|
+| cc-click | Windows UI automation: click, type, screenshot | Windows, .NET |
+| cc-trisight | 3-tier UI element detection (UIA + OCR + pixel) | Windows, .NET |
+| cc-computer | AI desktop agent with screenshot-in-the-loop | Windows, .NET, OPENAI_API_KEY |
+
+### Media
+
+| Tool | Description | Requirements |
+|------|-------------|--------------|
+| cc-image | Image generation, analysis, OCR | OPENAI_API_KEY |
+| cc-voice | Text-to-speech (OpenAI TTS) | OPENAI_API_KEY |
+| cc-whisper | Audio transcription and translation | OPENAI_API_KEY |
+| cc-video | Video info, audio extraction, screenshots, frames | FFmpeg |
+| cc-transcribe | Video/audio transcription with screenshots | FFmpeg, OPENAI_API_KEY |
+| cc-photos | Photo scanning, duplicates, AI descriptions | OPENAI_API_KEY |
 | cc-youtube-info | YouTube transcript/metadata extraction | None |
+
+### Data and Utilities
+
+| Tool | Description | Requirements |
+|------|-------------|--------------|
+| cc-vault | Personal vault: contacts, tasks, goals, docs, RAG | None |
+| cc-hardware | System hardware info (RAM, CPU, GPU, disk) | None |
+| cc-comm-queue | Communication Manager approval queue | None |
+| cc-docgen | C4 architecture diagrams from YAML | Graphviz (not yet built) |
+| cc-director-setup | Windows installer for CC Director | None |
+| cc-personresearch | Person research aggregation | (not yet built) |
 
 ---
 
-## Document Conversion Tools
+## Documents
 
 ### cc-markdown
 
@@ -49,13 +77,15 @@ cc-markdown report.md -o report.docx
 cc-markdown --themes
 ```
 
-**Themes:** boardroom, terminal, paper, spark, thesis, obsidian, blueprint
+**Themes:** boardroom, terminal, paper (default), spark, thesis, obsidian, blueprint
 
 **Options:** `-o` output file, `--theme` theme name, `--css` custom CSS, `--page-size` a4/letter, `--margin` page margin
 
 ### cc-excel
 
 Convert CSV, JSON, and Markdown tables to formatted Excel workbooks with themes, charts, and formulas.
+
+**Status:** Source exists but not yet built.
 
 ```bash
 cc-excel from-csv sales.csv -o sales.xlsx --theme boardroom
@@ -66,7 +96,7 @@ cc-excel from-csv sales.csv -o report.xlsx --summary all --highlight scale
 cc-excel from-spec workbook.json -o output.xlsx
 ```
 
-**Features:** Auto column types, autofilter, freeze panes, charts (bar/line/pie/column), summary rows, conditional formatting, multi-sheet workbooks with formulas
+**Subcommands:** `from-csv`, `from-json`, `from-markdown`, `from-spec`
 
 ### cc-powerpoint
 
@@ -80,7 +110,7 @@ Use `---` to separate slides. First `# Title` becomes the title slide.
 
 ---
 
-## Email Tools
+## Email
 
 ### cc-outlook
 
@@ -88,11 +118,15 @@ Outlook CLI with email and calendar support via Microsoft Graph API.
 
 ```bash
 cc-outlook list --unread
-cc-outlook read MESSAGE_ID
+cc-outlook read <message_id>
 cc-outlook search "project update"
+cc-outlook reply <message_id>
+cc-outlook forward <message_id>
 cc-outlook calendar events -d 14
 cc-outlook calendar today
 cc-outlook calendar search "standup"
+cc-outlook folders
+cc-outlook attachments <message_id>
 ```
 
 ### cc-gmail
@@ -101,23 +135,32 @@ Gmail CLI with multi-account support.
 
 ```bash
 cc-gmail list --unread
-cc-gmail read MESSAGE_ID
+cc-gmail read <message_id>
 cc-gmail search "from:someone@example.com"
+cc-gmail reply <message_id>
+cc-gmail labels
+cc-gmail stats
+cc-gmail calendar
+cc-gmail contacts
 ```
 
 ---
 
-## Browser and Web Tools
+## Web and Social
 
 ### cc-browser
 
 Persistent browser automation with workspace management.
 
 ```bash
+cc-browser daemon
 cc-browser start --workspace myworkspace
-cc-browser navigate "https://example.com"
-cc-browser screenshot -o page.png
-cc-browser close
+cc-browser navigate --url "https://example.com"
+cc-browser snapshot --interactive
+cc-browser click --ref e3
+cc-browser type --ref e4 --text "hello"
+cc-browser screenshot --save page.png
+cc-browser stop
 ```
 
 ### cc-linkedin
@@ -129,6 +172,8 @@ cc-linkedin status
 cc-linkedin feed --limit 10
 cc-linkedin messages --unread
 cc-linkedin search "query" --type people
+cc-linkedin create "Post content"
+cc-linkedin profile <username>
 ```
 
 **Important:** Always use cc-linkedin for LinkedIn operations. Never use cc-browser directly with LinkedIn.
@@ -140,15 +185,15 @@ Reddit automation with human-like delays and random jitter.
 ```bash
 cc-reddit status
 cc-reddit feed
-cc-reddit post URL
-cc-reddit comment URL "Comment text"
+cc-reddit post <url>
+cc-reddit comment <url> "Comment text"
 ```
 
 **Important:** Always use cc-reddit for Reddit operations. Never use cc-browser directly with Reddit.
 
 ### cc-spotify
 
-Spotify playback control via browser automation. Controls Spotify Web Player through a cc-browser workspace.
+Spotify playback control via browser automation.
 
 ```bash
 cc-spotify config --workspace edge-personal
@@ -170,7 +215,7 @@ AI-ready web crawler that converts pages to clean markdown.
 
 ```bash
 cc-crawl4ai crawl "https://example.com" -o page.md
-cc-crawl4ai crawl URL --fit --stealth
+cc-crawl4ai crawl <url> --fit --stealth
 cc-crawl4ai batch urls.txt -o ./output/
 ```
 
@@ -178,13 +223,15 @@ cc-crawl4ai batch urls.txt -o ./output/
 
 Comprehensive website auditing across SEO, security, structured data, and AI readiness.
 
+**Status:** Source exists but not yet built.
+
 ```bash
 cc-websiteaudit example.com -o report.pdf
 cc-websiteaudit example.com --format json -o audit.json
 cc-websiteaudit example.com --modules technical-seo,security
 ```
 
-**Grades:** A+ (97+) through F (<60). Modules: technical-seo, on-page-seo, security, structured-data, ai-readiness.
+**Modules:** technical-seo, on-page-seo, security, structured-data, ai-readiness
 
 ### cc-brandingrecommendations
 
@@ -197,7 +244,7 @@ cc-brandingrecommendations --audit audit.json --budget high --industry saas
 
 ---
 
-## Desktop Automation Stack
+## Desktop Automation
 
 Three tools work together for AI-powered desktop automation:
 
@@ -210,7 +257,7 @@ cc-trisight (Detection CLI - the "eyes")
     +-- UI Automation + OCR + Pixel Analysis
 
 cc-click (Automation CLI - the "hands")
-    +-- Click, type, inspect, window management
+    +-- Click, type, screenshot, read text, window management
 ```
 
 ### cc-computer
@@ -235,15 +282,17 @@ trisight detect --window "Notepad" --annotate --output annotated.png
 Low-level Windows UI automation.
 
 ```bash
-cc-click click 100 200
-cc-click type "Hello World"
-cc-click windows
-cc-click focus "Notepad"
+cc-click click <element>
+cc-click type <text>
+cc-click screenshot
+cc-click read-text <element>
+cc-click list-windows
+cc-click list-elements <window>
 ```
 
 ---
 
-## Media Tools
+## Media
 
 ### cc-transcribe
 
@@ -258,6 +307,8 @@ cc-transcribe video.mp4 -o ./output/ --no-screenshots
 
 Image generation, analysis, and OCR using OpenAI.
 
+**Status:** BROKEN - needs rebuild.
+
 ```bash
 cc-image generate "A sunset over mountains" -o sunset.png
 cc-image describe image.png
@@ -269,17 +320,18 @@ cc-image ocr screenshot.png
 Text-to-speech using OpenAI TTS.
 
 ```bash
-cc-voice speak "Hello, world!" -o hello.mp3 --voice nova
+cc-voice "Hello, world!" -o hello.mp3 --voice nova
 ```
 
-**Voices:** alloy, echo, fable, nova, onyx, shimmer
+**Voices:** alloy, echo, fable, nova, onyx (default), shimmer
 
 ### cc-whisper
 
-Audio transcription using OpenAI Whisper.
+Audio transcription and translation using OpenAI Whisper.
 
 ```bash
 cc-whisper transcribe audio.mp3 -o transcript.txt
+cc-whisper translate foreign-audio.mp3
 ```
 
 ### cc-video
@@ -287,8 +339,10 @@ cc-whisper transcribe audio.mp3 -o transcript.txt
 Video utilities powered by FFmpeg.
 
 ```bash
-cc-video extract-audio video.mp4 -o audio.mp3
 cc-video info video.mp4
+cc-video audio video.mp4 -o audio.mp3
+cc-video screenshots video.mp4
+cc-video frame video.mp4 --timestamp 01:30
 ```
 
 ### cc-photos
@@ -298,9 +352,11 @@ Photo organization with duplicate detection, screenshot identification, and AI d
 ```bash
 cc-photos source add "D:\Photos" --category private --label "Family"
 cc-photos scan
+cc-photos discover
 cc-photos dupes --cleanup
 cc-photos analyze --limit 50
 cc-photos search "beach vacation"
+cc-photos exclude
 ```
 
 ### cc-youtube-info
@@ -308,14 +364,14 @@ cc-photos search "beach vacation"
 Extract transcripts, metadata, and chapters from YouTube videos.
 
 ```bash
-cc-youtube-info transcript URL -o transcript.txt
-cc-youtube-info info URL --json
-cc-youtube-info chapters URL
+cc-youtube-info transcript <url> -o transcript.txt
+cc-youtube-info info <url> --json
+cc-youtube-info chapters <url>
 ```
 
 ---
 
-## Utility Tools
+## Data and Utilities
 
 ### cc-hardware
 
@@ -329,13 +385,18 @@ cc-hardware --json   # JSON output
 
 ### cc-vault
 
-Personal data vault with contacts, documents, tasks, and RAG-powered search.
+Personal data vault with contacts, documents, tasks, goals, ideas, and RAG-powered search.
 
 ```bash
 cc-vault search "query"
 cc-vault ask "question"
-cc-vault contacts list
+cc-vault contacts list --account personal
+cc-vault contacts show <id>
+cc-vault contacts search "name"
 cc-vault docs import file.pdf
+cc-vault lists list
+cc-vault backup
+cc-vault stats
 ```
 
 ### cc-comm-queue
@@ -352,16 +413,18 @@ cc-comm-queue status
 
 Generate C4 architecture diagrams from YAML manifest files.
 
+**Status:** Source exists but not yet built.
+
 ```bash
 cc-docgen generate --manifest ./docs/architecture.yaml
 ```
 
-### cc-setup
+### cc-director-setup
 
-Windows installer for the entire cc-tools suite. Downloads from GitHub releases, no admin required.
+Windows installer for the entire CC Director tools suite. Downloads from GitHub releases, no admin required.
 
 ```bash
-cc-setup
+cc-director-setup
 ```
 
 ---

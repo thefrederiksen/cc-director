@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-cc-reddit is a command-line tool for automating Reddit interactions through browser automation, enabling users to perform all Reddit actions as if they were a real user. Part of the cc-tools suite.
+cc-reddit is a command-line tool for automating Reddit interactions through browser automation, enabling users to perform all Reddit actions as if they were a real user. Part of the cc-director suite.
 
 ## The Problem
 
@@ -153,7 +153,7 @@ Chrome (logged into Reddit)
 ## Technical Decisions
 
 ### Language: Python
-- Consistent with other cc-tools (cc-gmail, cc-markdown)
+- Consistent with other cc-director (cc-gmail, cc-markdown)
 - Rich CLI support via Typer
 - Easy HTTP client (requests/httpx) for cc-browser communication
 

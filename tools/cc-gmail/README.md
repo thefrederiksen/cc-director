@@ -454,7 +454,7 @@ cc-gmail auth --force
 ## Configuration
 
 ```
-%LOCALAPPDATA%\cc-tools\data\gmail\
+%LOCALAPPDATA%\cc-director\data\gmail\
     config.json              # Default account setting
     accounts/
         personal/
@@ -465,7 +465,7 @@ cc-gmail auth --force
             config.json
 ```
 
-On Windows, this is typically: `C:\Users\<you>\AppData\Local\cc-tools\data\gmail\`
+On Windows, this is typically: `C:\Users\<you>\AppData\Local\cc-director\data\gmail\`
 
 App passwords are stored separately in your OS credential manager (not in files).
 

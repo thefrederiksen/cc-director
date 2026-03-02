@@ -174,6 +174,6 @@ cc-linkedin messages
 cc-linkedin message johndoe --text "Thanks for connecting! Looking forward to staying in touch."
 ```
 
-## Part of cc-tools
+## Part of cc-director
 
-This tool is part of the [cc-tools](https://github.com/sfrederico/cc-tools) suite.
+This tool is part of the [cc-director](https://github.com/sfrederico/cc-director) suite.

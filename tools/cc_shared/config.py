@@ -1,4 +1,4 @@
-"""Shared configuration for cc-tools.
+"""Shared configuration for cc-director.
 
 Configuration is stored in the cc-director config directory.
 All path resolution is delegated to cc_storage.CcStorage.
@@ -39,16 +39,16 @@ def get_data_dir() -> Path:
 
 
 def get_install_dir() -> Path:
-    """Get the cc-tools installation directory (where executables live).
+    """Get the cc-director installation directory (where executables live).
 
     Returns:
-        Path to the bin directory containing cc-tools executables.
+        Path to the bin directory containing cc-director executables.
     """
     return CcStorage.bin()
 
 
 def get_config_path() -> Path:
-    """Get the path to the cc-tools config file."""
+    """Get the path to the cc-director config file."""
     return CcStorage.config_json()
 
 
@@ -229,8 +229,8 @@ class PhotosConfig:
         )
 
 
-class CCToolsConfig:
-    """Main configuration class for cc-tools."""
+class CCDirectorConfig:
+    """Main configuration class for cc-director."""
 
     def __init__(self):
         self.llm = LLMConfig()
@@ -239,7 +239,7 @@ class CCToolsConfig:
         self.comm_manager = CommManagerConfig()
         self._config_path = get_config_path()
 
-    def load(self) -> "CCToolsConfig":
+    def load(self) -> "CCDirectorConfig":
         """Load configuration from file."""
         if self._config_path.exists():
             try:
@@ -338,19 +338,19 @@ class CCToolsConfig:
 
 
 # Global config instance
-_config: Optional[CCToolsConfig] = None
+_config: Optional[CCDirectorConfig] = None
 
 
-def get_config() -> CCToolsConfig:
+def get_config() -> CCDirectorConfig:
     """Get the global configuration instance."""
     global _config
     if _config is None:
-        _config = CCToolsConfig().load()
+        _config = CCDirectorConfig().load()
     return _config
 
 
-def reload_config() -> CCToolsConfig:
+def reload_config() -> CCDirectorConfig:
     """Reload configuration from file."""
     global _config
-    _config = CCToolsConfig().load()
+    _config = CCDirectorConfig().load()
     return _config

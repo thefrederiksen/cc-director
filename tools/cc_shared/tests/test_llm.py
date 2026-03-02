@@ -14,7 +14,7 @@ from cc_shared.llm import (
     ClaudeCodeProvider,
     get_llm_provider,
 )
-from cc_shared.config import CCToolsConfig
+from cc_shared.config import CCDirectorConfig
 
 
 class TestLLMProviderInterface:
@@ -41,7 +41,7 @@ class TestOpenAIProvider:
         env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
         with patch.dict(os.environ, env, clear=True):
             with patch("cc_shared.llm.get_config") as mock_config:
-                config = CCToolsConfig()
+                config = CCDirectorConfig()
                 mock_config.return_value = config
                 with pytest.raises(ValueError, match="API key not found"):
                     OpenAIProvider()
@@ -49,7 +49,7 @@ class TestOpenAIProvider:
     def test_accepts_explicit_api_key(self):
         """OpenAIProvider accepts an explicit API key."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             mock_config.return_value = config
             provider = OpenAIProvider(api_key="test-key-123")
         assert provider.api_key == "test-key-123"
@@ -59,7 +59,7 @@ class TestOpenAIProvider:
         """OpenAIProvider reads API key from environment."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env-key-456"}):
             with patch("cc_shared.llm.get_config") as mock_config:
-                config = CCToolsConfig()
+                config = CCDirectorConfig()
                 mock_config.return_value = config
                 provider = OpenAIProvider()
         assert provider.api_key == "env-key-456"
@@ -67,7 +67,7 @@ class TestOpenAIProvider:
     def test_uses_config_model_names(self):
         """OpenAIProvider uses model names from config."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             config.llm.providers.openai.vision_model = "gpt-5-vision"
             config.llm.providers.openai.default_model = "gpt-5"
             mock_config.return_value = config
@@ -78,7 +78,7 @@ class TestOpenAIProvider:
     def test_explicit_model_overrides_config(self):
         """Explicit vision_model parameter overrides config."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             mock_config.return_value = config
             provider = OpenAIProvider(api_key="test", vision_model="custom-model")
         assert provider.vision_model == "custom-model"
@@ -90,7 +90,7 @@ class TestClaudeCodeProvider:
     def test_name_is_claude_code(self):
         """ClaudeCodeProvider has correct name."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             mock_config.return_value = config
             provider = ClaudeCodeProvider()
         assert provider.name == "claude_code"
@@ -98,7 +98,7 @@ class TestClaudeCodeProvider:
     def test_raises_when_disabled(self):
         """ClaudeCodeProvider raises when disabled in config."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             config.llm.providers.claude_code.enabled = False
             mock_config.return_value = config
             with pytest.raises(ValueError, match="disabled"):
@@ -111,7 +111,7 @@ class TestGetLLMProvider:
     def test_returns_openai_when_requested(self):
         """get_llm_provider('openai') returns OpenAIProvider."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             mock_config.return_value = config
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
                 provider = get_llm_provider("openai")
@@ -120,7 +120,7 @@ class TestGetLLMProvider:
     def test_returns_claude_code_when_requested(self):
         """get_llm_provider('claude_code') returns ClaudeCodeProvider."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             mock_config.return_value = config
             provider = get_llm_provider("claude_code")
         assert isinstance(provider, ClaudeCodeProvider)
@@ -128,7 +128,7 @@ class TestGetLLMProvider:
     def test_uses_config_default_when_no_name(self):
         """get_llm_provider() uses default_provider from config."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             config.llm.default_provider = "claude_code"
             mock_config.return_value = config
             provider = get_llm_provider()
@@ -137,7 +137,7 @@ class TestGetLLMProvider:
     def test_unknown_provider_raises(self):
         """Unknown provider name raises ValueError."""
         with patch("cc_shared.llm.get_config") as mock_config:
-            config = CCToolsConfig()
+            config = CCDirectorConfig()
             mock_config.return_value = config
             with pytest.raises(ValueError, match="Unknown provider"):
                 get_llm_provider("nonexistent")

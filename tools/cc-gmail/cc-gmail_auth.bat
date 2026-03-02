@@ -6,8 +6,8 @@ echo  cc-gmail OAuth Authentication
 echo  =============================
 echo.
 
-:: Data directory: %LOCALAPPDATA%\cc-tools\data\gmail\accounts
-set "DATA_DIR=%LOCALAPPDATA%\cc-tools\data\gmail\accounts"
+:: Data directory: %LOCALAPPDATA%\cc-director\data\gmail\accounts
+set "DATA_DIR=%LOCALAPPDATA%\cc-director\data\gmail\accounts"
 
 :: Find the source directory
 set "SRC_DIR=%~dp0"

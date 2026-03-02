@@ -21,7 +21,7 @@ CLI tool that converts tabular data from CSV, JSON, and Markdown into profession
 
 ## Installation
 
-Built as part of cc-tools suite:
+Built as part of cc-director suite:
 
 ```powershell
 .\build.ps1

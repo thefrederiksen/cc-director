@@ -117,7 +117,7 @@ If you have multiple Gmail accounts (personal + work), create a SEPARATE Google 
 - Keeps credentials isolated
 - Avoids cross-org permission issues
 - Each project gets its own OAuth client ID and credentials.json
-- Each account's credentials.json goes in its own folder under `~/.cc_tools/gmail/accounts/<name>/`
+- Each account's credentials.json goes in its own folder under `~/.cc_director/gmail/accounts/<name>/`
 
 ---
 
@@ -202,9 +202,9 @@ Click each link, make sure your project is selected, click Enable:
 ### Step 6: Place Credentials File
 Save the downloaded JSON as `credentials.json` in the cc-gmail account folder:
 ```
-%LOCALAPPDATA%\cc-tools\data\gmail\accounts\<account_name>\credentials.json
+%LOCALAPPDATA%\cc-director\data\gmail\accounts\<account_name>\credentials.json
 ```
-(On Windows, that's typically `C:\Users\<you>\AppData\Local\cc-tools\data\gmail\accounts\`)
+(On Windows, that's typically `C:\Users\<you>\AppData\Local\cc-director\data\gmail\accounts\`)
 
 If you haven't created the account yet:
 ```bash
@@ -214,7 +214,7 @@ cc-gmail accounts add <name>
 ```
 
 ### Step 7: Authenticate
-Double-click `cc-gmail_auth.bat` (in the cc-tools bin folder) OR run:
+Double-click `cc-gmail_auth.bat` (in the cc-director bin folder) OR run:
 ```bash
 cc-gmail -a <name> auth
 ```

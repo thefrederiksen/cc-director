@@ -113,7 +113,7 @@ def download_raw_file(path: str, dest_path: str, branch: str = "main") -> bool:
     Download a raw file from the repository.
 
     Args:
-        path: Path within the repository (e.g., "skills/cc-tools/SKILL.md")
+        path: Path within the repository (e.g., "skills/cc-director/SKILL.md")
         dest_path: Local path to save file
         branch: Git branch to download from
 

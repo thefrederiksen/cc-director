@@ -12,7 +12,7 @@ A **self-contained WPF wizard application** (`cc-director-setup.exe`) that:
 - Checks if each dependency is already installed
 - For Claude Code: guides user to install it themselves (they must see/accept terms)
 - For everything else: offers to install automatically via winget
-- Downloads all cc-tools from GitHub releases
+- Downloads all cc-director tools from GitHub releases
 - Configures PATH
 - Shows a final summary of what's installed and what needs attention
 
@@ -32,13 +32,13 @@ src/CcDirector.Setup/
   Services/
     PrerequisiteChecker.cs     -- Checks if each prerequisite is installed
     WingetInstaller.cs         -- Installs packages via winget
-    ToolDownloader.cs          -- Downloads cc-tools from GitHub releases
+    ToolDownloader.cs          -- Downloads cc-director tools from GitHub releases
     PathManager.cs             -- Adds directories to user PATH via registry
     GitHubApi.cs               -- Fetches release info from GitHub API
   Views/
     WelcomePage.xaml            -- Step 0: Welcome + what will be installed
     PrerequisitePage.xaml       -- Step 1-6: Reusable template for each prerequisite
-    ToolsDownloadPage.xaml      -- Step 7: Download cc-tools from GitHub
+    ToolsDownloadPage.xaml      -- Step 7: Download cc-director tools from GitHub
     ApiKeyPage.xaml             -- Step 8: Optional OpenAI API key
     SummaryPage.xaml            -- Step 9: Final status report
 ```
@@ -107,9 +107,9 @@ Each screen is large, clean, dark-themed (matching CC Director style). One prere
 ### Screen 7: Download CC Tools
 
 - **Why**: "Downloading the CC Director command-line tools"
-- Downloads all tool executables from GitHub releases to `%LOCALAPPDATA%\cc-tools\bin\`
+- Downloads all tool executables from GitHub releases to `%LOCALAPPDATA%\cc-director\bin\`
 - Shows progress bar and per-tool status as each downloads
-- Adds `%LOCALAPPDATA%\cc-tools\bin\` to user PATH
+- Adds `%LOCALAPPDATA%\cc-director\bin\` to user PATH
 - Installs Claude Code skill (SKILL.md)
 - Full tool list (25+ tools)
 

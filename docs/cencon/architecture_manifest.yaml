@@ -230,8 +230,8 @@ security_boundaries:
     name: IPC Boundary
     description: IPC channels are local-only, no network exposure
     components:
-      - "Windows: \\\\.\pipe\\CC_ClaudeDirector (Named Pipe)"
-      - "Mac/Linux: ~/.cc-director/director.sock (Unix Socket)"
+      - 'Windows: \\.\pipe\CC_ClaudeDirector (Named Pipe)'
+      - 'Mac/Linux: ~/.cc-director/director.sock (Unix Socket)'
     security_note: IPC accessible only on local machine
 
   - id: file_system

@@ -20,7 +20,7 @@ choco install graphviz
 
 ```bash
 # From source
-cd cc-tools/src/cc-docgen
+cd cc-director/src/cc-docgen
 pip install -e .
 
 # Or install dependencies directly

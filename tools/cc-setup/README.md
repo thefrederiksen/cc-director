@@ -16,7 +16,7 @@ No arguments required. Runs a 5-step automated installation.
 2. **Check latest release** - Fetches from GitHub API
 3. **Download tools** - Downloads executables from release assets
 4. **Add to PATH** - Modifies Windows user PATH via registry
-5. **Install Claude Code skill** - Downloads SKILL.md to `~/.claude/skills/cc-tools/`
+5. **Install Claude Code skill** - Downloads SKILL.md to `~/.claude/skills/cc-director/`
 
 ## What It Does NOT Do
 

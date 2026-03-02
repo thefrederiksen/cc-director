@@ -117,9 +117,9 @@ Wire the dispatcher into EngineHost.Start() as a second background loop (alongsi
 Three tools currently write to/read from `communications.db` at the old path. They need to point at `engine.db` in `%LOCALAPPDATA%\cc-myvault\`.
 
 **1. cc-comm-queue** (Python CLI -- WRITER)
-- `{cc-tools}\src\cc-comm-queue\src\queue_manager.py` line 66
+- `{cc-director}\src\cc-comm-queue\src\queue_manager.py` line 66
   - Change: `self.db_path = queue_path / "communications.db"` -> `self.db_path = queue_path / "engine.db"`
-- `{cc-tools}\src\cc_shared\config.py` line 173
+- `{cc-director}\src\cc_shared\config.py` line 173
   - Change: `queue_path` default from the old communication_manager content path to `%LOCALAPPDATA%/cc-myvault`
 
 **2. Communication Manager WPF App** (C# -- REVIEWER)
@@ -159,7 +159,7 @@ This is nice-to-have -- the old records are mostly historical (posted/rejected).
 - `VaultBridge.cs` -- wrapper around `cc-vault.exe` CLI calls
 - Write contact interactions, create tasks, log dispatch outcomes to vault.db
 - Vault DB is at `%LOCALAPPDATA%\cc-myvault\vault.db`
-- CLI tool is at `C:\cc-tools\cc-vault.exe`
+- CLI tool is at `%LOCALAPPDATA%\cc-director\bin\cc-vault.exe`
 
 ### Phase 5: Cleanup
 - Verify all Python scheduler functionality is ported

@@ -1,12 +1,12 @@
-"""Shared configuration and LLM abstraction for cc-tools."""
+"""Shared configuration and LLM abstraction for cc-director."""
 
 __version__ = "0.1.0"
 
-from .config import CCToolsConfig, get_config, get_config_path
+from .config import CCDirectorConfig, get_config, get_config_path
 from .llm import LLMProvider, get_llm_provider
 
 __all__ = [
-    "CCToolsConfig",
+    "CCDirectorConfig",
     "get_config",
     "get_config_path",
     "LLMProvider",

@@ -142,6 +142,14 @@ FileLog.Write($"[ClassName] MethodName FAILED: {ex.Message}");
 
 ---
 
+## CC Director CLI Tools
+
+**Reference:** [docs/cli-reference.md](docs/cli-reference.md)
+
+When using any cc-* tool, check `docs/cli-reference.md` for exact flags before calling. Key gotcha: use `--count` / `-n` for result limits, NOT `--limit`.
+
+---
+
 ## When in Doubt
 
 1. Log more, not less

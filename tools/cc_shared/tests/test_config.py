@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from cc_shared.config import (
-    CCToolsConfig,
+    CCDirectorConfig,
     CommManagerConfig,
     LLMConfig,
     OpenAIProviderConfig,
@@ -62,12 +62,12 @@ class TestGetInstallDir:
         assert result == Path.home() / ".cc-director" / "bin"
 
 
-class TestCCToolsConfig:
+class TestCCDirectorConfig:
     """Tests for the main configuration class."""
 
     def test_default_values(self):
         """Config has sensible defaults without a config file."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         assert config.llm.default_provider == "claude_code"
         assert config.llm.providers.openai.api_key_env == "OPENAI_API_KEY"
         assert config.llm.providers.openai.default_model == "gpt-4o-mini"
@@ -93,7 +93,7 @@ class TestCCToolsConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps(config_data))
 
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config._config_path = config_file
         config.load()
 
@@ -105,7 +105,7 @@ class TestCCToolsConfig:
 
     def test_load_missing_file_uses_defaults(self, tmp_path):
         """Missing config file should use defaults, not error."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config._config_path = tmp_path / "nonexistent.json"
         config.load()
 
@@ -116,7 +116,7 @@ class TestCCToolsConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text("not valid json {{{")
 
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config._config_path = config_file
         config.load()
 
@@ -127,14 +127,14 @@ class TestCCToolsConfig:
         config_file = tmp_path / "config.json"
 
         # Create and save
-        config1 = CCToolsConfig()
+        config1 = CCDirectorConfig()
         config1._config_path = config_file
         config1.llm.default_provider = "openai"
         config1.vault.vault_path = "/test/vault"
         config1.save()
 
         # Reload
-        config2 = CCToolsConfig()
+        config2 = CCDirectorConfig()
         config2._config_path = config_file
         config2.load()
 
@@ -143,7 +143,7 @@ class TestCCToolsConfig:
 
     def test_to_dict_structure(self):
         """to_dict produces the expected JSON structure."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         d = config.to_dict()
 
         assert "llm" in d
@@ -160,7 +160,7 @@ class TestCCToolsConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps(config_data))
 
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config._config_path = config_file
         config.load()
 
@@ -217,18 +217,18 @@ class TestPhotoSource:
 
 
 class TestPhotoSourceManagement:
-    """Tests for photo source add/remove on CCToolsConfig."""
+    """Tests for photo source add/remove on CCDirectorConfig."""
 
     def test_add_photo_source(self):
         """Adding a photo source works."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         source = config.add_photo_source("D:/Photos", "private", "Family", 1)
         assert source.label == "Family"
         assert len(config.photos.sources) == 1
 
     def test_add_replaces_same_label(self):
         """Adding a source with existing label replaces it."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config.add_photo_source("D:/Old", "private", "Family", 1)
         config.add_photo_source("D:/New", "private", "Family", 2)
         assert len(config.photos.sources) == 1
@@ -236,7 +236,7 @@ class TestPhotoSourceManagement:
 
     def test_add_sorts_by_priority(self):
         """Sources are sorted by priority after add."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config.add_photo_source("D:/Low", "other", "Low", 10)
         config.add_photo_source("D:/High", "private", "High", 1)
         config.add_photo_source("D:/Mid", "work", "Mid", 5)
@@ -245,7 +245,7 @@ class TestPhotoSourceManagement:
 
     def test_remove_photo_source(self):
         """Removing a source by label works."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config.add_photo_source("D:/Photos", "private", "Family", 1)
         removed = config.remove_photo_source("Family")
         assert removed is True
@@ -253,13 +253,13 @@ class TestPhotoSourceManagement:
 
     def test_remove_nonexistent_returns_false(self):
         """Removing a nonexistent label returns False."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         removed = config.remove_photo_source("DoesNotExist")
         assert removed is False
 
     def test_get_photo_source(self):
         """Getting a source by label works."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         config.add_photo_source("D:/Photos", "private", "Family", 1)
         source = config.get_photo_source("Family")
         assert source is not None
@@ -267,7 +267,7 @@ class TestPhotoSourceManagement:
 
     def test_get_nonexistent_returns_none(self):
         """Getting a nonexistent label returns None."""
-        config = CCToolsConfig()
+        config = CCDirectorConfig()
         assert config.get_photo_source("Nope") is None
 
 

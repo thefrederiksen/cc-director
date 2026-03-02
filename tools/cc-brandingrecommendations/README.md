@@ -19,7 +19,7 @@ Branding and SEO recommendations engine that reads cc-websiteaudit JSON reports 
 
 ## Installation
 
-Built as part of cc-tools suite:
+Built as part of cc-director suite:
 
 ```powershell
 .\build.ps1

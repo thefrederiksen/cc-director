@@ -27,12 +27,12 @@ TOOLS = [
 ]
 
 
-class CCToolsInstaller:
-    """Installer for cc-tools suite."""
+class CCDirectorInstaller:
+    """Installer for cc-director tools suite."""
 
     def __init__(self):
         self.install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "cc-director"
-        self.skill_dir = Path(os.environ.get("USERPROFILE", "")) / ".claude" / "skills" / "cc-tools"
+        self.skill_dir = Path(os.environ.get("USERPROFILE", "")) / ".claude" / "skills" / "cc-director"
 
     def install(self) -> bool:
         """
@@ -75,7 +75,7 @@ class CCToolsInstaller:
         self.skill_dir.mkdir(parents=True, exist_ok=True)
         skill_path = self.skill_dir / "SKILL.md"
 
-        if download_raw_file("skills/cc-tools/SKILL.md", str(skill_path)):
+        if download_raw_file("skills/cc-director/SKILL.md", str(skill_path)):
             print(f"      Installed: {skill_path}")
         else:
             print(f"      WARNING: Could not download SKILL.md")

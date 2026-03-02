@@ -1,21 +1,21 @@
 # cc_shared
 
-Shared configuration and LLM abstraction library for the cc-tools suite.
+Shared configuration and LLM abstraction library for the cc-director suite.
 
-This is **not a CLI tool** - it is a Python library imported by all other cc-tools Python packages.
+This is **not a CLI tool** - it is a Python library imported by all other cc-director Python packages.
 
 ## What It Provides
 
 ### Configuration Management (`config.py`)
 
-Centralized configuration for the entire cc-tools suite. All Python tools import `get_config()` to access settings.
+Centralized configuration for the entire cc-director suite. All Python tools import `get_config()` to access settings.
 
 **Data directory resolution (in priority order):**
 
 1. `CC_TOOLS_DATA` environment variable (if set)
-2. `%LOCALAPPDATA%\cc-tools\data` (preferred, no admin needed)
-3. `C:\cc-tools\data` (legacy, backward compat)
-4. `~/.cc-tools/` (final fallback)
+2. `%LOCALAPPDATA%\cc-director\data` (preferred, no admin needed)
+3. `C:\cc-director\data` (legacy, backward compat)
+4. `~/.cc-director/` (final fallback)
 
 **Config file:** `<data_dir>/config.json`
 
@@ -95,7 +95,7 @@ text = provider.extract_text(Path("screenshot.png"))
     }
   },
   "photos": {
-    "database_path": "~/.cc-tools/photos.db",
+    "database_path": "~/.cc-director/photos.db",
     "sources": []
   },
   "vault": {
@@ -111,7 +111,7 @@ text = provider.extract_text(Path("screenshot.png"))
 
 ## Installation
 
-cc_shared is installed as a development dependency by other cc-tools:
+cc_shared is installed as a development dependency by other cc-director tools:
 
 ```bash
 cd src/cc_shared
@@ -125,7 +125,7 @@ pip install -e ".[dev]"
 
 ## Used By
 
-Every Python tool in the cc-tools suite:
+Every Python tool in the cc-director suite:
 cc-comm-queue, cc-crawl4ai, cc-gmail, cc-hardware, cc-image, cc-linkedin,
 cc-markdown, cc-outlook, cc-photos, cc-powerpoint, cc-reddit, cc-setup,
 cc-transcribe, cc-vault, cc-video, cc-voice, cc-whisper, cc-youtube-info
