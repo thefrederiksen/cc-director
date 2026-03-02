@@ -1,5 +1,6 @@
 using Whisper.net;
 using Whisper.net.Ggml;
+using VoiceChat.Core.Logging;
 
 namespace VoiceChat.Core.Stt;
 
@@ -7,42 +8,62 @@ namespace VoiceChat.Core.Stt;
 /// Whisper.net-based speech-to-text engine.
 /// Downloads and caches the GGML model, then transcribes audio buffers.
 /// </summary>
-public sealed class WhisperSttEngine : IDisposable
+public sealed class WhisperSttEngine : ISttEngine
 {
-    private WhisperProcessor? _processor;
+    private readonly GgmlType _modelSize;
     private readonly string _modelsDir;
+    private WhisperProcessor? _processor;
+
+    public string DisplayName { get; }
+    public string Description { get; }
+    public bool IsReady => _processor is not null;
 
     public event Action<string>? StatusChanged;
 
-    public WhisperSttEngine()
+    public WhisperSttEngine(GgmlType modelSize)
     {
+        _modelSize = modelSize;
+
+        var sizeName = modelSize.ToString();
+        DisplayName = $"Whisper {sizeName}";
+        Description = modelSize switch
+        {
+            GgmlType.Tiny => "~75 MB | Fast, lower accuracy",
+            GgmlType.Base => "~142 MB | Medium speed and accuracy",
+            GgmlType.Small => "~466 MB | Slow, high accuracy",
+            _ => $"whisper.net {sizeName}",
+        };
+
         _modelsDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "voice-chat", "models", "whisper");
         Directory.CreateDirectory(_modelsDir);
     }
 
-    public async Task InitializeAsync(GgmlType modelSize = GgmlType.Small, CancellationToken ct = default)
+    public async Task InitializeAsync(CancellationToken ct = default)
     {
-        var modelFileName = $"ggml-{modelSize.ToString().ToLowerInvariant()}.bin";
+        VoiceLog.Write($"[WhisperSttEngine] InitializeAsync: model={_modelSize}");
+
+        var modelFileName = $"ggml-{_modelSize.ToString().ToLowerInvariant()}.bin";
         var modelPath = Path.Combine(_modelsDir, modelFileName);
 
         if (!File.Exists(modelPath))
         {
-            StatusChanged?.Invoke($"Downloading Whisper {modelSize} model...");
-            using var modelStream = await WhisperGgmlDownloader.GetGgmlModelAsync(modelSize, cancellationToken: ct);
+            StatusChanged?.Invoke($"Downloading Whisper {_modelSize} model...");
+            using var modelStream = await WhisperGgmlDownloader.GetGgmlModelAsync(_modelSize, cancellationToken: ct);
             using var fileStream = File.Create(modelPath);
             await modelStream.CopyToAsync(fileStream, ct);
-            StatusChanged?.Invoke($"Whisper {modelSize} model downloaded.");
+            StatusChanged?.Invoke($"Whisper {_modelSize} model downloaded.");
         }
 
-        StatusChanged?.Invoke("Loading Whisper model...");
+        StatusChanged?.Invoke($"Loading Whisper {_modelSize} model...");
         var factory = WhisperFactory.FromPath(modelPath);
         _processor = factory.CreateBuilder()
             .WithLanguage("en")
             .Build();
 
-        StatusChanged?.Invoke("Whisper ready.");
+        VoiceLog.Write($"[WhisperSttEngine] InitializeAsync: {_modelSize} ready.");
+        StatusChanged?.Invoke($"Whisper {_modelSize} ready.");
     }
 
     /// <summary>
@@ -52,15 +73,6 @@ public sealed class WhisperSttEngine : IDisposable
     {
         if (_processor is null)
             throw new InvalidOperationException("WhisperSttEngine not initialized. Call InitializeAsync first.");
-
-        // Convert 16-bit PCM to float samples for Whisper
-        var sampleCount = pcmAudio.Length / 2;
-        var floatSamples = new float[sampleCount];
-        for (var i = 0; i < sampleCount; i++)
-        {
-            var sample16 = BitConverter.ToInt16(pcmAudio, i * 2);
-            floatSamples[i] = sample16 / (float)short.MaxValue;
-        }
 
         // Write as WAV to a memory stream (Whisper.net expects a stream)
         using var wavStream = new MemoryStream();
@@ -84,13 +96,13 @@ public sealed class WhisperSttEngine : IDisposable
         }
         wavStream.Position = 0;
 
-        var text = string.Empty;
+        var sb = new System.Text.StringBuilder();
         await foreach (var segment in _processor.ProcessAsync(wavStream, ct))
         {
-            text += segment.Text;
+            sb.Append(segment.Text);
         }
 
-        return text.Trim();
+        return sb.ToString().Trim();
     }
 
     public void Dispose()

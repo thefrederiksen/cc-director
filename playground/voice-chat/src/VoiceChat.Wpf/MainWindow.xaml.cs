@@ -22,6 +22,12 @@ public partial class MainWindow : Window
             ChatScrollViewer.ScrollToEnd();
         };
 
+        // Save dictionary when TextBox loses focus (not on every keystroke)
+        DictionaryTextBox.LostFocus += (_, _) =>
+        {
+            DictionaryTextBox.GetBindingExpression(System.Windows.Controls.TextBox.TextProperty)?.UpdateSource();
+        };
+
         // Update processing indicator visibility
         _viewModel.PropertyChanged += (_, e) =>
         {

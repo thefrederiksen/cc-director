@@ -15,25 +15,55 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private string _statusText = "Starting up...";
     private string _selectedVoice = "af_heart";
+    private string _selectedSttEngine = "Vosk Small EN";
+    private string _partialTranscription = string.Empty;
     private bool _isRecording;
     private bool _isProcessing;
     private bool _isInitialized;
+    private bool _isSwitchingSttEngine;
     private string _sttLatency = "--";
     private string _llmLatency = "--";
     private string _ttsLatency = "--";
     private string _totalLatency = "--";
+    private string _dictionaryText = string.Empty;
 
     public ObservableCollection<ChatMessage> Messages { get; } = [];
     public ObservableCollection<string> Voices { get; } = [];
+    public ObservableCollection<string> SttEngines { get; } = [];
 
     public string StatusText { get => _statusText; set => SetField(ref _statusText, value); }
     public bool IsRecording { get => _isRecording; set => SetField(ref _isRecording, value); }
     public bool IsProcessing { get => _isProcessing; set => SetField(ref _isProcessing, value); }
     public bool IsInitialized { get => _isInitialized; set => SetField(ref _isInitialized, value); }
+    public bool IsSwitchingSttEngine { get => _isSwitchingSttEngine; set => SetField(ref _isSwitchingSttEngine, value); }
     public string SttLatency { get => _sttLatency; set => SetField(ref _sttLatency, value); }
     public string LlmLatency { get => _llmLatency; set => SetField(ref _llmLatency, value); }
     public string TtsLatency { get => _ttsLatency; set => SetField(ref _ttsLatency, value); }
     public string TotalLatency { get => _totalLatency; set => SetField(ref _totalLatency, value); }
+
+    public string PartialTranscription
+    {
+        get => _partialTranscription;
+        set => SetField(ref _partialTranscription, value);
+    }
+
+    public string DictionaryText
+    {
+        get => _dictionaryText;
+        set
+        {
+            if (SetField(ref _dictionaryText, value))
+            {
+                var words = value
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(w => w.Trim())
+                    .Where(w => w.Length > 0)
+                    .ToArray();
+                _pipeline.Dictionary.SetWords(words);
+                VoiceLog.Write($"[MainViewModel] DictionaryText updated: {words.Length} words");
+            }
+        }
+    }
 
     public string SelectedVoice
     {
@@ -42,6 +72,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (SetField(ref _selectedVoice, value))
                 _pipeline.SelectedVoice = value;
+        }
+    }
+
+    public string SelectedSttEngine
+    {
+        get => _selectedSttEngine;
+        set
+        {
+            if (SetField(ref _selectedSttEngine, value) && IsInitialized)
+            {
+                _ = SwitchSttEngineAsync(value);
+            }
         }
     }
 
@@ -65,6 +107,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 UpdateLatencyDisplay(msg.Latency);
             });
 
+        _pipeline.PartialTranscriptionChanged += partial =>
+            Application.Current.Dispatcher.BeginInvoke(() => PartialTranscription = partial);
+
         ResetCommand = new RelayCommand(ResetConversation);
     }
 
@@ -75,13 +120,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             await _pipeline.InitializeAsync();
 
-            Application.Current.Dispatcher.Invoke(() =>
+            await Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 foreach (var voice in _pipeline.GetAvailableVoices())
                     Voices.Add(voice);
 
-                // Re-trigger SelectedVoice after populating so ComboBox picks it up
+                foreach (var engine in _pipeline.GetSttEngines())
+                    SttEngines.Add(engine);
+
+                _selectedSttEngine = _pipeline.GetCurrentSttEngine();
+                _dictionaryText = string.Join("\n", _pipeline.Dictionary.GetWords());
+
+                // Re-trigger properties after populating so ComboBoxes pick them up
                 OnPropertyChanged(nameof(SelectedVoice));
+                OnPropertyChanged(nameof(SelectedSttEngine));
+                OnPropertyChanged(nameof(DictionaryText));
                 IsInitialized = true;
             });
 
@@ -92,17 +145,38 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             VoiceLog.Write($"[MainViewModel] InitializeAsync FAILED: {ex}");
-            Application.Current.Dispatcher.Invoke(() =>
+            _ = Application.Current.Dispatcher.BeginInvoke(() =>
                 StatusText = $"Init failed: {ex.Message}");
+        }
+    }
+
+    private async Task SwitchSttEngineAsync(string engineName)
+    {
+        VoiceLog.Write($"[MainViewModel] SwitchSttEngineAsync: {engineName}");
+        IsSwitchingSttEngine = true;
+        try
+        {
+            await _pipeline.SetSttEngineAsync(engineName);
+        }
+        catch (Exception ex)
+        {
+            VoiceLog.Write($"[MainViewModel] SwitchSttEngineAsync FAILED: {ex}");
+            _ = Application.Current.Dispatcher.BeginInvoke(() =>
+                StatusText = $"Engine switch failed: {ex.Message}");
+        }
+        finally
+        {
+            IsSwitchingSttEngine = false;
         }
     }
 
     public void StartRecording()
     {
-        if (!IsInitialized || IsProcessing) return;
+        if (!IsInitialized || IsProcessing || IsSwitchingSttEngine) return;
 
         VoiceLog.Write("[MainViewModel] StartRecording.");
         IsRecording = true;
+        PartialTranscription = string.Empty;
         _pipeline.StartRecording();
     }
 
@@ -132,6 +206,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             IsProcessing = false;
+            PartialTranscription = string.Empty;
             _processingCts?.Dispose();
             _processingCts = null;
         }

@@ -101,11 +101,19 @@
                     </StackPanel>
                 </Border>
 
+                <!-- Partial transcription (streaming STT live text) -->
+                <TextBlock Text="{Binding PartialTranscription}"
+                           FontSize="13" Foreground="#888888"
+                           FontStyle="Italic"
+                           HorizontalAlignment="Center" Margin="0,16,0,0"
+                           TextWrapping="Wrap" MaxWidth="400"
+                           FontFamily="Segoe UI"/>
+
                 <!-- Processing indicator -->
                 <TextBlock x:Name="ProcessingText"
                            Text="Processing..."
                            FontSize="13" Foreground="{StaticResource AccentBrush}"
-                           HorizontalAlignment="Center" Margin="0,16,0,0"
+                           HorizontalAlignment="Center" Margin="0,8,0,0"
                            Visibility="Collapsed"
                            FontFamily="Segoe UI"/>
             </StackPanel>
@@ -179,6 +187,16 @@
 
                     <TextBlock Text="PIPELINE CONFIG" Style="{StaticResource PanelHeader}" Margin="0,0,0,12"/>
 
+                    <!-- STT Engine Selection -->
+                    <TextBlock Text="STT Engine" FontSize="11" Foreground="{StaticResource TextDimmed}"
+                               Margin="0,0,0,4" FontFamily="Segoe UI"/>
+                    <ComboBox ItemsSource="{Binding SttEngines}"
+                              SelectedItem="{Binding SelectedSttEngine}"
+                              IsEnabled="{Binding IsInitialized}"/>
+
+                    <!-- Spacer -->
+                    <Border Height="12"/>
+
                     <!-- Voice Selection -->
                     <TextBlock Text="Voice" FontSize="11" Foreground="{StaticResource TextDimmed}"
                                Margin="0,0,0,4" FontFamily="Segoe UI"/>
@@ -198,10 +216,8 @@
                         <StackPanel>
                             <TextBlock Text="STT" FontSize="10" Foreground="{StaticResource TextDimmed}"
                                        FontFamily="Segoe UI"/>
-                            <TextBlock Text="Whisper Small" FontSize="13" Foreground="{StaticResource TextForeground}"
-                                       FontFamily="Segoe UI"/>
-                            <TextBlock Text="~466 MB  |  whisper.net" FontSize="10"
-                                       Foreground="{StaticResource TextDimmed}" Margin="0,2,0,0"
+                            <TextBlock Text="{Binding SelectedSttEngine}" FontSize="13"
+                                       Foreground="{StaticResource TextForeground}"
                                        FontFamily="Segoe UI"/>
                         </StackPanel>
                     </Border>
@@ -238,6 +254,29 @@
                             Command="{Binding ResetCommand}"
                             Style="{StaticResource FlatButton}"
                             HorizontalAlignment="Stretch"/>
+
+                    <!-- Spacer -->
+                    <Border Height="20"/>
+
+                    <!-- Custom Dictionary -->
+                    <TextBlock Text="CUSTOM DICTIONARY" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextDimmed}" Margin="0,0,0,4"
+                               FontFamily="Segoe UI"/>
+                    <TextBlock Text="One word per line. Corrects similar-sounding STT output."
+                               FontSize="10" Foreground="#606060" Margin="0,0,0,6"
+                               TextWrapping="Wrap" FontFamily="Segoe UI"/>
+                    <TextBox x:Name="DictionaryTextBox"
+                             Text="{Binding DictionaryText, Mode=TwoWay, UpdateSourceTrigger=Explicit}"
+                             AcceptsReturn="True"
+                             Height="120"
+                             VerticalScrollBarVisibility="Auto"
+                             Background="#1E1E1E"
+                             Foreground="{StaticResource TextForeground}"
+                             BorderBrush="{StaticResource BorderBrush}"
+                             BorderThickness="1"
+                             Padding="6,4"
+                             FontSize="12"
+                             FontFamily="Cascadia Mono, Consolas"/>
 
                 </StackPanel>
             </ScrollViewer>

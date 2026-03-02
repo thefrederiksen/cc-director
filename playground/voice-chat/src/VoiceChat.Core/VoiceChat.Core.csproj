@@ -12,6 +12,7 @@
     <PackageReference Include="Whisper.net" Version="1.7.*" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.7.*" />
     <PackageReference Include="KokoroSharp" Version="0.6.*" />
+    <PackageReference Include="Vosk" Version="0.3.*" />
   </ItemGroup>
 
 </Project>

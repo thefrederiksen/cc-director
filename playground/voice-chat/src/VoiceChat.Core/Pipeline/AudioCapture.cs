@@ -17,6 +17,7 @@ public sealed class AudioCapture : IDisposable
     public bool IsRecording => _isRecording;
 
     public event Action<string>? StatusChanged;
+    public event Action<byte[], int>? AudioChunkAvailable;
 
     public AudioCapture()
     {
@@ -56,6 +57,7 @@ public sealed class AudioCapture : IDisposable
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
         _buffer?.Write(e.Buffer, 0, e.BytesRecorded);
+        AudioChunkAvailable?.Invoke(e.Buffer, e.BytesRecorded);
     }
 
     public void Dispose()
