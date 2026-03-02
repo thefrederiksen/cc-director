@@ -65,7 +65,8 @@ class FECSource(BaseSource):
             # Filter: if we have company context, only include matching entries
             if company:
                 employer = (entry["employer"] or "").lower()
-                if company in employer or not employer:
+                employer_normalized = employer.replace(" ", "").replace("-", "").replace("_", "")
+                if company in employer or company in employer_normalized or not employer:
                     entry["context_match"] = True
                 else:
                     entry["context_match"] = False
