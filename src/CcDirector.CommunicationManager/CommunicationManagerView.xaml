@@ -26,6 +26,9 @@
                 RedditTemplate="{StaticResource RedditPreviewTemplate}"
                 EmailTemplate="{StaticResource EmailPreviewTemplate}"
                 ArticleTemplate="{StaticResource ArticlePreviewTemplate}"
+                FacebookTemplate="{StaticResource FacebookPreviewTemplate}"
+                WhatsAppTemplate="{StaticResource WhatsAppPreviewTemplate}"
+                YouTubeTemplate="{StaticResource YouTubePreviewTemplate}"
                 DefaultTemplate="{StaticResource DefaultPreviewTemplate}"/>
 
             <Style x:Key="TabButtonStyle" TargetType="RadioButton">
@@ -52,6 +55,37 @@
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
+            </Style>
+
+            <Style x:Key="FilterChipStyle" TargetType="Button">
+                <Setter Property="Padding" Value="10,4"/>
+                <Setter Property="Margin" Value="2"/>
+                <Setter Property="FontSize" Value="11"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Background" Value="#333333"/>
+                <Setter Property="Foreground" Value="#AAAAAA"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="border"
+                                    Padding="{TemplateBinding Padding}"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="12">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="border" Property="Background" Value="#444444"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style x:Key="FilterChipActiveStyle" TargetType="Button" BasedOn="{StaticResource FilterChipStyle}">
+                <Setter Property="Background" Value="#094771"/>
+                <Setter Property="Foreground" Value="#FFFFFF"/>
             </Style>
 
             <Style x:Key="ActionButtonStyle" TargetType="Button">
@@ -139,6 +173,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -205,18 +240,77 @@
             </Grid>
         </Border>
 
+        <!-- Platform Filter Bar -->
+        <Border Grid.Row="1" Background="#1E1E1E" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="12,4">
+            <StackPanel>
+                <StackPanel x:Name="FilterBar" Orientation="Horizontal">
+                    <Button Content="All" Click="FilterChip_Click" Tag="All"
+                            Style="{StaticResource FilterChipActiveStyle}"/>
+                    <Button Content="Email" Click="FilterChip_Click" Tag="email"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="LinkedIn" Click="FilterChip_Click" Tag="linkedin"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="Facebook" Click="FilterChip_Click" Tag="facebook"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="YouTube" Click="FilterChip_Click" Tag="youtube"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="WhatsApp" Click="FilterChip_Click" Tag="whatsapp"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="Reddit" Click="FilterChip_Click" Tag="reddit"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="Twitter" Click="FilterChip_Click" Tag="twitter"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="Blog" Click="FilterChip_Click" Tag="blog"
+                            Style="{StaticResource FilterChipStyle}"/>
+                </StackPanel>
+
+                <!-- Date Filter Bar (Approved tab only) -->
+                <StackPanel x:Name="DateFilterBar" Orientation="Horizontal" Margin="0,4,0,0"
+                            Visibility="{Binding ElementName=ApprovedTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Schedule:" Foreground="#888888" FontSize="11"
+                               VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <Button Content="Today" Click="DateFilterChip_Click" Tag="Today"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="Tomorrow" Click="DateFilterChip_Click" Tag="Tomorrow"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="This Week" Click="DateFilterChip_Click" Tag="This Week"
+                            Style="{StaticResource FilterChipStyle}"/>
+                    <Button Content="All Upcoming" Click="DateFilterChip_Click" Tag="All Upcoming"
+                            Style="{StaticResource FilterChipActiveStyle}"/>
+
+                    <!-- View Toggle (List / Timeline) -->
+                    <Border Margin="16,0,0,0" Background="#252526" CornerRadius="4" Padding="2">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="ListViewBtn" Content="List" Click="ViewToggle_Click" Tag="List"
+                                    Style="{StaticResource FilterChipActiveStyle}"/>
+                            <Button x:Name="TimelineViewBtn" Content="Timeline" Click="ViewToggle_Click" Tag="Timeline"
+                                    Style="{StaticResource FilterChipStyle}"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
         <!-- Main Content -->
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="350" MinWidth="200"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left Panel - List -->
+            <!-- Left Panel - List / Timeline -->
             <Border Grid.Column="0" BorderBrush="#3C3C3C" BorderThickness="0,0,1,0" Background="#1E1E1E">
-                <ListBox x:Name="ItemList"
-                         ItemsSource="{Binding PendingItems}"
+                <Grid>
+                    <!-- Timeline View (shown on Approved tab when Timeline is selected) -->
+                    <views:TimelineView x:Name="ApprovedTimeline"
+                                        Items="{Binding FilteredItems}"
+                                        Visibility="Collapsed"
+                                        ItemSelected="Timeline_ItemSelected"/>
+
+                    <!-- List View -->
+                    <ListBox x:Name="ItemList"
+                         ItemsSource="{Binding FilteredItems}"
                          SelectedItem="{Binding SelectedItem}"
                          ItemContainerStyle="{StaticResource ListItemStyle}"
                          Background="Transparent"
@@ -255,17 +349,40 @@
                                            TextTrimming="CharacterEllipsis"/>
 
                                 <!-- Meta info -->
-                                <StackPanel Grid.Column="1" Grid.Row="1" Orientation="Horizontal" Margin="0,4,0,0">
-                                    <TextBlock Text="{Binding TicketDisplay}" Foreground="#007ACC" FontSize="11" FontWeight="SemiBold"/>
-                                    <TextBlock Text=" - " Foreground="#666666" FontSize="11"/>
-                                    <TextBlock Text="{Binding PersonaDisplay}" Foreground="#888888" FontSize="11"/>
-                                    <TextBlock Text=" - " Foreground="#666666" FontSize="11"/>
-                                    <TextBlock Text="{Binding CreatedBy}" Foreground="#666666" FontSize="11"/>
+                                <StackPanel Grid.Column="1" Grid.Row="1" Margin="0,4,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding TicketDisplay}" Foreground="#007ACC" FontSize="11" FontWeight="SemiBold"/>
+                                        <TextBlock Text=" - " Foreground="#666666" FontSize="11"/>
+                                        <TextBlock Text="{Binding PersonaDisplay}" Foreground="#888888" FontSize="11"/>
+                                        <TextBlock Text=" - " Foreground="#666666" FontSize="11"/>
+                                        <TextBlock Text="{Binding CreatedBy}" Foreground="#666666" FontSize="11"/>
+                                    </StackPanel>
+                                    <!-- Schedule info (visible for approved items) -->
+                                    <TextBlock Text="{Binding ScheduleDisplayShort}" FontSize="10" Margin="0,2,0,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="#007ACC"/>
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Status}" Value="approved">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsHold}" Value="True">
+                                                        <Setter Property="Foreground" Value="#D97706"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsAsap}" Value="True">
+                                                        <Setter Property="Foreground" Value="#22C55E"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
                                 </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
+                </Grid>
             </Border>
 
             <!-- Splitter -->
@@ -311,6 +428,39 @@
                                 <TextBlock Text=" at " Foreground="#888888"/>
                                 <TextBlock Text="{Binding SelectedItem.CreatedAt, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Foreground="#888888"/>
                             </StackPanel>
+
+                            <!-- Schedule Info (for Approved tab) -->
+                            <Border CornerRadius="4" Padding="8,4" Margin="0,0,0,8"
+                                    Visibility="{Binding ElementName=ApprovedTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background" Value="#1B2A3A"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SelectedItem.IsHold}" Value="True">
+                                                <Setter Property="Background" Value="#3A2A1B"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding SelectedItem.IsAsap}" Value="True">
+                                                <Setter Property="Background" Value="#1B3A2A"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBlock Text="{Binding SelectedItem.SendTimingDisplay}" FontWeight="SemiBold" FontSize="12">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="#007ACC"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedItem.IsHold}" Value="True">
+                                                    <Setter Property="Foreground" Value="#D97706"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding SelectedItem.IsAsap}" Value="True">
+                                                    <Setter Property="Foreground" Value="#22C55E"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Border>
 
                             <!-- Posted At (for Sent tab) -->
                             <TextBlock Text="{Binding SelectedItem.PostedAtDisplay}"
@@ -496,7 +646,7 @@
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
                                     Visibility="{Binding ElementName=PendingTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
                             <Button Content="Approve" Style="{StaticResource ApproveButtonStyle}"
-                                    Command="{Binding ApproveCommand}" Width="100"/>
+                                    Click="Approve_Click" Width="100"/>
                             <Button Content="Edit" Style="{StaticResource SecondaryButtonStyle}"
                                     Command="{Binding StartEditCommand}" Width="80"/>
                             <Button Content="Skip" Style="{StaticResource SecondaryButtonStyle}"
@@ -513,6 +663,8 @@
                             <Button Content="Post to LinkedIn" Style="{StaticResource ApproveButtonStyle}"
                                     Command="{Binding PostToLinkedInCommand}" Width="140"
                                     Visibility="{Binding SelectedItem.IsLinkedIn, Converter={StaticResource BoolToVis}}"/>
+                            <Button Content="Reschedule" Style="{StaticResource LinkButtonStyle}"
+                                    Click="Reschedule_Click" Width="100"/>
                             <Button Content="Move to Review" Style="{StaticResource SecondaryButtonStyle}"
                                     Command="{Binding MoveToReviewCommand}" Width="120"/>
                             <Button Content="Delete" Style="{StaticResource SecondaryButtonStyle}"
@@ -549,7 +701,7 @@
         </Grid>
 
         <!-- Status Bar -->
-        <Border Grid.Row="2" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="16,6">
+        <Border Grid.Row="3" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="16,6">
             <TextBlock Text="{Binding StatusMessage}" Foreground="#888888" FontSize="12"/>
         </Border>
     </Grid>

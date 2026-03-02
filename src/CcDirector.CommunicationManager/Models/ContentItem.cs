@@ -81,6 +81,15 @@ public class ContentItem
     [JsonPropertyName("article_specific")]
     public ArticleSpecific? ArticleSpecific { get; set; }
 
+    [JsonPropertyName("facebook_specific")]
+    public FacebookSpecific? FacebookSpecific { get; set; }
+
+    [JsonPropertyName("whatsapp_specific")]
+    public WhatsAppSpecific? WhatsAppSpecific { get; set; }
+
+    [JsonPropertyName("youtube_specific")]
+    public YouTubeSpecific? YouTubeSpecific { get; set; }
+
     [JsonPropertyName("thread_content")]
     public List<string>? ThreadContent { get; set; }
 
@@ -139,6 +148,20 @@ public class ContentItem
     public string SendTimingDisplay => GetSendTimingDisplay();
 
     [JsonIgnore]
+    public string ScheduleDisplayShort => GetScheduleDisplayShort();
+
+    [JsonIgnore]
+    public bool IsScheduled => SendTiming?.Equals("scheduled", StringComparison.OrdinalIgnoreCase) == true && ScheduledFor.HasValue;
+
+    [JsonIgnore]
+    public bool IsHold => SendTiming?.Equals("hold", StringComparison.OrdinalIgnoreCase) == true;
+
+    [JsonIgnore]
+    public bool IsAsap => SendTiming?.Equals("asap", StringComparison.OrdinalIgnoreCase) == true ||
+                          SendTiming?.Equals("immediate", StringComparison.OrdinalIgnoreCase) == true ||
+                          string.IsNullOrEmpty(SendTiming);
+
+    [JsonIgnore]
     public string PostedAtDisplay => PostedAt.HasValue ? $"Sent: {PostedAt:MMM d, yyyy 'at' h:mm tt}" : "";
 
     [JsonIgnore]
@@ -152,6 +175,15 @@ public class ContentItem
 
     [JsonIgnore]
     public bool IsEmail => Platform?.Equals("email", StringComparison.OrdinalIgnoreCase) == true;
+
+    [JsonIgnore]
+    public bool IsFacebook => Platform?.Equals("facebook", StringComparison.OrdinalIgnoreCase) == true;
+
+    [JsonIgnore]
+    public bool IsWhatsApp => Platform?.Equals("whatsapp", StringComparison.OrdinalIgnoreCase) == true;
+
+    [JsonIgnore]
+    public bool IsYouTube => Platform?.Equals("youtube", StringComparison.OrdinalIgnoreCase) == true;
 
     [JsonIgnore]
     public bool HasAttachments => EmailSpecific?.Attachments?.Count > 0;
@@ -203,6 +235,28 @@ public class ContentItem
         };
     }
 
+    private string GetScheduleDisplayShort()
+    {
+        if (IsHold) return "On Hold";
+        if (!IsScheduled) return "ASAP";
+
+        var scheduled = ScheduledFor.GetValueOrDefault();
+        var now = DateTime.Now;
+        var today = now.Date;
+        var tomorrow = today.AddDays(1);
+
+        if (scheduled.Date == today)
+            return $"Today {scheduled:h:mm tt}";
+        if (scheduled.Date == tomorrow)
+            return $"Tomorrow {scheduled:h:mm tt}";
+        if (scheduled.Date < today)
+            return $"Overdue {scheduled:MMM d}";
+        if (scheduled.Date < today.AddDays(7))
+            return $"{scheduled:ddd h:mm tt}";
+
+        return $"{scheduled:MMM d, h:mm tt}";
+    }
+
     private string GetDisplayTitle()
     {
         if (!string.IsNullOrEmpty(ContextTitle))
@@ -216,6 +270,9 @@ public class ContentItem
 
         if (EmailSpecific != null && !string.IsNullOrEmpty(EmailSpecific.Subject))
             return EmailSpecific.Subject;
+
+        if (YouTubeSpecific != null && !string.IsNullOrEmpty(YouTubeSpecific.Title))
+            return YouTubeSpecific.Title;
 
         // Truncate content for display
         var preview = Content.Length > 50 ? Content[..50] + "..." : Content;
@@ -232,6 +289,8 @@ public class ContentItem
             "youtube" => "YT",
             "email" => "@",
             "blog" => "B",
+            "facebook" => "FB",
+            "whatsapp" => "WA",
             _ => "?"
         };
     }
@@ -473,4 +532,49 @@ public class ArticleSpecific
 
     [JsonPropertyName("seo_keywords")]
     public List<string>? SeoKeywords { get; set; }
+}
+
+public class FacebookSpecific
+{
+    [JsonPropertyName("page_id")]
+    public string? PageId { get; set; }
+
+    [JsonPropertyName("page_name")]
+    public string? PageName { get; set; }
+
+    [JsonPropertyName("audience")]
+    public string? Audience { get; set; }
+}
+
+public class WhatsAppSpecific
+{
+    [JsonPropertyName("phone_number")]
+    public string? PhoneNumber { get; set; }
+
+    [JsonPropertyName("contact_name")]
+    public string? ContactName { get; set; }
+}
+
+public class YouTubeSpecific
+{
+    [JsonPropertyName("title")]
+    public string? Title { get; set; }
+
+    [JsonPropertyName("description")]
+    public string? Description { get; set; }
+
+    [JsonPropertyName("tags")]
+    public List<string>? Tags { get; set; }
+
+    [JsonPropertyName("category")]
+    public string? Category { get; set; }
+
+    [JsonPropertyName("privacy_status")]
+    public string? PrivacyStatus { get; set; }
+
+    [JsonPropertyName("thumbnail_path")]
+    public string? ThumbnailPath { get; set; }
+
+    [JsonPropertyName("video_file_path")]
+    public string? VideoFilePath { get; set; }
 }

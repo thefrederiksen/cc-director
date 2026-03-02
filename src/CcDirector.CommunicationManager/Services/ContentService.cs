@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using CcDirector.Core.Utilities;
 using CommunicationManager.Models;
 
 namespace CommunicationManager.Services;
@@ -50,6 +51,34 @@ public class ContentService : IDisposable
         Debug.WriteLine($"[ContentService] ApproveItemAsync: ticket={item.TicketNumber}");
         if (!item.TicketNumber.HasValue) return false;
         return await _db.UpdateStatusAsync(item.TicketNumber.Value, "approved");
+    }
+
+    public async Task<bool> ApproveWithScheduleAsync(ContentItem item, string sendTiming, DateTime? scheduledFor = null)
+    {
+        FileLog.Write($"[ContentService] ApproveWithScheduleAsync: ticket={item.TicketNumber}, timing={sendTiming}, scheduledFor={scheduledFor}");
+        if (!item.TicketNumber.HasValue) return false;
+
+        var additionalFields = new Dictionary<string, object?>
+        {
+            { "send_timing", sendTiming },
+            { "scheduled_for", scheduledFor?.ToString("o") }
+        };
+
+        return await _db.UpdateStatusAsync(item.TicketNumber.Value, "approved", additionalFields);
+    }
+
+    public async Task<bool> UpdateScheduleAsync(ContentItem item, string sendTiming, DateTime? scheduledFor = null)
+    {
+        FileLog.Write($"[ContentService] UpdateScheduleAsync: ticket={item.TicketNumber}, timing={sendTiming}, scheduledFor={scheduledFor}");
+        if (!item.TicketNumber.HasValue) return false;
+
+        var additionalFields = new Dictionary<string, object?>
+        {
+            { "send_timing", sendTiming },
+            { "scheduled_for", scheduledFor?.ToString("o") }
+        };
+
+        return await _db.UpdateStatusAsync(item.TicketNumber.Value, item.Status, additionalFields);
     }
 
     public async Task<bool> RejectItemAsync(ContentItem item, string? reason = null)

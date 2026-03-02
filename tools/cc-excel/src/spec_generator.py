@@ -319,7 +319,10 @@ def _write_cell(
         content = cell.formula or cell.value or ""
         if cell.formula:
             worksheet.merge_range(row, col, row, last_col, "", cell_fmt)
-            worksheet.write_formula(row, col, cell.formula, cell_fmt, cell.value)
+            if cell.value is not None:
+                worksheet.write_formula(row, col, cell.formula, cell_fmt, cell.value)
+            else:
+                worksheet.write_formula(row, col, cell.formula, cell_fmt)
         else:
             worksheet.merge_range(row, col, row, last_col, content, cell_fmt)
         # Add comment if present
@@ -329,7 +332,10 @@ def _write_cell(
 
     # Formula cell
     if cell.formula:
-        worksheet.write_formula(row, col, cell.formula, cell_fmt, cell.value)
+        if cell.value is not None:
+            worksheet.write_formula(row, col, cell.formula, cell_fmt, cell.value)
+        else:
+            worksheet.write_formula(row, col, cell.formula, cell_fmt)
     else:
         _write_value(worksheet, row, col, cell.value, cell_fmt)
 

@@ -2,7 +2,9 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using CcDirector.Core.Utilities;
+using CommunicationManager.Models;
 using CommunicationManager.ViewModels;
+using CommunicationManager.Views;
 
 namespace CommunicationManager;
 
@@ -63,29 +65,162 @@ public partial class CommunicationManagerView : UserControl, IDisposable
     private void PendingTab_Checked(object sender, RoutedEventArgs e)
     {
         if (!_isInitialized) return;
-        ItemList.ItemsSource = _viewModel.PendingItems;
         _viewModel.OnTabChanged("Pending");
+        ResetFilterChipVisuals();
+        UpdateViewToggle("List");
     }
 
     private void ApprovedTab_Checked(object sender, RoutedEventArgs e)
     {
         if (!_isInitialized) return;
-        ItemList.ItemsSource = _viewModel.ApprovedItems;
         _viewModel.OnTabChanged("Approved");
+        ResetFilterChipVisuals();
+        ResetDateFilterChipVisuals("All Upcoming");
     }
 
     private void RejectedTab_Checked(object sender, RoutedEventArgs e)
     {
         if (!_isInitialized) return;
-        ItemList.ItemsSource = _viewModel.RejectedItems;
         _viewModel.OnTabChanged("Rejected");
+        ResetFilterChipVisuals();
+        UpdateViewToggle("List");
     }
 
     private void SentTab_Checked(object sender, RoutedEventArgs e)
     {
         if (!_isInitialized) return;
-        ItemList.ItemsSource = _viewModel.SentItems;
         _viewModel.OnTabChanged("Sent");
+        ResetFilterChipVisuals();
+        UpdateViewToggle("List");
+    }
+
+    private void FilterChip_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button) return;
+        var platform = button.Tag?.ToString() ?? "All";
+
+        _viewModel.SetPlatformFilterCommand.Execute(platform);
+        UpdateFilterChipVisuals(platform);
+    }
+
+    private void DateFilterChip_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button) return;
+        var filter = button.Tag?.ToString() ?? "All Upcoming";
+
+        FileLog.Write($"[CommunicationManagerView] DateFilterChip_Click: {filter}");
+        _viewModel.SetDateFilterCommand.Execute(filter);
+        UpdateDateFilterChipVisuals(filter);
+    }
+
+    private void ViewToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button) return;
+        var view = button.Tag?.ToString() ?? "List";
+
+        FileLog.Write($"[CommunicationManagerView] ViewToggle_Click: {view}");
+        _viewModel.SetApprovedViewCommand.Execute(view);
+        UpdateViewToggle(view);
+    }
+
+    private async void Approve_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.SelectedItem == null) return;
+
+        FileLog.Write("[CommunicationManagerView] Approve_Click: showing schedule dialog");
+
+        var dialog = new ScheduleDialog();
+        dialog.Owner = Window.GetWindow(this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            FileLog.Write($"[CommunicationManagerView] Schedule dialog result: timing={dialog.SelectedTiming}, dateTime={dialog.SelectedDateTime}");
+            await _viewModel.ApproveWithScheduleCommand.ExecuteAsync((dialog.SelectedTiming, dialog.SelectedDateTime));
+        }
+    }
+
+    private async void Reschedule_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.SelectedItem == null) return;
+
+        FileLog.Write("[CommunicationManagerView] Reschedule_Click: showing schedule dialog");
+
+        var dialog = new ScheduleDialog(_viewModel.SelectedItem.ScheduledFor);
+        dialog.Owner = Window.GetWindow(this);
+        dialog.Title = "Reschedule";
+
+        if (dialog.ShowDialog() == true)
+        {
+            FileLog.Write($"[CommunicationManagerView] Reschedule dialog result: timing={dialog.SelectedTiming}, dateTime={dialog.SelectedDateTime}");
+            await _viewModel.RescheduleCommand.ExecuteAsync((dialog.SelectedTiming, dialog.SelectedDateTime));
+        }
+    }
+
+    private void Timeline_ItemSelected(object? sender, ContentItem item)
+    {
+        FileLog.Write($"[CommunicationManagerView] Timeline_ItemSelected: {item.DisplayTitle}");
+        _viewModel.SelectedItem = item;
+    }
+
+    private void UpdateFilterChipVisuals(string activePlatform)
+    {
+        foreach (var child in FilterBar.Children)
+        {
+            if (child is Button chip)
+            {
+                chip.Style = (chip.Tag?.ToString() == activePlatform)
+                    ? (Style)FindResource("FilterChipActiveStyle")
+                    : (Style)FindResource("FilterChipStyle");
+            }
+        }
+    }
+
+    private void UpdateDateFilterChipVisuals(string activeFilter)
+    {
+        foreach (var child in DateFilterBar.Children)
+        {
+            if (child is Button chip && chip.Tag != null)
+            {
+                chip.Style = (chip.Tag.ToString() == activeFilter)
+                    ? (Style)FindResource("FilterChipActiveStyle")
+                    : (Style)FindResource("FilterChipStyle");
+            }
+        }
+    }
+
+    private void ResetDateFilterChipVisuals(string defaultFilter)
+    {
+        UpdateDateFilterChipVisuals(defaultFilter);
+    }
+
+    private void UpdateViewToggle(string activeView)
+    {
+        if (ListViewBtn == null || TimelineViewBtn == null) return;
+
+        ListViewBtn.Style = activeView == "List"
+            ? (Style)FindResource("FilterChipActiveStyle")
+            : (Style)FindResource("FilterChipStyle");
+
+        TimelineViewBtn.Style = activeView == "Timeline"
+            ? (Style)FindResource("FilterChipActiveStyle")
+            : (Style)FindResource("FilterChipStyle");
+
+        // Toggle visibility
+        if (ApprovedTimeline != null)
+        {
+            var isApprovedTab = ApprovedTab?.IsChecked == true;
+            ApprovedTimeline.Visibility = isApprovedTab && activeView == "Timeline"
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            ItemList.Visibility = isApprovedTab && activeView == "Timeline"
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        }
+    }
+
+    private void ResetFilterChipVisuals()
+    {
+        UpdateFilterChipVisuals("All");
     }
 
     private void PreviewToggle_Click(object sender, MouseButtonEventArgs e)

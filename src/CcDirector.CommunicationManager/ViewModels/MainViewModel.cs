@@ -61,11 +61,46 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _isPreviewMode = true;
 
+    [ObservableProperty]
+    private string _selectedPlatformFilter = "All";
+
+    [ObservableProperty]
+    private string _selectedDateFilter = "All Upcoming";
+
+    [ObservableProperty]
+    private string _selectedApprovedView = "List";
+
+    [ObservableProperty]
+    private ObservableCollection<ContentItem> _filteredItems = new();
+
     [RelayCommand]
     private void TogglePreviewMode()
     {
         IsPreviewMode = !IsPreviewMode;
         StatusMessage = IsPreviewMode ? "Preview mode" : "Raw mode";
+    }
+
+    [RelayCommand]
+    private void SetPlatformFilter(string platform)
+    {
+        FileLog.Write($"[CommunicationManager.VM] SetPlatformFilter: {platform}");
+        SelectedPlatformFilter = platform;
+        RebuildFilteredItems();
+    }
+
+    [RelayCommand]
+    private void SetDateFilter(string dateFilter)
+    {
+        FileLog.Write($"[CommunicationManager.VM] SetDateFilter: {dateFilter}");
+        SelectedDateFilter = dateFilter;
+        RebuildFilteredItems();
+    }
+
+    [RelayCommand]
+    private void SetApprovedView(string view)
+    {
+        FileLog.Write($"[CommunicationManager.VM] SetApprovedView: {view}");
+        SelectedApprovedView = view;
     }
 
     public MainViewModel()
@@ -146,6 +181,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             RejectedCount = rejected.Count;
             SentCount = sent.Count;
 
+            RebuildFilteredItems();
+
             // Auto-select first item if nothing selected
             if (SelectedItem == null)
             {
@@ -172,7 +209,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void AutoSelectFirstItem()
     {
-        var items = SelectedTab switch
+        if (FilteredItems.Count > 0)
+        {
+            SelectedItem = FilteredItems[0];
+        }
+    }
+
+    public void OnTabChanged(string tabName)
+    {
+        SelectedTab = tabName;
+        SelectedPlatformFilter = "All";
+        SelectedDateFilter = "All Upcoming";
+        RebuildFilteredItems();
+        AutoSelectFirstItem();
+    }
+
+    private void RebuildFilteredItems()
+    {
+        var source = SelectedTab switch
         {
             "Pending" => PendingItems,
             "Approved" => ApprovedItems,
@@ -181,16 +235,63 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _ => PendingItems
         };
 
-        if (items.Count > 0)
+        FilteredItems.Clear();
+
+        foreach (var item in source)
         {
-            SelectedItem = items[0];
+            if (SelectedPlatformFilter != "All" &&
+                !item.Platform.Equals(SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (SelectedTab == "Approved" && !PassesDateFilter(item))
+            {
+                continue;
+            }
+
+            FilteredItems.Add(item);
         }
     }
 
-    public void OnTabChanged(string tabName)
+    private bool PassesDateFilter(ContentItem item)
     {
-        SelectedTab = tabName;
-        AutoSelectFirstItem();
+        var today = DateTime.Today;
+        var tomorrow = today.AddDays(1);
+        var endOfWeek = today.AddDays(7 - (int)today.DayOfWeek);
+
+        // For ASAP items, treat them as "today"
+        var effectiveDate = item.IsScheduled ? item.ScheduledFor.GetValueOrDefault().Date : today;
+
+        return SelectedDateFilter switch
+        {
+            "Today" => effectiveDate == today,
+            "Tomorrow" => effectiveDate == tomorrow,
+            "This Week" => effectiveDate >= today && effectiveDate <= endOfWeek,
+            "All Upcoming" => effectiveDate >= today || item.IsAsap || item.IsHold,
+            _ => true
+        };
+    }
+
+    public int GetDateFilterCount(string filter)
+    {
+        var source = ApprovedItems;
+        var today = DateTime.Today;
+        var tomorrow = today.AddDays(1);
+        var endOfWeek = today.AddDays(7 - (int)today.DayOfWeek);
+
+        return filter switch
+        {
+            "Today" => source.Count(i => (SelectedPlatformFilter == "All" || i.Platform.Equals(SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
+                && ((i.IsScheduled && i.ScheduledFor.GetValueOrDefault().Date == today) || i.IsAsap)),
+            "Tomorrow" => source.Count(i => (SelectedPlatformFilter == "All" || i.Platform.Equals(SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
+                && i.IsScheduled && i.ScheduledFor.GetValueOrDefault().Date == tomorrow),
+            "This Week" => source.Count(i => (SelectedPlatformFilter == "All" || i.Platform.Equals(SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
+                && ((i.IsScheduled && i.ScheduledFor.GetValueOrDefault().Date >= today && i.ScheduledFor.GetValueOrDefault().Date <= endOfWeek) || i.IsAsap)),
+            "All Upcoming" => source.Count(i => (SelectedPlatformFilter == "All" || i.Platform.Equals(SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
+                && ((i.IsScheduled && i.ScheduledFor.GetValueOrDefault().Date >= today) || i.IsAsap || i.IsHold)),
+            _ => source.Count
+        };
     }
 
     [RelayCommand]
@@ -210,6 +311,51 @@ public partial class MainViewModel : ObservableObject, IDisposable
         else
         {
             StatusMessage = "Failed to approve item";
+        }
+    }
+
+    [RelayCommand]
+    private async Task ApproveWithScheduleAsync((string Timing, DateTime? ScheduledFor) schedule)
+    {
+        if (SelectedItem == null) return;
+
+        var item = SelectedItem;
+        StatusMessage = "Approving with schedule...";
+
+        if (await _contentService.ApproveWithScheduleAsync(item, schedule.Timing, schedule.ScheduledFor))
+        {
+            var desc = schedule.Timing == "hold" ? "on hold"
+                : schedule.ScheduledFor.HasValue ? $"scheduled for {schedule.ScheduledFor:MMM d, h:mm tt}"
+                : "ASAP";
+            StatusMessage = $"Approved ({desc}): {item.DisplayTitle}";
+            await RefreshAsync();
+            SelectNextItem();
+        }
+        else
+        {
+            StatusMessage = "Failed to approve item";
+        }
+    }
+
+    [RelayCommand]
+    private async Task RescheduleAsync((string Timing, DateTime? ScheduledFor) schedule)
+    {
+        if (SelectedItem == null) return;
+
+        var item = SelectedItem;
+        StatusMessage = "Rescheduling...";
+
+        if (await _contentService.UpdateScheduleAsync(item, schedule.Timing, schedule.ScheduledFor))
+        {
+            var desc = schedule.Timing == "hold" ? "on hold"
+                : schedule.ScheduledFor.HasValue ? $"scheduled for {schedule.ScheduledFor:MMM d, h:mm tt}"
+                : "ASAP";
+            StatusMessage = $"Rescheduled ({desc}): {item.DisplayTitle}";
+            await RefreshAsync();
+        }
+        else
+        {
+            StatusMessage = "Failed to reschedule item";
         }
     }
 
@@ -479,30 +625,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void SelectNextItem()
     {
-        var items = SelectedTab switch
-        {
-            "Pending" => PendingItems,
-            "Approved" => ApprovedItems,
-            "Rejected" => RejectedItems,
-            "Sent" => SentItems,
-            _ => PendingItems
-        };
-
-        if (items.Count == 0)
+        if (FilteredItems.Count == 0)
         {
             SelectedItem = null;
             return;
         }
 
-        // SelectedItem may be null if nothing is selected; IndexOf returns -1 in that case
-        var currentIndex = items.IndexOf(SelectedItem ?? items[0]);
-        if (currentIndex < items.Count - 1)
+        var currentIndex = FilteredItems.IndexOf(SelectedItem ?? FilteredItems[0]);
+        if (currentIndex < FilteredItems.Count - 1)
         {
-            SelectedItem = items[currentIndex + 1];
+            SelectedItem = FilteredItems[currentIndex + 1];
         }
-        else if (items.Count > 0)
+        else if (FilteredItems.Count > 0)
         {
-            SelectedItem = items[0];
+            SelectedItem = FilteredItems[0];
         }
     }
 
