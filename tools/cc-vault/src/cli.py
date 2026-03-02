@@ -46,22 +46,39 @@ except ImportError:
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+
+class AliasGroup(typer.core.TyperGroup):
+    """Typer Group with command aliases and 'did you mean?' suggestions."""
+
+    ALIASES = {
+        "get": "show",
+        "view": "show",
+    }
+
+    def get_command(self, ctx, cmd_name):
+        # Resolve aliases first, then fall through to Typer's built-in
+        # "did you mean?" suggestions for truly unknown commands
+        resolved = self.ALIASES.get(cmd_name, cmd_name)
+        return super().get_command(ctx, resolved)
+
+
 app = typer.Typer(
     name="cc-vault",
     help="Personal Vault CLI: manage contacts, tasks, goals, ideas, documents, and more.",
     add_completion=False,
+    cls=AliasGroup,
 )
 
-# Sub-apps
-tasks_app = typer.Typer(help="Task management")
-goals_app = typer.Typer(help="Goal tracking")
-ideas_app = typer.Typer(help="Idea capture")
-contacts_app = typer.Typer(help="Contact management")
-docs_app = typer.Typer(help="Document management")
-config_app = typer.Typer(help="Configuration")
-health_app = typer.Typer(help="Health data")
-posts_app = typer.Typer(help="Social media posts")
-lists_app = typer.Typer(help="Contact list management")
+# Sub-apps -- cls=AliasGroup adds "get/view -> show" aliases and "did you mean?" suggestions
+tasks_app = typer.Typer(help="Task management", cls=AliasGroup)
+goals_app = typer.Typer(help="Goal tracking", cls=AliasGroup)
+ideas_app = typer.Typer(help="Idea capture", cls=AliasGroup)
+contacts_app = typer.Typer(help="Contact management", cls=AliasGroup)
+docs_app = typer.Typer(help="Document management", cls=AliasGroup)
+config_app = typer.Typer(help="Configuration", cls=AliasGroup)
+health_app = typer.Typer(help="Health data", cls=AliasGroup)
+posts_app = typer.Typer(help="Social media posts", cls=AliasGroup)
+lists_app = typer.Typer(help="Contact list management", cls=AliasGroup)
 
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(goals_app, name="goals")
@@ -1777,6 +1794,160 @@ def contacts_search(
         raise typer.Exit(1)
 
 
+@contacts_app.command("email-activity")
+def contacts_email_activity(
+    contact_id: Optional[int] = typer.Argument(None, help="Contact ID (omit to list all)"),
+    update: bool = typer.Option(False, "--update", help="Update mode: store email activity"),
+    account: Optional[str] = typer.Option(None, "-a", "--account", help="Account name (e.g. personal, consulting, outlook)"),
+    sent: Optional[int] = typer.Option(None, "--sent", help="Number of sent emails"),
+    received: Optional[int] = typer.Option(None, "--received", help="Number of received emails"),
+    first_date: Optional[str] = typer.Option(None, "--first-date", help="First email date (ISO format)"),
+    last_date: Optional[str] = typer.Option(None, "--last-date", help="Last email date (ISO format)"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
+):
+    """Show or update email activity for a contact.
+
+    View:   cc-vault contacts email-activity <contact_id>
+    Update: cc-vault contacts email-activity <contact_id> --update --account personal --sent 47
+    """
+    db = get_db()
+
+    if update:
+        # Update mode: store email activity
+        if contact_id is None:
+            console.print("[red]Contact ID required for --update[/red]")
+            raise typer.Exit(1)
+        if not account:
+            console.print("[red]--account required for --update[/red]")
+            raise typer.Exit(1)
+
+        contact = db.get_contact_by_id(contact_id)
+        if not contact:
+            console.print(f"[red]Contact #{contact_id} not found[/red]")
+            raise typer.Exit(1)
+
+        db.upsert_email_activity(
+            contact_id=contact_id,
+            account=account,
+            sent_count=sent or 0,
+            received_count=received or 0,
+            first_email_date=first_date,
+            last_email_date=last_date,
+        )
+        display_name = contact.get('name') or f"#{contact_id}"
+        console.print(f"[green]Email activity updated for {display_name} ({account})[/green]")
+        return
+
+    # View mode: show email activity
+    try:
+        results = db.get_email_activity(contact_id=contact_id, account=account)
+
+        if not results:
+            if contact_id:
+                console.print(f"[yellow]No email activity for contact #{contact_id}[/yellow]")
+            else:
+                console.print("[yellow]No email activity recorded[/yellow]")
+            return
+
+        if format == "json":
+            import json as json_mod
+            console.print(json_mod.dumps(results, indent=2, ensure_ascii=False))
+        else:
+            title = f"Email Activity for Contact #{contact_id}" if contact_id else "All Email Activity"
+            table = Table(title=title)
+            table.add_column("Contact ID", style="dim")
+            table.add_column("Name", style="cyan")
+            table.add_column("Email")
+            table.add_column("Account")
+            table.add_column("Sent", justify="right", style="green")
+            table.add_column("Received", justify="right", style="blue")
+            table.add_column("Total", justify="right", style="bold")
+            table.add_column("Last Scanned", style="dim")
+
+            for r in results:
+                table.add_row(
+                    str(r['contact_id']),
+                    r.get('name', '-') or '-',
+                    r.get('email', '-') or '-',
+                    r.get('account', '-'),
+                    str(r.get('sent_count', 0)),
+                    str(r.get('received_count', 0)),
+                    str(r.get('email_count', 0)),
+                    (r.get('scanned_at', '') or '')[:19],
+                )
+
+            console.print(table)
+
+    except sqlite3.Error as e:
+        console.print(f"[red]Error reading email activity:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@contacts_app.command("sync-recipients")
+def contacts_sync_recipients(
+    account: str = typer.Option(..., "-a", "--account", help="Account name (e.g. consulting, personal)"),
+    file: Path = typer.Option(..., "--file", help="Path to recipients JSON file from cc-gmail/cc-outlook recipients --format json"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would happen without writing"),
+):
+    """Bulk-import recipients into vault contacts and email activity.
+
+    Usage:
+      cc-vault contacts sync-recipients -a consulting --file recipients.json
+      cc-vault contacts sync-recipients -a consulting --file recipients.json --dry-run
+    """
+    db = get_db()
+
+    # Read and validate JSON file
+    if not file.exists():
+        console.print(f"[red]File not found:[/red] {file}")
+        raise typer.Exit(1)
+
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        console.print(f"[red]Error reading JSON file:[/red] {e}")
+        raise typer.Exit(1)
+
+    if not isinstance(data, list):
+        console.print("[red]JSON must be an array of recipient objects[/red]")
+        raise typer.Exit(1)
+
+    if len(data) == 0:
+        console.print("[yellow]No recipients in file[/yellow]")
+        return
+
+    # Validate structure of first entry
+    sample = data[0]
+    if "email" not in sample:
+        console.print("[red]Each recipient must have an 'email' field[/red]")
+        raise typer.Exit(1)
+
+    mode_label = "[yellow]DRY RUN[/yellow] " if dry_run else ""
+    console.print(f"{mode_label}Syncing {len(data)} recipients for account '{account}'...")
+
+    try:
+        result = db.sync_recipients(data, account=account, dry_run=dry_run)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    if dry_run:
+        console.print(f"\n[yellow]Dry run results:[/yellow]")
+    else:
+        console.print(f"\n[green]Sync complete![/green]")
+
+    console.print(f"  New contacts created:    {result['new_contacts']}")
+    console.print(f"  Existing contacts found: {result['existing_contacts']}")
+    console.print(f"  Email activities stored: {result['activities_upserted']}")
+
+    if result.get("errors"):
+        console.print(f"\n[yellow]Warnings ({len(result['errors'])}):[/yellow]")
+        for err in result["errors"][:10]:
+            console.print(f"  - {err}")
+        if len(result["errors"]) > 10:
+            console.print(f"  ... and {len(result['errors']) - 10} more")
+
+
 # =============================================================================
 # Documents Commands
 # =============================================================================
@@ -2177,7 +2348,7 @@ def health_insights(
 # Graph Commands (Entity Links)
 # =============================================================================
 
-graph_app = typer.Typer(help="Graph statistics and traversal")
+graph_app = typer.Typer(help="Graph statistics and traversal", cls=AliasGroup)
 app.add_typer(graph_app, name="graph")
 
 
