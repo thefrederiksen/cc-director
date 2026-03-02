@@ -797,73 +797,133 @@ def comment(
 
 @app.command()
 def profile(
-    username: str = typer.Argument(..., help="LinkedIn username (vanity URL slug)"),
+    username: str = typer.Argument(..., help="LinkedIn username (vanity URL slug) or full profile URL"),
 ):
     """View someone's LinkedIn profile."""
     try:
         client = get_client()
 
+        # Handle full URL or just username
+        if "/" in username:
+            match = re.search(r"/in/([a-zA-Z0-9_-]+)", username)
+            if match:
+                username = match.group(1)
+            else:
+                error("Invalid LinkedIn URL - expected /in/<username>")
+                raise typer.Exit(1)
+
         # Navigate to profile
         client.navigate(LinkedInURLs.profile(username))
-        jittered_sleep(3)
+        jittered_sleep(4)
 
-        # Extract profile info including related profiles for spider effect
+        # Check if profile page loaded
+        check_js = """
+        (() => {
+            const url = window.location.href || '';
+            if (url.includes('/404')) return 'not_found';
+            const body = document.body?.textContent || '';
+            if (body.includes('page not found') || body.includes('Page not found') ||
+                body.includes('profile is not available') || body.includes('Profile not found')) {
+                return 'not_found';
+            }
+            if (body.includes('Sign in') && !document.querySelector('h1')) {
+                return 'not_logged_in';
+            }
+            const h1 = document.querySelector('h1');
+            if (!h1) return 'no_heading';
+            return 'ok';
+        })()
+        """
+        page_status = client.evaluate(check_js).get("result", "")
+        if page_status == "not_found":
+            error(f"Profile not found: {username}")
+            raise typer.Exit(1)
+        if page_status == "not_logged_in":
+            error("Not logged into LinkedIn. Please log in via the browser first.")
+            raise typer.Exit(1)
+        if page_status == "no_heading":
+            warn("Page loaded but no profile heading found - LinkedIn may have changed their layout or the page is still loading.")
+
+        # Extract profile info
         js_profile = """
         (() => {
-            const name = document.querySelector('h1.text-heading-xlarge')?.textContent?.trim() || '';
+            const name = document.querySelector('h1.text-heading-xlarge')?.textContent?.trim() ||
+                         document.querySelector('h1')?.textContent?.trim() || '';
             const headline = document.querySelector('div.text-body-medium')?.textContent?.trim() || '';
             const location = document.querySelector('span.text-body-small.inline')?.textContent?.trim() || '';
 
-            // Get connections/followers
+            // Connections/followers count
             let connections = '';
-            const spans = document.querySelectorAll('span');
-            for (const span of spans) {
-                const text = span.textContent || '';
-                if (text.includes('connection') || text.includes('follower')) {
-                    const num = span.querySelector('span.t-bold')?.textContent?.trim() ||
-                               span.previousElementSibling?.textContent?.trim();
-                    if (num) {
-                        connections = num + ' ' + (text.includes('connection') ? 'connections' : 'followers');
-                        break;
-                    }
+            const connSpan = document.querySelector('li.text-body-small span.t-bold');
+            if (connSpan) {
+                const parent = connSpan.closest('li');
+                if (parent) {
+                    connections = parent.textContent?.trim() || '';
                 }
             }
 
-            // Get about section
-            const about = document.querySelector('section.pv-about-section div.pv-shared-text-with-see-more span')?.textContent?.trim() || '';
+            // About section
+            let about = '';
+            const aboutSection = document.getElementById('about');
+            if (aboutSection) {
+                const aboutContainer = aboutSection.closest('section');
+                if (aboutContainer) {
+                    const aboutSpan = aboutContainer.querySelector('span[aria-hidden="true"]');
+                    if (aboutSpan) about = aboutSpan.textContent?.trim() || '';
+                }
+            }
 
-            // Spider effect: Extract "People also viewed" and similar profiles
+            // Current experience
+            let currentCompany = '';
+            let currentTitle = '';
+            const expSection = document.getElementById('experience');
+            if (expSection) {
+                const expContainer = expSection.closest('section');
+                if (expContainer) {
+                    const firstExp = expContainer.querySelector('div.display-flex.flex-column.full-width');
+                    if (firstExp) {
+                        const spans = firstExp.querySelectorAll('span[aria-hidden="true"]');
+                        if (spans.length >= 2) {
+                            currentTitle = spans[0]?.textContent?.trim() || '';
+                            currentCompany = spans[1]?.textContent?.trim() || '';
+                        } else if (spans.length === 1) {
+                            currentTitle = spans[0]?.textContent?.trim() || '';
+                        }
+                    }
+                }
+            }
+            if (!currentCompany) {
+                const companyButton = document.querySelector('button[aria-label*="Current company"]');
+                if (companyButton) {
+                    currentCompany = companyButton.textContent?.trim() || '';
+                }
+            }
+
+            // Related profiles (spider effect)
             const relatedProfiles = [];
             const seen = new Set();
-
-            // Find all profile links on the page (sidebar, recommendations, etc.)
             const profileLinks = document.querySelectorAll('a[href*="/in/"]');
             for (const link of profileLinks) {
                 const href = link.getAttribute('href') || '';
-                const match = href.match(/\\/in\\/([a-zA-Z0-9\\-]+)/);
+                const match = href.match(/\\/in\\/([a-zA-Z0-9_\\-]+)/);
                 if (match && match[1]) {
-                    const username = match[1];
-                    if (!seen.has(username) && username.length > 2) {
-                        seen.add(username);
-                        // Try to get name from link text or nearby elements
+                    const u = match[1];
+                    if (!seen.has(u) && u.length > 2) {
+                        seen.add(u);
                         const linkName = link.textContent?.trim() || '';
                         if (linkName && linkName.length > 2 && linkName.length < 100) {
-                            relatedProfiles.push({
-                                username: username,
-                                name: linkName.split('\\n')[0].trim()
-                            });
+                            relatedProfiles.push({ username: u, name: linkName.split('\\n')[0].trim() });
                         } else {
-                            relatedProfiles.push({ username: username });
+                            relatedProfiles.push({ username: u });
                         }
                     }
                 }
             }
 
             return JSON.stringify({
-                name,
-                headline,
-                location,
-                connections,
+                name, headline, location, connections,
+                current_company: currentCompany,
+                current_title: currentTitle,
                 about: about.substring(0, 300),
                 related_profiles: relatedProfiles.slice(0, 20)
             });
@@ -871,23 +931,214 @@ def profile(
         """
 
         result = client.evaluate(js_profile)
-        profile_data = json.loads(result.get("result", "{}"))
+        raw = result.get("result", "{}")
+        profile_data = json.loads(raw)
+
+        # Check if we got any meaningful data
+        has_data = any(profile_data.get(k) for k in ["name", "headline", "location", "current_company"])
+        if not has_data:
+            warn(f"No profile data extracted for '{username}'. The page may not have loaded correctly.")
+            note(f"Current URL: {LinkedInURLs.profile(username)}")
 
         if config.format == "json":
             print(json.dumps(profile_data, ensure_ascii=False))
         else:
-            console.print(f"\n[bold]{profile_data.get('name', 'Unknown')}[/bold]")
+            name = profile_data.get("name") or "(no name)"
+            console.print(f"\n[bold]{name}[/bold]")
             if profile_data.get("headline"):
                 console.print(f"{profile_data['headline']}")
+            if profile_data.get("current_title") or profile_data.get("current_company"):
+                title = profile_data.get("current_title", "")
+                company = profile_data.get("current_company", "")
+                if title and company:
+                    console.print(f"{title} at {company}")
+                else:
+                    console.print(f"{title or company}")
             if profile_data.get("location"):
                 console.print(f"Location: {profile_data['location']}")
             if profile_data.get("connections"):
                 console.print(f"{profile_data['connections']}")
             if profile_data.get("about"):
                 console.print(f"\nAbout:\n{profile_data['about']}...")
+            if not has_data:
+                console.print("")
 
     except BrowserError as e:
         error(str(e))
+        raise typer.Exit(1)
+
+
+@app.command()
+def enrich(
+    username: str = typer.Argument(..., help="LinkedIn username (vanity URL slug) or full profile URL"),
+):
+    """Extract all available profile data as JSON for contact enrichment."""
+    try:
+        client = get_client()
+
+        # Handle full URL or just username
+        if "/" in username:
+            match = re.search(r"/in/([a-zA-Z0-9_-]+)", username)
+            if match:
+                username = match.group(1)
+            else:
+                print(json.dumps({"profile_exists": False, "error": "Invalid LinkedIn URL"}, ensure_ascii=False))
+                raise typer.Exit(1)
+
+        client.navigate(LinkedInURLs.profile(username))
+        jittered_sleep(4)
+
+        # Check if profile exists
+        check_js = """
+        (() => {
+            const url = window.location.href || '';
+            if (url.includes('/404')) return 'not_found';
+            const body = document.body?.textContent || '';
+            if (body.includes('page not found') || body.includes('Page not found') ||
+                body.includes('profile is not available') || body.includes('Profile not found')) {
+                return 'not_found';
+            }
+            if (body.includes('Sign in') && !document.querySelector('h1')) {
+                return 'not_logged_in';
+            }
+            const h1 = document.querySelector('h1');
+            if (!h1) return 'no_heading';
+            return 'ok';
+        })()
+        """
+        page_status = client.evaluate(check_js).get("result", "")
+        if page_status == "not_logged_in":
+            print(json.dumps({"profile_exists": False, "error": "Not logged into LinkedIn"}, ensure_ascii=False))
+            raise typer.Exit(1)
+        if page_status == "not_found":
+            print(json.dumps({"profile_exists": False}, ensure_ascii=False))
+            return
+
+        # Extract all available profile data
+        js_enrich = """
+        (() => {
+            const name = document.querySelector('h1.text-heading-xlarge')?.textContent?.trim() || '';
+            const headline = document.querySelector('div.text-body-medium')?.textContent?.trim() || '';
+            const location = document.querySelector('span.text-body-small.inline')?.textContent?.trim() || '';
+
+            // Pronouns
+            let pronouns = '';
+            const pronSpan = document.querySelector('span.text-body-small.v-align-middle[aria-hidden="true"]');
+            if (pronSpan) {
+                const txt = pronSpan.textContent?.trim() || '';
+                if (txt.match(/^(He|She|They|Ze)/i)) {
+                    pronouns = txt;
+                }
+            }
+
+            // Connections/followers count
+            let connections = '';
+            const connSpan = document.querySelector('li.text-body-small span.t-bold');
+            if (connSpan) {
+                const parent = connSpan.closest('li');
+                if (parent) {
+                    connections = parent.textContent?.trim() || '';
+                }
+            }
+
+            // Current experience (first entry)
+            let currentCompany = '';
+            let currentTitle = '';
+            const expSection = document.getElementById('experience');
+            if (expSection) {
+                const expContainer = expSection.closest('section');
+                if (expContainer) {
+                    const firstExp = expContainer.querySelector('div.display-flex.flex-column.full-width');
+                    if (firstExp) {
+                        const spans = firstExp.querySelectorAll('span[aria-hidden="true"]');
+                        if (spans.length >= 1) {
+                            const text0 = spans[0]?.textContent?.trim() || '';
+                            const text1 = spans[1]?.textContent?.trim() || '';
+                            // Could be "Title" then "Company" or "Company" with nested roles
+                            if (text1 && (text1.includes('Full-time') || text1.includes('Part-time') ||
+                                text1.includes('Contract') || text1.includes('Internship') ||
+                                text1.includes('Freelance') || text1.includes('Self-employed'))) {
+                                // text0 is title with type suffix
+                                currentTitle = text0;
+                                // Company might be in a parent element
+                                const compSpan = expContainer.querySelector('span.t-bold span[aria-hidden="true"]');
+                                if (compSpan) currentCompany = compSpan.textContent?.trim() || '';
+                            } else {
+                                // Typical layout: first span is title or company name
+                                currentTitle = text0;
+                                currentCompany = text1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If company still empty, try the top-card company button
+            if (!currentCompany) {
+                const companyButton = document.querySelector('button[aria-label*="Current company"]');
+                if (companyButton) {
+                    currentCompany = companyButton.textContent?.trim() || '';
+                }
+            }
+
+            // About section
+            let about = '';
+            const aboutSection = document.getElementById('about');
+            if (aboutSection) {
+                const aboutContainer = aboutSection.closest('section');
+                if (aboutContainer) {
+                    const aboutSpan = aboutContainer.querySelector('span[aria-hidden="true"]');
+                    if (aboutSpan) about = aboutSpan.textContent?.trim() || '';
+                }
+            }
+
+            // Education (first entry)
+            let education = '';
+            const eduSection = document.getElementById('education');
+            if (eduSection) {
+                const eduContainer = eduSection.closest('section');
+                if (eduContainer) {
+                    const eduName = eduContainer.querySelector('span.t-bold span[aria-hidden="true"]');
+                    if (eduName) education = eduName.textContent?.trim() || '';
+                }
+            }
+
+            // Contact info (need to click "Contact info" link)
+            // We skip this to avoid extra navigation - website/twitter can be added later
+
+            return JSON.stringify({
+                profile_exists: true,
+                username: window.location.pathname.replace('/in/', '').replace(/\\//g, ''),
+                name: name,
+                headline: headline,
+                location: location,
+                pronouns: pronouns,
+                connections: connections,
+                current_company: currentCompany,
+                current_title: currentTitle,
+                about: about.substring(0, 500),
+                education: education
+            });
+        })()
+        """
+
+        result = client.evaluate(js_enrich)
+        raw = result.get("result", "{}")
+        profile_data = json.loads(raw)
+
+        # Clean up empty strings to null
+        for key in list(profile_data.keys()):
+            if profile_data[key] == '':
+                profile_data[key] = None
+
+        # Always keep profile_exists and username
+        profile_data["profile_exists"] = True
+        profile_data["username"] = username
+
+        print(json.dumps(profile_data, ensure_ascii=False))
+
+    except BrowserError as e:
+        print(json.dumps({"profile_exists": False, "error": str(e)}, ensure_ascii=False))
         raise typer.Exit(1)
 
 
