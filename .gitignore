@@ -32,11 +32,17 @@ tmp_build_output/right_click_session.png
 
 .temp/
 
+# Data output files
+tools/cc-gmail/sent_contacts.json
+
 # Debug/temp output files
 cli-explorer-console*.txt
 cli-explorer-report.md
 json-schema-stderr.txt
 *_wpftmp.csproj
+
+# Node
+node_modules/
 
 # Python
 __pycache__/
