@@ -120,13 +120,18 @@ export async function detectCaptchaVision(page) {
 // ---------------------------------------------------------------------------
 
 /**
- * Detect CAPTCHA using DOM check first, then vision if needed.
+ * Detect CAPTCHA using DOM check first, then vision if requested.
+ * Vision requires Claude CLI and is slow, so it is opt-in only.
  * @param {Object} page - Playwright page object
+ * @param {Object} [options]
+ * @param {boolean} [options.useVision=false] - Also try LLM vision detection
  * @returns {Promise<{detected: boolean, type: string, selector?: string, description?: string}>}
  */
-export async function detectCaptcha(page) {
+export async function detectCaptcha(page, { useVision = false } = {}) {
   const domResult = await detectCaptchaDOM(page);
   if (domResult.detected) return domResult;
+
+  if (!useVision) return domResult;
   return detectCaptchaVision(page);
 }
 
@@ -162,7 +167,7 @@ async function solveImageGrid(page, detection) {
       'Look at the instruction text and the grid images. ' +
       'Return ONLY valid JSON: {"cells": [0, 3, 7], "instruction": "what to select"}' +
       ' where cells is an array of 0-indexed cell positions (left to right, top to bottom).',
-      { model: 'claude-sonnet-4-6' }
+      { model: 'sonnet' }
     );
 
     const cleaned = response.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -201,7 +206,7 @@ async function solveSlider(page, detection) {
       'This page has a slider CAPTCHA puzzle. Identify the slider handle position and the target slot position. ' +
       'Return ONLY valid JSON: {"handleX": number, "handleY": number, "targetX": number, "targetY": number}' +
       ' with pixel coordinates from the top-left of the screenshot.',
-      { model: 'claude-sonnet-4-6' }
+      { model: 'sonnet' }
     );
 
     const cleaned = response.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -236,7 +241,7 @@ async function solveSlider(page, detection) {
       'Was the slider CAPTCHA solved? Look for success indicators. ' +
       'If not solved, estimate how many pixels the handle needs to move. ' +
       'Return ONLY valid JSON: {"solved": true/false, "offsetPx": number_or_null}',
-      { model: 'claude-sonnet-4-6' }
+      { model: 'sonnet' }
     );
 
     const retryParsed = JSON.parse(retryResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim());
@@ -255,7 +260,7 @@ async function solveTextCaptcha(page, detection) {
       'This page has a text CAPTCHA with distorted/warped text on a canvas element. ' +
       'Read the text shown in the CAPTCHA image carefully. ' +
       'Return ONLY valid JSON: {"text": "THE_CAPTCHA_TEXT"}',
-      { model: 'claude-sonnet-4-6' }
+      { model: 'sonnet' }
     );
 
     const cleaned = response.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();

@@ -776,7 +776,7 @@ const routes = {
     if (!validation.valid) return jsonError(res, 400, validation.error);
     const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
     const page = await getPageForTargetId({ cdpUrl, targetId: body.tab || body.targetId });
-    const result = await detectCaptcha(page);
+    const result = await detectCaptcha(page, { useVision: body.vision || false });
     jsonSuccess(res, result);
   },
 

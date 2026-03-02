@@ -631,15 +631,17 @@ const commandHelp = {
   Detect or solve CAPTCHAs on the current page.
 
   Subcommands:
-    detect              Check if a CAPTCHA is present
+    detect              Check if a CAPTCHA is present (DOM-based)
     solve               Attempt to solve the detected CAPTCHA
 
   Options:
+    --vision            Also use LLM vision for detection (requires claude CLI)
     --attempts <n>      Maximum solve attempts (default: 3)
     --tab <targetId>    Target specific tab
 
   Examples:
     cc-browser captcha detect
+    cc-browser captcha detect --vision
     cc-browser captcha solve
     cc-browser captcha solve --attempts 5`,
 
@@ -813,7 +815,8 @@ RECORD & REPLAY:
   cc-browser replay --file flow.json --mode fast   Replay at full speed
 
 CAPTCHA:
-  cc-browser captcha detect                    Detect CAPTCHA on current page
+  cc-browser captcha detect                    Detect CAPTCHA (DOM-based)
+  cc-browser captcha detect --vision           Detect with LLM vision fallback
   cc-browser captcha solve                     Auto-solve detected CAPTCHA
   cc-browser captcha solve --attempts 5        Solve with max attempts
 
@@ -1393,6 +1396,7 @@ MULTI-WORKSPACE (SIMULTANEOUS BROWSERS):
     if (subcommand === 'detect') {
       const result = await request('POST', '/captcha/detect', {
         tab: args.tab,
+        vision: args.vision || false,
       }, port);
       output(result);
     } else if (subcommand === 'solve') {
