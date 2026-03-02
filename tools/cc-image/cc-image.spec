@@ -9,15 +9,17 @@ block_cipher = None
 # Get the spec file directory
 spec_path = Path(SPECPATH)
 cc_shared_path = os.path.abspath('../cc_shared')
+cc_storage_path = os.path.abspath('../cc_storage')
 venv_site_packages = os.path.join(SPECPATH, 'venv', 'Lib', 'site-packages')
 
 a = Analysis(
     [str(spec_path / 'main.py')],
-    pathex=[SPECPATH, str(spec_path / 'src'), cc_shared_path],
+    pathex=[SPECPATH, str(spec_path / 'src'), cc_shared_path, cc_storage_path],
     binaries=[],
     datas=[
         (cc_shared_path + '/*.py', 'cc_shared'),
         (cc_shared_path + '/providers/*.py', 'cc_shared/providers'),
+        (cc_storage_path + '/*.py', 'cc_storage'),
         (os.path.join(venv_site_packages, 'rich', '_unicode_data', '*.py'), 'rich/_unicode_data'),
     ],
     hiddenimports=[
@@ -41,6 +43,8 @@ a = Analysis(
         'cc_shared.llm',
         'cc_shared.config',
         'cc_shared.providers',
+        'cc_storage',
+        'cc_storage.storage',
     ],
     hookspath=[],
     hooksconfig={},

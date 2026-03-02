@@ -28,10 +28,17 @@ Write-Host "Building executable..." -ForegroundColor Yellow
 pyinstaller cc-personresearch.spec --clean
 
 # Check result
-if (Test-Path "dist\cc-personresearch.exe") {
-    Write-Host "Build successful!" -ForegroundColor Green
-    Write-Host "Executable: dist\cc-personresearch.exe" -ForegroundColor Green
+$exePath = "dist\cc-personresearch.exe"
+if (Test-Path $exePath) {
+    $size = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
+    Write-Host "SUCCESS: Built $exePath ($size MB)" -ForegroundColor Green
+
+    # Copy to %LOCALAPPDATA%\cc-director\bin
+    $targetPath = "$env:LOCALAPPDATA\cc-director\bin\cc-personresearch.exe"
+    Write-Host "Copying to $targetPath..." -ForegroundColor Yellow
+    Copy-Item $exePath $targetPath -Force
+    Write-Host "SUCCESS: Copied to $targetPath" -ForegroundColor Green
 } else {
-    Write-Host "Build failed!" -ForegroundColor Red
+    Write-Host "ERROR: Build failed - executable not found" -ForegroundColor Red
     exit 1
 }

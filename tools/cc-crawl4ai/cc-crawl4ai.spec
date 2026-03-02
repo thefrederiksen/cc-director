@@ -4,12 +4,13 @@
 # The browsers themselves are NOT bundled - run 'playwright install chromium'
 # on the target system after deployment.
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 a = Analysis(
     ['src\\cli.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=collect_data_files('rich'),
     hiddenimports=[
         'crawl4ai',
         'crawl4ai.async_webcrawler',
@@ -34,7 +35,7 @@ a = Analysis(
         'rich.console',
         'rich.table',
         'rich.progress',
-    ],
+    ] + collect_submodules('rich'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
