@@ -131,6 +131,11 @@ def note(msg: str) -> None:
     console.print(f"[blue]INFO:[/blue] {msg}")
 
 
+def _safe_str(text: str) -> str:
+    """Replace non-ASCII characters with closest ASCII equivalent for console output."""
+    return text.encode("ascii", errors="replace").decode("ascii")
+
+
 def find_element_ref(snapshot_text: str, keywords: list[str], element_type: str = "button") -> Optional[str]:
     """Find element ref matching keywords in snapshot.
 
@@ -1540,11 +1545,361 @@ def _add_connection_note(client: BrowserClient, note: str) -> None:
         client.click(add_note_ref)
         jittered_sleep(0.5)
 
-        # Find text area and type note
+        # Find the textbox input field in the "Add a note" dialog.
+        # Search for elements with role "textbox" -- use the placeholder text
+        # to avoid matching the heading which also contains "note".
         snapshot = client.snapshot()
-        note_ref = find_element_ref(snapshot.get("snapshot", ""), ["textbox", "textarea"])
+        snapshot_text = snapshot.get("snapshot", "")
+        note_ref = find_element_ref(snapshot_text, ["Ex: We know each other"], "textbox")
+        if not note_ref:
+            # Fallback: match any textbox element
+            note_ref = find_element_ref(snapshot_text, [""], "textbox")
         if note_ref:
             client.type(note_ref, note)
+
+
+# =============================================================================
+# Auto-Connect Command
+# =============================================================================
+
+# JavaScript to extract suggestion cards from the "grow your network" page.
+# LinkedIn uses hashed/obfuscated CSS class names, so we match structurally:
+# each suggestion is an <a href="/in/..."> containing <p> children (name + headline)
+# inside an <li> that also has a Connect button.
+_JS_EXTRACT_SUGGESTIONS = """
+(() => {
+    const data = [];
+    const seen = new Set();
+    const mainEl = document.querySelector('main main') || document.querySelector('main');
+    if (!mainEl) return JSON.stringify([]);
+
+    const links = mainEl.querySelectorAll('a[href*="/in/"]');
+
+    for (const link of links) {
+        const paragraphs = link.querySelectorAll('p');
+        if (paragraphs.length < 1) continue;
+
+        const href = link.getAttribute('href') || '';
+        const usernameMatch = href.match(/\\/in\\/([^/?]+)/);
+        if (!usernameMatch) continue;
+
+        const username = usernameMatch[1];
+        if (seen.has(username)) continue;
+
+        // Extract name: take first line only (innerText may repeat name on
+        // multiple lines due to hidden badge overlays), then strip badge text.
+        let rawName = (paragraphs[0]?.innerText || paragraphs[0]?.textContent || '').trim();
+        let name = rawName.split('\\n')[0].trim();
+        // Strip LinkedIn badge suffixes: ", Verified...", ", Premium...", etc.
+        name = name.replace(/,?\\s*(Verified|Premium|Influencer|Ver)\\b.*$/i, '').trim();
+        const headline = paragraphs.length >= 2 ? (paragraphs[1]?.innerText || paragraphs[1]?.textContent || '').split('\\n')[0].trim() : '';
+
+        if (!name || name.length < 2 || name.length > 100) continue;
+        if (['Connect', 'Follow', 'Message', 'Pending', 'Show all'].includes(name)) continue;
+
+        const container = link.closest('li');
+        if (container) {
+            const btn = container.querySelector('button');
+            const btnText = btn?.textContent?.trim()?.toLowerCase() || '';
+            if (!btnText.includes('connect')) continue;
+        }
+
+        seen.add(username);
+        data.push({ username, name, headline });
+    }
+
+    return JSON.stringify(data);
+})()
+"""
+
+# Keyword sets for categorizing connections
+_MINDZIE_KEYWORDS = [
+    "process mining", "operational intelligence", "process improvement",
+    "bpm", "business process", "automation", "data engineer", "analytics",
+    "operations", "manufacturing", "supply chain", "continuous improvement",
+    "process optimization", "process analyst", "data analytics", "etl",
+    "business intelligence", "rpa", "robotic process", "lean", "six sigma",
+    "celonis", "uipath", "power automate",
+]
+
+_COURSE_KEYWORDS = [
+    "business owner", "entrepreneur", "founder", "ceo", "coo", "cto",
+    "consultant", "small business", "startup", "marketing", "toronto",
+    "gta", "ontario", "real estate", "financial advisor", "coach",
+    "advisor", "managing director", "president", "partner", "director",
+    "freelance", "self-employed", "agency",
+]
+
+# Note template pools (3 variants each)
+_MINDZIE_NOTES = [
+    "Hi {first_name}, I work in process mining and operational intelligence. Always looking to connect with others in the space. - Soren",
+    "Hi {first_name}, I noticed we share an interest in process optimization. Would be great to connect. - Soren",
+    "Hi {first_name}, I build tools for operational intelligence and process mining. Your background caught my eye. - Soren",
+]
+
+_COURSE_NOTES = [
+    "Hi {first_name}, I run an AI productivity course for business professionals in Toronto. Always happy to connect. - Soren",
+    "Hi {first_name}, I help business owners integrate AI agents into their daily work. Would love to connect. - Soren",
+    "Hi {first_name}, I teach hands-on AI workshops for professionals in Toronto. Great to connect with you. - Soren",
+]
+
+
+def _get_auto_connect_log_path() -> Path:
+    """Get path to auto-connect JSONL log file."""
+    try:
+        from cc_storage import CcStorage
+    except ImportError:
+        import sys
+        _tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+        if _tools_dir not in sys.path:
+            sys.path.insert(0, _tools_dir)
+        from cc_storage import CcStorage
+    log_dir = CcStorage.ensure(CcStorage.tool_logs("linkedin"))
+    return log_dir / "auto-connect.jsonl"
+
+
+def _load_previously_connected() -> set[str]:
+    """Load usernames from previous auto-connect attempts to avoid duplicates."""
+    log_path = _get_auto_connect_log_path()
+    usernames: set[str] = set()
+    if not log_path.exists():
+        return usernames
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                if record.get("status") in ("sent", "already_connected"):
+                    usernames.add(record["username"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return usernames
+
+
+def _log_connection_attempt(attempt: dict) -> None:
+    """Append a connection attempt record to the JSONL log."""
+    log_path = _get_auto_connect_log_path()
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(attempt, ensure_ascii=False) + "\n")
+
+
+def _categorize_connection(headline: str) -> str:
+    """Categorize a connection as 'mindzie' or 'course' based on headline keywords."""
+    if not headline:
+        return "course"
+    headline_lower = headline.lower()
+    mindzie_score = sum(1 for kw in _MINDZIE_KEYWORDS if kw in headline_lower)
+    course_score = sum(1 for kw in _COURSE_KEYWORDS if kw in headline_lower)
+    if mindzie_score > course_score:
+        return "mindzie"
+    return "course"
+
+
+def _pick_note(category: str, first_name: str) -> str:
+    """Pick a random note from the template pool for the given category."""
+    import random
+    templates = _MINDZIE_NOTES if category == "mindzie" else _COURSE_NOTES
+    template = random.choice(templates)
+    return template.format(first_name=first_name)
+
+
+def _send_connect_request(client: BrowserClient, username: str, note_text: str) -> str:
+    """Send a connection request to a user. Returns status string.
+
+    Assumes we are already on the user's profile page.
+    """
+    try:
+        snapshot = client.snapshot()
+        snapshot_text = snapshot.get("snapshot", "")
+
+        connect_ref = _find_connect_button(snapshot_text)
+
+        if not connect_ref:
+            if find_element_ref(snapshot_text, ["message"], "button"):
+                return "already_connected"
+            if "pending" in snapshot_text.lower():
+                return "already_connected"
+            return "failed"
+
+        client.click(connect_ref)
+        jittered_sleep(1)
+
+        # Add the personalized note
+        _add_connection_note(client, note_text)
+
+        # Click send/done
+        jittered_sleep(0.5)
+        snapshot = client.snapshot()
+        send_ref = find_element_ref(snapshot.get("snapshot", ""), ["send", "done"], "button")
+
+        if send_ref:
+            client.click(send_ref)
+            jittered_sleep(1)
+            return "sent"
+
+        return "failed"
+    except BrowserError as e:
+        warn(f"Browser error during connect request for {username}: {e}")
+        return "failed"
+
+
+@app.command("auto-connect")
+def auto_connect(
+    count: int = typer.Option(4, "--count", "-c", help="Number of connections to attempt (3-5)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without sending requests"),
+    category: str = typer.Option("auto", "--category", help="Force category: auto, mindzie, or course"),
+):
+    """Auto-connect with suggested people on LinkedIn.
+
+    Browses the 'grow your network' page, picks random suggestions,
+    visits each profile with human-like behavior, and sends personalized
+    connection requests.
+    """
+    import random
+    from datetime import datetime, timezone
+
+    if category not in ("auto", "mindzie", "course"):
+        error("Category must be 'auto', 'mindzie', or 'course'")
+        raise typer.Exit(1)
+
+    try:
+        client = get_client()
+        previously_connected = _load_previously_connected()
+        results = []
+
+        # Step 1: Visit home feed first (human-like behavior)
+        note("Visiting home feed...")
+        client.navigate(LinkedInURLs.home())
+        jittered_sleep(4)
+
+        # Scroll feed once or twice
+        client.scroll("down")
+        jittered_sleep(random.uniform(3, 8))
+        if random.random() > 0.5:
+            client.scroll("down")
+            jittered_sleep(random.uniform(3, 6))
+
+        # Step 2: Navigate to grow network page
+        note("Navigating to network suggestions...")
+        client.navigate(LinkedInURLs.grow_network())
+        jittered_sleep(4)
+
+        # Scroll to load more suggestions
+        client.scroll("down")
+        jittered_sleep(2)
+        client.scroll("down")
+        jittered_sleep(2)
+
+        # Step 3: Extract suggestions
+        result = client.evaluate(_JS_EXTRACT_SUGGESTIONS)
+        suggestions_raw = json.loads(result.get("result", "[]"))
+
+        if not suggestions_raw:
+            warn("No suggestions found on grow page. LinkedIn may have changed their layout.")
+            raise typer.Exit(1)
+
+        # Filter out previously connected
+        suggestions = [
+            s for s in suggestions_raw
+            if s.get("username") and s["username"] not in previously_connected
+        ]
+
+        if not suggestions:
+            warn("All visible suggestions have already been contacted.")
+            raise typer.Exit(0)
+
+        # Pick random subset
+        pick_count = min(count, len(suggestions))
+        selected = random.sample(suggestions, pick_count)
+
+        console.print(f"\nSelected {pick_count} people to connect with:\n")
+
+        for i, person in enumerate(selected, 1):
+            username = person["username"]
+            name = person.get("name", username)
+            headline = person.get("headline", "")
+            first_name = name.split()[0] if name else username
+
+            # Categorize
+            if category == "auto":
+                cat = _categorize_connection(headline)
+            else:
+                cat = category
+
+            note_text = _pick_note(cat, first_name)
+
+            console.print(f"  {i}. {_safe_str(name)} ({username})")
+            console.print(f"     Headline: {_safe_str(headline) or '(none)'}")
+            console.print(f"     Category: {cat}")
+            console.print(f"     Note: {_safe_str(note_text)}")
+
+            if dry_run:
+                attempt = {
+                    "username": username,
+                    "name": name,
+                    "headline": headline,
+                    "note_category": cat,
+                    "note_sent": note_text,
+                    "status": "dry_run",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                results.append(attempt)
+                console.print(f"     Status: [yellow]DRY RUN - skipped[/yellow]\n")
+                continue
+
+            # Visit profile (human-like browsing)
+            note(f"Visiting {_safe_str(name)}'s profile...")
+            client.navigate(LinkedInURLs.profile(username))
+            jittered_sleep(3)
+
+            # Scroll down once (simulating reading)
+            client.scroll("down")
+            jittered_sleep(random.uniform(8, 20))
+
+            # Send request
+            status = _send_connect_request(client, username, note_text)
+
+            attempt = {
+                "username": username,
+                "name": name,
+                "headline": headline,
+                "note_category": cat,
+                "note_sent": note_text,
+                "status": status,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            results.append(attempt)
+            _log_connection_attempt(attempt)
+
+            status_colors = {
+                "sent": "[green]SENT[/green]",
+                "already_connected": "[yellow]ALREADY CONNECTED[/yellow]",
+                "failed": "[red]FAILED[/red]",
+            }
+            console.print(f"     Status: {status_colors.get(status, status)}\n")
+
+            # Pause between connections (30-90 seconds)
+            if i < pick_count:
+                pause = random.uniform(30, 90)
+                note(f"Waiting {int(pause)}s before next connection...")
+                time.sleep(pause)
+
+        # Summary
+        sent_count = sum(1 for r in results if r["status"] == "sent")
+        failed_count = sum(1 for r in results if r["status"] == "failed")
+        skipped_count = sum(1 for r in results if r["status"] in ("already_connected", "dry_run"))
+
+        console.print(f"\n--- Summary ---")
+        console.print(f"Sent: {sent_count}  Skipped: {skipped_count}  Failed: {failed_count}")
+
+        if config.format == "json":
+            print(json.dumps(results, ensure_ascii=False))
+
+    except BrowserError as e:
+        error(str(e))
+        raise typer.Exit(1)
 
 
 # =============================================================================
