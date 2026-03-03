@@ -618,33 +618,38 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private enum DispatchResult { Sent, Failed, Skipped }
 
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
-    private static readonly HashSet<string> _gmailAccounts = LoadGmailAccounts();
+    private static readonly Dictionary<string, SendFromConfig> _sendFromConfigs = LoadSendFromConfigs();
 
-    private static HashSet<string> LoadGmailAccounts()
+    private record SendFromConfig(string Tool, string? ToolAccount);
+
+    private static Dictionary<string, SendFromConfig> LoadSendFromConfigs()
     {
         var configPath = CcStorage.ConfigJson();
         if (!File.Exists(configPath))
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            return new Dictionary<string, SendFromConfig>(StringComparer.OrdinalIgnoreCase);
 
         var json = File.ReadAllText(configPath);
         using var doc = JsonDocument.Parse(json);
 
         if (!doc.RootElement.TryGetProperty("comm_manager", out var cm) ||
             !cm.TryGetProperty("send_from_accounts", out var accounts))
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            return new Dictionary<string, SendFromConfig>(StringComparer.OrdinalIgnoreCase);
 
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, SendFromConfig>(StringComparer.OrdinalIgnoreCase);
         foreach (var acct in accounts.EnumerateObject())
         {
-            if (acct.Value.TryGetProperty("tool", out var tool))
-            {
-                var toolStr = tool.GetString() ?? "";
-                if (toolStr.Contains("gmail", StringComparison.OrdinalIgnoreCase))
-                    result.Add(acct.Name);
-            }
+            var tool = "";
+            string? toolAccount = null;
+
+            if (acct.Value.TryGetProperty("tool", out var toolProp))
+                tool = toolProp.GetString() ?? "";
+            if (acct.Value.TryGetProperty("tool_account", out var toolAcctProp))
+                toolAccount = toolAcctProp.GetString();
+
+            result[acct.Name] = new SendFromConfig(tool, toolAccount);
         }
 
-        FileLog.Write($"[CommunicationManager.VM] LoadGmailAccounts: {string.Join(", ", result)}");
+        FileLog.Write($"[CommunicationManager.VM] LoadSendFromConfigs: {string.Join(", ", result.Select(kv => $"{kv.Key}={kv.Value.Tool}/{kv.Value.ToolAccount}"))}");
         return result;
     }
 
@@ -799,17 +804,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
 
         var sendFrom = item.SendFrom ?? item.Persona;
-        var useGmail = _gmailAccounts.Contains(sendFrom) ||
-                       sendFrom.Contains("@gmail.com", StringComparison.OrdinalIgnoreCase);
+        _sendFromConfigs.TryGetValue(sendFrom, out var accountConfig);
+        var useGmail = accountConfig != null
+            ? accountConfig.Tool.Contains("gmail", StringComparison.OrdinalIgnoreCase)
+            : sendFrom.Contains("@gmail.com", StringComparison.OrdinalIgnoreCase);
         var toolName = useGmail ? "cc-gmail" : "cc-outlook";
         var toolPath = Path.Combine(CcStorage.Bin(), useGmail ? "cc-gmail.exe" : "cc-outlook.exe");
 
         var to = string.Join(",", spec.To);
         var subject = spec.Subject ?? "(no subject)";
 
-        FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: ticket #{item.TicketNumber} to {to} via {toolName}");
+        FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: ticket #{item.TicketNumber} to {to} via {toolName} (account={accountConfig?.ToolAccount ?? "default"})");
 
-        var args = new List<string> { "send", "-t", to, "-s", subject, "-b", item.Content, "--html" };
+        var args = new List<string>();
+
+        // Pass account to cc-gmail/cc-outlook if configured
+        if (accountConfig?.ToolAccount != null)
+        {
+            args.Add("--account");
+            args.Add(accountConfig.ToolAccount);
+        }
+
+        args.AddRange(new[] { "send", "-t", to, "-s", subject, "-b", item.Content, "--html" });
 
         if (spec.Cc != null && spec.Cc.Count > 0)
         {

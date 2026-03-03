@@ -47,7 +47,8 @@ public sealed class EngineHost : IDisposable
                 _options.CcOutlookPath,
                 _options.CcGmailPath,
                 _options.GmailSendFromAccounts,
-                _options.DispatcherPollIntervalSeconds);
+                _options.DispatcherPollIntervalSeconds,
+                _options.ToolAccountMap);
             _dispatcher.OnEvent += e =>
             {
                 try { OnEvent?.Invoke(e); }

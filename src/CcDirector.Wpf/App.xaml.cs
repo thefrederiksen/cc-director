@@ -6,9 +6,12 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.Hooks;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Engine;
 using CcDirector.Wpf.Controls;
+using CcDirector.Wpf.Teams;
+using CcDirector.Wpf.Teams.Models;
 using static CcDirector.Core.Utilities.FileLog;
 
 namespace CcDirector.Wpf;
@@ -31,6 +34,7 @@ public partial class App : Application
     public ClaudeAccountStore ClaudeAccountStore { get; private set; } = null!; // Initialized in OnStartup
     public ClaudeUsageService ClaudeUsageService { get; private set; } = null!; // Initialized in OnStartup
     public EngineHost? EngineHost { get; private set; }
+    public TeamsRemoteController? TeamsRemoteController { get; private set; }
 
     /// <summary>
     /// When true, sessions are not loaded or saved, and no exit dialog is shown.
@@ -145,6 +149,9 @@ public partial class App : Application
 
         // Start Engine (communication dispatcher + scheduler)
         StartEngine(log);
+
+        // Start Teams bot (if enabled in config)
+        StartTeamsBot(log);
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -188,6 +195,23 @@ public partial class App : Application
                     FileLog.Write($"[App] Engine stop error: {ex.Message}");
                 }
                 EngineHost.Dispose();
+            }
+
+            if (TeamsRemoteController != null)
+            {
+                try
+                {
+                    var teamsStopTask = TeamsRemoteController.StopAsync();
+                    if (!teamsStopTask.Wait(TimeSpan.FromSeconds(5)))
+                    {
+                        FileLog.Write("[App] TeamsRemoteController stop timed out after 5 seconds");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[App] TeamsRemoteController stop error: {ex.Message}");
+                }
+                TeamsRemoteController.Dispose();
             }
 
             ClaudeUsageService?.Dispose();
@@ -296,6 +320,27 @@ public partial class App : Application
                 }
             }
 
+            // Load tool_account mappings from cc-director config.json
+            var ccConfigPath = CcStorage.ConfigJson();
+            if (File.Exists(ccConfigPath))
+            {
+                var ccJson = File.ReadAllText(ccConfigPath);
+                using var ccDoc = JsonDocument.Parse(ccJson);
+
+                if (ccDoc.RootElement.TryGetProperty("comm_manager", out var cm) &&
+                    cm.TryGetProperty("send_from_accounts", out var sendFromAccounts))
+                {
+                    foreach (var acct in sendFromAccounts.EnumerateObject())
+                    {
+                        if (acct.Value.TryGetProperty("tool_account", out var toolAcctProp))
+                        {
+                            engineOptions.ToolAccountMap[acct.Name] = toolAcctProp.GetString();
+                        }
+                    }
+                    FileLog.Write($"[App] ToolAccountMap: {string.Join(", ", engineOptions.ToolAccountMap.Select(kv => $"{kv.Key}={kv.Value}"))}");
+                }
+            }
+
             EngineHost = new EngineHost(engineOptions);
             EngineHost.OnEvent += e => log($"[Engine] {e.Type}: {e.Message}");
             EngineHost.Start();
@@ -304,6 +349,86 @@ public partial class App : Application
         catch (Exception ex)
         {
             log($"Engine failed to start: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Provides the TerminalControl for a given session.
+    /// Called from TeamsRemoteController to capture screenshots/terminal text.
+    /// Only the active (displayed) session has a TerminalControl.
+    /// </summary>
+    internal TerminalControl? GetTerminalControlForSession(Session session)
+    {
+        var mainWindow = MainWindow as MainWindow;
+        if (mainWindow == null)
+            return null;
+
+        return mainWindow.GetTerminalControlForSession(session);
+    }
+
+    private void StartTeamsBot(Action<string> log)
+    {
+        try
+        {
+            var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+            if (!File.Exists(configPath))
+                return;
+
+            var json = File.ReadAllText(configPath);
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("TeamsBot", out var teamsSection))
+                return;
+
+            var config = new TeamsBotConfig();
+            if (teamsSection.TryGetProperty("Enabled", out var enabled) && !enabled.GetBoolean())
+            {
+                log("Teams bot disabled in config");
+                return;
+            }
+            config.Enabled = true;
+
+            if (teamsSection.TryGetProperty("MicrosoftAppId", out var appId))
+                config.MicrosoftAppId = appId.GetString() ?? "";
+            if (teamsSection.TryGetProperty("MicrosoftAppPassword", out var appPwd))
+                config.MicrosoftAppPassword = appPwd.GetString() ?? "";
+            if (teamsSection.TryGetProperty("Port", out var port))
+                config.Port = port.GetInt32();
+            if (teamsSection.TryGetProperty("TunnelName", out var tunnelName))
+                config.TunnelName = tunnelName.GetString() ?? config.TunnelName;
+            if (teamsSection.TryGetProperty("WhitelistPath", out var wlPath))
+                config.WhitelistPath = wlPath.GetString() ?? config.WhitelistPath;
+            if (teamsSection.TryGetProperty("NotificationQuiescenceMs", out var quiesce))
+                config.NotificationQuiescenceMs = quiesce.GetInt32();
+            if (teamsSection.TryGetProperty("TunnelStatePath", out var tsPath))
+                config.TunnelStatePath = tsPath.GetString() ?? config.TunnelStatePath;
+
+            TeamsRemoteController = new TeamsRemoteController(
+                SessionManager,
+                config,
+                Repositories,
+                Dispatcher,
+                GetTerminalControlForSession,
+                msg => FileLog.Write(msg));
+
+            // Start async -- fire-and-forget, errors logged inside StartAsync
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await TeamsRemoteController.StartAsync();
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[App] Teams bot start FAILED: {ex.Message}");
+                }
+            });
+
+            log("Teams bot starting...");
+        }
+        catch (Exception ex)
+        {
+            log($"Teams bot config error: {ex.Message}");
         }
     }
 

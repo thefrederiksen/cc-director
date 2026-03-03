@@ -20,5 +20,11 @@ public sealed class EngineOptions
     /// </summary>
     public List<string> GmailSendFromAccounts { get; set; } = new() { "personal" };
 
+    /// <summary>
+    /// Maps persona/send_from names to their tool_account name (e.g. "consulting" -> "consulting").
+    /// Passed as --account flag to cc-gmail/cc-outlook so the correct account is used.
+    /// </summary>
+    public Dictionary<string, string?> ToolAccountMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     public int DispatcherPollIntervalSeconds { get; set; } = 5;
 }

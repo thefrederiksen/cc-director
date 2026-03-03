@@ -15,6 +15,7 @@ public sealed class CommunicationDispatcher : IDisposable
     private readonly string _ccOutlookPath;
     private readonly string _ccGmailPath;
     private readonly HashSet<string> _gmailSendFromAccounts;
+    private readonly Dictionary<string, string?> _toolAccountMap;
     private readonly int _pollIntervalSeconds;
     private readonly VaultArchiver _archiver = new();
 #pragma warning disable CS0649 // Timer field not assigned until auto-dispatch is re-enabled
@@ -29,13 +30,15 @@ public sealed class CommunicationDispatcher : IDisposable
         string ccOutlookPath,
         string ccGmailPath,
         IEnumerable<string> gmailSendFromAccounts,
-        int pollIntervalSeconds = 5)
+        int pollIntervalSeconds = 5,
+        Dictionary<string, string?>? toolAccountMap = null)
     {
         _communicationsDbPath = communicationsDbPath;
         _ccOutlookPath = ccOutlookPath;
         _ccGmailPath = ccGmailPath;
         _gmailSendFromAccounts = new HashSet<string>(
             gmailSendFromAccounts, StringComparer.OrdinalIgnoreCase);
+        _toolAccountMap = toolAccountMap ?? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         _pollIntervalSeconds = pollIntervalSeconds;
 
         FileLog.Write($"[CommunicationDispatcher] Gmail accounts: [{string.Join(", ", _gmailSendFromAccounts)}]");
@@ -165,11 +168,14 @@ public sealed class CommunicationDispatcher : IDisposable
         var toolName = useGmail ? "cc-gmail" : "cc-outlook";
         var toolPath = useGmail ? _ccGmailPath : _ccOutlookPath;
 
-        FileLog.Write($"[CommunicationDispatcher] Sending ticket #{email.TicketNumber} to {email.To} via {toolName} (send_from={email.SendFrom ?? "null"}, persona={email.Persona})");
+        var sendFrom = email.SendFrom ?? email.Persona;
+        _toolAccountMap.TryGetValue(sendFrom, out var toolAccount);
+
+        FileLog.Write($"[CommunicationDispatcher] Sending ticket #{email.TicketNumber} to {email.To} via {toolName} (send_from={email.SendFrom ?? "null"}, persona={email.Persona}, account={toolAccount ?? "default"})");
 
         try
         {
-            var args = BuildSendArgs(email, useGmail);
+            var args = BuildSendArgs(email, useGmail, toolAccount);
             var result = await RunToolProcessAsync(toolPath, args);
 
             if (result.ExitCode == 0)
@@ -192,16 +198,25 @@ public sealed class CommunicationDispatcher : IDisposable
         }
     }
 
-    private static List<string> BuildSendArgs(ApprovedEmail email, bool useGmail)
+    private static List<string> BuildSendArgs(ApprovedEmail email, bool useGmail, string? toolAccount)
     {
-        var args = new List<string>
+        var args = new List<string>();
+
+        // Pass account to cc-gmail/cc-outlook if configured
+        if (toolAccount != null)
+        {
+            args.Add("--account");
+            args.Add(toolAccount);
+        }
+
+        args.AddRange(new[]
         {
             "send",
             "-t", email.To,
             "-s", email.Subject,
             "-b", email.Body,
             "--html"
-        };
+        });
 
         if (!string.IsNullOrEmpty(email.Cc))
         {
