@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-pdf"
+version = "0.1.0"
+description = "Convert between Markdown and PDF with beautiful themes"
+license = {text = "MIT"}
+authors = [{name = "CC Director Contributors"}]
+requires-python = ">=3.11"
+keywords = ["markdown", "pdf", "converter", "cli"]
+dependencies = [
+    "markdown-it-py>=3.0.0",
+    "mdit-py-plugins>=0.4.0",
+    "linkify-it-py>=2.0.0",
+    "pygments>=2.17.0",
+    "beautifulsoup4>=4.12.0",
+    "PyMuPDF>=1.23.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pyinstaller>=6.0.0",
+]
+
+[project.scripts]
+cc-pdf = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

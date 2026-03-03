@@ -16,6 +16,8 @@ class Platform(str, Enum):
     YOUTUBE = "youtube"
     EMAIL = "email"
     BLOG = "blog"
+    FACEBOOK = "facebook"
+    WHATSAPP = "whatsapp"
 
 
 class ContentType(str, Enum):
@@ -63,25 +65,26 @@ PERSONA_DISPLAY_MAP = {
     Persona.PERSONAL: "Personal",
 }
 
-# Email account mapping - defines which tool/account to use for each identifier
-# Configure actual email addresses in %LOCALAPPDATA%\cc-director\config\config.json
-SEND_FROM_ACCOUNTS = {
-    "mindzie": {
-        "email": "user@company.com",
-        "tool": "cc_outlook",
-        "tool_account": None,  # cc_outlook uses default
-    },
-    "personal": {
-        "email": "user@personal.com",
-        "tool": "cc_gmail",
-        "tool_account": "personal",
-    },
-    "consulting": {
-        "email": "user@consulting.com",
-        "tool": "cc_gmail",
-        "tool_account": "consulting",
-    },
-}
+# Email account mapping - loaded from config.json at runtime
+# Configure in %LOCALAPPDATA%\cc-director\config\config.json under comm_manager.send_from_accounts
+def _get_send_from_accounts():
+    """Get send-from accounts from config.json."""
+    try:
+        from cc_shared.config import get_config
+        accounts = get_config().comm_manager.send_from_accounts
+        return {
+            name: {
+                "email": acct.email,
+                "tool": acct.tool,
+                "tool_account": acct.tool_account,
+            }
+            for name, acct in accounts.items()
+        }
+    except Exception:
+        return {}
+
+
+SEND_FROM_ACCOUNTS = _get_send_from_accounts()
 
 # Default account for each persona
 PERSONA_DEFAULT_ACCOUNT = {
@@ -151,6 +154,30 @@ class ArticleSpecific(BaseModel):
     seo_keywords: List[str] = Field(default_factory=list)
 
 
+class FacebookSpecific(BaseModel):
+    """Facebook-specific fields."""
+    page_id: Optional[str] = None
+    page_name: Optional[str] = None
+    audience: str = Field(default="public", description="Audience: public, friends, only_me")
+
+
+class WhatsAppSpecific(BaseModel):
+    """WhatsApp-specific fields."""
+    phone_number: Optional[str] = None
+    contact_name: Optional[str] = None
+
+
+class YouTubeSpecific(BaseModel):
+    """YouTube-specific fields."""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    category: Optional[str] = None
+    privacy_status: str = Field(default="private", description="Privacy: private, unlisted, public")
+    thumbnail_path: Optional[str] = None
+    video_file_path: Optional[str] = None
+
+
 class ContentItem(BaseModel):
     """Base content item that all content types extend."""
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -180,6 +207,9 @@ class ContentItem(BaseModel):
     reddit_specific: Optional[RedditSpecific] = None
     email_specific: Optional[EmailSpecific] = None
     article_specific: Optional[ArticleSpecific] = None
+    facebook_specific: Optional[FacebookSpecific] = None
+    whatsapp_specific: Optional[WhatsAppSpecific] = None
+    youtube_specific: Optional[YouTubeSpecific] = None
 
     # Rejection metadata
     rejection_reason: Optional[str] = None
@@ -213,8 +243,11 @@ class ContentItem(BaseModel):
 
     def get_send_from_email(self) -> Optional[str]:
         """Get the email address for the send_from account."""
-        if self.send_from and self.send_from in SEND_FROM_ACCOUNTS:
-            return SEND_FROM_ACCOUNTS[self.send_from]["email"]
+        if not self.send_from:
+            return None
+        accounts = _get_send_from_accounts()
+        if self.send_from in accounts:
+            return accounts[self.send_from]["email"]
         return None
 
     def get_send_timing_display(self) -> str:

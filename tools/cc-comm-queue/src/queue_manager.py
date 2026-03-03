@@ -81,17 +81,18 @@ class QueueManager:
         else:
             return "document"
 
-    def list_content(self, status: Optional[Status] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """List content items, optionally filtered by status.
+    def list_content(self, status: Optional[Status] = None, limit: int = 100, campaign_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List content items, optionally filtered by status and/or campaign.
 
         Args:
             status: Filter by status, or None for all
             limit: Maximum results
+            campaign_id: Filter by campaign identifier, or None for all
 
         Returns:
             List of content item dictionaries
         """
-        return self.db.list_by_status(status, limit)
+        return self.db.list_by_status(status, limit, campaign_id=campaign_id)
 
     def get_stats(self) -> QueueStats:
         """Get queue statistics.

@@ -26,6 +26,10 @@ Write-Host "Activating virtual environment..." -ForegroundColor Yellow
 Write-Host "Installing dependencies..." -ForegroundColor Yellow
 pip install -e ".[dev]"
 
+# Install cc_shared (required for canonical themes)
+Write-Host "Installing cc_shared..." -ForegroundColor Yellow
+pip install -e "$PSScriptRoot\..\cc_shared"
+
 # Build with PyInstaller
 Write-Host "Building executable with PyInstaller..." -ForegroundColor Yellow
 pyinstaller cc-excel.spec --clean --noconfirm

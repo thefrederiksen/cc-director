@@ -1,0 +1,19 @@
+Month,Product,Revenue,Units,Region
+January,Widget Pro,12400,248,Northeast
+January,Widget Basic,8900,445,Southeast
+January,Widget Enterprise,34500,69,West Coast
+February,Widget Pro,11800,236,Northeast
+February,Widget Basic,9200,460,Midwest
+February,Widget Enterprise,31200,62,West Coast
+March,Widget Pro,14200,284,Northeast
+March,Widget Basic,10100,505,Southeast
+March,Widget Enterprise,38900,78,West Coast
+April,Widget Pro,13500,270,Southwest
+April,Widget Basic,9800,490,Midwest
+April,Widget Enterprise,36700,73,Northeast
+May,Widget Pro,15600,312,West Coast
+May,Widget Basic,11200,560,Southeast
+May,Widget Enterprise,41300,83,Northeast
+June,Widget Pro,16900,338,Northeast
+June,Widget Basic,12400,620,Midwest
+June,Widget Enterprise,44800,90,West Coast

@@ -144,7 +144,6 @@ public class ClaudeAccountStore
                 existing.SubscriptionType = creds.SubscriptionType;
                 existing.RateLimitTier = creds.RateLimitTier;
                 SetActiveAccount(existing.Id);
-                Save();
                 return existing;
             }
 
@@ -193,35 +192,11 @@ public class ClaudeAccountStore
             var creds = ParseCredentialsJson(json);
             if (creds == null) return;
 
-            // Find matching account: try exact token match first, then fuzzy strategies
+            // Find matching account: exact token match ONLY
+            // Do NOT use fuzzy matching (tier, subscription type) - different accounts
+            // can have identical tiers, and fuzzy matching silently overwrites the wrong account.
             var matching = _accounts.Find(a => a.RefreshToken == creds.RefreshToken)
                         ?? _accounts.Find(a => a.AccessToken == creds.AccessToken);
-
-            // Single-account shortcut: if only 1 account exists, that's the one
-            if (matching == null && _accounts.Count == 1)
-            {
-                matching = _accounts[0];
-                FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: single-account shortcut -> '{matching.Label}'");
-            }
-
-            // Match active account with same SubscriptionType + RateLimitTier
-            if (matching == null)
-            {
-                matching = _accounts.Find(a => a.IsActive
-                    && a.SubscriptionType == creds.SubscriptionType
-                    && a.RateLimitTier == creds.RateLimitTier);
-                if (matching != null)
-                    FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: active tier match -> '{matching.Label}'");
-            }
-
-            // Match any account by SubscriptionType + RateLimitTier
-            if (matching == null)
-            {
-                matching = _accounts.Find(a => a.SubscriptionType == creds.SubscriptionType
-                    && a.RateLimitTier == creds.RateLimitTier);
-                if (matching != null)
-                    FileLog.Write($"[ClaudeAccountStore] RefreshActiveTokenFromCredentials: tier match -> '{matching.Label}'");
-            }
 
             if (matching != null)
             {
@@ -235,7 +210,6 @@ public class ClaudeAccountStore
                 matching.SubscriptionType = creds.SubscriptionType;
                 matching.RateLimitTier = creds.RateLimitTier;
                 SetActiveAccount(matching.Id);
-                Save();
 
                 if (tokenChanged)
                     TokensRefreshed?.Invoke();
@@ -251,10 +225,12 @@ public class ClaudeAccountStore
         }
     }
 
-    private void SetActiveAccount(string id)
+    public void SetActiveAccount(string id)
     {
+        FileLog.Write($"[ClaudeAccountStore] SetActiveAccount: id={id}");
         foreach (var a in _accounts)
             a.IsActive = a.Id == id;
+        Save();
     }
 
     private void Save()
@@ -262,6 +238,81 @@ public class ClaudeAccountStore
         FileLog.Write($"[ClaudeAccountStore] Save: writing {_accounts.Count} accounts");
         var json = JsonSerializer.Serialize(_accounts, JsonOptions);
         File.WriteAllText(FilePath, json);
+    }
+
+    /// <summary>
+    /// Reads the credentials file and returns status about the current login.
+    /// Returns (matchedAccount, credentialsData) - matchedAccount is null if no stored account matches.
+    /// </summary>
+    public (ClaudeAccount? MatchedAccount, CredentialsData? Creds) ReadCredentialStatus(string? credentialsPath = null)
+    {
+        var path = credentialsPath ?? GetDefaultCredentialsPath();
+        FileLog.Write($"[ClaudeAccountStore] ReadCredentialStatus: path={path}");
+
+        if (!File.Exists(path))
+        {
+            FileLog.Write("[ClaudeAccountStore] ReadCredentialStatus: file not found");
+            return (null, null);
+        }
+
+        var json = File.ReadAllText(path);
+        var creds = ParseCredentialsJson(json);
+        if (creds == null)
+        {
+            FileLog.Write("[ClaudeAccountStore] ReadCredentialStatus: parse failed");
+            return (null, null);
+        }
+
+        // Try to match against stored accounts
+        var matched = _accounts.Find(a => a.AccessToken == creds.AccessToken)
+                   ?? _accounts.Find(a => a.RefreshToken == creds.RefreshToken);
+
+        FileLog.Write($"[ClaudeAccountStore] ReadCredentialStatus: matched={matched?.Label ?? "(none)"}");
+        return (matched, creds);
+    }
+
+    /// <summary>
+    /// Attempts to fetch the user profile from Anthropic's OAuth endpoint.
+    /// Returns the display name/email if successful, null if the endpoint is unavailable.
+    /// </summary>
+    public static async Task<string?> TryFetchProfileLabelAsync(string accessToken)
+    {
+        FileLog.Write("[ClaudeAccountStore] TryFetchProfileLabelAsync: attempting profile fetch");
+
+        using var client = new System.Net.Http.HttpClient();
+        client.Timeout = TimeSpan.FromSeconds(5);
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+
+        var response = await client.GetAsync("https://api.anthropic.com/api/oauth/profile");
+        if (!response.IsSuccessStatusCode)
+        {
+            FileLog.Write($"[ClaudeAccountStore] TryFetchProfileLabelAsync: status={response.StatusCode}");
+            return null;
+        }
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        // Try common profile fields
+        if (doc.RootElement.TryGetProperty("name", out var name) && name.GetString() is string n && !string.IsNullOrEmpty(n))
+        {
+            FileLog.Write($"[ClaudeAccountStore] TryFetchProfileLabelAsync: got name={n}");
+            return n;
+        }
+        if (doc.RootElement.TryGetProperty("email", out var email) && email.GetString() is string e && !string.IsNullOrEmpty(e))
+        {
+            FileLog.Write($"[ClaudeAccountStore] TryFetchProfileLabelAsync: got email={e}");
+            return e;
+        }
+        if (doc.RootElement.TryGetProperty("organization", out var org) && org.GetString() is string o && !string.IsNullOrEmpty(o))
+        {
+            FileLog.Write($"[ClaudeAccountStore] TryFetchProfileLabelAsync: got org={o}");
+            return o;
+        }
+
+        FileLog.Write("[ClaudeAccountStore] TryFetchProfileLabelAsync: no usable fields in response");
+        return null;
     }
 
     public static string GetDefaultCredentialsPath()

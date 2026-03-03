@@ -16,15 +16,17 @@ __version__ = "0.1.0"
 # Handle imports for both package and frozen executable
 try:
     from .schema import (
-        ContentItem, ContentType, EmailSpecific, LinkedInSpecific,
-        Persona, Platform, RedditSpecific, SendTiming, Status, Visibility,
+        ContentItem, ContentType, EmailSpecific, FacebookSpecific,
+        LinkedInSpecific, Persona, Platform, RedditSpecific, SendTiming,
+        Status, Visibility, WhatsAppSpecific, YouTubeSpecific,
     )
     from .queue_manager import QueueManager
 except ImportError:
     # Running as frozen executable
     from schema import (
-        ContentItem, ContentType, EmailSpecific, LinkedInSpecific,
-        Persona, Platform, RedditSpecific, SendTiming, Status, Visibility,
+        ContentItem, ContentType, EmailSpecific, FacebookSpecific,
+        LinkedInSpecific, Persona, Platform, RedditSpecific, SendTiming,
+        Status, Visibility, WhatsAppSpecific, YouTubeSpecific,
     )
     from queue_manager import QueueManager
 
@@ -83,7 +85,7 @@ def main(
 
 @app.command()
 def add(
-    platform: str = typer.Argument(..., help="Platform: linkedin, twitter, reddit, youtube, email, blog"),
+    platform: str = typer.Argument(..., help="Platform: linkedin, twitter, reddit, youtube, email, blog, facebook, whatsapp"),
     content_type: str = typer.Argument(..., help="Type: post, comment, reply, message, article, email"),
     content: str = typer.Argument(..., help="The actual content text"),
     persona: str = typer.Option("personal", "--persona", "-p", help="Persona: mindzie, center_consulting, personal"),
@@ -102,12 +104,29 @@ def add(
     email_to: Optional[str] = typer.Option(None, "--email-to", help="Recipient email address"),
     email_subject: Optional[str] = typer.Option(None, "--email-subject", help="Email subject line"),
     email_attach: Optional[List[str]] = typer.Option(None, "--email-attach", help="Email attachment file path (can be repeated)"),
+    # Facebook-specific
+    facebook_page_id: Optional[str] = typer.Option(None, "--facebook-page-id", help="Facebook page ID"),
+    facebook_page_name: Optional[str] = typer.Option(None, "--facebook-page-name", help="Facebook page name"),
+    facebook_audience: str = typer.Option("public", "--facebook-audience", help="Audience: public, friends, only_me"),
+    # WhatsApp-specific
+    whatsapp_phone: Optional[str] = typer.Option(None, "--whatsapp-phone", help="WhatsApp phone number"),
+    whatsapp_contact: Optional[str] = typer.Option(None, "--whatsapp-contact", help="WhatsApp contact name"),
+    # YouTube-specific
+    youtube_title: Optional[str] = typer.Option(None, "--youtube-title", help="YouTube video title"),
+    youtube_description: Optional[str] = typer.Option(None, "--youtube-description", help="YouTube video description"),
+    youtube_tags: Optional[str] = typer.Option(None, "--youtube-tags", help="Comma-separated YouTube tags"),
+    youtube_category: Optional[str] = typer.Option(None, "--youtube-category", help="YouTube category"),
+    youtube_privacy: str = typer.Option("private", "--youtube-privacy", help="Privacy: private, unlisted, public"),
+    youtube_video: Optional[str] = typer.Option(None, "--youtube-video", help="Path to video file"),
+    youtube_thumbnail: Optional[str] = typer.Option(None, "--youtube-thumbnail", help="Path to thumbnail image"),
     # Dispatch fields
     send_timing: str = typer.Option("asap", "--send-timing", "-st", help="When to send: immediate, scheduled, asap, hold"),
     scheduled_for: Optional[str] = typer.Option(None, "--scheduled-for", help="ISO datetime for scheduled send"),
     send_from: Optional[str] = typer.Option(None, "--send-from", "-sf", help="Account: mindzie, personal, consulting"),
     # Media attachments
     media: Optional[List[str]] = typer.Option(None, "--media", "-m", help="Path to media file (can be repeated)"),
+    # Campaign
+    campaign_id: Optional[str] = typer.Option(None, "--campaign-id", help="Campaign identifier for grouping related items"),
     # Output format
     json_output: bool = typer.Option(False, "--json", help="Output as JSON (for agents)"),
 ):
@@ -121,7 +140,7 @@ def add(
     except ValueError:
         if not json_output:
             console.print(f"[red]ERROR:[/red] Invalid platform: {platform}")
-            console.print("Valid platforms: linkedin, twitter, reddit, youtube, email, blog")
+            console.print("Valid platforms: linkedin, twitter, reddit, youtube, email, blog, facebook, whatsapp")
         else:
             console.print(json.dumps({"success": False, "error": f"Invalid platform: {platform}"}))
         raise typer.Exit(1)
@@ -174,13 +193,17 @@ def add(
         raise typer.Exit(1)
 
     # Validate send_from if provided
-    valid_accounts = ["mindzie", "personal", "consulting"]
-    if send_from and send_from.lower() not in valid_accounts:
+    valid_accounts = config.comm_manager.get_valid_account_names()
+    if send_from and valid_accounts and send_from.lower() not in valid_accounts:
         if not json_output:
             console.print(f"[red]ERROR:[/red] Invalid send_from: {send_from}")
-            console.print(f"Valid accounts: {', '.join(valid_accounts)}")
+            acct_list = ", ".join(
+                f"{name} ({config.comm_manager.get_account_email(name)})"
+                for name in valid_accounts
+            )
+            console.print(f"Valid accounts: {acct_list}")
         else:
-            console.print(json.dumps({"success": False, "error": f"Invalid send_from: {send_from}"}))
+            console.print(json.dumps({"success": False, "error": f"Invalid send_from: {send_from}. Valid: {', '.join(valid_accounts)}"}))
         raise typer.Exit(1)
 
     # Build the content item
@@ -195,6 +218,7 @@ def add(
         context_title=context_title,
         tags=tag_list,
         notes=notes,
+        campaign_id=campaign_id,
         send_timing=timing,
         scheduled_for=scheduled_for,
         send_from=send_from.lower() if send_from else None,
@@ -235,11 +259,69 @@ def add(
                 attachments=attachment_paths,
             )
 
-    # Parse media files
+    elif plat == Platform.FACEBOOK:
+        item.facebook_specific = FacebookSpecific(
+            page_id=facebook_page_id,
+            page_name=facebook_page_name,
+            audience=facebook_audience,
+        )
+
+    elif plat == Platform.WHATSAPP:
+        item.whatsapp_specific = WhatsAppSpecific(
+            phone_number=whatsapp_phone,
+            contact_name=whatsapp_contact,
+        )
+
+    elif plat == Platform.YOUTUBE:
+        yt_tags = [t.strip() for t in youtube_tags.split(",")] if youtube_tags else []
+        # Validate video file exists if provided
+        if youtube_video:
+            vp = Path(youtube_video)
+            if not vp.exists():
+                if not json_output:
+                    console.print(f"[red]ERROR:[/red] Video file not found: {youtube_video}")
+                else:
+                    console.print(json.dumps({"success": False, "error": f"Video file not found: {youtube_video}"}))
+                raise typer.Exit(1)
+        # Validate thumbnail file exists if provided
+        if youtube_thumbnail:
+            tp = Path(youtube_thumbnail)
+            if not tp.exists():
+                if not json_output:
+                    console.print(f"[red]ERROR:[/red] Thumbnail file not found: {youtube_thumbnail}")
+                else:
+                    console.print(json.dumps({"success": False, "error": f"Thumbnail file not found: {youtube_thumbnail}"}))
+                raise typer.Exit(1)
+        item.youtube_specific = YouTubeSpecific(
+            title=youtube_title,
+            description=youtube_description,
+            tags=yt_tags,
+            category=youtube_category,
+            privacy_status=youtube_privacy,
+            video_file_path=youtube_video,
+            thumbnail_path=youtube_thumbnail,
+        )
+
+    # Parse media files - collect all files that need to be stored as BLOBs
     media_files = None
     if media:
         media_files = [Path(m) for m in media]
-        # Validate all media files exist
+    else:
+        media_files = []
+
+    # Auto-ingest YouTube video/thumbnail as media BLOBs so we own the data
+    if plat == Platform.YOUTUBE:
+        if youtube_video:
+            media_files.append(Path(youtube_video))
+        if youtube_thumbnail:
+            media_files.append(Path(youtube_thumbnail))
+
+    # Convert empty list to None for downstream
+    if not media_files:
+        media_files = None
+
+    # Validate all media files exist
+    if media_files:
         for mf in media_files:
             if not mf.exists():
                 if not json_output:
@@ -320,6 +402,7 @@ def add_json(
 @app.command("list")
 def list_content(
     status: Optional[str] = typer.Option(None, "-s", "--status", help="Filter by status: pending, approved, rejected, posted"),
+    campaign_id: Optional[str] = typer.Option(None, "--campaign-id", help="Filter by campaign identifier"),
     limit: int = typer.Option(20, "-n", help="Max results"),
 ):
     """List content items in the queue."""
@@ -337,7 +420,7 @@ def list_content(
         }
         status_filter = status_map.get(status.lower())
 
-    items = qm.list_content(status=status_filter)
+    items = qm.list_content(status=status_filter, campaign_id=campaign_id)
 
     if not items:
         console.print("[yellow]No content items found[/yellow]")
@@ -443,6 +526,72 @@ def show_content(
         console.print(f"\n[dim]File: {item['_file_path']}[/dim]")
 
 
+@app.command("delete")
+def delete_content(
+    content_id: str = typer.Argument(..., help="Ticket number or content ID (can be partial)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON (for agents)"),
+):
+    """Delete a content item from the queue."""
+    qm = get_queue_manager()
+
+    # Look up by ticket number if numeric, else by ID
+    item = None
+    ticket_number = None
+    if content_id.isdigit():
+        ticket_number = int(content_id)
+        item = qm.get_content_by_ticket(ticket_number)
+    else:
+        item = qm.get_content_by_id(content_id)
+        if item:
+            ticket_number = item.get("ticket_number")
+
+    if not item:
+        if json_output:
+            console.print(json.dumps({"success": False, "error": f"Content not found: {content_id}"}))
+        else:
+            console.print(f"[red]ERROR:[/red] Content not found: {content_id}")
+        raise typer.Exit(1)
+
+    if ticket_number is None:
+        if json_output:
+            console.print(json.dumps({"success": False, "error": "Item has no ticket number"}))
+        else:
+            console.print("[red]ERROR:[/red] Item has no ticket number, cannot delete")
+        raise typer.Exit(1)
+
+    # Show summary
+    platform = item.get("platform", "?")
+    status = item.get("status", "?")
+    content_preview = (item.get("content", "") or "")[:60]
+    if len(item.get("content", "") or "") > 60:
+        content_preview += "..."
+
+    if not force and not json_output:
+        console.print(f"  Ticket: #{ticket_number}")
+        console.print(f"  Platform: {platform}")
+        console.print(f"  Status: {status}")
+        console.print(f"  Content: {content_preview}")
+        if not typer.confirm("\nDelete this item?"):
+            console.print("[yellow]Cancelled[/yellow]")
+            raise typer.Exit(0)
+
+    deleted = qm.delete_content(ticket_number)
+
+    if json_output:
+        console.print(json.dumps({
+            "success": deleted,
+            "ticket_number": ticket_number,
+            "error": None if deleted else "Delete failed",
+        }))
+    else:
+        if deleted:
+            console.print(f"[green]OK:[/green] Deleted ticket #{ticket_number}")
+        else:
+            console.print(f"[red]ERROR:[/red] Failed to delete ticket #{ticket_number}")
+            raise typer.Exit(1)
+
+
 # =============================================================================
 # Config Commands
 # =============================================================================
@@ -461,6 +610,23 @@ def config_show():
     table.add_row("Default Created By", config.comm_manager.default_created_by)
 
     console.print(table)
+
+    # Show send-from accounts
+    accounts = config.comm_manager.send_from_accounts
+    if accounts:
+        acct_table = Table(title="\nSend-From Accounts")
+        acct_table.add_column("Name", style="cyan")
+        acct_table.add_column("Email")
+        acct_table.add_column("Tool")
+        acct_table.add_column("Tool Account")
+
+        for name, acct in accounts.items():
+            acct_table.add_row(name, acct.email, acct.tool, acct.tool_account or "-")
+
+        console.print(acct_table)
+    else:
+        console.print("\n[yellow]No send-from accounts configured[/yellow]")
+        console.print("[dim]Add them to config.json under comm_manager.send_from_accounts[/dim]")
 
 
 @config_app.command("set")

@@ -1,4 +1,5 @@
 import { getQuickWins } from './scoring.mjs';
+import { CATEGORY_EXPLANATIONS, CHECK_EXPLANATIONS } from './explanations.mjs';
 
 /**
  * Generate a self-contained HTML report.
@@ -81,6 +82,7 @@ ${sorted.map(([id, cat]) => `
             <div class="cat-bar-fill ${barClass(cat.score)}" style="width: ${cat.score}%"></div>
           </div>
           <div class="cat-score">${cat.score}/100 &middot; Weight: ${Math.round(cat.weight * 100)}%</div>
+          ${CATEGORY_EXPLANATIONS[id] ? `<div class="cat-desc">${esc(CATEGORY_EXPLANATIONS[id].what)}</div>` : ''}
         </div>
       </div>`).join('\n')}
     </div>
@@ -102,6 +104,7 @@ ${quickWins.map((qw, i) => `
             <span class="win-tags">Impact: ${qw.impact}/5 &middot; Effort: ${qw.effort}/5</span>
           </div>
           <div class="win-detail">${esc(qw.detail)}</div>
+          ${CHECK_EXPLANATIONS[qw.id] ? `<div class="win-why"><strong>Why this matters:</strong> ${esc(CHECK_EXPLANATIONS[qw.id].whyItMatters)}</div>` : ''}
         </div>
       </div>`).join('\n')}
     </div>
@@ -117,6 +120,11 @@ ${sorted.map(([id, cat]) => `
         <h3>${esc(cat.name)}</h3>
         <span class="result-cat-score">${cat.score}/100</span>
       </div>
+      ${CATEGORY_EXPLANATIONS[id] ? `
+      <div class="result-cat-explainer">
+        <div class="explainer-what">${esc(CATEGORY_EXPLANATIONS[id].what)}</div>
+        ${cat.score < 80 ? `<div class="explainer-why">${esc(CATEGORY_EXPLANATIONS[id].whyItMatters)}</div>` : ''}
+      </div>` : ''}
       <div class="checks-list">
 ${cat.checks.map(check => `
         <div class="check-item check-${check.status.toLowerCase()}">
@@ -124,6 +132,11 @@ ${cat.checks.map(check => `
           <div class="check-body">
             <div class="check-name">${esc(check.name)}</div>
             <div class="check-detail">${esc(check.detail)}</div>
+            ${(check.status === 'FAIL' || check.status === 'WARN') && CHECK_EXPLANATIONS[check.id] ? `
+            <div class="check-explain">
+              <div class="check-what">${esc(CHECK_EXPLANATIONS[check.id].what)}</div>
+              <div class="check-why"><strong>Why this matters:</strong> ${esc(CHECK_EXPLANATIONS[check.id].whyItMatters)}</div>
+            </div>` : ''}
           </div>
         </div>`).join('\n')}
       </div>
@@ -391,6 +404,7 @@ h2 {
 .bar-d { background: #ea580c; }
 .bar-f { background: #dc2626; }
 .cat-score { font-size: 12px; color: #888; }
+.cat-desc { font-size: 12px; color: #777; margin-top: 4px; line-height: 1.4; }
 
 /* Quick Wins */
 .quick-wins {
@@ -442,6 +456,16 @@ h2 {
 .win-name { font-weight: 700; font-size: 15px; }
 .win-tags { font-size: 12px; color: #888; }
 .win-detail { font-size: 13px; color: #555; line-height: 1.5; }
+.win-why {
+  font-size: 12px;
+  color: #666;
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: #f8f9fa;
+  border-left: 3px solid #d97706;
+  border-radius: 0 6px 6px 0;
+  line-height: 1.5;
+}
 
 /* Detailed Results */
 .detailed-results {
@@ -511,6 +535,45 @@ h2 {
 .status-skip { color: #9ca3af; font-weight: 800; font-size: 12px; }
 .check-name { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
 .check-detail { font-size: 13px; color: #555; }
+
+/* Category explainer in detailed results */
+.result-cat-explainer {
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  background: #f8f9fb;
+  border-radius: 8px;
+  border-left: 4px solid #94a3b8;
+}
+.explainer-what {
+  font-size: 13px;
+  color: #555;
+  line-height: 1.5;
+}
+.explainer-why {
+  font-size: 13px;
+  color: #b45309;
+  margin-top: 8px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+
+/* Check-level explanations for WARN/FAIL */
+.check-explain {
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: #fafafa;
+  border-left: 3px solid #cbd5e1;
+  border-radius: 0 6px 6px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.check-what {
+  color: #555;
+  margin-bottom: 4px;
+}
+.check-why {
+  color: #666;
+}
 
 /* Footer */
 .report-footer {

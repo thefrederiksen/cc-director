@@ -16,9 +16,12 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.Git;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Wpf.Backends;
 using System.IO;
+using System.Text.Json;
+using System.Windows.Media.Imaging;
 using CcDirector.Wpf.Controls;
 using CcDirector.Wpf.Voice;
 using CcDirector.VoskStt;
@@ -65,6 +68,13 @@ public partial class MainWindow : Window
     private static readonly SolidColorBrush RecordingBrush = FreezeBrush(0xC0, 0x20, 0x20);
     private static readonly SolidColorBrush RecordingForegroundBrush = FreezeBrush(0xFF, 0xFF, 0xFF);
 
+    // Screenshots panel
+    private readonly ObservableCollection<ScreenshotViewModel> _screenshots = new();
+    private FileSystemWatcher? _screenshotWatcher;
+    private System.Windows.Threading.DispatcherTimer? _screenshotDebounceTimer;
+    private string? _screenshotsDirectory;
+    private static readonly string[] ScreenshotExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".gif" };
+
     private readonly List<DocumentTabInfo> _documentTabs = new();
     private record DocumentTabInfo(Guid SessionId, string FilePath, TabItem TabItem, IFileViewer Viewer);
 
@@ -84,6 +94,7 @@ public partial class MainWindow : Window
         HookEventList.ItemsSource = _hookEvents;
         QueueItemsList.ItemsSource = _queueItems;
         SummaryItemsControl.ItemsSource = _summaryItems;
+        ScreenshotList.ItemsSource = _screenshots;
         Loaded += MainWindow_Loaded;
         LocationChanged += (_, _) => DeferConsolePositionUpdate();
         SizeChanged += (_, _) => DeferConsolePositionUpdate();
@@ -175,6 +186,14 @@ public partial class MainWindow : Window
     {
         // Dispose Communications Manager (polling timer)
         CommunicationsView.Dispose();
+
+        // Dispose screenshot watcher
+        _screenshotDebounceTimer?.Stop();
+        if (_screenshotWatcher != null)
+        {
+            _screenshotWatcher.EnableRaisingEvents = false;
+            _screenshotWatcher.Dispose();
+        }
 
         // Cancel any pending debounced persist and flush immediately
         _persistDebounceCts?.Cancel();
@@ -275,6 +294,9 @@ public partial class MainWindow : Window
                 await app.ClaudeUsageService.PollAllAccountsAsync();
             });
         }
+
+        // Initialize screenshots panel (async - reads config from disk)
+        _ = InitializeScreenshotsPanelAsync();
     }
 
     private void SetBuildInfo()
@@ -439,9 +461,7 @@ public partial class MainWindow : Window
                 session.VerifyClaudeSession();
             }
 
-            // Turn summarization disabled — interesting feature but wasn't used in practice;
-            // better to just ask Claude for a summary when needed rather than spending tokens every turn.
-            // session.OnTurnCompleted += OnSessionTurnCompleted;
+            session.OnTurnCompleted += OnSimpleChatTurnCompleted;
             var vm = new SessionViewModel(session, Dispatcher) { PendingPromptText = p.PendingPromptText ?? "" };
             _sessions.Add(vm);
 
@@ -1190,8 +1210,7 @@ public partial class MainWindow : Window
             // Create session with ConPty backend (default mode)
             var session = _sessionManager.CreateSession(repoPath, claudeArgs, SessionBackendType.ConPty, resumeSessionId);
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}, elapsed={sw.ElapsedMilliseconds}ms");
-            // Turn summarization disabled — see comment in RestoreSingleSession
-            // session.OnTurnCompleted += OnSessionTurnCompleted;
+            session.OnTurnCompleted += OnSimpleChatTurnCompleted;
             var vm = new SessionViewModel(session, Dispatcher);
             _sessions.Add(vm);
             SessionList.SelectedItem = vm;
@@ -1340,7 +1359,9 @@ public partial class MainWindow : Window
         _activeSession = session;
         PlaceholderText.Visibility = Visibility.Collapsed;
         SessionTabs.Visibility = Visibility.Visible;
-        PromptBar.Visibility = Visibility.Visible;
+        PromptBar.Visibility = SessionTabs.SelectedItem == SimpleChatTab
+            ? Visibility.Collapsed
+            : Visibility.Visible;
 
         // Hide previous embedded backend (don't kill it)
         _activeEmbeddedBackend?.Hide();
@@ -1388,6 +1409,10 @@ public partial class MainWindow : Window
         GitChanges.Attach(session.RepoPath);
         UpdateSourceControlTabVisibility(session.RepoPath);
 
+        // Attach Simple Chat view
+        SimpleChatView.SetClaudeClient(GetOrCreateClaudeClient(session.WorkingDirectory));
+        SimpleChatView.Attach(session);
+
         // Rebuild hook events panel for the new session
         RefreshHookEventsPanel();
 
@@ -1418,6 +1443,7 @@ public partial class MainWindow : Window
         // Hide session header banner
         UpdateSessionHeader();
 
+        SimpleChatView.Detach();
         GitChanges.Detach();
         SourceControlTab.Visibility = Visibility.Collapsed;
 
@@ -2043,6 +2069,16 @@ public partial class MainWindow : Window
 
     private void SessionTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        // Hide the main PromptBar when Simple tab is active (it has its own input)
+        if (SessionTabs.SelectedItem == SimpleChatTab)
+        {
+            PromptBar.Visibility = Visibility.Collapsed;
+        }
+        else if (_activeSession != null)
+        {
+            PromptBar.Visibility = Visibility.Visible;
+        }
+
         if (_activeEmbeddedBackend == null) return;
 
         // Terminal tab is index 0 — show overlay only when it's selected
@@ -2588,6 +2624,21 @@ public partial class MainWindow : Window
                     HookEventList.ScrollIntoView(_hookEvents[^1]);
             }
 
+            // Add permission notice to Simple Chat
+            if ((msg.HookEventName == "PermissionRequest"
+                || (msg.HookEventName == "Notification" && msg.NotificationType == "permission_prompt"))
+                && !string.IsNullOrEmpty(msg.SessionId))
+            {
+                var permSession = _sessionManager.GetSessionByClaudeId(msg.SessionId);
+                if (permSession != null)
+                {
+                    var toolInfo = !string.IsNullOrEmpty(msg.ToolName) ? $" ({msg.ToolName})" : "";
+                    permSession.ChatHistory.AddMessage(new ChatMessage(
+                        ChatMessageType.PermissionNotice,
+                        $"Claude needs permission{toolInfo}. Switch to Terminal tab to approve or deny."));
+                }
+            }
+
             // Refresh Claude metadata on Stop events (end of turn - metadata may have updated)
             if (msg.HookEventName == "Stop" && !string.IsNullOrEmpty(msg.SessionId))
             {
@@ -2670,6 +2721,41 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             FileLog.Write($"[MainWindow] OnSessionTurnCompleted FAILED: {ex.Message}");
+        }
+    }
+
+    private async void OnSimpleChatTurnCompleted(Session session, TurnData turnData)
+    {
+        FileLog.Write($"[MainWindow] OnSimpleChatTurnCompleted: session={session.Id}, prompt={turnData.UserPrompt.Length} chars");
+
+        try
+        {
+            var client = GetOrCreateClaudeClient(session.WorkingDirectory);
+            if (client == null)
+            {
+                FileLog.Write("[MainWindow] OnSimpleChatTurnCompleted: no ClaudeClient, adding plain summary");
+                session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, "Done."));
+                return;
+            }
+
+            // Read terminal text for context
+            var terminalText = "";
+            if (session.Buffer != null)
+            {
+                var bytes = session.Buffer.DumpAll();
+                if (bytes.Length > 0)
+                    terminalText = TerminalOutputParser.StripAnsi(System.Text.Encoding.UTF8.GetString(bytes));
+            }
+
+            var summary = await Task.Run(
+                () => SimpleChatSummarizer.SummarizeCompletionAsync(client, turnData, terminalText));
+
+            session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, summary));
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OnSimpleChatTurnCompleted FAILED: {ex.Message}");
+            session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, $"Turn completed. (Summary unavailable: {ex.Message})"));
         }
     }
 
@@ -2961,6 +3047,297 @@ public partial class MainWindow : Window
             HookToggleButton.Content = "\u00AB";
         }
         DeferConsolePositionUpdate();
+    }
+
+    // ── Screenshots Panel ──────────────────────────────────────────
+
+    private async Task InitializeScreenshotsPanelAsync()
+    {
+        FileLog.Write("[MainWindow] InitializeScreenshotsPanelAsync: starting");
+        try
+        {
+            _screenshotsDirectory = await Task.Run(() => ResolveScreenshotsDirectory());
+
+            if (_screenshotsDirectory == null || !Directory.Exists(_screenshotsDirectory))
+            {
+                FileLog.Write($"[MainWindow] InitializeScreenshotsPanelAsync: directory not found ({_screenshotsDirectory ?? "null"})");
+                return;
+            }
+
+            FileLog.Write($"[MainWindow] InitializeScreenshotsPanelAsync: watching {_screenshotsDirectory}");
+
+            var viewModels = await Task.Run(() => LoadScreenshotViewModels(_screenshotsDirectory));
+            foreach (var vm in viewModels)
+                _screenshots.Add(vm);
+            FileLog.Write($"[MainWindow] InitializeScreenshotsPanelAsync: loaded {_screenshots.Count} screenshots");
+
+            _screenshotDebounceTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(300)
+            };
+            _screenshotDebounceTimer.Tick += (_, _) =>
+            {
+                _screenshotDebounceTimer.Stop();
+                RefreshScreenshots();
+            };
+
+            _screenshotWatcher = new FileSystemWatcher(_screenshotsDirectory)
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
+                IncludeSubdirectories = false,
+                EnableRaisingEvents = true
+            };
+            _screenshotWatcher.Created += OnScreenshotFileChanged;
+            _screenshotWatcher.Deleted += OnScreenshotFileChanged;
+            _screenshotWatcher.Renamed += (_, _) =>
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    _screenshotDebounceTimer?.Stop();
+                    _screenshotDebounceTimer?.Start();
+                });
+            };
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] InitializeScreenshotsPanelAsync FAILED: {ex.Message}");
+        }
+    }
+
+    private string? ResolveScreenshotsDirectory()
+    {
+        FileLog.Write("[MainWindow] ResolveScreenshotsDirectory: reading config.json");
+        var configPath = CcStorage.ConfigJson();
+        if (File.Exists(configPath))
+        {
+            var json = File.ReadAllText(configPath);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("screenshots", out var screenshotsObj) &&
+                screenshotsObj.TryGetProperty("source_directory", out var dirProp))
+            {
+                var dir = dirProp.GetString();
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    FileLog.Write($"[MainWindow] ResolveScreenshotsDirectory: config={dir}");
+                    return dir;
+                }
+            }
+        }
+
+        // Detect OneDrive screenshots folder
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var oneDriveConsumer = Path.Combine(userProfile, "OneDrive", "Pictures", "Screenshots");
+        if (Directory.Exists(oneDriveConsumer))
+            return oneDriveConsumer;
+
+        var localScreenshots = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Screenshots");
+        if (Directory.Exists(localScreenshots))
+            return localScreenshots;
+
+        return null;
+    }
+
+    private List<ScreenshotViewModel> LoadScreenshotViewModels(string directory)
+    {
+        var results = new List<ScreenshotViewModel>();
+        var files = Directory.EnumerateFiles(directory)
+            .Where(f => ScreenshotExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .Select(f => new FileInfo(f))
+            .OrderByDescending(f => f.LastWriteTime)
+            .Take(50)
+            .ToList();
+
+        foreach (var file in files)
+            results.Add(new ScreenshotViewModel(file.FullName));
+
+        return results;
+    }
+
+    private async void RefreshScreenshots()
+    {
+        FileLog.Write("[MainWindow] RefreshScreenshots: loading");
+        try
+        {
+            if (_screenshotsDirectory == null || !Directory.Exists(_screenshotsDirectory))
+                return;
+
+            var viewModels = await Task.Run(() => LoadScreenshotViewModels(_screenshotsDirectory));
+            _screenshots.Clear();
+            foreach (var vm in viewModels)
+                _screenshots.Add(vm);
+
+            FileLog.Write($"[MainWindow] RefreshScreenshots: loaded {_screenshots.Count} screenshots");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] RefreshScreenshots FAILED: {ex.Message}");
+        }
+    }
+
+    private void OnScreenshotFileChanged(object? sender, FileSystemEventArgs e)
+    {
+        if (e != null && !ScreenshotExtensions.Contains(Path.GetExtension(e.FullPath).ToLowerInvariant()))
+            return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            _screenshotDebounceTimer?.Stop();
+            _screenshotDebounceTimer?.Start();
+        });
+    }
+
+    private void ScreenshotItem_CopyPath(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is ScreenshotViewModel vm)
+        {
+            FileLog.Write($"[MainWindow] ScreenshotItem_CopyPath: {vm.FilePath}");
+            Clipboard.SetText(vm.FilePath);
+        }
+    }
+
+    private void ScreenshotItem_OpenInExplorer(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is ScreenshotViewModel vm)
+        {
+            FileLog.Write($"[MainWindow] ScreenshotItem_OpenInExplorer: {vm.FilePath}");
+            try
+            {
+                Process.Start("explorer.exe", $"/select,\"{vm.FilePath}\"");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] ScreenshotItem_OpenInExplorer FAILED: {ex.Message}");
+            }
+        }
+    }
+
+    private void ScreenshotItem_Delete(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is ScreenshotViewModel vm)
+        {
+            var result = MessageBox.Show(this,
+                $"Delete {vm.FileName}?",
+                "Delete Screenshot", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            FileLog.Write($"[MainWindow] ScreenshotItem_Delete: {vm.FilePath}");
+            try
+            {
+                File.Delete(vm.FilePath);
+                // FileSystemWatcher triggers refresh automatically
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] ScreenshotItem_Delete FAILED: {ex.Message}");
+                MessageBox.Show(this, $"Failed to delete: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+
+    private void BtnClearScreenshots_Click(object sender, RoutedEventArgs e)
+    {
+        if (_screenshotsDirectory == null || !Directory.Exists(_screenshotsDirectory))
+            return;
+
+        var result = MessageBox.Show(this,
+            "Delete ALL screenshots from the screenshots folder?",
+            "Clear All Screenshots", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes)
+            return;
+
+        FileLog.Write($"[MainWindow] BtnClearScreenshots_Click: clearing {_screenshotsDirectory}");
+        try
+        {
+            var files = Directory.EnumerateFiles(_screenshotsDirectory)
+                .Where(f => ScreenshotExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                .ToList();
+
+            var failedFiles = new List<string>();
+            foreach (var file in files)
+            {
+                try { File.Delete(file); }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[MainWindow] ClearScreenshots: skip {file}: {ex.Message}");
+                    failedFiles.Add(Path.GetFileName(file));
+                }
+            }
+            if (failedFiles.Count > 0)
+            {
+                MessageBox.Show(this,
+                    $"Could not delete {failedFiles.Count} file(s):\n{string.Join("\n", failedFiles)}",
+                    "Some Files Not Deleted", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            // FileSystemWatcher triggers refresh automatically
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnClearScreenshots_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private Point _screenshotDragStart;
+
+    private void ScreenshotItem_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _screenshotDragStart = e.GetPosition(null);
+    }
+
+    private void ScreenshotItem_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed)
+            return;
+
+        var pos = e.GetPosition(null);
+        var diff = _screenshotDragStart - pos;
+
+        if (Math.Abs(diff.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(diff.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        if (sender is FrameworkElement fe && fe.DataContext is ScreenshotViewModel vm)
+        {
+            var data = new DataObject(DataFormats.Text, vm.FilePath);
+            DragDrop.DoDragDrop(fe, data, DragDropEffects.Copy);
+        }
+    }
+
+    private void PromptInput_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.Text) || e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            e.Effects = DragDropEffects.Copy;
+            e.Handled = true;
+        }
+    }
+
+    private void PromptInput_Drop(object sender, DragEventArgs e)
+    {
+        string? path = null;
+
+        if (e.Data.GetDataPresent(DataFormats.Text))
+        {
+            path = e.Data.GetData(DataFormats.Text) as string;
+        }
+        else if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files?.Length > 0)
+                path = files[0];
+        }
+
+        if (!string.IsNullOrEmpty(path))
+        {
+            FileLog.Write($"[MainWindow] PromptInput_Drop: inserting path={path}");
+            var idx = PromptInput.CaretIndex;
+            PromptInput.Text = PromptInput.Text.Insert(idx, path);
+            PromptInput.CaretIndex = idx + path.Length;
+        }
+
+        e.Handled = true;
     }
 
     // ── Prompt Queue ──────────────────────────────────────────────
@@ -3917,6 +4294,31 @@ public class TurnSummaryViewModel
     {
         Header = header;
         Summary = summary;
+    }
+}
+
+public class ScreenshotViewModel
+{
+    public string FilePath { get; }
+    public string FileName { get; }
+    public string TimeLabel { get; }
+    public System.Windows.Media.Imaging.BitmapImage Thumbnail { get; }
+
+    public ScreenshotViewModel(string filePath)
+    {
+        FilePath = filePath;
+        FileName = System.IO.Path.GetFileName(filePath);
+        var info = new System.IO.FileInfo(filePath);
+        TimeLabel = info.LastWriteTime.ToString("MMM d, h:mm tt");
+
+        var bmp = new System.Windows.Media.Imaging.BitmapImage();
+        bmp.BeginInit();
+        bmp.UriSource = new Uri(filePath);
+        bmp.DecodePixelWidth = 280;
+        bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+        bmp.EndInit();
+        bmp.Freeze();
+        Thumbnail = bmp;
     }
 }
 

@@ -1,17 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec file for cc-excel."""
 
+import os
 from pathlib import Path
 
 block_cipher = None
 
 spec_path = Path(SPECPATH)
 
+# Get cc_shared path
+cc_shared_path = os.path.abspath('../cc_shared')
+
 a = Analysis(
     [str(spec_path / 'main.py')],
-    pathex=[SPECPATH, str(spec_path / 'src')],
+    pathex=[SPECPATH, str(spec_path / 'src'), cc_shared_path],
     binaries=[],
-    datas=[],
+    datas=[
+        (cc_shared_path + '/*.py', 'cc_shared'),
+        (cc_shared_path + '/providers/*.py', 'cc_shared/providers'),
+    ],
     hiddenimports=[
         'typer',
         'rich',
@@ -23,6 +30,7 @@ a = Analysis(
         'xlsxwriter.format',
         'xlsxwriter.chart',
         'xlsxwriter.chartsheet',
+        'openpyxl',
         'markdown_it',
         'cli',
         'models',
@@ -32,11 +40,16 @@ a = Analysis(
         'spec_models',
         'spec_parser',
         'spec_generator',
+        'md_converter',
         'parsers',
         'parsers.csv_parser',
         'parsers.json_parser',
         'parsers.markdown_parser',
         'themes',
+        'cc_shared',
+        'cc_shared.themes',
+        'cc_shared.config',
+        'cc_shared.providers',
     ],
     hookspath=[],
     hooksconfig={},

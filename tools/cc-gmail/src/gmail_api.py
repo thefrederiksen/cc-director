@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -717,3 +718,126 @@ class GmailClient:
         if existing:
             return existing
         return self.create_label(name)
+
+    def get_all_recipients(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract all unique recipients from sent emails.
+
+        Paginates through all SENT messages (metadata only), batch-fetches
+        To/Cc/Bcc headers in groups of 50, deduplicates by email address,
+        and filters out noreply/system addresses.
+
+        Returns:
+            Dict keyed by email address, each value is:
+            {"name": str, "sent_count": int}
+        """
+        logger.info("Fetching all sent message IDs...")
+
+        # Step 1: Get all sent message IDs
+        all_ids = []
+        page_token = None
+        while True:
+            kwargs = {"userId": self.user_id, "labelIds": ["SENT"], "maxResults": 500}
+            if page_token:
+                kwargs["pageToken"] = page_token
+            results = self.service.users().messages().list(**kwargs).execute()
+            messages = results.get("messages", [])
+            all_ids.extend([m["id"] for m in messages])
+            page_token = results.get("nextPageToken")
+            if not page_token:
+                break
+
+        logger.info("Total sent messages: %d", len(all_ids))
+
+        # Step 2: Batch-fetch To/Cc/Bcc headers in groups of 50
+        recipients = {}  # email -> {"name": str, "sent_count": int}
+        batch_size = 50
+
+        for i in range(0, len(all_ids), batch_size):
+            batch_ids = all_ids[i:i + batch_size]
+            batch = self.service.new_batch_http_request()
+
+            def make_callback(msg_id):
+                def callback(request_id, response, exception):
+                    if exception:
+                        return
+                    headers = response.get("payload", {}).get("headers", [])
+                    for h in headers:
+                        header_name = h.get("name", "").lower()
+                        if header_name in ("to", "cc", "bcc"):
+                            for contact in _parse_email_addresses(h.get("value", "")):
+                                email = contact["email"]
+                                if email in recipients:
+                                    recipients[email]["sent_count"] += 1
+                                    # Keep the first non-empty name
+                                    if contact["name"] and not recipients[email]["name"]:
+                                        recipients[email]["name"] = contact["name"]
+                                else:
+                                    recipients[email] = {
+                                        "name": contact["name"],
+                                        "sent_count": 1,
+                                    }
+                return callback
+
+            for msg_id in batch_ids:
+                batch.add(
+                    self.service.users().messages().get(
+                        userId=self.user_id,
+                        id=msg_id,
+                        format="metadata",
+                        metadataHeaders=["To", "Cc", "Bcc"],
+                    ),
+                    callback=make_callback(msg_id),
+                )
+
+            batch.execute()
+
+        # Step 3: Filter out noreply/system addresses
+        skip_patterns = [
+            "noreply", "no-reply", "notifications@", "mailer-daemon",
+            "donotreply", "do-not-reply", "unsubscribe",
+        ]
+
+        filtered = {}
+        for email, data in recipients.items():
+            if any(p in email for p in skip_patterns):
+                continue
+            filtered[email] = data
+
+        logger.info("Unique recipients after filtering: %d", len(filtered))
+        return filtered
+
+
+def _parse_email_addresses(header_value: str) -> List[Dict[str, str]]:
+    """Parse email addresses from a To/Cc/Bcc header value.
+
+    Handles formats like:
+      - "Name <email@example.com>"
+      - "email@example.com"
+      - "Name <email@example.com>, Other <other@example.com>"
+    """
+    if not header_value:
+        return []
+
+    contacts = []
+    # Split on commas, but not commas inside quotes
+    parts = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', header_value)
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        # Try "Name <email>" format
+        match = re.match(r'^"?([^"<]*?)"?\s*<([^>]+)>', part)
+        if match:
+            name = match.group(1).strip().strip('"')
+            email = match.group(2).strip().lower()
+            contacts.append({"name": name, "email": email})
+        else:
+            # Plain email
+            email = part.strip().strip("<>").lower()
+            if "@" in email:
+                contacts.append({"name": "", "email": email})
+
+    return contacts

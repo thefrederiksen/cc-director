@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import { parseAuditFile } from './audit-parser.mjs';
 import { generateTechnicalSeoRecs } from './generators/technical-seo.mjs';
 import { generateOnPageSeoRecs } from './generators/on-page-seo.mjs';
@@ -16,6 +17,22 @@ import { createWeeklyPlan } from './weekly-planner.mjs';
 import { formatConsole } from './formatters/console.mjs';
 import { formatJson } from './formatters/json.mjs';
 import { formatMarkdown } from './formatters/markdown.mjs';
+
+function getDefaultOutputDir(toolName) {
+  const home = process.env.USERPROFILE || process.env.HOME;
+  const dir = join(home, 'Documents', 'cc-director', toolName);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function getDefaultOutputPath(hostname, format) {
+  const dir = getDefaultOutputDir('cc-brandingrecommendations');
+  const extMap = { json: 'json', markdown: 'md' };
+  const ext = extMap[format] || format;
+  const date = new Date().toISOString().split('T')[0];
+  const safeName = hostname.replace(/[^a-zA-Z0-9]/g, '_');
+  return join(dir, `${safeName}_${date}.${ext}`);
+}
 
 const program = new Command();
 
@@ -75,6 +92,11 @@ function run(opts) {
     process.exit(1);
   }
   if (opts.verbose) console.log('    Audit for: ' + audit.hostname + ' (score: ' + audit.overall.score + ')');
+
+  // Default output directory when no -o specified
+  if (!opts.output && format !== 'console') {
+    opts.output = getDefaultOutputPath(audit.hostname, format);
+  }
 
   // Phase 2: Generate recommendations
   if (opts.verbose) console.log('[*] Generating recommendations...');

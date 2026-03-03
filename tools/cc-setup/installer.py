@@ -18,7 +18,9 @@ from github_api import (
 
 # Tools to install (order matters for display)
 TOOLS = [
-    "cc-markdown",
+    "cc-pdf",
+    "cc-html",
+    "cc-word",
     "cc-transcribe",
     "cc-image",
     "cc-voice",

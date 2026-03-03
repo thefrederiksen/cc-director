@@ -20,6 +20,7 @@ try:
     from .spec_parser import parse_spec
     from .spec_generator import generate_from_spec
     from .themes import THEMES, get_theme
+    from .md_converter import convert_xlsx_to_markdown
 except ImportError:
     from src import __version__
     from src.models import ChartSpec, ChartType, SummaryType, HighlightType
@@ -31,6 +32,7 @@ except ImportError:
     from src.spec_parser import parse_spec
     from src.spec_generator import generate_from_spec
     from src.themes import THEMES, get_theme
+    from src.md_converter import convert_xlsx_to_markdown
 
 app = typer.Typer(
     name="cc-excel",
@@ -567,6 +569,66 @@ def from_spec(
         raise typer.Exit(1)
     except RuntimeError as e:
         console.print(f"[red]Generation error:[/red] {e}")
+        raise typer.Exit(1)
+    except OSError as e:
+        console.print(f"[red]File error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command("to-markdown")
+def to_markdown(
+    input_file: Path = typer.Argument(
+        ...,
+        help="Input .xlsx file",
+        exists=True,
+        readable=True,
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output", "-o",
+        help="Output Markdown file (defaults to input name with .md extension)",
+    ),
+    sheet_name: Optional[str] = typer.Option(
+        None,
+        "--sheet-name",
+        help="Convert a specific sheet by name",
+    ),
+    all_sheets: bool = typer.Option(
+        False,
+        "--all-sheets",
+        help="Convert all sheets (default: first sheet only)",
+    ),
+):
+    """Convert an Excel workbook to Markdown pipe tables."""
+
+    # Default output path
+    if output is None:
+        output = input_file.with_suffix(".md")
+
+    # Validate output extension
+    if output.suffix.lower() != ".md":
+        console.print("[red]Error:[/red] Output file must have .md extension")
+        raise typer.Exit(1)
+
+    try:
+        console.print(f"[blue]Reading:[/blue] {input_file}")
+        markdown = convert_xlsx_to_markdown(
+            input_file,
+            sheet_name=sheet_name,
+            all_sheets=all_sheets,
+        )
+
+        console.print(f"[blue]Writing:[/blue] {output}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(markdown, encoding="utf-8")
+
+        console.print(f"[green]Done:[/green] {output}")
+
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except ValueError as e:
+        console.print(f"[red]Invalid input:[/red] {e}")
         raise typer.Exit(1)
     except OSError as e:
         console.print(f"[red]File error:[/red] {e}")

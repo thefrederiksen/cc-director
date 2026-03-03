@@ -1,0 +1,82 @@
+[
+  {
+    "id": 1,
+    "name": "Alice Chen",
+    "department": "Engineering",
+    "role": "Senior Developer",
+    "location": "San Francisco",
+    "start_date": "2022-03-15",
+    "projects": 7,
+    "rating": 4.8
+  },
+  {
+    "id": 2,
+    "name": "Marcus Johnson",
+    "department": "Product",
+    "role": "Product Manager",
+    "location": "New York",
+    "start_date": "2021-08-01",
+    "projects": 12,
+    "rating": 4.5
+  },
+  {
+    "id": 3,
+    "name": "Priya Patel",
+    "department": "Engineering",
+    "role": "Tech Lead",
+    "location": "Austin",
+    "start_date": "2020-11-10",
+    "projects": 15,
+    "rating": 4.9
+  },
+  {
+    "id": 4,
+    "name": "James O'Brien",
+    "department": "Design",
+    "role": "UX Designer",
+    "location": "Portland",
+    "start_date": "2023-01-20",
+    "projects": 5,
+    "rating": 4.3
+  },
+  {
+    "id": 5,
+    "name": "Sofia Rodriguez",
+    "department": "Engineering",
+    "role": "DevOps Engineer",
+    "location": "Denver",
+    "start_date": "2022-06-12",
+    "projects": 9,
+    "rating": 4.7
+  },
+  {
+    "id": 6,
+    "name": "David Kim",
+    "department": "Data Science",
+    "role": "ML Engineer",
+    "location": "Seattle",
+    "start_date": "2021-04-05",
+    "projects": 11,
+    "rating": 4.6
+  },
+  {
+    "id": 7,
+    "name": "Emma Wilson",
+    "department": "Engineering",
+    "role": "Backend Developer",
+    "location": "Chicago",
+    "start_date": "2023-09-18",
+    "projects": 3,
+    "rating": 4.4
+  },
+  {
+    "id": 8,
+    "name": "Raj Gupta",
+    "department": "Security",
+    "role": "Security Engineer",
+    "location": "Boston",
+    "start_date": "2022-01-03",
+    "projects": 8,
+    "rating": 4.8
+  }
+]

@@ -16,29 +16,22 @@ The Teams bot allows you to control CC Director sessions remotely via 1:1 Teams 
 
 ```
 +------------------+      HTTPS       +----------------------+
-|   Microsoft      | <--------------> |   Azure Dev Tunnel   |
+|   Microsoft      | <--------------> |   Dev Tunnels Relay  |
 |   Teams Client   |                  |   (Microsoft Cloud)  |
 +------------------+                  +----------------------+
         |                                       |
-        | Teams Bot Framework                   | Persistent tunnel
+        | Teams Bot Framework                   | In-process SDK
         v                                       v
 +------------------+                  +----------------------+
-|   Azure Bot      |                  |   devtunnel host     |
-|   Service        |                  |   (process in        |
-|                  |                  |    CC Director)      |
-+------------------+                  +----------------------+
-        |                                       |
-        | Routes to messaging endpoint          | localhost:3978
+|   Azure Bot      |                  |   CC Director        |
+|   Service        |                  |   Dev Tunnels SDK    |
+|                  |                  |   + Bot Server       |
++------------------+                  |   (ASP.NET Core)     |
+        |                             +----------------------+
+        | Routes to messaging endpoint          |
         | (your tunnel URL)                     v
         |                             +----------------------+
-        +---------------------------> |   CC Director        |
-                                      |   Teams Bot Server   |
-                                      |   (ASP.NET Core)     |
-                                      +----------------------+
-                                                |
-                                                v
-                                      +----------------------+
-                                      |   Session Manager    |
+        +---------------------------> |   Session Manager    |
                                       |   Terminal Control   |
                                       +----------------------+
 ```
@@ -50,39 +43,42 @@ The Teams bot allows you to control CC Director sessions remotely via 1:1 Teams 
 2. **Teams routes to Azure Bot Service** using Bot Framework protocol
 
 3. **Azure Bot Service forwards** to your configured messaging endpoint
-   (e.g., `https://abc123.devtunnels.ms/api/messages`)
+   (e.g., `https://abc123-3978.usw2.devtunnels.ms/api/messages`)
 
-4. **Dev Tunnel routes** the HTTPS request through Microsoft's cloud
-   to the `devtunnel host` process running inside CC Director
+4. **Dev Tunnels SDK** (running in-process inside CC Director) receives
+   the HTTPS request through Microsoft's relay cloud
 
-5. **CC Director's bot server** receives the message on localhost:3978,
-   processes commands, and sends responses back through the same path
+5. **CC Director's bot server** processes the message on localhost:3978
+   and sends responses back through the same path
 
 ### Dev Tunnel Lifecycle
 
 ```
-FIRST TIME SETUP (once ever):
-    devtunnel user login          # Authenticate with Microsoft
-    devtunnel create cc-director-bot --allow-anonymous
-                                  # Creates persistent tunnel definition
-                                  # You get a permanent URL like:
-                                  # https://abc123-3978.usw2.devtunnels.ms
+FIRST TIME CC DIRECTOR STARTS:
+    CC Director automatically:
+    1. Authenticates via Azure (DefaultAzureCredential)
+    2. Creates a persistent tunnel via Dev Tunnels API
+    3. Adds port 3978 with anonymous access
+    4. Stores tunnel ID locally for reuse
+    5. Connects the in-process tunnel host
+    -> You get a permanent URL like:
+       https://abc123-3978.usw2.devtunnels.ms
 
-EVERY TIME CC DIRECTOR STARTS:
-    CC Director automatically runs:
-    devtunnel host --tunnel-name cc-director-bot --port 3978
-                                  # "Activates" the tunnel
-                                  # Same URL becomes reachable
-                                  # Routes traffic to localhost:3978
+EVERY SUBSEQUENT START:
+    CC Director automatically:
+    1. Loads saved tunnel ID from disk
+    2. Verifies tunnel still exists (recreates if deleted)
+    3. Connects the in-process tunnel host
+    -> Same URL as before
 
 WHEN CC DIRECTOR STOPS:
-    devtunnel host process dies   # Tunnel goes offline
-                                  # URL returns errors
-                                  # Bot appears "unavailable" in Teams
+    Tunnel host disconnects gracefully
+    URL returns errors until next start
+    Bot appears "unavailable" in Teams
 
 WHEN CC DIRECTOR RESTARTS:
-    Same URL works again          # No reconfiguration needed
-                                  # Azure Bot endpoint unchanged
+    Same URL works again
+    No reconfiguration needed
 ```
 
 ### Key Characteristics
@@ -91,10 +87,11 @@ WHEN CC DIRECTOR RESTARTS:
 |--------|----------|
 | Tunnel URL | Persistent - same URL forever (tied to your MS account) |
 | Azure Bot config | One-time setup - endpoint URL never changes |
-| Tunnel activation | Automatic - CC Director starts `devtunnel host` |
+| Tunnel activation | Automatic - CC Director handles everything via SDK |
 | Offline behavior | Bot appears unavailable when CC Director not running |
 | Multiple PCs | Tunnel is tied to account, can only host from one PC at a time |
 | Port | Always 3978 (standard Bot Framework port) |
+| CLI dependency | None - Dev Tunnels SDK is bundled in the application |
 
 ### Why Dev Tunnels?
 
@@ -103,7 +100,7 @@ Options:
 
 1. **Public server** - Deploy bot to cloud (complex, costs money)
 2. **ngrok** - Works but URL changes on each restart (reconfigure Azure Bot each time)
-3. **Dev Tunnels** - Persistent URL, free, integrated with Microsoft ecosystem
+3. **Dev Tunnels SDK** - Persistent URL, free, bundled in-app, no external tools needed
 
 Dev Tunnels give you a stable public URL that always points to your local machine
 when the tunnel is active. Perfect for development and personal use.
@@ -114,55 +111,11 @@ when the tunnel is active. Perfect for development and personal use.
 
 - Azure subscription (free tier works)
 - Microsoft 365 account with Teams
-- Azure Dev Tunnels CLI installed
+- Azure CLI logged in (`az login`) or Visual Studio signed in to Azure
 
 ---
 
-## Step 1: Install Azure Dev Tunnels CLI
-
-```powershell
-# Install via winget
-winget install Microsoft.devtunnel
-
-# Or download from: https://aka.ms/TunnelsCliDownload/win-x64
-```
-
-Verify installation:
-```powershell
-devtunnel --version
-```
-
----
-
-## Step 2: Create Persistent Dev Tunnel
-
-Login to Dev Tunnels (one-time):
-```powershell
-devtunnel user login
-```
-
-Create a persistent tunnel (one-time):
-```powershell
-devtunnel create cc-director-bot --allow-anonymous
-```
-
-Note the tunnel ID - it will be used automatically when CC Director starts.
-
-To test the tunnel manually:
-```powershell
-devtunnel host --tunnel-name cc-director-bot --port 3978 --allow-anonymous
-```
-
-You should see output like:
-```
-Connect via browser: https://xxxxxxxx.devtunnels.ms
-```
-
-Save this URL - you'll need it for Azure Bot registration.
-
----
-
-## Step 3: Create Azure Bot Registration
+## Step 1: Create Azure Bot Registration
 
 1. Go to [Azure Portal](https://portal.azure.com)
 
@@ -188,15 +141,13 @@ Save this URL - you'll need it for Azure Bot registration.
    - **COPY THE SECRET VALUE NOW** - you won't see it again
 
 7. Go to **Configuration** and set:
-   - **Messaging endpoint**: `https://YOUR-TUNNEL-URL.devtunnels.ms/api/messages`
-
-   (Replace YOUR-TUNNEL-URL with your actual Dev Tunnel URL from Step 2)
+   - **Messaging endpoint**: (leave blank for now - you'll get the URL when CC Director first starts)
 
 8. Click **Apply**
 
 ---
 
-## Step 4: Enable Teams Channel
+## Step 2: Enable Teams Channel
 
 1. In your Azure Bot resource, go to **Channels**
 
@@ -210,7 +161,7 @@ The Teams channel is now enabled.
 
 ---
 
-## Step 5: Configure CC Director
+## Step 3: Configure CC Director
 
 Edit `appsettings.json` in your CC Director folder:
 
@@ -218,8 +169,8 @@ Edit `appsettings.json` in your CC Director folder:
 {
   "TeamsBot": {
     "Enabled": true,
-    "MicrosoftAppId": "YOUR-APP-ID-FROM-STEP-3",
-    "MicrosoftAppPassword": "YOUR-SECRET-FROM-STEP-3",
+    "MicrosoftAppId": "YOUR-APP-ID-FROM-STEP-1",
+    "MicrosoftAppPassword": "YOUR-SECRET-FROM-STEP-1",
     "Port": 3978,
     "TunnelName": "cc-director-bot",
     "WhitelistPath": "%LOCALAPPDATA%/CcDirector/teams-whitelist.json",
@@ -230,33 +181,50 @@ Edit `appsettings.json` in your CC Director folder:
 
 ---
 
-## Step 6: Get Your Teams User ID
+## Step 4: First Launch and Tunnel URL
 
 1. Start CC Director (with Teams bot enabled)
 
-2. Check the log file for:
+2. On first launch, the app will automatically:
+   - Authenticate with Azure via DefaultAzureCredential
+   - Create a persistent Dev Tunnel
+   - Start hosting the tunnel
+
+3. Check the log file for the tunnel URL:
    ```
-   [TeamsRemote] Bot started, URL: https://xxx.devtunnels.ms/api/messages
+   [DevTunnel] Public URL: https://xxx-3978.usw2.devtunnels.ms
+   [TeamsRemote] Bot started, URL: https://xxx-3978.usw2.devtunnels.ms/api/messages
    ```
 
-3. In Teams, search for your bot by name (the Bot handle from Step 3)
+4. Copy this URL and go back to Azure Portal:
+   - Open your Azure Bot resource > **Configuration**
+   - Set **Messaging endpoint** to: `https://YOUR-TUNNEL-URL/api/messages`
+   - Click **Apply**
 
-4. Send any message to the bot
+This URL is persistent - you only need to set it once.
 
-5. You'll see "Access denied" - this is expected
+---
 
-6. Check the file: `%LOCALAPPDATA%\CcDirector\teams-unknown-users.log`
+## Step 5: Get Your Teams User ID
+
+1. In Teams, search for your bot by name (the Bot handle from Step 1)
+
+2. Send any message to the bot
+
+3. You'll see "Access denied" - this is expected
+
+4. Check the file: `%LOCALAPPDATA%\CcDirector\teams-unknown-users.log`
 
    You'll see an entry like:
    ```
    [2024-01-15 10:30:00] UserId=29:1a2b3c4d-..., Name=Your Name, Message=hello
    ```
 
-7. Copy the UserId value (the full `29:xxx...` string)
+5. Copy the UserId value (the full `29:xxx...` string)
 
 ---
 
-## Step 7: Add Yourself to Whitelist
+## Step 6: Add Yourself to Whitelist
 
 Create/edit `%LOCALAPPDATA%\CcDirector\teams-whitelist.json`:
 
@@ -273,7 +241,7 @@ Restart CC Director or send `/reload` in Teams chat.
 
 ---
 
-## Step 8: Test the Bot
+## Step 7: Test the Bot
 
 In Teams, send these commands to your bot:
 
@@ -295,8 +263,8 @@ In Teams, send these commands to your bot:
 ### Bot doesn't respond
 
 1. Check CC Director log for errors
-2. Verify Dev Tunnel is running (check log for URL)
-3. Ensure messaging endpoint in Azure matches tunnel URL
+2. Verify tunnel is connected (check log for `[DevTunnel] Tunnel host connected, IsRunning=True`)
+3. Ensure messaging endpoint in Azure matches your tunnel URL
 
 ### "Access denied" message
 
@@ -304,11 +272,11 @@ In Teams, send these commands to your bot:
 2. Add the ID to `teams-whitelist.json`
 3. Send `/reload` or restart CC Director
 
-### Dev Tunnel won't start
+### Dev Tunnel authentication fails
 
-1. Ensure you're logged in: `devtunnel user login`
-2. Verify tunnel exists: `devtunnel list`
-3. If missing, recreate: `devtunnel create cc-director-bot --allow-anonymous`
+1. Ensure you are logged in to Azure CLI: `az login`
+2. Or ensure Visual Studio is signed in to an Azure account
+3. The Dev Tunnels API requires an authenticated Microsoft account
 
 ### Screenshots don't work
 
@@ -316,7 +284,7 @@ The `/snap` command only works for the currently displayed session. If the sessi
 
 ### Bot goes offline when PC sleeps
 
-Dev Tunnel disconnects when your PC sleeps. The bot will reconnect when CC Director restarts or when you wake your PC.
+Dev Tunnel disconnects when your PC sleeps. The tunnel will automatically reconnect when CC Director is running and your PC wakes up.
 
 ---
 
@@ -334,6 +302,7 @@ Dev Tunnel disconnects when your PC sleeps. The bot will reconnect when CC Direc
 | File | Purpose |
 |------|---------|
 | `appsettings.json` | Bot configuration (App ID, password, etc.) |
+| `%LOCALAPPDATA%\cc-director\config\teams-tunnel-state.json` | Saved tunnel ID for reuse |
 | `%LOCALAPPDATA%\CcDirector\teams-whitelist.json` | Allowed user IDs |
 | `%LOCALAPPDATA%\CcDirector\teams-unknown-users.log` | Rejected user attempts |
 | `%LOCALAPPDATA%\CcDirector\logs\director-*.log` | CC Director logs |

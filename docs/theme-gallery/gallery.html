@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CC Director Theme Gallery</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f0f2f5;
+    color: #1a1a2e;
+    line-height: 1.5;
+  }
+
+  header {
+    background: #1a1a2e;
+    color: #fff;
+    padding: 24px 32px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+
+  header h1 {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+  }
+
+  header p {
+    color: #a0a4b8;
+    font-size: 14px;
+    margin-top: 4px;
+  }
+
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 16px 32px;
+    background: #fff;
+    border-bottom: 1px solid #e0e3eb;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .filter-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .filter-group label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #666;
+    margin-right: 4px;
+  }
+
+  .filter-btn {
+    padding: 6px 14px;
+    border: 1px solid #d0d3db;
+    border-radius: 4px;
+    background: #fff;
+    color: #444;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .filter-btn:hover {
+    border-color: #888;
+    background: #f8f8fa;
+  }
+
+  .filter-btn.active {
+    background: #1a1a2e;
+    color: #fff;
+    border-color: #1a1a2e;
+  }
+
+  .separator {
+    width: 1px;
+    height: 28px;
+    background: #e0e3eb;
+    margin: 0 8px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    gap: 20px;
+    padding: 24px 32px;
+  }
+
+  .card {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    overflow: hidden;
+    transition: box-shadow 0.2s;
+  }
+
+  .card:hover {
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid #f0f2f5;
+  }
+
+  .card-header .tool-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: #1a1a2e;
+  }
+
+  .card-header .theme-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #f0f2f5;
+    color: #555;
+  }
+
+  .theme-boardroom .theme-badge { background: #e8eaf6; color: #283593; }
+  .theme-paper .theme-badge { background: #f5f5f5; color: #616161; }
+  .theme-terminal .theme-badge { background: #e8f5e9; color: #2e7d32; }
+  .theme-spark .theme-badge { background: #fff3e0; color: #e65100; }
+  .theme-thesis .theme-badge { background: #fce4ec; color: #880e4f; }
+  .theme-obsidian .theme-badge { background: #37374a; color: #c8c8d4; }
+  .theme-blueprint .theme-badge { background: #e3f2fd; color: #1565c0; }
+
+  .card-preview {
+    width: 100%;
+    height: 320px;
+    border: none;
+    background: #fafafa;
+  }
+
+  .card-preview-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 160px;
+    background: #fafafa;
+    color: #999;
+    font-size: 14px;
+    gap: 8px;
+  }
+
+  .card-preview-placeholder .file-icon {
+    font-size: 32px;
+    color: #ccc;
+  }
+
+  .card-footer {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid #f0f2f5;
+  }
+
+  .card-footer a {
+    font-size: 12px;
+    color: #1a73e8;
+    text-decoration: none;
+  }
+
+  .card-footer a:hover {
+    text-decoration: underline;
+  }
+
+  .empty-state {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: #888;
+  }
+
+  .empty-state p {
+    font-size: 16px;
+    margin-bottom: 8px;
+  }
+
+  .empty-state small {
+    font-size: 13px;
+    color: #aaa;
+  }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); padding: 16px; }
+    header, .filters { padding-left: 16px; padding-right: 16px; }
+  }
+
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CC Director Theme Gallery</h1>
+  <p>Visual comparison of themes across document generation tools</p>
+</header>
+
+<div class="filters">
+  <div class="filter-group">
+    <label>Theme:</label>
+    <button class="filter-btn active" data-filter-type="theme" data-filter="all">All</button>
+    <button class="filter-btn" data-filter-type="theme" data-filter="boardroom">Boardroom</button>
+    <button class="filter-btn" data-filter-type="theme" data-filter="paper">Paper</button>
+    <button class="filter-btn" data-filter-type="theme" data-filter="terminal">Terminal</button>
+    <button class="filter-btn" data-filter-type="theme" data-filter="spark">Spark</button>
+    <button class="filter-btn" data-filter-type="theme" data-filter="thesis">Thesis</button>
+    <button class="filter-btn" data-filter-type="theme" data-filter="obsidian">Obsidian</button>
+    <button class="filter-btn" data-filter-type="theme" data-filter="blueprint">Blueprint</button>
+  </div>
+  <div class="separator"></div>
+  <div class="filter-group">
+    <label>Tool:</label>
+    <button class="filter-btn active" data-filter-type="tool" data-filter="all">All</button>
+    <button class="filter-btn" data-filter-type="tool" data-filter="cc-html">cc-html</button>
+    <button class="filter-btn" data-filter-type="tool" data-filter="cc-pdf">cc-pdf</button>
+    <button class="filter-btn" data-filter-type="tool" data-filter="cc-word">cc-word</button>
+    <button class="filter-btn" data-filter-type="tool" data-filter="cc-excel">cc-excel</button>
+    <button class="filter-btn" data-filter-type="tool" data-filter="cc-powerpoint">cc-powerpoint</button>
+  </div>
+</div>
+
+<div class="grid" id="gallery"></div>
+
+<script>
+(function() {
+  var THEMES = ["boardroom", "paper", "terminal", "spark", "thesis", "obsidian", "blueprint"];
+
+  var TOOLS = [
+    { name: "cc-html", dir: "output/html", base: "report", ext: ".html", previewable: true },
+    { name: "cc-pdf", dir: "output/pdf", base: "report", ext: ".pdf", previewable: false },
+    { name: "cc-word", dir: "output/word", base: "report", ext: ".docx", previewable: false },
+    { name: "cc-excel", dir: "output/excel", base: "quarterly-sales", ext: ".xlsx", previewable: false },
+    { name: "cc-powerpoint", dir: "output/powerpoint", base: "slides", ext: ".pptx", previewable: false }
+  ];
+
+  var EXT_LABELS = {
+    ".html": "HTML",
+    ".pdf": "PDF",
+    ".docx": "Word",
+    ".xlsx": "Excel",
+    ".pptx": "PowerPoint"
+  };
+
+  var activeTheme = "all";
+  var activeTool = "all";
+
+  function buildCards() {
+    var gallery = document.getElementById("gallery");
+    gallery.innerHTML = "";
+    var count = 0;
+
+    TOOLS.forEach(function(tool) {
+      THEMES.forEach(function(theme) {
+        if (activeTheme !== "all" && activeTheme !== theme) return;
+        if (activeTool !== "all" && activeTool !== tool.name) return;
+
+        count++;
+        var filename = tool.base + "-" + theme + tool.ext;
+        var filepath = tool.dir + "/" + filename;
+
+        var card = document.createElement("div");
+        card.className = "card theme-" + theme;
+        card.setAttribute("data-tool", tool.name);
+        card.setAttribute("data-theme", theme);
+
+        var header = document.createElement("div");
+        header.className = "card-header";
+        header.innerHTML =
+          '<span class="tool-name">' + tool.name + '</span>' +
+          '<span class="theme-badge">' + theme + '</span>';
+        card.appendChild(header);
+
+        if (tool.previewable) {
+          var iframe = document.createElement("iframe");
+          iframe.className = "card-preview";
+          iframe.src = filepath;
+          iframe.title = tool.name + " - " + theme;
+          iframe.setAttribute("loading", "lazy");
+          card.appendChild(iframe);
+        } else {
+          var placeholder = document.createElement("div");
+          placeholder.className = "card-preview-placeholder";
+          placeholder.innerHTML =
+            '<span class="file-icon">[' + (EXT_LABELS[tool.ext] || tool.ext) + ']</span>' +
+            '<span>Binary format - download to view</span>';
+          card.appendChild(placeholder);
+        }
+
+        var footer = document.createElement("div");
+        footer.className = "card-footer";
+        footer.innerHTML = '<a href="' + filepath + '" download>Download ' + filename + '</a>';
+        if (tool.previewable) {
+          footer.innerHTML += '<a href="' + filepath + '" target="_blank">Open in new tab</a>';
+        }
+        card.appendChild(footer);
+
+        gallery.appendChild(card);
+      });
+    });
+
+    if (count === 0) {
+      gallery.innerHTML =
+        '<div class="empty-state">' +
+        '<p>No outputs match the current filters.</p>' +
+        '<small>Run generate.py to create output files, then refresh this page.</small>' +
+        '</div>';
+    }
+  }
+
+  document.querySelector(".filters").addEventListener("click", function(e) {
+    var btn = e.target.closest(".filter-btn");
+    if (!btn) return;
+
+    var filterType = btn.getAttribute("data-filter-type");
+    var filterValue = btn.getAttribute("data-filter");
+
+    // Update active state within the same filter group
+    var group = btn.closest(".filter-group");
+    var siblings = group.querySelectorAll(".filter-btn");
+    for (var i = 0; i < siblings.length; i++) {
+      siblings[i].classList.remove("active");
+    }
+    btn.classList.add("active");
+
+    if (filterType === "theme") {
+      activeTheme = filterValue;
+    } else if (filterType === "tool") {
+      activeTool = filterValue;
+    }
+
+    buildCards();
+  });
+
+  buildCards();
+})();
+</script>
+
+</body>
+</html>

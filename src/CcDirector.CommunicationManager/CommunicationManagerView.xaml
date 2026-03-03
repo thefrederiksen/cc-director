@@ -235,8 +235,32 @@
                     </RadioButton>
                 </StackPanel>
 
-                <Button Grid.Column="1" Content="Refresh" Style="{StaticResource SecondaryButtonStyle}"
-                        Command="{Binding RefreshCommand}"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="SEND ALL" Command="{Binding SendAllCommand}"
+                            Padding="20,10" Margin="4" FontSize="15" FontWeight="Bold" Cursor="Hand">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="border" Padding="{TemplateBinding Padding}"
+                                        Background="#DC3545" CornerRadius="6">
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="border" Property="Background" Value="#C82333"/>
+                                    </Trigger>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter TargetName="border" Property="Background" Value="#6C1A23"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                        <Button.Foreground>
+                            <SolidColorBrush Color="White"/>
+                        </Button.Foreground>
+                    </Button>
+                    <Button Content="Refresh" Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding RefreshCommand}"/>
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -645,8 +669,10 @@
                         <!-- Pending Actions -->
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
                                     Visibility="{Binding ElementName=PendingTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
-                            <Button Content="Approve" Style="{StaticResource ApproveButtonStyle}"
-                                    Click="Approve_Click" Width="100"/>
+                            <Button Content="Approve &amp; Send" Style="{StaticResource ApproveButtonStyle}"
+                                    Click="ApproveAndSend_Click" Width="140"/>
+                            <Button Content="Approve &amp; Schedule" Style="{StaticResource LinkButtonStyle}"
+                                    Click="ApproveAndSchedule_Click" Width="160"/>
                             <Button Content="Edit" Style="{StaticResource SecondaryButtonStyle}"
                                     Command="{Binding StartEditCommand}" Width="80"/>
                             <Button Content="Skip" Style="{StaticResource SecondaryButtonStyle}"

@@ -2,10 +2,16 @@ using System.Windows;
 using System.Windows.Documents;
 using System.Windows.Media;
 using Markdig;
+using Markdig.Extensions.Tables;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 
 using WpfBlock = System.Windows.Documents.Block;
+using WpfTable = System.Windows.Documents.Table;
+using WpfTableRow = System.Windows.Documents.TableRow;
+using WpfTableCell = System.Windows.Documents.TableCell;
+using MdTableRow = Markdig.Extensions.Tables.TableRow;
+using MdTableCell = Markdig.Extensions.Tables.TableCell;
 
 namespace CcDirector.Wpf.Helpers;
 
@@ -24,6 +30,8 @@ public static class MarkdownFlowDocumentRenderer
     private static readonly Brush QuoteBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)));
     private static readonly Brush QuoteBorderBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x3C, 0x3C, 0x3C)));
     private static readonly Brush DocBackground = Freeze(new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)));
+    private static readonly Brush TableHeaderForeground = Freeze(new SolidColorBrush(Color.FromRgb(0x56, 0x9C, 0xD6)));
+    private static readonly Brush TableAltRowBackground = Freeze(new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26)));
 
     private static readonly FontFamily MonoFont = new("Cascadia Mono, Consolas, Courier New");
     private static readonly FontFamily UiFont = new("Segoe UI");
@@ -32,15 +40,21 @@ public static class MarkdownFlowDocumentRenderer
         .UseAdvancedExtensions()
         .Build();
 
-    public static FlowDocument Render(string markdown)
+    public static FlowDocument Render(string markdown) => Render(markdown, embedded: false);
+
+    /// <summary>
+    /// Renders markdown to a FlowDocument.
+    /// When <paramref name="embedded"/> is true, uses transparent background and zero padding (for chat bubbles).
+    /// </summary>
+    public static FlowDocument Render(string markdown, bool embedded)
     {
         var doc = new FlowDocument
         {
-            Background = DocBackground,
+            Background = embedded ? Brushes.Transparent : DocBackground,
             Foreground = TextBrush,
             FontFamily = UiFont,
             FontSize = 14,
-            PagePadding = new Thickness(24, 16, 24, 16)
+            PagePadding = embedded ? new Thickness(0) : new Thickness(24, 16, 24, 16)
         };
 
         if (string.IsNullOrEmpty(markdown))
@@ -68,6 +82,7 @@ public static class MarkdownFlowDocumentRenderer
             CodeBlock codeBlock => RenderCodeBlock(codeBlock),
             ListBlock list => RenderList(list),
             QuoteBlock quote => RenderQuote(quote),
+            Markdig.Extensions.Tables.Table table => RenderTable(table),
             ThematicBreakBlock => RenderThematicBreak(),
             _ => RenderFallbackBlock(block)
         };
@@ -198,6 +213,83 @@ public static class MarkdownFlowDocumentRenderer
         }
 
         return section;
+    }
+
+    private static WpfTable RenderTable(Markdig.Extensions.Tables.Table table)
+    {
+        var wpfTable = new WpfTable
+        {
+            CellSpacing = 0,
+            BorderBrush = QuoteBorderBrush,
+            BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 4, 0, 8)
+        };
+
+        // Determine column count from first row
+        var columnCount = 0;
+        foreach (var child in table)
+        {
+            if (child is MdTableRow firstRow)
+            {
+                columnCount = firstRow.Count;
+                break;
+            }
+        }
+
+        for (var i = 0; i < columnCount; i++)
+            wpfTable.Columns.Add(new TableColumn());
+
+        var rowGroup = new TableRowGroup();
+        var rowIndex = 0;
+
+        foreach (var child in table)
+        {
+            if (child is not MdTableRow mdRow)
+                continue;
+
+            var wpfRow = new WpfTableRow();
+
+            if (mdRow.IsHeader)
+            {
+                wpfRow.Foreground = TableHeaderForeground;
+                wpfRow.FontWeight = FontWeights.SemiBold;
+            }
+            else
+            {
+                wpfRow.Foreground = TextBrush;
+                if (rowIndex % 2 == 1)
+                    wpfRow.Background = TableAltRowBackground;
+            }
+
+            foreach (var cellChild in mdRow)
+            {
+                if (cellChild is not MdTableCell mdCell)
+                    continue;
+
+                var wpfCell = new WpfTableCell
+                {
+                    BorderBrush = QuoteBorderBrush,
+                    BorderThickness = new Thickness(0.5),
+                    Padding = new Thickness(8, 4, 8, 4)
+                };
+
+                foreach (var block in mdCell)
+                {
+                    var rendered = RenderBlock(block);
+                    if (rendered != null)
+                        wpfCell.Blocks.Add(rendered);
+                }
+
+                wpfRow.Cells.Add(wpfCell);
+            }
+
+            rowGroup.Rows.Add(wpfRow);
+            if (!mdRow.IsHeader)
+                rowIndex++;
+        }
+
+        wpfTable.RowGroups.Add(rowGroup);
+        return wpfTable;
     }
 
     private static Paragraph RenderThematicBreak()

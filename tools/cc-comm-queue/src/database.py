@@ -62,6 +62,9 @@ CREATE TABLE IF NOT EXISTS communications (
     reddit_specific TEXT,
     email_specific TEXT,
     article_specific TEXT,
+    facebook_specific TEXT,
+    whatsapp_specific TEXT,
+    youtube_specific TEXT,
 
     -- Other
     recipient TEXT,  -- JSON object
@@ -87,6 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_created_at ON communications(created_at);
 CREATE INDEX IF NOT EXISTS idx_posted_at ON communications(posted_at);
 CREATE INDEX IF NOT EXISTS idx_ticket_number ON communications(ticket_number);
 CREATE INDEX IF NOT EXISTS idx_media_comm_id ON media(communication_id);
+CREATE INDEX IF NOT EXISTS idx_campaign_id ON communications(campaign_id);
 """
 
 
@@ -122,6 +126,29 @@ class Database:
             raise RuntimeError("Database not connected")
 
         self.conn.executescript(SCHEMA_SQL)
+        self.conn.commit()
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add columns that may be missing from older databases."""
+        if self.conn is None:
+            raise RuntimeError("Database not connected")
+
+        new_columns = [
+            ("facebook_specific", "TEXT"),
+            ("whatsapp_specific", "TEXT"),
+            ("youtube_specific", "TEXT"),
+        ]
+
+        for col_name, col_type in new_columns:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE communications ADD COLUMN {col_name} {col_type}"
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
         self.conn.commit()
 
     def close(self) -> None:
@@ -168,6 +195,9 @@ class Database:
         reddit_json = item.reddit_specific.model_dump_json() if item.reddit_specific else None
         email_json = item.email_specific.model_dump_json() if item.email_specific else None
         article_json = item.article_specific.model_dump_json() if item.article_specific else None
+        facebook_json = item.facebook_specific.model_dump_json() if item.facebook_specific else None
+        whatsapp_json = item.whatsapp_specific.model_dump_json() if item.whatsapp_specific else None
+        youtube_json = item.youtube_specific.model_dump_json() if item.youtube_specific else None
         recipient_json = item.recipient.model_dump_json() if item.recipient else None
         thread_json = json.dumps(item.thread_content) if item.thread_content else None
 
@@ -181,8 +211,10 @@ class Database:
                 context_url, context_title, context_author, destination_url,
                 campaign_id, notes, tags,
                 linkedin_specific, twitter_specific, reddit_specific,
-                email_specific, article_specific, recipient, thread_content
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                email_specific, article_specific,
+                facebook_specific, whatsapp_specific, youtube_specific,
+                recipient, thread_content
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -217,6 +249,9 @@ class Database:
                 reddit_json,
                 email_json,
                 article_json,
+                facebook_json,
+                whatsapp_json,
+                youtube_json,
                 recipient_json,
                 thread_json,
             ),
@@ -407,12 +442,13 @@ class Database:
 
         return self._row_to_dict(row)
 
-    def list_by_status(self, status: Optional[Status] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """List communications by status.
+    def list_by_status(self, status: Optional[Status] = None, limit: int = 100, campaign_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List communications by status and/or campaign.
 
         Args:
             status: Filter by status, or None for all
             limit: Maximum number of results
+            campaign_id: Filter by campaign identifier, or None for all
 
         Returns:
             List of communication dictionaries
@@ -420,16 +456,24 @@ class Database:
         if self.conn is None:
             raise RuntimeError("Database not connected")
 
+        conditions = []
+        params: List[Any] = []
+
         if status:
-            cursor = self.conn.execute(
-                "SELECT * FROM communications WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-                (status.value, limit)
-            )
-        else:
-            cursor = self.conn.execute(
-                "SELECT * FROM communications ORDER BY created_at DESC LIMIT ?",
-                (limit,)
-            )
+            conditions.append("status = ?")
+            params.append(status.value)
+
+        if campaign_id:
+            conditions.append("campaign_id = ?")
+            params.append(campaign_id)
+
+        where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+
+        cursor = self.conn.execute(
+            f"SELECT * FROM communications{where_clause} ORDER BY created_at DESC LIMIT ?",
+            params
+        )
 
         return [self._row_to_dict(row) for row in cursor.fetchall()]
 
@@ -563,7 +607,8 @@ class Database:
         # Parse JSON fields
         json_fields = [
             "tags", "linkedin_specific", "twitter_specific", "reddit_specific",
-            "email_specific", "article_specific", "recipient", "thread_content"
+            "email_specific", "article_specific", "facebook_specific",
+            "whatsapp_specific", "youtube_specific", "recipient", "thread_content"
         ]
 
         for field in json_fields:

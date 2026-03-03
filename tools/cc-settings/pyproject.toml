@@ -1,0 +1,16 @@
+[project]
+name = "cc-settings"
+version = "1.0.0"
+description = "Manage cc-director configuration and system settings"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+cc-settings = "src.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

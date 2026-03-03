@@ -174,7 +174,7 @@ public sealed class TeamsRemoteController : IDisposable
         if (_tunnelManager != null)
         {
             await _tunnelManager.StopAsync();
-            _tunnelManager.Dispose();
+            await _tunnelManager.DisposeAsync();
             _tunnelManager = null;
         }
 

@@ -178,6 +178,11 @@ class LinkedInURLs:
         return f"{LinkedInURLs.BASE}/jobs"
 
     @staticmethod
+    def grow_network() -> str:
+        """My Network grow page URL (people you may know)."""
+        return f"{LinkedInURLs.BASE}/mynetwork/grow"
+
+    @staticmethod
     def company(company_id: str) -> str:
         """Company page URL."""
         return f"{LinkedInURLs.BASE}/company/{company_id}"

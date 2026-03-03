@@ -306,6 +306,80 @@ class OutlookClient:
 
         return True
 
+    def get_all_recipients(self) -> dict:
+        """
+        Extract all unique recipients from sent emails.
+
+        Iterates through all messages in the Sent folder, collects
+        To and Cc addresses, deduplicates by email, and filters out
+        noreply/system addresses.
+
+        Returns:
+            Dict keyed by email address, each value is:
+            {"name": str, "sent_count": int}
+        """
+        logger.info("Fetching all sent messages for recipient extraction...")
+
+        mailbox = self.account.mailbox()
+        sent_folder = mailbox.sent_folder()
+
+        # Fetch all sent messages (O365 handles pagination internally when limit > 999)
+        messages = sent_folder.get_messages(limit=10000)
+
+        recipients = {}  # email -> {"name": str, "sent_count": int}
+        processed = 0
+
+        for msg in messages:
+            # Collect To recipients
+            if msg.to:
+                for recipient in msg.to:
+                    email = recipient.address.lower() if recipient.address else None
+                    if not email:
+                        continue
+                    name = recipient.name or ""
+                    if email in recipients:
+                        recipients[email]["sent_count"] += 1
+                        if name and not recipients[email]["name"]:
+                            recipients[email]["name"] = name
+                    else:
+                        recipients[email] = {"name": name, "sent_count": 1}
+
+            # Collect Cc recipients
+            if msg.cc:
+                for recipient in msg.cc:
+                    email = recipient.address.lower() if recipient.address else None
+                    if not email:
+                        continue
+                    name = recipient.name or ""
+                    if email in recipients:
+                        recipients[email]["sent_count"] += 1
+                        if name and not recipients[email]["name"]:
+                            recipients[email]["name"] = name
+                    else:
+                        recipients[email] = {"name": name, "sent_count": 1}
+
+            processed += 1
+            if processed % 500 == 0:
+                logger.info("Processed %d messages, %d unique recipients so far",
+                            processed, len(recipients))
+
+        logger.info("Total sent messages processed: %d", processed)
+
+        # Filter out noreply/system addresses
+        skip_patterns = [
+            "noreply", "no-reply", "notifications@", "mailer-daemon",
+            "donotreply", "do-not-reply", "unsubscribe",
+        ]
+
+        filtered = {}
+        for email, data in recipients.items():
+            if any(p in email for p in skip_patterns):
+                continue
+            filtered[email] = data
+
+        logger.info("Unique recipients after filtering: %d", len(filtered))
+        return filtered
+
     # =========================================================================
     # Folder Operations
     # =========================================================================

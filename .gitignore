@@ -35,11 +35,18 @@ tmp_build_output/right_click_session.png
 # Data output files
 tools/cc-gmail/sent_contacts.json
 
+# Screenshots with potential PII
+docs/simple-chat-plain-text-table.png
+
 # Debug/temp output files
 cli-explorer-console*.txt
 cli-explorer-report.md
 json-schema-stderr.txt
+outlook-stderr.txt
 *_wpftmp.csproj
+
+# Data backup files
+docs/deleted-*-contacts-backup.json
 
 # Node
 node_modules/

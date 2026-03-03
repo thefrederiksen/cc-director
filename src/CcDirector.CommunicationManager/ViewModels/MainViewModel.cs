@@ -631,7 +631,35 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private enum DispatchResult { Sent, Failed, Skipped }
 
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
-    private static readonly HashSet<string> _gmailAccounts = new(StringComparer.OrdinalIgnoreCase) { "personal" };
+    private static readonly HashSet<string> _gmailAccounts = LoadGmailAccounts();
+
+    private static HashSet<string> LoadGmailAccounts()
+    {
+        var configPath = CcStorage.ConfigJson();
+        if (!File.Exists(configPath))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var json = File.ReadAllText(configPath);
+        using var doc = JsonDocument.Parse(json);
+
+        if (!doc.RootElement.TryGetProperty("comm_manager", out var cm) ||
+            !cm.TryGetProperty("send_from_accounts", out var accounts))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var acct in accounts.EnumerateObject())
+        {
+            if (acct.Value.TryGetProperty("tool", out var tool))
+            {
+                var toolStr = tool.GetString() ?? "";
+                if (toolStr.Contains("gmail", StringComparison.OrdinalIgnoreCase))
+                    result.Add(acct.Name);
+            }
+        }
+
+        FileLog.Write($"[CommunicationManager.VM] LoadGmailAccounts: {string.Join(", ", result)}");
+        return result;
+    }
 
     [RelayCommand]
     private async Task SendAllAsync()

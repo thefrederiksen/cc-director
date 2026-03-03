@@ -83,3 +83,14 @@ class FeedItem(BaseModel):
     time_ago: str = ""
     is_repost: bool = False
     original_author: Optional[str] = None
+
+
+class ConnectionAttempt(BaseModel):
+    """Record of an auto-connect attempt for JSONL logging."""
+    username: str
+    name: str
+    headline: Optional[str] = None
+    note_category: str  # "mindzie" or "course"
+    note_sent: str
+    status: str  # "sent", "already_connected", "skipped", "failed"
+    timestamp: str

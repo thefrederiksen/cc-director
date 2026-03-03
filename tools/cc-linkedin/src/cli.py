@@ -1524,12 +1524,32 @@ def connect(
 
 
 def _find_connect_button(snapshot_text: str) -> Optional[str]:
-    """Find connect button, excluding message buttons."""
+    """Find connect button, excluding false positives.
+
+    Matches buttons like:
+        - 'Invite John to connect'
+        - 'Connect' (standalone action button)
+    Excludes:
+        - 'Connection Management A/S' (education/company)
+        - '500+ connections' (profile stats)
+        - 'Message' buttons
+    """
     lines = snapshot_text.split('\n')
     for line in lines:
         line_lower = line.lower()
-        if 'connect' in line_lower and 'button' in line_lower:
-            if 'message' not in line_lower:
+        if 'button' not in line_lower:
+            continue
+        if 'message' in line_lower:
+            continue
+        # Match "invite ... to connect" (dropdown menu item)
+        if 'invite' in line_lower and 'to connect' in line_lower:
+            match = re.search(r'\[ref=(\w+)\]', line)
+            if match:
+                return match.group(1)
+        # Match standalone "Connect" action button -- must have "connect"
+        # but NOT "connection" or "connections" or "connected" or "disconnect"
+        if 'connect' in line_lower:
+            if not re.search(r'connect(ion|ions|ed|ing)|disconnect', line_lower):
                 match = re.search(r'\[ref=(\w+)\]', line)
                 if match:
                     return match.group(1)
@@ -1709,6 +1729,7 @@ def _send_connect_request(client: BrowserClient, username: str, note_text: str) 
     """Send a connection request to a user. Returns status string.
 
     Assumes we are already on the user's profile page.
+    Handles both direct Connect button and Connect hidden in "More actions" dropdown.
     """
     try:
         snapshot = client.snapshot()
@@ -1717,11 +1738,40 @@ def _send_connect_request(client: BrowserClient, username: str, note_text: str) 
         connect_ref = _find_connect_button(snapshot_text)
 
         if not connect_ref:
-            if find_element_ref(snapshot_text, ["message"], "button"):
-                return "already_connected"
+            # Check if pending
             if "pending" in snapshot_text.lower():
                 return "already_connected"
-            return "failed"
+
+            # Check if truly already connected: Message button WITHOUT a
+            # Follow button. If Follow is visible, they're NOT connected --
+            # Connect is just hidden in the "More actions" dropdown.
+            has_message = find_element_ref(snapshot_text, ["message"], "button")
+            has_follow = find_element_ref(snapshot_text, ["follow"], "button")
+            if has_message and not has_follow:
+                return "already_connected"
+
+            # Try "More actions" dropdown -- Connect is often hidden there
+            more_ref = find_element_ref(snapshot_text, ["more actions", "more"], "button")
+            if more_ref:
+                client.click(more_ref)
+                jittered_sleep(1)
+                snapshot = client.snapshot()
+                snapshot_text = snapshot.get("snapshot", "")
+                # Look for "Invite ... to connect" button in dropdown
+                connect_ref = _find_connect_button(snapshot_text)
+                if not connect_ref:
+                    # Also check for "Invite ... to connect" pattern
+                    lines = snapshot_text.split('\n')
+                    for line in lines:
+                        line_lower = line.lower()
+                        if 'invite' in line_lower and 'connect' in line_lower and 'button' in line_lower:
+                            match = re.search(r'\[ref=(\w+)\]', line)
+                            if match:
+                                connect_ref = match.group(1)
+                                break
+
+            if not connect_ref:
+                return "failed"
 
         client.click(connect_ref)
         jittered_sleep(1)

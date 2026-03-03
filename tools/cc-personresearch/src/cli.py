@@ -1,7 +1,9 @@
 """CLI entry point for cc-personresearch."""
 
 import json
+import os
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,22 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+def get_default_output_dir(tool_name: str) -> Path:
+    """Return ~/Documents/cc-director/<tool_name>/, creating it if needed."""
+    home = Path(os.environ.get("USERPROFILE", "") or Path.home())
+    out_dir = home / "Documents" / "cc-director" / tool_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def get_default_output_path(person_name: str) -> Path:
+    """Generate default output path from person name and today's date."""
+    out_dir = get_default_output_dir("cc-personresearch")
+    safe_name = "".join(c if c.isalnum() else "_" for c in person_name)
+    today = date.today().isoformat()
+    return out_dir / f"{safe_name}_{today}.json"
 
 
 @app.command()
@@ -66,13 +84,10 @@ def search(
     # Output JSON
     report_json = report.model_dump_json(indent=2)
 
-    if output:
-        out_path = Path(output)
-        out_path.write_text(report_json, encoding="utf-8")
-        console.print(f"\n[bold green]Report saved:[/bold green] {out_path.resolve()}")
-    else:
-        console.print(f"\n[bold]JSON Report:[/bold]")
-        console.print(report_json)
+    # Default output directory when no -o specified
+    out_path = Path(output) if output else get_default_output_path(name)
+    out_path.write_text(report_json, encoding="utf-8")
+    console.print(f"\n[bold green]Report saved:[/bold green] {out_path.resolve()}")
 
 
 @app.command()

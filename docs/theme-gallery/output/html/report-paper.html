@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Quarterly Operations Report</title>
+<style>
+        /* Base styles for all themes */
+        
+        * {
+            box-sizing: border-box;
+        }
+        
+        html {
+            font-size: 16px;
+            line-height: 1.6;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+        }
+        
+        .markdown-body {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        /* Typography */
+        h1, h2, h3, h4, h5, h6 {
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+            font-weight: 600;
+            line-height: 1.25;
+        }
+        
+        h1 { font-size: 2em; }
+        h2 { font-size: 1.5em; }
+        h3 { font-size: 1.25em; }
+        h4 { font-size: 1em; }
+        h5 { font-size: 0.875em; }
+        h6 { font-size: 0.85em; }
+        
+        p {
+            margin: 1em 0;
+        }
+        
+        /* Links */
+        a {
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+        
+        /* Lists */
+        ul, ol {
+            margin: 1em 0;
+            padding-left: 2em;
+        }
+        
+        li {
+            margin: 0.25em 0;
+        }
+        
+        /* Code */
+        code {
+            font-size: 0.9em;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+        }
+        
+        pre {
+            margin: 1em 0;
+            padding: 1em;
+            overflow-x: auto;
+            border-radius: 6px;
+        }
+        
+        pre code {
+            padding: 0;
+            background: transparent;
+        }
+        
+        /* Blockquotes */
+        blockquote {
+            margin: 1em 0;
+            padding: 0.5em 1em;
+            border-left: 4px solid;
+        }
+        
+        blockquote p {
+            margin: 0.5em 0;
+        }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1em 0;
+        }
+        
+        th, td {
+            padding: 0.75em;
+            text-align: left;
+            border: 1px solid;
+        }
+        
+        th {
+            font-weight: 600;
+        }
+        
+        /* Horizontal rule */
+        hr {
+            border: none;
+            height: 1px;
+            margin: 2em 0;
+        }
+        
+        /* Images */
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+        
+        /* Task lists */
+        .task-list-item {
+            list-style-type: none;
+        }
+        
+        .task-list-item input[type="checkbox"] {
+            margin-right: 0.5em;
+        }
+        
+        /* Paper Theme - Minimal, clean, elegant */
+        
+        body {
+            font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: #1A1A1A;
+            background: #FFFFFF;
+        }
+        
+        h1, h2, h3, h4, h5, h6 {
+            font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #000000;
+        }
+        
+        a {
+            color: #0066CC;
+        }
+        
+        code {
+            font-family: "Consolas", "JetBrains Mono", "Fira Code", Consolas, monospace;
+            background: #F5F5F5;
+            color: #333333;
+        }
+        
+        pre {
+            background: #F5F5F5;
+            border: 1px solid #E0E0E0;
+        }
+        
+        blockquote {
+            color: #666666;
+            border-color: #E0E0E0;
+            background: #FFFFFF;
+        }
+        
+        th, td {
+            border-color: #E0E0E0;
+        }
+        
+        th {
+            background: #FAFAFA;
+            color: #1A1A1A;
+        }
+        
+        hr {
+            background: #E0E0E0;
+        }
+        
+    </style>
+</head>
+<body>
+<article class="markdown-body">
+<h1>Quarterly Operations Report</h1>
+<p><strong>Prepared by:</strong> Strategic Operations Division
+        <strong>Period:</strong> Q4 2025 (October - December)
+        <strong>Classification:</strong> Internal</p>
+<hr/>
+<h2>Executive Summary</h2>
+<p>The fourth quarter delivered <strong>strong operational results</strong> across all business units, with consolidated revenue reaching $42.3M -- a 14% increase over Q3. Infrastructure modernization initiatives completed ahead of schedule, enabling the platform team to deploy <em>three major feature releases</em> without service disruption.</p>
+<p>Key achievements this quarter include the successful migration of 12 legacy services to the new container orchestration platform, a 23% reduction in mean time to recovery (MTTR), and the onboarding of two enterprise clients in the healthcare vertical.</p>
+<blockquote>
+<p>"This quarter represents a turning point in our operational maturity. The investments we made in automation and observability are paying dividends." -- VP of Engineering</p>
+</blockquote>
+<h2>Financial Performance</h2>
+<h3>Revenue by Business Unit</h3>
+<table>
+<thead>
+<tr>
+<th>Business Unit</th>
+<th>Q3 Revenue</th>
+<th>Q4 Revenue</th>
+<th>Change</th>
+<th>YoY Growth</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Core Platform</td>
+<td>$18.2M</td>
+<td>$21.1M</td>
+<td>+15.9%</td>
+<td>+28.3%</td>
+</tr>
+<tr>
+<td>Enterprise</td>
+<td>$11.4M</td>
+<td>$12.8M</td>
+<td>+12.3%</td>
+<td>+19.7%</td>
+</tr>
+<tr>
+<td>Data Services</td>
+<td>$5.1M</td>
+<td>$5.9M</td>
+<td>+15.7%</td>
+<td>+34.2%</td>
+</tr>
+<tr>
+<td>Professional Svcs</td>
+<td>$2.4M</td>
+<td>$2.5M</td>
+<td>+4.2%</td>
+<td>+8.1%</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>$37.1M</strong></td>
+<td><strong>$42.3M</strong></td>
+<td><strong>+14.0%</strong></td>
+<td><strong>+24.6%</strong></td>
+</tr>
+</tbody>
+</table>
+<h3>Cost Analysis</h3>
+<p>Operating expenses remained within budget at $31.7M, yielding an operating margin of 25.1%. Notable line items:</p>
+<ol>
+<li><strong>Cloud infrastructure</strong>: $8.2M (down 6% due to optimization)</li>
+<li><strong>Personnel</strong>: $18.1M (includes 14 new hires)</li>
+<li><strong>Software licenses</strong>: $3.4M</li>
+<li><strong>Facilities and overhead</strong>: $2.0M</li>
+</ol>
+<h2>Technical Operations</h2>
+<h3>Platform Reliability</h3>
+<p>System uptime averaged <strong>99.97%</strong> across all production environments. The three incidents that occurred were resolved within SLA:</p>
+<ul>
+<li><strong>Oct 12</strong>: Database connection pool exhaustion (P2, resolved in 47 min)</li>
+<li><strong>Nov 3</strong>: Certificate rotation failure on edge nodes (P3, resolved in 22 min)</li>
+<li><strong>Dec 18</strong>: Memory leak in notification service v2.4.1 (P2, resolved in 1h 13min)</li>
+</ul>
+<h3>Deployment Metrics</h3>
+<p>The engineering team shipped 847 deployments this quarter, averaging 65 per week:</p>
+<pre><code class="language-python"># Deployment frequency analysis
+        deployments = {
+            "october": 274,
+            "november": 291,
+            "december": 282
+        }
+        
+        avg_weekly = sum(deployments.values()) / 13
+        success_rate = 0.994  # 99.4% success rate
+        rollback_count = 5
+        
+        print(f"Average weekly deployments: {avg_weekly:.0f}")
+        print(f"Success rate: {success_rate:.1%}")
+        print(f"Rollbacks: {rollback_count}")
+        </code></pre>
+<p>The deployment pipeline now supports <code>blue-green</code> and <code>canary</code> release strategies, reducing the blast radius of failed deployments.</p>
+<h2>Strategic Initiatives</h2>
+<h3>Initiative 1: Healthcare Vertical Expansion</h3>
+<p>Two new enterprise healthcare clients signed in Q4, bringing annual contract value (ACV) to $4.2M. HIPAA compliance certification was renewed, and the dedicated healthcare data residency zone went live in November.</p>
+<h3>Initiative 2: Observability Platform</h3>
+<p>The internal observability stack was consolidated from four vendors to one unified platform. Key results:</p>
+<ul>
+<li>Alert noise reduced by <strong>62%</strong></li>
+<li>Dashboard load time improved from 8s to under 2s</li>
+<li>Cost savings of $340K annually</li>
+</ul>
+<h3>Initiative 3: Developer Experience</h3>
+<p>Internal developer satisfaction scores rose from 3.2 to <strong>4.1 out of 5.0</strong> following the rollout of the new CI/CD pipeline, standardized project templates, and self-service environment provisioning.</p>
+<h2>Risks and Mitigations</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Likelihood</th>
+<th>Impact</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Key person dependency on platform team</td>
+<td>Medium</td>
+<td>High</td>
+<td>Cross-training program launched in Nov</td>
+</tr>
+<tr>
+<td>Cloud provider rate increases in 2026</td>
+<td>High</td>
+<td>Medium</td>
+<td>Multi-cloud evaluation underway</td>
+</tr>
+<tr>
+<td>Regulatory changes in EU market</td>
+<td>Low</td>
+<td>High</td>
+<td>Legal review scheduled for Q1</td>
+</tr>
+</tbody>
+</table>
+<h2>Next Quarter Outlook</h2>
+<p>Q1 2026 priorities include launching the self-service analytics portal, completing SOC 2 Type II certification, and expanding the sales team by 8 headcount. The engineering roadmap focuses on API v3 general availability and real-time event streaming.</p>
+<hr/>
+<p><em>Report generated by Strategic Operations Division. For questions, contact <a href="mailto:ops-reports@example.com">ops-reports@example.com</a>.</em></p>
+</article>
+</body>
+</html>

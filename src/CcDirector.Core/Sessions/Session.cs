@@ -133,6 +133,9 @@ public sealed class Session : IDisposable
         }
     }
 
+    /// <summary>Chat messages for the Simple Chat view.</summary>
+    public SessionChatHistory ChatHistory { get; } = new();
+
     /// <summary>Prompt text the user was composing but hasn't sent yet. Persisted across switches and restarts.</summary>
     public string? PendingPromptText { get; set; }
 

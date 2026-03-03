@@ -75,10 +75,11 @@ $pythonTools = @(
     "cc-excel",
     "cc-gmail",
     "cc-hardware",
+    "cc-html",
     "cc-image",
     "cc-linkedin",
-    "cc-markdown",
     "cc-outlook",
+    "cc-pdf",
     "cc-personresearch",
     "cc-photos",
     "cc-powerpoint",
@@ -90,6 +91,7 @@ $pythonTools = @(
     "cc-video",
     "cc-voice",
     "cc-whisper",
+    "cc-word",
     "cc-youtube-info"
 )
 

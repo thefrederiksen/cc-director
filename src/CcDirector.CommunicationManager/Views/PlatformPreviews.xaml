@@ -324,6 +324,193 @@
         </Border>
     </DataTemplate>
 
+    <!-- Facebook Preview -->
+    <DataTemplate x:Key="FacebookPreviewTemplate" DataType="{x:Type models:ContentItem}">
+        <Border Background="White" BorderBrush="#E4E6EB" BorderThickness="1" CornerRadius="8" Padding="16" MaxWidth="600">
+            <StackPanel>
+                <!-- Header: Avatar + Name -->
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="40"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Avatar Circle -->
+                    <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20" Background="#1877F2">
+                        <TextBlock Text="UN" Foreground="White" FontWeight="Bold" FontSize="14"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+
+                    <!-- Name and Page -->
+                    <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding FacebookSpecific.PageName, FallbackValue='User Name'}"
+                                   FontWeight="SemiBold" FontSize="15" Foreground="#050505"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="2h" Foreground="#65676B" FontSize="12"/>
+                            <TextBlock Text=" - " Foreground="#65676B" FontSize="12"/>
+                            <TextBlock Text="{Binding FacebookSpecific.Audience, FallbackValue='Public'}"
+                                       Foreground="#65676B" FontSize="12"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Content -->
+                <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="15" LineHeight="20"
+                           Foreground="#050505" Margin="0,0,0,12"/>
+
+                <!-- Image (if present) -->
+                <Border Margin="0,0,0,12" CornerRadius="4"
+                        Visibility="{Binding Media, Converter={StaticResource NullToVis}}">
+                    <Image Source="{Binding Media, Converter={StaticResource FirstMediaToImage}}"
+                           Stretch="Uniform" MaxHeight="400"/>
+                </Border>
+
+                <!-- Engagement Stats -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <Ellipse Width="18" Height="18" Fill="#1877F2"/>
+                    <TextBlock Text=" 32" Foreground="#65676B" FontSize="13" Margin="2,0,0,0"/>
+                    <TextBlock Text="    5 Comments" Foreground="#65676B" FontSize="13"/>
+                    <TextBlock Text="    2 Shares" Foreground="#65676B" FontSize="13"/>
+                </StackPanel>
+
+                <!-- Separator -->
+                <Border Height="1" Background="#E4E6EB" Margin="0,4,0,8"/>
+
+                <!-- Action Buttons -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Center">
+                        <TextBlock Text="[+]" Foreground="#65676B" FontSize="16"/>
+                        <TextBlock Text=" Like" Foreground="#65676B" FontSize="14" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center">
+                        <TextBlock Text="[o]" Foreground="#65676B" FontSize="16"/>
+                        <TextBlock Text=" Comment" Foreground="#65676B" FontSize="14" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center">
+                        <TextBlock Text="[>]" Foreground="#65676B" FontSize="16"/>
+                        <TextBlock Text=" Share" Foreground="#65676B" FontSize="14" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </Border>
+    </DataTemplate>
+
+    <!-- WhatsApp Preview -->
+    <DataTemplate x:Key="WhatsAppPreviewTemplate" DataType="{x:Type models:ContentItem}">
+        <Border Background="#ECE5DD" CornerRadius="8" Padding="16" MaxWidth="500">
+            <StackPanel>
+                <!-- Contact Header -->
+                <Grid Margin="0,0,0,12" Background="#075E54">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="40"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Width="36" Height="36" CornerRadius="18" Background="#25D366" Margin="4">
+                        <TextBlock Text="UN" Foreground="White" FontWeight="Bold" FontSize="12"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Margin="8,8,0,8" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding WhatsAppSpecific.ContactName, FallbackValue='Contact'}"
+                                   FontWeight="SemiBold" FontSize="15" Foreground="White"/>
+                        <TextBlock Text="{Binding WhatsAppSpecific.PhoneNumber, FallbackValue=''}"
+                                   Foreground="#A0D8B4" FontSize="11"/>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Chat Bubble (outgoing - right aligned) -->
+                <Border Background="#DCF8C6" CornerRadius="8,8,0,8"
+                        Padding="10,6" Margin="60,0,0,4"
+                        HorizontalAlignment="Right">
+                    <StackPanel>
+                        <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="14"
+                                   LineHeight="20" Foreground="#303030" MaxWidth="350"/>
+                        <TextBlock Text="12:34 PM" Foreground="#999999" FontSize="10"
+                                   HorizontalAlignment="Right" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Border>
+    </DataTemplate>
+
+    <!-- YouTube Preview -->
+    <DataTemplate x:Key="YouTubePreviewTemplate" DataType="{x:Type models:ContentItem}">
+        <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="8" MaxWidth="650">
+            <StackPanel>
+                <!-- Video Thumbnail Area -->
+                <Border Background="#0F0F0F" CornerRadius="8,8,0,0" Height="200">
+                    <Grid>
+                        <!-- Image (if present) -->
+                        <Image Source="{Binding Media, Converter={StaticResource FirstMediaToImage}}"
+                               Stretch="UniformToFill"
+                               Visibility="{Binding Media, Converter={StaticResource NullToVis}}"/>
+                        <!-- Play Button Overlay -->
+                        <Border Background="#CC000000" Width="60" Height="42" CornerRadius="8"
+                                HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock Text="[>]" Foreground="White" FontSize="20"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <!-- Privacy Badge -->
+                        <Border Background="#CC000000" CornerRadius="4" Padding="6,2"
+                                HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,8,0">
+                            <TextBlock Text="{Binding YouTubeSpecific.PrivacyStatus, FallbackValue='private'}"
+                                       Foreground="White" FontSize="11" FontWeight="SemiBold"/>
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <!-- Video Info -->
+                <StackPanel Margin="12,12,12,8">
+                    <!-- Title -->
+                    <TextBlock Text="{Binding YouTubeSpecific.Title, FallbackValue='Video Title'}"
+                               FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"
+                               Foreground="#0F0F0F" Margin="0,0,0,4"/>
+
+                    <!-- Channel Info -->
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <Border Width="24" Height="24" CornerRadius="12" Background="#FF0000">
+                            <TextBlock Text="YT" Foreground="White" FontSize="9" FontWeight="Bold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <TextBlock Text="{Binding PersonaDisplay}" Foreground="#606060" FontSize="13"
+                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </StackPanel>
+
+                    <!-- Description -->
+                    <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="13"
+                               Foreground="#606060" LineHeight="18" MaxHeight="54"
+                               TextTrimming="CharacterEllipsis" Margin="0,0,0,8"/>
+
+                    <!-- Tags -->
+                    <ItemsControl ItemsSource="{Binding YouTubeSpecific.Tags}"
+                                  Visibility="{Binding YouTubeSpecific.Tags, Converter={StaticResource NullToVis}}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#F2F2F2" CornerRadius="4" Padding="8,3" Margin="0,0,4,4">
+                                    <TextBlock Text="{Binding}" Foreground="#065FD4" FontSize="12"/>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </DataTemplate>
+
     <!-- Default/Fallback Preview -->
     <DataTemplate x:Key="DefaultPreviewTemplate" DataType="{x:Type models:ContentItem}">
         <Border Background="#F8F9FA" CornerRadius="4" Padding="16">

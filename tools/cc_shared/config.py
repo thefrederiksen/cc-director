@@ -137,6 +137,81 @@ class VaultConfig:
         return cls(vault_path=data.get("vault_path", _default_vault_path()))
 
 
+def _default_screenshots_path() -> str:
+    """Compute the default screenshots directory path.
+
+    Checks the Windows Snipping Tool / Screenshots folder location.
+    Falls back to Pictures/Screenshots under the user profile.
+    """
+    # Check common Windows screenshot locations
+    user_profile = os.environ.get("USERPROFILE", "")
+
+    # Check all OneDrive variants (consumer, commercial, generic)
+    for env_var in ("OneDriveConsumer", "OneDrive", "OneDriveCommercial"):
+        onedrive = os.environ.get(env_var, "")
+        if onedrive:
+            candidate = os.path.join(onedrive, "Pictures", "Screenshots")
+            if os.path.isdir(candidate):
+                return candidate.replace("\\", "/")
+
+    # Local Pictures/Screenshots
+    if user_profile:
+        candidate = os.path.join(user_profile, "Pictures", "Screenshots")
+        if os.path.isdir(candidate):
+            return candidate.replace("\\", "/")
+
+    # Fallback: just return the typical path (may not exist yet)
+    if user_profile:
+        return os.path.join(user_profile, "Pictures", "Screenshots").replace("\\", "/")
+    return ""
+
+
+@dataclass
+class ScreenshotsConfig:
+    """Screenshots configuration."""
+    source_directory: str = ""
+
+    def __post_init__(self):
+        if not self.source_directory:
+            self.source_directory = _default_screenshots_path()
+
+    def get_source_directory(self) -> Path:
+        """Get the source directory as a Path object."""
+        return Path(self.source_directory)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"source_directory": self.source_directory}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScreenshotsConfig":
+        return cls(
+            source_directory=data.get("source_directory", _default_screenshots_path()),
+        )
+
+
+@dataclass
+class SendFromAccount:
+    """An email send-from account."""
+    email: str
+    tool: str  # "cc-outlook" or "cc-gmail"
+    tool_account: Optional[str] = None  # e.g. "personal", "consulting"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "email": self.email,
+            "tool": self.tool,
+            "tool_account": self.tool_account,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SendFromAccount":
+        return cls(
+            email=data["email"],
+            tool=data["tool"],
+            tool_account=data.get("tool_account"),
+        )
+
+
 def _default_comm_manager_path() -> str:
     """Compute the default Communication Manager content path.
 
@@ -155,6 +230,7 @@ class CommManagerConfig:
             self.queue_path = _default_comm_manager_path()
     default_persona: str = "personal"
     default_created_by: str = "claude_code"
+    send_from_accounts: Dict[str, SendFromAccount] = field(default_factory=dict)
 
     def get_queue_path(self) -> Path:
         """Get the queue path as a Path object."""
@@ -176,19 +252,42 @@ class CommManagerConfig:
         """Get the posted directory path."""
         return self.get_queue_path() / "posted"
 
+    def get_valid_account_names(self) -> List[str]:
+        """Get list of valid send-from account names."""
+        return list(self.send_from_accounts.keys())
+
+    def get_account_email(self, name: str) -> Optional[str]:
+        """Get the email address for a send-from account name."""
+        account = self.send_from_accounts.get(name)
+        return account.email if account else None
+
+    def get_account(self, name: str) -> Optional[SendFromAccount]:
+        """Get a send-from account by name."""
+        return self.send_from_accounts.get(name)
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result: Dict[str, Any] = {
             "queue_path": self.queue_path,
             "default_persona": self.default_persona,
             "default_created_by": self.default_created_by,
         }
+        if self.send_from_accounts:
+            result["send_from_accounts"] = {
+                name: acct.to_dict()
+                for name, acct in self.send_from_accounts.items()
+            }
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CommManagerConfig":
+        accounts = {}
+        for name, acct_data in data.get("send_from_accounts", {}).items():
+            accounts[name] = SendFromAccount.from_dict(acct_data)
         return cls(
             queue_path=data.get("queue_path", _default_comm_manager_path()),
             default_persona=data.get("default_persona", "personal"),
             default_created_by=data.get("default_created_by", "claude_code"),
+            send_from_accounts=accounts,
         )
 
 
@@ -237,6 +336,7 @@ class CCDirectorConfig:
         self.photos = PhotosConfig()
         self.vault = VaultConfig()
         self.comm_manager = CommManagerConfig()
+        self.screenshots = ScreenshotsConfig()
         self._config_path = get_config_path()
 
     def load(self) -> "CCDirectorConfig":
@@ -285,6 +385,10 @@ class CCDirectorConfig:
         if "comm_manager" in data:
             self.comm_manager = CommManagerConfig.from_dict(data["comm_manager"])
 
+        # Load screenshots config
+        if "screenshots" in data:
+            self.screenshots = ScreenshotsConfig.from_dict(data["screenshots"])
+
     def save(self) -> None:
         """Save configuration to file."""
         ensure_config_dir()
@@ -311,6 +415,7 @@ class CCDirectorConfig:
             "photos": self.photos.to_dict(),
             "vault": self.vault.to_dict(),
             "comm_manager": self.comm_manager.to_dict(),
+            "screenshots": self.screenshots.to_dict(),
         }
 
     def add_photo_source(self, path: str, category: str, label: str, priority: int = 10) -> PhotoSource:

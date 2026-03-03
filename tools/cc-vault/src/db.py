@@ -579,6 +579,24 @@ def init_db(silent: bool = False):
         )
     """)
 
+    # ==========================================
+    # EMAIL ACTIVITY DOMAIN
+    # ==========================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS email_activity (
+            contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            account TEXT NOT NULL,
+            email_count INTEGER DEFAULT 0,
+            sent_count INTEGER DEFAULT 0,
+            received_count INTEGER DEFAULT 0,
+            first_email_date TEXT,
+            last_email_date TEXT,
+            scanned_at TEXT,
+            PRIMARY KEY (contact_id, account)
+        )
+    """)
+
     # Entity links - flexible graph-like relationships
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS entity_links (
@@ -708,6 +726,10 @@ def init_db(silent: bool = False):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_social_posts_platform ON social_posts(platform)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_social_posts_status ON social_posts(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_social_posts_posted_at ON social_posts(posted_at)")
+
+    # Email activity indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_activity_contact ON email_activity(contact_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_activity_account ON email_activity(account)")
 
     # Entity links indexes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_source ON entity_links(source_type, source_id)")
@@ -990,6 +1012,7 @@ def list_contacts(
     relationship: Optional[str] = None,
     has_fields: Optional[List[str]] = None,
     missing_fields: Optional[List[str]] = None,
+    tags: Optional[List[str]] = None,
 ) -> List[dict]:
     """List contacts with optional filtering.
 
@@ -999,6 +1022,7 @@ def list_contacts(
         relationship: Filter by relationship.
         has_fields: Only return contacts where these fields are non-empty.
         missing_fields: Only return contacts where these fields are empty/null.
+        tags: Filter by tags (AND logic - contact must have ALL specified tags).
     """
     valid_fields = [
         'name', 'nickname', 'pronunciation', 'account', 'category', 'relationship',
@@ -1047,6 +1071,12 @@ def list_contacts(
                 conn.close()
                 raise ValueError(f"Invalid field: {field}")
             sql += f" AND ({field} IS NULL OR {field} = '')"
+
+    if tags:
+        for tag in tags:
+            tag_normalized = tag.lower().strip()
+            sql += " AND id IN (SELECT contact_id FROM contact_tags WHERE tag = ?)"
+            params.append(tag_normalized)
 
     sql += " ORDER BY name"
 
@@ -1287,6 +1317,71 @@ def list_all_tags() -> List[dict]:
     conn.close()
 
     return results
+
+
+def add_tags_by_id(contact_id: int, *tags: str) -> int:
+    """
+    Add tags to a contact by contact ID.
+    Returns the number of tags added.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Verify contact exists
+    cursor.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise ValueError(f"Contact #{contact_id} not found")
+
+    added = 0
+    for tag_item in tags:
+        tag_normalized = tag_item.lower().strip()
+        if not tag_normalized:
+            continue
+        try:
+            cursor.execute(
+                "INSERT INTO contact_tags (contact_id, tag) VALUES (?, ?)",
+                (contact_id, tag_normalized)
+            )
+            added += 1
+        except sqlite3.IntegrityError:
+            pass  # Tag already exists
+
+    conn.commit()
+    conn.close()
+
+    return added
+
+
+def remove_tags_by_id(contact_id: int, *tags: str) -> int:
+    """
+    Remove tags from a contact by contact ID.
+    Returns the number of tags removed.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Verify contact exists
+    cursor.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise ValueError(f"Contact #{contact_id} not found")
+
+    removed = 0
+    for tag_item in tags:
+        tag_normalized = tag_item.lower().strip()
+        if not tag_normalized:
+            continue
+        cursor.execute(
+            "DELETE FROM contact_tags WHERE contact_id = ? AND tag = ?",
+            (contact_id, tag_normalized)
+        )
+        removed += cursor.rowcount
+
+    conn.commit()
+    conn.close()
+
+    return removed
 
 
 # ===========================================
@@ -4456,3 +4551,210 @@ def get_stats() -> dict:
     conn.close()
 
     return stats
+
+
+# ===========================================
+# EMAIL ACTIVITY
+# ===========================================
+
+def upsert_email_activity(
+    contact_id: int,
+    account: str,
+    sent_count: int = 0,
+    received_count: int = 0,
+    first_email_date: Optional[str] = None,
+    last_email_date: Optional[str] = None,
+) -> None:
+    """
+    Insert or update email activity for a contact + account pair.
+
+    Args:
+        contact_id: The contact ID.
+        account: Account name (e.g. 'personal', 'consulting', 'outlook').
+        sent_count: Number of emails sent to this contact.
+        received_count: Number of emails received from this contact.
+        first_email_date: ISO date string of first email.
+        last_email_date: ISO date string of most recent email.
+    """
+    init_db(silent=True)
+    conn = get_db()
+    now = datetime.now().isoformat()
+    email_count = sent_count + received_count
+
+    conn.execute("""
+        INSERT INTO email_activity
+            (contact_id, account, email_count, sent_count, received_count,
+             first_email_date, last_email_date, scanned_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(contact_id, account) DO UPDATE SET
+            email_count = excluded.email_count,
+            sent_count = excluded.sent_count,
+            received_count = excluded.received_count,
+            first_email_date = COALESCE(excluded.first_email_date, email_activity.first_email_date),
+            last_email_date = COALESCE(excluded.last_email_date, email_activity.last_email_date),
+            scanned_at = excluded.scanned_at
+    """, (contact_id, account, email_count, sent_count, received_count,
+          first_email_date, last_email_date, now))
+
+    conn.commit()
+    conn.close()
+
+
+def get_email_activity(
+    contact_id: Optional[int] = None,
+    account: Optional[str] = None,
+) -> List[dict]:
+    """
+    Get email activity records.
+
+    Args:
+        contact_id: Filter by contact ID (optional).
+        account: Filter by account name (optional).
+
+    Returns:
+        List of email activity dicts.
+    """
+    init_db(silent=True)
+    conn = get_db()
+
+    sql = """
+        SELECT ea.*, c.name, c.email
+        FROM email_activity ea
+        JOIN contacts c ON c.id = ea.contact_id
+        WHERE 1=1
+    """
+    params = []
+
+    if contact_id is not None:
+        sql += " AND ea.contact_id = ?"
+        params.append(contact_id)
+
+    if account is not None:
+        sql += " AND ea.account = ?"
+        params.append(account)
+
+    sql += " ORDER BY ea.sent_count DESC"
+
+    cursor = conn.cursor()
+    cursor.execute(sql, params)
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    return results
+
+
+def sync_recipients(
+    recipients: List[Dict[str, Any]],
+    account: str,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Bulk-import recipients into the vault.
+
+    Takes the JSON array from cc-gmail/cc-outlook recipients --format json.
+    Creates missing contacts and upserts email_activity in one transaction.
+
+    Args:
+        recipients: List of dicts with keys: email, name, sent_count.
+        account: Account name (e.g. 'consulting', 'personal').
+        dry_run: If True, count new vs existing without writing.
+
+    Returns:
+        Dict with keys: new_contacts, existing_contacts, activities_upserted, errors.
+    """
+    if account not in ('consulting', 'personal', 'both'):
+        raise ValueError(f"Invalid account '{account}'. Must be: consulting, personal, both")
+
+    init_db(silent=True)
+    conn = get_db()
+
+    new_contacts = 0
+    existing_contacts = 0
+    activities_upserted = 0
+    errors = []
+
+    try:
+        cursor = conn.cursor()
+
+        # Collect all emails for batch lookup
+        all_emails = []
+        recipients_by_email = {}
+        for r in recipients:
+            email = (r.get("email") or "").strip().lower()
+            if not email:
+                errors.append("Skipped entry with missing email")
+                continue
+            all_emails.append(email)
+            recipients_by_email[email] = r
+
+        # Batch lookup existing contacts by email (chunk at 900 for SQLite limit)
+        existing_map = {}  # email -> contact_id
+        chunk_size = 900
+        for i in range(0, len(all_emails), chunk_size):
+            chunk = all_emails[i:i + chunk_size]
+            placeholders = ", ".join(["?" for _ in chunk])
+            cursor.execute(
+                f"SELECT id, email FROM contacts WHERE LOWER(email) IN ({placeholders})",
+                [e.lower() for e in chunk],
+            )
+            for row in cursor.fetchall():
+                existing_map[row["email"].lower()] = row["id"]
+
+        if dry_run:
+            for email in all_emails:
+                if email in existing_map:
+                    existing_contacts += 1
+                else:
+                    new_contacts += 1
+            conn.close()
+            return {
+                "new_contacts": new_contacts,
+                "existing_contacts": existing_contacts,
+                "activities_upserted": 0,
+                "errors": errors,
+            }
+
+        # Process each recipient in one transaction
+        now = datetime.now().isoformat()
+        for email in all_emails:
+            r = recipients_by_email[email]
+            sent_count = r.get("sent_count", 0)
+            name = (r.get("name") or "").strip()
+
+            if email in existing_map:
+                contact_id = existing_map[email]
+                existing_contacts += 1
+            else:
+                # Insert new contact
+                cursor.execute(
+                    "INSERT INTO contacts (email, name, account, category) VALUES (?, ?, ?, ?)",
+                    (r.get("email", "").strip(), name, account, "whitelist"),
+                )
+                contact_id = cursor.lastrowid
+                existing_map[email] = contact_id
+                new_contacts += 1
+
+            # Upsert email activity
+            email_count = sent_count
+            cursor.execute("""
+                INSERT INTO email_activity
+                    (contact_id, account, email_count, sent_count, received_count,
+                     first_email_date, last_email_date, scanned_at)
+                VALUES (?, ?, ?, ?, 0, NULL, NULL, ?)
+                ON CONFLICT(contact_id, account) DO UPDATE SET
+                    email_count = excluded.email_count,
+                    sent_count = excluded.sent_count,
+                    scanned_at = excluded.scanned_at
+            """, (contact_id, account, email_count, sent_count, now))
+            activities_upserted += 1
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "new_contacts": new_contacts,
+        "existing_contacts": existing_contacts,
+        "activities_upserted": activities_upserted,
+        "errors": errors,
+    }

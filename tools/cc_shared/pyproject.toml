@@ -5,13 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cc-shared"
 version = "0.1.0"
-description = "Shared configuration and LLM abstraction for cc-director"
+description = "Shared configuration, LLM abstraction, and theme definitions for cc-director"
 license = {text = "MIT"}
 authors = [{name = "CC Director Contributors"}]
 requires-python = ">=3.11"
-keywords = ["configuration", "llm", "shared"]
+keywords = ["configuration", "llm", "shared", "themes"]
 dependencies = [
     "openai>=1.0.0",
+    "markdown-it-py>=3.0.0",
+    "mdit-py-plugins>=0.4.0",
 ]
 
 [project.optional-dependencies]

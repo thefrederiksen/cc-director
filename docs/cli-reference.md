@@ -112,6 +112,7 @@ COMMANDS:
   list      List content items in the queue
   status    Show queue status and counts
   show      Show details of a specific item
+  delete    Delete a content item from the queue
   migrate   Migrate existing JSON files to SQLite
   config    Configuration management
 ```
@@ -161,6 +162,19 @@ USAGE: cc-comm-queue list [OPTIONS]
 OPTIONS:
   --status  -s  Filter: pending, approved, rejected, posted
             -n  Max results [default: 20]
+```
+
+### cc-comm-queue delete
+
+```
+USAGE: cc-comm-queue delete CONTENT_ID [OPTIONS]
+
+ARGUMENTS:
+  CONTENT_ID    Ticket number or content ID (can be partial)
+
+OPTIONS:
+  --force  -f   Skip confirmation prompt
+  --json        Output as JSON (for agents)
 ```
 
 ---
@@ -334,24 +348,194 @@ COMMANDS:
 
 ---
 
-## cc-markdown
+## cc-html
 
-Convert Markdown to PDF, Word, or HTML with themes.
+Convert between Markdown and HTML with themes.
 
 ```
-USAGE: cc-markdown [OPTIONS] INPUT_FILE
+USAGE: cc-html [OPTIONS] COMMAND [ARGS]...
+
+OPTIONS:
+  --version  -v  Show version
+  --themes       List available themes
+
+COMMANDS:
+  from-markdown  Convert Markdown to HTML with beautiful themes
+  to-markdown    Convert HTML to Markdown, extracting embedded images
+```
+
+### cc-html from-markdown
+
+```
+USAGE: cc-html from-markdown [OPTIONS] INPUT_FILE
 
 ARGUMENTS:
   INPUT_FILE  Input Markdown file [required]
 
 OPTIONS:
-  --output   -o PATH  Output file (.pdf, .docx, .html) [required]
+  --output   -o PATH  Output HTML file [required]
   --theme    -t TEXT   Theme name [default: paper]
   --css         PATH   Custom CSS file
-  --page-size   TEXT   Page size: a4, letter [default: a4]
-  --margin      TEXT   Page margin [default: 1in]
-  --version  -v        Show version
-  --themes             List available themes
+```
+
+### cc-html to-markdown
+
+```
+USAGE: cc-html to-markdown [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input HTML file [required]
+
+OPTIONS:
+  --output  -o PATH  Output .md file (defaults to input name with .md extension)
+```
+
+---
+
+## cc-pdf
+
+Convert between Markdown and PDF with themes.
+
+```
+USAGE: cc-pdf [OPTIONS] COMMAND [ARGS]...
+
+OPTIONS:
+  --version  -v  Show version
+  --themes       List available themes
+
+COMMANDS:
+  from-markdown  Convert Markdown to PDF with beautiful themes
+  to-markdown    Convert PDF to Markdown, extracting embedded images
+```
+
+### cc-pdf from-markdown
+
+```
+USAGE: cc-pdf from-markdown [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input Markdown file [required]
+
+OPTIONS:
+  --output     -o PATH  Output PDF file [required]
+  --theme      -t TEXT   Theme name [default: paper]
+  --css           PATH   Custom CSS file
+  --page-size     TEXT   Page size: a4, letter [default: a4]
+  --margin        TEXT   Page margin [default: 1in]
+```
+
+### cc-pdf to-markdown
+
+```
+USAGE: cc-pdf to-markdown [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input PDF file [required]
+
+OPTIONS:
+  --output  -o PATH  Output .md file (defaults to input name with .md extension)
+```
+
+---
+
+## cc-word
+
+Convert between Markdown and Word documents with themes.
+
+```
+USAGE: cc-word [OPTIONS] COMMAND [ARGS]...
+
+OPTIONS:
+  --version  -v  Show version
+  --themes       List available themes
+
+COMMANDS:
+  from-markdown  Convert Markdown to Word documents with beautiful themes
+  to-markdown    Convert a Word document to Markdown, extracting embedded images
+```
+
+### cc-word from-markdown
+
+```
+USAGE: cc-word from-markdown [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input Markdown file [required]
+
+OPTIONS:
+  --output   -o PATH  Output .docx file [required]
+  --theme    -t TEXT   Theme name [default: paper]
+```
+
+### cc-word to-markdown
+
+```
+USAGE: cc-word to-markdown [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input Word document (.docx) [required]
+
+OPTIONS:
+  --output  -o PATH  Output .md file (defaults to input name with .md extension)
+```
+
+---
+
+## cc-excel
+
+Convert between CSV, JSON, Markdown tables, and formatted Excel workbooks.
+
+```
+USAGE: cc-excel [OPTIONS] COMMAND [ARGS]...
+
+OPTIONS:
+  --version  -v  Show version
+  --themes       List available themes
+
+COMMANDS:
+  from-csv       Convert a CSV file to a formatted Excel workbook
+  from-json      Convert a JSON file to a formatted Excel workbook
+  from-markdown  Convert Markdown pipe tables to a formatted Excel workbook
+  from-spec      Generate a multi-sheet Excel workbook from a JSON spec file
+  to-markdown    Convert an Excel workbook to Markdown pipe tables
+```
+
+### cc-excel from-csv
+
+```
+USAGE: cc-excel from-csv [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input CSV file [required]
+
+OPTIONS:
+  --output        -o PATH     Output .xlsx file [required]
+  --theme         -t TEXT      Theme name [default: paper]
+  --delimiter        TEXT      CSV delimiter [default: ,]
+  --encoding         TEXT      File encoding [default: utf-8]
+  --no-header                  First row is data, not headers
+  --sheet-name       TEXT      Worksheet tab name
+  --no-autofilter              Disable autofilter
+  --no-freeze                  Disable freeze panes
+  --chart            TEXT      Chart type: bar, line, pie, column
+  --chart-x          TEXT      Category column for chart
+  --chart-y          TEXT      Value column(s) for chart (repeatable)
+  --summary          TEXT      Summary rows: sum, avg, or all
+  --highlight        TEXT      Conditional formatting: best-worst or scale
+```
+
+### cc-excel to-markdown
+
+```
+USAGE: cc-excel to-markdown [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input .xlsx file [required]
+
+OPTIONS:
+  --output      -o PATH  Output .md file (defaults to input name with .md extension)
+  --sheet-name     TEXT   Convert a specific sheet by name
+  --all-sheets            Convert all sheets (default: first sheet only)
 ```
 
 ---
@@ -463,19 +647,99 @@ COMMANDS:
 
 ## cc-powerpoint
 
-Convert Markdown to PowerPoint presentations.
+Convert between Markdown and PowerPoint presentations with themes.
 
 ```
-USAGE: cc-powerpoint [OPTIONS] INPUT_FILE
+USAGE: cc-powerpoint [OPTIONS] COMMAND [ARGS]...
+
+OPTIONS:
+  --version  -v  Show version
+  --themes       List available themes
+
+COMMANDS:
+  from-markdown  Convert Markdown to PowerPoint presentations with beautiful themes
+  to-markdown    Convert a PowerPoint presentation to Markdown, extracting images
+```
+
+### cc-powerpoint from-markdown
+
+```
+USAGE: cc-powerpoint from-markdown [OPTIONS] INPUT_FILE
 
 ARGUMENTS:
   INPUT_FILE  Markdown file with --- slide separators [required]
 
 OPTIONS:
-  --output  -o PATH  Output .pptx file
+  --output  -o PATH  Output .pptx file (defaults to input name with .pptx extension)
   --theme   -t TEXT   Theme name [default: paper]
-  --version -v        Show version
-  --themes            List available themes
+```
+
+### cc-powerpoint to-markdown
+
+```
+USAGE: cc-powerpoint to-markdown [OPTIONS] INPUT_FILE
+
+ARGUMENTS:
+  INPUT_FILE  Input PowerPoint file (.pptx) [required]
+
+OPTIONS:
+  --output  -o PATH  Output .md file (defaults to input name with .md extension)
+```
+
+---
+
+## cc-settings
+
+Manage cc-director configuration and system settings.
+
+```
+USAGE: cc-settings [OPTIONS] COMMAND [ARGS]...
+
+OPTIONS: --version -v, --help
+
+COMMANDS:
+  show [SECTION]                       Display current settings (all or one section)
+  get KEY                              Get a specific setting value
+  set KEY VALUE                        Set a configuration value
+  list                                 List all setting keys with values
+  path                                 Show the config file location
+```
+
+### cc-settings show
+
+```
+USAGE: cc-settings show [OPTIONS] [SECTION]
+
+ARGUMENTS:
+  SECTION  Section name (e.g. screenshots, vault, llm) [optional]
+
+OPTIONS:
+  --json  -j  Output as JSON
+```
+
+### cc-settings get
+
+```
+USAGE: cc-settings get [OPTIONS] KEY
+
+ARGUMENTS:
+  KEY  Dotted setting key (e.g. screenshots.source_directory) [required]
+
+OPTIONS:
+  --json  -j  Output as JSON
+```
+
+### cc-settings set
+
+```
+USAGE: cc-settings set [OPTIONS] KEY VALUE
+
+ARGUMENTS:
+  KEY    Dotted setting key [required]
+  VALUE  New value [required]
+
+OPTIONS:
+  --json  -j  Output as JSON
 ```
 
 ---

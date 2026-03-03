@@ -33,6 +33,15 @@ public sealed class TeamsBotConfig
     /// </summary>
     public int NotificationQuiescenceMs { get; set; } = 3000;
 
+    /// <summary>
+    /// Path to JSON file storing the tunnel ID and cluster ID for reuse across restarts.
+    /// Supports environment variables like %LOCALAPPDATA%.
+    /// </summary>
+    public string TunnelStatePath { get; set; } = "%LOCALAPPDATA%/cc-director/config/teams-tunnel-state.json";
+
     /// <summary>Expand environment variables in WhitelistPath.</summary>
     public string ExpandedWhitelistPath => Environment.ExpandEnvironmentVariables(WhitelistPath);
+
+    /// <summary>Expand environment variables in TunnelStatePath.</summary>
+    public string ExpandedTunnelStatePath => Environment.ExpandEnvironmentVariables(TunnelStatePath);
 }

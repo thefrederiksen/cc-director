@@ -898,6 +898,63 @@ def folders() -> None:
 
 
 @app.command()
+def recipients(
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
+    count: int = typer.Option(0, "-n", "--count", help="Limit results (0 = all)"),
+):
+    """List all unique recipients from sent emails with send counts."""
+    client = get_client()
+
+    try:
+        err_console = Console(stderr=True)
+        err_console.print("[blue]Scanning sent messages for recipients (this may take a minute)...[/blue]")
+        results = client.get_all_recipients()
+
+        if not results:
+            console.print("[yellow]No recipients found in sent messages.[/yellow]")
+            return
+
+        # Sort by sent_count descending
+        sorted_recipients = sorted(
+            results.items(),
+            key=lambda x: x[1]["sent_count"],
+            reverse=True,
+        )
+
+        if count > 0:
+            sorted_recipients = sorted_recipients[:count]
+
+        if format == "json":
+            import json
+            output = [
+                {"email": email, "name": data["name"], "sent_count": data["sent_count"]}
+                for email, data in sorted_recipients
+            ]
+            sys.stdout.buffer.write(json.dumps(output, indent=2, ensure_ascii=False).encode("utf-8"))
+            sys.stdout.buffer.write(b"\n")
+        else:
+            acct = resolve_account(_current_account)
+            table = Table(title=f"Sent Recipients ({acct}) - {len(sorted_recipients)} contacts")
+            table.add_column("Email", style="cyan")
+            table.add_column("Name")
+            table.add_column("Sent", justify="right", style="green")
+
+            for email, data in sorted_recipients:
+                table.add_row(email, data["name"] or "-", str(data["sent_count"]))
+
+            console.print(table)
+
+    except ValueError as e:
+        logger.error("Error fetching recipients: %s", e)
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except (ConnectionError, OSError) as e:
+        logger.error("Network error fetching recipients: %s", e)
+        console.print(f"[red]Error:[/red] Network error: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def profile() -> None:
     """Show authenticated user profile."""
     client = get_client()

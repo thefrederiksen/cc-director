@@ -17,7 +17,9 @@ public sealed class CommunicationDispatcher : IDisposable
     private readonly HashSet<string> _gmailSendFromAccounts;
     private readonly int _pollIntervalSeconds;
     private readonly VaultArchiver _archiver = new();
+#pragma warning disable CS0649 // Timer field not assigned until auto-dispatch is re-enabled
     private Timer? _timer;
+#pragma warning restore CS0649
     private int _polling; // 0 = idle, 1 = polling (used with Interlocked for thread safety)
 
     public event Action<EngineEvent>? OnEvent;
@@ -41,8 +43,9 @@ public sealed class CommunicationDispatcher : IDisposable
 
     public void Start()
     {
-        FileLog.Write("[CommunicationDispatcher] Starting");
-        _timer = new Timer(Poll, null, TimeSpan.Zero, TimeSpan.FromSeconds(_pollIntervalSeconds));
+        FileLog.Write("[CommunicationDispatcher] Starting (auto-dispatch disabled -- use manual Send button)");
+        // TODO: Re-enable auto-dispatch timer once manual testing is complete
+        // _timer = new Timer(Poll, null, TimeSpan.Zero, TimeSpan.FromSeconds(_pollIntervalSeconds));
     }
 
     public void Stop()

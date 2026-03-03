@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .config import SEND_FROM_ACCOUNTS
+from .config import get_send_from_accounts
 
 # Regex to match URLs that are not already in an href
 URL_PATTERN = re.compile(
@@ -43,7 +43,33 @@ class EmailSender:
 
     def __init__(self):
         """Initialize the email sender."""
-        self.accounts = SEND_FROM_ACCOUNTS
+        self.accounts = get_send_from_accounts()
+
+    def _plain_text_to_html(self, content: str) -> str:
+        """Convert plain text email content to HTML with proper formatting.
+
+        Preserves paragraph breaks and line breaks so emails render
+        correctly in Gmail and other HTML-based email clients.
+
+        Args:
+            content: Plain text content with newlines
+
+        Returns:
+            HTML string with paragraphs and line breaks
+        """
+        import html as html_mod
+        # Escape HTML special chars in the original text
+        content = html_mod.escape(content)
+        # Split on double newlines into paragraphs
+        paragraphs = re.split(r'\n\s*\n', content)
+        # Within each paragraph, convert single newlines to <br>
+        html_parts = []
+        for p in paragraphs:
+            p = p.strip()
+            if p:
+                p = p.replace('\n', '<br>\n')
+                html_parts.append(f'<p style="margin:0 0 1em 0">{p}</p>')
+        return '\n'.join(html_parts)
 
     def _linkify_urls(self, content: str) -> str:
         """Convert plain URLs in content to clickable HTML links.
@@ -90,13 +116,14 @@ class EmailSender:
         # Get subject
         subject = email_specific.get("subject", "(No subject)")
 
-        # Get content and linkify URLs
+        # Get content, convert to HTML, and linkify URLs
         content = item.get("content", "")
         if not content:
             return SendResult(
                 success=False,
                 message="Missing email content"
             )
+        content = self._plain_text_to_html(content)
         content = self._linkify_urls(content)
 
         # Get account config - try send_from first, then persona
@@ -183,6 +210,7 @@ class EmailSender:
             "-t", to_email,
             "-s", subject,
             "-b", body,
+            "--html",
         ]
 
         # Add CC if present
@@ -218,6 +246,7 @@ class EmailSender:
             "-t", to_email,
             "-s", subject,
             "-b", body,
+            "--html",
         ]
 
         # Add CC if present

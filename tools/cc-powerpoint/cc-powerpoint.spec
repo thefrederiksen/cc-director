@@ -10,6 +10,9 @@ block_cipher = None
 spec_path = Path(SPECPATH)
 src_dir = spec_path / 'src'
 
+# Get cc_shared path
+cc_shared_path = os.path.abspath('../cc_shared')
+
 # python-pptx ships a default.pptx template that must be bundled
 import pptx
 pptx_pkg_dir = Path(pptx.__file__).parent
@@ -23,9 +26,12 @@ if pptx_templates.exists():
 
 a = Analysis(
     [str(spec_path / 'main.py')],
-    pathex=[SPECPATH, str(spec_path / 'src')],
+    pathex=[SPECPATH, str(spec_path / 'src'), cc_shared_path],
     binaries=[],
-    datas=pptx_data,
+    datas=pptx_data + [
+        (cc_shared_path + '/*.py', 'cc_shared'),
+        (cc_shared_path + '/providers/*.py', 'cc_shared/providers'),
+    ],
     hiddenimports=[
         'typer',
         'rich',
@@ -44,7 +50,13 @@ a = Analysis(
         'cli',
         'parser',
         'pptx_generator',
+        'md_converter',
         'themes',
+        'cc_shared',
+        'cc_shared.themes',
+        'cc_shared.config',
+        'cc_shared.image_extractor',
+        'cc_shared.providers',
     ],
     hookspath=[],
     hooksconfig={},

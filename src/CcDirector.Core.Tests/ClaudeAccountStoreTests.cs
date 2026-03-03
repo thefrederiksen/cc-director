@@ -286,14 +286,14 @@ public class ClaudeAccountStoreTests : IDisposable
     }
 
     [Fact]
-    public void RefreshActiveTokenFromCredentials_BothTokensChanged_MatchesSingleAccount()
+    public void RefreshActiveTokenFromCredentials_BothTokensChanged_NoMatch()
     {
-        // Regression test for root cause: when Claude Code refreshes tokens,
-        // BOTH accessToken and refreshToken change, so no match was found.
+        // When both accessToken and refreshToken change completely,
+        // exact matching finds no match and the account is not updated.
+        // This is correct: fuzzy matching was removed to prevent silently overwriting wrong accounts.
         var store = new ClaudeAccountStore(_filePath);
         store.Load();
 
-        // Add account with original tokens
         var account = new ClaudeAccount
         {
             Label = "Personal",
@@ -322,10 +322,48 @@ public class ClaudeAccountStoreTests : IDisposable
 
         store.RefreshActiveTokenFromCredentials(credPath);
 
-        // With the fix, the single-account shortcut should match
+        // No match: tokens remain original
+        Assert.Single(store.Accounts);
+        Assert.Equal("sk-ant-oat01-original", store.Accounts[0].AccessToken);
+        Assert.Equal("sk-ant-ort01-original", store.Accounts[0].RefreshToken);
+    }
+
+    [Fact]
+    public void RefreshActiveTokenFromCredentials_RefreshTokenMatches_UpdatesAccessToken()
+    {
+        // When refreshToken matches, the account is updated even if accessToken differs
+        var store = new ClaudeAccountStore(_filePath);
+        store.Load();
+
+        var account = new ClaudeAccount
+        {
+            Label = "Personal",
+            AccessToken = "sk-ant-oat01-original",
+            RefreshToken = "sk-ant-ort01-shared",
+            ExpiresAt = 100,
+            SubscriptionType = "max",
+            RateLimitTier = "default_claude_max_20x",
+            IsActive = true,
+        };
+        store.Add(account);
+
+        var credPath = Path.Combine(_tempDir, ".credentials.json");
+        File.WriteAllText(credPath, """
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-refreshed",
+                    "refreshToken": "sk-ant-ort01-shared",
+                    "expiresAt": 9999999999999,
+                    "subscriptionType": "max",
+                    "rateLimitTier": "default_claude_max_20x"
+                }
+            }
+            """);
+
+        store.RefreshActiveTokenFromCredentials(credPath);
+
         Assert.Single(store.Accounts);
         Assert.Equal("sk-ant-oat01-refreshed", store.Accounts[0].AccessToken);
-        Assert.Equal("sk-ant-ort01-refreshed", store.Accounts[0].RefreshToken);
         Assert.Equal(9999999999999, store.Accounts[0].ExpiresAt);
     }
 
@@ -339,7 +377,7 @@ public class ClaudeAccountStoreTests : IDisposable
         {
             Label = "Test",
             AccessToken = "sk-ant-oat01-old",
-            RefreshToken = "sk-ant-ort01-old",
+            RefreshToken = "sk-ant-ort01-shared",
             ExpiresAt = 100,
             SubscriptionType = "max",
             RateLimitTier = "default_claude_max_20x",
@@ -347,12 +385,13 @@ public class ClaudeAccountStoreTests : IDisposable
         };
         store.Add(account);
 
+        // Use same refreshToken so the account is matched by exact token
         var credPath = Path.Combine(_tempDir, ".credentials.json");
         File.WriteAllText(credPath, """
             {
                 "claudeAiOauth": {
                     "accessToken": "sk-ant-oat01-new",
-                    "refreshToken": "sk-ant-ort01-new",
+                    "refreshToken": "sk-ant-ort01-shared",
                     "expiresAt": 9999999999999,
                     "subscriptionType": "max",
                     "rateLimitTier": "default_claude_max_20x"

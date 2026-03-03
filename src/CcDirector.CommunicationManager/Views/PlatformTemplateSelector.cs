@@ -11,6 +11,9 @@ public class PlatformTemplateSelector : DataTemplateSelector
     public DataTemplate? RedditTemplate { get; set; }
     public DataTemplate? EmailTemplate { get; set; }
     public DataTemplate? ArticleTemplate { get; set; }
+    public DataTemplate? FacebookTemplate { get; set; }
+    public DataTemplate? WhatsAppTemplate { get; set; }
+    public DataTemplate? YouTubeTemplate { get; set; }
     public DataTemplate? DefaultTemplate { get; set; }
 
     public override DataTemplate? SelectTemplate(object? item, DependencyObject container)
@@ -32,6 +35,9 @@ public class PlatformTemplateSelector : DataTemplateSelector
             "reddit" => RedditTemplate ?? DefaultTemplate,
             "email" => EmailTemplate ?? DefaultTemplate,
             "blog" => ArticleTemplate ?? DefaultTemplate,
+            "facebook" => FacebookTemplate ?? DefaultTemplate,
+            "whatsapp" => WhatsAppTemplate ?? DefaultTemplate,
+            "youtube" => YouTubeTemplate ?? DefaultTemplate,
             _ => DefaultTemplate
         };
     }

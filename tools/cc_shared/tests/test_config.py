@@ -18,6 +18,8 @@ from cc_shared.config import (
     ClaudeCodeProviderConfig,
     PhotoSource,
     PhotosConfig,
+    ScreenshotsConfig,
+    SendFromAccount,
     VaultConfig,
     get_config,
     get_config_path,
@@ -150,6 +152,7 @@ class TestCCDirectorConfig:
         assert "photos" in d
         assert "vault" in d
         assert "comm_manager" in d
+        assert "screenshots" in d
         assert "providers" in d["llm"]
         assert "openai" in d["llm"]["providers"]
         assert "claude_code" in d["llm"]["providers"]
@@ -271,6 +274,44 @@ class TestPhotoSourceManagement:
         assert config.get_photo_source("Nope") is None
 
 
+class TestSendFromAccount:
+    """Tests for SendFromAccount dataclass."""
+
+    def test_to_dict(self):
+        """SendFromAccount serializes to dict."""
+        acct = SendFromAccount(
+            email="user@example.com", tool="cc-gmail", tool_account="personal"
+        )
+        d = acct.to_dict()
+        assert d["email"] == "user@example.com"
+        assert d["tool"] == "cc-gmail"
+        assert d["tool_account"] == "personal"
+
+    def test_from_dict(self):
+        """SendFromAccount deserializes from dict."""
+        data = {"email": "cto@company.com", "tool": "cc-outlook", "tool_account": None}
+        acct = SendFromAccount.from_dict(data)
+        assert acct.email == "cto@company.com"
+        assert acct.tool == "cc-outlook"
+        assert acct.tool_account is None
+
+    def test_round_trip(self):
+        """SendFromAccount round-trips through dict."""
+        original = SendFromAccount(
+            email="test@test.com", tool="cc-gmail", tool_account="work"
+        )
+        restored = SendFromAccount.from_dict(original.to_dict())
+        assert original.email == restored.email
+        assert original.tool == restored.tool
+        assert original.tool_account == restored.tool_account
+
+    def test_default_tool_account_none(self):
+        """SendFromAccount defaults tool_account to None."""
+        data = {"email": "a@b.com", "tool": "cc-outlook"}
+        acct = SendFromAccount.from_dict(data)
+        assert acct.tool_account is None
+
+
 class TestCommManagerConfig:
     """Tests for CommManagerConfig."""
 
@@ -279,6 +320,7 @@ class TestCommManagerConfig:
         cfg = CommManagerConfig()
         assert cfg.default_persona == "personal"
         assert cfg.default_created_by == "claude_code"
+        assert cfg.send_from_accounts == {}
 
     def test_path_methods(self):
         """Path methods return correct subdirectories."""
@@ -298,6 +340,52 @@ class TestCommManagerConfig:
         assert original.queue_path == restored.queue_path
         assert original.default_persona == restored.default_persona
         assert original.default_created_by == restored.default_created_by
+
+    def test_round_trip_with_accounts(self):
+        """CommManagerConfig with send_from_accounts round-trips through dict."""
+        accounts = {
+            "mindzie": SendFromAccount("cto@company.com", "cc-outlook", None),
+            "personal": SendFromAccount("me@home.com", "cc-gmail", "personal"),
+        }
+        original = CommManagerConfig(
+            queue_path="/custom",
+            send_from_accounts=accounts,
+        )
+        d = original.to_dict()
+        assert "send_from_accounts" in d
+        assert d["send_from_accounts"]["mindzie"]["email"] == "cto@company.com"
+
+        restored = CommManagerConfig.from_dict(d)
+        assert len(restored.send_from_accounts) == 2
+        assert restored.send_from_accounts["mindzie"].email == "cto@company.com"
+        assert restored.send_from_accounts["personal"].tool_account == "personal"
+
+    def test_get_valid_account_names(self):
+        """get_valid_account_names returns account keys."""
+        accounts = {
+            "mindzie": SendFromAccount("a@b.com", "cc-outlook", None),
+            "personal": SendFromAccount("c@d.com", "cc-gmail", "personal"),
+        }
+        cfg = CommManagerConfig(send_from_accounts=accounts)
+        names = cfg.get_valid_account_names()
+        assert "mindzie" in names
+        assert "personal" in names
+
+    def test_get_account_email(self):
+        """get_account_email returns email for known account."""
+        accounts = {
+            "personal": SendFromAccount("me@home.com", "cc-gmail", "personal"),
+        }
+        cfg = CommManagerConfig(send_from_accounts=accounts)
+        assert cfg.get_account_email("personal") == "me@home.com"
+        assert cfg.get_account_email("bogus") is None
+
+    def test_empty_accounts_default(self):
+        """Empty accounts work without errors."""
+        cfg = CommManagerConfig()
+        assert cfg.get_valid_account_names() == []
+        assert cfg.get_account_email("anything") is None
+        assert cfg.get_account("anything") is None
 
 
 class TestVaultConfig:
@@ -341,3 +429,90 @@ class TestPhotosConfig:
         assert len(restored.sources) == 2
         assert restored.sources[0].label == "A"
         assert restored.sources[1].label == "B"
+
+
+class TestScreenshotsConfig:
+    """Tests for ScreenshotsConfig."""
+
+    def test_defaults_not_empty(self):
+        """ScreenshotsConfig auto-detects a default path on Windows."""
+        cfg = ScreenshotsConfig()
+        # On a Windows machine with USERPROFILE set, should find something
+        if os.environ.get("USERPROFILE"):
+            assert cfg.source_directory != ""
+
+    def test_explicit_path(self):
+        """ScreenshotsConfig accepts an explicit path."""
+        cfg = ScreenshotsConfig(source_directory="D:/My/Screenshots")
+        assert cfg.source_directory == "D:/My/Screenshots"
+
+    def test_get_source_directory(self):
+        """get_source_directory returns a Path object."""
+        cfg = ScreenshotsConfig(source_directory="D:/Screenshots")
+        assert cfg.get_source_directory() == Path("D:/Screenshots")
+
+    def test_to_dict(self):
+        """ScreenshotsConfig serializes to dict."""
+        cfg = ScreenshotsConfig(source_directory="D:/Pics/Screenshots")
+        d = cfg.to_dict()
+        assert d["source_directory"] == "D:/Pics/Screenshots"
+
+    def test_from_dict(self):
+        """ScreenshotsConfig deserializes from dict."""
+        data = {"source_directory": "/custom/screenshots"}
+        cfg = ScreenshotsConfig.from_dict(data)
+        assert cfg.source_directory == "/custom/screenshots"
+
+    def test_round_trip(self):
+        """ScreenshotsConfig round-trips through dict."""
+        original = ScreenshotsConfig(source_directory="D:/Test/Screenshots")
+        restored = ScreenshotsConfig.from_dict(original.to_dict())
+        assert original.source_directory == restored.source_directory
+
+    def test_save_and_reload_with_screenshots(self, tmp_path):
+        """Screenshots config persists through save/load cycle."""
+        config_file = tmp_path / "config.json"
+
+        config1 = CCDirectorConfig()
+        config1._config_path = config_file
+        config1.screenshots.source_directory = "D:/Custom/Screenshots"
+        config1.save()
+
+        config2 = CCDirectorConfig()
+        config2._config_path = config_file
+        config2.load()
+
+        assert config2.screenshots.source_directory == "D:/Custom/Screenshots"
+
+    def test_partial_config_preserves_screenshots_default(self, tmp_path):
+        """Config without screenshots section uses defaults."""
+        config_data = {"llm": {"default_provider": "openai"}}
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps(config_data))
+
+        config = CCDirectorConfig()
+        config._config_path = config_file
+        config.load()
+
+        # Screenshots should have a default, not be empty
+        assert isinstance(config.screenshots, ScreenshotsConfig)
+
+    def test_save_and_reload_with_send_from_accounts(self, tmp_path):
+        """Send-from accounts persist through save/load cycle."""
+        config_file = tmp_path / "config.json"
+
+        config1 = CCDirectorConfig()
+        config1._config_path = config_file
+        config1.comm_manager.send_from_accounts = {
+            "work": SendFromAccount("work@co.com", "cc-outlook", None),
+            "personal": SendFromAccount("me@home.com", "cc-gmail", "personal"),
+        }
+        config1.save()
+
+        config2 = CCDirectorConfig()
+        config2._config_path = config_file
+        config2.load()
+
+        assert len(config2.comm_manager.send_from_accounts) == 2
+        assert config2.comm_manager.get_account_email("work") == "work@co.com"
+        assert config2.comm_manager.send_from_accounts["personal"].tool == "cc-gmail"

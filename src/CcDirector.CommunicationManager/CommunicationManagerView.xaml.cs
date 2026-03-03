@@ -123,11 +123,19 @@ public partial class CommunicationManagerView : UserControl, IDisposable
         UpdateViewToggle(view);
     }
 
-    private async void Approve_Click(object sender, RoutedEventArgs e)
+    private async void ApproveAndSend_Click(object sender, RoutedEventArgs e)
     {
         if (_viewModel.SelectedItem == null) return;
 
-        FileLog.Write("[CommunicationManagerView] Approve_Click: showing schedule dialog");
+        FileLog.Write("[CommunicationManagerView] ApproveAndSend_Click: approving with ASAP timing");
+        await _viewModel.ApproveWithScheduleCommand.ExecuteAsync(("asap", (DateTime?)null));
+    }
+
+    private async void ApproveAndSchedule_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.SelectedItem == null) return;
+
+        FileLog.Write("[CommunicationManagerView] ApproveAndSchedule_Click: showing schedule dialog");
 
         var dialog = new ScheduleDialog();
         dialog.Owner = Window.GetWindow(this);

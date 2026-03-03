@@ -1,9 +1,12 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Input;
+using CcDirector.Core.Storage;
+using CcDirector.Core.Utilities;
 
 namespace CommunicationManager.Models;
 
@@ -197,12 +200,39 @@ public class ContentItem
     [JsonIgnore]
     public string MediaCountDisplay => MediaCount > 0 ? $"{MediaCount} attachment{(MediaCount > 1 ? "s" : "")}" : "";
 
-    private static readonly Dictionary<string, string> SendFromEmails = new()
+    private static Dictionary<string, string>? _sendFromEmailsCache;
+
+    private static Dictionary<string, string> SendFromEmails
     {
-        { "mindzie", "user@company.com" },
-        { "personal", "user@personal.com" },
-        { "consulting", "user@consulting.com" }
-    };
+        get
+        {
+            if (_sendFromEmailsCache != null) return _sendFromEmailsCache;
+            _sendFromEmailsCache = LoadSendFromEmails();
+            return _sendFromEmailsCache;
+        }
+    }
+
+    private static Dictionary<string, string> LoadSendFromEmails()
+    {
+        var configPath = CcStorage.ConfigJson();
+        if (!File.Exists(configPath))
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var json = File.ReadAllText(configPath);
+        using var doc = JsonDocument.Parse(json);
+
+        if (!doc.RootElement.TryGetProperty("comm_manager", out var cm) ||
+            !cm.TryGetProperty("send_from_accounts", out var accounts))
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var acct in accounts.EnumerateObject())
+        {
+            if (acct.Value.TryGetProperty("email", out var email))
+                result[acct.Name] = email.GetString() ?? acct.Name;
+        }
+        return result;
+    }
 
     private string GetSendFromDisplay()
     {

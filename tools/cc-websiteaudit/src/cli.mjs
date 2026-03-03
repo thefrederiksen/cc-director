@@ -13,6 +13,45 @@ import { reportConsole, reportJson } from './reporter.mjs';
 import { reportHtml } from './reporter-html.mjs';
 import { reportMarkdown } from './reporter-markdown.mjs';
 import { htmlToPdf } from './reporter-pdf.mjs';
+import { join } from 'path';
+import { mkdirSync, writeFileSync } from 'fs';
+import { createInterface } from 'readline';
+
+function getDefaultOutputDir(toolName) {
+  const home = process.env.USERPROFILE || process.env.HOME;
+  const dir = join(home, 'Documents', 'cc-director', toolName);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function getDefaultOutputPath(hostname, format) {
+  const dir = getDefaultOutputDir('cc-websiteaudit');
+  const extMap = { json: 'json', html: 'html', markdown: 'md', pdf: 'pdf' };
+  const ext = extMap[format] || format;
+  const date = new Date().toISOString().split('T')[0];
+  const safeName = hostname.replace(/[^a-zA-Z0-9]/g, '_');
+  return join(dir, `${safeName}_${date}.${ext}`);
+}
+
+async function promptOutputPath(defaultPath, quiet) {
+  // Non-interactive (piped, CI, --quiet): use default silently
+  if (quiet || !process.stdin.isTTY) {
+    console.log('Report will be saved to: ' + defaultPath);
+    return defaultPath;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    console.log('');
+    console.log('Report will be saved to:');
+    console.log('  ' + defaultPath);
+    console.log('');
+    rl.question('Press Enter to confirm, or type a different path: ', (answer) => {
+      rl.close();
+      const trimmed = answer.trim();
+      resolve(trimmed || defaultPath);
+    });
+  });
+}
 
 const program = new Command();
 
@@ -52,6 +91,12 @@ async function run(url, opts) {
     else if (ext === 'html' || ext === 'htm') format = 'html';
     else if (ext === 'md' || ext === 'markdown') format = 'markdown';
     else if (ext === 'pdf') format = 'pdf';
+  }
+
+  // Default output directory when no -o specified
+  if (!opts.output && format !== 'console') {
+    const defaultPath = getDefaultOutputPath(parsedUrl.hostname, format);
+    opts.output = await promptOutputPath(defaultPath, opts.quiet);
   }
 
   // Determine which modules to run
@@ -158,12 +203,10 @@ async function run(url, opts) {
     results,
   };
 
-  const fs = await import('fs');
-
   if (format === 'json') {
     const json = reportJson(report);
     if (opts.output) {
-      fs.writeFileSync(opts.output, json, 'utf8');
+      writeFileSync(opts.output, json, 'utf8');
       if (!opts.quiet) console.log('[+] JSON report saved to: ' + opts.output);
     } else {
       console.log(json);
@@ -171,7 +214,7 @@ async function run(url, opts) {
   } else if (format === 'html') {
     const html = reportHtml(report);
     if (opts.output) {
-      fs.writeFileSync(opts.output, html, 'utf8');
+      writeFileSync(opts.output, html, 'utf8');
       if (!opts.quiet) console.log('[+] HTML report saved to: ' + opts.output);
     } else {
       console.log(html);
@@ -179,19 +222,67 @@ async function run(url, opts) {
   } else if (format === 'markdown') {
     const md = reportMarkdown(report);
     if (opts.output) {
-      fs.writeFileSync(opts.output, md, 'utf8');
+      writeFileSync(opts.output, md, 'utf8');
       if (!opts.quiet) console.log('[+] Markdown report saved to: ' + opts.output);
     } else {
       console.log(md);
     }
   } else if (format === 'pdf') {
-    const outputPath = opts.output || (report.hostname.replace(/\./g, '_') + '_audit.pdf');
+    let outputPath = opts.output;
+    if (!outputPath) {
+      const defaultPdfPath = getDefaultOutputPath(report.hostname, 'pdf');
+      outputPath = await promptOutputPath(defaultPdfPath, opts.quiet);
+    }
     if (!opts.quiet) console.log('[*] Generating PDF report...');
     const html = reportHtml(report);
     await htmlToPdf(html, outputPath);
     if (!opts.quiet) console.log('[+] PDF report saved to: ' + outputPath);
   } else {
     reportConsole(report, opts.quiet);
+    // Auto-save both PDF and JSON reports
+    if (!opts.output) {
+      const defaultDir = getDefaultOutputDir('cc-websiteaudit');
+      const safeName = report.hostname.replace(/[^a-zA-Z0-9]/g, '_');
+      const dateStr = report.date;
+      let pdfPath = join(defaultDir, safeName + '_' + dateStr + '.pdf');
+      let jsonPath = join(defaultDir, safeName + '_' + dateStr + '.json');
+
+      // In interactive mode, offer to change save location
+      if (!opts.quiet && process.stdin.isTTY) {
+        console.log('');
+        console.log('Reports will be saved to:');
+        console.log('  PDF:  ' + pdfPath);
+        console.log('  JSON: ' + jsonPath);
+        console.log('');
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const newDir = await new Promise((resolve) => {
+          rl.question('Press Enter to confirm, or type a different directory: ', (answer) => {
+            rl.close();
+            resolve(answer.trim());
+          });
+        });
+        if (newDir) {
+          mkdirSync(newDir, { recursive: true });
+          pdfPath = join(newDir, safeName + '_' + dateStr + '.pdf');
+          jsonPath = join(newDir, safeName + '_' + dateStr + '.json');
+        }
+      }
+
+      // Save JSON
+      writeFileSync(jsonPath, reportJson(report), 'utf8');
+
+      // Save PDF
+      if (!opts.quiet) console.log('[*] Generating PDF report...');
+      const html = reportHtml(report);
+      await htmlToPdf(html, pdfPath);
+
+      if (!opts.quiet) {
+        console.log('');
+        console.log('Reports saved:');
+        console.log('  PDF:  ' + pdfPath);
+        console.log('  JSON: ' + jsonPath);
+      }
+    }
   }
 }
 

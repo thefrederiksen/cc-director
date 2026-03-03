@@ -6,24 +6,28 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-# Email account mapping - defines which tool/account to use for each identifier
-SEND_FROM_ACCOUNTS: Dict[str, Dict[str, Optional[str]]] = {
-    "mindzie": {
-        "email": "user@company.com",
-        "tool": "cc-outlook",
-        "tool_account": None,  # cc-outlook uses default
-    },
-    "personal": {
-        "email": "user@personal.com",
-        "tool": "cc-gmail",
-        "tool_account": "personal",
-    },
-    "consulting": {
-        "email": "user@consulting.com",
-        "tool": "cc-gmail",
-        "tool_account": "consulting",
-    },
-}
+def get_send_from_accounts() -> Dict[str, Dict[str, Optional[str]]]:
+    """Get send-from accounts from config.json.
+
+    Returns dict of {name: {"email": ..., "tool": ..., "tool_account": ...}}.
+    """
+    try:
+        from cc_shared.config import get_config
+        accounts = get_config().comm_manager.send_from_accounts
+        return {
+            name: {
+                "email": acct.email,
+                "tool": acct.tool,
+                "tool_account": acct.tool_account,
+            }
+            for name, acct in accounts.items()
+        }
+    except Exception:
+        return {}
+
+
+# Kept for backwards compatibility - callers should prefer get_send_from_accounts()
+SEND_FROM_ACCOUNTS = get_send_from_accounts()
 
 
 @dataclass

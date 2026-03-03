@@ -79,6 +79,7 @@ config_app = typer.Typer(help="Configuration", cls=AliasGroup)
 health_app = typer.Typer(help="Health data", cls=AliasGroup)
 posts_app = typer.Typer(help="Social media posts", cls=AliasGroup)
 lists_app = typer.Typer(help="Contact list management", cls=AliasGroup)
+tags_app = typer.Typer(help="Contact tag management", cls=AliasGroup)
 
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(goals_app, name="goals")
@@ -89,6 +90,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(health_app, name="health")
 app.add_typer(posts_app, name="posts")
 app.add_typer(lists_app, name="lists")
+app.add_typer(tags_app, name="tags")
 
 console = Console(force_terminal=True)
 
@@ -1297,6 +1299,7 @@ def contacts_list(
     account: Optional[str] = typer.Option(None, "-a", "--account", help="Filter by account: consulting, personal, both"),
     category: Optional[str] = typer.Option(None, "-c", "--category", help="Filter by category"),
     relationship: Optional[str] = typer.Option(None, "-r", "--relationship", help="Filter by relationship"),
+    tag: Optional[List[str]] = typer.Option(None, "--tag", help="Filter by tag (repeatable, AND logic)"),
     has: Optional[List[str]] = typer.Option(None, "--has", help="Only show contacts where field is non-empty (repeatable)"),
     missing: Optional[List[str]] = typer.Option(None, "--missing", help="Only show contacts where field is empty/null (repeatable)"),
     format: str = typer.Option("text", "--format", "-f", help="Output format: text, json"),
@@ -1311,6 +1314,7 @@ def contacts_list(
             relationship=relationship,
             has_fields=has,
             missing_fields=missing,
+            tags=tag,
         )
 
         if not contacts:
@@ -1946,6 +1950,185 @@ def contacts_sync_recipients(
             console.print(f"  - {err}")
         if len(result["errors"]) > 10:
             console.print(f"  ... and {len(result['errors']) - 10} more")
+
+
+# =============================================================================
+# Contact Tag Commands
+# =============================================================================
+
+@contacts_app.command("tag")
+def contacts_tag(
+    contact_id: int = typer.Argument(..., help="Contact ID"),
+    tags: List[str] = typer.Argument(..., help="Tags to add"),
+):
+    """Add tags to a contact.
+
+    Example: cc-vault contacts tag 42 toronto ai-interested course-prospect
+    """
+    db = get_db()
+
+    try:
+        contact = db.get_contact_by_id(contact_id)
+        if not contact:
+            console.print(f"[red]Contact #{contact_id} not found[/red]")
+            raise typer.Exit(1)
+
+        added = db.add_tags_by_id(contact_id, *tags)
+        display_name = contact.get('name') or f"#{contact_id}"
+        all_tags = db.get_tags(contact_id)
+        console.print(f"[green]Added {added} tag(s) to {display_name}[/green]")
+        console.print(f"Tags: {', '.join(all_tags)}")
+
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except sqlite3.Error as e:
+        console.print(f"[red]Error tagging contact:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@contacts_app.command("untag")
+def contacts_untag(
+    contact_id: int = typer.Argument(..., help="Contact ID"),
+    tags: List[str] = typer.Argument(..., help="Tags to remove"),
+):
+    """Remove tags from a contact.
+
+    Example: cc-vault contacts untag 42 course-prospect
+    """
+    db = get_db()
+
+    try:
+        contact = db.get_contact_by_id(contact_id)
+        if not contact:
+            console.print(f"[red]Contact #{contact_id} not found[/red]")
+            raise typer.Exit(1)
+
+        removed = db.remove_tags_by_id(contact_id, *tags)
+        display_name = contact.get('name') or f"#{contact_id}"
+        remaining = db.get_tags(contact_id)
+        console.print(f"[green]Removed {removed} tag(s) from {display_name}[/green]")
+        if remaining:
+            console.print(f"Remaining tags: {', '.join(remaining)}")
+        else:
+            console.print("No tags remaining.")
+
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except sqlite3.Error as e:
+        console.print(f"[red]Error removing tags:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@contacts_app.command("tags")
+def contacts_tags(
+    contact_id: int = typer.Argument(..., help="Contact ID"),
+):
+    """Show all tags for a contact.
+
+    Example: cc-vault contacts tags 42
+    """
+    db = get_db()
+
+    try:
+        contact = db.get_contact_by_id(contact_id)
+        if not contact:
+            console.print(f"[red]Contact #{contact_id} not found[/red]")
+            raise typer.Exit(1)
+
+        tags = db.get_tags(contact_id)
+        display_name = contact.get('name') or f"#{contact_id}"
+
+        if not tags:
+            console.print(f"[yellow]{display_name} has no tags[/yellow]")
+            return
+
+        console.print(f"[bold]{display_name}[/bold] ({len(tags)} tags):")
+        for tag in tags:
+            console.print(f"  - {tag}")
+
+    except sqlite3.Error as e:
+        console.print(f"[red]Error getting tags:[/red] {e}")
+        raise typer.Exit(1)
+
+
+# =============================================================================
+# Tags App Commands (cc-vault tags ...)
+# =============================================================================
+
+@tags_app.callback(invoke_without_command=True)
+def tags_default(ctx: typer.Context):
+    """List all tags with contact counts."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    db = get_db()
+    try:
+        all_tags = db.list_all_tags()
+
+        if not all_tags:
+            console.print("[yellow]No tags found. Tag a contact with: cc-vault contacts tag <id> <tag>[/yellow]")
+            return
+
+        table = Table(title="Contact Tags")
+        table.add_column("Tag", style="cyan")
+        table.add_column("Contacts", justify="right")
+
+        for t in all_tags:
+            table.add_row(t['tag'], str(t['count']))
+
+        console.print(table)
+        console.print(f"\n[dim]{len(all_tags)} tags across {sum(t['count'] for t in all_tags)} assignments[/dim]")
+
+    except sqlite3.Error as e:
+        console.print(f"[red]Error listing tags:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@tags_app.command("show")
+def tags_show(
+    tag: str = typer.Argument(..., help="Tag to look up"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text, json"),
+):
+    """Show all contacts with a specific tag.
+
+    Example: cc-vault tags show toronto
+    """
+    db = get_db()
+
+    try:
+        contacts = db.list_contacts_by_tag(tag)
+
+        if not contacts:
+            console.print(f"[yellow]No contacts found with tag \"{tag}\"[/yellow]")
+            return
+
+        if format == "json":
+            print(json.dumps(contacts, indent=2, default=str))
+            return
+
+        table = Table(title=f"Contacts tagged \"{tag}\" ({len(contacts)})")
+        table.add_column("ID", style="dim")
+        table.add_column("Name", style="cyan")
+        table.add_column("Email")
+        table.add_column("Company")
+        table.add_column("Relationship")
+
+        for c in contacts:
+            table.add_row(
+                str(c['id']),
+                c.get('name', '-') or '-',
+                c.get('email', '-') or '-',
+                c.get('company', '-') or '-',
+                c.get('relationship', '-') or '-',
+            )
+
+        console.print(table)
+
+    except sqlite3.Error as e:
+        console.print(f"[red]Error showing tag:[/red] {e}")
+        raise typer.Exit(1)
 
 
 # =============================================================================
