@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-youtube"
+version = "0.1.0"
+description = "YouTube CLI: upload videos, manage comments, and list channel content"
+license = {text = "MIT"}
+authors = [{name = "CC Director Contributors"}]
+requires-python = ">=3.11"
+keywords = ["youtube", "video", "cli", "google", "api"]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.23.0",
+    "google-auth-oauthlib>=1.1.0",
+    "google-auth-httplib2>=0.1.1",
+    "keyring>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "pyinstaller>=6.0.0"]
+
+[project.scripts]
+cc-youtube = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-twitter"
+version = "0.1.0"
+description = "Twitter/X CLI: post, reply, like, retweet, and view timeline"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "CC Director Contributors"}]
+requires-python = ">=3.11"
+keywords = ["twitter", "x", "cli", "tweepy", "api"]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "tweepy>=4.14.0",
+    "keyring>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "pyinstaller>=6.0.0"]
+
+[project.scripts]
+cc-twitter = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

@@ -13,7 +13,7 @@
       "name": "cc-pdf",
       "category": "documents",
       "type": "python",
-      "description": "Convert Markdown to PDF with themes",
+      "description": "Convert between Markdown and PDF with themes",
       "built": true,
       "requirements": ["Chrome/Chromium"]
     },
@@ -21,7 +21,7 @@
       "name": "cc-html",
       "category": "documents",
       "type": "python",
-      "description": "Convert Markdown to HTML with themes",
+      "description": "Convert between Markdown and HTML with themes",
       "built": true,
       "requirements": []
     },
@@ -29,7 +29,7 @@
       "name": "cc-word",
       "category": "documents",
       "type": "python",
-      "description": "Convert Markdown to Word documents with themes",
+      "description": "Convert between Markdown and Word documents with themes",
       "built": true,
       "requirements": []
     },
@@ -37,7 +37,7 @@
       "name": "cc-excel",
       "category": "documents",
       "type": "python",
-      "description": "Convert CSV, JSON, and Markdown tables to formatted Excel workbooks",
+      "description": "Convert between CSV, JSON, Markdown tables, and formatted Excel workbooks",
       "built": true,
       "requirements": []
     },
@@ -45,7 +45,7 @@
       "name": "cc-powerpoint",
       "category": "documents",
       "type": "python",
-      "description": "Convert Markdown to PowerPoint presentations with themes",
+      "description": "Convert between Markdown and PowerPoint presentations with themes",
       "built": true,
       "requirements": []
     },
@@ -88,6 +88,30 @@
       "description": "Reddit automation with human-like delays",
       "built": true,
       "requirements": ["Playwright browsers", "cc-browser"]
+    },
+    {
+      "name": "cc-twitter",
+      "category": "web-social",
+      "type": "python",
+      "description": "Twitter/X CLI: post, reply, thread, like, retweet, timeline",
+      "built": false,
+      "requirements": ["Twitter API v2 credentials"]
+    },
+    {
+      "name": "cc-facebook",
+      "category": "web-social",
+      "type": "python",
+      "description": "Facebook Page CLI: post, comment, reply, list via Graph API",
+      "built": false,
+      "requirements": ["Facebook App + Page Access Token"]
+    },
+    {
+      "name": "cc-youtube",
+      "category": "web-social",
+      "type": "python",
+      "description": "YouTube CLI: upload, comment, reply, list via YouTube Data API v3",
+      "built": false,
+      "requirements": ["Google OAuth (YouTube Data API v3)"]
     },
     {
       "name": "cc-spotify",

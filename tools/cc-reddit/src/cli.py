@@ -946,6 +946,165 @@ def post(
 # =============================================================================
 
 @app.command()
+def create(
+    subreddit: str = typer.Argument(..., help="Subreddit to post in (e.g. 'python')"),
+    title: str = typer.Option(..., "--title", "-t", help="Post title"),
+    body: str = typer.Option("", "--body", "-b", help="Post body text"),
+    url: str = typer.Option("", "--url", "-u", help="Link URL (for link posts)"),
+    flair: str = typer.Option("", "--flair", "-f", help="Post flair text"),
+):
+    """Create a new post in a subreddit."""
+    try:
+        client = get_client()
+
+        if not title:
+            error("Post title is required")
+            raise typer.Exit(1)
+
+        # Navigate to submit page
+        submit_url = RedditURLs.submit(subreddit)
+        client.navigate(submit_url)
+        human_delay(3)
+
+        # Get snapshot to find form elements
+        snapshot_data = client.snapshot()
+        snapshot_text = snapshot_data.get("snapshot", "")
+
+        if config.verbose:
+            console.print(snapshot_text)
+
+        # If this is a link post, select the Link tab first
+        if url:
+            lines = snapshot_text.split('\n')
+            for line in lines:
+                if 'link' in line.lower() and ('tab' in line.lower() or 'button' in line.lower()):
+                    match = re.search(r'\[ref=(\w+)\]', line)
+                    if match:
+                        client.click(match.group(1))
+                        human_delay(1)
+                        # Refresh snapshot after tab switch
+                        snapshot_data = client.snapshot()
+                        snapshot_text = snapshot_data.get("snapshot", "")
+                        break
+
+        # Find and fill title input
+        lines = snapshot_text.split('\n')
+        title_ref = None
+        for line in lines:
+            if 'title' in line.lower() and ('textbox' in line.lower() or 'textarea' in line.lower() or 'input' in line.lower()):
+                match = re.search(r'\[ref=(\w+)\]', line)
+                if match:
+                    title_ref = match.group(1)
+                    break
+
+        if not title_ref:
+            error("Could not find title input. Try using 'cc-reddit snapshot' to see page elements.")
+            raise typer.Exit(1)
+
+        client.click(title_ref)
+        human_delay(0.5)
+        type_slowly(client, title_ref, title)
+        human_delay(0.5)
+
+        # Fill URL if link post
+        if url:
+            snapshot_data = client.snapshot()
+            snapshot_text = snapshot_data.get("snapshot", "")
+            lines = snapshot_text.split('\n')
+            url_ref = None
+            for line in lines:
+                if 'url' in line.lower() and ('textbox' in line.lower() or 'input' in line.lower()):
+                    match = re.search(r'\[ref=(\w+)\]', line)
+                    if match:
+                        url_ref = match.group(1)
+                        break
+
+            if url_ref:
+                client.click(url_ref)
+                human_delay(0.3)
+                type_slowly(client, url_ref, url)
+                human_delay(0.5)
+            else:
+                warn("Could not find URL input field")
+
+        # Fill body if text post
+        if body and not url:
+            snapshot_data = client.snapshot()
+            snapshot_text = snapshot_data.get("snapshot", "")
+            lines = snapshot_text.split('\n')
+            body_ref = None
+            for line in lines:
+                if ('textbox' in line.lower() or 'contenteditable' in line.lower()) and 'title' not in line.lower():
+                    match = re.search(r'\[ref=(\w+)\]', line)
+                    if match:
+                        body_ref = match.group(1)
+                        break
+
+            if body_ref:
+                client.click(body_ref)
+                human_delay(0.3)
+                type_slowly(client, body_ref, body)
+                human_delay(0.5)
+            else:
+                warn("Could not find body text input")
+
+        # Select flair if specified
+        if flair:
+            snapshot_data = client.snapshot()
+            snapshot_text = snapshot_data.get("snapshot", "")
+            lines = snapshot_text.split('\n')
+            flair_ref = None
+            for line in lines:
+                if 'flair' in line.lower() and ('button' in line.lower() or 'select' in line.lower()):
+                    match = re.search(r'\[ref=(\w+)\]', line)
+                    if match:
+                        flair_ref = match.group(1)
+                        break
+
+            if flair_ref:
+                client.click(flair_ref)
+                human_delay(1)
+                # Look for matching flair option
+                snapshot_data = client.snapshot()
+                snapshot_text = snapshot_data.get("snapshot", "")
+                lines = snapshot_text.split('\n')
+                for line in lines:
+                    if flair.lower() in line.lower():
+                        match = re.search(r'\[ref=(\w+)\]', line)
+                        if match:
+                            client.click(match.group(1))
+                            human_delay(0.5)
+                            break
+
+        # Find and click submit/post button
+        human_delay(1)
+        snapshot_data = client.snapshot()
+        snapshot_text = snapshot_data.get("snapshot", "")
+        lines = snapshot_text.split('\n')
+        submit_ref = None
+        for line in lines:
+            lower_line = line.lower()
+            if ('post' in lower_line or 'submit' in lower_line) and 'button' in lower_line:
+                # Skip "create post" navigation buttons
+                if 'create' in lower_line:
+                    continue
+                match = re.search(r'\[ref=(\w+)\]', line)
+                if match:
+                    submit_ref = match.group(1)
+
+        if submit_ref:
+            client.click(submit_ref)
+            human_delay(2)
+            success(f"Post submitted to r/{subreddit}")
+        else:
+            warn("Could not find submit button. Post may not have been created.")
+
+    except BrowserError as e:
+        error(str(e))
+        raise typer.Exit(1)
+
+
+@app.command()
 def comment(
     post_url: str = typer.Argument(..., help="Post URL to comment on"),
     text: str = typer.Option(..., "--text", "-t", help="Comment text"),

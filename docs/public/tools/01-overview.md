@@ -1,6 +1,6 @@
 # Tools Overview
 
-CC Director includes 29 command-line tools for document conversion, media processing, email, browser automation, desktop automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
+CC Director includes 32 command-line tools for document conversion, media processing, email, browser automation, social media, desktop automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
 
 ## Quick Reference
 
@@ -8,8 +8,10 @@ CC Director includes 29 command-line tools for document conversion, media proces
 
 | Tool | Description | Requirements |
 |------|-------------|--------------|
-| cc-markdown | Markdown to PDF/Word/HTML with themes | Chrome/Chromium |
-| cc-excel | CSV/JSON/Markdown to formatted Excel workbooks | None (not yet built) |
+| cc-pdf | Markdown to PDF with themes | Chrome/Chromium |
+| cc-html | Markdown to HTML with themes | None |
+| cc-word | Markdown to Word (.docx) with themes | None |
+| cc-excel | CSV/JSON/Markdown to formatted Excel workbooks | None |
 | cc-powerpoint | Markdown to PowerPoint presentations | None |
 
 ### Email
@@ -26,6 +28,9 @@ CC Director includes 29 command-line tools for document conversion, media proces
 | cc-browser | Persistent browser automation with workspaces | Node.js, Playwright |
 | cc-linkedin | LinkedIn automation with human-like delays | Playwright, cc-browser |
 | cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
+| cc-twitter | Twitter/X CLI: post, reply, thread, like, retweet, timeline | Twitter API v2 credentials |
+| cc-facebook | Facebook Page CLI: post, comment, reply, list via Graph API | Facebook App + Page Access Token |
+| cc-youtube | YouTube CLI: upload, comment, reply, list via Data API v3 | Google OAuth (YouTube Data API) |
 | cc-spotify | Spotify playback control via browser | cc-browser |
 | cc-crawl4ai | AI-ready web crawler to clean markdown | Playwright browsers |
 | cc-websiteaudit | Website SEO/security/AI readiness audit | Node.js, Chrome (not yet built) |
@@ -58,6 +63,7 @@ CC Director includes 29 command-line tools for document conversion, media proces
 | cc-vault | Personal vault: contacts, tasks, goals, docs, RAG | None |
 | cc-hardware | System hardware info (RAM, CPU, GPU, disk) | None |
 | cc-comm-queue | Communication Manager approval queue | None |
+| cc-settings | CC Director configuration management | None |
 | cc-docgen | C4 architecture diagrams from YAML | Graphviz (not yet built) |
 | cc-director-setup | Windows installer for CC Director | None |
 | cc-personresearch | Person research aggregation | (not yet built) |
@@ -67,26 +73,49 @@ CC Director includes 29 command-line tools for document conversion, media proces
 
 ## Documents
 
-### cc-markdown
+### cc-pdf
 
-Convert Markdown to PDF, Word, or HTML with built-in themes.
+Convert Markdown to PDF with built-in themes.
 
 ```bash
-cc-markdown report.md -o report.pdf
-cc-markdown report.md -o report.pdf --theme boardroom
-cc-markdown report.md -o report.docx
-cc-markdown --themes
+cc-pdf report.md -o report.pdf
+cc-pdf report.md -o report.pdf --theme boardroom
+cc-pdf report.md -o report.pdf --page-size a4 --margin 1in
 ```
 
 **Themes:** boardroom, terminal, paper (default), spark, thesis, obsidian, blueprint
 
 **Options:** `-o` output file, `--theme` theme name, `--css` custom CSS, `--page-size` a4/letter, `--margin` page margin
 
+### cc-html
+
+Convert Markdown to styled HTML with built-in themes.
+
+```bash
+cc-html report.md -o report.html
+cc-html report.md -o report.html --theme terminal
+```
+
+**Themes:** boardroom, terminal, paper (default), spark, thesis, obsidian, blueprint
+
+**Options:** `-o` output file, `--theme` theme name, `--css` custom CSS
+
+### cc-word
+
+Convert Markdown to Word (.docx) documents with built-in themes.
+
+```bash
+cc-word report.md -o report.docx
+cc-word report.md -o report.docx --theme boardroom
+```
+
+**Themes:** boardroom, terminal, paper (default), spark, thesis, obsidian, blueprint
+
+**Options:** `-o` output file, `--theme` theme name
+
 ### cc-excel
 
 Convert CSV, JSON, and Markdown tables to formatted Excel workbooks with themes, charts, and formulas.
-
-**Status:** Source exists but not yet built.
 
 ```bash
 cc-excel from-csv sales.csv -o sales.xlsx --theme boardroom
@@ -187,10 +216,65 @@ Reddit automation with human-like delays and random jitter.
 cc-reddit status
 cc-reddit feed
 cc-reddit post <url>
-cc-reddit comment <url> "Comment text"
+cc-reddit create <subreddit> --title "Title" --body "Body text"
+cc-reddit comment <url> --text "Comment text"
+cc-reddit reply <url> --text "Reply text"
 ```
 
 **Important:** Always use cc-reddit for Reddit operations. Never use cc-browser directly with Reddit.
+
+### cc-twitter
+
+Twitter/X CLI using Twitter API v2 with OAuth 1.0a.
+
+```bash
+cc-twitter auth                              # Store API credentials
+cc-twitter status                            # Show auth status and account info
+cc-twitter post "Tweet content"              # Create a tweet
+cc-twitter reply "Reply text" --to <url>     # Reply to a tweet
+cc-twitter thread "First" "Second" "Third"   # Post a multi-tweet thread
+cc-twitter like <tweet_url>                  # Like a tweet
+cc-twitter retweet <tweet_url>               # Retweet
+cc-twitter timeline --count 20               # Show home timeline
+cc-twitter mentions --count 10               # Show mentions
+cc-twitter delete <tweet_url>                # Delete own tweet
+```
+
+**Setup:** Register an app at developer.x.com, generate API Key, API Secret, Access Token, and Access Token Secret. Run `cc-twitter auth` to store them.
+
+### cc-facebook
+
+Facebook Page management via Graph API v19.0. Supports page posting only (personal profile posting is restricted by Meta).
+
+```bash
+cc-facebook auth                             # Store App ID, Secret, Page Token, Page ID
+cc-facebook status                           # Show auth status and page info
+cc-facebook pages                            # List managed pages
+cc-facebook post "Message" --link <url>      # Create a page post
+cc-facebook comment <post_url> "Comment"     # Comment on a post
+cc-facebook reply <comment_id> "Reply"       # Reply to a comment
+cc-facebook list --count 10                  # List recent page posts
+cc-facebook delete <post_id>                 # Delete a post
+```
+
+**Setup:** Create a Facebook App at developers.facebook.com, obtain a long-lived Page Access Token with `pages_manage_posts` permission. Run `cc-facebook auth` to store credentials.
+
+### cc-youtube
+
+YouTube CLI using YouTube Data API v3 with OAuth 2.0.
+
+```bash
+cc-youtube auth                              # Run OAuth flow (requires credentials.json)
+cc-youtube status                            # Show auth status and channel info
+cc-youtube upload video.mp4 --title "Title" --description "Desc" --privacy public
+cc-youtube list --count 10                   # List channel's videos
+cc-youtube comments <video_url> --count 20   # List comments on a video
+cc-youtube comment <video_url> "Comment"     # Comment on a video
+cc-youtube reply <comment_id> "Reply"        # Reply to a comment
+cc-youtube delete <video_id>                 # Delete a video
+```
+
+**Setup:** Enable YouTube Data API v3 in Google Cloud Console, download `credentials.json` to the config directory. Run `cc-youtube auth` to complete OAuth flow.
 
 ### cc-spotify
 

@@ -147,6 +147,8 @@ class SQLiteWatcher:
             "reddit_specific",
             "email_specific",
             "article_specific",
+            "facebook_specific",
+            "youtube_specific",
             "thread_content"
         ]
 
@@ -182,9 +184,17 @@ class SQLiteDispatcher:
         # Import senders
         from .email_sender import EmailSender
         from .linkedin_sender import LinkedInSender
+        from .reddit_sender import RedditSender
+        from .twitter_sender import TwitterSender
+        from .facebook_sender import FacebookSender
+        from .youtube_sender import YouTubeSender
 
         self.email_sender = EmailSender()
         self.linkedin_sender = LinkedInSender(db_path=db_path)
+        self.reddit_sender = RedditSender(db_path=db_path)
+        self.twitter_sender = TwitterSender(db_path=db_path)
+        self.facebook_sender = FacebookSender(db_path=db_path)
+        self.youtube_sender = YouTubeSender(db_path=db_path)
 
     async def start(self) -> None:
         """Start the dispatcher."""
@@ -216,6 +226,14 @@ class SQLiteDispatcher:
                 result = await self.email_sender.send(item)
             elif platform == "linkedin":
                 result = await self.linkedin_sender.send(item)
+            elif platform == "reddit":
+                result = await self.reddit_sender.send(item)
+            elif platform == "twitter":
+                result = await self.twitter_sender.send(item)
+            elif platform == "facebook":
+                result = await self.facebook_sender.send(item)
+            elif platform == "youtube":
+                result = await self.youtube_sender.send(item)
             else:
                 logger.warning(f"Unknown platform: {platform}")
                 result = type("Result", (), {
