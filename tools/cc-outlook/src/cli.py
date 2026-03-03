@@ -579,7 +579,7 @@ def reply(
     body_file: Path = typer.Option(None, "-f", "--file", help="Read body from file"),
     reply_all: bool = typer.Option(False, "--all", "-a", help="Reply to all recipients"),
 ):
-    """Reply to an email."""
+    """Create a draft reply to an email."""
     client = get_client()
 
     # Get body content
@@ -595,7 +595,9 @@ def reply(
     try:
         result = client.reply_message(message_id, body=body, reply_all=reply_all)
         action = "Reply-all" if reply_all else "Reply"
-        console.print(f"[green]{action} sent.[/green]")
+        console.print(f"[green]{action} draft created.[/green]")
+        if result.get('id'):
+            console.print(f"Draft ID: {result['id']}")
 
     except ValueError as e:
         logger.error(f"Reply error: {e}")

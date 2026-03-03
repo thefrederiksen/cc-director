@@ -503,7 +503,7 @@ class OutlookClient:
 
     def reply_message(self, message_id: str, body: str, reply_all: bool = False) -> dict:
         """
-        Reply to a message.
+        Create a draft reply to a message.
 
         Args:
             message_id: Message ID to reply to
@@ -511,7 +511,7 @@ class OutlookClient:
             reply_all: If True, reply to all recipients
 
         Returns:
-            Dict with reply status
+            Dict with draft reply details
         """
         mailbox = self.account.mailbox()
         message = mailbox.get_message(object_id=message_id)
@@ -525,10 +525,13 @@ class OutlookClient:
             reply = message.reply()
 
         reply.body = body
-        reply.send()
+        reply.save_draft()
 
         return {
-            'status': 'sent',
+            'status': 'draft',
+            'id': reply.object_id,
+            'subject': reply.subject,
+            'to': [r.address for r in reply.to],
             'reply_to': message_id,
             'reply_all': reply_all
         }

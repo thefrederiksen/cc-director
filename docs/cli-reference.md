@@ -374,7 +374,7 @@ COMMANDS:
   send                 Send an email
   draft                Create a draft
   search               Search emails
-  reply                Reply to an email
+  reply                Create a draft reply
   forward              Forward an email
   flag                 Flag message for follow-up
   categorize           Set categories
