@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
-using System.Windows.Threading;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -17,7 +16,6 @@ namespace CommunicationManager.ViewModels;
 public partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly ContentService _contentService;
-    private readonly DispatcherTimer _pollTimer;
     private bool _isRefreshing;
     private bool _disposed;
 
@@ -115,13 +113,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var contentPath = GetContentPath();
 
         _contentService = new ContentService(contentPath);
-
-        // Set up polling timer (every 5 seconds)
-        _pollTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(5)
-        };
-        _pollTimer.Tick += async (s, e) => await RefreshAsync();
     }
 
     private static string GetContentPath()
@@ -136,8 +127,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         FileLog.Write("[CommunicationManager.VM] InitializeAsync");
         await _contentService.InitializeAsync();
         await RefreshAsync();
-        // Start polling after initial load
-        _pollTimer.Start();
     }
 
     /// <summary>
@@ -145,8 +134,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public void StartPolling()
     {
-        FileLog.Write("[CommunicationManager.VM] StartPolling");
-        _pollTimer.Start();
+        FileLog.Write("[CommunicationManager.VM] StartPolling (no-op, auto-refresh disabled)");
     }
 
     /// <summary>
@@ -154,8 +142,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public void StopPolling()
     {
-        FileLog.Write("[CommunicationManager.VM] StopPolling");
-        _pollTimer.Stop();
+        FileLog.Write("[CommunicationManager.VM] StopPolling (no-op, auto-refresh disabled)");
     }
 
     [RelayCommand]
@@ -964,7 +951,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _pollTimer.Stop();
         _contentService.Dispose();
     }
 }
