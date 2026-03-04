@@ -5,6 +5,7 @@ Supports two authentication methods:
   - OAuth (Gmail API) -- Full Setup, required when IMAP is blocked
 """
 
+import json
 import logging
 import sys
 from datetime import datetime
@@ -406,9 +407,28 @@ def main(
 # =============================================================================
 
 @accounts_app.command("list")
-def accounts_list() -> None:
+def accounts_list(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON for machine consumption"),
+) -> None:
     """List all configured Gmail accounts."""
     accts = list_accounts()
+
+    if json_output:
+        result = {
+            "tool": "cc-gmail",
+            "accounts": [
+                {
+                    "name": acct["name"],
+                    "email": acct.get("email", ""),
+                    "is_default": acct["is_default"],
+                    "authenticated": acct["authenticated"],
+                    "can_send": acct["authenticated"] and bool(acct.get("email")),
+                }
+                for acct in accts
+            ],
+        }
+        print(json.dumps(result))
+        return
 
     if not accts:
         console.print("[yellow]No accounts configured.[/yellow]")

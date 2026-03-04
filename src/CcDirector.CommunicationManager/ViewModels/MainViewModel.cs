@@ -646,7 +646,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
             if (acct.Value.TryGetProperty("tool_account", out var toolAcctProp))
                 toolAccount = toolAcctProp.GetString();
 
-            result[acct.Name] = new SendFromConfig(tool, toolAccount);
+            var config = new SendFromConfig(tool, toolAccount);
+            result[acct.Name] = config;
+
+            // Also index by email address so lookups work whether send_from is
+            // an account name ("consulting") or an email ("soren@centerconsulting.com")
+            if (acct.Value.TryGetProperty("email", out var emailProp))
+            {
+                var email = emailProp.GetString();
+                if (!string.IsNullOrEmpty(email))
+                    result.TryAdd(email, config);
+            }
         }
 
         FileLog.Write($"[CommunicationManager.VM] LoadSendFromConfigs: {string.Join(", ", result.Select(kv => $"{kv.Key}={kv.Value.Tool}/{kv.Value.ToolAccount}"))}");
@@ -805,9 +815,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         var sendFrom = item.SendFrom ?? item.Persona;
         _sendFromConfigs.TryGetValue(sendFrom, out var accountConfig);
-        var useGmail = accountConfig != null
-            ? accountConfig.Tool.Contains("gmail", StringComparison.OrdinalIgnoreCase)
-            : sendFrom.Contains("@gmail.com", StringComparison.OrdinalIgnoreCase);
+
+        if (accountConfig == null)
+        {
+            var knownKeys = string.Join(", ", _sendFromConfigs.Keys);
+            FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync FAILED: no send_from config for '{sendFrom}'. Known: [{knownKeys}]");
+            return false;
+        }
+
+        var useGmail = accountConfig.Tool.Contains("gmail", StringComparison.OrdinalIgnoreCase);
         var toolName = useGmail ? "cc-gmail" : "cc-outlook";
         var toolPath = Path.Combine(CcStorage.Bin(), useGmail ? "cc-gmail.exe" : "cc-outlook.exe");
 

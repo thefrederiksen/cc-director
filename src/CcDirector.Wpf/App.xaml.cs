@@ -301,26 +301,12 @@ public partial class App : Application
                 {
                     if (engineSection.TryGetProperty("CommunicationsDbPath", out var dbPath))
                         engineOptions.CommunicationsDbPath = dbPath.GetString() ?? engineOptions.CommunicationsDbPath;
-                    if (engineSection.TryGetProperty("CcOutlookPath", out var outlookPath))
-                        engineOptions.CcOutlookPath = outlookPath.GetString() ?? engineOptions.CcOutlookPath;
-                    if (engineSection.TryGetProperty("CcGmailPath", out var gmailPath))
-                        engineOptions.CcGmailPath = gmailPath.GetString() ?? engineOptions.CcGmailPath;
-                    if (engineSection.TryGetProperty("GmailSendFromAccounts", out var gmailAccounts))
-                    {
-                        var accounts = new List<string>();
-                        foreach (var account in gmailAccounts.EnumerateArray())
-                        {
-                            var val = account.GetString();
-                            if (val != null) accounts.Add(val);
-                        }
-                        if (accounts.Count > 0) engineOptions.GmailSendFromAccounts = accounts;
-                    }
                     if (engineSection.TryGetProperty("DispatcherPollIntervalSeconds", out var poll))
                         engineOptions.DispatcherPollIntervalSeconds = poll.GetInt32();
                 }
             }
 
-            // Load tool_account mappings from cc-director config.json
+            // Load email tool names from cc-director config.json
             var ccConfigPath = CcStorage.ConfigJson();
             if (File.Exists(ccConfigPath))
             {
@@ -328,16 +314,16 @@ public partial class App : Application
                 using var ccDoc = JsonDocument.Parse(ccJson);
 
                 if (ccDoc.RootElement.TryGetProperty("comm_manager", out var cm) &&
-                    cm.TryGetProperty("send_from_accounts", out var sendFromAccounts))
+                    cm.TryGetProperty("email_tools", out var emailTools))
                 {
-                    foreach (var acct in sendFromAccounts.EnumerateObject())
+                    var tools = new List<string>();
+                    foreach (var tool in emailTools.EnumerateArray())
                     {
-                        if (acct.Value.TryGetProperty("tool_account", out var toolAcctProp))
-                        {
-                            engineOptions.ToolAccountMap[acct.Name] = toolAcctProp.GetString();
-                        }
+                        var val = tool.GetString();
+                        if (val != null) tools.Add(val);
                     }
-                    FileLog.Write($"[App] ToolAccountMap: {string.Join(", ", engineOptions.ToolAccountMap.Select(kv => $"{kv.Key}={kv.Value}"))}");
+                    if (tools.Count > 0) engineOptions.EmailToolNames = tools;
+                    FileLog.Write($"[App] EmailToolNames from config: [{string.Join(", ", tools)}]");
                 }
             }
 

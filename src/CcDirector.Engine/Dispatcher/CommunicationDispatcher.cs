@@ -12,10 +12,7 @@ public sealed class CommunicationDispatcher : IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
     private readonly string _communicationsDbPath;
-    private readonly string _ccOutlookPath;
-    private readonly string _ccGmailPath;
-    private readonly HashSet<string> _gmailSendFromAccounts;
-    private readonly Dictionary<string, string?> _toolAccountMap;
+    private readonly EmailRoutingTable _routingTable;
     private readonly int _pollIntervalSeconds;
     private readonly VaultArchiver _archiver = new();
 #pragma warning disable CS0649 // Timer field not assigned until auto-dispatch is re-enabled
@@ -27,21 +24,14 @@ public sealed class CommunicationDispatcher : IDisposable
 
     public CommunicationDispatcher(
         string communicationsDbPath,
-        string ccOutlookPath,
-        string ccGmailPath,
-        IEnumerable<string> gmailSendFromAccounts,
-        int pollIntervalSeconds = 5,
-        Dictionary<string, string?>? toolAccountMap = null)
+        EmailRoutingTable routingTable,
+        int pollIntervalSeconds = 5)
     {
         _communicationsDbPath = communicationsDbPath;
-        _ccOutlookPath = ccOutlookPath;
-        _ccGmailPath = ccGmailPath;
-        _gmailSendFromAccounts = new HashSet<string>(
-            gmailSendFromAccounts, StringComparer.OrdinalIgnoreCase);
-        _toolAccountMap = toolAccountMap ?? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        _routingTable = routingTable;
         _pollIntervalSeconds = pollIntervalSeconds;
 
-        FileLog.Write($"[CommunicationDispatcher] Gmail accounts: [{string.Join(", ", _gmailSendFromAccounts)}]");
+        FileLog.Write($"[CommunicationDispatcher] Initialized with {routingTable.Count} email routes");
     }
 
     public void Start()
@@ -142,53 +132,40 @@ public sealed class CommunicationDispatcher : IDisposable
         return emails;
     }
 
-    /// <summary>
-    /// Determines whether to use cc-gmail or cc-outlook for this email.
-    /// Routes to Gmail if send_from is in the configured Gmail accounts list,
-    /// or if send_from contains "@gmail.com".
-    /// </summary>
-    private bool IsGmailEmail(ApprovedEmail email)
-    {
-        var sendFrom = email.SendFrom ?? email.Persona;
-
-        // Check configured Gmail accounts
-        if (_gmailSendFromAccounts.Contains(sendFrom))
-            return true;
-
-        // Check if send_from looks like a Gmail address
-        if (sendFrom.Contains("@gmail.com", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return false;
-    }
-
     private async Task DispatchEmailAsync(ApprovedEmail email)
     {
-        var useGmail = IsGmailEmail(email);
-        var toolName = useGmail ? "cc-gmail" : "cc-outlook";
-        var toolPath = useGmail ? _ccGmailPath : _ccOutlookPath;
-
         var sendFrom = email.SendFrom ?? email.Persona;
-        _toolAccountMap.TryGetValue(sendFrom, out var toolAccount);
+        var route = _routingTable.FindRoute(sendFrom);
 
-        FileLog.Write($"[CommunicationDispatcher] Sending ticket #{email.TicketNumber} to {email.To} via {toolName} (send_from={email.SendFrom ?? "null"}, persona={email.Persona}, account={toolAccount ?? "default"})");
+        if (route == null)
+        {
+            var knownEmails = string.Join(", ", _routingTable.AllRoutes.Select(r => r.EmailAddress));
+            var error = $"No email route found for '{sendFrom}'. Known routes: [{knownEmails}]";
+            MarkFailed(email.Id, error);
+            FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} FAILED: {error}");
+            RaiseEvent(new EngineEvent(EngineEventType.Error,
+                Message: $"Email ticket #{email.TicketNumber} failed: {error}"));
+            return;
+        }
+
+        FileLog.Write($"[CommunicationDispatcher] Sending ticket #{email.TicketNumber} to {email.To} via {route.ToolName} (send_from={sendFrom}, account={route.AccountName})");
 
         try
         {
-            var args = BuildSendArgs(email, useGmail, toolAccount);
-            var result = await RunToolProcessAsync(toolPath, args);
+            var args = BuildSendArgs(email, route);
+            var result = await RunToolProcessAsync(route.ToolPath, args);
 
             if (result.ExitCode == 0)
             {
-                HandleSendSuccess(email, toolName);
+                HandleSendSuccess(email, route.ToolName);
             }
             else
             {
                 var error = string.IsNullOrEmpty(result.Stderr) ? result.Stdout : result.Stderr;
                 MarkFailed(email.Id, error);
-                FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} FAILED via {toolName}: {error}");
+                FileLog.Write($"[CommunicationDispatcher] Ticket #{email.TicketNumber} FAILED via {route.ToolName}: {error}");
                 RaiseEvent(new EngineEvent(EngineEventType.Error,
-                    Message: $"Email ticket #{email.TicketNumber} failed via {toolName}: {error}"));
+                    Message: $"Email ticket #{email.TicketNumber} failed via {route.ToolName}: {error}"));
             }
         }
         catch (Exception ex)
@@ -198,16 +175,12 @@ public sealed class CommunicationDispatcher : IDisposable
         }
     }
 
-    private static List<string> BuildSendArgs(ApprovedEmail email, bool useGmail, string? toolAccount)
+    private static List<string> BuildSendArgs(ApprovedEmail email, EmailRoute route)
     {
         var args = new List<string>();
 
-        // Pass account to cc-gmail/cc-outlook if configured
-        if (toolAccount != null)
-        {
-            args.Add("--account");
-            args.Add(toolAccount);
-        }
+        args.Add("--account");
+        args.Add(route.AccountName);
 
         // Convert plain text newlines to HTML tags before sending with --html flag.
         // Without this, email clients ignore \n and recipients see a wall of text.
@@ -234,13 +207,11 @@ public sealed class CommunicationDispatcher : IDisposable
             args.Add(email.Bcc);
         }
 
-        // Attachment flag differs: cc-outlook uses "-a", cc-gmail uses "--attach"
-        var attachFlag = useGmail ? "--attach" : "-a";
         foreach (var attachment in email.Attachments)
         {
             if (File.Exists(attachment))
             {
-                args.Add(attachFlag);
+                args.Add("--attach");
                 args.Add(attachment);
             }
         }

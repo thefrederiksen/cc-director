@@ -1,5 +1,6 @@
 """CLI for cc-outlook - Outlook from the command line with multi-account support."""
 
+import json
 import logging
 import sys
 from datetime import datetime, timedelta
@@ -149,9 +150,28 @@ def main(
 # =============================================================================
 
 @accounts_app.command("list")
-def accounts_list() -> None:
+def accounts_list(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON for machine consumption"),
+) -> None:
     """List all configured Outlook accounts."""
     accts = list_accounts()
+
+    if json_output:
+        result = {
+            "tool": "cc-outlook",
+            "accounts": [
+                {
+                    "name": acct["name"],
+                    "email": acct["name"],  # For cc-outlook, the account name IS the email
+                    "is_default": acct["is_default"],
+                    "authenticated": acct["authenticated"],
+                    "can_send": acct["authenticated"],
+                }
+                for acct in accts
+            ],
+        }
+        print(json.dumps(result))
+        return
 
     if not accts:
         console.print("[yellow]No accounts configured.[/yellow]")

@@ -225,16 +225,18 @@ class ContentItem(BaseModel):
     # Dispatch fields
     send_timing: SendTiming = SendTiming.ASAP
     scheduled_for: Optional[str] = None  # ISO datetime, only if send_timing == SCHEDULED
-    send_from: Optional[str] = None      # Account identifier: "mindzie", "personal", "consulting"
+    send_from: Optional[str] = None      # Email address to send from (resolved from persona)
 
     def model_post_init(self, __context: Any) -> None:
         """Set persona_display and send_from defaults if not provided."""
         if self.persona_display is None:
             self.persona_display = PERSONA_DISPLAY_MAP.get(self.persona, str(self.persona.value))
 
-        # Set default send_from based on persona for emails
+        # Set default send_from based on persona for emails -- resolve to email address
         if self.send_from is None and self.platform == Platform.EMAIL:
-            self.send_from = PERSONA_DEFAULT_ACCOUNT.get(self.persona, "personal")
+            persona_key = PERSONA_DEFAULT_ACCOUNT.get(self.persona, "personal")
+            acct = SEND_FROM_ACCOUNTS.get(persona_key, {})
+            self.send_from = acct.get("email", persona_key)
 
     def get_filename(self) -> str:
         """Generate filename for this content item."""

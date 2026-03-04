@@ -10,21 +10,17 @@ public sealed class EngineOptions
     public int ShutdownTimeoutSeconds { get; set; } = 30;
     public int RunRetentionDays { get; set; } = 30;
     public string CommunicationsDbPath { get; set; } = CcStorage.CommQueueDb();
-    public string CcOutlookPath { get; set; } = Path.Combine(CcStorage.Bin(), "cc-outlook.exe");
-    public string CcGmailPath { get; set; } = Path.Combine(CcStorage.Bin(), "cc-gmail.exe");
 
     /// <summary>
-    /// List of send_from values that should use cc-gmail instead of cc-outlook.
-    /// Values are matched case-insensitively. If send_from contains "@gmail.com",
-    /// it is also automatically routed to cc-gmail.
+    /// List of email tool names to discover accounts from at startup.
+    /// Each tool must support: {tool} accounts list --json
     /// </summary>
-    public List<string> GmailSendFromAccounts { get; set; } = new() { "personal" };
+    public List<string> EmailToolNames { get; set; } = new() { "cc-gmail", "cc-outlook" };
 
     /// <summary>
-    /// Maps persona/send_from names to their tool_account name (e.g. "consulting" -> "consulting").
-    /// Passed as --account flag to cc-gmail/cc-outlook so the correct account is used.
+    /// Directory where tool executables are installed.
     /// </summary>
-    public Dictionary<string, string?> ToolAccountMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string BinDirectory { get; set; } = CcStorage.Bin();
 
     public int DispatcherPollIntervalSeconds { get; set; } = 5;
 }

@@ -42,13 +42,16 @@ public sealed class EngineHost : IDisposable
         if (!string.IsNullOrEmpty(_options.CommunicationsDbPath))
         {
             FileLog.Write($"[EngineHost] Starting communication dispatcher: db={_options.CommunicationsDbPath}");
+
+            var routingTable = Task.Run(() => EmailToolDiscovery.DiscoverAsync(
+                _options.BinDirectory, _options.EmailToolNames))
+                .GetAwaiter().GetResult();
+            FileLog.Write($"[EngineHost] Discovered {routingTable.Count} email routes");
+
             _dispatcher = new CommunicationDispatcher(
                 _options.CommunicationsDbPath,
-                _options.CcOutlookPath,
-                _options.CcGmailPath,
-                _options.GmailSendFromAccounts,
-                _options.DispatcherPollIntervalSeconds,
-                _options.ToolAccountMap);
+                routingTable,
+                _options.DispatcherPollIntervalSeconds);
             _dispatcher.OnEvent += e =>
             {
                 try { OnEvent?.Invoke(e); }

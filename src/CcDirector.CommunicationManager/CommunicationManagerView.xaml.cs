@@ -127,6 +127,9 @@ public partial class CommunicationManagerView : UserControl, IDisposable
     {
         if (_viewModel.SelectedItem == null) return;
 
+        if (_viewModel.IsEditing)
+            await _viewModel.SaveEditCommand.ExecuteAsync(null);
+
         FileLog.Write("[CommunicationManagerView] ApproveAndSend_Click: approving with ASAP timing");
         await _viewModel.ApproveWithScheduleCommand.ExecuteAsync(("asap", (DateTime?)null));
     }
@@ -134,6 +137,9 @@ public partial class CommunicationManagerView : UserControl, IDisposable
     private async void ApproveAndSchedule_Click(object sender, RoutedEventArgs e)
     {
         if (_viewModel.SelectedItem == null) return;
+
+        if (_viewModel.IsEditing)
+            await _viewModel.SaveEditCommand.ExecuteAsync(null);
 
         FileLog.Write("[CommunicationManagerView] ApproveAndSchedule_Click: showing schedule dialog");
 
