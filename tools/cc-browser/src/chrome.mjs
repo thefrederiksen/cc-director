@@ -474,36 +474,38 @@ export async function checkChromeRunning(port = DEFAULT_CDP_PORT) {
   // Check pipe-launched context first
   if (pipeLaunchedContext) {
     try {
-      const pages = pipeLaunchedContext.pages();
-      if (pages.length >= 0) {
-        // Context is alive - gather tab info
-        const tabs = [];
-        for (const page of pages) {
-          try {
-            const session = await pipeLaunchedContext.newCDPSession(page);
-            const info = await session.send('Target.getTargetInfo');
-            const targetId = info?.targetInfo?.targetId || null;
-            await session.detach().catch(() => {});
-            if (targetId) {
-              tabs.push({
-                targetId,
-                title: await page.title().catch(() => ''),
-                url: page.url(),
-              });
-            }
-          } catch {
-            // Skip
-          }
-        }
-        return {
-          running: true,
-          pipeMode: true,
-          browser: pipeLaunchedContext.browser(),
-          context: pipeLaunchedContext,
-          tabs,
-          activeTab: tabs[0]?.targetId || null,
-        };
+      const browser = pipeLaunchedContext.browser();
+      if (!browser || !browser.isConnected()) {
+        throw new Error('Browser disconnected');
       }
+      // Context is alive - gather tab info
+      const pages = pipeLaunchedContext.pages();
+      const tabs = [];
+      for (const page of pages) {
+        try {
+          const session = await pipeLaunchedContext.newCDPSession(page);
+          const info = await session.send('Target.getTargetInfo');
+          const targetId = info?.targetInfo?.targetId || null;
+          await session.detach().catch(() => {});
+          if (targetId) {
+            tabs.push({
+              targetId,
+              title: await page.title().catch(() => ''),
+              url: page.url(),
+            });
+          }
+        } catch {
+          // Skip
+        }
+      }
+      return {
+        running: true,
+        pipeMode: true,
+        browser: pipeLaunchedContext.browser(),
+        context: pipeLaunchedContext,
+        tabs,
+        activeTab: tabs[0]?.targetId || null,
+      };
     } catch {
       // Pipe context is dead, clear it
       pipeLaunchedContext = null;
@@ -545,22 +547,7 @@ export async function checkChromeRunning(port = DEFAULT_CDP_PORT) {
 export async function ensureChromeAvailable(opts = {}) {
   const { port = DEFAULT_CDP_PORT } = opts;
 
-  // Check if pipe context is alive first
-  if (pipeLaunchedContext) {
-    try {
-      const pages = pipeLaunchedContext.pages();
-      if (pages.length >= 0) {
-        const status = await checkChromeRunning(port);
-        if (status.running) {
-          return { started: false, ...status };
-        }
-      }
-    } catch {
-      pipeLaunchedContext = null;
-    }
-  }
-
-  // Check if already running via port (legacy)
+  // Check if already running (pipe context or port)
   const status = await checkChromeRunning(port);
   if (status.running) {
     return {
