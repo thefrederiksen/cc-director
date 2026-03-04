@@ -1563,7 +1563,7 @@ def _add_connection_note(client: BrowserClient, note: str) -> None:
 
     if add_note_ref:
         client.click(add_note_ref)
-        jittered_sleep(0.5)
+        jittered_sleep(1)
 
         # Find the textbox input field in the "Add a note" dialog.
         # Search for elements with role "textbox" -- use the placeholder text
@@ -1633,21 +1633,51 @@ _JS_EXTRACT_SUGGESTIONS = """
 """
 
 # Keyword sets for categorizing connections
+# mindzie targets: consultants in process mining / process improvement / ops excellence.
+# NOT researchers, academics, data scientists, or students.
 _MINDZIE_KEYWORDS = [
     "process mining", "operational intelligence", "process improvement",
-    "bpm", "business process", "automation", "data engineer", "analytics",
-    "operations", "manufacturing", "supply chain", "continuous improvement",
-    "process optimization", "process analyst", "data analytics", "etl",
-    "business intelligence", "rpa", "robotic process", "lean", "six sigma",
-    "celonis", "uipath", "power automate",
+    "process consultant", "process optimization", "process excellence",
+    "bpm", "business process", "continuous improvement",
+    "lean", "six sigma", "operational excellence",
+    "celonis", "uipath", "power automate", "signavio", "aris",
+    "rpa", "robotic process automation",
+    "supply chain", "manufacturing", "operations manager",
+    "management consultant", "transformation", "change management",
 ]
 
+# Negative keywords that disqualify from mindzie (researchers, not consultants)
+_MINDZIE_EXCLUDE = [
+    "professor", "ph.d", "phd", "researcher", "research intern",
+    "student", "postdoc", "lab ", "university", "academic",
+    "data scientist", "machine learning", "deep learning",
+]
+
+# Course targets: Toronto-area business owners/operators with 1-25 employees.
+# Hands-on people who run a business, NOT developers, researchers, or students.
 _COURSE_KEYWORDS = [
-    "business owner", "entrepreneur", "founder", "ceo", "coo", "cto",
-    "consultant", "small business", "startup", "marketing", "toronto",
-    "gta", "ontario", "real estate", "financial advisor", "coach",
-    "advisor", "managing director", "president", "partner", "director",
-    "freelance", "self-employed", "agency",
+    "business owner", "owner", "entrepreneur", "founder", "co-founder",
+    "ceo", "coo", "president", "managing director", "principal",
+    "partner", "general manager", "operator",
+    "toronto", "gta", "ontario", "mississauga", "brampton",
+    "markham", "vaughan", "scarborough", "etobicoke", "north york",
+    "real estate", "financial advisor", "insurance", "mortgage",
+    "accounting", "bookkeeping", "law firm", "dental", "clinic",
+    "contractor", "construction", "landscaping", "plumbing", "hvac",
+    "agency", "creative director", "marketing agency",
+    "franchise", "retail", "restaurant", "catering",
+    "self-employed", "freelance", "independent",
+    "small business", "consulting", "advisory",
+]
+
+# Negative keywords that disqualify from course (not the target avatar)
+_COURSE_EXCLUDE = [
+    "professor", "ph.d", "phd", "researcher", "research intern",
+    "student", "postdoc", "data scientist", "machine learning",
+    "software engineer", "developer", "programmer", "devops",
+    "full stack", "frontend", "backend", "sre",
+    "intern", "junior", "entry level", "early career",
+    "assistant professor", "associate professor",
 ]
 
 # Note template pools (3 variants each)
@@ -1706,12 +1736,29 @@ def _log_connection_attempt(attempt: dict) -> None:
 
 
 def _categorize_connection(headline: str) -> str:
-    """Categorize a connection as 'mindzie' or 'course' based on headline keywords."""
+    """Categorize a connection as 'mindzie', 'course', or 'skip'.
+
+    Returns 'skip' when the person clearly doesn't match either target:
+    - mindzie: consultants in process mining / process improvement (not researchers)
+    - course: Toronto-area business owners/operators (not devs, researchers, students)
+    """
     if not headline:
-        return "course"
+        return "skip"
     headline_lower = headline.lower()
-    mindzie_score = sum(1 for kw in _MINDZIE_KEYWORDS if kw in headline_lower)
-    course_score = sum(1 for kw in _COURSE_KEYWORDS if kw in headline_lower)
+
+    # Check exclude lists first -- if they match, zero out that category
+    mindzie_excluded = any(kw in headline_lower for kw in _MINDZIE_EXCLUDE)
+    course_excluded = any(kw in headline_lower for kw in _COURSE_EXCLUDE)
+
+    mindzie_score = 0 if mindzie_excluded else sum(
+        1 for kw in _MINDZIE_KEYWORDS if kw in headline_lower
+    )
+    course_score = 0 if course_excluded else sum(
+        1 for kw in _COURSE_KEYWORDS if kw in headline_lower
+    )
+
+    if mindzie_score == 0 and course_score == 0:
+        return "skip"
     if mindzie_score > course_score:
         return "mindzie"
     return "course"
@@ -1754,7 +1801,7 @@ def _send_connect_request(client: BrowserClient, username: str, note_text: str) 
             more_ref = find_element_ref(snapshot_text, ["more actions", "more"], "button")
             if more_ref:
                 client.click(more_ref)
-                jittered_sleep(1)
+                jittered_sleep(2)
                 snapshot = client.snapshot()
                 snapshot_text = snapshot.get("snapshot", "")
                 # Look for "Invite ... to connect" button in dropdown
@@ -1774,7 +1821,7 @@ def _send_connect_request(client: BrowserClient, username: str, note_text: str) 
                 return "failed"
 
         client.click(connect_ref)
-        jittered_sleep(1)
+        jittered_sleep(2)
 
         # Add the personalized note
         _add_connection_note(client, note_text)
@@ -1860,9 +1907,33 @@ def auto_connect(
             warn("All visible suggestions have already been contacted.")
             raise typer.Exit(0)
 
-        # Pick random subset
-        pick_count = min(count, len(suggestions))
-        selected = random.sample(suggestions, pick_count)
+        # Categorize all suggestions and filter out non-matches
+        categorized = []
+        skipped_names = []
+        for s in suggestions:
+            headline = s.get("headline", "")
+            if category == "auto":
+                cat = _categorize_connection(headline)
+            else:
+                cat = category
+            if cat == "skip":
+                skipped_names.append(_safe_str(s.get("name", s["username"])))
+                continue
+            s["_category"] = cat
+            categorized.append(s)
+
+        if skipped_names:
+            note(f"Skipped {len(skipped_names)} people (not matching target audience): {', '.join(skipped_names[:5])}")
+            if len(skipped_names) > 5:
+                note(f"  ... and {len(skipped_names) - 5} more")
+
+        if not categorized:
+            warn("No suggestions matched the target audience (mindzie consultants or course avatar).")
+            raise typer.Exit(0)
+
+        # Pick random subset from matching suggestions
+        pick_count = min(count, len(categorized))
+        selected = random.sample(categorized, pick_count)
 
         console.print(f"\nSelected {pick_count} people to connect with:\n")
 
@@ -1871,12 +1942,7 @@ def auto_connect(
             name = person.get("name", username)
             headline = person.get("headline", "")
             first_name = name.split()[0] if name else username
-
-            # Categorize
-            if category == "auto":
-                cat = _categorize_connection(headline)
-            else:
-                cat = category
+            cat = person["_category"]
 
             note_text = _pick_note(cat, first_name)
 
