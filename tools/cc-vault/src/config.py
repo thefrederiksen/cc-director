@@ -148,14 +148,29 @@ VECTOR_COLLECTIONS = {
     "chunks": "Document chunks for hybrid search",
     "facts": "Knowledge base - facts and memories about contacts",
     "health": "Health data summaries",
-    "ideas": "Ideas for similarity search"
+    "ideas": "Ideas for similarity search",
+    "catalog": "Document catalog summaries for library search",
 }
 
 # Document types
 DOCUMENT_TYPES = ["transcript", "note", "journal", "research"]
 
 # Entity types for linking
-ENTITY_TYPES = ["contact", "task", "goal", "idea", "document", "fact", "health", "photo", "social_post"]
+ENTITY_TYPES = ["contact", "task", "goal", "idea", "document", "fact", "health", "photo", "social_post", "catalog_entry"]
+
+# Catalog: file extensions that support text extraction and summarization
+CATALOG_SUMMARIZABLE_EXTENSIONS = {
+    '.pdf', '.docx', '.pptx', '.xlsx',
+    '.txt', '.md', '.csv', '.sql', '.json', '.xml',
+    '.html', '.htm',
+}
+
+# Catalog: file extensions tracked as metadata-only (no text extraction)
+CATALOG_METADATA_ONLY_EXTENSIONS = {
+    '.doc', '.svg', '.png', '.jpg', '.jpeg', '.gif',
+    '.zip', '.pfx', '.pem', '.cer', '.crt',
+    '.vsd', '.msg',
+}
 
 # Photo categories
 PHOTO_CATEGORIES = ["private", "work", "other"]

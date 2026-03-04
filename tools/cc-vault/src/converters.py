@@ -37,6 +37,14 @@ SUPPORTED_EXTENSIONS = {
     '.txt': 'text',
     '.docx': 'word',
     '.pdf': 'pdf',
+    '.pptx': 'powerpoint',
+    '.xlsx': 'excel',
+    '.csv': 'text',
+    '.sql': 'text',
+    '.json': 'text',
+    '.xml': 'text',
+    '.html': 'html',
+    '.htm': 'html',
 }
 
 
@@ -83,6 +91,12 @@ def convert_to_markdown(path: Path) -> Tuple[str, dict]:
         return _convert_word(path)
     elif file_type == 'pdf':
         return _convert_pdf(path)
+    elif file_type == 'powerpoint':
+        return _convert_powerpoint(path)
+    elif file_type == 'excel':
+        return _convert_excel(path)
+    elif file_type == 'html':
+        return _convert_html(path)
     else:
         raise ValueError(f"No converter for type: {file_type}")
 
@@ -290,6 +304,110 @@ def _clean_pdf_text(text: str) -> str:
         cleaned_lines.append(line)
 
     return '\n'.join(cleaned_lines)
+
+
+def _convert_powerpoint(path: Path) -> Tuple[str, dict]:
+    """Convert PowerPoint (.pptx) to markdown."""
+    try:
+        from pptx import Presentation
+    except ImportError:
+        raise ImportError(
+            "python-pptx is required for PowerPoint conversion.\n"
+            "Install with: pip install python-pptx"
+        )
+
+    prs = Presentation(str(path))
+    parts = []
+    slide_count = 0
+    for slide_num, slide in enumerate(prs.slides, 1):
+        slide_count += 1
+        slide_text = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        slide_text.append(text)
+        if slide_text:
+            parts.append(f'## Slide {slide_num}\n\n' + '\n\n'.join(slide_text))
+
+    content = '\n\n---\n\n'.join(parts)
+    metadata = {
+        'original_format': 'powerpoint',
+        'slide_count': slide_count,
+    }
+    return content, metadata
+
+
+def _convert_excel(path: Path) -> Tuple[str, dict]:
+    """Convert Excel (.xlsx) to markdown."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise ImportError(
+            "openpyxl is required for Excel conversion.\n"
+            "Install with: pip install openpyxl"
+        )
+
+    wb = load_workbook(str(path), read_only=True, data_only=True)
+    parts = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows = []
+        row_count = 0
+        for row in ws.iter_rows(values_only=True):
+            if row_count >= 100:
+                rows.append("... (truncated at 100 rows)")
+                break
+            cells = [str(c) if c is not None else '' for c in row]
+            if any(cells):
+                rows.append('| ' + ' | '.join(cells) + ' |')
+                # Header separator after first row
+                if row_count == 0:
+                    rows.append('| ' + ' | '.join(['---'] * len(cells)) + ' |')
+            row_count += 1
+        if rows:
+            parts.append(f'## Sheet: {sheet_name}\n\n' + '\n'.join(rows))
+    wb.close()
+
+    content = '\n\n'.join(parts)
+    metadata = {
+        'original_format': 'excel',
+        'sheet_count': len(wb.sheetnames) if hasattr(wb, 'sheetnames') else 0,
+    }
+    return content, metadata
+
+
+def _convert_html(path: Path) -> Tuple[str, dict]:
+    """Convert HTML to plain text."""
+    from html.parser import HTMLParser
+
+    class _TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+            self._skip = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ('script', 'style'):
+                self._skip = True
+
+        def handle_endtag(self, tag):
+            if tag in ('script', 'style'):
+                self._skip = False
+
+        def handle_data(self, data):
+            if not self._skip:
+                text = data.strip()
+                if text:
+                    self.parts.append(text)
+
+    raw = path.read_text(encoding='utf-8', errors='replace')
+    extractor = _TextExtractor()
+    extractor.feed(raw)
+    content = '\n\n'.join(extractor.parts)
+    metadata = {'original_format': 'html'}
+    return content, metadata
 
 
 def convert_and_save(

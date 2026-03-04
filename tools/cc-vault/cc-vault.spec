@@ -13,11 +13,13 @@ a = Analysis(
     ],
     hiddenimports=[
         'cli', 'config', 'db', 'vectors', 'chunker', 'converters', 'importer', 'rag', 'utils', 'fuzzy_search',
+        'catalog',
         'jellyfish',
         'cc_storage',
         'rich._unicode_data', 'rich._unicode_data.unicode17-0-0',
         'tiktoken_ext.openai_public',
         'tiktoken_ext',
+        'pptx', 'openpyxl',
     ],
     hookspath=[],
     hooksconfig={},

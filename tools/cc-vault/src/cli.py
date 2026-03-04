@@ -88,6 +88,8 @@ health_app = typer.Typer(help="Health data", cls=AliasGroup)
 posts_app = typer.Typer(help="Social media posts", cls=AliasGroup)
 lists_app = typer.Typer(help="Contact list management", cls=AliasGroup)
 tags_app = typer.Typer(help="Contact tag management", cls=AliasGroup)
+library_app = typer.Typer(help="Document library management", cls=AliasGroup)
+catalog_app = typer.Typer(help="Document catalog", cls=AliasGroup)
 
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(goals_app, name="goals")
@@ -99,6 +101,8 @@ app.add_typer(health_app, name="health")
 app.add_typer(posts_app, name="posts")
 app.add_typer(lists_app, name="lists")
 app.add_typer(tags_app, name="tags")
+app.add_typer(library_app, name="library")
+app.add_typer(catalog_app, name="catalog")
 
 # Singular aliases (hidden so they don't clutter --help)
 app.add_typer(tasks_app, name="task", hidden=True)
@@ -3211,6 +3215,394 @@ def lists_export(
     except sqlite3.Error as e:
         console.print(f"[red]Error exporting list:[/red] {e}")
         raise typer.Exit(1)
+
+
+# ==========================================
+# LIBRARY COMMANDS
+# ==========================================
+
+
+@library_app.command("add")
+def library_add(
+    path: str = typer.Argument(..., help="Directory path to register"),
+    label: str = typer.Option(..., "--label", "-l", help="Unique label for this library"),
+    category: str = typer.Option("business", "--category", "-c", help="Category: business, personal, other"),
+    owner: Optional[str] = typer.Option(None, "--owner", help="Owner name"),
+    no_recursive: bool = typer.Option(False, "--no-recursive", help="Do not scan subdirectories"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Register a document library folder.
+
+    Example: cc-vault library add "D:\\Docs\\Corporate" --label Corporate --category business
+    """
+    db = get_db()
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        console.print(f"[red]Error:[/red] Directory not found: {resolved}")
+        raise typer.Exit(1)
+
+    try:
+        lib = db.add_library(
+            path=str(resolved), label=label, category=category,
+            owner=owner, recursive=not no_recursive,
+        )
+        if json_output:
+            print(json.dumps(lib, indent=2))
+        else:
+            console.print(f"[green]Library added:[/green] {label} -> {resolved}")
+    except sqlite3.IntegrityError as e:
+        console.print(f"[red]Error:[/red] Library already exists or duplicate label/path: {e}")
+        raise typer.Exit(1)
+
+
+@library_app.command("list")
+def library_list(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List all registered libraries."""
+    db = get_db()
+    libs = db.list_libraries()
+
+    if json_output:
+        print(json.dumps(libs, indent=2))
+        return
+
+    if not libs:
+        console.print("[yellow]No libraries registered. Use 'cc-vault library add' to add one.[/yellow]")
+        return
+
+    table = Table(title="Document Libraries")
+    table.add_column("ID", style="dim", justify="right")
+    table.add_column("Label", style="cyan bold")
+    table.add_column("Category")
+    table.add_column("Path")
+    table.add_column("Last Scanned")
+    table.add_column("Enabled")
+
+    for lib in libs:
+        table.add_row(
+            str(lib['id']),
+            lib['label'],
+            lib['category'],
+            lib['path'],
+            lib.get('last_scanned') or '-',
+            'Yes' if lib.get('enabled') else 'No',
+        )
+
+    console.print(table)
+
+
+@library_app.command("show")
+def library_show(
+    label: str = typer.Argument(..., help="Library label"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show details for a library."""
+    db = get_db()
+    lib = db.get_library(label)
+    if not lib:
+        console.print(f"[red]Error:[/red] Library '{label}' not found")
+        raise typer.Exit(1)
+
+    stats = db.get_catalog_stats(lib['id'])
+
+    if json_output:
+        lib['stats'] = stats
+        print(json.dumps(lib, indent=2))
+        return
+
+    panel_lines = [
+        f"[bold]Label:[/bold] {lib['label']}",
+        f"[bold]Path:[/bold] {lib['path']}",
+        f"[bold]Category:[/bold] {lib['category']}",
+        f"[bold]Owner:[/bold] {lib.get('owner') or '-'}",
+        f"[bold]Recursive:[/bold] {'Yes' if lib.get('recursive') else 'No'}",
+        f"[bold]Last Scanned:[/bold] {lib.get('last_scanned') or 'Never'}",
+        "",
+        f"[bold]Files:[/bold] {stats['total']}",
+        f"  Summarized: {stats['summarized']}",
+        f"  Pending: {stats['pending']}",
+        f"  Skipped: {stats['skipped']}",
+        f"  Errors: {stats['errors']}",
+        f"  Missing: {stats['missing']}",
+    ]
+    console.print(Panel("\n".join(panel_lines), title=f"Library: {lib['label']}"))
+
+
+@library_app.command("delete")
+def library_delete(
+    label: str = typer.Argument(..., help="Library label to delete"),
+    confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a library and all its catalog entries."""
+    db = get_db()
+    lib = db.get_library(label)
+    if not lib:
+        console.print(f"[red]Error:[/red] Library '{label}' not found")
+        raise typer.Exit(1)
+
+    if not confirm:
+        stats = db.get_catalog_stats(lib['id'])
+        console.print(f"[yellow]This will delete library '{label}' and {stats['total']} catalog entries.[/yellow]")
+        if not typer.confirm("Are you sure?"):
+            raise typer.Exit(0)
+
+    db.delete_library(label)
+    console.print(f"[green]Library '{label}' deleted.[/green]")
+
+
+# ==========================================
+# CATALOG COMMANDS
+# ==========================================
+
+
+@catalog_app.command("scan")
+def catalog_scan(
+    library: str = typer.Option(..., "--library", "-l", help="Library label to scan"),
+    stream: bool = typer.Option(False, "--stream", help="Output JSON progress lines for UI"),
+):
+    """Scan a library directory and catalog files.
+
+    Example: cc-vault catalog scan --library Corporate --stream
+    """
+    try:
+        try:
+            from .catalog import CatalogScanner
+        except ImportError:
+            from catalog import CatalogScanner
+
+        scanner = CatalogScanner()
+        result = scanner.scan_library_by_label(library, stream=stream)
+
+        if not stream:
+            console.print(f"\n[green]Scan complete:[/green]")
+            console.print(f"  New: {result.get('new', 0)}")
+            console.print(f"  Updated: {result.get('updated', 0)}")
+            console.print(f"  Skipped: {result.get('skipped', 0)}")
+            console.print(f"  Missing: {result.get('missing', 0)}")
+            console.print(f"  Errors: {result.get('errors', 0)}")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@catalog_app.command("summarize")
+def catalog_summarize(
+    library: Optional[str] = typer.Option(None, "--library", "-l", help="Library label (all if omitted)"),
+    batch: int = typer.Option(10, "--batch", "-b", help="Batch size"),
+    stream: bool = typer.Option(False, "--stream", help="Output JSON progress lines for UI"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be summarized"),
+):
+    """Generate AI summaries for pending catalog entries.
+
+    Example: cc-vault catalog summarize --library Corporate --stream
+    """
+    try:
+        try:
+            from .catalog import CatalogScanner
+        except ImportError:
+            from catalog import CatalogScanner
+
+        scanner = CatalogScanner()
+        library_id = None
+        if library:
+            db = get_db()
+            lib = db.get_library(library)
+            if not lib:
+                console.print(f"[red]Error:[/red] Library '{library}' not found")
+                raise typer.Exit(1)
+            library_id = lib['id']
+
+        result = scanner.summarize_entries(
+            library_id=library_id, batch_size=batch,
+            stream=stream, dry_run=dry_run,
+        )
+
+        if not stream:
+            if dry_run:
+                console.print(f"[yellow]Dry run:[/yellow] {result.get('pending', 0)} entries would be summarized")
+            else:
+                console.print(f"\n[green]Summarize complete:[/green]")
+                console.print(f"  Summarized: {result.get('summarized', 0)}")
+                console.print(f"  Deduped: {result.get('deduped', 0)}")
+                console.print(f"  Errors: {result.get('errors', 0)}")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@catalog_app.command("list")
+def catalog_list(
+    library: Optional[str] = typer.Option(None, "--library", "-l", help="Filter by library label"),
+    ext: Optional[str] = typer.Option(None, "--ext", "-e", help="Filter by extension (e.g. .pdf)"),
+    dept: Optional[str] = typer.Option(None, "--dept", "-d", help="Filter by department"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status"),
+    n: int = typer.Option(50, "-n", "--count", help="Number of results"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List catalog entries with optional filters.
+
+    Example: cc-vault catalog list --library Corporate --ext .pdf -n 20
+    """
+    db = get_db()
+    library_id = None
+    if library:
+        lib = db.get_library(library)
+        if not lib:
+            console.print(f"[red]Error:[/red] Library '{library}' not found")
+            raise typer.Exit(1)
+        library_id = lib['id']
+
+    entries = db.list_catalog_entries(
+        library_id=library_id, ext=ext, department=dept, status=status, limit=n,
+    )
+
+    if json_output:
+        print(json.dumps(entries, indent=2))
+        return
+
+    if not entries:
+        console.print("[yellow]No catalog entries found.[/yellow]")
+        return
+
+    table = Table(title=f"Catalog Entries ({len(entries)} shown)")
+    table.add_column("ID", style="dim", justify="right")
+    table.add_column("File", style="cyan", max_width=40)
+    table.add_column("Ext", style="dim")
+    table.add_column("Dept")
+    table.add_column("Status")
+    table.add_column("Title", max_width=40)
+
+    for e in entries:
+        status_style = {
+            'summarized': 'green', 'pending': 'yellow',
+            'error': 'red', 'skipped': 'dim', 'missing': 'red dim',
+        }.get(e['status'], '')
+        table.add_row(
+            str(e['id']),
+            e['file_name'],
+            e['file_ext'],
+            e.get('department') or '-',
+            f"[{status_style}]{e['status']}[/{status_style}]",
+            (e.get('title') or '-')[:40],
+        )
+
+    console.print(table)
+
+
+@catalog_app.command("show")
+def catalog_show(
+    entry_id: int = typer.Argument(..., help="Catalog entry ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show details for a catalog entry."""
+    db = get_db()
+    conn = db.get_db()
+    try:
+        row = conn.execute("SELECT * FROM catalog_entries WHERE id = ?", (entry_id,)).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        console.print(f"[red]Error:[/red] Entry #{entry_id} not found")
+        raise typer.Exit(1)
+
+    entry = dict(row)
+    if json_output:
+        print(json.dumps(entry, indent=2))
+        return
+
+    lines = [
+        f"[bold]File:[/bold] {entry['file_name']}",
+        f"[bold]Path:[/bold] {entry['file_path']}",
+        f"[bold]Extension:[/bold] {entry['file_ext']}",
+        f"[bold]Size:[/bold] {entry.get('file_size', 0):,} bytes",
+        f"[bold]Department:[/bold] {entry.get('department') or '-'}",
+        f"[bold]Status:[/bold] {entry['status']}",
+    ]
+    if entry.get('title'):
+        lines.append(f"\n[bold]Title:[/bold] {entry['title']}")
+    if entry.get('summary'):
+        lines.append(f"[bold]Summary:[/bold] {entry['summary']}")
+    if entry.get('tags'):
+        lines.append(f"[bold]Tags:[/bold] {entry['tags']}")
+    if entry.get('error_message'):
+        lines.append(f"[red]Error:[/red] {entry['error_message']}")
+
+    console.print(Panel("\n".join(lines), title=f"Catalog Entry #{entry_id}"))
+
+
+@catalog_app.command("search")
+def catalog_search(
+    query: str = typer.Argument(..., help="Search query"),
+    n: int = typer.Option(20, "-n", "--count", help="Number of results"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Full-text search across catalog entries.
+
+    Example: cc-vault catalog search "investor update"
+    """
+    db = get_db()
+    results = db.search_catalog_fts(query, limit=n)
+
+    if json_output:
+        print(json.dumps(results, indent=2))
+        return
+
+    if not results:
+        console.print(f"[yellow]No results for '{query}'[/yellow]")
+        return
+
+    table = Table(title=f"Search: '{query}' ({len(results)} results)")
+    table.add_column("ID", style="dim", justify="right")
+    table.add_column("File", style="cyan", max_width=40)
+    table.add_column("Dept")
+    table.add_column("Title", max_width=50)
+
+    for e in results:
+        table.add_row(
+            str(e['id']),
+            e['file_name'],
+            e.get('department') or '-',
+            (e.get('title') or '-')[:50],
+        )
+
+    console.print(table)
+
+
+@catalog_app.command("stats")
+def catalog_stats(
+    library: Optional[str] = typer.Option(None, "--library", "-l", help="Filter by library label"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show catalog statistics."""
+    db = get_db()
+    library_id = None
+    if library:
+        lib = db.get_library(library)
+        if not lib:
+            console.print(f"[red]Error:[/red] Library '{library}' not found")
+            raise typer.Exit(1)
+        library_id = lib['id']
+
+    stats = db.get_catalog_stats(library_id)
+
+    if json_output:
+        print(json.dumps(stats, indent=2))
+        return
+
+    title = f"Library: {library}" if library else "All Libraries"
+    lines = [
+        f"  Total files:  {stats['total']}",
+        f"  Summarized:   {stats['summarized']}",
+        f"  Pending:      {stats['pending']}",
+        f"  Skipped:      {stats['skipped']}",
+        f"  Errors:       {stats['errors']}",
+        f"  Missing:      {stats['missing']}",
+    ]
+    console.print(Panel("\n".join(lines), title=title))
 
 
 def _check_search_entity_mistake():

@@ -24,6 +24,8 @@ dependencies = [
 full = [
     "python-docx>=0.8.0",
     "pymupdf>=1.23.0",
+    "python-pptx>=0.6.0",
+    "openpyxl>=3.1.0",
 ]
 dev = ["pytest>=7.0.0", "pyinstaller>=6.0.0"]
 

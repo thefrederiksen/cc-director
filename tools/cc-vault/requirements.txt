@@ -10,6 +10,8 @@ jellyfish>=1.0.0
 # Optional: Document conversion
 python-docx>=0.8.0,<2.0.0
 pymupdf>=1.23.0,<2.0.0
+python-pptx>=0.6.0
+openpyxl>=3.1.0
 
 # Development dependencies
 pytest>=7.0.0,<9.0.0

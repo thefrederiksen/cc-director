@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private const int PersistDebounceMs = 250;
     private List<Core.Claude.ClaudeUsageInfo> _latestUsage = new();
     private readonly System.Windows.Threading.DispatcherTimer _usageCountdownTimer;
+    private readonly System.Windows.Threading.DispatcherTimer _commsBadgeTimer;
 
     /// <summary>Tracks whether the read-only mode warning has been shown to avoid repeated dialogs.</summary>
     private bool _readOnlyWarningShown;
@@ -131,6 +132,12 @@ public partial class MainWindow : Window
         };
         _usageCountdownTimer.Tick += (_, _) => RefreshUsageBadges(_latestUsage);
 
+        _commsBadgeTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(30)
+        };
+        _commsBadgeTimer.Tick += async (_, _) => await CommunicationsView.ViewModel.RefreshBadgeCountAsync();
+
         // Subscribe to communications pending count for sidebar badge
         CommunicationsView.ViewModel.PropertyChanged += (s, e) =>
         {
@@ -198,6 +205,9 @@ public partial class MainWindow : Window
         // Dispose Communications Manager (polling timer)
         CommunicationsView.Dispose();
 
+        // Dispose Document Library
+        DocumentLibraryView.Dispose();
+
         // Dispose screenshot watcher
         _screenshotDebounceTimer?.Stop();
         if (_screenshotWatcher != null)
@@ -209,6 +219,7 @@ public partial class MainWindow : Window
         // Cancel any pending debounced persist and flush immediately
         _persistDebounceCts?.Cancel();
         _sessionGitTimer.Stop();
+        _commsBadgeTimer.Stop();
         SyncPromptTextToSessions();
         PersistSessionStateCore();
 
@@ -305,6 +316,9 @@ public partial class MainWindow : Window
                 await app.ClaudeUsageService.PollAllAccountsAsync();
             });
         }
+
+        // Start communications badge polling (lightweight count-only query)
+        _commsBadgeTimer.Start();
 
         // Initialize screenshots panel (async - reads config from disk)
         _ = InitializeScreenshotsPanelAsync();
@@ -1074,7 +1088,7 @@ public partial class MainWindow : Window
     }
 
     // --- Sidebar Panel (QA / Communications full-area takeover) ---
-    private enum SidebarPanel { None, QuickActions, Communications }
+    private enum SidebarPanel { None, QuickActions, Communications, Documents }
     private SidebarPanel _activeSidebarPanel = SidebarPanel.None;
 
     private void BtnQuickActions_Click(object sender, RoutedEventArgs e)
@@ -1095,6 +1109,15 @@ public partial class MainWindow : Window
             ShowSidebarPanel(SidebarPanel.Communications);
     }
 
+    private void BtnDocuments_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnDocuments_Click");
+        if (_activeSidebarPanel == SidebarPanel.Documents)
+            HideSidebarPanel();
+        else
+            ShowSidebarPanel(SidebarPanel.Documents);
+    }
+
     private void ShowSidebarPanel(SidebarPanel panel)
     {
         FileLog.Write($"[MainWindow] ShowSidebarPanel: {panel}");
@@ -1110,10 +1133,12 @@ public partial class MainWindow : Window
         SessionHeaderBanner.Visibility = Visibility.Collapsed;
         PlaceholderText.Visibility = Visibility.Collapsed;
 
-        // Show the requested panel, hide the other
+        // Show the requested panel, hide the others
         QuickActionsView.Visibility = panel == SidebarPanel.QuickActions
             ? Visibility.Visible : Visibility.Collapsed;
         CommunicationsView.Visibility = panel == SidebarPanel.Communications
+            ? Visibility.Visible : Visibility.Collapsed;
+        DocumentLibraryView.Visibility = panel == SidebarPanel.Documents
             ? Visibility.Visible : Visibility.Collapsed;
 
         // Start/stop CM polling
@@ -1135,6 +1160,7 @@ public partial class MainWindow : Window
         _activeSidebarPanel = SidebarPanel.None;
         QuickActionsView.Visibility = Visibility.Collapsed;
         CommunicationsView.Visibility = Visibility.Collapsed;
+        DocumentLibraryView.Visibility = Visibility.Collapsed;
 
         // Restore placeholder if no session selected
         if (SessionList.SelectedItem == null)
@@ -1201,6 +1227,12 @@ public partial class MainWindow : Window
                 ShowRenameDialog(vm);
                 SaveSessionToHistory(vm);
                 _ = CaptureStartupTextAsync(vm.Session);
+            }
+
+            // If started from a handover, inject the handover prompt after session is ready
+            if (!string.IsNullOrEmpty(dialog.SelectedHandoverPath))
+            {
+                _ = InjectHandoverPromptAsync(vm.Session, dialog.SelectedHandoverPath);
             }
 
             PersistSessionState();
@@ -2170,6 +2202,20 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void BtnHandover_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnHandover_Click");
+
+        if (_activeSession == null)
+        {
+            FileLog.Write("[MainWindow] BtnHandover_Click: no active session");
+            return;
+        }
+
+        await _activeSession.SendTextAsync("/handover");
+        FileLog.Write($"[MainWindow] BtnHandover_Click: sent /handover to session {_activeSession.Id}");
+    }
+
     // ── Voice Input (Mic Button) ─────────────────────────────────
 
     private async void BtnMic_Click(object sender, RoutedEventArgs e)
@@ -2574,16 +2620,7 @@ public partial class MainWindow : Window
         if (_readOnlyWarningShown) return;
         _readOnlyWarningShown = true;
 
-        FileLog.Write("[MainWindow] Read-only mode: blocked write attempt");
-
-        Dispatcher.BeginInvoke(() =>
-        {
-            MessageBox.Show(
-                "Another CC Director instance is running.\n\nChanges will not be saved.",
-                "Read-Only Mode",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        });
+        FileLog.Write("[MainWindow] Read-only mode: blocked write attempt (header already shows read-only state)");
     }
 
     /// <summary>Copy prompt text from VMs (and the active PromptInput) to Session objects for persistence. Must run on UI thread.</summary>
@@ -3731,6 +3768,28 @@ public partial class MainWindow : Window
             entry.ClaudeSessionId = vm.Session.ClaudeSessionId ?? entry.ClaudeSessionId;
             app.SessionHistoryStore.Save(entry);
         }
+    }
+
+    // --- Handover Injection ---
+
+    /// <summary>
+    /// After a new session starts from a handover, wait for Claude Code to be ready
+    /// and then send the handover file as a prompt asking it to review and plan next steps.
+    /// </summary>
+    private async Task InjectHandoverPromptAsync(Session session, string handoverPath)
+    {
+        FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: waiting for session {session.Id}, handover={handoverPath}");
+
+        // Wait for Claude Code to finish starting up
+        await Task.Delay(TimeSpan.FromSeconds(5));
+
+        var prompt = $"@{handoverPath} This is a handover document from a previous session. "
+            + "Please read it carefully, then give me a high-level summary of what was done "
+            + "and what you think we should work on next. Show the scope of remaining work "
+            + "and suggest priorities.";
+
+        await session.SendTextAsync(prompt);
+        FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: sent handover prompt for session {session.Id}");
     }
 
     // --- Startup Text Capture ---

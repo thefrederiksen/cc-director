@@ -643,6 +643,81 @@ def init_db(silent: bool = False):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_vec_collection ON vec_embeddings(collection)")
 
     # ==========================================
+    # DOCUMENT CATALOG (Document Library)
+    # ==========================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS libraries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT UNIQUE NOT NULL,
+            label TEXT UNIQUE NOT NULL,
+            category TEXT NOT NULL CHECK(category IN ('business','personal','other')),
+            owner TEXT,
+            recursive INTEGER DEFAULT 1,
+            enabled INTEGER DEFAULT 1,
+            last_scanned TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS catalog_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+            file_path TEXT UNIQUE NOT NULL,
+            file_name TEXT NOT NULL,
+            file_ext TEXT NOT NULL,
+            file_size INTEGER,
+            file_hash TEXT,
+            file_modified_at TEXT,
+            title TEXT,
+            summary TEXT,
+            tags TEXT,
+            department TEXT,
+            status TEXT DEFAULT 'pending'
+                CHECK(status IN ('pending','summarized','error','skipped','missing')),
+            error_message TEXT,
+            summarizable INTEGER DEFAULT 1,
+            dedup_source_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now')),
+            summarized_at TEXT
+        )
+    """)
+
+    # FTS5 full-text search for catalog entries
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
+            title, summary, tags, file_name, department,
+            content='catalog_entries',
+            content_rowid='id'
+        )
+    """)
+
+    # Triggers to keep catalog_fts in sync
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS catalog_ai AFTER INSERT ON catalog_entries BEGIN
+            INSERT INTO catalog_fts(rowid, title, summary, tags, file_name, department)
+            VALUES (new.id, new.title, new.summary, new.tags, new.file_name, new.department);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS catalog_ad AFTER DELETE ON catalog_entries BEGIN
+            INSERT INTO catalog_fts(catalog_fts, rowid, title, summary, tags, file_name, department)
+            VALUES('delete', old.id, old.title, old.summary, old.tags, old.file_name, old.department);
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS catalog_au AFTER UPDATE ON catalog_entries BEGIN
+            INSERT INTO catalog_fts(catalog_fts, rowid, title, summary, tags, file_name, department)
+            VALUES('delete', old.id, old.title, old.summary, old.tags, old.file_name, old.department);
+            INSERT INTO catalog_fts(rowid, title, summary, tags, file_name, department)
+            VALUES (new.id, new.title, new.summary, new.tags, new.file_name, new.department);
+        END
+    """)
+
+    # ==========================================
     # INDEXES
     # ==========================================
 
@@ -730,6 +805,14 @@ def init_db(silent: bool = False):
     # Email activity indexes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_activity_contact ON email_activity(contact_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_activity_account ON email_activity(account)")
+
+    # Catalog indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_catalog_library ON catalog_entries(library_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_catalog_hash ON catalog_entries(file_hash)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_catalog_status ON catalog_entries(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_catalog_ext ON catalog_entries(file_ext)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_catalog_dept ON catalog_entries(department)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_libraries_label ON libraries(label)")
 
     # Entity links indexes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_source ON entity_links(source_type, source_id)")
@@ -4758,3 +4841,336 @@ def sync_recipients(
         "activities_upserted": activities_upserted,
         "errors": errors,
     }
+
+
+# ==========================================
+# LIBRARY / CATALOG CRUD
+# ==========================================
+
+def add_library(path: str, label: str, category: str,
+                owner: Optional[str] = None, recursive: bool = True) -> Dict[str, Any]:
+    """Register a document library folder."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO libraries (path, label, category, owner, recursive)
+            VALUES (?, ?, ?, ?, ?)
+        """, (str(path), label, category, owner, int(recursive)))
+        conn.commit()
+        lib_id = cursor.lastrowid
+        row = conn.execute("SELECT * FROM libraries WHERE id = ?", (lib_id,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def get_library(label: str) -> Optional[Dict[str, Any]]:
+    """Get a library by label."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM libraries WHERE label = ?", (label,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_library_by_id(library_id: int) -> Optional[Dict[str, Any]]:
+    """Get a library by ID."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM libraries WHERE id = ?", (library_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_libraries() -> List[Dict[str, Any]]:
+    """List all registered libraries."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM libraries ORDER BY label").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_library(label: str) -> bool:
+    """Delete a library and all its catalog entries (CASCADE)."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM libraries WHERE label = ?", (label,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def update_library_last_scanned(library_id: int) -> None:
+    """Update the last_scanned timestamp for a library."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE libraries SET last_scanned = ? WHERE id = ?",
+            (datetime.now().isoformat(), library_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_catalog_entry(library_id: int, file_path: str, file_name: str,
+                         file_ext: str, file_size: int, file_hash: str,
+                         file_modified_at: str, department: Optional[str],
+                         summarizable: bool, status: str = 'pending') -> Dict[str, Any]:
+    """Insert or update a catalog entry by file_path."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO catalog_entries
+                (library_id, file_path, file_name, file_ext, file_size,
+                 file_hash, file_modified_at, department, summarizable, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(file_path) DO UPDATE SET
+                file_size = excluded.file_size,
+                file_hash = excluded.file_hash,
+                file_modified_at = excluded.file_modified_at,
+                department = excluded.department,
+                summarizable = excluded.summarizable,
+                status = CASE
+                    WHEN catalog_entries.file_hash = excluded.file_hash
+                        AND catalog_entries.status IN ('summarized', 'skipped')
+                    THEN catalog_entries.status
+                    ELSE excluded.status
+                END
+        """, (library_id, file_path, file_name, file_ext, file_size,
+              file_hash, file_modified_at, department, int(summarizable), status))
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT * FROM catalog_entries WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def get_catalog_entry_by_path(file_path: str) -> Optional[Dict[str, Any]]:
+    """Get a catalog entry by file path."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM catalog_entries WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_catalog_entry_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
+    """Get the first catalog entry with a given hash that has a summary."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM catalog_entries WHERE file_hash = ? AND status = 'summarized' LIMIT 1",
+            (file_hash,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_catalog_entry_summary(entry_id: int, title: str, summary: str,
+                                 tags: str, status: str = 'summarized',
+                                 dedup_source_id: Optional[int] = None) -> None:
+    """Update a catalog entry with summary data."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        conn.execute("""
+            UPDATE catalog_entries
+            SET title = ?, summary = ?, tags = ?, status = ?,
+                dedup_source_id = ?, summarized_at = ?
+            WHERE id = ?
+        """, (title, summary, tags, status, dedup_source_id,
+              datetime.now().isoformat(), entry_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_catalog_entry_status(entry_id: int, status: str,
+                                error_message: Optional[str] = None) -> None:
+    """Update the status (and optionally error_message) of a catalog entry."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE catalog_entries SET status = ?, error_message = ? WHERE id = ?",
+            (status, error_message, entry_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_missing_catalog_entries(library_id: int, existing_paths: set) -> int:
+    """Mark entries whose files no longer exist as 'missing'. Returns count."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, file_path FROM catalog_entries WHERE library_id = ? AND status != 'missing'",
+            (library_id,)
+        ).fetchall()
+        missing_count = 0
+        for row in rows:
+            if row['file_path'] not in existing_paths:
+                conn.execute(
+                    "UPDATE catalog_entries SET status = 'missing' WHERE id = ?",
+                    (row['id'],)
+                )
+                missing_count += 1
+        conn.commit()
+        return missing_count
+    finally:
+        conn.close()
+
+
+def list_catalog_entries(library_id: Optional[int] = None,
+                         ext: Optional[str] = None,
+                         department: Optional[str] = None,
+                         status: Optional[str] = None,
+                         limit: int = 100) -> List[Dict[str, Any]]:
+    """List catalog entries with optional filters."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        sql = "SELECT * FROM catalog_entries WHERE 1=1"
+        params: list = []
+
+        if library_id is not None:
+            sql += " AND library_id = ?"
+            params.append(library_id)
+        if ext is not None:
+            sql += " AND file_ext = ?"
+            params.append(ext)
+        if department is not None:
+            sql += " AND department = ?"
+            params.append(department)
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+
+        sql += " ORDER BY file_name LIMIT ?"
+        params.append(limit)
+
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def search_catalog_fts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """Full-text search across catalog entries."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT ce.*, bm25(catalog_fts) AS rank
+            FROM catalog_fts
+            JOIN catalog_entries ce ON ce.id = catalog_fts.rowid
+            WHERE catalog_fts MATCH ?
+            ORDER BY bm25(catalog_fts)
+            LIMIT ?
+        """, (query, limit)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_catalog_stats(library_id: Optional[int] = None) -> Dict[str, Any]:
+    """Get catalog statistics."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        where = ""
+        params: list = []
+        if library_id is not None:
+            where = " WHERE library_id = ?"
+            params = [library_id]
+
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM catalog_entries{where}", params
+        ).fetchone()[0]
+
+        summarized = conn.execute(
+            f"SELECT COUNT(*) FROM catalog_entries{where}"
+            + (" AND" if where else " WHERE") + " status = 'summarized'",
+            params
+        ).fetchone()[0]
+
+        pending = conn.execute(
+            f"SELECT COUNT(*) FROM catalog_entries{where}"
+            + (" AND" if where else " WHERE") + " status = 'pending'",
+            params
+        ).fetchone()[0]
+
+        errors = conn.execute(
+            f"SELECT COUNT(*) FROM catalog_entries{where}"
+            + (" AND" if where else " WHERE") + " status = 'error'",
+            params
+        ).fetchone()[0]
+
+        skipped = conn.execute(
+            f"SELECT COUNT(*) FROM catalog_entries{where}"
+            + (" AND" if where else " WHERE") + " status = 'skipped'",
+            params
+        ).fetchone()[0]
+
+        missing = conn.execute(
+            f"SELECT COUNT(*) FROM catalog_entries{where}"
+            + (" AND" if where else " WHERE") + " status = 'missing'",
+            params
+        ).fetchone()[0]
+
+        return {
+            "total": total,
+            "summarized": summarized,
+            "pending": pending,
+            "errors": errors,
+            "skipped": skipped,
+            "missing": missing,
+        }
+    finally:
+        conn.close()
+
+
+def get_pending_catalog_entries(library_id: Optional[int] = None,
+                                limit: int = 10) -> List[Dict[str, Any]]:
+    """Get catalog entries with status='pending' and summarizable=1."""
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        sql = "SELECT * FROM catalog_entries WHERE status = 'pending' AND summarizable = 1"
+        params: list = []
+        if library_id is not None:
+            sql += " AND library_id = ?"
+            params.append(library_id)
+        sql += " ORDER BY id LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()

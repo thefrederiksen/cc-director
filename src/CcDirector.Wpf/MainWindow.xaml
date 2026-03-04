@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:CcDirector.Wpf.Controls"
         xmlns:cm="clr-namespace:CommunicationManager;assembly=CcDirector.CommunicationManager"
+        xmlns:doclib="clr-namespace:CcDirector.DocumentLibrary.Views;assembly=CcDirector.DocumentLibrary"
         Title="CC Director v2"
         Icon="app.ico"
         Width="1400" Height="700"
@@ -278,6 +279,17 @@
                             Focusable="False"
                             Height="30" Margin="8,2,8,2"
                             Background="#68217A"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand" />
+
+                    <!-- Documents button (bottom of sidebar) -->
+                    <Button x:Name="BtnDocuments" DockPanel.Dock="Bottom"
+                            Content="Documents"
+                            Click="BtnDocuments_Click"
+                            Focusable="False"
+                            Height="30" Margin="8,2,8,2"
+                            Background="#0B5394"
                             Foreground="White"
                             BorderThickness="0"
                             Cursor="Hand" />
@@ -936,6 +948,15 @@
                                             BorderThickness="0"
                                             Cursor="Hand"
                                             ToolTip="Add to prompt queue (Ctrl+Shift+Enter)" />
+                                    <Button Content="Handover"
+                                            Click="BtnHandover_Click"
+                                            Width="60" Margin="8,4,0,0"
+                                            Height="30"
+                                            Background="#2D2D30"
+                                            Foreground="#AAAAAA"
+                                            BorderThickness="0"
+                                            Cursor="Hand"
+                                            ToolTip="Create a handover document for this session" />
                                 </StackPanel>
                             </Grid>
                         </Border>
@@ -1230,6 +1251,11 @@
                     <cm:CommunicationManagerView x:Name="CommunicationsView"
                                                   Grid.ColumnSpan="3"
                                                   Visibility="Collapsed" />
+
+                    <!-- Document Library (full-area overlay, spans all columns) -->
+                    <doclib:DocumentLibraryView x:Name="DocumentLibraryView"
+                                                Grid.ColumnSpan="3"
+                                                Visibility="Collapsed" />
                 </Grid>
 
     </Grid>
