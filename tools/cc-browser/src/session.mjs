@@ -478,7 +478,72 @@ async function getChromeWebSocketUrl(cdpUrl, timeoutMs = 5000) {
   }
 }
 
+/**
+ * Directly set a Playwright browser instance (pipe mode, no CDP URL needed).
+ * Used when launchPersistentContext provides the browser directly.
+ */
+export async function setBrowserDirect(browser) {
+  cached = { browser, cdpUrl: 'pipe' };
+  connecting = null;
+
+  // Mask navigator.webdriver and observe all pages
+  for (const context of browser.contexts()) {
+    await applyWebdriverMask(context);
+    if (currentMode === 'stealth') {
+      await applyStealthScripts(context);
+    }
+    for (const page of context.pages()) {
+      ensurePageState(page);
+      if (currentMode === 'stealth') {
+        try {
+          const session = await page.context().newCDPSession(page);
+          await session.send('Page.addScriptToEvaluateOnNewDocument', {
+            source: `
+              Object.defineProperty(Navigator.prototype, 'webdriver', {
+                get: () => undefined,
+                configurable: true,
+              });
+            `,
+          });
+          await session.send('Runtime.evaluate', {
+            expression: `
+              Object.defineProperty(Navigator.prototype, 'webdriver', {
+                get: () => undefined,
+                configurable: true,
+              });
+            `,
+          });
+          await session.detach().catch(() => {});
+        } catch {
+          // Best effort
+        }
+      }
+    }
+    context.on('page', (page) => ensurePageState(page));
+  }
+
+  browser.on('disconnected', () => {
+    if (cached?.browser === browser) {
+      cached = null;
+    }
+  });
+
+  return cached;
+}
+
 export async function connectBrowser(cdpUrl) {
+  // If we have a pipe-mode browser, verify it is alive and reuse it
+  if (cached?.cdpUrl === 'pipe') {
+    try {
+      // Verify the browser is still connected by checking contexts
+      cached.browser.contexts();
+      return cached;
+    } catch {
+      // Pipe browser is dead, clear cache
+      cached = null;
+    }
+  }
+
   const normalized = normalizeCdpUrl(cdpUrl);
 
   if (cached?.cdpUrl === normalized) {

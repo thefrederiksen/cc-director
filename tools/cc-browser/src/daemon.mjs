@@ -53,7 +53,7 @@ function resolveAlias(alias) {
   }
   return null;
 }
-import { connectBrowser, disconnectBrowser, getCachedBrowser, getPageState, setWorkspaceIndicator, getCurrentMode, setCurrentMode } from './session.mjs';
+import { connectBrowser, disconnectBrowser, getCachedBrowser, getPageState, setWorkspaceIndicator, getCurrentMode, setCurrentMode, setBrowserDirect } from './session.mjs';
 import {
   listPagesViaPlaywright,
   createPageViaPlaywright,
@@ -152,12 +152,20 @@ let activeWorkspace = null;
 let activeIncognito = false;
 
 function getActiveCdpPort() {
-  // Active session takes priority
+  // Active session takes priority (null means pipe mode)
   if (activeCdpPort) return activeCdpPort;
+  // Pipe mode: no port needed
+  if (activeBrowserKind && activeCdpPort === null) return null;
   // Then use daemon's default workspace CDP port
   if (defaultDaemonCdpPort) return defaultDaemonCdpPort;
   // Finally fall back to default
   return DEFAULT_CDP_PORT;
+}
+
+function getActiveCdpUrl() {
+  const port = getActiveCdpPort();
+  if (port === null) return 'pipe';
+  return `http://127.0.0.1:${port}`;
 }
 
 function setActiveSession(cdpPort, browserKind, workspace, incognito = false) {
@@ -179,7 +187,8 @@ function clearActiveSession() {
 
 function validateSession(body) {
   // If no active session, return error
-  if (!activeCdpPort) {
+  // activeCdpPort is null in pipe mode, so check activeBrowserKind as session indicator
+  if (!activeCdpPort && !activeBrowserKind) {
     return { valid: false, error: 'No browser session active. Run "start" first.' };
   }
 
@@ -270,8 +279,9 @@ const routes = {
       daemon: 'running',
       daemonPort: params.daemonPort,
       browser: status.running ? 'connected' : 'not running',
-      cdpUrl: status.cdpUrl,
-      cdpPort,
+      cdpUrl: status.pipeMode ? 'pipe' : status.cdpUrl,
+      cdpPort: status.pipeMode ? null : cdpPort,
+      pipeMode: !!status.pipeMode,
       browserKind: activeBrowserKind,
       workspace: activeIncognito ? null : activeWorkspace,
       incognito: activeIncognito,
@@ -337,26 +347,33 @@ const routes = {
       incognito: isIncognito,
     });
 
-    // Connect Playwright
-    await connectBrowser(result.cdpUrl);
+    // Set mode before connecting (stealth scripts depend on mode)
+    if (requestedMode) {
+      setCurrentMode(requestedMode);
+    }
+
+    // Connect Playwright - pipe mode (browser returned directly) or legacy port mode
+    if (result.browser) {
+      // Pipe mode: Playwright launched the browser, no CDP port needed
+      await setBrowserDirect(result.browser);
+      // Track with null cdpPort to indicate pipe mode
+      setActiveSession(null, result.browserKind, workspaceName, isIncognito);
+    } else if (result.cdpUrl) {
+      // Legacy: port-based connection (e.g. already-running browser)
+      await connectBrowser(result.cdpUrl);
+      setActiveSession(cdpPort, result.browserKind, workspaceName, isIncognito);
+    }
 
     // Show workspace indicator bar on all pages (JS-injected, no --enable-automation)
     if (indicator) {
       await setWorkspaceIndicator(workspaceName);
     }
 
-    // Track this as the active session
-    setActiveSession(cdpPort, result.browserKind, workspaceName, isIncognito);
-
-    // Set mode if specified in request or workspace config
-    if (requestedMode) {
-      setCurrentMode(requestedMode);
-    }
-
     jsonSuccess(res, {
       started: result.started,
-      cdpUrl: result.cdpUrl,
-      cdpPort,
+      cdpUrl: result.browser ? 'pipe' : result.cdpUrl,
+      cdpPort: result.browser ? null : cdpPort,
+      pipeMode: !!result.browser,
       browserKind: result.browserKind,
       workspace: isIncognito ? null : workspaceName,
       incognito: isIncognito,
@@ -381,8 +398,7 @@ const routes = {
     if (!validation.valid) {
       return jsonError(res, 400, validation.error);
     }
-    const cdpPort = getActiveCdpPort();
-    const cdpUrl = `http://127.0.0.1:${cdpPort}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await navigateViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -397,7 +413,7 @@ const routes = {
   'POST /reload': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await reloadViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -411,7 +427,7 @@ const routes = {
   'POST /back': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await goBackViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -425,7 +441,7 @@ const routes = {
   'POST /forward': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await goForwardViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -439,7 +455,7 @@ const routes = {
   'POST /snapshot': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await snapshotViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -455,7 +471,7 @@ const routes = {
   'POST /info': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await getPageInfoViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -467,7 +483,7 @@ const routes = {
   'POST /click': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await clickViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -487,7 +503,7 @@ const routes = {
   'POST /type': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await typeViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -507,7 +523,7 @@ const routes = {
   'POST /press': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await pressKeyViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -521,7 +537,7 @@ const routes = {
   'POST /hover': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await hoverViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -538,7 +554,7 @@ const routes = {
   'POST /drag': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await dragViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -553,7 +569,7 @@ const routes = {
   'POST /select': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await selectOptionViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -568,7 +584,7 @@ const routes = {
   'POST /fill': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await fillFormViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -582,7 +598,7 @@ const routes = {
   'POST /scroll': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await scrollViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -598,7 +614,7 @@ const routes = {
   'POST /wait': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await waitForViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -618,7 +634,7 @@ const routes = {
   'POST /evaluate': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await evaluateViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -632,7 +648,7 @@ const routes = {
   'POST /screenshot': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const { buffer } = await takeScreenshotViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -653,7 +669,7 @@ const routes = {
   'POST /screenshot-labels': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const { buffer, labels, skipped } = await screenshotWithLabelsViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -673,7 +689,7 @@ const routes = {
   'POST /upload': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await setInputFilesViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -688,7 +704,7 @@ const routes = {
   'POST /resize': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await resizeViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -702,7 +718,7 @@ const routes = {
   'POST /tabs': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const tabs = await listPagesViaPlaywright({ cdpUrl });
     // Annotate tabs with session info
     for (const tab of tabs) {
@@ -725,7 +741,7 @@ const routes = {
       if (!sess) return jsonError(res, 404, `Session not found: ${body.session}`);
     }
 
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const tab = await createPageViaPlaywright({ cdpUrl, url: body.url });
 
     // Track tab in session (also acts as implicit heartbeat)
@@ -741,7 +757,7 @@ const routes = {
   'POST /tabs/close': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const tabId = body.tab || body.targetId;
     await closePageByTargetIdViaPlaywright({ cdpUrl, targetId: tabId });
     removeTabFromSessions(tabId);
@@ -752,7 +768,7 @@ const routes = {
   'POST /tabs/focus': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     await focusPageByTargetIdViaPlaywright({ cdpUrl, targetId: body.tab || body.targetId });
     jsonSuccess(res, { focused: body.tab || body.targetId });
   },
@@ -761,7 +777,7 @@ const routes = {
   'POST /text': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const text = await getTextContentViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -774,7 +790,7 @@ const routes = {
   'POST /captcha/detect': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const page = await getPageForTargetId({ cdpUrl, targetId: body.tab || body.targetId });
     const result = await detectCaptcha(page, { useVision: body.vision || false });
     jsonSuccess(res, result);
@@ -784,7 +800,7 @@ const routes = {
   'POST /captcha/solve': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const page = await getPageForTargetId({ cdpUrl, targetId: body.tab || body.targetId });
     const result = await solveCaptcha(page, { maxAttempts: body.attempts || 3 });
     jsonSuccess(res, result);
@@ -809,7 +825,7 @@ const routes = {
   'POST /html': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const html = await getHtmlViaPlaywright({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -866,7 +882,7 @@ const routes = {
 
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
 
     // Close all tabs in this session
     const closed = [];
@@ -892,7 +908,7 @@ const routes = {
   'POST /sessions/prune': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
 
     const pruned = pruneExpiredSessions();
     let totalClosed = 0;
@@ -918,7 +934,7 @@ const routes = {
   'POST /tabs/close-all': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
 
     const tabs = await listPagesViaPlaywright({ cdpUrl });
     if (tabs.length === 0) {
@@ -951,7 +967,7 @@ const routes = {
   'POST /record/start': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await startRecording({ cdpUrl, targetId: body.tab || body.targetId, daemonPort: actualDaemonPort });
     jsonSuccess(res, result);
   },
@@ -960,7 +976,7 @@ const routes = {
   'POST /record/stop': async (req, res, params, body) => {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await stopRecording({ cdpUrl, targetId: body.tab || body.targetId });
     jsonSuccess(res, result);
   },
@@ -985,7 +1001,7 @@ const routes = {
     const validation = validateSession(body);
     if (!validation.valid) return jsonError(res, 400, validation.error);
     if (!body.recording) return jsonError(res, 400, 'recording is required');
-    const cdpUrl = `http://127.0.0.1:${getActiveCdpPort()}`;
+    const cdpUrl = getActiveCdpUrl();
     const result = await replayRecording({
       cdpUrl,
       targetId: body.tab || body.targetId,
@@ -1092,8 +1108,8 @@ if (sessionDir) {
 }
 
 startCleanupTimer(async (tabIds) => {
-  if (!activeCdpPort) return;
-  const cdpUrl = `http://127.0.0.1:${activeCdpPort}`;
+  if (!activeBrowserKind) return;
+  const cdpUrl = getActiveCdpUrl();
   for (const tabId of tabIds) {
     try {
       await closePageByTargetIdViaPlaywright({ cdpUrl, targetId: tabId });

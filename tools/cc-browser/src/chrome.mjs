@@ -2,11 +2,12 @@
 // Adapted from: OpenClaw src/browser/chrome.ts and chrome.executables.ts
 // Handles Chrome detection, launch, and connection
 
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import { existsSync, mkdirSync, rmSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import { createServer } from 'net';
+import { chromium } from 'playwright-core';
 
 // ---------------------------------------------------------------------------
 // Port Availability Check
@@ -355,33 +356,8 @@ export async function launchChrome(opts = {}) {
     userDataDir = getChromeUserDataDir(browserKind, workspaceName);
   }
 
-  // Check if CDP port is available
-  const portFree = await isPortAvailable(port);
-  if (!portFree) {
-    // Check if there's already a browser we can connect to
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (res.ok) {
-        throw new Error(
-          `Port ${port} is already in use by another browser.\n` +
-          `Either stop that browser, or use a different --cdpPort.`
-        );
-      }
-    } catch (e) {
-      if (e.message.includes('Port')) throw e;
-      throw new Error(
-        `Port ${port} is in use by another process.\n` +
-        `Use a different --cdpPort or stop the process using port ${port}.`
-      );
-    }
-  }
-
-  // Launch arguments
+  // Launch arguments (no --remote-debugging-port: Playwright uses pipe transport)
   const args = [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
   ];
@@ -394,18 +370,12 @@ export async function launchChrome(opts = {}) {
     args.push('--disable-sync');
   }
 
-  // Never use --enable-automation: it sets navigator.webdriver=true which is
-  // the #1 bot detection signal. The cc-browser indicator bar (injected via JS
-  // in session.mjs) provides the visual workspace indicator instead.
-
   if (incognito) {
     args.push('--incognito');
   }
 
   args.push(
     '--disable-features=TranslateUI',
-    '--disable-background-networking',
-    '--disable-client-side-phishing-detection',
     '--new-window',
   );
 
@@ -418,67 +388,82 @@ export async function launchChrome(opts = {}) {
     );
   }
 
-  if (headless) {
-    args.push('--headless=new');
+  // Determine Playwright channel for Edge
+  // Playwright injects many default args designed for test automation that are
+  // harmful for our "real browser with automation" use case:
+  //   --no-sandbox             -> "stability will suffer" warning bar
+  //   --disable-extensions     -> breaks user's installed extensions
+  //   --disable-background-networking, --disable-client-side-phishing-detection
+  //                            -> detectable by anti-bot systems (real browsers have these)
+  //   --disable-component-extensions-with-background-pages -> detectable
+  //   --disable-default-apps   -> unnecessary restriction
+  //   --disable-popup-blocking -> changes user-facing behavior
+  //   --disable-infobars       -> detectable flag (no longer works in modern Chrome)
+  //   --enable-automation      -> sets navigator.webdriver=true (#1 bot signal)
+  //   --enable-unsafe-swiftshader -> detectable (CPU-based WebGL fallback)
+  const launchOpts = {
+    executablePath: chromePath,
+    headless,
+    args,
+    ignoreDefaultArgs: [
+      '--enable-automation',
+      '--no-sandbox',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-client-side-phishing-detection',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-default-apps',
+      '--disable-popup-blocking',
+      '--disable-infobars',
+      '--enable-unsafe-swiftshader',
+    ],
+  };
+
+  if (browserKind === 'edge') {
+    launchOpts.channel = 'msedge';
   }
 
-  // Always open about:blank to ensure a target exists
-  args.push('about:blank');
+  // Launch via Playwright persistent context (uses --remote-debugging-pipe, not port)
+  const context = await chromium.launchPersistentContext(userDataDir, launchOpts);
 
-  // Launch Chrome
-  const child = spawn(chromePath, args, {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false,
-  });
+  // Store context for lifecycle management
+  pipeLaunchedContext = context;
 
-  child.unref();
-
-  // Store PID for later cleanup
-  setLaunchedChromePid(child.pid);
   if (incognito) {
     setIncognitoUserDataDir(userDataDir);
   }
 
-  // Wait for CDP to be available
-  const cdpUrl = `http://127.0.0.1:${port}`;
-  const maxWaitMs = 15000;
-  const pollIntervalMs = 300;
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < maxWaitMs) {
+  // Get tab info via CDP sessions on context pages
+  const pages = context.pages();
+  const tabs = [];
+  for (const page of pages) {
     try {
-      const res = await fetch(`${cdpUrl}/json/version`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (res.ok) {
-        // Get initial tabs
-        const tabsRes = await fetch(`${cdpUrl}/json/list`);
-        const tabs = await tabsRes.json();
-        const pageTabs = tabs.filter((t) => t.type === 'page');
-
-        return {
-          cdpUrl,
-          pid: child.pid,
-          browserKind,
-          userDataDir,
-          profileDir: profileDirArg,
-          incognito,
-          tabs: pageTabs.map((t) => ({
-            targetId: t.id,
-            title: t.title,
-            url: t.url,
-          })),
-          activeTab: pageTabs[0]?.id || null,
-        };
+      const session = await context.newCDPSession(page);
+      const info = await session.send('Target.getTargetInfo');
+      const targetId = info?.targetInfo?.targetId || null;
+      await session.detach().catch(() => {});
+      if (targetId) {
+        tabs.push({
+          targetId,
+          title: await page.title().catch(() => ''),
+          url: page.url(),
+        });
       }
     } catch {
-      // Not ready yet
+      // Skip pages we cannot inspect
     }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
   }
 
-  throw new Error(`Chrome did not start within ${maxWaitMs}ms`);
+  return {
+    browser: context.browser(),
+    context,
+    browserKind,
+    userDataDir,
+    profileDir: profileDirArg,
+    incognito,
+    tabs,
+    activeTab: tabs[0]?.targetId || null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +471,46 @@ export async function launchChrome(opts = {}) {
 // ---------------------------------------------------------------------------
 
 export async function checkChromeRunning(port = DEFAULT_CDP_PORT) {
+  // Check pipe-launched context first
+  if (pipeLaunchedContext) {
+    try {
+      const pages = pipeLaunchedContext.pages();
+      if (pages.length >= 0) {
+        // Context is alive - gather tab info
+        const tabs = [];
+        for (const page of pages) {
+          try {
+            const session = await pipeLaunchedContext.newCDPSession(page);
+            const info = await session.send('Target.getTargetInfo');
+            const targetId = info?.targetInfo?.targetId || null;
+            await session.detach().catch(() => {});
+            if (targetId) {
+              tabs.push({
+                targetId,
+                title: await page.title().catch(() => ''),
+                url: page.url(),
+              });
+            }
+          } catch {
+            // Skip
+          }
+        }
+        return {
+          running: true,
+          pipeMode: true,
+          browser: pipeLaunchedContext.browser(),
+          context: pipeLaunchedContext,
+          tabs,
+          activeTab: tabs[0]?.targetId || null,
+        };
+      }
+    } catch {
+      // Pipe context is dead, clear it
+      pipeLaunchedContext = null;
+    }
+  }
+
+  // Fall back to HTTP port check (legacy / external browsers)
   const cdpUrl = `http://127.0.0.1:${port}`;
   try {
     const res = await fetch(`${cdpUrl}/json/version`, {
@@ -520,7 +545,22 @@ export async function checkChromeRunning(port = DEFAULT_CDP_PORT) {
 export async function ensureChromeAvailable(opts = {}) {
   const { port = DEFAULT_CDP_PORT } = opts;
 
-  // Check if already running
+  // Check if pipe context is alive first
+  if (pipeLaunchedContext) {
+    try {
+      const pages = pipeLaunchedContext.pages();
+      if (pages.length >= 0) {
+        const status = await checkChromeRunning(port);
+        if (status.running) {
+          return { started: false, ...status };
+        }
+      }
+    } catch {
+      pipeLaunchedContext = null;
+    }
+  }
+
+  // Check if already running via port (legacy)
   const status = await checkChromeRunning(port);
   if (status.running) {
     return {
@@ -545,6 +585,9 @@ export async function ensureChromeAvailable(opts = {}) {
 let launchedChromePid = null;
 let incognitoUserDataDir = null;
 
+// Track Playwright pipe-launched context (replaces spawn + CDP port)
+let pipeLaunchedContext = null;
+
 export function setLaunchedChromePid(pid) {
   launchedChromePid = pid;
 }
@@ -561,22 +604,29 @@ export function getIncognitoUserDataDir() {
   return incognitoUserDataDir;
 }
 
+export function getPipeLaunchedContext() {
+  return pipeLaunchedContext;
+}
+
+export function setPipeLaunchedContext(ctx) {
+  pipeLaunchedContext = ctx;
+}
+
 export async function stopChrome(port = DEFAULT_CDP_PORT) {
-  const cdpUrl = `http://127.0.0.1:${port}`;
   let stopped = false;
 
-  // Try CDP close first
-  try {
-    await fetch(`${cdpUrl}/json/close`, {
-      method: 'PUT',
-      signal: AbortSignal.timeout(2000),
-    });
-    stopped = true;
-  } catch {
-    // CDP close failed
+  // Try pipe context close first (preferred path)
+  if (pipeLaunchedContext) {
+    try {
+      await pipeLaunchedContext.close();
+      stopped = true;
+    } catch {
+      // Context may already be closed
+    }
+    pipeLaunchedContext = null;
   }
 
-  // If we have the PID, kill the process directly
+  // If we have the PID, kill the process directly (fallback)
   if (launchedChromePid) {
     try {
       if (process.platform === 'win32') {
@@ -593,37 +643,49 @@ export async function stopChrome(port = DEFAULT_CDP_PORT) {
     launchedChromePid = null;
   }
 
-  // Windows: Find and kill process by port if still running
-  if (process.platform === 'win32') {
+  // Legacy: try CDP close via port if neither pipe nor PID worked
+  if (!stopped) {
+    const cdpUrl = `http://127.0.0.1:${port}`;
     try {
-      const netstatOutput = execSync(`netstat -ano | findstr ":${port}" | findstr "LISTENING"`, {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
+      await fetch(`${cdpUrl}/json/close`, {
+        method: 'PUT',
+        signal: AbortSignal.timeout(2000),
       });
-      const match = netstatOutput.match(/LISTENING\s+(\d+)/);
-      if (match) {
-        const pid = match[1];
-        execSync(`taskkill /F /PID ${pid} /T`, { stdio: 'pipe' });
-        stopped = true;
+      stopped = true;
+    } catch {
+      // CDP close failed
+    }
+
+    // Windows: Find and kill process by port if still running
+    if (process.platform === 'win32') {
+      try {
+        const netstatOutput = execSync(`netstat -ano | findstr ":${port}" | findstr "LISTENING"`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const match = netstatOutput.match(/LISTENING\s+(\d+)/);
+        if (match) {
+          const pid = match[1];
+          execSync(`taskkill /F /PID ${pid} /T`, { stdio: 'pipe' });
+          stopped = true;
+        }
+      } catch {
+        // No process found or already killed
+      }
+    }
+
+    // Wait a bit and verify port-based shutdown
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const res = await fetch(`${cdpUrl}/json/version`, {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (res.ok) {
+        stopped = false; // Still running
       }
     } catch {
-      // No process found or already killed
+      stopped = true; // Not responding = stopped
     }
-  }
-
-  // Wait a bit and verify
-  await new Promise((r) => setTimeout(r, 500));
-
-  // Check if Chrome on this port is still running
-  try {
-    const res = await fetch(`${cdpUrl}/json/version`, {
-      signal: AbortSignal.timeout(1000),
-    });
-    if (res.ok) {
-      stopped = false; // Still running
-    }
-  } catch {
-    stopped = true; // Not responding = stopped
   }
 
   // Clean up incognito temp directory
