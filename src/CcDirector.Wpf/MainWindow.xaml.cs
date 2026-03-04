@@ -87,6 +87,17 @@ public partial class MainWindow : Window
         brush.Freeze();
         return brush;
     }
+    /// <summary>
+    /// Returns the TerminalControl for a session if it is the currently active (displayed) session.
+    /// Used by TeamsRemoteController for screenshots and terminal text capture.
+    /// </summary>
+    internal TerminalControl? GetTerminalControlForSession(Session session)
+    {
+        if (_activeSession?.Id == session.Id)
+            return _terminalControl;
+        return null;
+    }
+
     public MainWindow()
     {
         InitializeComponent();
