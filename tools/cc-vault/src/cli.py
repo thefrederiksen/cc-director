@@ -53,11 +53,19 @@ class AliasGroup(typer.core.TyperGroup):
     ALIASES = {
         "get": "show",
         "view": "show",
+        "members": "show",
+        "ls": "list",
+        "find": "search",
+        "rm": "delete",
+        "del": "delete",
+        "edit": "update",
+        "modify": "update",
+        "new": "add",
+        "insert": "add",
+        "mv": "rename",
     }
 
     def get_command(self, ctx, cmd_name):
-        # Resolve aliases first, then fall through to Typer's built-in
-        # "did you mean?" suggestions for truly unknown commands
         resolved = self.ALIASES.get(cmd_name, cmd_name)
         return super().get_command(ctx, resolved)
 
@@ -91,6 +99,16 @@ app.add_typer(health_app, name="health")
 app.add_typer(posts_app, name="posts")
 app.add_typer(lists_app, name="lists")
 app.add_typer(tags_app, name="tags")
+
+# Singular aliases (hidden so they don't clutter --help)
+app.add_typer(tasks_app, name="task", hidden=True)
+app.add_typer(goals_app, name="goal", hidden=True)
+app.add_typer(ideas_app, name="idea", hidden=True)
+app.add_typer(contacts_app, name="contact", hidden=True)
+app.add_typer(docs_app, name="doc", hidden=True)
+app.add_typer(posts_app, name="post", hidden=True)
+app.add_typer(lists_app, name="list", hidden=True)
+app.add_typer(tags_app, name="tag", hidden=True)
 
 console = Console(force_terminal=True)
 
