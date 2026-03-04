@@ -20,7 +20,8 @@ def main() -> None:
         sys.path.insert(0, str(base_path / 'src'))
 
     # Import after path setup
-    from cli import app
+    from cli import app, _check_search_entity_mistake
+    _check_search_entity_mistake()
     app()
 
 

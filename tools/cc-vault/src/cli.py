@@ -237,6 +237,13 @@ def ask(
     console.print(f"\n[dim]Sources: {result['context_used']} items, Mode: {result.get('search_mode', 'unknown')}[/dim]")
 
 
+ENTITY_TYPES = {
+    "contacts", "contact", "tasks", "task", "goals", "goal",
+    "ideas", "idea", "docs", "doc", "posts", "post",
+    "health", "lists", "list", "tags", "tag",
+}
+
+
 @app.command("search")
 def search_cmd(
     query: str = typer.Argument(..., help="Search query"),
@@ -3206,5 +3213,20 @@ def lists_export(
         raise typer.Exit(1)
 
 
+def _check_search_entity_mistake():
+    """Detect 'cc-vault search <entity-type> <query>' and suggest the correct command."""
+    args = sys.argv[1:]
+    if len(args) >= 3 and args[0] == "search" and args[1].lower() in ENTITY_TYPES:
+        entity = args[1]
+        rest = " ".join(args[2:])
+        console.print(
+            f"[red]ERROR:[/red] 'cc-vault search' takes a single QUERY argument.\n"
+            f"\n"
+            f"  Did you mean: [green]cc-vault {entity} search \"{rest}\"[/green]\n"
+        )
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
+    _check_search_entity_mistake()
     app()

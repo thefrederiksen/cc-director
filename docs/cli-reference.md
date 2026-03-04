@@ -881,6 +881,8 @@ OPTIONS:
 
 ### cc-vault search
 
+Semantic search across ALL vault data (contacts, tasks, docs, etc.).
+
 ```
 USAGE: cc-vault search [OPTIONS] QUERY
 
@@ -888,6 +890,23 @@ OPTIONS:
   -n INTEGER  Number of results [default: 10]
   --hybrid    Use hybrid search
 ```
+
+**Examples:**
+```bash
+cc-vault search "kubernetes deployment"
+cc-vault search "marketing strategy" --hybrid -n 5
+```
+
+**NOTE:** To search within a specific entity type, use the subcommand instead:
+```bash
+cc-vault contacts search "Ozdal"       # search contacts by name
+cc-vault tasks search "deploy"          # search tasks
+cc-vault docs search "architecture"     # search documents
+cc-vault posts search "linkedin"        # search posts
+```
+
+Do NOT use `cc-vault search contacts "Name"` -- that passes two arguments to the
+top-level search command and will fail.
 
 ---
 
