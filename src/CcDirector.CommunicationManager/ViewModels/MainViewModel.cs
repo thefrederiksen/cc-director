@@ -825,7 +825,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             args.Add(accountConfig.ToolAccount);
         }
 
-        args.AddRange(new[] { "send", "-t", to, "-s", subject, "-b", item.Content, "--html" });
+        // Convert plain text newlines to HTML before sending with --html flag.
+        // Without this, email clients ignore \n and recipients see a wall of text.
+        var htmlBody = HtmlFormatter.ConvertPlainTextToHtml(item.Content);
+        args.AddRange(new[] { "send", "-t", to, "-s", subject, "-b", htmlBody, "--html" });
 
         if (spec.Cc != null && spec.Cc.Count > 0)
         {
