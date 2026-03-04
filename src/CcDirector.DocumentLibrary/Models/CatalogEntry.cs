@@ -27,6 +27,9 @@ public class CatalogEntry
     [JsonPropertyName("file_hash")]
     public string? FileHash { get; set; }
 
+    [JsonPropertyName("file_modified_at")]
+    public string? FileModifiedAt { get; set; }
+
     public string? Title { get; set; }
     public string? Summary { get; set; }
     public string? Tags { get; set; }
@@ -46,4 +49,27 @@ public class CatalogEntry
             return $"{FileSize / (1024.0 * 1024.0):F1} MB";
         }
     }
+
+    /// <summary>Human-readable modified date.</summary>
+    public string ModifiedDisplay
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(FileModifiedAt)) return "-";
+            if (DateTime.TryParse(FileModifiedAt, out var dt))
+                return dt.ToString("yyyy-MM-dd HH:mm");
+            return FileModifiedAt;
+        }
+    }
+
+    /// <summary>Short status label for display.</summary>
+    public string StatusDisplay => Status switch
+    {
+        "summarized" => "OK",
+        "pending" => "Pending",
+        "error" => "Error",
+        "skipped" => "Skip",
+        "missing" => "Missing",
+        _ => Status,
+    };
 }

@@ -9,16 +9,21 @@ namespace CcDirector.DocumentLibrary.ViewModels;
 
 public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
 {
-    private readonly VaultCatalogClient _client = new();
+    private readonly CatalogDatabase _db = new();
     private Library? _selectedLibrary;
+    private string? _selectedDepartment;
     private CatalogEntry? _selectedEntry;
     private string _searchQuery = string.Empty;
     private string? _activeExtFilter;
     private string _statusText = string.Empty;
     private bool _isLoading;
+    private string _sortColumn = "file_name";
+    private bool _sortAscending = true;
+    private int _totalEntryCount;
     private CancellationTokenSource? _searchDebounce;
 
     public ObservableCollection<Library> Libraries { get; } = [];
+    public ObservableCollection<string> Departments { get; } = [];
     public ObservableCollection<CatalogEntry> Entries { get; } = [];
 
     public Library? SelectedLibrary
@@ -28,6 +33,21 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
         {
             if (_selectedLibrary == value) return;
             _selectedLibrary = value;
+            _selectedDepartment = null;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(SelectedDepartment));
+            _ = LoadDepartmentsAsync();
+            _ = LoadEntriesAsync();
+        }
+    }
+
+    public string? SelectedDepartment
+    {
+        get => _selectedDepartment;
+        set
+        {
+            if (_selectedDepartment == value) return;
+            _selectedDepartment = value;
             OnPropertyChanged();
             _ = LoadEntriesAsync();
         }
@@ -75,14 +95,33 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
         set { _isLoading = value; OnPropertyChanged(); }
     }
 
+    public string SortColumn
+    {
+        get => _sortColumn;
+        set
+        {
+            if (_sortColumn == value)
+            {
+                _sortAscending = !_sortAscending;
+            }
+            else
+            {
+                _sortColumn = value;
+                _sortAscending = true;
+            }
+            OnPropertyChanged();
+            _ = LoadEntriesAsync();
+        }
+    }
+
+    public bool SortAscending => _sortAscending;
+
     public async Task InitializeAsync()
     {
         FileLog.Write("[DocumentLibraryViewModel] InitializeAsync");
-        IsLoading = true;
-        StatusText = "Loading libraries...";
         try
         {
-            var libs = await Task.Run(() => _client.ListLibrariesAsync());
+            var libs = await Task.Run(() => _db.ListLibraries());
             Libraries.Clear();
             foreach (var lib in libs)
                 Libraries.Add(lib);
@@ -94,20 +133,40 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
             FileLog.Write($"[DocumentLibraryViewModel] InitializeAsync FAILED: {ex.Message}");
             StatusText = $"Error loading libraries: {ex.Message}";
         }
-        finally
+    }
+
+    private async Task LoadDepartmentsAsync()
+    {
+        if (_selectedLibrary is null)
         {
-            IsLoading = false;
+            Departments.Clear();
+            return;
         }
+
+        FileLog.Write($"[DocumentLibraryViewModel] LoadDepartmentsAsync: {_selectedLibrary.Label}");
+        var depts = await Task.Run(() => _db.GetDepartments(_selectedLibrary.Id));
+        Departments.Clear();
+        foreach (var d in depts)
+            Departments.Add(d);
     }
 
     public async Task LoadEntriesAsync()
     {
-        FileLog.Write($"[DocumentLibraryViewModel] LoadEntriesAsync: library={_selectedLibrary?.Label}, ext={_activeExtFilter}");
+        FileLog.Write($"[DocumentLibraryViewModel] LoadEntriesAsync: lib={_selectedLibrary?.Label}, dept={_selectedDepartment}, ext={_activeExtFilter}, sort={_sortColumn}");
         IsLoading = true;
         try
         {
             var entries = await Task.Run(() =>
-                _client.ListEntriesAsync(_selectedLibrary?.Label, _activeExtFilter));
+                _db.ListEntries(
+                    libraryId: _selectedLibrary?.Id,
+                    department: _selectedDepartment,
+                    ext: _activeExtFilter,
+                    sortColumn: _sortColumn,
+                    sortAscending: _sortAscending,
+                    limit: 500));
+
+            _totalEntryCount = await Task.Run(() =>
+                _db.GetEntryCount(_selectedLibrary?.Id, _selectedDepartment, _activeExtFilter));
 
             Entries.Clear();
             foreach (var e in entries)
@@ -132,7 +191,7 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
         IsLoading = true;
         try
         {
-            var results = await Task.Run(() => _client.SearchAsync(query));
+            var results = await Task.Run(() => _db.Search(query));
 
             Entries.Clear();
             foreach (var e in results)
@@ -160,18 +219,11 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
     public void OpenFile(CatalogEntry entry)
     {
         FileLog.Write($"[DocumentLibraryViewModel] OpenFile: {entry.FilePath}");
-        try
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = entry.FilePath,
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[DocumentLibraryViewModel] OpenFile FAILED: {ex.Message}");
-        }
+            FileName = entry.FilePath,
+            UseShellExecute = true,
+        });
     }
 
     private void DebouncedSearch()
@@ -193,10 +245,11 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
 
     private void UpdateStatusText()
     {
-        var total = Entries.Count;
+        var showing = Entries.Count;
         var summarized = Entries.Count(e => e.Status == "summarized");
         var pending = Entries.Count(e => e.Status == "pending");
-        StatusText = $"{total} files | {summarized} summarized | {pending} pending";
+        var totalStr = _totalEntryCount > showing ? $"{showing} of {_totalEntryCount}" : $"{showing}";
+        StatusText = $"{totalStr} files | {summarized} summarized | {pending} pending";
     }
 
     public void Dispose()

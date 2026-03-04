@@ -5,14 +5,12 @@
              Background="#1E1E1E">
 
     <UserControl.Resources>
-        <!-- Reusable styles matching VisualStyle.md -->
         <SolidColorBrush x:Key="PanelBg" Color="#1E1E1E" />
         <SolidColorBrush x:Key="SidebarBg" Color="#252526" />
         <SolidColorBrush x:Key="BorderColor" Color="#3C3C3C" />
         <SolidColorBrush x:Key="AccentBrush" Color="#007ACC" />
         <SolidColorBrush x:Key="TextPrimary" Color="#CCCCCC" />
         <SolidColorBrush x:Key="TextSecondary" Color="#808080" />
-        <SolidColorBrush x:Key="SuccessBrush" Color="#22C55E" />
 
         <Style x:Key="SidebarButtonStyle" TargetType="Button">
             <Setter Property="Height" Value="26" />
@@ -48,6 +46,24 @@
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FontSize" Value="11" />
+        </Style>
+
+        <Style x:Key="SortHeaderStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#808080" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="4,4" />
+        </Style>
+
+        <Style x:Key="DeptItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Foreground" Value="#CCCCCC" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Padding" Value="8,3" />
+            <Setter Property="Cursor" Value="Hand" />
         </Style>
     </UserControl.Resources>
 
@@ -88,17 +104,7 @@
                          Background="#3C3C3C" Foreground="#CCCCCC"
                          BorderBrush="#555555" BorderThickness="1"
                          Padding="8,6" FontSize="13"
-                         VerticalContentAlignment="Center">
-                    <TextBox.Style>
-                        <Style TargetType="TextBox">
-                            <Style.Triggers>
-                                <Trigger Property="Text" Value="">
-                                    <Setter Property="Tag" Value="Search documents..." />
-                                </Trigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBox.Style>
-                </TextBox>
+                         VerticalContentAlignment="Center" />
 
                 <StackPanel x:Name="FilterBar" Orientation="Horizontal" Margin="0,6,0,0">
                     <Button Content="All" Tag="" Click="FilterChip_Click"
@@ -124,7 +130,7 @@
                        Foreground="#808080" FontSize="11" />
         </Border>
 
-        <!-- Main content: library sidebar + catalog list -->
+        <!-- Main content -->
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="200" MinWidth="160" />
@@ -132,7 +138,7 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <!-- Library sidebar -->
+            <!-- Library + Department sidebar -->
             <Border Grid.Column="0" Background="#252526"
                     BorderBrush="#3C3C3C" BorderThickness="0,0,1,0">
                 <DockPanel>
@@ -145,46 +151,62 @@
                                Foreground="#808080" FontSize="11"
                                Margin="12,4" Visibility="Collapsed" />
 
-                    <ListBox x:Name="LibraryList"
-                             ItemsSource="{Binding Libraries}"
-                             SelectedItem="{Binding SelectedLibrary}"
-                             Background="Transparent"
-                             BorderThickness="0"
-                             Foreground="#CCCCCC"
-                             FontSize="12"
-                             Padding="4">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <StackPanel Margin="4,4">
-                                    <DockPanel>
-                                        <TextBlock Text="{Binding Label}"
-                                                   Foreground="#CCCCCC"
-                                                   FontWeight="SemiBold"
-                                                   FontSize="12" />
-                                        <TextBlock DockPanel.Dock="Right"
-                                                   Text="{Binding Stats.Total, StringFormat='({0})'}"
-                                                   Foreground="#808080" FontSize="10"
-                                                   VerticalAlignment="Center"
-                                                   Margin="6,0,0,0" />
-                                    </DockPanel>
-                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                        <Button Content="Scan" Tag="{Binding Label}"
-                                                Click="BtnScan_Click"
-                                                Style="{StaticResource SidebarButtonStyle}"
-                                                Width="55" />
-                                        <Button Content="Summarize" Tag="{Binding Label}"
-                                                Click="BtnSummarize_Click"
-                                                Style="{StaticResource SidebarButtonStyle}"
-                                                Width="75" Margin="4,2,0,2" />
-                                    </StackPanel>
-                                    <TextBlock x:Name="RescanHint"
-                                               Foreground="#B8860B" FontSize="9"
-                                               Margin="0,2,0,0"
-                                               Visibility="Collapsed" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- Library list -->
+                            <ItemsControl x:Name="LibraryList"
+                                          ItemsSource="{Binding Libraries}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border x:Name="LibBorder" Padding="8,6" Margin="2"
+                                                Background="Transparent" Cursor="Hand"
+                                                MouseLeftButtonUp="Library_Click">
+                                            <StackPanel>
+                                                <DockPanel>
+                                                    <TextBlock Text="{Binding Label}"
+                                                               Foreground="#CCCCCC"
+                                                               FontWeight="SemiBold"
+                                                               FontSize="12" />
+                                                    <TextBlock DockPanel.Dock="Right"
+                                                               Text="{Binding Stats.Total, StringFormat='({0})'}"
+                                                               Foreground="#808080" FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               Margin="6,0,0,0" />
+                                                </DockPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                    <Button Content="Scan + Summarize" Tag="{Binding Label}"
+                                                            Click="BtnScanAndSummarize_Click"
+                                                            Style="{StaticResource SidebarButtonStyle}"
+                                                            Width="120" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <!-- Department list (shown when library selected) -->
+                            <TextBlock x:Name="DeptHeader" Text="DEPARTMENTS"
+                                       Foreground="#808080" FontSize="10"
+                                       FontWeight="SemiBold" Margin="12,12,12,4"
+                                       Visibility="Collapsed" />
+
+                            <StackPanel x:Name="DeptPanel" Visibility="Collapsed">
+                                <Button Content="All Files" Click="DeptAll_Click"
+                                        Style="{StaticResource SidebarButtonStyle}"
+                                        HorizontalContentAlignment="Left"
+                                        Margin="8,1" Padding="8,3" />
+
+                                <ListBox x:Name="DeptList"
+                                         ItemsSource="{Binding Departments}"
+                                         SelectionChanged="DeptList_SelectionChanged"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Margin="4,0"
+                                         ItemContainerStyle="{StaticResource DeptItemStyle}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
                 </DockPanel>
             </Border>
 
@@ -194,56 +216,129 @@
                           VerticalAlignment="Stretch"
                           Background="#3C3C3C" />
 
-            <!-- Catalog entries -->
+            <!-- Catalog entries with sort headers -->
             <Border Grid.Column="2" Background="#1E1E1E">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="CATALOG"
-                               Foreground="#808080" FontSize="10"
-                               FontWeight="SemiBold" Margin="12,10,12,6" />
+                    <!-- Sort header row -->
+                    <Border DockPanel.Dock="Top" Background="#252526"
+                            BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                            Padding="8,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="50" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="100" />
+                                <ColumnDefinition Width="80" />
+                                <ColumnDefinition Width="130" />
+                                <ColumnDefinition Width="60" />
+                            </Grid.ColumnDefinitions>
 
+                            <Button Content="EXT" Grid.Column="0" Tag="file_ext"
+                                    Click="SortHeader_Click"
+                                    Style="{StaticResource SortHeaderStyle}" />
+                            <Button Content="NAME" Grid.Column="1" Tag="file_name"
+                                    Click="SortHeader_Click"
+                                    Style="{StaticResource SortHeaderStyle}" />
+                            <Button Content="DEPARTMENT" Grid.Column="2" Tag="department"
+                                    Click="SortHeader_Click"
+                                    Style="{StaticResource SortHeaderStyle}" />
+                            <Button Content="SIZE" Grid.Column="3" Tag="file_size"
+                                    Click="SortHeader_Click"
+                                    Style="{StaticResource SortHeaderStyle}" />
+                            <Button Content="MODIFIED" Grid.Column="4" Tag="file_modified_at"
+                                    Click="SortHeader_Click"
+                                    Style="{StaticResource SortHeaderStyle}" />
+                            <Button Content="STATUS" Grid.Column="5" Tag="status"
+                                    Click="SortHeader_Click"
+                                    Style="{StaticResource SortHeaderStyle}" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Entry list with virtualization -->
                     <ListBox x:Name="CatalogList"
                              ItemsSource="{Binding Entries}"
                              SelectedItem="{Binding SelectedEntry}"
                              Background="Transparent"
                              BorderThickness="0"
                              Foreground="#CCCCCC"
-                             FontSize="13"
-                             Padding="8"
+                             FontSize="12"
+                             Padding="0"
                              MouseDoubleClick="CatalogList_DoubleClick"
-                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Border Padding="8,6" Margin="0,1"
-                                        BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
-                                    <StackPanel>
-                                        <DockPanel>
-                                            <Border Background="#3C3C3C" CornerRadius="3"
-                                                    Padding="4,1" Margin="0,0,8,0"
-                                                    VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding FileExt}"
-                                                           Foreground="#CCCCCC"
-                                                           FontSize="10" FontWeight="SemiBold" />
-                                            </Border>
-                                            <TextBlock Text="{Binding FileName}"
-                                                       Foreground="#CCCCCC"
-                                                       FontSize="13" FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis" />
-                                        </DockPanel>
-                                        <DockPanel Margin="0,3,0,0">
-                                            <TextBlock Foreground="#808080" FontSize="10">
-                                                <Run Text="{Binding Department, Mode=OneWay, TargetNullValue='-'}" />
-                                                <Run Text=" | " />
-                                                <Run Text="{Binding FileSizeDisplay, Mode=OneWay}" />
-                                            </TextBlock>
-                                        </DockPanel>
-                                        <TextBlock Text="{Binding Summary}"
-                                                   Foreground="#999999" FontSize="11"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   MaxHeight="32"
-                                                   Margin="0,3,0,0"
-                                                   Visibility="{Binding Summary, Converter={x:Static local:NullToCollapsedConverter.Instance}}" />
-                                    </StackPanel>
-                                </Border>
+                                <Grid Margin="8,3" Height="22">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="50" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="100" />
+                                        <ColumnDefinition Width="80" />
+                                        <ColumnDefinition Width="130" />
+                                        <ColumnDefinition Width="60" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- Extension -->
+                                    <Border Grid.Column="0" Background="#3C3C3C" CornerRadius="3"
+                                            Padding="3,1" Margin="0,0,4,0"
+                                            HorizontalAlignment="Left" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding FileExt}"
+                                                   Foreground="#CCCCCC"
+                                                   FontSize="9" FontWeight="SemiBold" />
+                                    </Border>
+
+                                    <!-- File name -->
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding FileName}"
+                                               Foreground="#CCCCCC" FontSize="12"
+                                               TextTrimming="CharacterEllipsis"
+                                               VerticalAlignment="Center"
+                                               ToolTip="{Binding FilePath}" />
+
+                                    <!-- Department -->
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding Department, TargetNullValue='-'}"
+                                               Foreground="#808080" FontSize="11"
+                                               TextTrimming="CharacterEllipsis"
+                                               VerticalAlignment="Center" Padding="4,0" />
+
+                                    <!-- Size -->
+                                    <TextBlock Grid.Column="3"
+                                               Text="{Binding FileSizeDisplay}"
+                                               Foreground="#808080" FontSize="11"
+                                               VerticalAlignment="Center" Padding="4,0" />
+
+                                    <!-- Modified date -->
+                                    <TextBlock Grid.Column="4"
+                                               Text="{Binding ModifiedDisplay}"
+                                               Foreground="#808080" FontSize="11"
+                                               VerticalAlignment="Center" Padding="4,0" />
+
+                                    <!-- Status -->
+                                    <TextBlock Grid.Column="5"
+                                               Text="{Binding StatusDisplay}"
+                                               FontSize="10" FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               HorizontalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="#808080" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Status}" Value="summarized">
+                                                        <Setter Property="Foreground" Value="#22C55E" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="error">
+                                                        <Setter Property="Foreground" Value="#EF4444" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="missing">
+                                                        <Setter Property="Foreground" Value="#F59E0B" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>

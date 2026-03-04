@@ -38,7 +38,6 @@ public partial class DocumentLibraryView : UserControl, IDisposable
     public void StartPolling()
     {
         FileLog.Write("[DocumentLibraryView] StartPolling");
-        // No polling needed -- data loaded on demand
     }
 
     public void StopPolling()
@@ -55,7 +54,6 @@ public partial class DocumentLibraryView : UserControl, IDisposable
     private void BtnBack_Click(object sender, RoutedEventArgs e)
     {
         FileLog.Write("[DocumentLibraryView] BtnBack_Click");
-        // Parent MainWindow handles hiding this panel
         Visibility = Visibility.Collapsed;
     }
 
@@ -86,30 +84,57 @@ public partial class DocumentLibraryView : UserControl, IDisposable
         }
     }
 
-    private async void BtnScan_Click(object sender, RoutedEventArgs e)
+    private void Library_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.DataContext is not Library lib) return;
+        FileLog.Write($"[DocumentLibraryView] Library_Click: {lib.Label}");
+        _viewModel.SelectedLibrary = lib;
+
+        // Show department panel
+        DeptHeader.Visibility = Visibility.Visible;
+        DeptPanel.Visibility = Visibility.Visible;
+    }
+
+    private async void BtnScanAndSummarize_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not string label) return;
-        FileLog.Write($"[DocumentLibraryView] BtnScan_Click: {label}");
+        FileLog.Write($"[DocumentLibraryView] BtnScanAndSummarize_Click: {label}");
 
-        var dialog = new ScanProgressDialog("scan", label);
-        dialog.Owner = Window.GetWindow(this);
-        dialog.ShowDialog();
+        // Run scan first
+        var scanDialog = new ScanProgressDialog("scan", label);
+        scanDialog.Owner = Window.GetWindow(this);
+        scanDialog.ShowDialog();
+
+        // Then summarize
+        var sumDialog = new ScanProgressDialog("summarize", label);
+        sumDialog.Owner = Window.GetWindow(this);
+        sumDialog.ShowDialog();
 
         await _viewModel.RefreshLibrariesAsync();
         await _viewModel.LoadEntriesAsync();
     }
 
-    private async void BtnSummarize_Click(object sender, RoutedEventArgs e)
+    private void DeptAll_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button btn || btn.Tag is not string label) return;
-        FileLog.Write($"[DocumentLibraryView] BtnSummarize_Click: {label}");
+        FileLog.Write("[DocumentLibraryView] DeptAll_Click");
+        DeptList.SelectedItem = null;
+        _viewModel.SelectedDepartment = null;
+    }
 
-        var dialog = new ScanProgressDialog("summarize", label);
-        dialog.Owner = Window.GetWindow(this);
-        dialog.ShowDialog();
+    private void DeptList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DeptList.SelectedItem is string dept)
+        {
+            FileLog.Write($"[DocumentLibraryView] DeptList_SelectionChanged: {dept}");
+            _viewModel.SelectedDepartment = dept;
+        }
+    }
 
-        await _viewModel.RefreshLibrariesAsync();
-        await _viewModel.LoadEntriesAsync();
+    private void SortHeader_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string column) return;
+        FileLog.Write($"[DocumentLibraryView] SortHeader_Click: {column}");
+        _viewModel.SortColumn = column;
     }
 
     private void FilterChip_Click(object sender, RoutedEventArgs e)
@@ -121,7 +146,6 @@ public partial class DocumentLibraryView : UserControl, IDisposable
         FileLog.Write($"[DocumentLibraryView] FilterChip_Click: {ext ?? "All"}");
         _viewModel.ActiveExtFilter = ext;
 
-        // Update chip visuals
         foreach (var child in FilterBar.Children)
         {
             if (child is Button chip)
@@ -141,25 +165,5 @@ public partial class DocumentLibraryView : UserControl, IDisposable
             FileLog.Write($"[DocumentLibraryView] CatalogList_DoubleClick: {_viewModel.SelectedEntry.FileName}");
             _viewModel.OpenFile(_viewModel.SelectedEntry);
         }
-    }
-}
-
-/// <summary>
-/// Converts null/empty string to Collapsed, non-null to Visible.
-/// </summary>
-public class NullToCollapsedConverter : IValueConverter
-{
-    public static readonly NullToCollapsedConverter Instance = new();
-
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-    {
-        if (value is string s && !string.IsNullOrEmpty(s))
-            return Visibility.Visible;
-        return Visibility.Collapsed;
-    }
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
-    {
-        throw new NotSupportedException();
     }
 }
