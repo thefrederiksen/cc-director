@@ -237,6 +237,7 @@
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <Button Content="SEND ALL" Command="{Binding SendAllCommand}"
+                            IsEnabled="{Binding HasApprovedItems}"
                             Padding="20,10" Margin="4" FontSize="15" FontWeight="Bold" Cursor="Hand">
                         <Button.Template>
                             <ControlTemplate TargetType="Button">

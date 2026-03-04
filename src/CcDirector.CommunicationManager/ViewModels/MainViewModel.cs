@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Threading;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -18,6 +19,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly ContentService _contentService;
     private bool _isRefreshing;
     private bool _disposed;
+    private DispatcherTimer? _pollTimer;
+    private Dictionary<string, int>? _lastKnownStats;
 
     [ObservableProperty]
     private ObservableCollection<ContentItem> _pendingItems = new();
@@ -51,6 +54,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private int _approvedCount;
+
+    public bool HasApprovedItems => ApprovedCount > 0;
+
+    partial void OnApprovedCountChanged(int value)
+    {
+        OnPropertyChanged(nameof(HasApprovedItems));
+    }
 
     [ObservableProperty]
     private int _rejectedCount;
@@ -134,7 +144,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public void StartPolling()
     {
-        FileLog.Write("[CommunicationManager.VM] StartPolling (no-op, auto-refresh disabled)");
+        FileLog.Write("[CommunicationManager.VM] StartPolling");
+        if (_pollTimer == null)
+        {
+            _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+            _pollTimer.Tick += async (_, _) => await SmartRefreshAsync();
+        }
+        _pollTimer.Start();
     }
 
     /// <summary>
@@ -142,7 +158,97 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public void StopPolling()
     {
-        FileLog.Write("[CommunicationManager.VM] StopPolling (no-op, auto-refresh disabled)");
+        FileLog.Write("[CommunicationManager.VM] StopPolling");
+        _pollTimer?.Stop();
+    }
+
+    /// <summary>
+    /// Lightweight badge-only refresh. Queries pending count from DB without loading items.
+    /// Called by background timer to keep sidebar badge current.
+    /// </summary>
+    public async Task RefreshBadgeCountAsync()
+    {
+        try
+        {
+            var stats = await _contentService.GetStatsAsync();
+            stats.TryGetValue("pending_review", out var pending);
+            PendingCount = pending;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CommunicationManager.VM] RefreshBadgeCountAsync FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Smart refresh that only touches the UI when data has actually changed.
+    /// Compares stats counts first; if unchanged, skips the full reload entirely.
+    /// </summary>
+    public async Task SmartRefreshAsync()
+    {
+        if (_isRefreshing) return;
+
+        try
+        {
+            var stats = await _contentService.GetStatsAsync();
+
+            if (_lastKnownStats != null && StatsEqual(_lastKnownStats, stats))
+                return;
+
+            _lastKnownStats = stats;
+            FileLog.Write("[CommunicationManager.VM] SmartRefreshAsync: stats changed, merging");
+
+            _isRefreshing = true;
+
+            var selectedId = SelectedItem?.Id;
+
+            var pending = await _contentService.LoadPendingItemsAsync();
+            var approved = await _contentService.LoadApprovedItemsAsync();
+            var rejected = await _contentService.LoadRejectedItemsAsync();
+            var sent = await _contentService.LoadPostedItemsAsync();
+
+            MergeCollection(PendingItems, pending);
+            MergeCollection(ApprovedItems, approved);
+            MergeCollection(RejectedItems, rejected);
+            MergeCollection(SentItems, sent);
+
+            PendingCount = pending.Count;
+            ApprovedCount = approved.Count;
+            RejectedCount = rejected.Count;
+            SentCount = sent.Count;
+
+            RebuildFilteredItems();
+
+            // Restore selection
+            if (selectedId != null)
+            {
+                var match = FilteredItems.FirstOrDefault(i => i.Id == selectedId);
+                SelectedItem = match; // null if removed externally
+            }
+            else
+            {
+                AutoSelectFirstItem();
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CommunicationManager.VM] SmartRefreshAsync FAILED: {ex.Message}");
+        }
+        finally
+        {
+            _isRefreshing = false;
+        }
+    }
+
+    private static bool StatsEqual(Dictionary<string, int> a, Dictionary<string, int> b)
+    {
+        if (a.Count != b.Count) return false;
+        foreach (var kvp in a)
+        {
+            if (!b.TryGetValue(kvp.Key, out var val) || val != kvp.Value)
+                return false;
+        }
+        return true;
     }
 
     [RelayCommand]
@@ -150,6 +256,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         if (_isRefreshing) return;
         _isRefreshing = true;
+        _lastKnownStats = null; // Force next smart poll to re-evaluate
 
         try
         {
@@ -673,6 +780,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var sent = 0;
         var failed = 0;
         var skipped = 0;
+        Views.SendProgressDialog? dialog = null;
 
         try
         {
@@ -692,10 +800,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            dialog = new Views.SendProgressDialog(items.Count)
+            {
+                Owner = Application.Current.MainWindow
+            };
+            dialog.Show();
+
             for (var i = 0; i < items.Count; i++)
             {
                 var item = items[i];
-                StatusMessage = $"Dispatching {i + 1}/{items.Count}: [{item.Platform}] ticket #{item.TicketNumber}";
+                var description = $"[{item.Platform}] ticket #{item.TicketNumber}";
+                StatusMessage = $"Dispatching {i + 1}/{items.Count}: {description}";
+                dialog.ReportProgress(i + 1, description, sent, failed, skipped);
 
                 var result = await DispatchItemAsync(item, dbPath);
                 switch (result)
@@ -714,12 +830,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             StatusMessage = resultMsg;
             FileLog.Write($"[CommunicationManager.VM] SendAllAsync: {resultMsg}");
+            dialog.ReportComplete(sent, failed, skipped);
             await RefreshAsync();
         }
         catch (Exception ex)
         {
             FileLog.Write($"[CommunicationManager.VM] SendAllAsync FAILED: {ex.Message}");
             StatusMessage = $"Send error: {ex.Message}";
+            dialog?.Close();
         }
         finally
         {
@@ -973,6 +1091,53 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Diff-merge fresh items into an existing ObservableCollection.
+    /// Only fires collection-change notifications for actual differences,
+    /// so the UI repaints only what changed (no full-list flash).
+    /// </summary>
+    private static void MergeCollection(ObservableCollection<ContentItem> existing, List<ContentItem> fresh)
+    {
+        var freshIds = new HashSet<string>(fresh.Select(i => i.Id));
+
+        // Remove items no longer present (reverse iterate for stable indices)
+        for (var i = existing.Count - 1; i >= 0; i--)
+        {
+            if (!freshIds.Contains(existing[i].Id))
+                existing.RemoveAt(i);
+        }
+
+        // Insert or reposition items to match fresh order
+        for (var i = 0; i < fresh.Count; i++)
+        {
+            if (i < existing.Count && existing[i].Id == fresh[i].Id)
+                continue; // already in correct position
+
+            var existingIndex = -1;
+            for (var j = i + 1; j < existing.Count; j++)
+            {
+                if (existing[j].Id == fresh[i].Id)
+                {
+                    existingIndex = j;
+                    break;
+                }
+            }
+
+            if (existingIndex >= 0)
+            {
+                existing.RemoveAt(existingIndex);
+                existing.Insert(i, fresh[i]);
+            }
+            else
+            {
+                existing.Insert(i, fresh[i]);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Full clear-and-replace for the manual Refresh button path.
+    /// </summary>
     private static void UpdateCollection(ObservableCollection<ContentItem> collection, List<ContentItem> newItems)
     {
         collection.Clear();
@@ -986,6 +1151,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _pollTimer?.Stop();
         _contentService.Dispose();
     }
 }
