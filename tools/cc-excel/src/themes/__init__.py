@@ -24,6 +24,7 @@ class ExcelColors:
     border: str
     text: str
     accent: str
+    primary_light: str
     chart_colors: tuple[str, ...]
 
 
@@ -84,6 +85,7 @@ def _build_excel_theme(name: str) -> ExcelTheme:
             border=ct.colors.border,
             text=ct.colors.text,
             accent=ct.colors.accent,
+            primary_light=ct.colors.primary_light,
             chart_colors=_CHART_COLORS[name],
         ),
         fonts=ExcelFonts(
@@ -111,7 +113,7 @@ else:
         "boardroom": ExcelTheme(
             name="boardroom", description="Corporate, executive style with serif fonts",
             colors=ExcelColors(header_bg="#1A365D", header_text="#FFFFFF", alt_row_bg="#F7FAFC",
-                               border="#CBD5E0", text="#2D3748", accent="#D69E2E",
+                               border="#CBD5E0", text="#2D3748", accent="#D69E2E", primary_light="#2A4A7F",
                                chart_colors=("#1A365D", "#D69E2E", "#2C7A7B", "#9B2C2C", "#5B21B6", "#C05621")),
             fonts=ExcelFonts(header="Palatino Linotype", body="Georgia", header_size=11, body_size=10),
             header_bold=True, alt_row_shading=True, border_style="medium",
@@ -119,7 +121,7 @@ else:
         "paper": ExcelTheme(
             name="paper", description="Minimal, clean, elegant",
             colors=ExcelColors(header_bg="#FAFAFA", header_text="#1A1A1A", alt_row_bg="#F9FAFB",
-                               border="#E0E0E0", text="#1A1A1A", accent="#0066CC",
+                               border="#E0E0E0", text="#1A1A1A", accent="#0066CC", primary_light="#555555",
                                chart_colors=("#4A5568", "#0066CC", "#38A169", "#E53E3E", "#805AD5", "#DD6B20")),
             fonts=ExcelFonts(header="Segoe UI", body="Segoe UI", header_size=11, body_size=10),
             header_bold=True, alt_row_shading=True, border_style="thin",
@@ -127,7 +129,7 @@ else:
         "terminal": ExcelTheme(
             name="terminal", description="Technical, monospace with dark-friendly colors",
             colors=ExcelColors(header_bg="#1A1A1A", header_text="#22C55E", alt_row_bg="#1A1A1A",
-                               border="#404040", text="#E5E5E5", accent="#22C55E",
+                               border="#404040", text="#E5E5E5", accent="#22C55E", primary_light="#4ADE80",
                                chart_colors=("#00FF00", "#00BFFF", "#FF6347", "#FFD700", "#DA70D6", "#00FA9A")),
             fonts=ExcelFonts(header="Consolas", body="Consolas", header_size=11, body_size=10),
             header_bold=True, alt_row_shading=True, border_style="thin",
@@ -135,7 +137,7 @@ else:
         "spark": ExcelTheme(
             name="spark", description="Creative, colorful, modern",
             colors=ExcelColors(header_bg="#8B5CF6", header_text="#FFFFFF", alt_row_bg="#F5F3FF",
-                               border="#E5E7EB", text="#374151", accent="#EC4899",
+                               border="#E5E7EB", text="#374151", accent="#EC4899", primary_light="#A78BFA",
                                chart_colors=("#7C3AED", "#EC4899", "#F59E0B", "#10B981", "#3B82F6", "#EF4444")),
             fonts=ExcelFonts(header="Segoe UI", body="Segoe UI", header_size=11, body_size=10),
             header_bold=True, alt_row_shading=True, border_style="medium",
@@ -143,7 +145,7 @@ else:
         "thesis": ExcelTheme(
             name="thesis", description="Academic, scholarly with proper citations style",
             colors=ExcelColors(header_bg="#F0F0F0", header_text="#333333", alt_row_bg="#F7FAFC",
-                               border="#CCCCCC", text="#333333", accent="#800000",
+                               border="#CCCCCC", text="#333333", accent="#800000", primary_light="#444444",
                                chart_colors=("#1A202C", "#2B6CB0", "#276749", "#9B2C2C", "#6B46C1", "#C05621")),
             fonts=ExcelFonts(header="Times New Roman", body="Times New Roman", header_size=11, body_size=10),
             header_bold=True, alt_row_shading=True, border_style="thin",
@@ -151,7 +153,7 @@ else:
         "obsidian": ExcelTheme(
             name="obsidian", description="Dark theme with subtle highlights",
             colors=ExcelColors(header_bg="#262626", header_text="#A855F7", alt_row_bg="#1F2937",
-                               border="#404040", text="#D4D4D4", accent="#C084FC",
+                               border="#404040", text="#D4D4D4", accent="#C084FC", primary_light="#C084FC",
                                chart_colors=("#60A5FA", "#34D399", "#FBBF24", "#F87171", "#A78BFA", "#FB923C")),
             fonts=ExcelFonts(header="Segoe UI", body="Segoe UI", header_size=11, body_size=10),
             header_bold=True, alt_row_shading=True, border_style="thin",
@@ -159,7 +161,7 @@ else:
         "blueprint": ExcelTheme(
             name="blueprint", description="Technical documentation style",
             colors=ExcelColors(header_bg="#1E3A5F", header_text="#FFFFFF", alt_row_bg="#EFF6FF",
-                               border="#CBD5E1", text="#374151", accent="#F59E0B",
+                               border="#CBD5E1", text="#374151", accent="#F59E0B", primary_light="#60A5FA",
                                chart_colors=("#1E40AF", "#F59E0B", "#059669", "#DC2626", "#7C3AED", "#EA580C")),
             fonts=ExcelFonts(header="Segoe UI", body="Segoe UI", header_size=11, body_size=10),
             header_bold=True, alt_row_shading=True, border_style="medium",

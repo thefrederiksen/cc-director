@@ -152,7 +152,7 @@ def from_markdown(
             css_content = css.read_text(encoding="utf-8")
         else:
             console.print(f"[blue]Loading:[/blue] Theme '{theme}'")
-            css_content = get_theme_css(theme)
+            css_content = get_theme_css(theme, for_pdf=True)
 
         # Generate HTML
         console.print("[blue]Generating:[/blue] HTML")

@@ -25,6 +25,8 @@ class ThemeColors:
     table_header_bg: str
     table_header_text: str
     alt_row_bg: str
+    primary_light: str
+    shadow_color: str
 
 
 @dataclass(frozen=True)
@@ -36,12 +38,24 @@ class ThemeFonts:
 
 
 @dataclass(frozen=True)
+class ThemeStyle:
+    """Structural style properties beyond colors and fonts."""
+    heading_letter_spacing: str
+    body_line_height: str
+    border_radius: str
+    code_border_radius: str
+    shadow_sm: str
+    shadow_md: str
+
+
+@dataclass(frozen=True)
 class CanonicalTheme:
     """Complete theme definition used across all document tools."""
     name: str
     description: str
     colors: ThemeColors
     fonts: ThemeFonts
+    style: ThemeStyle
 
 
 # -- Theme Definitions --
@@ -66,11 +80,21 @@ BOARDROOM = CanonicalTheme(
         table_header_bg="#1A365D",
         table_header_text="#FFFFFF",
         alt_row_bg="#F7FAFC",
+        primary_light="#2A4A7F",
+        shadow_color="rgba(26, 54, 93, 0.08)",
     ),
     fonts=ThemeFonts(
         heading="Palatino Linotype",
         body="Georgia",
         code="Courier New",
+    ),
+    style=ThemeStyle(
+        heading_letter_spacing="-0.02em",
+        body_line_height="1.7",
+        border_radius="4px",
+        code_border_radius="6px",
+        shadow_sm="0 1px 3px rgba(26, 54, 93, 0.08)",
+        shadow_md="0 4px 12px rgba(26, 54, 93, 0.1)",
     ),
 )
 
@@ -93,11 +117,21 @@ PAPER = CanonicalTheme(
         table_header_bg="#FAFAFA",
         table_header_text="#1A1A1A",
         alt_row_bg="#F9FAFB",
+        primary_light="#555555",
+        shadow_color="rgba(0, 0, 0, 0.05)",
     ),
     fonts=ThemeFonts(
         heading="Segoe UI",
         body="Segoe UI",
         code="Consolas",
+    ),
+    style=ThemeStyle(
+        heading_letter_spacing="-0.01em",
+        body_line_height="1.7",
+        border_radius="3px",
+        code_border_radius="4px",
+        shadow_sm="none",
+        shadow_md="none",
     ),
 )
 
@@ -120,11 +154,21 @@ TERMINAL = CanonicalTheme(
         table_header_bg="#1A1A1A",
         table_header_text="#22C55E",
         alt_row_bg="#1A1A1A",
+        primary_light="#4ADE80",
+        shadow_color="rgba(34, 197, 94, 0.1)",
     ),
     fonts=ThemeFonts(
         heading="Consolas",
         body="Consolas",
         code="Consolas",
+    ),
+    style=ThemeStyle(
+        heading_letter_spacing="0",
+        body_line_height="1.6",
+        border_radius="0",
+        code_border_radius="0",
+        shadow_sm="none",
+        shadow_md="none",
     ),
 )
 
@@ -147,11 +191,21 @@ SPARK = CanonicalTheme(
         table_header_bg="#8B5CF6",
         table_header_text="#FFFFFF",
         alt_row_bg="#F5F3FF",
+        primary_light="#A78BFA",
+        shadow_color="rgba(139, 92, 246, 0.1)",
     ),
     fonts=ThemeFonts(
         heading="Segoe UI",
         body="Segoe UI",
         code="Consolas",
+    ),
+    style=ThemeStyle(
+        heading_letter_spacing="-0.02em",
+        body_line_height="1.7",
+        border_radius="12px",
+        code_border_radius="12px",
+        shadow_sm="0 1px 3px rgba(139, 92, 246, 0.08)",
+        shadow_md="0 4px 16px rgba(139, 92, 246, 0.12)",
     ),
 )
 
@@ -174,11 +228,21 @@ THESIS = CanonicalTheme(
         table_header_bg="#F0F0F0",
         table_header_text="#333333",
         alt_row_bg="#F7FAFC",
+        primary_light="#444444",
+        shadow_color="rgba(0, 0, 0, 0.06)",
     ),
     fonts=ThemeFonts(
         heading="Times New Roman",
         body="Times New Roman",
         code="Courier New",
+    ),
+    style=ThemeStyle(
+        heading_letter_spacing="0",
+        body_line_height="2.0",
+        border_radius="0",
+        code_border_radius="2px",
+        shadow_sm="none",
+        shadow_md="none",
     ),
 )
 
@@ -201,11 +265,21 @@ OBSIDIAN = CanonicalTheme(
         table_header_bg="#262626",
         table_header_text="#A855F7",
         alt_row_bg="#1F2937",
+        primary_light="#C084FC",
+        shadow_color="rgba(168, 85, 247, 0.15)",
     ),
     fonts=ThemeFonts(
         heading="Segoe UI",
         body="Segoe UI",
         code="Consolas",
+    ),
+    style=ThemeStyle(
+        heading_letter_spacing="-0.01em",
+        body_line_height="1.7",
+        border_radius="8px",
+        code_border_radius="8px",
+        shadow_sm="0 1px 4px rgba(168, 85, 247, 0.1)",
+        shadow_md="0 4px 20px rgba(168, 85, 247, 0.15)",
     ),
 )
 
@@ -228,11 +302,21 @@ BLUEPRINT = CanonicalTheme(
         table_header_bg="#1E3A5F",
         table_header_text="#FFFFFF",
         alt_row_bg="#EFF6FF",
+        primary_light="#60A5FA",
+        shadow_color="rgba(59, 130, 246, 0.08)",
     ),
     fonts=ThemeFonts(
         heading="Segoe UI",
         body="Segoe UI",
         code="Consolas",
+    ),
+    style=ThemeStyle(
+        heading_letter_spacing="-0.01em",
+        body_line_height="1.65",
+        border_radius="6px",
+        code_border_radius="6px",
+        shadow_sm="0 1px 3px rgba(59, 130, 246, 0.08)",
+        shadow_md="0 4px 12px rgba(59, 130, 246, 0.1)",
     ),
 )
 
