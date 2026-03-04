@@ -209,12 +209,16 @@ public sealed class CommunicationDispatcher : IDisposable
             args.Add(toolAccount);
         }
 
+        // Convert plain text newlines to HTML tags before sending with --html flag.
+        // Without this, email clients ignore \n and recipients see a wall of text.
+        var htmlBody = HtmlFormatter.ConvertPlainTextToHtml(email.Body);
+
         args.AddRange(new[]
         {
             "send",
             "-t", email.To,
             "-s", email.Subject,
-            "-b", email.Body,
+            "-b", htmlBody,
             "--html"
         });
 

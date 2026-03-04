@@ -1,21 +1,28 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Windows.Data;
+using CcDirector.Core.Utilities;
 
 namespace CommunicationManager.Converters;
 
 /// <summary>
-/// Converts HTML content to plain text with proper paragraph breaks for display.
-/// Handles simple HTML tags like p, br, ul, li without requiring a full HTML renderer.
+/// Converts email body content to plain text with proper paragraph breaks for display.
+/// First applies the same plain-text-to-HTML conversion the dispatcher uses,
+/// then converts HTML to TextBlock-friendly text. This ensures the preview
+/// shows the same formatting the email recipient will see.
 /// </summary>
 public partial class HtmlContentConverter : IValueConverter
 {
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        if (value is not string html || string.IsNullOrEmpty(html))
+        if (value is not string content || string.IsNullOrEmpty(content))
             return value;
 
-        // Check if content contains HTML tags
+        // Apply the same conversion the dispatcher uses, so the preview
+        // shows what the recipient will actually see (honest preview).
+        var html = HtmlFormatter.ConvertPlainTextToHtml(content);
+
+        // If there are no HTML tags after conversion, return as-is
         if (!html.Contains('<'))
             return html;
 
