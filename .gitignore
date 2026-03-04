@@ -69,3 +69,6 @@ venv/
 *.swp
 *.swo
 .DS_Store
+
+# Lock files (tool-specific)
+tools/cc-fox-browser/package-lock.json

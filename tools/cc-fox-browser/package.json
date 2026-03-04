@@ -1,0 +1,20 @@
+{
+  "name": "cc-fox-browser",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Camoufox browser automation daemon for Claude Code (anti-detection Firefox)",
+  "main": "src/daemon.mjs",
+  "bin": {
+    "cc-fox-browser": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/daemon.mjs",
+    "dev": "node --watch src/daemon.mjs",
+    "deploy": "node deploy.mjs"
+  },
+  "dependencies": {
+    "camoufox": "^0.1.4",
+    "playwright-core": "^1.52.0"
+  },
+  "devDependencies": {}
+}

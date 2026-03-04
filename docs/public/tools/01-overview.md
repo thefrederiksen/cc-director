@@ -1,6 +1,6 @@
 # Tools Overview
 
-CC Director includes 32 command-line tools for document conversion, media processing, email, browser automation, social media, desktop automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
+CC Director includes 33 command-line tools for document conversion, media processing, email, browser automation, social media, desktop automation, and AI workflows. All tools are installed to `%LOCALAPPDATA%\cc-director\bin\` and are available on your PATH.
 
 ## Quick Reference
 
@@ -26,6 +26,7 @@ CC Director includes 32 command-line tools for document conversion, media proces
 | Tool | Description | Requirements |
 |------|-------------|--------------|
 | cc-browser | Persistent browser automation with workspaces | Node.js, Playwright |
+| cc-fox-browser | Anti-detection browser automation (Camoufox/Firefox) | Node.js, Camoufox |
 | cc-linkedin | LinkedIn automation with human-like delays | Playwright, cc-browser |
 | cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
 | cc-twitter | Twitter/X CLI: post, reply, thread, like, retweet, timeline | Twitter API v2 credentials |
@@ -192,6 +193,27 @@ cc-browser type --ref e4 --text "hello"
 cc-browser screenshot --save page.png
 cc-browser stop
 ```
+
+### cc-fox-browser
+
+Anti-detection browser automation using Camoufox (custom Firefox). Bypasses Cloudflare Turnstile and other bot detection that blocks Chromium-based automation. Same API as cc-browser.
+
+```bash
+cc-fox-browser daemon
+cc-fox-browser start --workspace upwork
+cc-fox-browser navigate --url "https://www.upwork.com"
+cc-fox-browser snapshot --interactive
+cc-fox-browser click --ref e3
+cc-fox-browser type --ref e4 --text "hello"
+cc-fox-browser tabs
+cc-fox-browser stop
+```
+
+**Port:** 9380 (cc-browser uses 9280)
+
+**Profiles:** Persistent per workspace at `%LOCALAPPDATA%\cc-fox-browser\camoufox-{workspace}\`
+
+**When to use:** Sites with Cloudflare Turnstile or aggressive bot detection that blocks cc-browser.
 
 ### cc-linkedin
 

@@ -127,6 +127,53 @@ if exist "%BROWSER_SRC%\build.ps1" (
 )
 
 REM ============================================
+REM Node.js tools (cc-fox-browser)
+REM ============================================
+echo.
+echo --------------------------------------------
+echo Building cc-fox-browser (Node.js)...
+echo --------------------------------------------
+
+set "FOXBROWSER_SRC=%REPO_DIR%\tools\cc-fox-browser"
+set "FOXBROWSER_DEST=%INSTALL_DIR%\_cc-fox-browser"
+
+if exist "%FOXBROWSER_SRC%\build.ps1" (
+    pushd "%FOXBROWSER_SRC%"
+    powershell -ExecutionPolicy Bypass -File build.ps1
+
+    if !errorlevel! equ 0 (
+        REM Create destination directory
+        if not exist "%FOXBROWSER_DEST%" mkdir "%FOXBROWSER_DEST%"
+        if not exist "%FOXBROWSER_DEST%\src" mkdir "%FOXBROWSER_DEST%\src"
+
+        REM Copy built files from dist
+        copy /Y "dist\package.json" "%FOXBROWSER_DEST%\" >nul
+        copy /Y "dist\src\*.mjs" "%FOXBROWSER_DEST%\src\" >nul
+
+        REM Copy node_modules
+        if exist "%FOXBROWSER_DEST%\node_modules" rmdir /S /Q "%FOXBROWSER_DEST%\node_modules"
+        xcopy /E /I /Q /Y "dist\node_modules" "%FOXBROWSER_DEST%\node_modules" >nul
+
+        REM Create launcher scripts in install dir (.cmd for Windows, extensionless for Git Bash)
+        echo @node "%%~dp0_cc-fox-browser\src\cli.mjs" %%*> "%INSTALL_DIR%\cc-fox-browser.cmd"
+        > "%INSTALL_DIR%\cc-fox-browser" (
+            echo #^^!/bin/sh
+            echo node "$(dirname "$0")/_cc-fox-browser/src/cli.mjs" "$@"
+        )
+
+        echo [OK] cc-fox-browser installed to %FOXBROWSER_DEST%
+        set /a SUCCESS_COUNT+=1
+    ) else (
+        echo [FAIL] Build failed for cc-fox-browser
+        set "FAILED=!FAILED! cc-fox-browser"
+        set /a FAIL_COUNT+=1
+    )
+    popd
+) else (
+    echo [SKIP] No build.ps1 found for cc-fox-browser
+)
+
+REM ============================================
 REM Node.js tools (cc-brandingrecommendations)
 REM ============================================
 echo.
