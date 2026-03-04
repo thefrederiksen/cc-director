@@ -9,7 +9,8 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
-from pptx.util import Inches, Pt
+from pptx.util import Inches, Pt, Emu
+from pptx.oxml.ns import qn
 
 from .parser import Slide, SlideLayout, TableData, ImageData
 from .themes import PresentationTheme
@@ -25,6 +26,9 @@ MARGIN_RIGHT = Inches(0.8)
 MARGIN_TOP = Inches(0.6)
 CONTENT_WIDTH = SLIDE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT
 
+# Accent bar dimensions
+ACCENT_BAR_HEIGHT = Inches(0.04)
+
 
 def _hex_to_rgb(hex_color: str) -> RGBColor:
     """Convert hex color string to RGBColor."""
@@ -35,12 +39,42 @@ def _hex_to_rgb(hex_color: str) -> RGBColor:
     return RGBColor(r, g, b)
 
 
-def _set_slide_background(pptx_slide, hex_color: str) -> None:
-    """Set the background color of a slide."""
+def _set_slide_background(pptx_slide, theme: PresentationTheme) -> None:
+    """Set the background of a slide. Uses gradient for dark themes, solid otherwise."""
     background = pptx_slide.background
     fill = background.fill
-    fill.solid()
-    fill.fore_color.rgb = _hex_to_rgb(hex_color)
+
+    if theme.use_gradient_bg:
+        fill.gradient()
+        fill.gradient_stops[0].color.rgb = _hex_to_rgb(theme.colors.background)
+        fill.gradient_stops[0].position = 0.0
+        # Slightly lighter at the bottom for depth
+        fill.gradient_stops[1].color.rgb = _hex_to_rgb(theme.colors.primary_light)
+        fill.gradient_stops[1].position = 1.0
+        # Mute the gradient: make stop 1 very close to background
+        # Use a subtle dark-to-slightly-less-dark gradient
+        bg = theme.colors.background.lstrip("#")
+        r, g, b = int(bg[0:2], 16), int(bg[2:4], 16), int(bg[4:6], 16)
+        # Add a tiny amount to each channel for the gradient end
+        r2 = min(r + 12, 255)
+        g2 = min(g + 12, 255)
+        b2 = min(b + 12, 255)
+        fill.gradient_stops[1].color.rgb = RGBColor(r2, g2, b2)
+    else:
+        fill.solid()
+        fill.fore_color.rgb = _hex_to_rgb(theme.colors.background)
+
+
+def _add_accent_bar_bottom(pptx_slide, theme: PresentationTheme) -> None:
+    """Add a thin accent-colored bar at the bottom of a content slide."""
+    bar_top = SLIDE_HEIGHT - Inches(0.15)
+    shape = pptx_slide.shapes.add_shape(
+        1,  # MSO_SHAPE.RECTANGLE
+        Inches(0), bar_top, SLIDE_WIDTH, ACCENT_BAR_HEIGHT,
+    )
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = _hex_to_rgb(theme.colors.accent)
+    shape.line.fill.background()
 
 
 def _add_text_box(
@@ -101,11 +135,15 @@ def generate_pptx(
 
     for slide_data in slides:
         pptx_slide = prs.slides.add_slide(blank_layout)
-        _set_slide_background(pptx_slide, theme.colors.background)
+        _set_slide_background(pptx_slide, theme)
 
         # Build the slide based on layout type
         builder = _LAYOUT_BUILDERS.get(slide_data.layout, _build_blank)
         builder(pptx_slide, slide_data, theme, input_dir)
+
+        # Add accent bar to content slides (not title or blank)
+        if slide_data.layout not in (SlideLayout.TITLE, SlideLayout.BLANK, SlideLayout.BLANK_IMAGE):
+            _add_accent_bar_bottom(pptx_slide, theme)
 
         # Add speaker notes
         _add_speaker_notes(pptx_slide, slide_data.speaker_notes)
@@ -156,13 +194,13 @@ def _build_title_slide(
             alignment=PP_ALIGN.CENTER,
         )
 
-    # Accent line under title
+    # Accent line under title - wider for more impact
     line_top = Inches(2.0)
-    line_width = Inches(3.0)
+    line_width = Inches(4.0)
     line_left = (SLIDE_WIDTH - line_width) // 2
     shape = pptx_slide.shapes.add_shape(
         1,  # MSO_SHAPE.RECTANGLE
-        line_left, line_top, line_width, Inches(0.04),
+        line_left, line_top, line_width, Inches(0.05),
     )
     shape.fill.solid()
     shape.fill.fore_color.rgb = _hex_to_rgb(theme.colors.accent)
@@ -191,11 +229,11 @@ def _build_section_header(
     )
 
     # Accent line
-    line_width = Inches(2.0)
+    line_width = Inches(2.5)
     line_left = (SLIDE_WIDTH - line_width) // 2
     shape = pptx_slide.shapes.add_shape(
         1,
-        line_left, Inches(4.4), line_width, Inches(0.04),
+        line_left, Inches(4.4), line_width, Inches(0.05),
     )
     shape.fill.solid()
     shape.fill.fore_color.rgb = _hex_to_rgb(theme.colors.accent)
@@ -249,7 +287,7 @@ def _build_table_slide(
     theme: PresentationTheme,
     input_dir: Path | None,
 ) -> None:
-    """Build a title + table slide."""
+    """Build a title + table slide with alternating row colors."""
     _add_slide_heading(pptx_slide, slide.title, theme)
 
     table_data = slide.table
@@ -278,13 +316,17 @@ def _build_table_slide(
             _style_table_cell(cell, theme, is_header=True)
         row_idx = 1
 
-    # Data rows
+    # Data rows with alternating colors
     for data_row in table_data.rows:
         for col_idx, value in enumerate(data_row):
             if col_idx < cols:
                 cell = tbl.cell(row_idx, col_idx)
                 cell.text = value
                 _style_table_cell(cell, theme, is_header=False)
+                # Alternating row shading
+                if row_idx % 2 == 0:
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = _hex_to_rgb(theme.colors.alt_row_bg)
         row_idx += 1
 
 
@@ -328,6 +370,15 @@ def _build_code_slide(
     bg_shape.fill.solid()
     bg_shape.fill.fore_color.rgb = _hex_to_rgb(theme.colors.code_bg)
     bg_shape.line.fill.background()
+
+    # Accent bar at top of code block
+    accent_bar = pptx_slide.shapes.add_shape(
+        1,
+        code_left, code_top, code_width, Inches(0.04),
+    )
+    accent_bar.fill.solid()
+    accent_bar.fill.fore_color.rgb = _hex_to_rgb(theme.colors.accent)
+    accent_bar.line.fill.background()
 
     # Language label in top-right
     if slide.code_language:
@@ -429,7 +480,7 @@ def _add_slide_heading(pptx_slide, title: str, theme: PresentationTheme) -> None
     # Accent underline
     shape = pptx_slide.shapes.add_shape(
         1,
-        MARGIN_LEFT, Inches(1.35), Inches(4.0), Inches(0.03),
+        MARGIN_LEFT, Inches(1.35), Inches(4.0), Inches(0.04),
     )
     shape.fill.solid()
     shape.fill.fore_color.rgb = _hex_to_rgb(theme.colors.accent)
