@@ -202,6 +202,20 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
+        // Check for active document library scans before closing
+        if (DocumentLibraryView.ScanService.HasActiveScans)
+        {
+            var result = MessageBox.Show(
+                "A document library scan is still running.\n\nClose anyway? The scan will be interrupted.",
+                "Scan In Progress",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (result != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+        }
+
         // Dispose Communications Manager (polling timer)
         CommunicationsView.Dispose();
 
@@ -619,6 +633,105 @@ public partial class MainWindow : Window
         {
             FileLog.Write($"[MainWindow] MenuAccounts_Click FAILED: {ex.Message}");
             MessageBox.Show(this, $"Failed to open Accounts dialog:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void MenuSaveWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] MenuSaveWorkspace_Click");
+        try
+        {
+            if (_sessions.Count == 0)
+            {
+                MessageBox.Show(this, "No sessions to save.", "Save Workspace",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var app = (App)Application.Current;
+            var dialog = new SaveWorkspaceDialog(app.WorkspaceStore, _sessions) { Owner = this };
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] MenuSaveWorkspace_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to save workspace:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void MenuLoadWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] MenuLoadWorkspace_Click");
+        try
+        {
+            var app = (App)Application.Current;
+            var dialog = new LoadWorkspaceDialog(app.WorkspaceStore) { Owner = this };
+            if (dialog.ShowDialog() != true || dialog.SelectedWorkspace == null)
+                return;
+
+            var workspace = dialog.SelectedWorkspace;
+            FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: loading workspace '{workspace.Name}' with {workspace.Sessions.Count} sessions");
+
+            // Confirm closing existing sessions
+            if (_sessions.Count > 0)
+            {
+                var confirm = MessageBox.Show(this,
+                    $"Loading workspace \"{workspace.Name}\" will close all {_sessions.Count} current session(s).\n\nContinue?",
+                    "Load Workspace", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+                if (confirm != MessageBoxResult.Yes)
+                {
+                    FileLog.Write("[MainWindow] MenuLoadWorkspace_Click: user cancelled");
+                    return;
+                }
+
+                // Kill all existing sessions
+                FileLog.Write("[MainWindow] MenuLoadWorkspace_Click: killing existing sessions");
+                var sessionIds = _sessions.Select(s => s.Session.Id).ToList();
+                foreach (var id in sessionIds)
+                {
+                    try
+                    {
+                        await _sessionManager.KillSessionAsync(id);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: failed to kill session {id}: {ex.Message}");
+                    }
+                }
+                DetachTerminal();
+            }
+
+            // Create sessions from workspace entries sequentially with delay
+            var sorted = workspace.Sessions.OrderBy(s => s.SortOrder).ToList();
+            int total = sorted.Count;
+
+            for (int i = 0; i < total; i++)
+            {
+                var entry = sorted[i];
+                FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: creating session {i + 1}/{total}: {entry.RepoPath}");
+
+                var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
+                if (vm != null)
+                {
+                    vm.Rename(entry.CustomName, entry.CustomColor);
+                    SaveSessionToHistory(vm);
+                }
+
+                // Delay between sessions to prevent Claude Code settings corruption
+                if (i < total - 1)
+                    await Task.Delay(2500);
+            }
+
+            FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: workspace '{workspace.Name}' loaded");
+            SessionTabs.SelectedIndex = 0;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to load workspace:\n{ex.Message}", "Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -1088,7 +1201,7 @@ public partial class MainWindow : Window
     }
 
     // --- Sidebar Panel (QA / Communications full-area takeover) ---
-    private enum SidebarPanel { None, QuickActions, Communications, Documents }
+    private enum SidebarPanel { None, QuickActions, Communications, Documents, Connections }
     private SidebarPanel _activeSidebarPanel = SidebarPanel.None;
 
     private void BtnQuickActions_Click(object sender, RoutedEventArgs e)
@@ -1118,6 +1231,15 @@ public partial class MainWindow : Window
             ShowSidebarPanel(SidebarPanel.Documents);
     }
 
+    private void BtnConnections_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnConnections_Click");
+        if (_activeSidebarPanel == SidebarPanel.Connections)
+            HideSidebarPanel();
+        else
+            ShowSidebarPanel(SidebarPanel.Connections);
+    }
+
     private void ShowSidebarPanel(SidebarPanel panel)
     {
         FileLog.Write($"[MainWindow] ShowSidebarPanel: {panel}");
@@ -1140,12 +1262,20 @@ public partial class MainWindow : Window
             ? Visibility.Visible : Visibility.Collapsed;
         DocumentLibraryView.Visibility = panel == SidebarPanel.Documents
             ? Visibility.Visible : Visibility.Collapsed;
+        ConnectionsView.Visibility = panel == SidebarPanel.Connections
+            ? Visibility.Visible : Visibility.Collapsed;
 
         // Start/stop CM polling
         if (panel == SidebarPanel.Communications)
             CommunicationsView.StartPolling();
         else
             CommunicationsView.StopPolling();
+
+        // Start/stop Connections polling
+        if (panel == SidebarPanel.Connections)
+            ConnectionsView.StartPolling();
+        else
+            ConnectionsView.StopPolling();
     }
 
     private void HideSidebarPanel()
@@ -1157,10 +1287,14 @@ public partial class MainWindow : Window
         // Stop CM polling
         CommunicationsView.StopPolling();
 
+        // Stop Connections polling
+        ConnectionsView.StopPolling();
+
         _activeSidebarPanel = SidebarPanel.None;
         QuickActionsView.Visibility = Visibility.Collapsed;
         CommunicationsView.Visibility = Visibility.Collapsed;
         DocumentLibraryView.Visibility = Visibility.Collapsed;
+        ConnectionsView.Visibility = Visibility.Collapsed;
 
         // Restore placeholder if no session selected
         if (SessionList.SelectedItem == null)
@@ -3133,9 +3267,11 @@ public partial class MainWindow : Window
             {
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
                 IncludeSubdirectories = false,
+                InternalBufferSize = 32768,
                 EnableRaisingEvents = true
             };
             _screenshotWatcher.Created += OnScreenshotFileChanged;
+            _screenshotWatcher.Changed += OnScreenshotFileChanged;
             _screenshotWatcher.Deleted += OnScreenshotFileChanged;
             _screenshotWatcher.Renamed += (_, _) =>
             {
@@ -3145,6 +3281,7 @@ public partial class MainWindow : Window
                     _screenshotDebounceTimer?.Start();
                 });
             };
+            _screenshotWatcher.Error += OnScreenshotWatcherError;
         }
         catch (Exception ex)
         {
@@ -3235,6 +3372,14 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnScreenshotWatcherError(object sender, ErrorEventArgs e)
+    {
+        var ex = e.GetException();
+        FileLog.Write($"[MainWindow] ScreenshotWatcher ERROR (buffer overflow or access lost): {ex.Message}");
+        // Recover by doing a full refresh
+        Dispatcher.BeginInvoke(() => RefreshScreenshots());
+    }
+
     private void ScreenshotItem_CopyPath(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement fe && fe.DataContext is ScreenshotViewModel vm)
@@ -3283,6 +3428,12 @@ public partial class MainWindow : Window
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+    }
+
+    private void BtnRefreshScreenshots_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnRefreshScreenshots_Click: manual refresh");
+        RefreshScreenshots();
     }
 
     private void BtnClearScreenshots_Click(object sender, RoutedEventArgs e)

@@ -33,6 +33,7 @@ public partial class App : Application
     public BackupCleaner BackupCleaner { get; private set; } = null!; // Initialized in OnStartup
     public ClaudeAccountStore ClaudeAccountStore { get; private set; } = null!; // Initialized in OnStartup
     public ClaudeUsageService ClaudeUsageService { get; private set; } = null!; // Initialized in OnStartup
+    public WorkspaceStore WorkspaceStore { get; private set; } = null!; // Initialized in OnStartup
     public EngineHost? EngineHost { get; private set; }
     public TeamsRemoteController? TeamsRemoteController { get; private set; }
 
@@ -146,6 +147,9 @@ public partial class App : Application
         ClaudeUsageService = new ClaudeUsageService(ClaudeAccountStore);
         ClaudeUsageService.Start();
         log("Claude usage service started");
+
+        WorkspaceStore = new WorkspaceStore();
+        log("Workspace store initialized");
 
         // Start Engine (communication dispatcher + scheduler)
         StartEngine(log);

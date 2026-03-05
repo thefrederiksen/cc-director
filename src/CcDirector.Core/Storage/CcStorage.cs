@@ -100,6 +100,9 @@ public static class CcStorage
     /// <summary>Backup files: vault/backups/</summary>
     public static string VaultBackups() => Path.Combine(Vault(), "backups");
 
+    /// <summary>Session handover documents: vault/handovers/</summary>
+    public static string VaultHandovers() => Ensure(Path.Combine(Vault(), "handovers"));
+
     // -- Config shortcuts --
 
     /// <summary>Shared settings file: config/config.json</summary>
@@ -107,6 +110,37 @@ public static class CcStorage
 
     /// <summary>Communication queue database: config/comm-queue/communications.db</summary>
     public static string CommQueueDb() => Path.Combine(ToolConfig("comm-queue"), "communications.db");
+
+    // -- Life Operating System coaching directories --
+
+    /// <summary>Life OS coaching root: vault/life/</summary>
+    public static string VaultLife() => Path.Combine(Vault(), "life");
+
+    /// <summary>
+    /// Life OS coaching category directory: vault/life/{category}/
+    /// Valid categories: assistant, health, business, personal, growth.
+    /// Creates the directory if it doesn't exist.
+    /// </summary>
+    public static string CoachingCategory(string category)
+    {
+        return Ensure(Path.Combine(VaultLife(), category));
+    }
+
+    // -- Workspaces --
+
+    /// <summary>Workspace definitions directory: config/director/workspaces/</summary>
+    public static string Workspaces() => Path.Combine(ToolConfig("director"), "workspaces");
+
+    // -- Browser Connections --
+
+    /// <summary>Browser connections directory: base/connections/</summary>
+    public static string Connections() => Path.Combine(Base(), "connections");
+
+    /// <summary>Connection registry file: connections/connections.json</summary>
+    public static string ConnectionsRegistry() => Path.Combine(Connections(), "connections.json");
+
+    /// <summary>Chrome profile directory for a specific connection: connections/{name}/</summary>
+    public static string ConnectionProfile(string name) => Path.Combine(Connections(), name);
 
     // -- Utilities --
 

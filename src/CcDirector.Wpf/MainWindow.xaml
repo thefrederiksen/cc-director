@@ -241,6 +241,11 @@
                                     <MenuItem Header="Accounts..." Click="MenuAccounts_Click"
                                               ToolTip="Manage Claude subscription accounts" />
                                     <Separator />
+                                    <MenuItem Header="Save Workspace..." Click="MenuSaveWorkspace_Click"
+                                              ToolTip="Save current sessions as a named workspace" />
+                                    <MenuItem Header="Load Workspace..." Click="MenuLoadWorkspace_Click"
+                                              ToolTip="Load a saved workspace" />
+                                    <Separator />
                                     <MenuItem Header="Open Logs" Click="BtnOpenLogs_Click"
                                               ToolTip="Open log directory in Explorer" />
                                     <MenuItem Header="Open Sessions" Click="BtnOpenSessions_Click"
@@ -279,6 +284,17 @@
                             Focusable="False"
                             Height="30" Margin="8,2,8,2"
                             Background="#68217A"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand" />
+
+                    <!-- Connections button (bottom of sidebar) -->
+                    <Button x:Name="BtnConnections" DockPanel.Dock="Bottom"
+                            Content="Connections"
+                            Click="BtnConnections_Click"
+                            Focusable="False"
+                            Height="30" Margin="8,2,8,2"
+                            Background="#B45309"
                             Foreground="White"
                             BorderThickness="0"
                             Cursor="Hand" />
@@ -1161,12 +1177,18 @@
                                                    Foreground="{StaticResource TextForeground}"
                                                    FontWeight="SemiBold" FontSize="10"
                                                    VerticalAlignment="Center" />
-                                        <Button Content="Clear All" Click="BtnClearScreenshots_Click"
-                                                HorizontalAlignment="Right"
-                                                Padding="8,2"
-                                                Background="{StaticResource ButtonBackground}"
-                                                Foreground="{StaticResource TextForeground}"
-                                                BorderThickness="0" Cursor="Hand" FontSize="10" />
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button Content="Refresh" Click="BtnRefreshScreenshots_Click"
+                                                    Padding="8,2" Margin="0,0,6,0"
+                                                    Background="{StaticResource ButtonBackground}"
+                                                    Foreground="{StaticResource TextForeground}"
+                                                    BorderThickness="0" Cursor="Hand" FontSize="10" />
+                                            <Button Content="Clear All" Click="BtnClearScreenshots_Click"
+                                                    Padding="8,2"
+                                                    Background="{StaticResource ButtonBackground}"
+                                                    Foreground="{StaticResource TextForeground}"
+                                                    BorderThickness="0" Cursor="Hand" FontSize="10" />
+                                        </StackPanel>
                                     </DockPanel>
 
                                     <ListBox x:Name="ScreenshotList"
@@ -1240,6 +1262,7 @@
                                     </ListBox>
                                 </DockPanel>
                             </TabItem>
+
                         </TabControl>
                     </Border>
                     <!-- Quick Actions (full-area overlay, spans all columns) -->
@@ -1256,6 +1279,11 @@
                     <doclib:DocumentLibraryView x:Name="DocumentLibraryView"
                                                 Grid.ColumnSpan="3"
                                                 Visibility="Collapsed" />
+
+                    <!-- Connections (full-area overlay, spans all columns) -->
+                    <controls:ConnectionsView x:Name="ConnectionsView"
+                                              Grid.ColumnSpan="3"
+                                              Visibility="Collapsed" />
                 </Grid>
 
     </Grid>
