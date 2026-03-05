@@ -1752,17 +1752,97 @@ def contacts_enrich(
 
 @contacts_app.command("search")
 def contacts_search(
-    name: str = typer.Argument(..., help="Name to search for"),
-    threshold: int = typer.Option(50, "--threshold", "-t", help="Minimum match score (0-100)"),
+    name: Optional[str] = typer.Argument(None, help="Name to search for (fuzzy match)"),
+    company: Optional[str] = typer.Option(None, "--company", help="Search by company name"),
+    domain: Optional[str] = typer.Option(None, "--domain", help="Search by email domain (e.g. bakertilly.ca)"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Search by tag"),
+    notes: Optional[str] = typer.Option(None, "--notes", help="Full-text search in notes/context"),
+    title: Optional[str] = typer.Option(None, "--title", help="Search by job title"),
+    location: Optional[str] = typer.Option(None, "--location", help="Search by location"),
+    threshold: int = typer.Option(50, "--threshold", "-t", help="Minimum fuzzy match score (0-100)"),
     n: int = typer.Option(10, "-n", help="Max results"),
-    exact: bool = typer.Option(False, "--exact", help="Use exact matching (LIKE) instead of fuzzy"),
+    exact: bool = typer.Option(False, "--exact", help="Use exact matching (LIKE) instead of fuzzy for name"),
 ):
-    """Search contacts by name using fuzzy/phonetic matching."""
+    """Search contacts by name, company, domain, tag, notes, title, or location.
+
+    Examples:
+      cc-vault contacts search "Baker"                  # Fuzzy name search
+      cc-vault contacts search --company "Baker Tilly"   # By company
+      cc-vault contacts search --domain "bakertilly.ca"  # By email domain
+      cc-vault contacts search --tag consultant          # By tag
+      cc-vault contacts search --notes "SR&ED"           # In notes/context
+      cc-vault contacts search --company Acme --location Toronto  # Combined
+    """
     db = get_db()
+    has_filters = any([company, domain, tag, notes, title, location])
+
+    if not name and not has_filters:
+        console.print("[red]Error:[/red] Provide a name argument or at least one filter flag.")
+        console.print("[dim]Example: cc-vault contacts search --company \"Baker Tilly\"[/dim]")
+        raise typer.Exit(1)
 
     try:
+        # Field-level filter search (with or without name)
+        if has_filters:
+            results = db.filter_contacts(
+                company=company, domain=domain, tag=tag,
+                notes=notes, title=title, location=location, limit=n,
+            )
+
+            # If name is also provided, further filter by fuzzy name match
+            if name and results:
+                from thefuzz import fuzz
+                scored = []
+                for c in results:
+                    score = fuzz.token_set_ratio(name.lower(), (c.get('name') or '').lower())
+                    if score >= threshold:
+                        c['match_score'] = score
+                        scored.append(c)
+                results = sorted(scored, key=lambda x: x['match_score'], reverse=True)
+
+            # Build title string from filters used
+            filter_parts = []
+            if company:
+                filter_parts.append(f"company={company}")
+            if domain:
+                filter_parts.append(f"domain={domain}")
+            if tag:
+                filter_parts.append(f"tag={tag}")
+            if notes:
+                filter_parts.append(f"notes={notes}")
+            if title:
+                filter_parts.append(f"title={title}")
+            if location:
+                filter_parts.append(f"location={location}")
+            if name:
+                filter_parts.append(f"name~{name}")
+            title_str = ", ".join(filter_parts)
+
+            if not results:
+                console.print(f"[yellow]No contacts matching:[/yellow] {title_str}")
+                return
+
+            table = Table(title=f"Search Results ({title_str})")
+            table.add_column("ID", style="dim")
+            table.add_column("Name", style="cyan")
+            table.add_column("Email")
+            table.add_column("Company")
+            table.add_column("Title")
+
+            for c in results[:n]:
+                table.add_row(
+                    str(c['id']),
+                    c['name'],
+                    c.get('email', '-') or '-',
+                    c.get('company', '-') or '-',
+                    c.get('title', '-') or '-',
+                )
+
+            console.print(table)
+            return
+
+        # Name-only search (original behavior)
         if exact:
-            # Use existing exact search
             results = db.search_contacts(name)
             if not results:
                 console.print(f"[yellow]No contacts matching:[/yellow] {name}")
@@ -1786,7 +1866,6 @@ def contacts_search(
 
             console.print(table)
         else:
-            # Use fuzzy search
             results = db.fuzzy_search_contacts(name, threshold=threshold, limit=n)
 
             if not results:
@@ -1806,7 +1885,6 @@ def contacts_search(
                 score = c.get('match_score', 0)
                 match_type = c.get('match_type', 'fuzzy')
 
-                # Color score based on confidence
                 if score >= 80:
                     score_style = "[green]"
                     score_end = "[/green]"

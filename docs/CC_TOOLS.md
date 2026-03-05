@@ -881,7 +881,13 @@ cc-vault contacts list
 cc-vault contacts list --account personal
 cc-vault contacts list --account consulting
 cc-vault contacts show <id>
-cc-vault contacts search "name"
+cc-vault contacts search "name"                      # Fuzzy name search
+cc-vault contacts search --company "Baker Tilly"      # By company
+cc-vault contacts search --domain "bakertilly.ca"     # By email domain
+cc-vault contacts search --tag consultant             # By tag
+cc-vault contacts search --notes "SR&ED"              # In notes/context
+cc-vault contacts search --title "Director"           # By job title
+cc-vault contacts search --location "Toronto"         # By location
 cc-vault contacts add "Name" -e "email@example.com"
 cc-vault contacts update <id>
 cc-vault contacts memory <id>

@@ -1259,6 +1259,73 @@ def search_contacts(query: str) -> List[dict]:
         conn.close()
 
 
+def filter_contacts(
+    company: Optional[str] = None,
+    domain: Optional[str] = None,
+    tag: Optional[str] = None,
+    notes: Optional[str] = None,
+    title: Optional[str] = None,
+    location: Optional[str] = None,
+    limit: int = 50,
+) -> List[dict]:
+    """Search contacts by field-level filters.
+
+    All filters use case-insensitive LIKE matching. Multiple filters
+    are combined with AND logic.
+
+    Args:
+        company: Match company field.
+        domain: Match email domain (e.g. "bakertilly.ca").
+        tag: Match contacts with this tag.
+        notes: Full-text search in context/notes field.
+        title: Match job title field.
+        location: Match location field.
+        limit: Max results.
+
+    Returns:
+        List of matching contact dicts.
+    """
+    init_db(silent=True)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+
+        sql = "SELECT c.* FROM contacts c WHERE 1=1"
+        params = []
+
+        if company:
+            sql += " AND LOWER(c.company) LIKE LOWER(?)"
+            params.append(f"%{company}%")
+
+        if domain:
+            sql += " AND LOWER(c.email) LIKE LOWER(?)"
+            params.append(f"%@{domain.lstrip('@')}%")
+
+        if notes:
+            sql += " AND LOWER(c.context) LIKE LOWER(?)"
+            params.append(f"%{notes}%")
+
+        if title:
+            sql += " AND LOWER(c.title) LIKE LOWER(?)"
+            params.append(f"%{title}%")
+
+        if location:
+            sql += " AND LOWER(c.location) LIKE LOWER(?)"
+            params.append(f"%{location}%")
+
+        if tag:
+            sql += " AND c.id IN (SELECT contact_id FROM contact_tags WHERE tag = ?)"
+            params.append(tag.lower().strip())
+
+        sql += " ORDER BY c.name LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(sql, params)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def fuzzy_search_contacts(
     query: str,
     threshold: int = 50,
