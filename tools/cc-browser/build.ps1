@@ -27,6 +27,18 @@ Copy-Item "$toolDir\extension\*" "$deployDir\extension\"
 Copy-Item "$toolDir\native-host\*.mjs" "$deployDir\native-host\"
 Copy-Item "$toolDir\native-host\*.json" "$deployDir\native-host\"
 
+# Copy managed skills
+Copy-Item -Recurse "$toolDir\skills" "$deployDir\skills"
+
+# Copy managed skills to shared location for runtime resolution
+$managedSkillsDir = Join-Path $env:LOCALAPPDATA "cc-director\skills\managed"
+if (!(Test-Path $managedSkillsDir)) {
+    New-Item -ItemType Directory -Force -Path $managedSkillsDir | Out-Null
+}
+Copy-Item "$toolDir\skills\*.skill.md" "$managedSkillsDir\"
+Copy-Item "$toolDir\skills\manifest.json" "$managedSkillsDir\"
+Write-Host "[cc-browser] Managed skills deployed to $managedSkillsDir"
+
 # Install production dependencies (ws for WebSocket)
 Push-Location $deployDir
 npm install --production --silent 2>$null

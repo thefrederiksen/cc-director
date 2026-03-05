@@ -19,6 +19,11 @@ import {
   findChromeExecutable, listAvailableBrowsers,
 } from './chrome-launch.mjs';
 import { ensureInstalled } from '../native-host/install.mjs';
+import {
+  resolveSkill, listAllSkills, listManagedSkills, getManagedSkill,
+  forkSkill, resetSkill, appendLearnedPattern, getLearnedPatterns,
+  clearLearnedPatterns,
+} from './skills.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -273,10 +278,18 @@ const routes = {
 
     setConnectionStatus(name, 'connecting');
 
+    // Resolve navigation skill for this connection
+    const skill = resolveSkill(name);
+
     jsonSuccess(res, {
       connection: name,
       ...result,
       status: 'connecting',
+      skill: skill.content ? {
+        type: skill.type,
+        content: skill.content,
+        learnedPatterns: skill.learnedPatterns,
+      } : null,
     });
   },
 
@@ -346,6 +359,69 @@ const routes = {
     deleteConnection(name);
 
     jsonSuccess(res, { removed: name });
+  },
+
+  // --- Skills ---
+
+  'GET /skills': async (req, res) => {
+    const skills = listAllSkills();
+    jsonSuccess(res, skills);
+  },
+
+  'GET /skills/managed': async (req, res) => {
+    const skills = listManagedSkills();
+    jsonSuccess(res, { skills });
+  },
+
+  'POST /skills/show': async (req, res, body) => {
+    const name = body.name || body.connection;
+    if (!name) return jsonError(res, 400, 'name is required');
+
+    if (body.managed) {
+      const content = getManagedSkill(name);
+      if (!content) return jsonError(res, 404, `No managed skill "${name}"`);
+      jsonSuccess(res, { type: 'managed', name, content });
+    } else {
+      const skill = resolveSkill(name);
+      jsonSuccess(res, { name, ...skill });
+    }
+  },
+
+  'POST /skills/fork': async (req, res, body) => {
+    const name = body.name || body.connection;
+    if (!name) return jsonError(res, 400, 'name is required');
+    const path = forkSkill(name);
+    jsonSuccess(res, { connection: name, customSkillPath: path });
+  },
+
+  'POST /skills/reset': async (req, res, body) => {
+    const name = body.name || body.connection;
+    if (!name) return jsonError(res, 400, 'name is required');
+    resetSkill(name);
+    jsonSuccess(res, { connection: name, reset: true });
+  },
+
+  'POST /skills/learn': async (req, res, body) => {
+    const name = body.name || body.connection;
+    const pattern = body.pattern;
+    if (!name) return jsonError(res, 400, 'name is required');
+    if (!pattern) return jsonError(res, 400, 'pattern is required');
+    appendLearnedPattern(name, pattern);
+    jsonSuccess(res, { connection: name, learned: true });
+  },
+
+  'POST /skills/learned': async (req, res, body) => {
+    const name = body.name || body.connection;
+    if (!name) return jsonError(res, 400, 'name is required');
+    const patterns = getLearnedPatterns(name);
+    jsonSuccess(res, { connection: name, patterns });
+  },
+
+  'POST /skills/clear-learned': async (req, res, body) => {
+    const name = body.name || body.connection;
+    if (!name) return jsonError(res, 400, 'name is required');
+    const cleared = clearLearnedPatterns(name);
+    jsonSuccess(res, { connection: name, cleared });
   },
 
   // --- Browser Commands (forwarded to extension via transport) ---

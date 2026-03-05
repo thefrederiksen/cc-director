@@ -1,0 +1,20 @@
+{
+  "version": "2026.03.05",
+  "skills": {
+    "linkedin": {
+      "file": "linkedin.skill.md",
+      "site": "linkedin.com",
+      "version": "2026.03.05"
+    },
+    "reddit": {
+      "file": "reddit.skill.md",
+      "site": "reddit.com",
+      "version": "2026.03.05"
+    },
+    "spotify": {
+      "file": "spotify.skill.md",
+      "site": "open.spotify.com",
+      "version": "2026.03.05"
+    }
+  }
+}

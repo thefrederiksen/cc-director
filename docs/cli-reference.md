@@ -50,6 +50,16 @@ TABS:
 JAVASCRIPT:
   evaluate --fn "() => document.title"
 
+NAVIGATION SKILLS:
+  skills list                        List all skills (managed + custom)
+  skills show <connection>           Show resolved skill for connection
+  skills show <name> --managed       Show a managed skill by name
+  skills fork <connection>           Fork managed skill to custom
+  skills reset <connection>          Reset to managed skill
+  skills learn <connection> "text"   Append learned pattern
+  skills learned <connection>        Show learned patterns
+  skills clear-learned <connection>  Clear learned patterns
+
 DAEMON:
   daemon                             Start daemon in foreground
   status                             Show daemon status

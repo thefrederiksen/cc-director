@@ -255,6 +255,126 @@ async function cmdConnections(rest) {
   }
 }
 
+async function cmdSkills(rest) {
+  const subcommand = rest[0] || 'list';
+  const flags = parseFlags(rest.slice(1));
+
+  switch (subcommand) {
+    case 'list': {
+      const data = await get('/skills');
+      console.log('Managed skills:');
+      if (data.managed && data.managed.length > 0) {
+        for (const s of data.managed) {
+          console.log(`  ${s.name} (${s.site}) v${s.version}`);
+        }
+      } else {
+        console.log('  (none)');
+      }
+      console.log('');
+      console.log('Custom skills (per-connection):');
+      if (data.custom && data.custom.length > 0) {
+        for (const s of data.custom) {
+          console.log(`  ${s.name}`);
+        }
+      } else {
+        console.log('  (none)');
+      }
+      break;
+    }
+
+    case 'show': {
+      const name = flags._positional || rest[1];
+      if (!name) {
+        console.error('Usage: cc-browser skills show <connection> [--managed]');
+        process.exit(1);
+      }
+      const data = await post('/skills/show', { name, managed: flags.managed || false });
+      console.log(`Skill for "${name}" (${data.type}):`);
+      console.log('');
+      if (data.content) {
+        console.log(data.content);
+      } else {
+        console.log('(no skill found)');
+      }
+      if (data.learnedPatterns) {
+        console.log('');
+        console.log('--- Learned Patterns ---');
+        console.log(data.learnedPatterns);
+      }
+      break;
+    }
+
+    case 'fork': {
+      const name = flags._positional || rest[1];
+      if (!name) {
+        console.error('Usage: cc-browser skills fork <connection>');
+        process.exit(1);
+      }
+      const data = await post('/skills/fork', { name });
+      console.log(`Forked managed skill to custom: ${data.customSkillPath}`);
+      break;
+    }
+
+    case 'reset': {
+      const name = flags._positional || rest[1];
+      if (!name) {
+        console.error('Usage: cc-browser skills reset <connection>');
+        process.exit(1);
+      }
+      await post('/skills/reset', { name });
+      console.log(`Custom skill for "${name}" removed. Now using managed skill.`);
+      break;
+    }
+
+    case 'learn': {
+      const name = flags._positional || rest[1];
+      const pattern = flags.pattern || rest.slice(2).join(' ');
+      if (!name || !pattern) {
+        console.error('Usage: cc-browser skills learn <connection> "pattern description"');
+        process.exit(1);
+      }
+      await post('/skills/learn', { name, pattern });
+      console.log(`Learned pattern appended for "${name}".`);
+      break;
+    }
+
+    case 'learned': {
+      const name = flags._positional || rest[1];
+      if (!name) {
+        console.error('Usage: cc-browser skills learned <connection>');
+        process.exit(1);
+      }
+      const data = await post('/skills/learned', { name });
+      if (data.patterns) {
+        console.log(data.patterns);
+      } else {
+        console.log(`No learned patterns for "${name}".`);
+      }
+      break;
+    }
+
+    case 'clear-learned': {
+      const name = flags._positional || rest[1];
+      if (!name) {
+        console.error('Usage: cc-browser skills clear-learned <connection>');
+        process.exit(1);
+      }
+      const data = await post('/skills/clear-learned', { name });
+      if (data.cleared) {
+        console.log(`Learned patterns cleared for "${name}".`);
+      } else {
+        console.log(`No learned patterns to clear for "${name}".`);
+      }
+      break;
+    }
+
+    default:
+      console.error(`Unknown skills subcommand: ${subcommand}`);
+      console.error('Available: list, show, fork, reset, learn, learned, clear-learned');
+      process.exit(1);
+  }
+}
+
 async function cmdBrowserAction(command, connectionName, rest) {
   const flags = parseFlags(rest);
   const body = { connection: connectionName };
@@ -437,6 +557,16 @@ function printUsage() {
   console.log('  text [--selector "..."]            Get text content');
   console.log('  html [--selector "..."]            Get HTML content');
   console.log('');
+  console.log('Navigation Skills:');
+  console.log('  skills list                        List all skills (managed + custom)');
+  console.log('  skills show <connection>           Show resolved skill for connection');
+  console.log('  skills show <name> --managed       Show a managed skill by name');
+  console.log('  skills fork <connection>           Fork managed skill to custom');
+  console.log('  skills reset <connection>          Reset to managed skill');
+  console.log('  skills learn <connection> "text"   Append learned pattern');
+  console.log('  skills learned <connection>        Show learned patterns');
+  console.log('  skills clear-learned <connection>  Clear learned patterns');
+  console.log('');
   console.log('Daemon:');
   console.log('  daemon                             Start daemon in foreground');
   console.log('  status                             Show daemon status');
@@ -478,6 +608,11 @@ async function main() {
 
   if (command === 'connections') {
     await cmdConnections(rest);
+    return;
+  }
+
+  if (command === 'skills') {
+    await cmdSkills(rest);
     return;
   }
 

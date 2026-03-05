@@ -46,6 +46,20 @@ function writeRegistry(connections) {
 }
 
 // ---------------------------------------------------------------------------
+// Skill Detection
+// ---------------------------------------------------------------------------
+
+function getManagedSkillsDir() {
+  const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
+  return join(localAppData, 'cc-director', 'skills', 'managed');
+}
+
+function managedSkillExists(name) {
+  const skillPath = join(getManagedSkillsDir(), `${name}.skill.md`);
+  return existsSync(skillPath);
+}
+
+// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
@@ -84,6 +98,9 @@ export function createConnection({ name, url, toolBinding, browser = 'chrome', d
     throw new Error(`Connection "${name}" already exists`);
   }
 
+  // Auto-detect managed skill by connection name
+  const skillType = managedSkillExists(name) ? 'managed' : 'none';
+
   const connection = {
     name,
     description: description || '',
@@ -92,6 +109,10 @@ export function createConnection({ name, url, toolBinding, browser = 'chrome', d
     browser,
     createdAt: new Date().toISOString(),
     status: 'disconnected',
+    skill: {
+      type: skillType,
+      managedName: skillType === 'managed' ? name : null,
+    },
   };
 
   connections.push(connection);
@@ -110,7 +131,7 @@ export function updateConnection(name, updates) {
     throw new Error(`Connection "${name}" not found`);
   }
 
-  const allowed = ['url', 'toolBinding', 'browser', 'status', 'description'];
+  const allowed = ['url', 'toolBinding', 'browser', 'status', 'description', 'skill'];
   for (const key of Object.keys(updates)) {
     if (allowed.includes(key)) {
       connections[idx][key] = updates[key];
