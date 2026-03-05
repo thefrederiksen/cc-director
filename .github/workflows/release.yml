@@ -116,27 +116,33 @@ jobs:
         shell: pwsh
         run: |
           $tools = @(
-            "cc-comm-queue",
             "cc-crawl4ai",
             "cc-docgen",
             "cc-excel",
+            "cc-facebook",
             "cc-gmail",
             "cc-hardware",
+            "cc-html",
             "cc-image",
             "cc-linkedin",
-            "cc-markdown",
             "cc-outlook",
+            "cc-pdf",
             "cc-personresearch",
             "cc-photos",
+            "cc-posthog",
             "cc-powerpoint",
             "cc-reddit",
+            "cc-settings",
             "cc-setup",
             "cc-spotify",
             "cc-transcribe",
+            "cc-twitter",
             "cc-vault",
             "cc-video",
             "cc-voice",
             "cc-whisper",
+            "cc-word",
+            "cc-youtube",
             "cc-youtube-info"
           )
 
@@ -226,7 +232,7 @@ jobs:
       - name: Build Node.js tools
         shell: pwsh
         run: |
-          $tools = @("cc-browser", "cc-brandingrecommendations", "cc-websiteaudit")
+          $tools = @("cc-browser", "cc-fox-browser", "cc-brandingrecommendations", "cc-websiteaudit")
           $failed = @()
 
           foreach ($tool in $tools) {
@@ -377,6 +383,44 @@ jobs:
           echo ""
           echo "Release files:"
           ls -lh "$RELEASE_DIR/"
+
+      - name: Generate release manifest
+        run: |
+          RELEASE_DIR="$(pwd)/release-files"
+          VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST="$RELEASE_DIR/release-manifest.json"
+
+          echo "{" > "$MANIFEST"
+          echo "  \"version\": \"$VERSION\"," >> "$MANIFEST"
+          echo "  \"tag\": \"$GITHUB_REF_NAME\"," >> "$MANIFEST"
+          echo "  \"date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"," >> "$MANIFEST"
+          echo "  \"assets\": {" >> "$MANIFEST"
+
+          first=true
+          for file in "$RELEASE_DIR"/*; do
+            filename=$(basename "$file")
+            # Skip the manifest itself
+            if [ "$filename" = "release-manifest.json" ]; then
+              continue
+            fi
+            size=$(stat -c%s "$file")
+            sha256=$(sha256sum "$file" | cut -d' ' -f1)
+
+            if [ "$first" = true ]; then
+              first=false
+            else
+              echo "," >> "$MANIFEST"
+            fi
+
+            printf "    \"%s\": {\"size\": %s, \"sha256\": \"%s\"}" "$filename" "$size" "$sha256" >> "$MANIFEST"
+          done
+
+          echo "" >> "$MANIFEST"
+          echo "  }" >> "$MANIFEST"
+          echo "}" >> "$MANIFEST"
+
+          echo "Release manifest:"
+          cat "$MANIFEST"
 
       - name: Extract version from tag
         id: version

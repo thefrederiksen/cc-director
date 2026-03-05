@@ -3,10 +3,11 @@ Core installer logic for cc-director tools.
 """
 
 import os
-import sys
+import shutil
+import zipfile
 import winreg
 from pathlib import Path
-from typing import List, Tuple
+from typing import Tuple
 
 from github_api import (
     get_latest_release,
@@ -16,16 +17,50 @@ from github_api import (
 )
 
 
-# Tools to install (order matters for display)
-TOOLS = [
-    "cc-pdf",
+# Python tools - each builds to {name}.exe (except cc-setup -> cc-director-setup.exe)
+PYTHON_TOOLS = [
+    "cc-crawl4ai",
+    "cc-docgen",
+    "cc-excel",
+    "cc-facebook",
+    "cc-gmail",
+    "cc-hardware",
     "cc-html",
-    "cc-word",
-    "cc-transcribe",
     "cc-image",
+    "cc-linkedin",
+    "cc-outlook",
+    "cc-pdf",
+    "cc-personresearch",
+    "cc-photos",
+    "cc-posthog",
+    "cc-powerpoint",
+    "cc-reddit",
+    "cc-settings",
+    "cc-spotify",
+    "cc-transcribe",
+    "cc-twitter",
+    "cc-vault",
+    "cc-video",
     "cc-voice",
     "cc-whisper",
-    "cc-video",
+    "cc-word",
+    "cc-youtube",
+    "cc-youtube-info",
+]
+
+# Node.js tools - each is a zip containing _cc-{name}/ directory
+NODE_TOOLS = [
+    "cc-browser",
+    "cc-fox-browser",
+    "cc-brandingrecommendations",
+    "cc-websiteaudit",
+]
+
+# .NET tools - each is a zip containing _cc-{name}/ directory
+DOTNET_TOOLS = [
+    "cc-click",
+    "cc-computer",
+    "cc-trisight",
 ]
 
 
@@ -33,7 +68,7 @@ class CCDirectorInstaller:
     """Installer for cc-director tools suite."""
 
     def __init__(self):
-        self.install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "cc-director"
+        self.install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "cc-director" / "bin"
         self.skill_dir = Path(os.environ.get("USERPROFILE", "")) / ".claude" / "skills" / "cc-director"
 
     def install(self) -> bool:
@@ -87,7 +122,7 @@ class CCDirectorInstaller:
 
     def _download_tools(self, assets: dict) -> Tuple[int, int]:
         """
-        Download tool executables from release assets.
+        Download tool executables and archives from release assets.
 
         Args:
             assets: Dict mapping asset names to download URLs
@@ -98,22 +133,118 @@ class CCDirectorInstaller:
         downloaded = 0
         skipped = 0
 
-        for tool in TOOLS:
-            asset_name = f"{tool}-windows-x64.exe"
-
+        # Python tools: download as {name}.exe
+        for tool in PYTHON_TOOLS:
+            asset_name = f"{tool}.exe"
             if asset_name not in assets:
                 skipped += 1
                 continue
 
-            dest_path = self.install_dir / f"{tool}.exe"
-            print(f"      Downloading {tool}.exe...")
+            dest_path = self.install_dir / asset_name
+            print(f"      Downloading {asset_name}...")
 
             if download_file(assets[asset_name], str(dest_path)):
                 downloaded += 1
             else:
                 print(f"      WARNING: Failed to download {tool}")
 
+        # Node.js tools: download as {name}.zip, extract to _{name}/, create launchers
+        for tool in NODE_TOOLS:
+            asset_name = f"{tool}.zip"
+            if asset_name not in assets:
+                skipped += 1
+                continue
+
+            downloaded += self._install_zipped_tool(tool, assets[asset_name], "node")
+
+        # .NET tools: download as {name}.zip, extract to _{name}/, create launchers
+        for tool in DOTNET_TOOLS:
+            asset_name = f"{tool}.zip"
+            if asset_name not in assets:
+                skipped += 1
+                continue
+
+            downloaded += self._install_zipped_tool(tool, assets[asset_name], "dotnet")
+
+        # Main app
+        if "cc-director.exe" in assets:
+            dest_path = self.install_dir / "cc-director.exe"
+            print(f"      Downloading cc-director.exe...")
+            if download_file(assets["cc-director.exe"], str(dest_path)):
+                downloaded += 1
+
         return downloaded, skipped
+
+    def _install_zipped_tool(self, tool: str, url: str, tool_type: str) -> int:
+        """
+        Download and extract a zipped tool, then create launcher scripts.
+
+        Args:
+            tool: Tool name (e.g. "cc-browser")
+            url: Download URL for the zip
+            tool_type: "node" or "dotnet"
+
+        Returns:
+            1 if successful, 0 if failed
+        """
+        zip_path = self.install_dir / f"{tool}.zip"
+        dest_dir = self.install_dir / f"_{tool}"
+
+        print(f"      Downloading {tool}.zip...")
+        if not download_file(url, str(zip_path)):
+            print(f"      WARNING: Failed to download {tool}")
+            return 0
+
+        # Extract zip
+        try:
+            # Remove old directory
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+
+            with zipfile.ZipFile(str(zip_path), 'r') as zf:
+                zf.extractall(str(dest_dir))
+
+            # Create launcher scripts
+            self._create_launchers(tool, tool_type)
+
+            # Clean up zip
+            zip_path.unlink()
+            return 1
+
+        except (zipfile.BadZipFile, OSError) as e:
+            print(f"      WARNING: Failed to extract {tool}: {e}")
+            if zip_path.exists():
+                zip_path.unlink()
+            return 0
+
+    def _create_launchers(self, tool: str, tool_type: str):
+        """Create .cmd and Git Bash launcher scripts for a tool."""
+        if tool_type == "node":
+            # Node.js tool: launch via node
+            cmd_content = f'@node "%~dp0_{tool}\\src\\cli.mjs" %*\n'
+            bash_content = f'#!/bin/sh\nnode "$(dirname "$0")/_{tool}/src/cli.mjs" "$@"\n'
+        elif tool_type == "dotnet":
+            # .NET tool: launch the exe directly
+            if tool == "cc-computer":
+                # cc-computer has CLI mode (default) and GUI mode
+                cmd_content = f'@"%~dp0_{tool}\\{tool}.exe" --cli %*\n'
+                bash_content = f'#!/bin/sh\n"$(dirname "$0")/_{tool}/{tool}.exe" --cli "$@"\n'
+                # Also create GUI launcher
+                gui_cmd = self.install_dir / f"{tool}-gui.cmd"
+                gui_bash = self.install_dir / f"{tool}-gui"
+                gui_cmd.write_text(f'@"%~dp0_{tool}\\{tool}.exe" %*\n')
+                gui_bash.write_text(f'#!/bin/sh\n"$(dirname "$0")/_{tool}/{tool}.exe" "$@"\n')
+            else:
+                cmd_content = f'@"%~dp0_{tool}\\{tool}.exe" %*\n'
+                bash_content = f'#!/bin/sh\n"$(dirname "$0")/_{tool}/{tool}.exe" "$@"\n'
+        else:
+            return
+
+        cmd_path = self.install_dir / f"{tool}.cmd"
+        bash_path = self.install_dir / tool
+
+        cmd_path.write_text(cmd_content)
+        bash_path.write_text(bash_content)
 
     def _add_to_path(self) -> bool:
         """
