@@ -3606,6 +3606,20 @@ public partial class MainWindow : Window
         QueueCountText.Text = count == 1 ? "1 item" : $"{count} items";
         BtnQueuePrompt.Content = count > 0 ? $"Queue ({count})" : "Queue";
         QueueTabHeader.Text = count > 0 ? $"Queue ({count})" : "Queue";
+
+        // Turn Queue button red when items are queued
+        if (count > 0)
+        {
+            BtnQueuePrompt.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xDC, 0x26, 0x26));
+            BtnQueuePrompt.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Colors.White);
+        }
+        else
+        {
+            BtnQueuePrompt.Background = (System.Windows.Media.Brush)FindResource("ButtonBackground");
+            BtnQueuePrompt.Foreground = (System.Windows.Media.Brush)FindResource("TextForeground");
+        }
     }
 
     private void BtnClearQueue_Click(object sender, RoutedEventArgs e)
