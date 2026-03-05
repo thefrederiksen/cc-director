@@ -74,6 +74,27 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
     return dot / denom
 
 
+def _build_path_context(metadata: Dict[str, Any]) -> str:
+    """Build a path context prefix from document metadata.
+
+    Extracts title, path, and source from metadata and returns a short
+    text prefix like "Document: My Title | Path: /some/dir/file.pdf\n"
+    that gets prepended to chunk content for search indexing.
+    """
+    parts = []
+    title = metadata.get('doc_title') or metadata.get('title') or ''
+    if title:
+        parts.append(f"Document: {title}")
+
+    path = metadata.get('doc_path') or metadata.get('source') or ''
+    if path:
+        parts.append(f"Path: {path}")
+
+    if not parts:
+        return ''
+    return ' | '.join(parts) + '\n'
+
+
 class VaultVectors:
     """SQLite-backed vector store for Vault semantic search."""
 
@@ -424,6 +445,12 @@ class VaultVectors:
         delete_chunks_for_document(document_id)
         self.delete_chunks_by_document(document_id)
 
+        # Build path context prefix for searchability
+        # This gets prepended to chunk content so both FTS5 and vector search
+        # can match on file names, directory paths, and document titles.
+        base_meta = metadata or {}
+        path_context = _build_path_context(base_meta)
+
         # Check if document needs chunking
         if not should_chunk(content, CHUNK_THRESHOLD_TOKENS):
             # Small document - store as single chunk
@@ -458,13 +485,15 @@ class VaultVectors:
         batch = []
         db_chunk_ids = []
 
-        base_meta = metadata or {}
-
         for chunk in chunks:
+            # Store chunk content with path context prefix in SQLite
+            # so FTS5 can also match on file names and paths
+            stored_content = path_context + chunk['text'] if path_context else chunk['text']
+
             # Add to SQLite
             chunk_id = add_chunk(
                 document_id=document_id,
-                content=chunk['text'],
+                content=stored_content,
                 content_hash=chunk['content_hash'],
                 start_line=chunk['start_line'],
                 end_line=chunk['end_line'],
@@ -481,7 +510,7 @@ class VaultVectors:
 
             batch.append({
                 'id': f"chunk_{chunk_id}",
-                'content': chunk['text'],
+                'content': stored_content,
                 'metadata': chunk_meta
             })
 

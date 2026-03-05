@@ -114,7 +114,8 @@ app.add_typer(posts_app, name="post", hidden=True)
 app.add_typer(lists_app, name="list", hidden=True)
 app.add_typer(tags_app, name="tag", hidden=True)
 
-console = Console(force_terminal=True)
+_is_tty = sys.stdout.isatty()
+console = Console(force_terminal=_is_tty, no_color=not _is_tty)
 
 
 def version_callback(value: bool) -> None:
@@ -282,12 +283,17 @@ def search_cmd(
     else:
         results = rag.semantic_search(query, n_results=n)
 
+        found = False
         for coll, items in results.items():
             if items:
+                found = True
                 console.print(f"\n[cyan]{coll.upper()} ({len(items)} results):[/cyan]")
                 for item in items[:5]:
                     doc = item.get('document', '')[:100]
                     console.print(f"  [{item['id']}] {doc}...")
+
+        if not found:
+            console.print("[yellow]No results found[/yellow]")
 
 
 @app.command()
