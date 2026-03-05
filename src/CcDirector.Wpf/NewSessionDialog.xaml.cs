@@ -413,6 +413,7 @@ public partial class NewSessionDialog : Window
     private readonly SessionHistoryStore? _historyStore;
     private List<SessionHistoryViewModel>? _allSessions;
     private List<RepositoryConfig>? _allRepos;
+    private List<HandoverViewModel>? _allHandovers;
     private bool _sessionsLoaded;
     private bool _handoversLoaded;
 
@@ -588,6 +589,28 @@ public partial class NewSessionDialog : Window
                          || s.ProjectName.Contains(filter, StringComparison.OrdinalIgnoreCase)
                          || s.ProjectPath.Contains(filter, StringComparison.OrdinalIgnoreCase)
                          || s.DisplaySummary.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    private void HandoverSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_handoversLoaded || _allHandovers == null)
+            return;
+
+        var filter = HandoverSearchBox.Text?.Trim() ?? string.Empty;
+
+        if (string.IsNullOrEmpty(filter))
+        {
+            HandoverList.ItemsSource = _allHandovers;
+        }
+        else
+        {
+            HandoverList.ItemsSource = _allHandovers
+                .Where(h => h.Title.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                         || h.RepoDisplay.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                         || h.DateDisplay.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                         || (h.SessionName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false))
                 .ToList();
         }
     }
@@ -787,8 +810,8 @@ public partial class NewSessionDialog : Window
 
             if (files.Length > 0)
             {
-                var viewModels = files.Select(f => new HandoverViewModel(f)).ToList();
-                HandoverList.ItemsSource = viewModels;
+                _allHandovers = files.Select(f => new HandoverViewModel(f)).ToList();
+                HandoverList.ItemsSource = _allHandovers;
                 HandoverList.Visibility = Visibility.Visible;
                 FileLog.Write($"[NewSessionDialog] LoadHandoversAsync: found {files.Length} handovers");
             }

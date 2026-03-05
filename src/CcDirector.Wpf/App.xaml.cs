@@ -161,11 +161,14 @@ public partial class App : Application
         // Start Teams bot (if enabled in config)
         StartTeamsBot(log);
 
-        // Close splash before MainWindow - restore sessions dialog may appear during Loaded
-        splash.Close();
-
+        // Create MainWindow and assign it before closing splash.
+        // WPF ShutdownMode=OnMainWindowClose needs MainWindow set,
+        // otherwise closing splash (the only window) shuts down the app.
         var mainWindow = new MainWindow();
         MainWindow = mainWindow;
+
+        // Close splash before showing MainWindow - restore sessions dialog may appear during Loaded
+        splash.Close();
         mainWindow.Show();
     }
 
