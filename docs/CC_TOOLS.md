@@ -874,6 +874,9 @@ Personal data vault with contacts, documents, tasks, goals, ideas, and RAG searc
 ```bash
 # Search and ask
 cc-vault search "query"
+cc-vault search "query" --type contacts      # Only search contacts/facts
+cc-vault search "query" --type docs           # Only search documents
+cc-vault search "query" --type ideas          # Only search ideas
 cc-vault ask "question"
 
 # Contacts

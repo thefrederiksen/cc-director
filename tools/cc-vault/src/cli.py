@@ -254,8 +254,44 @@ def search_cmd(
     query: str = typer.Argument(..., help="Search query"),
     n: int = typer.Option(10, "-n", help="Number of results"),
     hybrid: bool = typer.Option(False, "--hybrid", help="Use hybrid search"),
+    entity_type: Optional[str] = typer.Option(None, "--type", "-t", help="Filter by entity type (contacts, docs, research, ideas, health, catalog, facts, chunks)"),
 ):
-    """Search the vault using semantic or hybrid search."""
+    """Search the vault using semantic or hybrid search.
+
+    Examples:
+      cc-vault search "Omnigo"                    # Search all collections
+      cc-vault search "Omnigo" --type contacts     # Only contact facts
+      cc-vault search "Omnigo" --type docs          # Only documents
+      cc-vault search "Omnigo" --type ideas         # Only ideas
+      cc-vault search "SR&ED" --hybrid --type docs  # Hybrid, documents only
+    """
+    # Map user-friendly type names to vector collection names
+    TYPE_ALIASES = {
+        "contacts": "facts",
+        "contact": "facts",
+        "documents": "documents",
+        "docs": "documents",
+        "doc": "documents",
+        "research": "documents",
+        "ideas": "ideas",
+        "idea": "ideas",
+        "health": "health",
+        "facts": "facts",
+        "fact": "facts",
+        "chunks": "chunks",
+        "chunk": "chunks",
+        "catalog": "catalog",
+    }
+
+    collections = None
+    if entity_type:
+        mapped = TYPE_ALIASES.get(entity_type.lower())
+        if not mapped:
+            valid = sorted(set(TYPE_ALIASES.keys()))
+            console.print(f"[red]Error:[/red] Unknown type '{entity_type}'. Valid types: {', '.join(valid)}")
+            raise typer.Exit(1)
+        collections = [mapped]
+
     try:
         from .rag import get_vault_rag
     except ImportError:
@@ -263,14 +299,27 @@ def search_cmd(
 
     rag = get_vault_rag()
 
+    type_label = f" (type={entity_type})" if entity_type else ""
+
     if hybrid:
         results = rag.hybrid_search(query, n_results=n)
 
+        # Filter hybrid results by doc_type if type filter is set
+        if entity_type and collections:
+            coll = collections[0]
+            if coll == "documents":
+                # Hybrid searches chunks; filter by doc_type metadata
+                results = [r for r in results if r.get('metadata', {}).get('doc_type') in ('transcript', 'note', 'journal', 'research')]
+            elif coll == "facts":
+                # Facts are in a separate collection, not in chunks -- hybrid won't find them
+                console.print("[yellow]Hybrid search only covers document chunks. Use semantic search for contacts/facts.[/yellow]")
+                return
+
         if not results:
-            console.print("[yellow]No results found[/yellow]")
+            console.print(f"[yellow]No results found{type_label}[/yellow]")
             return
 
-        console.print(f"\n[cyan]Hybrid Search Results ({len(results)} chunks):[/cyan]\n")
+        console.print(f"\n[cyan]Hybrid Search Results ({len(results)} chunks){type_label}:[/cyan]\n")
         for r in results:
             meta = r.get('metadata', {})
             doc_title = meta.get('doc_title', 'Unknown')
@@ -281,7 +330,7 @@ def search_cmd(
             console.print(f"    {content}...")
             console.print()
     else:
-        results = rag.semantic_search(query, n_results=n)
+        results = rag.semantic_search(query, collections=collections, n_results=n)
 
         found = False
         for coll, items in results.items():
@@ -293,7 +342,7 @@ def search_cmd(
                     console.print(f"  [{item['id']}] {doc}...")
 
         if not found:
-            console.print("[yellow]No results found[/yellow]")
+            console.print(f"[yellow]No results found{type_label}[/yellow]")
 
 
 @app.command()
