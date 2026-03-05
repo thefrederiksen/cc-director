@@ -11,7 +11,7 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly CatalogDatabase _db = new();
     private Library? _selectedLibrary;
-    private string? _selectedDepartment;
+    private string? _selectedRelativeDir;
     private CatalogEntry? _selectedEntry;
     private string _searchQuery = string.Empty;
     private string? _activeExtFilter;
@@ -23,7 +23,6 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
     private CancellationTokenSource? _searchDebounce;
 
     public ObservableCollection<Library> Libraries { get; } = [];
-    public ObservableCollection<string> Departments { get; } = [];
     public ObservableCollection<CatalogEntry> Entries { get; } = [];
 
     public Library? SelectedLibrary
@@ -33,23 +32,18 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
         {
             if (_selectedLibrary == value) return;
             _selectedLibrary = value;
-            _selectedDepartment = null;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(SelectedDepartment));
-            _ = LoadDepartmentsAsync();
-            _ = LoadEntriesAsync();
         }
     }
 
-    public string? SelectedDepartment
+    /// <summary>Relative directory path for folder filtering (e.g. "Software/SubDir").</summary>
+    public string? SelectedRelativeDir
     {
-        get => _selectedDepartment;
+        get => _selectedRelativeDir;
         set
         {
-            if (_selectedDepartment == value) return;
-            _selectedDepartment = value;
+            _selectedRelativeDir = value;
             OnPropertyChanged();
-            _ = LoadEntriesAsync();
         }
     }
 
@@ -79,7 +73,8 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
             if (_activeExtFilter == value) return;
             _activeExtFilter = value;
             OnPropertyChanged();
-            _ = LoadEntriesAsync();
+            if (_selectedLibrary is not null)
+                _ = ReloadCurrentViewAsync();
         }
     }
 
@@ -110,7 +105,7 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
                 _sortAscending = true;
             }
             OnPropertyChanged();
-            _ = LoadEntriesAsync();
+            _ = ReloadCurrentViewAsync();
         }
     }
 
@@ -135,38 +130,77 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private async Task LoadDepartmentsAsync()
+    /// <summary>Get relative directory paths for building a multi-level tree.</summary>
+    public List<string> GetRelativeDirectories(int libraryId, string libraryPath)
     {
-        if (_selectedLibrary is null)
-        {
-            Departments.Clear();
-            return;
-        }
+        FileLog.Write($"[DocumentLibraryViewModel] GetRelativeDirectories: libraryId={libraryId}");
+        return _db.GetRelativeDirectories(libraryId, libraryPath);
+    }
 
-        FileLog.Write($"[DocumentLibraryViewModel] LoadDepartmentsAsync: {_selectedLibrary.Label}");
-        var depts = await Task.Run(() => _db.GetDepartments(_selectedLibrary.Id));
-        Departments.Clear();
-        foreach (var d in depts)
-            Departments.Add(d);
+    /// <summary>Reload the current view (after filter/sort change).</summary>
+    public async Task ReloadCurrentViewAsync()
+    {
+        if (_selectedLibrary is null) return;
+
+        if (!string.IsNullOrEmpty(_selectedRelativeDir))
+        {
+            await LoadEntriesByDirectoryAsync(_selectedLibrary.Id, _selectedLibrary.Path, _selectedRelativeDir);
+        }
+        else
+        {
+            await LoadEntriesAsync();
+        }
+    }
+
+    /// <summary>Load entries filtered by relative directory path.</summary>
+    public async Task LoadEntriesByDirectoryAsync(int libraryId, string libraryPath, string relativeDir)
+    {
+        FileLog.Write($"[DocumentLibraryViewModel] LoadEntriesByDirectoryAsync: lib={libraryId}, dir={relativeDir}");
+        IsLoading = true;
+        try
+        {
+            var entries = await Task.Run(() =>
+                _db.ListEntriesByDirectory(
+                    libraryId, libraryPath, relativeDir,
+                    ext: _activeExtFilter,
+                    sortColumn: _sortColumn,
+                    sortAscending: _sortAscending,
+                    limit: 500));
+
+            Entries.Clear();
+            foreach (var e in entries)
+                Entries.Add(e);
+
+            _totalEntryCount = entries.Count;
+            UpdateStatusText();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DocumentLibraryViewModel] LoadEntriesByDirectoryAsync FAILED: {ex.Message}");
+            StatusText = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            IsLoading = false;
+        }
     }
 
     public async Task LoadEntriesAsync()
     {
-        FileLog.Write($"[DocumentLibraryViewModel] LoadEntriesAsync: lib={_selectedLibrary?.Label}, dept={_selectedDepartment}, ext={_activeExtFilter}, sort={_sortColumn}");
+        FileLog.Write($"[DocumentLibraryViewModel] LoadEntriesAsync: lib={_selectedLibrary?.Label}, ext={_activeExtFilter}, sort={_sortColumn}");
         IsLoading = true;
         try
         {
             var entries = await Task.Run(() =>
                 _db.ListEntries(
                     libraryId: _selectedLibrary?.Id,
-                    department: _selectedDepartment,
                     ext: _activeExtFilter,
                     sortColumn: _sortColumn,
                     sortAscending: _sortAscending,
                     limit: 500));
 
             _totalEntryCount = await Task.Run(() =>
-                _db.GetEntryCount(_selectedLibrary?.Id, _selectedDepartment, _activeExtFilter));
+                _db.GetEntryCount(_selectedLibrary?.Id, ext: _activeExtFilter));
 
             Entries.Clear();
             foreach (var e in entries)
@@ -187,11 +221,14 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task SearchEntriesAsync(string query)
     {
-        FileLog.Write($"[DocumentLibraryViewModel] SearchEntriesAsync: {query}");
+        FileLog.Write($"[DocumentLibraryViewModel] SearchEntriesAsync: query={query}, lib={_selectedLibrary?.Label}");
         IsLoading = true;
         try
         {
-            var results = await Task.Run(() => _db.Search(query));
+            var results = await Task.Run(() => _db.Search(
+                query,
+                libraryId: _selectedLibrary?.Id,
+                ext: _activeExtFilter));
 
             Entries.Clear();
             foreach (var e in results)
@@ -237,7 +274,7 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
             if (token.IsCancellationRequested) return;
 
             if (string.IsNullOrWhiteSpace(_searchQuery))
-                await LoadEntriesAsync();
+                await ReloadCurrentViewAsync();
             else
                 await SearchEntriesAsync(_searchQuery);
         }, token, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);

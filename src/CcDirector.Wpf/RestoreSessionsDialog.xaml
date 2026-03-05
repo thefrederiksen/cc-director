@@ -30,6 +30,7 @@
             </ItemsControl>
 
             <CheckBox x:Name="ChkStartFresh"
+                      IsChecked="True"
                       Content="Start all sessions fresh (no resume)"
                       Foreground="#CCCCCC"
                       FontSize="12"

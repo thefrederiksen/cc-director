@@ -1,10 +1,13 @@
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using Microsoft.Win32;
 
@@ -248,6 +251,126 @@ public class SessionHistoryViewModel
     }
 }
 
+/// <summary>
+/// View model for displaying handover documents in the Handovers tab.
+/// Parses timestamped filenames like 20260304_0700_fix-session-routing.md
+/// and YAML frontmatter for structured metadata.
+/// </summary>
+public class HandoverViewModel
+{
+    public string FilePath { get; }
+    public string Title { get; }
+    public string DateDisplay { get; }
+    public DateTime FileDate { get; }
+
+    /// <summary>Primary repository path (first valid path from frontmatter repositories list).</summary>
+    public string? RepoPath { get; }
+
+    /// <summary>All repository paths from frontmatter.</summary>
+    public List<string> RepoPaths { get; } = new();
+
+    /// <summary>Display-friendly repo name (folder name from RepoPath).</summary>
+    public string RepoDisplay => string.IsNullOrEmpty(RepoPath)
+        ? "Unknown"
+        : Path.GetFileName(RepoPath.TrimEnd('\\', '/'));
+
+    public HandoverViewModel(string filePath)
+    {
+        FilePath = filePath;
+        var name = Path.GetFileNameWithoutExtension(filePath);
+
+        // Parse filename: YYYYMMDD_HHMM_title-slug
+        if (name.Length >= 13 && name[8] == '_'
+            && DateTime.TryParseExact(name.Substring(0, 8) + name.Substring(9, 4),
+                "yyyyMMddHHmm", null, System.Globalization.DateTimeStyles.None, out var parsed))
+        {
+            FileDate = parsed;
+            DateDisplay = parsed.ToString("yyyy-MM-dd HH:mm");
+
+            var slug = name.Length > 14 ? name.Substring(14) : string.Empty;
+            Title = string.IsNullOrEmpty(slug)
+                ? "Handover"
+                : char.ToUpper(slug[0]) + slug.Substring(1).Replace("-", " ");
+        }
+        else
+        {
+            FileDate = File.GetLastWriteTime(filePath);
+            DateDisplay = FileDate.ToString("yyyy-MM-dd HH:mm");
+            Title = name;
+        }
+
+        RepoPaths = ExtractRepoPaths(filePath);
+        RepoPath = RepoPaths.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Extracts repository paths from YAML frontmatter.
+    /// Falls back to legacy **Repository:** format for old handovers.
+    /// </summary>
+    private static List<string> ExtractRepoPaths(string filePath)
+    {
+        var paths = new List<string>();
+        try
+        {
+            using var reader = new StreamReader(filePath);
+            var firstLine = reader.ReadLine();
+            if (firstLine == "---")
+            {
+                // YAML frontmatter: read until closing ---
+                bool inRepositories = false;
+                string? line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    if (line == "---") break;
+
+                    if (line.StartsWith("repositories:"))
+                    {
+                        inRepositories = true;
+                        continue;
+                    }
+
+                    // A non-indented key ends the repositories block
+                    if (inRepositories && line.Length > 0 && !char.IsWhiteSpace(line[0]))
+                        inRepositories = false;
+
+                    if (inRepositories && line.TrimStart().StartsWith("- path:"))
+                    {
+                        var path = line.Substring(line.IndexOf("- path:") + 7).Trim();
+                        if (Directory.Exists(path))
+                            paths.Add(path);
+                    }
+                }
+            }
+            else
+            {
+                // Legacy format: scan first 10 lines for **Repository:** line
+                var line = firstLine;
+                for (int i = 0; i < 10 && line != null; i++)
+                {
+                    if (line.StartsWith("**Repository:**"))
+                    {
+                        var raw = line.Substring("**Repository:**".Length).Trim();
+                        // Handle comma-separated paths with optional annotations like "(primary)"
+                        foreach (var segment in raw.Split(','))
+                        {
+                            // Strip annotations in parentheses: "D:\path (primary)" -> "D:\path"
+                            var cleaned = System.Text.RegularExpressions.Regex.Replace(
+                                segment.Trim(), @"\s*\(.*?\)\s*$", "").Trim();
+                            if (Directory.Exists(cleaned))
+                                paths.Add(cleaned);
+                        }
+                        break;
+                    }
+                    line = reader.ReadLine();
+                }
+            }
+        }
+        catch { /* Non-critical: preview still works without repo path */ }
+
+        return paths;
+    }
+}
+
 public partial class NewSessionDialog : Window
 {
     private static readonly SolidColorBrush ResumeButtonBrush = new(
@@ -274,12 +397,16 @@ public partial class NewSessionDialog : Window
     private List<SessionHistoryViewModel>? _allSessions;
     private List<RepositoryConfig>? _allRepos;
     private bool _sessionsLoaded;
+    private bool _handoversLoaded;
 
     /// <summary>The selected path (for new session or resume).</summary>
     public string? SelectedPath { get; private set; }
 
     /// <summary>The Claude session ID to resume (null for new session).</summary>
     public string? SelectedResumeSessionId { get; private set; }
+
+    /// <summary>Path to the selected handover file (when starting from Handovers tab).</summary>
+    public string? SelectedHandoverPath { get; private set; }
 
     /// <summary>Whether to bypass permission prompts (adds --dangerously-skip-permissions flag).</summary>
     public bool BypassPermissions => BypassPermissionsCheckBox.IsChecked == true;
@@ -380,16 +507,25 @@ public partial class NewSessionDialog : Window
         }
     }
 
-    private void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (e.Source != MainTabs)
             return;
+
+        // Lazy-load handovers when tab is first selected
+        if (MainTabs.SelectedIndex == 2 && !_handoversLoaded)
+            await LoadHandoversAsync();
 
         UpdateActionButton();
     }
 
     private void UpdateActionButton()
     {
+        // Show/hide copy button (only visible on Handovers tab with selection)
+        BtnCopyHandover.Visibility = MainTabs.SelectedIndex == 2 && HandoverList.SelectedItem != null
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
         if (MainTabs.SelectedIndex == 0) // New Session tab
         {
             BtnAction.Content = "Start Session";
@@ -398,12 +534,21 @@ public partial class NewSessionDialog : Window
             BtnAction.Background = isEnabled ? NewSessionButtonBrush : DisabledButtonBrush;
             BtnAction.Foreground = isEnabled ? EnabledTextBrush : DisabledTextBrush;
         }
-        else // Resume Session tab
+        else if (MainTabs.SelectedIndex == 1) // Resume Session tab
         {
             BtnAction.Content = "Resume Selected";
             var isEnabled = SessionList.SelectedItem != null;
             BtnAction.IsEnabled = isEnabled;
             BtnAction.Background = isEnabled ? ResumeButtonBrush : DisabledButtonBrush;
+            BtnAction.Foreground = isEnabled ? EnabledTextBrush : DisabledTextBrush;
+        }
+        else // Handovers tab
+        {
+            BtnAction.Content = "Start Session";
+            var hvm = HandoverList.SelectedItem as HandoverViewModel;
+            var isEnabled = hvm != null && !string.IsNullOrEmpty(hvm.RepoPath);
+            BtnAction.IsEnabled = isEnabled;
+            BtnAction.Background = isEnabled ? NewSessionButtonBrush : DisabledButtonBrush;
             BtnAction.Foreground = isEnabled ? EnabledTextBrush : DisabledTextBrush;
         }
     }
@@ -543,12 +688,27 @@ public partial class NewSessionDialog : Window
         }
     }
 
+    private void BtnCoaching_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string category)
+            return;
+
+        FileLog.Write($"[NewSessionDialog] BtnCoaching_Click: category={category}");
+
+        SelectedPath = CcStorage.CoachingCategory(category);
+        SelectedResumeSessionId = null;
+        BypassPermissionsCheckBox.IsChecked = true;
+
+        FileLog.Write($"[NewSessionDialog] BtnCoaching_Click: starting session at {SelectedPath}");
+        DialogResult = true;
+    }
+
     private void BtnAction_Click(object sender, RoutedEventArgs e)
     {
         if (MainTabs.SelectedIndex == 0) // New Session tab
         {
             SelectedPath = PathInput.Text;
-            SelectedResumeSessionId = null; // Ensure we're starting a new session
+            SelectedResumeSessionId = null;
 
             if (string.IsNullOrWhiteSpace(SelectedPath))
             {
@@ -559,7 +719,7 @@ public partial class NewSessionDialog : Window
             FileLog.Write($"[NewSessionDialog] BtnAction_Click: Starting new session at {SelectedPath}");
             DialogResult = true;
         }
-        else // Resume Session tab
+        else if (MainTabs.SelectedIndex == 1) // Resume Session tab
         {
             if (SessionList.SelectedItem is not SessionHistoryViewModel vm)
             {
@@ -567,13 +727,110 @@ public partial class NewSessionDialog : Window
                 return;
             }
 
-            // For sessions without a ClaudeSessionId, start a fresh session at the repo path
             SelectedResumeSessionId = vm.ClaudeSessionId;
             SelectedPath = vm.ProjectPath;
 
             FileLog.Write($"[NewSessionDialog] BtnAction_Click: Resuming session claude={vm.ClaudeSessionId}, path={vm.ProjectPath}");
             DialogResult = true;
         }
+        else // Handovers tab - Start Session
+        {
+            if (HandoverList.SelectedItem is not HandoverViewModel hvm || string.IsNullOrEmpty(hvm.RepoPath))
+                return;
+
+            SelectedPath = hvm.RepoPath;
+            SelectedResumeSessionId = null;
+            SelectedHandoverPath = hvm.FilePath;
+
+            FileLog.Write($"[NewSessionDialog] BtnAction_Click: Starting session from handover, repo={hvm.RepoPath}, handover={hvm.FilePath}");
+            DialogResult = true;
+        }
+    }
+
+    private async Task LoadHandoversAsync()
+    {
+        FileLog.Write("[NewSessionDialog] LoadHandoversAsync: starting");
+
+        try
+        {
+            var dir = CcStorage.VaultHandovers();
+            var files = await Task.Run(() =>
+            {
+                if (!Directory.Exists(dir))
+                    return Array.Empty<string>();
+                return Directory.GetFiles(dir, "*.md")
+                    .OrderByDescending(f => Path.GetFileName(f))
+                    .ToArray();
+            });
+
+            _handoversLoaded = true;
+            HandoverLoadingText.Visibility = Visibility.Collapsed;
+
+            if (files.Length > 0)
+            {
+                var viewModels = files.Select(f => new HandoverViewModel(f)).ToList();
+                HandoverList.ItemsSource = viewModels;
+                HandoverList.Visibility = Visibility.Visible;
+                FileLog.Write($"[NewSessionDialog] LoadHandoversAsync: found {files.Length} handovers");
+            }
+            else
+            {
+                NoHandoversText.Visibility = Visibility.Visible;
+                FileLog.Write("[NewSessionDialog] LoadHandoversAsync: no handovers found");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[NewSessionDialog] LoadHandoversAsync FAILED: {ex.Message}");
+            HandoverLoadingText.Visibility = Visibility.Collapsed;
+            NoHandoversText.Text = "Error loading handovers";
+            NoHandoversText.Visibility = Visibility.Visible;
+        }
+    }
+
+    private async void HandoverList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (HandoverList.SelectedItem is not HandoverViewModel hvm)
+        {
+            HandoverPreview.Visibility = Visibility.Collapsed;
+            HandoverPlaceholder.Visibility = Visibility.Visible;
+            HandoverRepoPath.Text = "No handover selected";
+            UpdateActionButton();
+            return;
+        }
+
+        FileLog.Write($"[NewSessionDialog] HandoverList_SelectionChanged: {hvm.FilePath}");
+
+        // Update repo path header
+        HandoverRepoPath.Text = !string.IsNullOrEmpty(hvm.RepoPath)
+            ? hvm.RepoPath
+            : "Repository path not found in handover";
+
+        var content = await Task.Run(() => File.ReadAllText(hvm.FilePath));
+        HandoverPreview.Text = content;
+        HandoverPreview.Visibility = Visibility.Visible;
+        HandoverPlaceholder.Visibility = Visibility.Collapsed;
+        UpdateActionButton();
+    }
+
+    private void BtnCopyHandover_Click(object sender, RoutedEventArgs e)
+    {
+        if (HandoverList.SelectedItem is not HandoverViewModel hvm)
+            return;
+
+        var content = File.ReadAllText(hvm.FilePath);
+        Clipboard.SetText(content);
+        FileLog.Write($"[NewSessionDialog] BtnCopyHandover_Click: Copied to clipboard: {hvm.FilePath}");
+
+        // Brief visual feedback
+        BtnCopyHandover.Content = "Copied!";
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+        timer.Tick += (_, _) =>
+        {
+            BtnCopyHandover.Content = "Copy to Clipboard";
+            timer.Stop();
+        };
+        timer.Start();
     }
 
     private void BtnCancel_Click(object sender, RoutedEventArgs e)

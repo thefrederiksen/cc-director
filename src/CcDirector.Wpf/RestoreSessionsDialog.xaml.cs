@@ -112,10 +112,13 @@ public partial class RestoreSessionsDialog : Window
         else
             ProgressStatusText.Text = $"Restored {RestoredCount} of {total} {word}. {FailedCount} failed.";
 
-        DoneButtonPanel.Visibility = Visibility.Visible;
         _isRestoring = false;
 
         FileLog.Write($"[RestoreSessionsDialog] Restore complete: restored={RestoredCount}, failed={FailedCount}");
+
+        // Auto-close after a brief pause so user can see the final status
+        await Task.Delay(1500);
+        DialogResult = true;
     }
 
     private void BtnSkip_Click(object sender, RoutedEventArgs e)

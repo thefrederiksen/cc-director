@@ -82,6 +82,107 @@ public sealed class CatalogDatabase
         return departments;
     }
 
+    /// <summary>Get distinct relative directory paths for building a multi-level folder tree.</summary>
+    public List<string> GetRelativeDirectories(int libraryId, string libraryPath)
+    {
+        FileLog.Write($"[CatalogDatabase] GetRelativeDirectories: libraryId={libraryId}");
+        var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        using var conn = CreateConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT DISTINCT file_path FROM catalog_entries
+            WHERE library_id = @libId
+            """;
+        cmd.Parameters.AddWithValue("@libId", libraryId);
+
+        var normalizedRoot = libraryPath.Replace('\\', '/').TrimEnd('/') + "/";
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var filePath = reader.GetString(0).Replace('\\', '/');
+            if (!filePath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var relative = filePath[normalizedRoot.Length..];
+            var lastSlash = relative.LastIndexOf('/');
+            if (lastSlash <= 0)
+                continue; // file is at root of library
+
+            var dirPart = relative[..lastSlash];
+
+            // Add this directory and all parent directories
+            var parts = dirPart.Split('/');
+            for (var i = 1; i <= parts.Length; i++)
+            {
+                dirs.Add(string.Join("/", parts[..i]));
+            }
+        }
+
+        var result = dirs.OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToList();
+        FileLog.Write($"[CatalogDatabase] GetRelativeDirectories: {result.Count} directories");
+        return result;
+    }
+
+    /// <summary>List catalog entries filtered by relative directory prefix.</summary>
+    public List<CatalogEntry> ListEntriesByDirectory(
+        int libraryId,
+        string libraryPath,
+        string relativeDir,
+        string? ext = null,
+        string sortColumn = "file_name",
+        bool sortAscending = true,
+        int limit = 500)
+    {
+        FileLog.Write($"[CatalogDatabase] ListEntriesByDirectory: lib={libraryId}, dir={relativeDir}");
+
+        using var conn = CreateConnection();
+        using var cmd = conn.CreateCommand();
+
+        var normalizedRoot = libraryPath.Replace('\\', '/').TrimEnd('/');
+        var dirPrefix = normalizedRoot + "/" + relativeDir + "/";
+
+        var where = new List<string> { "library_id = @libId", "REPLACE(file_path, '\\', '/') LIKE @dirPrefix" };
+        cmd.Parameters.AddWithValue("@libId", libraryId);
+        cmd.Parameters.AddWithValue("@dirPrefix", dirPrefix + "%");
+
+        if (!string.IsNullOrEmpty(ext))
+        {
+            where.Add("file_ext = @ext");
+            cmd.Parameters.AddWithValue("@ext", ext);
+        }
+
+        var validSortColumns = new HashSet<string>
+        {
+            "file_name", "file_ext", "file_size", "file_modified_at",
+            "status", "department", "title", "created_at"
+        };
+        if (!validSortColumns.Contains(sortColumn))
+            sortColumn = "file_name";
+
+        var direction = sortAscending ? "ASC" : "DESC";
+        var whereClause = "WHERE " + string.Join(" AND ", where);
+
+        cmd.CommandText = $"""
+            SELECT * FROM catalog_entries
+            {whereClause}
+            ORDER BY {sortColumn} {direction}
+            LIMIT @limit
+            """;
+        cmd.Parameters.AddWithValue("@limit", limit);
+
+        var entries = new List<CatalogEntry>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            entries.Add(ReadEntry(reader));
+        }
+
+        FileLog.Write($"[CatalogDatabase] ListEntriesByDirectory: {entries.Count} entries");
+        return entries;
+    }
+
     /// <summary>List catalog entries with filters, sorting, and pagination.</summary>
     public List<CatalogEntry> ListEntries(
         int? libraryId = null,
@@ -153,21 +254,40 @@ public sealed class CatalogDatabase
         return entries;
     }
 
-    /// <summary>Full-text search across catalog entries.</summary>
-    public List<CatalogEntry> Search(string query, int limit = 50)
+    /// <summary>Search catalog entries by substring match across key fields.</summary>
+    public List<CatalogEntry> Search(string query, int? libraryId = null, string? ext = null, int limit = 200)
     {
-        FileLog.Write($"[CatalogDatabase] Search: {query}");
+        FileLog.Write($"[CatalogDatabase] Search: query={query}, lib={libraryId}");
 
         using var conn = CreateConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT ce.* FROM catalog_fts
-            JOIN catalog_entries ce ON ce.id = catalog_fts.rowid
-            WHERE catalog_fts MATCH @query
-            ORDER BY bm25(catalog_fts)
+
+        var pattern = "%" + query.Replace("%", "[%]").Replace("_", "[_]") + "%";
+
+        var where = new List<string>
+        {
+            "(file_name LIKE @pattern OR title LIKE @pattern OR summary LIKE @pattern OR tags LIKE @pattern OR department LIKE @pattern)"
+        };
+        cmd.Parameters.AddWithValue("@pattern", pattern);
+
+        if (libraryId.HasValue)
+        {
+            where.Add("library_id = @libId");
+            cmd.Parameters.AddWithValue("@libId", libraryId.Value);
+        }
+        if (!string.IsNullOrEmpty(ext))
+        {
+            where.Add("file_ext = @ext");
+            cmd.Parameters.AddWithValue("@ext", ext);
+        }
+
+        var whereClause = "WHERE " + string.Join(" AND ", where);
+        cmd.CommandText = $"""
+            SELECT * FROM catalog_entries
+            {whereClause}
+            ORDER BY file_name
             LIMIT @limit
             """;
-        cmd.Parameters.AddWithValue("@query", query);
         cmd.Parameters.AddWithValue("@limit", limit);
 
         var entries = new List<CatalogEntry>();
