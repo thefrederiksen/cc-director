@@ -888,10 +888,13 @@ class OutlookClient:
                       end_date: datetime = None, calendar_name: str = None,
                       limit: int = 25) -> list:
         """
-        Search calendar events by subject text within a date range.
+        Search calendar events within a date range.
+
+        Matches against event subject, organizer email, and attendee
+        names/emails (all case-insensitive).
 
         Args:
-            query: Search text (matched against event subject, case-insensitive)
+            query: Search text (matched against subject, organizer, attendee names/emails)
             start_date: Start of date range (default: 1 year ago)
             end_date: End of date range (default: now)
             calendar_name: Specific calendar name (optional)
@@ -914,11 +917,32 @@ class OutlookClient:
         query_lower = query.lower()
         matched = []
         for event in events:
-            subject = event.get('subject', '') or ''
-            if query_lower in subject.lower():
+            # Search subject
+            subject = (event.get('subject', '') or '').lower()
+            if query_lower in subject:
                 matched.append(event)
                 if len(matched) >= limit:
                     break
+                continue
+
+            # Search organizer
+            organizer = (event.get('organizer', '') or '').lower()
+            if query_lower in organizer:
+                matched.append(event)
+                if len(matched) >= limit:
+                    break
+                continue
+
+            # Search attendee names and emails
+            attendees = event.get('attendees', [])
+            for att in attendees:
+                name = (att.get('name', '') or '').lower()
+                email = (att.get('email', '') or '').lower()
+                if query_lower in name or query_lower in email:
+                    matched.append(event)
+                    break
+            if len(matched) >= limit:
+                break
 
         return matched
 

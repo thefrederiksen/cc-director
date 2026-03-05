@@ -1436,13 +1436,13 @@ def calendar_week(
 
 @calendar_app.command("search")
 def calendar_search(
-    query: str = typer.Argument(..., help="Search text (matches event subject)"),
+    query: str = typer.Argument(..., help="Search text (matches subject, organizer, attendee names/emails)"),
     start_date: str = typer.Option(None, "--start", "-s", help="Start date (YYYY-MM-DD). Default: 1 year ago"),
     end_date: str = typer.Option(None, "--end", "-e", help="End date (YYYY-MM-DD). Default: today"),
     calendar_name: str = typer.Option(None, "-c", "--calendar", help="Specific calendar name"),
     limit: int = typer.Option(25, "-n", "--limit", help="Max results to show"),
 ):
-    """Search calendar events by subject."""
+    """Search calendar events by subject, organizer, or attendee."""
     client = get_client()
 
     start_dt = None
