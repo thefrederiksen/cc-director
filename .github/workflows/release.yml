@@ -55,47 +55,7 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------
-  # Job 2: Build .NET CLI tools
-  # ---------------------------------------------------------------
-  build-dotnet-tools:
-    name: Build .NET Tools
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: Create artifacts directory
-        run: New-Item -ItemType Directory -Path artifacts -Force
-
-      # cc-click
-      - name: Build cc-click
-        working-directory: tools/cc-click
-        run: dotnet publish -c Release -o ../../artifacts/_cc-click
-
-      # cc-trisight
-      - name: Build cc-trisight
-        working-directory: tools/cc-trisight
-        run: dotnet publish -c Release -o ../../artifacts/_cc-trisight
-
-      # cc-computer
-      - name: Build cc-computer
-        working-directory: tools/cc-computer
-        run: dotnet publish ComputerApp -c Release -o ../../artifacts/_cc-computer
-
-      - name: Upload .NET tools artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dotnet-tools
-          path: artifacts/
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------
-  # Job 3: Build Python tools
+  # Job 2: Build Python tools (core document tools + installer)
   # ---------------------------------------------------------------
   build-python-tools:
     name: Build Python Tools
@@ -112,38 +72,16 @@ jobs:
       - name: Create artifacts directory
         run: New-Item -ItemType Directory -Path artifacts -Force
 
-      - name: Build all Python tools
+      - name: Build Python tools
         shell: pwsh
         run: |
+          # Lean release: core document tools + installer only.
+          # More tools will be added once the pipeline is proven.
           $tools = @(
-            "cc-crawl4ai",
-            "cc-docgen",
-            "cc-excel",
-            "cc-facebook",
-            "cc-gmail",
-            "cc-hardware",
-            "cc-html",
-            "cc-image",
-            "cc-linkedin",
-            "cc-outlook",
             "cc-pdf",
-            "cc-personresearch",
-            "cc-photos",
-            "cc-posthog",
-            "cc-powerpoint",
-            "cc-reddit",
-            "cc-settings",
-            "cc-setup",
-            "cc-spotify",
-            "cc-transcribe",
-            "cc-twitter",
-            "cc-vault",
-            "cc-video",
-            "cc-voice",
-            "cc-whisper",
+            "cc-html",
             "cc-word",
-            "cc-youtube",
-            "cc-youtube-info"
+            "cc-setup"
           )
 
           $failed = @()
@@ -195,12 +133,7 @@ jobs:
           Write-Host ""
           Write-Host "Python tools built: $built / $($tools.Count)" -ForegroundColor Cyan
           if ($failed.Count -gt 0) {
-            Write-Host "Failed tools: $($failed -join ', ')" -ForegroundColor Yellow
-            Write-Host "::warning::Python tools that failed to build: $($failed -join ', ')"
-          }
-
-          if ($built -eq 0) {
-            Write-Host "ERROR: No Python tools built successfully" -ForegroundColor Red
+            Write-Host "Failed tools: $($failed -join ', ')" -ForegroundColor Red
             exit 1
           }
 
@@ -209,119 +142,6 @@ jobs:
         with:
           name: python-tools
           path: artifacts/
-          if-no-files-found: warn
-
-  # ---------------------------------------------------------------
-  # Job 4: Build Node.js tools
-  # ---------------------------------------------------------------
-  build-node-tools:
-    name: Build Node.js Tools
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Create artifacts directory
-        run: New-Item -ItemType Directory -Path artifacts -Force
-
-      - name: Build Node.js tools
-        shell: pwsh
-        run: |
-          $tools = @("cc-browser", "cc-fox-browser", "cc-brandingrecommendations", "cc-websiteaudit")
-          $failed = @()
-
-          foreach ($tool in $tools) {
-            $toolDir = "tools/$tool"
-            $buildScript = "$toolDir/build.ps1"
-
-            if (-not (Test-Path $buildScript)) {
-              Write-Host "[SKIP] $tool - no build.ps1" -ForegroundColor Yellow
-              continue
-            }
-
-            Write-Host ""
-            Write-Host "============================================" -ForegroundColor Cyan
-            Write-Host "Building $tool..." -ForegroundColor Cyan
-            Write-Host "============================================" -ForegroundColor Cyan
-
-            Push-Location $toolDir
-            try {
-              & powershell -ExecutionPolicy Bypass -File build.ps1
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "[FAIL] $tool build failed" -ForegroundColor Red
-                $failed += $tool
-                continue
-              }
-
-              $distDir = "dist"
-              if (Test-Path $distDir) {
-                $destDir = "../../artifacts/_$tool"
-                Copy-Item $distDir $destDir -Recurse -Force
-                Write-Host "[OK] $tool -> _$tool/" -ForegroundColor Green
-              } else {
-                Write-Host "[FAIL] dist/ not found after build" -ForegroundColor Red
-                $failed += $tool
-              }
-            } finally {
-              Pop-Location
-            }
-          }
-
-          if ($failed.Count -gt 0) {
-            Write-Host ""
-            Write-Host "Failed tools: $($failed -join ', ')" -ForegroundColor Red
-            exit 1
-          }
-
-      - name: Upload Node.js tools artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-tools
-          path: artifacts/
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------
-  # Job 5: Build self-contained installer wizard
-  # ---------------------------------------------------------------
-  build-installer:
-    name: Build Installer Wizard
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Build cc-setup (installer wizard)
-        working-directory: tools/cc-setup
-        shell: pwsh
-        run: |
-          & powershell -ExecutionPolicy Bypass -File build.ps1
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-          if (-not (Test-Path "dist/cc-director-setup.exe")) {
-            Write-Error "cc-director-setup.exe not found after build"
-            exit 1
-          }
-
-      - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer
-          path: tools/cc-setup/dist/cc-director-setup.exe
           if-no-files-found: error
 
   # ---------------------------------------------------------------
@@ -332,10 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-director
-      - build-dotnet-tools
       - build-python-tools
-      - build-node-tools
-      - build-installer
 
     steps:
       - uses: actions/checkout@v4
@@ -346,7 +163,7 @@ jobs:
           path: release-artifacts
 
       - name: List artifacts
-        run: find release-artifacts -type f | head -100
+        run: find release-artifacts -type f | head -50
 
       - name: Collect release files
         run: |
@@ -356,29 +173,8 @@ jobs:
           # Main app
           cp release-artifacts/cc-director/cc-director.exe "$RELEASE_DIR/"
 
-          # Installer
-          cp release-artifacts/installer/cc-director-setup.exe "$RELEASE_DIR/"
-
-          # Python tools (individual .exe files)
-          if [ -d "release-artifacts/python-tools" ]; then
-            cp release-artifacts/python-tools/*.exe "$RELEASE_DIR/" 2>/dev/null || true
-          fi
-
-          # .NET tools - zip each tool directory
-          for dir in release-artifacts/dotnet-tools/_cc-*; do
-            if [ -d "$dir" ]; then
-              tool_name=$(basename "$dir" | sed 's/^_//')
-              (cd "$dir" && zip -r "$RELEASE_DIR/${tool_name}.zip" .)
-            fi
-          done
-
-          # Node.js tools - zip each tool directory
-          for dir in release-artifacts/node-tools/_cc-*; do
-            if [ -d "$dir" ]; then
-              tool_name=$(basename "$dir" | sed 's/^_//')
-              (cd "$dir" && zip -r "$RELEASE_DIR/${tool_name}.zip" .)
-            fi
-          done
+          # Python tools (individual .exe files including installer)
+          cp release-artifacts/python-tools/*.exe "$RELEASE_DIR/"
 
           echo ""
           echo "Release files:"
