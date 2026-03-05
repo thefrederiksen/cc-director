@@ -18,6 +18,7 @@ import {
   launchChromeForConnection, killChromeForConnection,
   findChromeExecutable, listAvailableBrowsers,
 } from './chrome-launch.mjs';
+import { ensureInstalled } from '../native-host/install.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -599,6 +600,14 @@ server.listen(daemonPort, '127.0.0.1', () => {
   console.log(`[cc-browser] Daemon v2 listening on http://127.0.0.1:${daemonPort}`);
   console.log(`[cc-browser] WebSocket transport ready on ws://127.0.0.1:${daemonPort}/ws`);
   writeLockfile(daemonPort);
+
+  // Ensure native messaging host is installed (no-op if already correct)
+  try {
+    ensureInstalled();
+  } catch (err) {
+    console.error(`[cc-browser] WARNING: Native host install check failed: ${err.message}`);
+  }
+
   console.log('[cc-browser] Ready for commands');
 });
 

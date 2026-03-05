@@ -1,0 +1,9 @@
+{
+  "name": "com.cc_browser.bridge",
+  "description": "CC Browser Native Messaging Bridge",
+  "path": "PLACEHOLDER_NATIVE_HOST_PATH",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://PLACEHOLDER_EXTENSION_ID/"
+  ]
+}

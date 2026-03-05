@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "CC Browser Bridge",
+  "version": "2.0.0",
+  "description": "Bridge between cc-browser daemon and Chrome via Native Messaging",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "nativeMessaging",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "minimum_chrome_version": "116"
+}

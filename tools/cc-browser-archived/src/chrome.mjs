@@ -4,6 +4,7 @@
 
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync, rmSync, readdirSync, readFileSync } from 'fs';
+import { rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import { createServer } from 'net';
@@ -300,6 +301,35 @@ export function resetChromeUserDataDir(browserKind = 'chrome', workspaceName = '
   return dir;
 }
 
+// ---------------------------------------------------------------------------
+// User Data Dir Cleanup (GPU cache corruption + stale lockfiles)
+// ---------------------------------------------------------------------------
+
+// Files/dirs that corrupt or lock after force-kill
+const CLEANUP_TARGETS = [
+  'GrShaderCache',
+  'GraphiteDawnCache',
+  'lockfile',
+  'SingletonLock',
+  'SingletonSocket',
+  'SingletonCookie',
+];
+
+export async function cleanUserDataDir(userDataDir) {
+  if (!userDataDir || !existsSync(userDataDir)) return;
+  const results = [];
+  for (const target of CLEANUP_TARGETS) {
+    const targetPath = join(userDataDir, target);
+    try {
+      await rm(targetPath, { recursive: true, force: true });
+      results.push(target);
+    } catch {
+      // Target did not exist or was already gone -- no-op
+    }
+  }
+  return results;
+}
+
 export async function launchChrome(opts = {}) {
   const {
     port = DEFAULT_CDP_PORT,
@@ -376,7 +406,6 @@ export async function launchChrome(opts = {}) {
 
   args.push(
     '--disable-features=TranslateUI',
-    '--new-window',
   );
 
   // Edge-specific: prevent merging into existing Edge instance
@@ -423,11 +452,15 @@ export async function launchChrome(opts = {}) {
     launchOpts.channel = 'msedge';
   }
 
+  // Clean corruption-prone files before launch (GPU cache, stale lockfiles)
+  await cleanUserDataDir(userDataDir);
+
   // Launch via Playwright persistent context (uses --remote-debugging-pipe, not port)
   const context = await chromium.launchPersistentContext(userDataDir, launchOpts);
 
-  // Store context for lifecycle management
+  // Store context and userDataDir for lifecycle management
   pipeLaunchedContext = context;
+  pipeLaunchedUserDataDir = userDataDir;
 
   if (incognito) {
     setIncognitoUserDataDir(userDataDir);
@@ -471,19 +504,29 @@ export async function launchChrome(opts = {}) {
 // ---------------------------------------------------------------------------
 
 export async function checkChromeRunning(port = DEFAULT_CDP_PORT) {
-  // Check pipe-launched context first
-  if (pipeLaunchedContext) {
+  // Check pipe-launched context first (active CDP probe, not just isConnected)
+  const ctx = pipeLaunchedContext;
+  if (ctx) {
     try {
-      const browser = pipeLaunchedContext.browser();
+      const browser = ctx.browser();
       if (!browser || !browser.isConnected()) {
-        throw new Error('Browser disconnected');
+        throw new Error('disconnected');
       }
+      // Active CDP probe -- ctx.pages() requires a live pipe; timeout protects
+      // against hung connections where isConnected() lies.
+      await Promise.race([
+        ctx.pages(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 2000)
+        ),
+      ]);
+
       // Context is alive - gather tab info
-      const pages = pipeLaunchedContext.pages();
+      const pages = ctx.pages();
       const tabs = [];
       for (const page of pages) {
         try {
-          const session = await pipeLaunchedContext.newCDPSession(page);
+          const session = await ctx.newCDPSession(page);
           const info = await session.send('Target.getTargetInfo');
           const targetId = info?.targetInfo?.targetId || null;
           await session.detach().catch(() => {});
@@ -501,14 +544,15 @@ export async function checkChromeRunning(port = DEFAULT_CDP_PORT) {
       return {
         running: true,
         pipeMode: true,
-        browser: pipeLaunchedContext.browser(),
-        context: pipeLaunchedContext,
+        browser: ctx.browser(),
+        context: ctx,
         tabs,
         activeTab: tabs[0]?.targetId || null,
       };
     } catch {
-      // Pipe context is dead, clear it
+      // Pipe context is stale/dead -- clear it
       pipeLaunchedContext = null;
+      pipeLaunchedUserDataDir = null;
     }
   }
 
@@ -574,6 +618,7 @@ let incognitoUserDataDir = null;
 
 // Track Playwright pipe-launched context (replaces spawn + CDP port)
 let pipeLaunchedContext = null;
+let pipeLaunchedUserDataDir = null;
 
 export function setLaunchedChromePid(pid) {
   launchedChromePid = pid;
@@ -611,6 +656,12 @@ export async function stopChrome(port = DEFAULT_CDP_PORT) {
       // Context may already be closed
     }
     pipeLaunchedContext = null;
+
+    // Clean GPU cache and lockfiles after close
+    if (pipeLaunchedUserDataDir) {
+      await cleanUserDataDir(pipeLaunchedUserDataDir);
+      pipeLaunchedUserDataDir = null;
+    }
   }
 
   // If we have the PID, kill the process directly (fallback)
