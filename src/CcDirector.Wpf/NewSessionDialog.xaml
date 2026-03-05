@@ -169,6 +169,10 @@
                                 Style="{StaticResource CoachingButton}"
                                 Click="BtnCoaching_Click"
                                 ToolTip="Software development coaching" />
+                        <Button Content="Log" Tag="log"
+                                Style="{StaticResource CoachingButton}"
+                                Click="BtnCoaching_Click"
+                                ToolTip="Application logs, debugging" />
                     </StackPanel>
                 </Grid>
             </TabItem>
