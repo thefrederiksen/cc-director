@@ -148,10 +148,9 @@ This bypasses React's synthetic event system and triggers the actual state updat
 
 ---
 
-## 8. Workspace Configuration
+## 8. Connection Configuration
 
-cc-browser uses `{browser}-{workspace}` directory naming:
-- `chrome-personal` -> browser=chrome, workspace=personal
-- Daemon reads `workspace.json` for `daemonPort`, `cdpPort`, profile settings
-- Multiple workspaces can run simultaneously on different ports
-- cc-spotify stores its default workspace in `CcStorage.tool_config("spotify")/config.json`
+cc-browser v2 uses a connections registry (`connections.json`) in `%LOCALAPPDATA%\cc-director\connections\`.
+- Each connection has a name and optional `toolBinding` for auto-resolution
+- Daemon port is read from `%LOCALAPPDATA%\cc-browser\daemon.lock`
+- cc-spotify stores its default connection in `CcStorage.tool_config("spotify")/config.json`

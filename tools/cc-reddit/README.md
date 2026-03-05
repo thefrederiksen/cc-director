@@ -16,18 +16,15 @@ cc-reddit enables programmatic Reddit interactions through browser automation, a
 
 ## Requirements
 
-- cc-browser daemon running (workspace resolved via `~/.cc-reddit/config.json`)
-- Chrome/Edge browser
+- cc-browser daemon running (connection resolved via tool binding or config)
+- Chrome browser with cc-browser extension
 - Logged into Reddit in the browser
 
 ## Quick Start
 
 ```bash
-# First time: open browser UI to log into Reddit
-cc-browser start --workspace reddit
-
-# Start cc-browser daemon (for automation)
-cc-browser daemon --workspace reddit
+# First time: open browser to log into Reddit
+cc-browser connections open reddit
 
 # Check Reddit login status
 cc-reddit status
@@ -104,27 +101,22 @@ cc-reddit upvote abc123
 ## Options
 
 ```
---workspace TEXT  Browser workspace (default from ~/.cc-reddit/config.json, or "reddit")
---format TEXT     Output: text, json, markdown
---delay FLOAT     Delay between actions (seconds)
---verbose         Detailed output
+--connection TEXT  Browser connection (auto-resolved via tool binding, or use --connection)
+--format TEXT      Output: text, json, markdown
+--delay FLOAT      Delay between actions (seconds)
+--verbose          Detailed output
 ```
 
 ## Browser Setup
 
-1. Start cc-browser to open the browser UI and log into Reddit:
+1. Open the browser and log into Reddit:
    ```bash
-   cc-browser start --workspace reddit
+   cc-browser connections open reddit
    ```
 
 2. Log into Reddit in the browser window that opens
 
-3. Start the daemon for automation:
-   ```bash
-   cc-browser daemon --workspace reddit
-   ```
-
-4. Your session persists - cc-reddit uses the same browser session
+3. Your session persists - cc-reddit uses the same browser session
 
 ## How It Works
 
@@ -135,7 +127,7 @@ cc-reddit (Python CLI)
     v
 cc-browser daemon (Node.js)
     |
-    | Chrome DevTools Protocol
+    | Chrome Extension + Native Messaging
     v
 Chrome browser (logged into Reddit)
 ```

@@ -32,7 +32,7 @@ Node.js and .NET tools include both `.cmd` (Windows) and extensionless (Git Bash
 
 | Tool | Description | Requirements |
 |------|-------------|--------------|
-| cc-browser | Persistent browser automation with workspaces | Node.js, Playwright |
+| cc-browser | Browser automation with persistent connections | Chrome Extension |
 | cc-linkedin | LinkedIn automation with human-like delays | Playwright, cc-browser |
 | cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
 | cc-spotify | Spotify playback control via browser | cc-browser |
@@ -299,83 +299,53 @@ cc-outlook profile
 
 ### cc-browser
 
-Persistent browser automation with workspace management. Runs as a daemon for persistent sessions.
+Browser automation via Chrome Extension + Native Messaging with persistent connections. Runs as a daemon for persistent sessions.
 
 ```bash
 # Daemon
 cc-browser daemon
 cc-browser status
 
-# Browser management
-cc-browser browsers                                  # List available browsers
-cc-browser profiles [--browser chrome]               # List system profiles
-cc-browser workspaces                                # List workspaces
-cc-browser favorites --workspace work                # Get favorites
-
-# Launch
-cc-browser start --workspace myworkspace
-cc-browser start --browser edge --workspace work
-cc-browser start --incognito
-cc-browser stop
+# Connection management
+cc-browser connections list                          # List all connections
+cc-browser connections add myconnection              # Add a connection
+cc-browser connections add spotify --tool cc-spotify # Add with tool binding
+cc-browser connections open myconnection             # Launch Chrome
+cc-browser connections close myconnection            # Close Chrome
+cc-browser connections remove myconnection           # Delete connection
+cc-browser connections status                        # Status of all connections
 
 # Navigation
 cc-browser navigate --url "https://example.com"
-cc-browser reload
-cc-browser back / forward
 
 # Page inspection
-cc-browser snapshot [--interactive]
+cc-browser snapshot [--interactive] [--compact]
 cc-browser info
 cc-browser text [--selector ".content"]
 cc-browser html [--selector ".content"]
 
 # Interactions
 cc-browser click --ref <e1>
-cc-browser click --text "Submit"
-cc-browser click --selector ".btn"
 cc-browser type --ref <e1> --text "hello"
+cc-browser fill --ref <e1> --value "hello"
 cc-browser press --key Enter
 cc-browser hover --ref <e1>
-cc-browser select --ref <e1> --value "option"
-cc-browser scroll [--direction down]
+cc-browser scroll [--direction down] [--amount 500]
 
 # Screenshots
-cc-browser screenshot [--fullPage]
-cc-browser screenshot --save ./page.png
-cc-browser screenshot-labels
+cc-browser screenshot [--type jpeg]
 
 # Tabs
 cc-browser tabs
-cc-browser tabs-open [--url <url>]
-cc-browser tabs-close --tab <targetId>
-cc-browser tabs-focus --tab <targetId>
-
-# Mode (speed/detection)
-cc-browser mode human
-cc-browser mode fast
-cc-browser mode stealth
-
-# Record and replay
-cc-browser record start
-cc-browser record stop --output flow.json
-cc-browser replay --file flow.json
-
-# CAPTCHA
-cc-browser captcha detect
-cc-browser captcha solve
-
-# Sessions
-cc-browser session create --name <name>
-cc-browser session list
-cc-browser session close --session <id>
+cc-browser tabs/open [--url <url>]
+cc-browser tabs/close --tab <targetId>
 
 # JavaScript
-cc-browser evaluate --js "document.title"
+cc-browser evaluate --fn "() => document.title"
 
 # Advanced
 cc-browser wait --text "loaded"
-cc-browser fill --fields '[...]'
-cc-browser upload --ref <e1> --path <file>
+cc-browser wait --selector ".done"
 ```
 
 **Note:** NEVER use cc-browser directly with LinkedIn or Reddit. Use cc-linkedin and cc-reddit instead.
@@ -478,11 +448,11 @@ cc-reddit screenshot
 
 ### cc-spotify
 
-Spotify CLI via browser automation. Controls Spotify Web Player through a cc-browser workspace.
+Spotify CLI via browser automation. Controls Spotify Web Player through a cc-browser connection.
 
 ```bash
 # Setup
-cc-spotify config --workspace edge-personal
+cc-spotify config --connection edge-personal
 
 # Status
 cc-spotify status
@@ -513,7 +483,7 @@ cc-spotify recommend
 cc-spotify recommend --mood "chill jazz"
 
 # Config
-cc-spotify config --workspace NAME
+cc-spotify config --connection NAME
 cc-spotify config --show
 ```
 

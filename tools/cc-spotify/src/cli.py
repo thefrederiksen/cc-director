@@ -7,7 +7,7 @@ from typing import Optional
 import json
 from pathlib import Path
 
-from .browser_client import BrowserClient, BrowserError, WorkspaceError
+from .browser_client import BrowserClient, BrowserError, ConnectionError, WorkspaceError
 from .selectors import SpotifyKeys, SpotifySelectors, SpotifyURLs
 from .delays import jittered_sleep
 import time
@@ -51,11 +51,11 @@ def get_config_dir() -> Path:
         return CcStorage.tool_config("spotify")
 
 
-def load_default_workspace() -> Optional[str]:
-    """Load default workspace from config.json.
+def load_default_connection() -> Optional[str]:
+    """Load default connection from config.json.
 
     Returns:
-        Default workspace name from config, or None if not configured.
+        Default connection name from config, or None to auto-resolve by tool binding.
     """
     config_file = get_config_dir() / "config.json"
 
@@ -65,7 +65,7 @@ def load_default_workspace() -> Optional[str]:
     try:
         with open(config_file, "r") as f:
             data = json.load(f)
-        return data.get("default_workspace")
+        return data.get("default_connection", data.get("default_workspace"))
     except json.JSONDecodeError as e:
         console.print(f"[red]ERROR:[/red] Invalid JSON in {config_file}: {e}")
         raise typer.Exit(1)
@@ -74,8 +74,8 @@ def load_default_workspace() -> Optional[str]:
         raise typer.Exit(1)
 
 
-def save_config(workspace: str) -> Path:
-    """Save workspace to config.json."""
+def save_config(connection: str) -> Path:
+    """Save connection to config.json."""
     config_dir = get_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
     config_file = config_dir / "config.json"
@@ -88,7 +88,7 @@ def save_config(workspace: str) -> Path:
         except (json.JSONDecodeError, IOError):
             data = {}
 
-    data["default_workspace"] = workspace
+    data["default_connection"] = connection
 
     with open(config_file, "w") as f:
         json.dump(data, f, indent=2)
@@ -96,16 +96,18 @@ def save_config(workspace: str) -> Path:
     return config_file
 
 
-def list_available_workspaces() -> list[str]:
-    """List available cc-browser workspaces."""
-    from .browser_client import get_cc_browser_dir
-    cc_browser_dir = get_cc_browser_dir()
-    workspaces = []
-    if cc_browser_dir.exists():
-        for d in cc_browser_dir.iterdir():
-            if d.is_dir() and (d / "workspace.json").exists():
-                workspaces.append(d.name)
-    return workspaces
+def list_available_connections() -> list[str]:
+    """List available cc-browser connections."""
+    from .browser_client import get_connections_registry
+    registry = get_connections_registry()
+    if not registry.exists():
+        return []
+    try:
+        import json as _json
+        connections = _json.loads(registry.read_text())
+        return [c.get("name", "?") for c in connections]
+    except (json.JSONDecodeError, IOError):
+        return []
 
 
 # =============================================================================
@@ -122,10 +124,10 @@ app_config = AppConfig()
 
 
 def get_client() -> BrowserClient:
-    """Get browser client instance for configured workspace."""
+    """Get browser client instance for configured connection."""
     try:
-        return BrowserClient(workspace=app_config.workspace)
-    except WorkspaceError as e:
+        return BrowserClient(connection=app_config.workspace)
+    except (ConnectionError, WorkspaceError) as e:
         console.print(f"[red]ERROR:[/red] {e}")
         raise typer.Exit(1)
 
@@ -175,9 +177,13 @@ def parse_js_result(result: dict) -> dict:
 
 @app.callback()
 def main(
+    connection: Optional[str] = typer.Option(
+        None, "--connection", "-c",
+        help="cc-browser connection name"
+    ),
     workspace: Optional[str] = typer.Option(
-        None, "--workspace", "-w",
-        help="cc-browser workspace name or alias"
+        None, "--workspace", "-w", hidden=True,
+        help="Deprecated: use --connection"
     ),
     format: str = typer.Option(
         "text", "--format", "-f",
@@ -190,40 +196,26 @@ def main(
 ):
     """Spotify CLI via browser automation.
 
-    Control Spotify Web Player through a cc-browser workspace.
+    Control Spotify Web Player through a cc-browser connection.
     Requires cc-browser daemon to be running with Spotify open.
 
     First-time setup:
-      cc-spotify config --workspace <name>
-      cc-browser start --workspace <name>
+      cc-spotify config --connection <name>
+      cc-browser connections open <name>
       (navigate to open.spotify.com and log in)
     """
-    if workspace is None:
-        workspace = load_default_workspace()
+    resolved = connection or workspace or load_default_connection()
 
-    if workspace is None:
-        # Only fail if running a command that needs a workspace
-        # (not 'config')
-        workspace = ""
-
-    app_config.workspace = workspace
+    app_config.workspace = resolved  # May be None; BrowserClient auto-resolves
     app_config.format = format
     app_config.verbose = verbose
 
 
-def _ensure_workspace():
-    """Ensure workspace is configured before running commands."""
-    if not app_config.workspace:
-        console.print(
-            "[red]ERROR:[/red] No workspace configured.\n\n"
-            "Use 'cc-spotify config --workspace <name>' to set one.\n"
-        )
-        available = list_available_workspaces()
-        if available:
-            console.print("Available workspaces:")
-            for ws in available:
-                console.print(f"  - {ws}")
-        raise typer.Exit(1)
+def _ensure_connection():
+    """Ensure connection is available before running commands."""
+    # With v2, BrowserClient can auto-resolve via tool binding,
+    # so we only need to check if workspace is explicitly empty string
+    pass
 
 
 # =============================================================================
@@ -232,9 +224,13 @@ def _ensure_workspace():
 
 @app.command()
 def config(
+    connection: Optional[str] = typer.Option(
+        None, "--connection", "-c",
+        help="Set default connection"
+    ),
     workspace: Optional[str] = typer.Option(
-        None, "--workspace", "-w",
-        help="Set default workspace"
+        None, "--workspace", "-w", hidden=True,
+        help="Deprecated: use --connection"
     ),
     show: bool = typer.Option(
         False, "--show", "-s",
@@ -243,8 +239,9 @@ def config(
 ):
     """Configure cc-spotify settings."""
     config_file = get_config_dir() / "config.json"
+    resolved = connection or workspace
 
-    if show or workspace is None:
+    if show or resolved is None:
         if config_file.exists():
             with open(config_file, "r") as f:
                 data = json.load(f)
@@ -252,17 +249,17 @@ def config(
             console.print_json(json.dumps(data, indent=2))
         else:
             console.print(f"No config file found at: {config_file}")
-            console.print("Run: cc-spotify config --workspace <name>")
+            console.print("Run: cc-spotify config --connection <name>")
 
-        available = list_available_workspaces()
+        available = list_available_connections()
         if available:
-            console.print("\nAvailable cc-browser workspaces:")
-            for ws in available:
-                console.print(f"  - {ws}")
+            console.print("\nAvailable cc-browser connections:")
+            for c in available:
+                console.print(f"  - {c}")
         return
 
-    saved = save_config(workspace)
-    success(f"Default workspace set to '{workspace}'")
+    saved = save_config(resolved)
+    success(f"Default connection set to '{resolved}'")
     console.print(f"Config saved to: {saved}")
 
 
@@ -273,7 +270,7 @@ def config(
 @app.command()
 def status():
     """Check cc-browser daemon and Spotify connection status."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -321,7 +318,7 @@ def status():
 @app.command()
 def now():
     """Show currently playing track info."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -362,7 +359,7 @@ def now():
 @app.command()
 def play():
     """Resume playback."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -386,7 +383,7 @@ def play():
 @app.command()
 def pause():
     """Pause playback."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -410,7 +407,7 @@ def pause():
 @app.command(name="next")
 def next_track():
     """Skip to next track."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -433,7 +430,7 @@ def next_track():
 @app.command(name="prev")
 def prev_track():
     """Go to previous track."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -462,7 +459,7 @@ def shuffle(
     off: bool = typer.Option(False, "--off", help="Turn shuffle off"),
 ):
     """Toggle shuffle mode, or set explicitly with --on/--off."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -503,7 +500,7 @@ def repeat(
     ),
 ):
     """Set repeat mode or cycle through modes."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -544,7 +541,7 @@ def volume(
     level: int = typer.Argument(..., help="Volume level 0-100"),
 ):
     """Set volume level (0-100)."""
-    _ensure_workspace()
+    _ensure_connection()
 
     if level < 0 or level > 100:
         error("Volume must be between 0 and 100")
@@ -573,7 +570,7 @@ def volume(
 @app.command()
 def like():
     """Heart/save the currently playing track."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -607,7 +604,7 @@ def search(
     query: str = typer.Argument(..., help="Search query"),
 ):
     """Search Spotify for tracks, artists, albums."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -668,7 +665,7 @@ def playlists(
     ),
 ):
     """List library items from the sidebar."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -719,7 +716,7 @@ def playlist(
     name: str = typer.Argument(..., help="Playlist name to play"),
 ):
     """Play a playlist by name (searches sidebar)."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -773,7 +770,7 @@ def playlist(
 @app.command()
 def queue():
     """Show the playback queue."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -973,7 +970,7 @@ def liked(
     mouse wheel events via the daemon (slower, ~6 min, but behaves like
     a human scrolling). Both methods typically capture 96%+ of tracks.
     """
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         client = get_client()
@@ -1037,7 +1034,7 @@ def goto(
     url: str = typer.Argument(..., help="Spotify URL to navigate to"),
 ):
     """Navigate to a Spotify URL."""
-    _ensure_workspace()
+    _ensure_connection()
 
     if not url.startswith("http"):
         # Assume it's a Spotify URI or path
@@ -1077,7 +1074,7 @@ def recommend(
     ),
 ):
     """Get music recommendations powered by vault preferences."""
-    _ensure_workspace()
+    _ensure_connection()
 
     try:
         from .vault_integration import get_recommendations

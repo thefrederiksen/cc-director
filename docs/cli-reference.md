@@ -6,93 +6,59 @@ Auto-generated from `--help` output. Use `<tool> <command> --help` for subcomman
 
 ## cc-browser
 
-Browser automation with persistent workspaces.
+Browser automation via Chrome Extension + Native Messaging with persistent connections.
 
 ```
-USAGE: cc-browser <command> [options]
+USAGE: cc-browser [--connection <name>] <command> [options]
 
-DAEMON:
-  daemon              Start the daemon (keeps running)
-  status              Check daemon and browser status
+CONNECTION MANAGEMENT:
+  connections list                   List all connections
+  connections add <name> [--url URL] [--tool TOOL]
+                                     Add a new connection
+  connections open <name>            Launch Chrome for connection
+  connections close <name>           Close Chrome for connection
+  connections remove <name>          Delete connection
+  connections status                 Show daemon and connection status
 
-BROWSER LIFECYCLE:
-  browsers            List available browsers
-  profiles            List Chrome/Edge built-in profiles
-  workspaces          List configured cc-browser workspaces
-  favorites           Get favorites from workspace.json
-  start               Start browser (--workspace, --browser, --incognito, --no-indicator)
-  stop                Stop browser
-
-NAVIGATION:
-  navigate --url <url>    Go to URL
-  reload                  Reload page
-  back / forward          Navigate history
-
-PAGE INSPECTION:
-  snapshot [--interactive]     Get page structure with element refs
-  info                         Page URL, title, viewport
-  text [--selector <css>]      Page text content
-  html [--selector <css>]      Page HTML
+BROWSER COMMANDS (require --connection or single active connection):
+  navigate --url <url>               Navigate to URL
+  snapshot [--interactive] [--compact]
+                                     Get page structure with element refs
+  info                               Page URL, title, viewport
+  text [--selector <css>]            Get text content
+  html [--selector <css>]            Get HTML content
 
 INTERACTIONS:
-  click --ref <e1>             Click element by ref
-  click --text "Label"         Click by text content
-  click --selector ".btn"      Click by CSS selector
-  type --ref <e1> --text "x"   Type into element
-  press --key Enter            Press keyboard key
-  hover --ref <e1>             Hover over element
-  select --ref <e1> --value v  Select dropdown option
-  scroll [--direction down]    Scroll viewport
-  scroll --ref <e1>            Scroll element into view
+  click --ref <e1>                   Click element by ref
+  type --ref <e1> --text "x"         Type into element
+  fill --ref <e1> --value "x"        Fill input
+  press --key Enter                  Press keyboard key
+  hover --ref <e1>                   Hover over element
+  scroll [--direction down] [--amount 500]
+                                     Scroll viewport
+  wait --text "loaded"               Wait for text
+  wait --selector ".done"            Wait for selector
 
 SCREENSHOTS:
-  screenshot [--fullPage]          Take screenshot (base64)
-  screenshot --save ./page.png     Save to file
-  screenshot-labels                Screenshot with element labels
+  screenshot [--type jpeg]           Take screenshot (base64)
 
 TABS:
-  tabs                     List all tabs
-  tabs-open [--url <url>]  Open new tab
-  tabs-close --tab <id>    Close tab
-  tabs-focus --tab <id>    Focus tab
-
-MODE:
-  mode                     Show current mode
-  mode human               Human mode (delays + mouse curves)
-  mode fast                Fast mode (instant)
-  mode stealth             Stealth mode (human + anti-detect)
-
-RECORD & REPLAY:
-  record start / stop --output file.json / status
-  replay --file file.json [--mode fast]
-
-CAPTCHA:
-  captcha detect           Detect CAPTCHA on page
-  captcha solve            Auto-solve CAPTCHA
-
-SESSIONS:
-  session create --name <n>    Create named session
-  session list                 List active sessions
-  session close --session <id> Close session tabs
+  tabs                               List all tabs
+  tabs/open [--url <url>]            Open new tab
+  tabs/close --tab <id>              Close tab
 
 JAVASCRIPT:
-  evaluate --js "document.title"
-  evaluate --js "el => el.textContent" --ref e1
+  evaluate --fn "() => document.title"
 
-ADVANCED:
-  wait --text "loaded"         Wait for text
-  wait --time 1000             Wait ms
-  fill --fields '[...]'        Fill multiple form fields
-  upload --ref <e1> --path f   Upload file
+DAEMON:
+  daemon                             Start daemon in foreground
+  status                             Show daemon status
+  install                            Install native messaging host
 
 OPTIONS:
-  --port <port>       Daemon port (default: 9280)
-  --cdpPort <port>    Chrome CDP port (default: 9222)
-  --browser <name>    Browser: chrome, edge, brave
-  --workspace <name>  Named workspace (persists logins)
-  --no-indicator      Hide automation info bar
-  --tab <targetId>    Target specific tab
-  --timeout <ms>      Action timeout
+  --connection <name>  Target connection (auto-resolved if single active)
+  --port <port>        Daemon port (default: 9280)
+  --timeout <ms>       Action timeout
 ```
 
 ---
@@ -313,7 +279,8 @@ LinkedIn CLI via browser automation.
 USAGE: cc-linkedin [OPTIONS] COMMAND [ARGS]...
 
 OPTIONS:
-  --workspace  -w TEXT    cc-browser workspace
+  --connection -c TEXT    cc-browser connection name
+  --workspace  -w TEXT    Deprecated: use --connection
   --format        TEXT    Output: text, json, markdown [default: text]
   --delay         FLOAT   Delay between actions [default: 1.0]
   --verbose    -v         Verbose output
@@ -752,7 +719,8 @@ Reddit CLI via browser automation.
 USAGE: cc-reddit [OPTIONS] COMMAND [ARGS]...
 
 OPTIONS:
-  --workspace  -w TEXT    cc-browser workspace
+  --connection -c TEXT    cc-browser connection name
+  --workspace  -w TEXT    Deprecated: use --connection
   --format        TEXT    Output: text, json, markdown [default: text]
   --delay         FLOAT   Delay between actions [default: 1.0]
   --verbose    -v         Verbose output
@@ -786,7 +754,8 @@ Spotify CLI via browser automation.
 USAGE: cc-spotify [OPTIONS] COMMAND [ARGS]...
 
 OPTIONS:
-  --workspace  -w TEXT   cc-browser workspace
+  --connection -c TEXT   cc-browser connection name
+  --workspace  -w TEXT   Deprecated: use --connection
   --format     -f TEXT   Output: text, json [default: text]
   --verbose    -v        Verbose output
 
@@ -993,7 +962,7 @@ Most tools use these consistent flags:
 | `--version` | `-v` | Show version |
 | `--account` | `-a` | Account name (gmail, outlook) |
 | `--output` | `-o` | Output file path |
-| `--workspace` | `-w` | cc-browser workspace |
+| `--connection` | `-c` | cc-browser connection |
 | `--format` | `-f` | Output format (text, json, markdown) |
 | `--to` | `-t` | Recipient email |
 | `--subject` | `-s` | Email subject |

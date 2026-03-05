@@ -25,7 +25,7 @@ CC Director includes 33 command-line tools for document conversion, media proces
 
 | Tool | Description | Requirements |
 |------|-------------|--------------|
-| cc-browser | Persistent browser automation with workspaces | Node.js, Playwright |
+| cc-browser | Browser automation with persistent connections | Chrome Extension |
 | cc-fox-browser | Anti-detection browser automation (Camoufox/Firefox) | Node.js, Camoufox |
 | cc-linkedin | LinkedIn automation with human-like delays | Playwright, cc-browser |
 | cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
@@ -181,17 +181,17 @@ cc-gmail contacts
 
 ### cc-browser
 
-Persistent browser automation with workspace management.
+Browser automation via Chrome Extension + Native Messaging with persistent connections.
 
 ```bash
 cc-browser daemon
-cc-browser start --workspace myworkspace
+cc-browser connections open myconnection
 cc-browser navigate --url "https://example.com"
 cc-browser snapshot --interactive
 cc-browser click --ref e3
 cc-browser type --ref e4 --text "hello"
-cc-browser screenshot --save page.png
-cc-browser stop
+cc-browser screenshot
+cc-browser connections close myconnection
 ```
 
 ### cc-fox-browser
@@ -303,7 +303,7 @@ cc-youtube delete <video_id>                 # Delete a video
 Spotify playback control via browser automation.
 
 ```bash
-cc-spotify config --workspace edge-personal
+cc-spotify config --connection edge-personal
 cc-spotify status
 cc-spotify now
 cc-spotify play / pause / next / prev
@@ -314,7 +314,7 @@ cc-spotify volume 75
 cc-spotify recommend --mood "chill"
 ```
 
-**Setup:** Requires a cc-browser workspace with Spotify Web Player open and logged in.
+**Setup:** Requires a cc-browser connection with Spotify Web Player open and logged in.
 
 ### cc-crawl4ai
 

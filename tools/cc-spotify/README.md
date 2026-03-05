@@ -1,19 +1,19 @@
 # cc-spotify
 
-Spotify CLI via browser automation. Controls the Spotify Web Player (open.spotify.com) through a cc-browser workspace. No Spotify API key needed.
+Spotify CLI via browser automation. Controls the Spotify Web Player (open.spotify.com) through a cc-browser connection. No Spotify API key needed.
 
 ## Setup
 
-1. Configure a workspace (any existing cc-browser workspace where you're logged into Spotify):
+1. Configure a connection (any existing cc-browser connection where you're logged into Spotify):
 
 ```bash
-cc-spotify config --workspace edge-personal
+cc-spotify config --connection edge-personal
 ```
 
-2. Start the browser (if not already running):
+2. Open the browser (if not already running):
 
 ```bash
-cc-browser start --workspace edge-personal
+cc-browser connections open edge-personal
 ```
 
 3. Navigate to open.spotify.com in the browser and log in (one-time, session persists).
@@ -68,7 +68,7 @@ cc-spotify recommend --mood "chill"     # Mood-filtered suggestions
 ### Configuration
 
 ```bash
-cc-spotify config --workspace NAME      # Set default workspace
+cc-spotify config --connection NAME     # Set default connection
 cc-spotify config --show                # Show current config
 ```
 
@@ -76,7 +76,7 @@ cc-spotify config --show                # Show current config
 
 | Option | Description |
 |--------|-------------|
-| `--workspace, -w` | Override workspace per-call |
+| `--connection, -c` | Override connection per-call |
 | `--format, -f` | Output format: text, json |
 | `--verbose, -v` | Dump raw snapshots for debugging |
 
@@ -92,15 +92,15 @@ cc-spotify uses three interaction methods:
 
 ## Requirements
 
-- cc-browser daemon running with a workspace
+- cc-browser daemon running with a connection
 - Spotify Web Player open and logged in (Premium recommended for full control)
 - Python 3.10+
 
 ## Troubleshooting
 
-**"No workspace configured"** - Run `cc-spotify config --workspace <name>`
+**"No connection configured"** - Run `cc-spotify config --connection <name>` or set up a tool binding
 
-**"Cannot connect to daemon"** - Start cc-browser: `cc-browser start --workspace <name>`
+**"Cannot connect to daemon"** - Start cc-browser: `cc-browser daemon`
 
 **"No now-playing widget found"** - Navigate to open.spotify.com and start playing a track
 

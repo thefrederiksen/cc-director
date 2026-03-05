@@ -48,9 +48,9 @@ class LinkedInSource(BaseSource):
     name = "linkedin"
     requires_browser = False  # Uses cc-linkedin CLI, not direct browser
 
-    def __init__(self, *args, linkedin_workspace: str = "linkedin", **kwargs):
+    def __init__(self, *args, linkedin_connection: str = "linkedin", **kwargs):
         super().__init__(*args, **kwargs)
-        self.linkedin_workspace = linkedin_workspace
+        self.linkedin_connection = linkedin_connection
 
     def fetch(self) -> SourceResult:
         results = {"search_results": [], "profile": None, "urls": []}
@@ -106,12 +106,12 @@ class LinkedInSource(BaseSource):
     def _search(self, query: str) -> list[dict]:
         """Run cc-linkedin search command.
 
-        --format and --workspace are GLOBAL options that go BEFORE the subcommand.
+        --format and --connection are GLOBAL options that go BEFORE the subcommand.
         """
         cmd = [
             "cc-linkedin",
             "--format", "json",
-            "--workspace", self.linkedin_workspace,
+            "--connection", self.linkedin_connection,
             "search", query,
             "--type", "people",
             "--limit", "5",
@@ -157,12 +157,12 @@ class LinkedInSource(BaseSource):
     def _get_profile(self, username: str) -> dict:
         """Run cc-linkedin profile command.
 
-        --format and --workspace are GLOBAL options that go BEFORE the subcommand.
+        --format and --connection are GLOBAL options that go BEFORE the subcommand.
         """
         cmd = [
             "cc-linkedin",
             "--format", "json",
-            "--workspace", self.linkedin_workspace,
+            "--connection", self.linkedin_connection,
             "profile", username,
         ]
         try:

@@ -303,7 +303,7 @@ class TestLinkedInSource:
         assert "acmecorp" in query_arg.lower()
 
     @patch("src.sources.linkedin.subprocess.run")
-    def test_passes_workspace(self, mock_run):
+    def test_passes_connection(self, mock_run):
         from src.sources.linkedin import LinkedInSource
 
         mock_result = MagicMock()
@@ -312,16 +312,16 @@ class TestLinkedInSource:
         mock_result.stderr = ""
         mock_run.return_value = mock_result
 
-        src = LinkedInSource(person_name="Test", linkedin_workspace="my-linkedin")
+        src = LinkedInSource(person_name="Test", linkedin_connection="my-linkedin")
         result = src.fetch()
 
-        # Check --workspace flag was passed as global option (before subcommand)
+        # Check --connection flag was passed as global option (before subcommand)
         call_args = mock_run.call_args_list[0][0][0]
-        ws_idx = call_args.index("--workspace")
-        assert call_args[ws_idx + 1] == "my-linkedin"
+        conn_idx = call_args.index("--connection")
+        assert call_args[conn_idx + 1] == "my-linkedin"
         # Global options must come before the "search" subcommand
         search_idx = call_args.index("search")
-        assert ws_idx < search_idx
+        assert conn_idx < search_idx
 
 
 class TestBrowserSources:

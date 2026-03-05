@@ -45,10 +45,14 @@ def search(
     email: Optional[str] = typer.Option(None, "--email", "-e", help="Email address"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location hint"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output JSON file path"),
-    workspace: Optional[str] = typer.Option(None, "--workspace", "-w",
-                                            help="cc-browser workspace for browsing (auto-detected if omitted)"),
-    linkedin_workspace: str = typer.Option("linkedin", "--linkedin-workspace",
-                                           help="cc-linkedin workspace (default: linkedin)"),
+    connection: Optional[str] = typer.Option(None, "--connection", "-c",
+                                            help="cc-browser connection for browsing (auto-detected if omitted)"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", hidden=True,
+                                            help="Deprecated: use --connection"),
+    linkedin_connection: str = typer.Option("linkedin", "--linkedin-connection",
+                                            help="cc-linkedin connection (default: linkedin)"),
+    linkedin_workspace: Optional[str] = typer.Option(None, "--linkedin-workspace", hidden=True,
+                                                     help="Deprecated: use --linkedin-connection"),
     api_only: bool = typer.Option(False, "--api-only", help="Only run API sources (no browser)"),
     skip: Optional[str] = typer.Option(None, "--skip", help="Comma-separated source names to skip"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
@@ -63,12 +67,15 @@ def search(
 
     skip_list = [s.strip() for s in skip.split(",")] if skip else []
 
+    resolved_connection = connection or workspace
+    resolved_linkedin = linkedin_connection or linkedin_workspace or "linkedin"
+
     report = run_search(
         name=name,
         email=email,
         location=location,
-        workspace=workspace,
-        linkedin_workspace=linkedin_workspace,
+        connection=resolved_connection,
+        linkedin_connection=resolved_linkedin,
         api_only=api_only,
         skip_sources=skip_list,
         verbose=verbose,

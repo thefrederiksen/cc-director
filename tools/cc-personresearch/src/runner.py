@@ -9,7 +9,7 @@ from typing import Optional
 from rich.console import Console
 from rich.table import Table
 
-from src.browser_client import BrowserClient, BrowserError, WorkspaceError, get_cc_browser_dir
+from src.browser_client import BrowserClient, BrowserError, ConnectionError, WorkspaceError
 from src.models import PersonReport, SearchParams, SourceResult
 
 # API sources (no browser needed)
@@ -65,40 +65,15 @@ def _log(msg: str, verbose: bool):
         console.print(f"  {msg}")
 
 
-def _detect_workspace() -> Optional[str]:
-    """Auto-detect an available browser workspace from lockfiles."""
+def _try_connect_browser(connection: str, verbose: bool) -> Optional[BrowserClient]:
+    """Try to connect to a browser connection with health check."""
     try:
-        cc_browser_dir = get_cc_browser_dir()
-        if not cc_browser_dir.exists():
-            return None
-
-        for workspace_dir in cc_browser_dir.iterdir():
-            if not workspace_dir.is_dir():
-                continue
-            lock_file = workspace_dir / "daemon.lock"
-            workspace_json = workspace_dir / "workspace.json"
-            if lock_file.exists() and workspace_json.exists():
-                try:
-                    with open(workspace_json, "r") as f:
-                        config = json.load(f)
-                    # Return the directory name as workspace identifier
-                    return workspace_dir.name
-                except (json.JSONDecodeError, IOError):
-                    continue
-    except Exception:
-        pass
-    return None
-
-
-def _try_connect_browser(workspace: str, verbose: bool) -> Optional[BrowserClient]:
-    """Try to connect to a browser workspace with health check."""
-    try:
-        browser = BrowserClient(workspace=workspace)
+        browser = BrowserClient(connection=connection)
         status = browser.status()
-        _log(f"Connected to cc-browser on workspace '{workspace}'", verbose)
+        _log(f"Connected to cc-browser on connection '{connection}'", verbose)
         return browser
-    except (BrowserError, WorkspaceError) as e:
-        _log(f"Cannot connect to workspace '{workspace}': {e}", verbose)
+    except (BrowserError, ConnectionError, WorkspaceError) as e:
+        _log(f"Cannot connect to connection '{connection}': {e}", verbose)
         return None
 
 
@@ -106,8 +81,8 @@ def run_search(
     name: str,
     email: Optional[str] = None,
     location: Optional[str] = None,
-    workspace: Optional[str] = None,
-    linkedin_workspace: str = "linkedin",
+    connection: Optional[str] = None,
+    linkedin_connection: str = "linkedin",
     api_only: bool = False,
     skip_sources: Optional[list[str]] = None,
     verbose: bool = False,
@@ -118,8 +93,8 @@ def run_search(
         name: Person's full name.
         email: Email address (optional but recommended).
         location: Location hint (optional).
-        workspace: cc-browser workspace for general browsing (auto-detected if None).
-        linkedin_workspace: Workspace for LinkedIn operations (default: "linkedin").
+        connection: cc-browser connection for general browsing (auto-resolved if None).
+        linkedin_connection: Connection for LinkedIn operations (default: "linkedin").
         api_only: If True, skip all browser and tool sources.
         skip_sources: List of source names to skip.
         verbose: Print progress messages.
@@ -173,7 +148,7 @@ def run_search(
             email=email,
             location=location,
             verbose=verbose,
-            linkedin_workspace=linkedin_workspace,
+            linkedin_connection=linkedin_connection,
         )
         result = li_src.run()
         report.add_result(result)
@@ -188,26 +163,23 @@ def run_search(
     # --- Connect to browser for remaining sources ---
     browser = None
 
-    # Auto-detect workspace if not specified
-    if workspace is None:
-        workspace = _detect_workspace()
-        if workspace:
-            _log(f"Auto-detected workspace: {workspace}", verbose)
-        else:
-            console.print(
-                "[bold yellow]WARNING:[/bold yellow] No active browser workspace detected.\n"
-                "Start one with: cc-browser start --workspace edge-work\n"
-                "Skipping all browser sources."
-            )
-            _mark_browser_sources_skipped(name, email, skip, report)
-            return report
+    # Try to connect (v2 auto-resolves via tool binding if connection is None)
+    if connection is not None:
+        browser = _try_connect_browser(connection, verbose)
+    else:
+        # Try auto-resolve - BrowserClient will find connection by toolBinding
+        try:
+            browser = BrowserClient()
+            browser.status()
+            _log(f"Auto-resolved browser connection: {browser.connection}", verbose)
+        except (BrowserError, ConnectionError, WorkspaceError) as e:
+            _log(f"Cannot auto-resolve browser connection: {e}", verbose)
+            browser = None
 
-    # Try to connect with health check
-    browser = _try_connect_browser(workspace, verbose)
     if not browser:
         console.print(
-            f"[bold red]ERROR:[/bold red] Cannot connect to cc-browser workspace '{workspace}'.\n"
-            f"Start it with: cc-browser start --workspace {workspace}\n"
+            "[bold yellow]WARNING:[/bold yellow] No browser connection available.\n"
+            "Create one with: cc-browser connections add research --tool cc-personresearch\n"
             "Skipping all browser sources."
         )
         _mark_browser_sources_skipped(name, email, skip, report)

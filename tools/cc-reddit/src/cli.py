@@ -36,35 +36,23 @@ def get_config_dir() -> Path:
         return CcStorage.tool_config("reddit")
 
 
-def load_default_workspace() -> str:
-    """Load default workspace from config.json.
+def load_default_connection() -> Optional[str]:
+    """Load default connection from config.json.
 
     Returns:
-        Default workspace name from config, or 'reddit' if not configured.
-
-    Raises:
-        typer.Exit: If config file is invalid.
+        Default connection name from config, or None to auto-resolve by tool binding.
     """
     config_file = get_config_dir() / "config.json"
 
     if not config_file.exists():
-        console.print(
-            f"[yellow]WARNING:[/yellow] Config file not found: {config_file}\n"
-            "Using default workspace: reddit\n"
-            'Create config.json with: {"default_workspace": "reddit"}'
-        )
-        return "reddit"
+        return None  # Auto-resolve by tool binding
 
     try:
         with open(config_file, "r") as f:
             data = json.load(f)
-        return data.get("default_workspace", "reddit")
-    except json.JSONDecodeError as e:
-        console.print(f"[red]ERROR:[/red] Invalid JSON in {config_file}: {e}")
-        raise typer.Exit(1)
-    except IOError as e:
-        console.print(f"[red]ERROR:[/red] Cannot read {config_file}: {e}")
-        raise typer.Exit(1)
+        return data.get("default_connection", data.get("default_workspace"))
+    except (json.JSONDecodeError, IOError):
+        return None
 
 
 # Global options stored in context
@@ -142,7 +130,8 @@ def warn(msg: str):
 
 @app.callback()
 def main(
-    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="cc-browser workspace name or alias"),
+    connection: Optional[str] = typer.Option(None, "--connection", "-c", help="cc-browser connection name"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", hidden=True, help="Deprecated: use --connection"),
     format: str = typer.Option("text", help="Output format: text, json, markdown"),
     delay: float = typer.Option(1.0, help="Delay between actions (seconds)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
@@ -150,13 +139,12 @@ def main(
     """Reddit CLI via browser automation.
 
     Requires cc-browser daemon to be running.
-    Start it with: cc-browser daemon --workspace reddit
+    Start it with: cc-browser daemon
     """
-    # Load default workspace from config if not specified
-    if workspace is None:
-        workspace = load_default_workspace()
+    # Resolve connection: explicit flag > config > auto-resolve by tool binding
+    resolved = connection or workspace or load_default_connection()
 
-    config.workspace = workspace
+    config.workspace = resolved  # May be None; BrowserClient auto-resolves
     config.format = format
     config.delay = delay
     config.verbose = verbose
