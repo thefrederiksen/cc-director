@@ -55,7 +55,7 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------
-  # Job 2: Build Python tools (core document tools + installer)
+  # Job 2: Build Python tools (core document tools)
   # ---------------------------------------------------------------
   build-python-tools:
     name: Build Python Tools
@@ -75,13 +75,10 @@ jobs:
       - name: Build Python tools
         shell: pwsh
         run: |
-          # Lean release: core document tools + installer only.
-          # More tools will be added once the pipeline is proven.
           $tools = @(
             "cc-pdf",
             "cc-html",
-            "cc-word",
-            "cc-setup"
+            "cc-word"
           )
 
           $failed = @()
@@ -109,13 +106,7 @@ jobs:
                 continue
               }
 
-              # Determine exe name
-              if ($tool -eq "cc-setup") {
-                $exeName = "cc-director-setup.exe"
-              } else {
-                $exeName = "$tool.exe"
-              }
-
+              $exeName = "$tool.exe"
               $exePath = "dist/$exeName"
               if (Test-Path $exePath) {
                 Copy-Item $exePath "../../artifacts/$exeName" -Force
@@ -145,6 +136,36 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------
+  # Job 3: Build Setup Wizard (.NET WPF, self-contained)
+  # ---------------------------------------------------------------
+  build-setup-wizard:
+    name: Build Setup Wizard
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish self-contained setup wizard
+        run: >
+          dotnet publish tools/cc-director-setup/CcDirectorSetup.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          --nologo
+
+      - name: Upload setup wizard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-wizard
+          path: tools/cc-director-setup/bin/Release/net10.0-windows/win-x64/publish/cc-director-setup.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
   # Final Job: Create GitHub Release
   # ---------------------------------------------------------------
   create-release:
@@ -153,6 +174,7 @@ jobs:
     needs:
       - build-director
       - build-python-tools
+      - build-setup-wizard
 
     steps:
       - uses: actions/checkout@v4
@@ -173,8 +195,11 @@ jobs:
           # Main app
           cp release-artifacts/cc-director/cc-director.exe "$RELEASE_DIR/"
 
-          # Python tools (individual .exe files including installer)
+          # Python tools (individual .exe files)
           cp release-artifacts/python-tools/*.exe "$RELEASE_DIR/"
+
+          # Setup wizard
+          cp release-artifacts/setup-wizard/cc-director-setup.exe "$RELEASE_DIR/"
 
           echo ""
           echo "Release files:"

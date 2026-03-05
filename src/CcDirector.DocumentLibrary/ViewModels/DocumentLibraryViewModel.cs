@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using CcDirector.Core.Utilities;
 using CcDirector.DocumentLibrary.Models;
 using CcDirector.DocumentLibrary.Services;
@@ -13,6 +14,7 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
     private Library? _selectedLibrary;
     private string? _selectedRelativeDir;
     private CatalogEntry? _selectedEntry;
+    private CatalogEntry? _selectedSearchEntry;
     private string _searchQuery = string.Empty;
     private string? _activeExtFilter;
     private string _statusText = string.Empty;
@@ -24,6 +26,7 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<Library> Libraries { get; } = [];
     public ObservableCollection<CatalogEntry> Entries { get; } = [];
+    public ObservableCollection<CatalogEntry> SearchResults { get; } = [];
 
     public Library? SelectedLibrary
     {
@@ -51,6 +54,12 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
     {
         get => _selectedEntry;
         set { _selectedEntry = value; OnPropertyChanged(); }
+    }
+
+    public CatalogEntry? SelectedSearchEntry
+    {
+        get => _selectedSearchEntry;
+        set { _selectedSearchEntry = value; OnPropertyChanged(); }
     }
 
     public string SearchQuery
@@ -117,11 +126,14 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             var libs = await Task.Run(() => _db.ListLibraries());
-            Libraries.Clear();
-            foreach (var lib in libs)
-                Libraries.Add(lib);
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                Libraries.Clear();
+                foreach (var lib in libs)
+                    Libraries.Add(lib);
+            });
 
-            StatusText = $"{Libraries.Count} libraries registered";
+            StatusText = $"{libs.Count} libraries registered";
         }
         catch (Exception ex)
         {
@@ -167,9 +179,12 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
                     sortAscending: _sortAscending,
                     limit: 500));
 
-            Entries.Clear();
-            foreach (var e in entries)
-                Entries.Add(e);
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                Entries.Clear();
+                foreach (var e in entries)
+                    Entries.Add(e);
+            });
 
             _totalEntryCount = entries.Count;
             UpdateStatusText();
@@ -202,9 +217,12 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
             _totalEntryCount = await Task.Run(() =>
                 _db.GetEntryCount(_selectedLibrary?.Id, ext: _activeExtFilter));
 
-            Entries.Clear();
-            foreach (var e in entries)
-                Entries.Add(e);
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                Entries.Clear();
+                foreach (var e in entries)
+                    Entries.Add(e);
+            });
 
             UpdateStatusText();
         }
@@ -230,15 +248,50 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
                 libraryId: _selectedLibrary?.Id,
                 ext: _activeExtFilter));
 
-            Entries.Clear();
-            foreach (var e in results)
-                Entries.Add(e);
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                Entries.Clear();
+                foreach (var e in results)
+                    Entries.Add(e);
+            });
 
             StatusText = $"{results.Count} results for \"{query}\"";
         }
         catch (Exception ex)
         {
             FileLog.Write($"[DocumentLibraryViewModel] SearchEntriesAsync FAILED: {ex.Message}");
+            StatusText = $"Search error: {ex.Message}";
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    /// <summary>Search globally across all libraries (for Search tab).</summary>
+    public async Task SearchGlobalAsync(string query)
+    {
+        FileLog.Write($"[DocumentLibraryViewModel] SearchGlobalAsync: query={query}");
+        IsLoading = true;
+        try
+        {
+            var results = await Task.Run(() => _db.Search(
+                query,
+                libraryId: null,
+                ext: _activeExtFilter));
+
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                SearchResults.Clear();
+                foreach (var e in results)
+                    SearchResults.Add(e);
+            });
+
+            StatusText = $"{results.Count} results for \"{query}\"";
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DocumentLibraryViewModel] SearchGlobalAsync FAILED: {ex.Message}");
             StatusText = $"Search error: {ex.Message}";
         }
         finally
@@ -274,9 +327,17 @@ public class DocumentLibraryViewModel : INotifyPropertyChanged, IDisposable
             if (token.IsCancellationRequested) return;
 
             if (string.IsNullOrWhiteSpace(_searchQuery))
-                await ReloadCurrentViewAsync();
+            {
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    SearchResults.Clear();
+                });
+                StatusText = "";
+            }
             else
-                await SearchEntriesAsync(_searchQuery);
+            {
+                await SearchGlobalAsync(_searchQuery);
+            }
         }, token, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
     }
 

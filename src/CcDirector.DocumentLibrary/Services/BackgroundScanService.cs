@@ -23,6 +23,9 @@ public sealed class BackgroundScanService : IDisposable
     /// <summary>Fires on background thread when scan fails.</summary>
     public event Action<string, string>? ScanFailed;
 
+    /// <summary>Fires on background thread when scan is cancelled by the user.</summary>
+    public event Action<string>? ScanCancelled;
+
     /// <summary>True if any library is currently being scanned.</summary>
     public bool HasActiveScans => !_activeScans.IsEmpty;
 
@@ -86,6 +89,7 @@ public sealed class BackgroundScanService : IDisposable
             if (ct.IsCancellationRequested)
             {
                 FileLog.Write($"[BackgroundScanService] RunScanAsync: {label} cancelled during scan");
+                ScanCancelled?.Invoke(label);
                 return;
             }
 
@@ -107,6 +111,7 @@ public sealed class BackgroundScanService : IDisposable
             if (ct.IsCancellationRequested)
             {
                 FileLog.Write($"[BackgroundScanService] RunScanAsync: {label} cancelled during summarize");
+                ScanCancelled?.Invoke(label);
                 return;
             }
 
@@ -116,6 +121,7 @@ public sealed class BackgroundScanService : IDisposable
         catch (OperationCanceledException)
         {
             FileLog.Write($"[BackgroundScanService] RunScanAsync: {label} cancelled");
+            ScanCancelled?.Invoke(label);
         }
         catch (Exception ex)
         {

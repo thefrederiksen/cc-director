@@ -654,7 +654,29 @@ SVG-style Path data for a branch icon:
 | Primary default | `#007ACC` | White |
 | Ghost default | Transparent | `#888888` |
 | Ghost hover | Transparent | `#CCCCCC` (Opacity 1.0) |
-| Disabled | - | (IsEnabled=False) |
+| Disabled (secondary) | `#2D2D2D` | `#666666` |
+| Disabled (primary) | `#004E82` | `#6699BB` |
+| Disabled (success) | `#165C30` | `#4D9960` |
+
+### Disabled Button Rules - MANDATORY
+
+**Disabled buttons must always be readable.** The WPF default disabled style (white/gray chrome) is
+unacceptable on our dark theme. It makes buttons invisible or illegible.
+
+Rules:
+1. Disabled buttons keep their color identity -- just dimmed, never replaced with system chrome
+2. Background dims toward the panel background (`#1E1E1E`)
+3. Foreground dims to `#666666` (secondary) or a muted version of the original color (primary/success)
+4. Cursor changes to `Arrow` (no hand pointer)
+5. The global implicit Button style in App.xaml handles this automatically via a custom ControlTemplate
+6. Do NOT rely on WPF's default `IsEnabled=False` rendering -- it uses the Windows chrome overlay
+
+The global style uses `Opacity="0.4"` on the border container when disabled, which preserves
+the button's original colors in a dimmed state. This works for all button variants (secondary,
+primary, success, ghost) without needing per-button disabled overrides.
+
+If a button needs a custom template (e.g., ControlTemplate override), it MUST include a
+disabled trigger with readable styling. Copy the pattern from the global style.
 
 ### Three-Dot Menu Button
 

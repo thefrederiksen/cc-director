@@ -100,8 +100,13 @@ if exist "%BROWSER_SRC%\build.ps1" (
 
         REM Copy built files from dist
         copy /Y "dist\package.json" "%BROWSER_DEST%\" >nul
-        copy /Y "dist\README.md" "%BROWSER_DEST%\" >nul
         copy /Y "dist\src\*.mjs" "%BROWSER_DEST%\src\" >nul
+
+        REM Copy extension and native-host directories
+        if not exist "%BROWSER_DEST%\extension" mkdir "%BROWSER_DEST%\extension"
+        xcopy /E /I /Q /Y "dist\extension" "%BROWSER_DEST%\extension" >nul
+        if not exist "%BROWSER_DEST%\native-host" mkdir "%BROWSER_DEST%\native-host"
+        xcopy /E /I /Q /Y "dist\native-host" "%BROWSER_DEST%\native-host" >nul
 
         REM Copy node_modules
         if exist "%BROWSER_DEST%\node_modules" rmdir /S /Q "%BROWSER_DEST%\node_modules"

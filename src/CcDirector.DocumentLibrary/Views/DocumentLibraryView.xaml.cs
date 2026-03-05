@@ -31,6 +31,7 @@ public partial class DocumentLibraryView : UserControl, IDisposable
         _scanService.ScanProgressChanged += OnScanProgressChanged;
         _scanService.ScanCompleted += OnScanCompleted;
         _scanService.ScanFailed += OnScanFailed;
+        _scanService.ScanCancelled += OnScanCancelled;
 
         Loaded += DocumentLibraryView_Loaded;
     }
@@ -67,6 +68,7 @@ public partial class DocumentLibraryView : UserControl, IDisposable
         _scanService.ScanProgressChanged -= OnScanProgressChanged;
         _scanService.ScanCompleted -= OnScanCompleted;
         _scanService.ScanFailed -= OnScanFailed;
+        _scanService.ScanCancelled -= OnScanCancelled;
         _scanService.Dispose();
         _viewModel.Dispose();
     }
@@ -574,6 +576,45 @@ public partial class DocumentLibraryView : UserControl, IDisposable
             MessageBox.Show(
                 $"Scan failed for {label}: {error}",
                 "Scan Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        });
+    }
+
+    private void BtnCancelScan_Click(object sender, RoutedEventArgs e)
+    {
+        var lib = _viewModel.SelectedLibrary;
+        if (lib is null) return;
+
+        FileLog.Write($"[DocumentLibraryView] BtnCancelScan_Click: {lib.Label}");
+        _scanService.CancelScan(lib.Label);
+        BtnCancelScan.IsEnabled = false;
+        ScanProgressText.Text = "Cancelling...";
+    }
+
+    private void OnScanCancelled(string label)
+    {
+        FileLog.Write($"[DocumentLibraryView] OnScanCancelled: {label}");
+        Dispatcher.BeginInvoke(async () =>
+        {
+            // Hide progress bar if this is the selected library
+            var selectedLabel = _viewModel.SelectedLibrary?.Label;
+            if (selectedLabel == label)
+            {
+                ScanProgressPanel.Visibility = Visibility.Collapsed;
+                BtnCancelScan.IsEnabled = true;
+            }
+
+            // Update tree node (removes scanning state)
+            UpdateTreeNodeHeader(label);
+
+            // Refresh stats so tree shows accurate counts after partial scan
+            await _viewModel.RefreshLibrariesAsync();
+            BuildTree();
+
+            // Reload entries if viewing the cancelled library
+            if (selectedLabel == label)
+            {
+                await _viewModel.ReloadCurrentViewAsync();
+            }
         });
     }
 

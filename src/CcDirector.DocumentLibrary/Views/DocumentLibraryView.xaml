@@ -202,52 +202,11 @@
                         BorderThickness="0" Cursor="Hand"
                         FontSize="12" Padding="4,2" Margin="0,0,12,0" />
 
-                <Button x:Name="BtnAddLibrary" DockPanel.Dock="Right"
-                        Content="+ Add Library"
-                        Click="BtnAddLibrary_Click"
-                        Background="#007ACC" Foreground="White"
-                        BorderThickness="0" Cursor="Hand"
-                        Height="28" Padding="12,4" FontSize="12" />
-
                 <TextBlock Text="DOCUMENT LIBRARY"
                            Foreground="#CCCCCC"
                            FontWeight="SemiBold" FontSize="14"
                            VerticalAlignment="Center" />
             </DockPanel>
-        </Border>
-
-        <!-- Search and filter bar -->
-        <Border DockPanel.Dock="Top" Background="#252526"
-                BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
-                Padding="16,8">
-            <StackPanel>
-                <Grid>
-                    <TextBox x:Name="SearchBox"
-                             Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
-                             Background="#3C3C3C" Foreground="#CCCCCC"
-                             BorderBrush="#555555" BorderThickness="1"
-                             Padding="8,6" FontSize="13"
-                             VerticalContentAlignment="Center"
-                             TextChanged="SearchBox_TextChanged" />
-                    <TextBlock x:Name="SearchPlaceholder"
-                               Text="Search files by name, title, tags..."
-                               Foreground="#808080" FontSize="13"
-                               Padding="10,7" IsHitTestVisible="False" />
-                </Grid>
-
-                <StackPanel x:Name="FilterBar" Orientation="Horizontal" Margin="0,6,0,0">
-                    <Button Content="All" Tag="" Click="FilterChip_Click"
-                            Style="{StaticResource FilterChipActiveStyle}" />
-                    <Button Content=".pdf" Tag=".pdf" Click="FilterChip_Click"
-                            Style="{StaticResource FilterChipStyle}" />
-                    <Button Content=".docx" Tag=".docx" Click="FilterChip_Click"
-                            Style="{StaticResource FilterChipStyle}" />
-                    <Button Content=".pptx" Tag=".pptx" Click="FilterChip_Click"
-                            Style="{StaticResource FilterChipStyle}" />
-                    <Button Content=".xlsx" Tag=".xlsx" Click="FilterChip_Click"
-                            Style="{StaticResource FilterChipStyle}" />
-                </StackPanel>
-            </StackPanel>
         </Border>
 
         <!-- Status bar -->
@@ -259,151 +218,408 @@
                        Foreground="#808080" FontSize="11" />
         </Border>
 
-        <!-- Main content -->
-        <Grid>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="220" MinWidth="160" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
+        <!-- TabControl with Search and Libraries tabs -->
+        <TabControl x:Name="MainTabs" Background="#1E1E1E" BorderThickness="0">
+            <TabControl.Resources>
+                <Style TargetType="TabItem">
+                    <Setter Property="Background" Value="#2D2D2D" />
+                    <Setter Property="Foreground" Value="#888888" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="Padding" Value="12,6" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="TabItem">
+                                <Border x:Name="TabBorder"
+                                        Background="{TemplateBinding Background}"
+                                        Padding="{TemplateBinding Padding}">
+                                    <Grid>
+                                        <ContentPresenter ContentSource="Header"
+                                                          HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center" />
+                                        <Border x:Name="BottomAccent"
+                                                Height="2"
+                                                VerticalAlignment="Bottom"
+                                                Margin="0,0,0,-6"
+                                                Background="Transparent" />
+                                    </Grid>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter Property="Background" Value="#1E1E1E" />
+                                        <Setter Property="Foreground" Value="#CCCCCC" />
+                                        <Setter TargetName="BottomAccent" Property="Background" Value="#007ACC" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </TabControl.Resources>
 
-            <!-- Library + Folder tree sidebar -->
-            <Border Grid.Column="0" Background="#252526"
-                    BorderBrush="#3C3C3C" BorderThickness="0,0,1,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="LIBRARIES"
-                               Foreground="#808080" FontSize="10"
-                               FontWeight="SemiBold" Margin="12,10,12,6" />
-
-                    <TextBlock x:Name="LoadingText" DockPanel.Dock="Top"
-                               Text="Loading..."
-                               Foreground="#808080" FontSize="11"
-                               Margin="12,4" Visibility="Collapsed" />
-
-                    <TreeView x:Name="LibraryTree"
-                              SelectedItemChanged="LibraryTree_SelectedItemChanged"
-                              Style="{StaticResource LibraryTreeViewStyle}"
-                              ItemContainerStyle="{StaticResource LibraryTreeItemStyle}"
-                              Margin="4,0" />
-                </DockPanel>
-            </Border>
-
-            <!-- Splitter -->
-            <GridSplitter Grid.Column="1" Width="3"
-                          HorizontalAlignment="Center"
-                          VerticalAlignment="Stretch"
-                          Background="#3C3C3C" />
-
-            <!-- Right panel: toolbar + DataGrid -->
-            <Border Grid.Column="2" Background="#1E1E1E">
-                <DockPanel>
-                    <!-- Toolbar with breadcrumb, progress bar, and Scan+Summarize button -->
+            <!-- ==================== SEARCH TAB ==================== -->
+            <TabItem Header="Search">
+                <DockPanel Background="#1E1E1E">
+                    <!-- Search bar + filter chips -->
                     <Border DockPanel.Dock="Top" Background="#252526"
                             BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
-                            Padding="12,6">
-                        <DockPanel>
-                            <Button x:Name="BtnScanAndSummarize" DockPanel.Dock="Right"
-                                    Content="Scan + Summarize"
-                                    Click="BtnScanAndSummarize_Click"
-                                    Background="#3C3C3C" Foreground="#CCCCCC"
-                                    BorderThickness="0" Cursor="Hand"
-                                    Height="26" Padding="12,2" FontSize="11"
-                                    Visibility="Collapsed" />
+                            Padding="16,8">
+                        <StackPanel>
+                            <Grid>
+                                <TextBox x:Name="SearchBox"
+                                         Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#3C3C3C" Foreground="#CCCCCC"
+                                         BorderBrush="#555555" BorderThickness="1"
+                                         Padding="8,6" FontSize="13"
+                                         VerticalContentAlignment="Center"
+                                         TextChanged="SearchBox_TextChanged" />
+                                <TextBlock x:Name="SearchPlaceholder"
+                                           Text="Search files by name, title, tags..."
+                                           Foreground="#808080" FontSize="13"
+                                           Padding="10,7" IsHitTestVisible="False" />
+                            </Grid>
 
-                            <!-- Scan progress (visible only during scan) -->
-                            <StackPanel x:Name="ScanProgressPanel" DockPanel.Dock="Right"
-                                        Orientation="Horizontal" Margin="0,0,12,0"
-                                        Visibility="Collapsed"
-                                        VerticalAlignment="Center">
-                                <ProgressBar x:Name="ScanProgressBar"
-                                             Width="140" Height="4"
-                                             Minimum="0" Maximum="100" Value="0"
-                                             Foreground="#007ACC"
-                                             Background="#3C3C3C"
-                                             BorderThickness="0"
-                                             VerticalAlignment="Center" />
-                                <TextBlock x:Name="ScanProgressText"
-                                           Text=""
-                                           Foreground="#808080" FontSize="11"
-                                           Margin="8,0,0,0"
-                                           VerticalAlignment="Center"
-                                           MaxWidth="250"
-                                           TextTrimming="CharacterEllipsis" />
+                            <StackPanel x:Name="SearchFilterBar" Orientation="Horizontal" Margin="0,6,0,0">
+                                <Button Content="All" Tag="" Click="SearchFilterChip_Click"
+                                        Style="{StaticResource FilterChipActiveStyle}" />
+                                <Button Content=".pdf" Tag=".pdf" Click="SearchFilterChip_Click"
+                                        Style="{StaticResource FilterChipStyle}" />
+                                <Button Content=".docx" Tag=".docx" Click="SearchFilterChip_Click"
+                                        Style="{StaticResource FilterChipStyle}" />
+                                <Button Content=".pptx" Tag=".pptx" Click="SearchFilterChip_Click"
+                                        Style="{StaticResource FilterChipStyle}" />
+                                <Button Content=".xlsx" Tag=".xlsx" Click="SearchFilterChip_Click"
+                                        Style="{StaticResource FilterChipStyle}" />
                             </StackPanel>
-
-                            <TextBlock x:Name="BreadcrumbText"
-                                       Text="Select a library"
-                                       Foreground="#808080" FontSize="12"
-                                       VerticalAlignment="Center" />
-                        </DockPanel>
+                        </StackPanel>
                     </Border>
 
-                    <!-- DataGrid for catalog entries -->
-                    <DataGrid x:Name="CatalogGrid"
-                              ItemsSource="{Binding Entries}"
-                              SelectedItem="{Binding SelectedEntry}"
-                              Style="{StaticResource CatalogDataGridStyle}"
-                              ColumnHeaderStyle="{StaticResource CatalogColumnHeaderStyle}"
-                              CellStyle="{StaticResource CatalogCellStyle}"
-                              RowStyle="{StaticResource CatalogRowStyle}"
-                              MouseDoubleClick="CatalogGrid_DoubleClick"
-                              Sorting="CatalogGrid_Sorting"
-                              EnableColumnVirtualization="True"
-                              EnableRowVirtualization="True"
-                              VirtualizingPanel.IsVirtualizing="True"
-                              VirtualizingPanel.VirtualizationMode="Recycling">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="EXT" Binding="{Binding FileExt}"
-                                                Width="60" SortMemberPath="FileExt" />
-                            <DataGridTextColumn Header="NAME" Binding="{Binding FileName}"
-                                                Width="*" SortMemberPath="FileName">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                        <Setter Property="ToolTip" Value="{Binding FilePath}" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="FOLDER" Binding="{Binding Department}"
-                                                Width="120" SortMemberPath="Department">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="#808080" />
-                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="SIZE" Binding="{Binding FileSizeDisplay}"
-                                                Width="80" SortMemberPath="FileSize">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="#808080" />
-                                        <Setter Property="TextAlignment" Value="Right" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="MODIFIED" Binding="{Binding ModifiedDisplay}"
-                                                Width="130" SortMemberPath="FileModifiedAt">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="#808080" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="STATUS" Binding="{Binding StatusDisplay}"
-                                                Width="70" SortMemberPath="Status">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Center" />
-                                        <Setter Property="FontWeight" Value="SemiBold" />
-                                        <Setter Property="FontSize" Value="10" />
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
+                    <!-- Search results grid + preview pane -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition x:Name="PreviewSplitterCol" Width="0" />
+                            <ColumnDefinition x:Name="PreviewCol" Width="0" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Search results DataGrid -->
+                        <DataGrid x:Name="SearchGrid" Grid.Column="0"
+                                  ItemsSource="{Binding SearchResults}"
+                                  SelectedItem="{Binding SelectedSearchEntry}"
+                                  Style="{StaticResource CatalogDataGridStyle}"
+                                  ColumnHeaderStyle="{StaticResource CatalogColumnHeaderStyle}"
+                                  CellStyle="{StaticResource CatalogCellStyle}"
+                                  RowStyle="{StaticResource CatalogRowStyle}"
+                                  SelectionChanged="SearchGrid_SelectionChanged"
+                                  MouseDoubleClick="SearchGrid_DoubleClick"
+                                  EnableColumnVirtualization="True"
+                                  EnableRowVirtualization="True"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="EXT" Binding="{Binding FileExt}"
+                                                    Width="60" SortMemberPath="FileExt" />
+                                <DataGridTextColumn Header="NAME" Binding="{Binding FileName}"
+                                                    Width="*" SortMemberPath="FileName">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                            <Setter Property="ToolTip" Value="{Binding FilePath}" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="FOLDER" Binding="{Binding Department}"
+                                                    Width="120" SortMemberPath="Department">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="#808080" />
+                                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="SIZE" Binding="{Binding FileSizeDisplay}"
+                                                    Width="80" SortMemberPath="FileSize">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="#808080" />
+                                            <Setter Property="TextAlignment" Value="Right" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+
+                        <!-- Splitter between grid and preview -->
+                        <GridSplitter x:Name="PreviewSplitter" Grid.Column="1"
+                                      Width="3" HorizontalAlignment="Center"
+                                      VerticalAlignment="Stretch"
+                                      Background="#3C3C3C"
+                                      Visibility="Collapsed" />
+
+                        <!-- Preview pane -->
+                        <Border x:Name="PreviewPane" Grid.Column="2"
+                                Background="#252526" BorderBrush="#3C3C3C"
+                                BorderThickness="1,0,0,0"
+                                Visibility="Collapsed">
+                            <DockPanel>
+                                <!-- Preview header -->
+                                <Border DockPanel.Dock="Top" Background="#2D2D2D"
+                                        Padding="12,8">
+                                    <DockPanel>
+                                        <Button x:Name="BtnClosePreview" DockPanel.Dock="Right"
+                                                Content="X" Click="BtnClosePreview_Click"
+                                                Background="Transparent" Foreground="#808080"
+                                                BorderThickness="0" Cursor="Hand"
+                                                FontSize="12" FontWeight="Bold"
+                                                Padding="4,0" VerticalAlignment="Top" />
+
+                                        <StackPanel>
+                                            <TextBlock x:Name="PreviewTitle"
+                                                       Text="" Foreground="#CCCCCC"
+                                                       FontSize="13" FontWeight="SemiBold"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock x:Name="PreviewMeta"
+                                                       Text="" Foreground="#808080"
+                                                       FontSize="11" Margin="0,4,0,0"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock x:Name="PreviewStatus"
+                                                       Text="" Foreground="#808080"
+                                                       FontSize="11" Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+
+                                <!-- Preview content -->
+                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled"
+                                              Background="#1E1E1E">
+                                    <StackPanel Margin="12,8">
+                                        <!-- Summary section -->
+                                        <TextBlock x:Name="PreviewSummaryHeader"
+                                                   Text="--- Summary ---"
+                                                   Foreground="#007ACC" FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,0,0,4"
+                                                   Visibility="Collapsed" />
+                                        <TextBlock x:Name="PreviewSummary"
+                                                   Text="" Foreground="#CCCCCC"
+                                                   FontSize="12" TextWrapping="Wrap"
+                                                   Margin="0,0,0,12"
+                                                   Visibility="Collapsed" />
+
+                                        <!-- Content section -->
+                                        <TextBlock x:Name="PreviewContentHeader"
+                                                   Text="--- Content ---"
+                                                   Foreground="#007ACC" FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,0,0,4"
+                                                   Visibility="Collapsed" />
+                                        <TextBlock x:Name="PreviewContent"
+                                                   Text="" Foreground="#999999"
+                                                   FontSize="11" TextWrapping="Wrap"
+                                                   FontFamily="Consolas"
+                                                   Visibility="Collapsed" />
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </DockPanel>
+                        </Border>
+                    </Grid>
                 </DockPanel>
-            </Border>
-        </Grid>
+            </TabItem>
+
+            <!-- ==================== LIBRARIES TAB ==================== -->
+            <TabItem Header="Libraries">
+                <DockPanel Background="#1E1E1E">
+                    <!-- Main content: sidebar + grid -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="220" MinWidth="160" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Library + Folder tree sidebar -->
+                        <Border Grid.Column="0" Background="#252526"
+                                BorderBrush="#3C3C3C" BorderThickness="0,0,1,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Text="LIBRARIES"
+                                           Foreground="#808080" FontSize="10"
+                                           FontWeight="SemiBold" Margin="12,10,12,6" />
+
+                                <TextBlock x:Name="LoadingText" DockPanel.Dock="Top"
+                                           Text="Loading..."
+                                           Foreground="#808080" FontSize="11"
+                                           Margin="12,4" Visibility="Collapsed" />
+
+                                <TreeView x:Name="LibraryTree"
+                                          SelectedItemChanged="LibraryTree_SelectedItemChanged"
+                                          Style="{StaticResource LibraryTreeViewStyle}"
+                                          ItemContainerStyle="{StaticResource LibraryTreeItemStyle}"
+                                          Margin="4,0" />
+                            </DockPanel>
+                        </Border>
+
+                        <!-- Splitter -->
+                        <GridSplitter Grid.Column="1" Width="3"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Stretch"
+                                      Background="#3C3C3C" />
+
+                        <!-- Right panel: toolbar + DataGrid -->
+                        <Border Grid.Column="2" Background="#1E1E1E">
+                            <DockPanel>
+                                <!-- Toolbar with breadcrumb, progress bar, Add Library and Scan+Summarize -->
+                                <Border DockPanel.Dock="Top" Background="#252526"
+                                        BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                                        Padding="12,6">
+                                    <DockPanel>
+                                        <Button x:Name="BtnAddLibrary" DockPanel.Dock="Right"
+                                                Content="+ Add Library"
+                                                Click="BtnAddLibrary_Click"
+                                                Background="#007ACC" Foreground="White"
+                                                BorderThickness="0" Cursor="Hand"
+                                                Height="26" Padding="12,2" FontSize="11"
+                                                Margin="8,0,0,0" />
+
+                                        <Button x:Name="BtnRemoveLibrary" DockPanel.Dock="Right"
+                                                Content="Remove Library"
+                                                Click="BtnRemoveLibrary_Click"
+                                                Background="#C42B1C" Foreground="White"
+                                                BorderThickness="0" Cursor="Hand"
+                                                Height="26" Padding="12,2" FontSize="11"
+                                                Margin="8,0,0,0"
+                                                Visibility="Collapsed" />
+
+                                        <Button x:Name="BtnScanAndSummarize" DockPanel.Dock="Right"
+                                                Content="Scan + Summarize"
+                                                Click="BtnScanAndSummarize_Click"
+                                                Background="#3C3C3C" Foreground="#CCCCCC"
+                                                BorderThickness="0" Cursor="Hand"
+                                                Height="26" Padding="12,2" FontSize="11"
+                                                Visibility="Collapsed" />
+
+                                        <!-- Scan progress (visible only during scan) -->
+                                        <StackPanel x:Name="ScanProgressPanel" DockPanel.Dock="Right"
+                                                    Orientation="Horizontal" Margin="0,0,12,0"
+                                                    Visibility="Collapsed"
+                                                    VerticalAlignment="Center">
+                                            <ProgressBar x:Name="ScanProgressBar"
+                                                         Width="140" Height="4"
+                                                         Minimum="0" Maximum="100" Value="0"
+                                                         Foreground="#007ACC"
+                                                         Background="#3C3C3C"
+                                                         BorderThickness="0"
+                                                         VerticalAlignment="Center" />
+                                            <TextBlock x:Name="ScanProgressText"
+                                                       Text=""
+                                                       Foreground="#808080" FontSize="11"
+                                                       Margin="8,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       MaxWidth="250"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <Button x:Name="BtnCancelScan"
+                                                    Content="Cancel"
+                                                    Click="BtnCancelScan_Click"
+                                                    Background="#3C3C3C" Foreground="#CCCCCC"
+                                                    BorderThickness="0" Cursor="Hand"
+                                                    Height="20" Padding="8,0" FontSize="11"
+                                                    Margin="8,0,0,0"
+                                                    VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <TextBlock x:Name="BreadcrumbText"
+                                                   Text="Select a library"
+                                                   Foreground="#808080" FontSize="12"
+                                                   VerticalAlignment="Center" />
+                                    </DockPanel>
+                                </Border>
+
+                                <!-- Filter bar for Libraries tab -->
+                                <Border DockPanel.Dock="Top" Background="#252526"
+                                        BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                                        Padding="12,4">
+                                    <StackPanel x:Name="FilterBar" Orientation="Horizontal">
+                                        <Button Content="All" Tag="" Click="FilterChip_Click"
+                                                Style="{StaticResource FilterChipActiveStyle}" />
+                                        <Button Content=".pdf" Tag=".pdf" Click="FilterChip_Click"
+                                                Style="{StaticResource FilterChipStyle}" />
+                                        <Button Content=".docx" Tag=".docx" Click="FilterChip_Click"
+                                                Style="{StaticResource FilterChipStyle}" />
+                                        <Button Content=".pptx" Tag=".pptx" Click="FilterChip_Click"
+                                                Style="{StaticResource FilterChipStyle}" />
+                                        <Button Content=".xlsx" Tag=".xlsx" Click="FilterChip_Click"
+                                                Style="{StaticResource FilterChipStyle}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- DataGrid for catalog entries -->
+                                <DataGrid x:Name="CatalogGrid"
+                                          ItemsSource="{Binding Entries}"
+                                          SelectedItem="{Binding SelectedEntry}"
+                                          Style="{StaticResource CatalogDataGridStyle}"
+                                          ColumnHeaderStyle="{StaticResource CatalogColumnHeaderStyle}"
+                                          CellStyle="{StaticResource CatalogCellStyle}"
+                                          RowStyle="{StaticResource CatalogRowStyle}"
+                                          MouseDoubleClick="CatalogGrid_DoubleClick"
+                                          Sorting="CatalogGrid_Sorting"
+                                          EnableColumnVirtualization="True"
+                                          EnableRowVirtualization="True"
+                                          VirtualizingPanel.IsVirtualizing="True"
+                                          VirtualizingPanel.VirtualizationMode="Recycling">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="EXT" Binding="{Binding FileExt}"
+                                                            Width="60" SortMemberPath="FileExt" />
+                                        <DataGridTextColumn Header="NAME" Binding="{Binding FileName}"
+                                                            Width="*" SortMemberPath="FileName">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                                    <Setter Property="ToolTip" Value="{Binding FilePath}" />
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="FOLDER" Binding="{Binding Department}"
+                                                            Width="120" SortMemberPath="Department">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#808080" />
+                                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="SIZE" Binding="{Binding FileSizeDisplay}"
+                                                            Width="80" SortMemberPath="FileSize">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#808080" />
+                                                    <Setter Property="TextAlignment" Value="Right" />
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="MODIFIED" Binding="{Binding ModifiedDisplay}"
+                                                            Width="130" SortMemberPath="FileModifiedAt">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#808080" />
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTextColumn Header="STATUS" Binding="{Binding StatusDisplay}"
+                                                            Width="70" SortMemberPath="Status">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="HorizontalAlignment" Value="Center" />
+                                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                                    <Setter Property="FontSize" Value="10" />
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
+                        </Border>
+                    </Grid>
+                </DockPanel>
+            </TabItem>
+        </TabControl>
     </DockPanel>
 </UserControl>
