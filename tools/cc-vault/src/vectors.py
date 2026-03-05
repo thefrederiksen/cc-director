@@ -54,12 +54,12 @@ def _pack_embedding(embedding: List[float]) -> bytes:
     return struct.pack(_EMBED_FMT, *embedding)
 
 
-def _unpack_embedding(blob: bytes) -> List[float]:
-    """Unpack a binary BLOB back into a list of floats."""
-    return list(struct.unpack(_EMBED_FMT, blob))
+def _unpack_embedding(blob: bytes) -> tuple:
+    """Unpack a binary BLOB back into a tuple of floats."""
+    return struct.unpack(_EMBED_FMT, blob)
 
 
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
+def _cosine_similarity(a, b) -> float:
     """Compute cosine similarity between two vectors."""
     dot = 0.0
     norm_a = 0.0
@@ -72,6 +72,24 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
     if denom == 0:
         return 0.0
     return dot / denom
+
+
+def _cosine_similarity_prenorm(a, b, a_norm: float) -> float:
+    """Cosine similarity with pre-computed norm for vector a."""
+    dot = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_b += y * y
+    denom = a_norm * math.sqrt(norm_b)
+    if denom == 0:
+        return 0.0
+    return dot / denom
+
+
+def _vector_norm(v) -> float:
+    """Compute L2 norm of a vector."""
+    return math.sqrt(sum(x * x for x in v))
 
 
 def _build_path_context(metadata: Dict[str, Any]) -> str:
@@ -159,8 +177,18 @@ class VaultVectors:
         filter_metadata: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """Query a collection using cosine similarity."""
+        # Skip empty collections without a DB roundtrip
+        count = vec_count(collection)
+        if count == 0:
+            return []
+
         rows = vec_get_all(collection)
         if not rows:
+            return []
+
+        # Pre-compute query norm once (saves ~40% of cosine sim work)
+        query_norm = _vector_norm(query_embedding)
+        if query_norm == 0:
             return []
 
         # Compute similarities
@@ -178,7 +206,7 @@ class VaultVectors:
                     continue
 
             row_embedding = _unpack_embedding(row['embedding'])
-            similarity = _cosine_similarity(query_embedding, row_embedding)
+            similarity = _cosine_similarity_prenorm(query_embedding, row_embedding, query_norm)
             distance = 1.0 - similarity
             scored.append({
                 'id': row['id'],
