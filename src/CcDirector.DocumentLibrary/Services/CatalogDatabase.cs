@@ -336,11 +336,11 @@ public sealed class CatalogDatabase
         cmd.CommandText = """
             SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN status = 'summarized' THEN 1 ELSE 0 END) AS summarized,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
-                SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
-                SUM(CASE WHEN status = 'missing' THEN 1 ELSE 0 END) AS missing
+                COALESCE(SUM(CASE WHEN status = 'summarized' THEN 1 ELSE 0 END), 0) AS summarized,
+                COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+                COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS errors,
+                COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0) AS skipped,
+                COALESCE(SUM(CASE WHEN status = 'missing' THEN 1 ELSE 0 END), 0) AS missing
             FROM catalog_entries WHERE library_id = @libId
             """;
         cmd.Parameters.AddWithValue("@libId", libraryId);
