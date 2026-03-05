@@ -37,7 +37,7 @@ public interface ISessionBackend : IDisposable
     /// <param name="workingDir">Working directory for the process.</param>
     /// <param name="cols">Terminal columns (ignored by some backends).</param>
     /// <param name="rows">Terminal rows (ignored by some backends).</param>
-    void Start(string executable, string args, string workingDir, short cols, short rows);
+    void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null);
 
     /// <summary>
     /// Write raw bytes to the process input.

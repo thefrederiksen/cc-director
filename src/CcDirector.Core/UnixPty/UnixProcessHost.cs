@@ -32,7 +32,7 @@ public sealed class UnixProcessHost : IDisposable
     /// Spawn a process attached to the pseudo console.
     /// Uses .NET Process class with redirected I/O connected to PTY.
     /// </summary>
-    public void Start(string exePath, string args, string? workingDir)
+    public void Start(string exePath, string args, string? workingDir, Dictionary<string, string>? environmentVars = null)
     {
         if (_started) throw new InvalidOperationException("UnixProcessHost already started.");
         _started = true;
@@ -54,6 +54,13 @@ public sealed class UnixProcessHost : IDisposable
             // Set TERM environment variable for proper terminal behavior
             Environment = { ["TERM"] = "xterm-256color" }
         };
+
+        // Inject extra environment variables (e.g. CC_SESSION_ID)
+        if (environmentVars != null)
+        {
+            foreach (var kvp in environmentVars)
+                startInfo.Environment[kvp.Key] = kvp.Value;
+        }
 
         _process = new Process { StartInfo = startInfo };
         _process.EnableRaisingEvents = true;

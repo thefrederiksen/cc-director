@@ -269,6 +269,9 @@ public class HandoverViewModel
     /// <summary>All repository paths from frontmatter.</summary>
     public List<string> RepoPaths { get; } = new();
 
+    /// <summary>Session name from YAML frontmatter (session_name field).</summary>
+    public string? SessionName { get; }
+
     /// <summary>Display-friendly repo name (folder name from RepoPath).</summary>
     public string RepoDisplay => string.IsNullOrEmpty(RepoPath)
         ? "Unknown"
@@ -299,17 +302,22 @@ public class HandoverViewModel
             Title = name;
         }
 
-        RepoPaths = ExtractRepoPaths(filePath);
+        var frontmatter = ExtractFrontmatter(filePath);
+        RepoPaths = frontmatter.RepoPaths;
         RepoPath = RepoPaths.FirstOrDefault();
+        SessionName = frontmatter.SessionName;
     }
 
+    private record HandoverFrontmatter(List<string> RepoPaths, string? SessionName);
+
     /// <summary>
-    /// Extracts repository paths from YAML frontmatter.
+    /// Extracts structured metadata from YAML frontmatter (repo paths, session name).
     /// Falls back to legacy **Repository:** format for old handovers.
     /// </summary>
-    private static List<string> ExtractRepoPaths(string filePath)
+    private static HandoverFrontmatter ExtractFrontmatter(string filePath)
     {
         var paths = new List<string>();
+        string? sessionName = null;
         try
         {
             using var reader = new StreamReader(filePath);
@@ -322,6 +330,15 @@ public class HandoverViewModel
                 while ((line = reader.ReadLine()) != null)
                 {
                     if (line == "---") break;
+
+                    if (line.StartsWith("session_name:"))
+                    {
+                        inRepositories = false;
+                        sessionName = line.Substring("session_name:".Length).Trim();
+                        if (string.IsNullOrEmpty(sessionName))
+                            sessionName = null;
+                        continue;
+                    }
 
                     if (line.StartsWith("repositories:"))
                     {
@@ -367,7 +384,7 @@ public class HandoverViewModel
         }
         catch { /* Non-critical: preview still works without repo path */ }
 
-        return paths;
+        return new HandoverFrontmatter(paths, sessionName);
     }
 }
 
@@ -695,7 +712,9 @@ public partial class NewSessionDialog : Window
 
         FileLog.Write($"[NewSessionDialog] BtnCoaching_Click: category={category}");
 
-        SelectedPath = CcStorage.CoachingCategory(category);
+        SelectedPath = category == "log"
+            ? CcStorage.Logs()
+            : CcStorage.CoachingCategory(category);
         SelectedResumeSessionId = null;
         BypassPermissionsCheckBox.IsChecked = true;
 

@@ -37,7 +37,7 @@ public sealed class ProcessHost : IDisposable
     /// <summary>
     /// Spawn a process attached to the pseudo console.
     /// </summary>
-    public void Start(string exePath, string args, string? workingDir)
+    public void Start(string exePath, string args, string? workingDir, Dictionary<string, string>? environmentVars = null)
     {
         if (_started) throw new InvalidOperationException("ProcessHost already started.");
         _started = true;
@@ -88,7 +88,7 @@ public sealed class ProcessHost : IDisposable
             var envBlock = IntPtr.Zero;
             try
             {
-                envBlock = BuildEnvironmentBlock();
+                envBlock = BuildEnvironmentBlock(environmentVars);
 
                 if (!CreateProcessW(
                         null,
@@ -132,7 +132,7 @@ public sealed class ProcessHost : IDisposable
     /// (e.g. CLAUDECODE which prevents Claude Code from starting).
     /// The returned IntPtr must be freed with Marshal.FreeHGlobal.
     /// </summary>
-    private static IntPtr BuildEnvironmentBlock()
+    private static IntPtr BuildEnvironmentBlock(Dictionary<string, string>? extraVars = null)
     {
         var vars = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
@@ -144,6 +144,13 @@ public sealed class ProcessHost : IDisposable
             if (key.Equals("CLAUDECODE", StringComparison.OrdinalIgnoreCase))
                 continue;
             vars[key] = value;
+        }
+
+        // Inject extra variables (e.g. CC_SESSION_ID)
+        if (extraVars != null)
+        {
+            foreach (var kvp in extraVars)
+                vars[kvp.Key] = kvp.Value;
         }
 
         // Format: KEY=VALUE\0KEY=VALUE\0\0  (double-null terminated)

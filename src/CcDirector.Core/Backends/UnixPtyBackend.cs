@@ -46,7 +46,7 @@ public sealed class UnixPtyBackend : ISessionBackend
         _buffer = new CircularTerminalBuffer(bufferSizeBytes);
     }
 
-    public void Start(string executable, string args, string workingDir, short cols, short rows)
+    public void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null)
     {
         if (_processHost != null)
             throw new InvalidOperationException("Backend already started.");
@@ -61,8 +61,8 @@ public sealed class UnixPtyBackend : ISessionBackend
         _processHost = new UnixProcessHost(_console);
         _processHost.OnExited += OnProcessExited;
 
-        // Start the process
-        _processHost.Start(executable, args, workingDir);
+        // Start the process with optional extra environment variables
+        _processHost.Start(executable, args, workingDir, environmentVars);
 
         // Start the drain loop to read output into buffer
         _processHost.StartDrainLoop(_buffer!);

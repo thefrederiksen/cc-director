@@ -297,7 +297,7 @@ public class SessionStateStoreTests
         public event Action<string>? StatusChanged;
         public event Action<int>? ProcessExited;
 
-        public void Start(string executable, string args, string workingDir, short cols, short rows) { }
+        public void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null) { }
         public void Write(byte[] data) { }
         public Task SendTextAsync(string text) => Task.CompletedTask;
         public void Resize(short cols, short rows) { }

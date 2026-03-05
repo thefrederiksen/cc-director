@@ -21,7 +21,7 @@ internal sealed class StubSessionBackend : ISessionBackend
     public event Action<int>? ProcessExited;
 #pragma warning restore CS0067
 
-    public void Start(string executable, string args, string workingDir, short cols, short rows)
+    public void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null)
         => throw new NotSupportedException("StubSessionBackend does not support Start.");
 
     public void Write(byte[] data)

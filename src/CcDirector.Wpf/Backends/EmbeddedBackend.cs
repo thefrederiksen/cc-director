@@ -84,7 +84,7 @@ public sealed class EmbeddedBackend : ISessionBackend
     /// <summary>
     /// Start the embedded console process.
     /// </summary>
-    public void Start(string executable, string args, string workingDir, short cols, short rows)
+    public void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null)
     {
         if (_host != null)
             throw new InvalidOperationException("Backend already started.");

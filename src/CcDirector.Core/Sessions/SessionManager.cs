@@ -85,8 +85,14 @@ public sealed class SessionManager : IDisposable
 
         try
         {
+            // Inject CC_SESSION_ID so skills (e.g. /handover) can look up the session name
+            var envVars = new Dictionary<string, string>
+            {
+                ["CC_SESSION_ID"] = id.ToString()
+            };
+
             // Get initial terminal dimensions (default 120x30)
-            backend.Start(_options.ClaudePath, args, repoPath, 120, 30);
+            backend.Start(_options.ClaudePath, args, repoPath, 120, 30, envVars);
             session.MarkRunning();
 
             _sessions[id] = session;

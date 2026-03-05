@@ -53,7 +53,7 @@ public sealed class PipeBackend : ISessionBackend
     /// Initialize the backend. For pipe mode, this stores the configuration.
     /// No process is spawned until SendTextAsync is called.
     /// </summary>
-    public void Start(string executable, string args, string workingDir, short cols, short rows)
+    public void Start(string executable, string args, string workingDir, short cols, short rows, Dictionary<string, string>? environmentVars = null)
     {
         if (_initialized)
             throw new InvalidOperationException("Backend already initialized.");
