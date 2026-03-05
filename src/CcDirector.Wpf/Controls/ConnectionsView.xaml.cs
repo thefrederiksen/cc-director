@@ -40,6 +40,7 @@ public class ConnectionItem : INotifyPropertyChanged
 
     public bool Connected { get; set; }
     public bool Busy { get; set; }
+    public int? ChromePid { get; set; }
 
     private static readonly Brush BrushAmber = Freeze(new SolidColorBrush(Color.FromRgb(0xCC, 0xA7, 0x00)));
     private static readonly Brush BrushGreen = Freeze(new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E)));
@@ -455,6 +456,7 @@ public partial class ConnectionsView : UserControl
             var process = Process.Start(psi);
             FileLog.Write($"[ConnectionsView] Chrome launched: pid={process?.Id}");
 
+            item.ChromePid = process?.Id;
             item.Connected = true;
             item.SetBusy(false);
 
@@ -475,16 +477,23 @@ public partial class ConnectionsView : UserControl
 
     private async Task CloseConnection(ConnectionItem item)
     {
-        FileLog.Write($"[ConnectionsView] CloseConnection: {item.Name}");
+        FileLog.Write($"[ConnectionsView] CloseConnection: {item.Name}, pid={item.ChromePid}");
         item.SetBusy(true);
 
-        var profileDir = CcStorage.ConnectionProfile(item.Name);
-        var killed = await Task.Run(() => KillChromeByProfile(profileDir));
-        FileLog.Write($"[ConnectionsView] KillChromeByProfile: killed={killed}");
+        if (item.ChromePid is int pid)
+        {
+            var killed = await Task.Run(() => KillProcessTree(pid));
+            FileLog.Write($"[ConnectionsView] KillProcessTree pid={pid}: killed={killed}");
+        }
+        else
+        {
+            FileLog.Write("[ConnectionsView] No tracked PID, skipping kill");
+        }
 
         // Also notify daemon if running
         _ = NotifyDaemonAsync("close", item.Name);
 
+        item.ChromePid = null;
         item.Connected = false;
         item.SetBusy(false);
     }
@@ -538,80 +547,28 @@ public partial class ConnectionsView : UserControl
         return null;
     }
 
-    private static bool KillChromeByProfile(string profileDir)
+    private static bool KillProcessTree(int pid)
     {
-        FileLog.Write($"[ConnectionsView] KillChromeByProfile: {profileDir}");
-        var normalizedProfile = profileDir.Replace('\\', '/').ToLowerInvariant();
-        var killed = false;
-
+        FileLog.Write($"[ConnectionsView] KillProcessTree: pid={pid}");
         try
         {
-            var chromeProcesses = Process.GetProcessesByName("chrome");
-            var edgeProcesses = Process.GetProcessesByName("msedge");
-            var allProcesses = chromeProcesses.Concat(edgeProcesses);
-
-            foreach (var proc in allProcesses)
-            {
-                try
-                {
-                    var cmdLine = GetCommandLine(proc.Id);
-                    if (cmdLine == null) continue;
-
-                    var normalizedCmd = cmdLine.Replace('\\', '/').ToLowerInvariant();
-                    if (normalizedCmd.Contains(normalizedProfile))
-                    {
-                        FileLog.Write($"[ConnectionsView] Killing Chrome pid={proc.Id}");
-                        proc.Kill(entireProcessTree: true);
-                        killed = true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    FileLog.Write($"[ConnectionsView] Could not inspect/kill pid={proc.Id}: {ex.Message}");
-                }
-                finally
-                {
-                    proc.Dispose();
-                }
-            }
+            var proc = Process.GetProcessById(pid);
+            proc.Kill(entireProcessTree: true);
+            proc.Dispose();
+            FileLog.Write($"[ConnectionsView] Killed process tree: pid={pid}");
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            // Process already exited
+            FileLog.Write($"[ConnectionsView] Process already exited: pid={pid}");
+            return false;
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[ConnectionsView] KillChromeByProfile FAILED: {ex.Message}");
+            FileLog.Write($"[ConnectionsView] KillProcessTree FAILED pid={pid}: {ex.Message}");
+            return false;
         }
-
-        return killed;
-    }
-
-    private static string? GetCommandLine(int processId)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "wmic",
-                Arguments = $"process where ProcessId={processId} get CommandLine /FORMAT:LIST",
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            using var proc = Process.Start(psi);
-            if (proc == null) return null;
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(3000);
-
-            // Parse "CommandLine=..." from output
-            foreach (var line in output.Split('\n'))
-            {
-                if (line.StartsWith("CommandLine=", StringComparison.OrdinalIgnoreCase))
-                    return line.Substring("CommandLine=".Length).Trim();
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[ConnectionsView] GetCommandLine failed for pid={processId}: {ex.Message}");
-        }
-        return null;
     }
 
     private static string? FindExtensionDir()
