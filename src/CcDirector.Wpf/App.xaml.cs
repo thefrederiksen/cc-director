@@ -64,6 +64,10 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // Show splash screen immediately - before any heavy initialization
+        var splash = new SplashScreen();
+        splash.Show();
+
         // Parse command-line arguments
         SandboxMode = e.Args.Contains("--sandbox", StringComparer.OrdinalIgnoreCase);
 
@@ -156,6 +160,13 @@ public partial class App : Application
 
         // Start Teams bot (if enabled in config)
         StartTeamsBot(log);
+
+        // Close splash before MainWindow - restore sessions dialog may appear during Loaded
+        splash.Close();
+
+        var mainWindow = new MainWindow();
+        MainWindow = mainWindow;
+        mainWindow.Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
