@@ -1,0 +1,97 @@
+<UserControl x:Class="CcDirectorSetup.Steps.CompleteStep"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel>
+        <TextBlock Text="Setup Complete"
+                   Foreground="#22C55E"
+                   FontSize="22"
+                   FontWeight="SemiBold" />
+
+        <TextBlock Text="CC Director tools have been installed successfully."
+                   Foreground="{StaticResource TextForeground}"
+                   FontSize="13"
+                   Margin="0,12,0,24"
+                   LineHeight="20" />
+
+        <!-- Summary -->
+        <Border Background="#2A2D2E" CornerRadius="6" Padding="16" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Summary"
+                           Foreground="White"
+                           FontSize="15"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,12" />
+
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Tools installed:"
+                               Foreground="#888888" FontSize="13" />
+                    <TextBlock x:Name="InstalledText"
+                               Grid.Column="1"
+                               Foreground="#22C55E" FontSize="13" FontWeight="SemiBold" />
+                </Grid>
+
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Skipped:"
+                               Foreground="#888888" FontSize="13" />
+                    <TextBlock x:Name="SkippedText"
+                               Grid.Column="1"
+                               Foreground="#888888" FontSize="13" />
+                </Grid>
+
+                <Grid Margin="0,0,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Install path:"
+                               Foreground="#888888" FontSize="13" />
+                    <TextBlock x:Name="PathText"
+                               Grid.Column="1"
+                               Foreground="#AAAAAA" FontSize="12"
+                               TextWrapping="Wrap" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Launch button -->
+        <Button x:Name="LaunchButton"
+                Height="44"
+                HorizontalAlignment="Stretch"
+                Margin="0,8,0,16"
+                Cursor="Hand"
+                Click="LaunchButton_Click">
+            <Button.Template>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="#22C55E" CornerRadius="6"
+                            Padding="20,0">
+                        <TextBlock Text="Launch CC Director"
+                                   Foreground="White"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Opacity" Value="0.9" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Button.Template>
+        </Button>
+
+        <!-- Note about terminal PATH -->
+        <TextBlock Text="NOTE: Open a new terminal for cc-* commands to be available on PATH."
+                   Foreground="#666666"
+                   FontSize="11"
+                   TextWrapping="Wrap" />
+    </StackPanel>
+</UserControl>

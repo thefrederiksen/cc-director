@@ -1,0 +1,146 @@
+<UserControl x:Class="CcDirectorSetup.Steps.PrerequisitesStep"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock Text="Prerequisites"
+                       Foreground="White"
+                       FontSize="22"
+                       FontWeight="SemiBold" />
+            <TextBlock x:Name="SubtitleText"
+                       Text="Checking required software..."
+                       Foreground="{StaticResource TextForeground}"
+                       FontSize="13"
+                       Margin="0,8,0,16" />
+        </StackPanel>
+
+        <!-- Success banner (hidden by default) -->
+        <Border x:Name="SuccessBanner"
+                DockPanel.Dock="Bottom"
+                Background="#1B3A2A"
+                CornerRadius="6"
+                Padding="16"
+                Margin="0,16,0,0"
+                Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                <Border Width="32" Height="32" CornerRadius="16"
+                        Background="#22C55E"
+                        Margin="0,0,12,0">
+                    <TextBlock Text="OK"
+                               Foreground="White"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                </Border>
+                <TextBlock Text="All prerequisites met -- ready to install."
+                           Foreground="#22C55E"
+                           FontSize="15"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+        </Border>
+
+        <Button x:Name="RefreshButton" Content="Re-check"
+                DockPanel.Dock="Bottom"
+                HorizontalAlignment="Left"
+                Width="100"
+                Margin="0,12,0,0"
+                Click="RefreshButton_Click" />
+
+        <ItemsControl x:Name="PrereqList">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border Background="#2A2D2E"
+                            CornerRadius="4"
+                            Padding="14,10"
+                            Margin="0,0,0,6">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Name}"
+                                               Foreground="White"
+                                               FontSize="14"
+                                               FontWeight="SemiBold" />
+                                    <Border CornerRadius="3"
+                                            Padding="6,1"
+                                            Margin="8,0,0,0"
+                                            Background="#3A1B1B"
+                                            VerticalAlignment="Center">
+                                        <TextBlock Text="Required"
+                                                   Foreground="#CC4444"
+                                                   FontSize="10"
+                                                   FontWeight="SemiBold" />
+                                    </Border>
+                                </StackPanel>
+
+                                <TextBlock Text="{Binding Description}"
+                                           Foreground="#888888"
+                                           FontSize="11"
+                                           Margin="0,2,0,0" />
+
+                                <TextBlock Text="{Binding Version}"
+                                           Foreground="#AAAAAA"
+                                           FontSize="11"
+                                           Margin="0,2,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Version}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+
+                                <!-- Install link (shown when not found) -->
+                                <TextBlock Margin="0,4,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsFound}" Value="False">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                    <Hyperlink NavigateUri="{Binding InstallUrl}"
+                                               RequestNavigate="Hyperlink_RequestNavigate"
+                                               Foreground="{StaticResource AccentBrush}"
+                                               TextDecorations="None">
+                                        <Run Text="Download and install ->" />
+                                    </Hyperlink>
+                                </TextBlock>
+                            </StackPanel>
+
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding Status}"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"
+                                       Margin="12,0,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="#888888" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsFound}" Value="True">
+                                                <Setter Property="Foreground" Value="#22C55E" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </DockPanel>
+</UserControl>

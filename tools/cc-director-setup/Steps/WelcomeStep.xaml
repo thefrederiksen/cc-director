@@ -1,0 +1,85 @@
+<UserControl x:Class="CcDirectorSetup.Steps.WelcomeStep"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel>
+        <TextBlock Text="Welcome to CC Director"
+                   Foreground="White"
+                   FontSize="22"
+                   FontWeight="SemiBold" />
+
+        <TextBlock Text="CC Director is a suite of AI-powered CLI tools that extend Claude Code with document generation, browser automation, communication, media processing, and more."
+                   Foreground="{StaticResource TextForeground}"
+                   FontSize="13"
+                   TextWrapping="Wrap"
+                   Margin="0,12,0,0"
+                   LineHeight="20" />
+
+        <TextBlock Text="Choose your install profile:"
+                   Foreground="{StaticResource TextForeground}"
+                   FontSize="13"
+                   Margin="0,28,0,12" />
+
+        <!-- Standard card (default, first) -->
+        <Border x:Name="StandardCard"
+                Background="#2A2D2E"
+                BorderBrush="{StaticResource AccentBrush}"
+                BorderThickness="2"
+                CornerRadius="6"
+                Padding="16"
+                Cursor="Hand"
+                MouseLeftButtonDown="StandardCard_Click">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="StandardRadio" Text="(*)"
+                               Foreground="{StaticResource AccentBrush}"
+                               FontSize="14" FontWeight="Bold"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,0" />
+                    <TextBlock Text="Standard"
+                               Foreground="White"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock Text="Core document tools (PDF, HTML, Word, Excel, PowerPoint), communication (Outlook, Gmail), media, and vault."
+                           Foreground="{StaticResource DimText}"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Margin="28,6,0,0"
+                           LineHeight="18" />
+            </StackPanel>
+        </Border>
+
+        <!-- Developer card -->
+        <Border x:Name="DeveloperCard"
+                Background="#2A2D2E"
+                BorderBrush="{StaticResource StepInactive}"
+                BorderThickness="2"
+                CornerRadius="6"
+                Padding="16"
+                Margin="0,8,0,0"
+                Cursor="Hand"
+                MouseLeftButtonDown="DeveloperCard_Click">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="DeveloperRadio" Text="( )"
+                               Foreground="{StaticResource DimText}"
+                               FontSize="14" FontWeight="Bold"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,0" />
+                    <TextBlock Text="Developer"
+                               Foreground="White"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock Text="All tools: documents, browser automation, LinkedIn, Reddit, social media, code generation, media processing, and more."
+                           Foreground="{StaticResource DimText}"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Margin="28,6,0,0"
+                           LineHeight="18" />
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</UserControl>
