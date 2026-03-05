@@ -1,4 +1,4 @@
-"""HTTP client wrapper for cc-browser daemon."""
+"""HTTP client wrapper for cc-browser v2 daemon."""
 
 import httpx
 import json
@@ -12,154 +12,218 @@ class BrowserError(Exception):
     pass
 
 
-class WorkspaceError(Exception):
-    """Error resolving browser workspace."""
+class ConnectionError(Exception):
+    """Error resolving browser connection."""
     pass
 
 
-def get_cc_browser_dir() -> Path:
-    """Get cc-browser workspaces directory."""
+# Keep WorkspaceError as alias for backward compatibility in cli.py imports
+WorkspaceError = ConnectionError
+
+DEFAULT_DAEMON_PORT = 9280
+TOOL_NAME = "cc-linkedin"
+
+
+def get_connections_dir() -> Path:
+    """Get cc-director connections directory."""
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if not local_app_data:
-        raise WorkspaceError(
+        raise ConnectionError(
             "LOCALAPPDATA environment variable not set. "
-            "Cannot locate cc-browser workspaces."
+            "Cannot locate cc-director connections."
         )
-    return Path(local_app_data) / "cc-browser"
+    return Path(local_app_data) / "cc-director" / "connections"
 
 
-def resolve_workspace(workspace_name: str) -> dict:
-    """Resolve workspace name or alias to workspace config.
+def get_connections_registry() -> Path:
+    """Get connections.json path."""
+    return get_connections_dir() / "connections.json"
 
-    Scans all cc-browser workspace directories for matching workspace name or alias.
+
+def resolve_connection(connection_name: str = None) -> str:
+    """Resolve connection name for this tool.
+
+    Resolution order:
+    1. Explicit connection_name if provided
+    2. Find connection with toolBinding == TOOL_NAME in connections.json
+    3. Error with instructions
 
     Args:
-        workspace_name: Workspace name or alias (e.g., "linkedin", "work", "chrome-work")
+        connection_name: Explicit connection name, or None for auto-resolve
 
     Returns:
-        Workspace config dict with browser, workspace, daemonPort, etc.
+        Connection name string
 
     Raises:
-        WorkspaceError: If workspace cannot be found or resolved.
+        ConnectionError: If connection cannot be resolved.
     """
-    cc_browser_dir = get_cc_browser_dir()
+    if connection_name:
+        # Verify it exists in registry
+        registry = get_connections_registry()
+        if registry.exists():
+            try:
+                connections = json.loads(registry.read_text())
+                names = [c.get("name") for c in connections]
+                if connection_name not in names:
+                    available = ", ".join(names) if names else "(none)"
+                    raise ConnectionError(
+                        f"Connection '{connection_name}' not found.\n"
+                        f"Available connections: {available}\n"
+                        f"Create one with: cc-browser connections add {connection_name}"
+                    )
+            except (json.JSONDecodeError, IOError):
+                pass
+        return connection_name
 
-    if not cc_browser_dir.exists():
-        raise WorkspaceError(
-            f"cc-browser directory not found: {cc_browser_dir}\n"
-            "Install cc-browser and create a workspace first.\n"
-            "Run: cc-browser start --workspace linkedin"
+    # Auto-resolve by tool binding
+    registry = get_connections_registry()
+    if not registry.exists():
+        raise ConnectionError(
+            "No connections configured.\n"
+            f"Create a connection with: cc-browser connections add linkedin --tool {TOOL_NAME}"
         )
 
-    # Scan all workspace directories
-    for workspace_dir in cc_browser_dir.iterdir():
-        if not workspace_dir.is_dir():
-            continue
+    try:
+        connections = json.loads(registry.read_text())
+    except (json.JSONDecodeError, IOError) as e:
+        raise ConnectionError(f"Cannot read connections registry: {e}")
 
-        workspace_json = workspace_dir / "workspace.json"
-        if not workspace_json.exists():
-            continue
+    # Find connection bound to this tool
+    for conn in connections:
+        if conn.get("toolBinding") == TOOL_NAME:
+            return conn["name"]
 
-        try:
-            with open(workspace_json, "r") as f:
-                config = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            continue
-
-        # Check if workspace name matches directory name
-        if workspace_dir.name == workspace_name:
-            return config
-
-        # Check if workspace name matches browser-workspace combo
-        browser = config.get("browser", "")
-        workspace = config.get("workspace", "")
-        if f"{browser}-{workspace}" == workspace_name:
-            return config
-
-        # Check aliases
-        aliases = config.get("aliases", [])
-        if workspace_name in aliases:
-            return config
-
-    # Workspace not found - provide helpful error
-    available = []
-    for workspace_dir in cc_browser_dir.iterdir():
-        if workspace_dir.is_dir():
-            workspace_json = workspace_dir / "workspace.json"
-            if workspace_json.exists():
-                try:
-                    with open(workspace_json, "r") as f:
-                        config = json.load(f)
-                    aliases = config.get("aliases", [])
-                    available.append(f"{workspace_dir.name} (aliases: {', '.join(aliases)})")
-                except (json.JSONDecodeError, IOError):
-                    available.append(workspace_dir.name)
-
-    available_str = "\n  - ".join(available) if available else "(none found)"
-    raise WorkspaceError(
-        f"Workspace '{workspace_name}' not found.\n\n"
-        f"Available workspaces:\n  - {available_str}\n\n"
-        "To add 'linkedin' as an alias to an existing workspace, edit its workspace.json "
-        "and add 'linkedin' to the aliases array."
+    # Not found - list available
+    available = [c.get("name", "?") for c in connections]
+    available_str = ", ".join(available) if available else "(none)"
+    raise ConnectionError(
+        f"No connection bound to tool '{TOOL_NAME}'.\n\n"
+        f"Available connections: {available_str}\n\n"
+        f"Create one with: cc-browser connections add linkedin --tool {TOOL_NAME}\n"
+        f"Or bind an existing one by editing connections.json and setting toolBinding to '{TOOL_NAME}'."
     )
 
 
-def get_port_for_workspace(workspace_name: str) -> int:
-    """Get daemon port for a workspace name or alias.
-
-    Args:
-        workspace_name: Workspace name or alias
+def get_daemon_port() -> int:
+    """Get daemon port from lockfile.
 
     Returns:
-        Daemon port number
-
-    Raises:
-        WorkspaceError: If workspace not found or has no daemonPort.
+        Daemon port number (default 9280 if lockfile not found).
     """
-    config = resolve_workspace(workspace_name)
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if not local_app_data:
+        return DEFAULT_DAEMON_PORT
 
-    port = config.get("daemonPort")
-    if not port:
-        raise WorkspaceError(
-            f"Workspace '{workspace_name}' has no daemonPort configured.\n"
-            "Edit the workspace.json and add a daemonPort field."
-        )
+    lockfile = Path(local_app_data) / "cc-browser" / "daemon.lock"
+    if lockfile.exists():
+        try:
+            data = json.loads(lockfile.read_text())
+            return data.get("port", DEFAULT_DAEMON_PORT)
+        except (json.JSONDecodeError, IOError):
+            pass
 
-    return port
+    return DEFAULT_DAEMON_PORT
+
+
+class ConnectionLockedError(BrowserError):
+    """Raised when a connection is locked by another tool."""
+    pass
 
 
 class BrowserClient:
-    """HTTP client for cc-browser daemon.
+    """HTTP client for cc-browser v2 daemon.
 
     Communicates with the cc-browser daemon on localhost.
-    Workspace is resolved to get the daemon port.
+    Connection name is included in all POST requests.
+    Acquires an exclusive lock on the connection to prevent concurrent use.
     """
 
-    def __init__(self, workspace: str = None, profile: str = None, timeout: float = 30.0):
-        """Initialize browser client for a workspace.
+    def __init__(self, workspace: str = None, connection: str = None,
+                 profile: str = None, timeout: float = 30.0):
+        """Initialize browser client for a connection.
 
         Args:
-            workspace: Workspace name or alias (e.g., "linkedin", "work")
-            profile: Deprecated alias for workspace (for backward compat during transition)
+            workspace: Deprecated alias for connection (backward compat)
+            connection: Connection name (e.g., "linkedin")
+            profile: Deprecated alias for connection
             timeout: HTTP request timeout in seconds
 
         Raises:
-            WorkspaceError: If workspace cannot be resolved.
+            ConnectionError: If connection cannot be resolved.
+            ConnectionLockedError: If connection is locked by another tool.
         """
-        self.workspace = workspace or profile
-        self.port = get_port_for_workspace(self.workspace)
+        explicit_name = connection or workspace or profile
+        self.connection = resolve_connection(explicit_name)
+        self.port = get_daemon_port()
         self.base_url = f"http://localhost:{self.port}"
         self.timeout = timeout
         self._client = httpx.Client(timeout=timeout)
+        self._lock_acquired = False
+
+        # Keep workspace as alias for backward compat
+        self.workspace = self.connection
+
+        # Acquire exclusive lock on the connection
+        self._acquire_lock()
+
+    def _acquire_lock(self):
+        """Acquire exclusive lock on the connection via daemon."""
+        try:
+            response = self._client.post(
+                f"{self.base_url}/connections/acquire",
+                json={"name": self.connection, "owner": TOOL_NAME, "ttl": 300000}
+            )
+            result = response.json()
+            if response.status_code == 409:
+                raise ConnectionLockedError(
+                    result.get("error", f"Connection '{self.connection}' is in use by another tool.")
+                )
+            if result.get("success"):
+                self._lock_acquired = True
+        except httpx.ConnectError:
+            # Daemon not running - no locking available, proceed without lock
+            pass
+
+    def _release_lock(self):
+        """Release exclusive lock on the connection."""
+        if not self._lock_acquired:
+            return
+        try:
+            self._client.post(
+                f"{self.base_url}/connections/release",
+                json={"name": self.connection, "owner": TOOL_NAME}
+            )
+            self._lock_acquired = False
+        except (httpx.ConnectError, httpx.TimeoutException):
+            pass
+
+    def _renew_lock(self):
+        """Renew the lock TTL (call periodically for long operations)."""
+        if not self._lock_acquired:
+            return
+        try:
+            self._client.post(
+                f"{self.base_url}/connections/renew",
+                json={"name": self.connection, "owner": TOOL_NAME, "ttl": 300000}
+            )
+        except (httpx.ConnectError, httpx.TimeoutException):
+            pass
 
     def _post(self, endpoint: str, data: Optional[dict] = None) -> dict:
-        """Send POST request to daemon."""
+        """Send POST request to daemon with connection in body."""
+        body = data.copy() if data else {}
+        body["connection"] = self.connection
         try:
             response = self._client.post(
                 f"{self.base_url}{endpoint}",
-                json=data or {}
+                json=body
             )
             result = response.json()
+
+            if response.status_code == 409:
+                raise ConnectionLockedError(
+                    result.get("error", f"Connection '{self.connection}' is in use by another tool.")
+                )
 
             if not result.get("success", False):
                 raise BrowserError(result.get("error", "Unknown error"))
@@ -168,7 +232,7 @@ class BrowserClient:
         except httpx.ConnectError:
             raise BrowserError(
                 f"Cannot connect to cc-browser daemon on port {self.port}.\n"
-                f"Start it with: cc-browser daemon --workspace {self.workspace}"
+                f"Start it with: cc-browser daemon"
             )
         except httpx.TimeoutException:
             raise BrowserError(f"Request timed out after {self.timeout}s")
@@ -186,7 +250,7 @@ class BrowserClient:
         except httpx.ConnectError:
             raise BrowserError(
                 f"Cannot connect to cc-browser daemon on port {self.port}.\n"
-                f"Start it with: cc-browser daemon --workspace {self.workspace}"
+                f"Start it with: cc-browser daemon"
             )
         except httpx.TimeoutException:
             raise BrowserError(f"Request timed out after {self.timeout}s")
@@ -195,32 +259,17 @@ class BrowserClient:
         """Get daemon and browser status."""
         return self._get("/")
 
-    def start(self, profile_dir: Optional[str] = None, headless: bool = False) -> dict:
-        """Launch browser."""
-        data = {"headless": headless}
-        if profile_dir:
-            data["profileDir"] = profile_dir
-        return self._post("/start", data)
+    def open_connection(self) -> dict:
+        """Open browser for this connection."""
+        return self._post("/connections/open", {"name": self.connection})
 
-    def stop(self) -> dict:
-        """Close browser."""
-        return self._post("/stop")
+    def close_connection(self) -> dict:
+        """Close browser for this connection."""
+        return self._post("/connections/close", {"name": self.connection})
 
     def navigate(self, url: str) -> dict:
         """Navigate to URL."""
         return self._post("/navigate", {"url": url})
-
-    def reload(self) -> dict:
-        """Reload current page."""
-        return self._post("/reload")
-
-    def back(self) -> dict:
-        """Go back."""
-        return self._post("/back")
-
-    def forward(self) -> dict:
-        """Go forward."""
-        return self._post("/forward")
 
     def snapshot(self, interactive: bool = True) -> dict:
         """Get page snapshot with element refs."""
@@ -315,7 +364,8 @@ class BrowserClient:
         return self._post("/tabs/focus", {"tab": tab_id})
 
     def close(self):
-        """Close HTTP client."""
+        """Release lock and close HTTP client."""
+        self._release_lock()
         self._client.close()
 
     def __enter__(self):
@@ -326,6 +376,6 @@ class BrowserClient:
 
 
 # Convenience function for quick operations
-def get_client(workspace: str) -> BrowserClient:
-    """Get a browser client instance for a workspace."""
-    return BrowserClient(workspace=workspace)
+def get_client(workspace: str = None, connection: str = None) -> BrowserClient:
+    """Get a browser client instance for a connection."""
+    return BrowserClient(connection=connection or workspace)

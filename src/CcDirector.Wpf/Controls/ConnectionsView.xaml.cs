@@ -395,23 +395,34 @@ public partial class ConnectionsView : UserControl
         var item = _connections.FirstOrDefault(c => c.Name == name);
         if (item == null) return;
 
-        FileLog.Write($"[ConnectionsView] BtnConnectionAction_Click: {name}, connected={item.Connected}");
+        FileLog.Write($"[ConnectionsView] BtnConnectionAction_Click: name={name}, connected={item.Connected}, busy={item.Busy}, pid={item.ChromePid}");
+
+        if (item.Busy)
+        {
+            FileLog.Write($"[ConnectionsView] BtnConnectionAction_Click: ignored, item is busy");
+            return;
+        }
 
         if (item.Connected)
         {
-            // Close: try daemon, but don't fail hard
             await CloseConnection(item);
         }
         else
         {
-            // Open: launch Chrome directly (no daemon dependency)
             await OpenConnection(item);
         }
     }
 
     private async Task OpenConnection(ConnectionItem item)
     {
-        FileLog.Write($"[ConnectionsView] OpenConnection: {item.Name}");
+        FileLog.Write($"[ConnectionsView] OpenConnection: name={item.Name}, connected={item.Connected}, pid={item.ChromePid}");
+
+        if (item.Connected)
+        {
+            FileLog.Write($"[ConnectionsView] OpenConnection: already connected, ignoring double-open");
+            return;
+        }
+
         item.SetBusy(true);
 
         var chromePath = FindChromePath();
@@ -442,7 +453,8 @@ public partial class ConnectionsView : UserControl
         if (!string.IsNullOrEmpty(item.Url))
             args += $" \"{item.Url}\"";
 
-        FileLog.Write($"[ConnectionsView] Launching: {chromePath} {args}");
+        FileLog.Write($"[ConnectionsView] OpenConnection: chromePath={chromePath}, profileDir={profileDir}, extensionDir={extensionDir}");
+        FileLog.Write($"[ConnectionsView] OpenConnection: launching with args={args}");
 
         try
         {
@@ -454,7 +466,7 @@ public partial class ConnectionsView : UserControl
             };
 
             var process = Process.Start(psi);
-            FileLog.Write($"[ConnectionsView] Chrome launched: pid={process?.Id}");
+            FileLog.Write($"[ConnectionsView] OpenConnection: Chrome launched pid={process?.Id}");
 
             item.ChromePid = process?.Id;
             item.Connected = true;
@@ -477,17 +489,16 @@ public partial class ConnectionsView : UserControl
 
     private async Task CloseConnection(ConnectionItem item)
     {
-        FileLog.Write($"[ConnectionsView] CloseConnection: {item.Name}, pid={item.ChromePid}");
+        FileLog.Write($"[ConnectionsView] CloseConnection: name={item.Name}, pid={item.ChromePid}");
         item.SetBusy(true);
 
         if (item.ChromePid is int pid)
         {
-            var killed = await Task.Run(() => KillProcessTree(pid));
-            FileLog.Write($"[ConnectionsView] KillProcessTree pid={pid}: killed={killed}");
+            await Task.Run(() => CloseProcessWithFallback(pid));
         }
         else
         {
-            FileLog.Write("[ConnectionsView] No tracked PID, skipping kill");
+            FileLog.Write("[ConnectionsView] CloseConnection: no tracked PID, skipping process kill");
         }
 
         // Also notify daemon if running
@@ -547,27 +558,66 @@ public partial class ConnectionsView : UserControl
         return null;
     }
 
-    private static bool KillProcessTree(int pid)
+    private static void CloseProcessWithFallback(int pid)
     {
-        FileLog.Write($"[ConnectionsView] KillProcessTree: pid={pid}");
+        FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid}");
+        Process proc;
         try
         {
-            var proc = Process.GetProcessById(pid);
-            proc.Kill(entireProcessTree: true);
-            proc.Dispose();
-            FileLog.Write($"[ConnectionsView] Killed process tree: pid={pid}");
-            return true;
+            proc = Process.GetProcessById(pid);
         }
         catch (ArgumentException)
         {
-            // Process already exited
-            FileLog.Write($"[ConnectionsView] Process already exited: pid={pid}");
-            return false;
+            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} already exited");
+            return;
+        }
+
+        try
+        {
+            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: process name={proc.ProcessName}, hasExited={proc.HasExited}");
+
+            if (proc.HasExited)
+            {
+                FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} already exited (HasExited=true)");
+                proc.Dispose();
+                return;
+            }
+
+            // Step 1: Try CloseMainWindow (sends WM_CLOSE, like clicking X)
+            var sent = proc.CloseMainWindow();
+            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: CloseMainWindow returned {sent} for pid={pid}");
+
+            if (sent)
+            {
+                var exited = proc.WaitForExit(5000);
+                FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: WaitForExit(5s) returned {exited} for pid={pid}");
+
+                if (exited)
+                {
+                    FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} exited gracefully");
+                    proc.Dispose();
+                    return;
+                }
+            }
+
+            // Step 2: CloseMainWindow failed or process didn't exit - force kill
+            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: force killing pid={pid} (entireProcessTree=true)");
+            proc.Kill(entireProcessTree: true);
+            proc.WaitForExit(3000);
+            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: force kill complete for pid={pid}");
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Process exited between our checks
+            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} exited during close: {ex.Message}");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[ConnectionsView] KillProcessTree FAILED pid={pid}: {ex.Message}");
-            return false;
+            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback FAILED pid={pid}: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            proc.Dispose();
         }
     }
 
