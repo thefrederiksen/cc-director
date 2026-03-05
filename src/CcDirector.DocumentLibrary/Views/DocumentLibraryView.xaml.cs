@@ -16,6 +16,11 @@ public partial class DocumentLibraryView : UserControl, IDisposable
     private readonly BackgroundScanService _scanService = new();
     private bool _isInitialized;
 
+    private static readonly HashSet<string> ReadableExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".md", ".txt", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".ini", ".cfg", ".html", ".htm",
+    };
+
     public DocumentLibraryView()
     {
         FileLog.Write("[DocumentLibraryView] Constructor");
@@ -65,6 +70,148 @@ public partial class DocumentLibraryView : UserControl, IDisposable
         _scanService.Dispose();
         _viewModel.Dispose();
     }
+
+    // ==================== SEARCH TAB ====================
+
+    private void SearchGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_viewModel.SelectedSearchEntry is not null)
+        {
+            FileLog.Write($"[DocumentLibraryView] SearchGrid_SelectionChanged: {_viewModel.SelectedSearchEntry.FileName}");
+            ShowPreviewAsync(_viewModel.SelectedSearchEntry);
+        }
+        else
+        {
+            HidePreview();
+        }
+    }
+
+    private async void ShowPreviewAsync(CatalogEntry entry)
+    {
+        FileLog.Write($"[DocumentLibraryView] ShowPreviewAsync: {entry.FileName}");
+
+        // Show pane immediately with metadata
+        PreviewCol.Width = new GridLength(350);
+        PreviewSplitterCol.Width = new GridLength(3);
+        PreviewSplitter.Visibility = Visibility.Visible;
+        PreviewPane.Visibility = Visibility.Visible;
+
+        PreviewTitle.Text = entry.Title ?? entry.FileName;
+        PreviewMeta.Text = $"Folder: {entry.Department ?? "-"} | Tags: {entry.Tags ?? "-"}";
+        PreviewStatus.Text = $"Status: {entry.StatusDisplay} | {entry.FileSizeDisplay}";
+
+        // Summary
+        if (!string.IsNullOrEmpty(entry.Summary))
+        {
+            PreviewSummaryHeader.Visibility = Visibility.Visible;
+            PreviewSummary.Visibility = Visibility.Visible;
+            PreviewSummary.Text = entry.Summary;
+        }
+        else
+        {
+            PreviewSummaryHeader.Visibility = Visibility.Collapsed;
+            PreviewSummary.Visibility = Visibility.Collapsed;
+        }
+
+        // Content preview for readable file types
+        if (ReadableExtensions.Contains(entry.FileExt) && File.Exists(entry.FilePath))
+        {
+            PreviewContentHeader.Visibility = Visibility.Visible;
+            PreviewContent.Visibility = Visibility.Visible;
+            PreviewContent.Text = "Loading...";
+
+            var content = await BuildPreviewContent(entry);
+            PreviewContent.Text = content;
+        }
+        else
+        {
+            PreviewContentHeader.Visibility = Visibility.Collapsed;
+            PreviewContent.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private static async Task<string> BuildPreviewContent(CatalogEntry entry)
+    {
+        FileLog.Write($"[DocumentLibraryView] BuildPreviewContent: {entry.FilePath}");
+        return await Task.Run(() =>
+        {
+            try
+            {
+                using var reader = new StreamReader(entry.FilePath);
+                var buffer = new char[2000];
+                var read = reader.Read(buffer, 0, buffer.Length);
+                var text = new string(buffer, 0, read);
+                if (reader.Peek() >= 0)
+                    text += "\n\n[... truncated]";
+                return text;
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[DocumentLibraryView] BuildPreviewContent FAILED: {ex.Message}");
+                return $"Could not read file: {ex.Message}";
+            }
+        });
+    }
+
+    private void HidePreview()
+    {
+        FileLog.Write("[DocumentLibraryView] HidePreview");
+        PreviewCol.Width = new GridLength(0);
+        PreviewSplitterCol.Width = new GridLength(0);
+        PreviewSplitter.Visibility = Visibility.Collapsed;
+        PreviewPane.Visibility = Visibility.Collapsed;
+    }
+
+    private void BtnClosePreview_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[DocumentLibraryView] BtnClosePreview_Click");
+        SearchGrid.SelectedItem = null;
+        HidePreview();
+    }
+
+    private void SearchGrid_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_viewModel.SelectedSearchEntry is not null)
+        {
+            FileLog.Write($"[DocumentLibraryView] SearchGrid_DoubleClick: {_viewModel.SelectedSearchEntry.FileName}");
+            _viewModel.OpenFile(_viewModel.SelectedSearchEntry);
+        }
+    }
+
+    private void SearchFilterChip_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button) return;
+        var ext = button.Tag?.ToString();
+        if (string.IsNullOrEmpty(ext)) ext = null;
+
+        FileLog.Write($"[DocumentLibraryView] SearchFilterChip_Click: {ext ?? "All"}");
+        _viewModel.ActiveExtFilter = ext;
+
+        foreach (var child in SearchFilterBar.Children)
+        {
+            if (child is Button chip)
+            {
+                var chipExt = chip.Tag?.ToString();
+                chip.Style = (chipExt == (ext ?? ""))
+                    ? (Style)FindResource("FilterChipActiveStyle")
+                    : (Style)FindResource("FilterChipStyle");
+            }
+        }
+
+        // Re-trigger search with new filter
+        if (!string.IsNullOrWhiteSpace(_viewModel.SearchQuery))
+            _ = _viewModel.SearchGlobalAsync(_viewModel.SearchQuery);
+    }
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (SearchPlaceholder is not null)
+            SearchPlaceholder.Visibility = string.IsNullOrEmpty(SearchBox.Text)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+    }
+
+    // ==================== LIBRARIES TAB ====================
 
     private void BuildTree()
     {
@@ -180,6 +327,7 @@ public partial class DocumentLibraryView : UserControl, IDisposable
             _viewModel.SelectedRelativeDir = null;
             UpdateBreadcrumb(lib.Label);
             BtnScanAndSummarize.Visibility = Visibility.Visible;
+            BtnRemoveLibrary.Visibility = Visibility.Visible;
             UpdateScanProgressVisibility(lib.Label);
             item.IsExpanded = true;
             await _viewModel.LoadEntriesAsync();
@@ -192,6 +340,7 @@ public partial class DocumentLibraryView : UserControl, IDisposable
             _viewModel.SelectedRelativeDir = folderTag.RelativeDir;
             UpdateBreadcrumb($"{folderTag.Library.Label}  >  {folderTag.RelativeDir.Replace("/", "  >  ")}");
             BtnScanAndSummarize.Visibility = Visibility.Visible;
+            BtnRemoveLibrary.Visibility = Visibility.Visible;
             UpdateScanProgressVisibility(folderTag.Library.Label);
             await _viewModel.LoadEntriesByDirectoryAsync(
                 folderTag.Library.Id, folderTag.Library.Path, folderTag.RelativeDir);
@@ -260,6 +409,8 @@ public partial class DocumentLibraryView : UserControl, IDisposable
         if (dialog.ShowDialog() == true)
         {
             FileLog.Write($"[DocumentLibraryView] AddLibrary: path={dialog.LibraryPath}, label={dialog.LibraryLabel}");
+            BtnAddLibrary.IsEnabled = false;
+            BreadcrumbText.Text = $"Adding '{dialog.LibraryLabel}'...";
             try
             {
                 var client = new Services.VaultCatalogClient();
@@ -268,14 +419,72 @@ public partial class DocumentLibraryView : UserControl, IDisposable
                     dialog.LibraryCategory, dialog.LibraryOwner);
                 await _viewModel.RefreshLibrariesAsync();
                 BuildTree();
+                BreadcrumbText.Text = dialog.LibraryLabel;
+                _scanService.ScheduleScan(dialog.LibraryLabel);
+                FileLog.Write($"[DocumentLibraryView] AddLibrary complete, scan scheduled: {dialog.LibraryLabel}");
             }
             catch (Exception ex)
             {
                 FileLog.Write($"[DocumentLibraryView] AddLibrary FAILED: {ex.Message}");
+                BreadcrumbText.Text = "Select a library";
                 MessageBox.Show(
                     $"Failed to add library: {ex.Message}",
                     "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally
+            {
+                BtnAddLibrary.IsEnabled = true;
+            }
+        }
+    }
+
+    private async void BtnRemoveLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        var lib = _viewModel.SelectedLibrary;
+        if (lib is null) return;
+
+        FileLog.Write($"[DocumentLibraryView] BtnRemoveLibrary_Click: {lib.Label}");
+
+        var entryCount = lib.Stats?.Total ?? 0;
+        var message = $"Remove library '{lib.Label}' and all {entryCount} catalog entries?\n\nThis cannot be undone.";
+        var result = MessageBox.Show(
+            message, "Remove Library",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.Yes) return;
+
+        FileLog.Write($"[DocumentLibraryView] RemoveLibrary confirmed: {lib.Label}");
+        BtnRemoveLibrary.IsEnabled = false;
+        BtnScanAndSummarize.IsEnabled = false;
+        BreadcrumbText.Text = $"Removing '{lib.Label}'...";
+        try
+        {
+            var client = new Services.VaultCatalogClient();
+            await client.DeleteLibraryAsync(lib.Label);
+
+            _viewModel.SelectedLibrary = null;
+            _viewModel.SelectedRelativeDir = null;
+            BtnScanAndSummarize.Visibility = Visibility.Collapsed;
+            BtnRemoveLibrary.Visibility = Visibility.Collapsed;
+            BreadcrumbText.Text = "Select a library";
+
+            await _viewModel.RefreshLibrariesAsync();
+            BuildTree();
+            _viewModel.Entries.Clear();
+
+            FileLog.Write($"[DocumentLibraryView] RemoveLibrary complete: {lib.Label}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DocumentLibraryView] RemoveLibrary FAILED: {ex.Message}");
+            MessageBox.Show(
+                $"Failed to remove library: {ex.Message}",
+                "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            BtnRemoveLibrary.IsEnabled = true;
+            BtnScanAndSummarize.IsEnabled = true;
         }
     }
 
@@ -438,14 +647,6 @@ public partial class DocumentLibraryView : UserControl, IDisposable
                     : (Style)FindResource("FilterChipStyle");
             }
         }
-    }
-
-    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (SearchPlaceholder is not null)
-            SearchPlaceholder.Visibility = string.IsNullOrEmpty(SearchBox.Text)
-                ? Visibility.Visible
-                : Visibility.Collapsed;
     }
 
     private void CatalogGrid_DoubleClick(object sender, MouseButtonEventArgs e)
