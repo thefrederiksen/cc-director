@@ -297,7 +297,7 @@ const routes = {
     const name = body.name || body.connection;
     const owner = body.owner;
     if (!name) return jsonError(res, 400, 'name is required');
-    if (!owner) return jsonError(res, 400, 'owner is required (e.g., "cc-linkedin")');
+    if (!owner) return jsonError(res, 400, 'owner is required (e.g., "cc-reddit")');
 
     const ttl = body.ttl || DEFAULT_LOCK_TTL_MS;
     const result = acquireLock(name, owner, ttl);

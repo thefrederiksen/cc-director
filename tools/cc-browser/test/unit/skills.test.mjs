@@ -62,7 +62,7 @@ describe('Navigation Skills', () => {
       const skills = listManagedSkills();
       const linkedin = skills.find(s => s.name === 'linkedin');
       assert.equal(linkedin.site, 'linkedin.com');
-      assert.equal(linkedin.version, '2026.03.05');
+      assert.equal(linkedin.version, '2026.03.05.1');
     });
   });
 
