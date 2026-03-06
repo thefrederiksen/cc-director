@@ -84,14 +84,29 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <!-- Session name -->
-                <TextBlock x:Name="HeaderSessionName" Grid.Column="0" Grid.Row="0"
-                           Text=""
-                           Foreground="White"
-                           FontSize="20"
-                           FontWeight="SemiBold"
-                           VerticalAlignment="Center"
-                           TextTrimming="CharacterEllipsis" />
+                <!-- Session name with optional coaching icon -->
+                <StackPanel Grid.Column="0" Grid.Row="0" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Viewbox x:Name="HeaderCoachingIcon" Width="24" Height="24"
+                             Margin="0,0,10,0" Visibility="Collapsed">
+                        <Canvas Width="24" Height="24">
+                            <Path x:Name="HeaderCoachingIconPath" Fill="White" />
+                        </Canvas>
+                    </Viewbox>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock x:Name="HeaderSessionName"
+                                   Text=""
+                                   Foreground="White"
+                                   FontSize="20"
+                                   FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="HeaderCoachingSubtitle"
+                                   Text=""
+                                   Foreground="#B0D4F1"
+                                   FontSize="11"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </StackPanel>
 
                 <!-- Activity state badge + message count + refresh -->
                 <StackPanel Grid.Column="1" Grid.Row="0"
@@ -405,11 +420,28 @@
 
                                             <!-- Row 0: Display name + Status text -->
                                             <StackPanel Grid.Row="0">
-                                                <!-- Session name -->
-                                                <TextBlock Text="{Binding DisplayName}"
-                                                           FontWeight="Medium"
-                                                           FontSize="13"
-                                                           TextTrimming="CharacterEllipsis" />
+                                                <!-- Session name with optional coaching icon -->
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Viewbox Width="16" Height="16" Margin="0,0,6,0">
+                                                        <Viewbox.Style>
+                                                            <Style TargetType="Viewbox">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsCoachingMode}" Value="False">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Viewbox.Style>
+                                                        <Canvas Width="24" Height="24">
+                                                            <Path Fill="#CCCCCC" Data="{Binding CoachingIconGeometry}" />
+                                                        </Canvas>
+                                                    </Viewbox>
+                                                    <TextBlock Text="{Binding DisplayName}"
+                                                               FontWeight="Medium"
+                                                               FontSize="13"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
                                                 <!-- Status: Working (PID xxx) - ConPTY -->
                                                 <TextBlock Text="{Binding StatusText}"
                                                            FontSize="10"

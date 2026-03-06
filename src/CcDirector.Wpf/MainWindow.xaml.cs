@@ -2032,11 +2032,28 @@ public partial class MainWindow : Window
         vm.PropertyChanged += OnHeaderVmPropertyChanged;
 
         HeaderSessionName.Text = vm.DisplayName;
+        UpdateHeaderCoachingMode(vm);
         SessionHeaderBanner.Background = vm.CustomColorBrush;
         UpdateHeaderActivityState(vm);
         UpdateHeaderClaudeMetadata(vm);
         SessionHeaderBanner.Visibility = Visibility.Visible;
         DeferConsolePositionUpdate();
+    }
+
+    private void UpdateHeaderCoachingMode(SessionViewModel vm)
+    {
+        if (vm.IsCoachingMode && vm.CoachingIconGeometry != null)
+        {
+            HeaderCoachingIconPath.Data = Geometry.Parse(vm.CoachingIconGeometry);
+            HeaderCoachingIcon.Visibility = Visibility.Visible;
+            HeaderCoachingSubtitle.Text = vm.CoachingSubtitle ?? string.Empty;
+            HeaderCoachingSubtitle.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            HeaderCoachingIcon.Visibility = Visibility.Collapsed;
+            HeaderCoachingSubtitle.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void UpdateHeaderClaudeMetadata(SessionViewModel vm)
@@ -2115,6 +2132,13 @@ public partial class MainWindow : Window
         var headerBg = vm.CustomColorBrush.Color;
         var foreground = GetContrastForeground(headerBg);
         HeaderSessionName.Foreground = foreground;
+        HeaderCoachingIconPath.Fill = foreground;
+        // Subtitle uses slightly muted version of the foreground
+        var subtitleBrush = foreground == Brushes.White
+            ? new SolidColorBrush(Color.FromRgb(0xB0, 0xD4, 0xF1))
+            : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
+        subtitleBrush.Freeze();
+        HeaderCoachingSubtitle.Foreground = subtitleBrush;
     }
 
     private static SolidColorBrush GetContrastForeground(Color c)
@@ -4320,6 +4344,43 @@ public class SessionViewModel : INotifyPropertyChanged
 
     /// <summary>Whether we're waiting for Claude session link (not yet linked).</summary>
     public bool IsWaitingForLink => Session.VerificationStatus == SessionVerificationStatus.NotLinked;
+
+    // -- Coaching mode detection --
+
+    /// <summary>Coaching mode: "assistant", "coach", or null for regular repo sessions.</summary>
+    public string? CoachingMode
+    {
+        get
+        {
+            var path = Session.RepoPath;
+            if (string.IsNullOrEmpty(path)) return null;
+            var normalized = path.Replace('/', '\\').TrimEnd('\\');
+            if (normalized.EndsWith(@"\vault\life\assistant", StringComparison.OrdinalIgnoreCase))
+                return "assistant";
+            if (normalized.EndsWith(@"\vault\life\coach", StringComparison.OrdinalIgnoreCase))
+                return "coach";
+            return null;
+        }
+    }
+
+    /// <summary>Whether this session is a coaching/assistant mode (not a regular repo).</summary>
+    public bool IsCoachingMode => CoachingMode != null;
+
+    /// <summary>SVG path geometry for the coaching mode icon.</summary>
+    public string? CoachingIconGeometry => CoachingMode switch
+    {
+        "assistant" => "M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 20c0-3.3 2.7-6 6-6h4c3.3 0 6 2.7 6 6",
+        "coach" => "M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 2c4.4 0 8 3.6 8 8s-3.6 8-8 8-8-3.6-8-8 3.6-8 8-8zm0 2l-1.5 4H6l3.5 2.5L8 17l4-3 4 3-1.5-4.5L18 10h-4.5z",
+        _ => null
+    };
+
+    /// <summary>Subtitle for coaching mode display in the header.</summary>
+    public string? CoachingSubtitle => CoachingMode switch
+    {
+        "assistant" => "Tasks, contacts, daily briefing",
+        "coach" => "Life coaching across all domains",
+        _ => null
+    };
 
     /// <summary>Text describing the verification status.</summary>
     public string VerificationStatusText => Session.VerificationStatus switch

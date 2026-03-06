@@ -108,35 +108,29 @@
                               Margin="0,8,0,0"
                               ToolTip="When checked, starts session in Remote Control mode for access from claude.ai or mobile app" />
 
-                    <!-- Quick-launch coaching buttons -->
+                    <!-- Quick-launch cards -->
                     <StackPanel Grid.Row="6" Orientation="Horizontal" Margin="0,16,0,0">
                         <StackPanel.Resources>
-                            <Style x:Key="CoachingButton" TargetType="Button">
-                                <Setter Property="Background" Value="#2D2D30" />
-                                <Setter Property="Foreground" Value="#CCCCCC" />
-                                <Setter Property="BorderBrush" Value="#3C3C3C" />
-                                <Setter Property="BorderThickness" Value="1" />
-                                <Setter Property="Padding" Value="16,8" />
-                                <Setter Property="Margin" Value="0,0,8,0" />
+                            <Style x:Key="QuickLaunchCard" TargetType="Button">
+                                <Setter Property="Width" Value="200" />
+                                <Setter Property="Height" Value="56" />
+                                <Setter Property="Margin" Value="0,0,12,0" />
                                 <Setter Property="Cursor" Value="Hand" />
-                                <Setter Property="FontSize" Value="13" />
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="Button">
-                                            <Border x:Name="border"
-                                                    Background="{TemplateBinding Background}"
-                                                    BorderBrush="{TemplateBinding BorderBrush}"
-                                                    BorderThickness="{TemplateBinding BorderThickness}"
-                                                    CornerRadius="4"
-                                                    Padding="{TemplateBinding Padding}">
-                                                <ContentPresenter HorizontalAlignment="Center"
-                                                                  VerticalAlignment="Center"
-                                                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+                                            <Border x:Name="cardBorder"
+                                                    Background="#2D2D30"
+                                                    BorderBrush="#3C3C3C"
+                                                    BorderThickness="1"
+                                                    CornerRadius="6"
+                                                    Padding="12,8">
+                                                <ContentPresenter />
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="border" Property="Background" Value="#007ACC" />
-                                                    <Setter TargetName="border" Property="BorderBrush" Value="#007ACC" />
+                                                    <Setter TargetName="cardBorder" Property="Background" Value="#007ACC" />
+                                                    <Setter TargetName="cardBorder" Property="BorderBrush" Value="#007ACC" />
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -145,34 +139,53 @@
                             </Style>
                         </StackPanel.Resources>
 
-                        <Button Content="Assistant" Tag="assistant"
-                                Style="{StaticResource CoachingButton}"
+                        <!-- Assistant card -->
+                        <Button Tag="assistant" Style="{StaticResource QuickLaunchCard}"
                                 Click="BtnCoaching_Click"
-                                ToolTip="Life admin, contacts, routing" />
-                        <Button Content="Health" Tag="health"
-                                Style="{StaticResource CoachingButton}"
+                                ToolTip="Tasks, contacts, daily briefing">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Viewbox Grid.Column="0" Width="24" Height="24" Margin="0,0,10,0">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Fill="#CCCCCC" x:Name="AssistantIcon"
+                                              Data="M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 20c0-3.3 2.7-6 6-6h4c3.3 0 6 2.7 6 6" />
+                                    </Canvas>
+                                </Viewbox>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="Assistant" FontSize="14" FontWeight="SemiBold"
+                                               Foreground="#CCCCCC" x:Name="AssistantTitle" />
+                                    <TextBlock Text="Tasks, contacts, daily briefing" FontSize="11"
+                                               Foreground="#888888" x:Name="AssistantSubtitle" />
+                                </StackPanel>
+                            </Grid>
+                        </Button>
+
+                        <!-- Coach card -->
+                        <Button Tag="coach" Style="{StaticResource QuickLaunchCard}"
                                 Click="BtnCoaching_Click"
-                                ToolTip="Health, wellness, fitness" />
-                        <Button Content="Business" Tag="business"
-                                Style="{StaticResource CoachingButton}"
-                                Click="BtnCoaching_Click"
-                                ToolTip="Business strategy, consulting" />
-                        <Button Content="Personal" Tag="personal"
-                                Style="{StaticResource CoachingButton}"
-                                Click="BtnCoaching_Click"
-                                ToolTip="Relationships, emotional wellbeing" />
-                        <Button Content="Growth" Tag="growth"
-                                Style="{StaticResource CoachingButton}"
-                                Click="BtnCoaching_Click"
-                                ToolTip="Learning, mindset, skill development" />
-                        <Button Content="Dev" Tag="dev"
-                                Style="{StaticResource CoachingButton}"
-                                Click="BtnCoaching_Click"
-                                ToolTip="Software development coaching" />
-                        <Button Content="Log" Tag="log"
-                                Style="{StaticResource CoachingButton}"
-                                Click="BtnCoaching_Click"
-                                ToolTip="Application logs, debugging" />
+                                ToolTip="Life coaching across all domains">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Viewbox Grid.Column="0" Width="24" Height="24" Margin="0,0,10,0">
+                                    <Canvas Width="24" Height="24">
+                                        <Path Fill="#CCCCCC" x:Name="CoachIcon"
+                                              Data="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 2c4.4 0 8 3.6 8 8s-3.6 8-8 8-8-3.6-8-8 3.6-8 8-8zm0 2l-1.5 4H6l3.5 2.5L8 17l4-3 4 3-1.5-4.5L18 10h-4.5z" />
+                                    </Canvas>
+                                </Viewbox>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="Coach" FontSize="14" FontWeight="SemiBold"
+                                               Foreground="#CCCCCC" x:Name="CoachTitle" />
+                                    <TextBlock Text="Life coaching across all domains" FontSize="11"
+                                               Foreground="#888888" x:Name="CoachSubtitle" />
+                                </StackPanel>
+                            </Grid>
+                        </Button>
                     </StackPanel>
                 </Grid>
             </TabItem>

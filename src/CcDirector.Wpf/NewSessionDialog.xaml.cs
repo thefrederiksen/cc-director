@@ -735,9 +735,7 @@ public partial class NewSessionDialog : Window
 
         FileLog.Write($"[NewSessionDialog] BtnCoaching_Click: category={category}");
 
-        SelectedPath = category == "log"
-            ? CcStorage.Logs()
-            : CcStorage.CoachingCategory(category);
+        SelectedPath = CcStorage.CoachingCategory(category);
         SelectedResumeSessionId = null;
         BypassPermissionsCheckBox.IsChecked = true;
 
