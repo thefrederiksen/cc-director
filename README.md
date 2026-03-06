@@ -2,7 +2,9 @@
 
 A desktop application for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions simultaneously. Run, monitor, and switch between independent Claude Code instances — each working on its own repository — from a single unified interface.
 
-> **Mac/Linux Support (Experimental):** Cross-platform backend support has been added but needs testing. See [Help Wanted: Mac Testers](#help-wanted-mac-testers) below.
+> **Live Training:** I'm running a 2-day hands-on course in Toronto covering CC Director and the full Claude Code toolchain. Details and registration at [sorenfrederiksen.com/training](https://sorenfrederiksen.com/training).
+
+> **Mac/Linux Support (Experimental):** Cross-platform backend support has been added but is largely untested -- I don't have a Mac to test on. If you'd like to see CC Director running on Mac, I'd love your help. See [Help Wanted: Mac Testers](#help-wanted-mac-testers) below.
 
 ![CC Director](images/cc-director-main.png)
 
@@ -143,7 +145,7 @@ Session state and repository registry are persisted in `~/Documents/CcDirector/`
 
 ## Help Wanted: Mac Testers
 
-We've added experimental cross-platform support for macOS and Linux, but **we need help testing it** since we don't have regular access to Mac hardware.
+I've added experimental cross-platform support for macOS and Linux, but **it's largely untested because I don't have a Mac available**. If you're interested in running CC Director on Mac, I'd really appreciate your help getting it working. Even basic "does it build and run" feedback would be valuable.
 
 ### What's Been Implemented
 
@@ -160,7 +162,7 @@ The core backend (`CcDirector.Core`) is now cross-platform. The UI layer (`CcDir
 
 1. **Clone and build on Mac:**
    ```bash
-   git clone https://github.com/anthropics/cc-director.git
+   git clone https://github.com/thefrederiksen/cc-director.git
    cd cc-director
    dotnet build src/CcDirector.Core/
    ```
