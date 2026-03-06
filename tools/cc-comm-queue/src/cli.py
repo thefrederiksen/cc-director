@@ -17,16 +17,16 @@ __version__ = "0.1.0"
 try:
     from .schema import (
         ContentItem, ContentType, EmailSpecific, FacebookSpecific,
-        LinkedInSpecific, Persona, Platform, RedditSpecific, SendTiming,
-        Status, Visibility, WhatsAppSpecific, YouTubeSpecific,
+        LinkedInSpecific, Persona, Platform, RecipientInfo, RedditSpecific,
+        SendTiming, Status, Visibility, WhatsAppSpecific, YouTubeSpecific,
     )
     from .queue_manager import QueueManager
 except ImportError:
     # Running as frozen executable
     from schema import (
         ContentItem, ContentType, EmailSpecific, FacebookSpecific,
-        LinkedInSpecific, Persona, Platform, RedditSpecific, SendTiming,
-        Status, Visibility, WhatsAppSpecific, YouTubeSpecific,
+        LinkedInSpecific, Persona, Platform, RecipientInfo, RedditSpecific,
+        SendTiming, Status, Visibility, WhatsAppSpecific, YouTubeSpecific,
     )
     from queue_manager import QueueManager
 
@@ -125,6 +125,11 @@ def add(
     send_from: Optional[str] = typer.Option(None, "--send-from", "-sf", help="Account: mindzie, personal, consulting"),
     # Media attachments
     media: Optional[List[str]] = typer.Option(None, "--media", "-m", help="Path to media file (can be repeated)"),
+    # Recipient info (required for LinkedIn messages)
+    recipient_name: Optional[str] = typer.Option(None, "--recipient-name", help="Recipient full name (required for LinkedIn messages)"),
+    recipient_url: Optional[str] = typer.Option(None, "--recipient-url", help="Recipient profile URL (required for LinkedIn messages)"),
+    recipient_title: Optional[str] = typer.Option(None, "--recipient-title", help="Recipient job title"),
+    recipient_company: Optional[str] = typer.Option(None, "--recipient-company", help="Recipient company"),
     # Campaign
     campaign_id: Optional[str] = typer.Option(None, "--campaign-id", help="Campaign identifier for grouping related items"),
     # Output format
@@ -206,23 +211,41 @@ def add(
             console.print(json.dumps({"success": False, "error": f"Invalid send_from: {send_from}. Valid: {', '.join(valid_accounts)}"}))
         raise typer.Exit(1)
 
-    # Build the content item
-    item = ContentItem(
-        platform=plat,
-        type=ctype,
-        persona=pers,
-        content=content,
-        created_by=actual_created_by,
-        destination_url=destination,
-        context_url=context_url,
-        context_title=context_title,
-        tags=tag_list,
-        notes=notes,
-        campaign_id=campaign_id,
-        send_timing=timing,
-        scheduled_for=scheduled_for,
-        send_from=send_from.lower() if send_from else None,
-    )
+    # Build recipient info if provided
+    recipient = None
+    if recipient_name:
+        recipient = RecipientInfo(
+            name=recipient_name,
+            profile_url=recipient_url,
+            title=recipient_title,
+            company=recipient_company,
+        )
+
+    # Build the content item (model_validator enforces recipient for LinkedIn messages)
+    try:
+        item = ContentItem(
+            platform=plat,
+            type=ctype,
+            persona=pers,
+            content=content,
+            created_by=actual_created_by,
+            destination_url=destination,
+            context_url=context_url,
+            context_title=context_title,
+            tags=tag_list,
+            notes=notes,
+            campaign_id=campaign_id,
+            send_timing=timing,
+            scheduled_for=scheduled_for,
+            send_from=send_from.lower() if send_from else None,
+            recipient=recipient,
+        )
+    except Exception as e:
+        if json_output:
+            console.print(json.dumps({"success": False, "error": str(e)}))
+        else:
+            console.print(f"[red]ERROR:[/red] {e}")
+        raise typer.Exit(1)
 
     # Add platform-specific data
     if plat == Platform.LINKEDIN:

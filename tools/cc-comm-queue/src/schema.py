@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Platform(str, Enum):
@@ -226,6 +226,25 @@ class ContentItem(BaseModel):
     send_timing: SendTiming = SendTiming.ASAP
     scheduled_for: Optional[str] = None  # ISO datetime, only if send_timing == SCHEDULED
     send_from: Optional[str] = None      # Email address to send from (resolved from persona)
+
+    @model_validator(mode="after")
+    def _validate_recipient_required(self) -> "ContentItem":
+        """Validate that LinkedIn messages have recipient with profile_url."""
+        if self.platform == Platform.LINKEDIN and self.type == ContentType.MESSAGE:
+            if self.recipient is None:
+                raise ValueError(
+                    "LinkedIn messages require recipient info. "
+                    "Provide recipient with at minimum name and profile_url."
+                )
+            if not self.recipient.name:
+                raise ValueError(
+                    "LinkedIn messages require recipient name."
+                )
+            if not self.recipient.profile_url:
+                raise ValueError(
+                    "LinkedIn messages require recipient profile_url."
+                )
+        return self
 
     def model_post_init(self, __context: Any) -> None:
         """Set persona_display and send_from defaults if not provided."""
