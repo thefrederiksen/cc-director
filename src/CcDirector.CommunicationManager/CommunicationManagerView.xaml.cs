@@ -1,6 +1,9 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Navigation;
 using CcDirector.Core.Utilities;
 using CommunicationManager.Models;
 using CommunicationManager.ViewModels;
@@ -235,6 +238,17 @@ public partial class CommunicationManagerView : UserControl, IDisposable
     private void ResetFilterChipVisuals()
     {
         UpdateFilterChipVisuals("All");
+    }
+
+    private void Hyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        FileLog.Write($"[CommunicationManagerView] Hyperlink_RequestNavigate: {e.Uri}");
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = e.Uri.AbsoluteUri,
+            UseShellExecute = true
+        });
+        e.Handled = true;
     }
 
     private void PreviewToggle_Click(object sender, MouseButtonEventArgs e)

@@ -861,16 +861,20 @@ class ImapClient:
         message_uid: str,
         body: str,
         reply_all: bool = False,
+        send: bool = False,
+        html: bool = False,
     ) -> Dict[str, Any]:
-        """Create a draft reply to an existing message.
+        """Create a reply to an existing message (draft or send immediately).
 
         Args:
             message_uid: The message UID to reply to.
             body: Reply body text.
             reply_all: If True, reply to all recipients.
+            send: If True, send immediately via SMTP instead of saving as draft.
+            html: If True, body is HTML.
 
         Returns:
-            Created draft response.
+            Created draft or sent message response.
         """
         from email.mime.text import MIMEText
         import time
@@ -902,13 +906,21 @@ class ImapClient:
         else:
             references = original_message_id
 
-        msg = MIMEText(body, "plain")
+        content_type = "html" if html else "plain"
+        msg = MIMEText(body, content_type)
         msg["To"] = reply_to
         msg["From"] = self.email_address
         msg["Subject"] = reply_subject
         if original_message_id:
             msg["In-Reply-To"] = original_message_id
             msg["References"] = references
+
+        if send:
+            import smtplib
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                smtp.login(self.email_address, self.app_password)
+                smtp.send_message(msg)
+            return {"id": None, "status": "sent"}
 
         conn = self._connect()
 

@@ -230,6 +230,16 @@
                             <TextBlock Text="{Binding EmailSpecific.To[0]}" Foreground="#5F6368"/>
                             <TextBlock Text="&gt;" Foreground="#5F6368"/>
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
+                                    Visibility="{Binding HasEmailCc, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="CC: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding EmailCcDisplay}" Foreground="#5F6368"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
+                                    Visibility="{Binding HasEmailBcc, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="BCC: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding EmailBccDisplay}" Foreground="#5F6368"/>
+                        </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                             <TextBlock Text="Subject: " Foreground="#5F6368" FontWeight="SemiBold"/>
                             <TextBlock Text="{Binding EmailSpecific.Subject}" Foreground="#202124" FontWeight="SemiBold"/>

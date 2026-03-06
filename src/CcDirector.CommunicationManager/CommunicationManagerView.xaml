@@ -368,10 +368,15 @@
                                 </Border>
 
                                 <!-- Title -->
-                                <TextBlock Grid.Column="1" Grid.Row="0"
-                                           Text="{Binding DisplayTitle}"
-                                           FontWeight="SemiBold" Foreground="#CCCCCC"
-                                           TextTrimming="CharacterEllipsis"/>
+                                <StackPanel Grid.Column="1" Grid.Row="0">
+                                    <TextBlock Text="{Binding DisplayTitle}"
+                                               FontWeight="SemiBold" Foreground="#CCCCCC"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding RecipientDisplay}"
+                                               Foreground="#D97706" FontSize="11"
+                                               TextTrimming="CharacterEllipsis"
+                                               Visibility="{Binding HasRecipient, Converter={StaticResource BoolToVis}}"/>
+                                </StackPanel>
 
                                 <!-- Meta info -->
                                 <StackPanel Grid.Column="1" Grid.Row="1" Margin="0,4,0,0">
@@ -453,6 +458,26 @@
                                 <TextBlock Text=" at " Foreground="#888888"/>
                                 <TextBlock Text="{Binding SelectedItem.CreatedAt, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Foreground="#888888"/>
                             </StackPanel>
+
+                            <!-- Recipient Info -->
+                            <Border Background="#2A2A1B" CornerRadius="4" Padding="8,6" Margin="0,0,0,8"
+                                    Visibility="{Binding SelectedItem.HasRecipient, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="To: " Foreground="#888888" FontSize="12"/>
+                                        <TextBlock Text="{Binding SelectedItem.RecipientDisplay}" FontWeight="SemiBold"
+                                                   Foreground="#D97706" FontSize="12"/>
+                                    </StackPanel>
+                                    <TextBlock Margin="0,4,0,0"
+                                               Visibility="{Binding SelectedItem.HasRecipientProfile, Converter={StaticResource BoolToVis}}">
+                                        <Hyperlink NavigateUri="{Binding SelectedItem.Recipient.ProfileUrl}"
+                                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                                   Foreground="#007ACC" FontSize="11">
+                                            <Run Text="{Binding SelectedItem.Recipient.ProfileUrl, Mode=OneWay}"/>
+                                        </Hyperlink>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
 
                             <!-- Schedule Info (for Approved tab) -->
                             <Border CornerRadius="4" Padding="8,4" Margin="0,0,0,8"

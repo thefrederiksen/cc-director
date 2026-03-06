@@ -966,17 +966,27 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // Convert plain text newlines to HTML before sending with --html flag.
         // Without this, email clients ignore \n and recipients see a wall of text.
         var htmlBody = HtmlFormatter.ConvertPlainTextToHtml(item.Content);
-        args.AddRange(new[] { "send", "-t", to, "-s", subject, "-b", htmlBody, "--html" });
 
-        if (spec.Cc != null && spec.Cc.Count > 0)
+        if (!string.IsNullOrEmpty(spec.ReplyToMessageId))
         {
-            args.Add("--cc");
-            args.Add(string.Join(",", spec.Cc));
+            // Thread as a reply to the original message
+            FileLog.Write($"[CommunicationManager.VM] DispatchEmailItemAsync: ticket #{item.TicketNumber} is a reply to message {spec.ReplyToMessageId}");
+            args.AddRange(new[] { "reply", spec.ReplyToMessageId, "-b", htmlBody, "--all", "--send", "--html" });
         }
-        if (spec.Bcc != null && spec.Bcc.Count > 0)
+        else
         {
-            args.Add("--bcc");
-            args.Add(string.Join(",", spec.Bcc));
+            args.AddRange(new[] { "send", "-t", to, "-s", subject, "-b", htmlBody, "--html" });
+
+            if (spec.Cc != null && spec.Cc.Count > 0)
+            {
+                args.Add("--cc");
+                args.Add(string.Join(",", spec.Cc));
+            }
+            if (spec.Bcc != null && spec.Bcc.Count > 0)
+            {
+                args.Add("--bcc");
+                args.Add(string.Join(",", spec.Bcc));
+            }
         }
 
         var attachFlag = useGmail ? "--attach" : "-a";
@@ -1027,6 +1037,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             MarkPosted(item.Id, dbPath);
             FileLog.Write($"[CommunicationManager.VM] RunToolAndMarkPostedAsync: ticket #{item.TicketNumber} sent OK via {toolName}");
+            LogToVaultAsync(item.TicketNumber);
             return true;
         }
 
@@ -1051,6 +1062,49 @@ public partial class MainViewModel : ObservableObject, IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    private static async void LogToVaultAsync(int ticketNumber)
+    {
+        FileLog.Write($"[CommunicationManager.VM] LogToVaultAsync: ticket #{ticketNumber}");
+        try
+        {
+            var binDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "cc-director", "bin");
+            var toolPath = Path.Combine(binDir, "cc-comm-queue.exe");
+
+            if (!File.Exists(toolPath))
+            {
+                FileLog.Write($"[CommunicationManager.VM] LogToVaultAsync: cc-comm-queue.exe not found at {toolPath}");
+                return;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = toolPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            psi.ArgumentList.Add("log-to-vault");
+            psi.ArgumentList.Add(ticketNumber.ToString());
+
+            using var process = Process.Start(psi);
+            if (process == null)
+            {
+                FileLog.Write("[CommunicationManager.VM] LogToVaultAsync: failed to start cc-comm-queue");
+                return;
+            }
+
+            await process.WaitForExitAsync();
+            FileLog.Write($"[CommunicationManager.VM] LogToVaultAsync: ticket #{ticketNumber} exit code {process.ExitCode}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CommunicationManager.VM] LogToVaultAsync FAILED: {ex.Message}");
+        }
+    }
+
     private class QueuedItem
     {
         public string Id { get; set; } = "";
@@ -1073,6 +1127,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         public List<string>? Cc { get; set; }
         public List<string>? Bcc { get; set; }
         public string? Subject { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("reply_to_message_id")]
+        public string? ReplyToMessageId { get; set; }
         public List<string>? Attachments { get; set; }
     }
 

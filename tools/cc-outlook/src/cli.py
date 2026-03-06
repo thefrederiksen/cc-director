@@ -598,8 +598,10 @@ def reply(
     body: str = typer.Option(None, "-b", "--body", help="Reply body"),
     body_file: Path = typer.Option(None, "-f", "--file", help="Read body from file"),
     reply_all: bool = typer.Option(False, "--all", "-a", help="Reply to all recipients"),
+    send_flag: bool = typer.Option(False, "--send", help="Send immediately instead of saving as draft"),
+    html: bool = typer.Option(False, "--html", help="Body is HTML"),
 ):
-    """Create a draft reply to an email."""
+    """Create a reply to an email (draft or send)."""
     client = get_client()
 
     # Get body content
@@ -613,11 +615,15 @@ def reply(
         raise typer.Exit(1)
 
     try:
-        result = client.reply_message(message_id, body=body, reply_all=reply_all)
+        result = client.reply_message(message_id, body=body, reply_all=reply_all,
+                                      send=send_flag, html=html)
         action = "Reply-all" if reply_all else "Reply"
-        console.print(f"[green]{action} draft created.[/green]")
-        if result.get('id'):
-            console.print(f"Draft ID: {result['id']}")
+        if send_flag:
+            console.print(f"[green]{action} sent.[/green]")
+        else:
+            console.print(f"[green]{action} draft created.[/green]")
+            if result.get('id'):
+                console.print(f"Draft ID: {result['id']}")
 
     except ValueError as e:
         logger.error(f"Reply error: {e}")

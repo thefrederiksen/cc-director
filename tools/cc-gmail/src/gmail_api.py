@@ -308,17 +308,21 @@ class GmailClient:
         message_id: str,
         body: str,
         reply_all: bool = False,
+        send: bool = False,
+        html: bool = False,
     ) -> Dict[str, Any]:
         """
-        Create a draft reply to an existing message.
+        Create a reply to an existing message (draft or send immediately).
 
         Args:
             message_id: The message ID to reply to
             body: Reply body text
             reply_all: If True, reply to all recipients
+            send: If True, send immediately instead of saving as draft
+            html: If True, body is HTML
 
         Returns:
-            Created draft response.
+            Created draft or sent message response.
         """
         # Get original message details
         original = self.get_message_details(message_id)
@@ -357,7 +361,8 @@ class GmailClient:
             references = original_message_id
 
         # Create the reply message
-        message = MIMEText(body, "plain")
+        content_type = "html" if html else "plain"
+        message = MIMEText(body, content_type)
         message["to"] = reply_to
         message["subject"] = reply_subject
 
@@ -367,15 +372,24 @@ class GmailClient:
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
 
-        # Create draft in the same thread
-        draft_body = {"message": {"raw": raw, "threadId": thread_id}}
-
-        return (
-            self.service.users()
-            .drafts()
-            .create(userId=self.user_id, body=draft_body)
-            .execute()
-        )
+        if send:
+            # Send immediately in the same thread
+            send_body = {"raw": raw, "threadId": thread_id}
+            return (
+                self.service.users()
+                .messages()
+                .send(userId=self.user_id, body=send_body)
+                .execute()
+            )
+        else:
+            # Create draft in the same thread
+            draft_body = {"message": {"raw": raw, "threadId": thread_id}}
+            return (
+                self.service.users()
+                .drafts()
+                .create(userId=self.user_id, body=draft_body)
+                .execute()
+            )
 
     def list_drafts(self, max_results: int = 10) -> List[Dict[str, Any]]:
         """List drafts."""

@@ -103,6 +103,9 @@ def add(
     # Email-specific
     email_to: Optional[str] = typer.Option(None, "--email-to", help="Recipient email address"),
     email_subject: Optional[str] = typer.Option(None, "--email-subject", help="Email subject line"),
+    email_cc: Optional[List[str]] = typer.Option(None, "--email-cc", help="CC recipient email (can be repeated)"),
+    email_bcc: Optional[List[str]] = typer.Option(None, "--email-bcc", help="BCC recipient email (can be repeated)"),
+    email_reply_to: Optional[str] = typer.Option(None, "--email-reply-to", help="Original message ID for reply threading"),
     email_attach: Optional[List[str]] = typer.Option(None, "--email-attach", help="Email attachment file path (can be repeated)"),
     # Facebook-specific
     facebook_page_id: Optional[str] = typer.Option(None, "--facebook-page-id", help="Facebook page ID"),
@@ -197,8 +200,18 @@ def add(
             console.print(json.dumps({"success": False, "error": "--scheduled-for required when send_timing is 'scheduled'"}))
         raise typer.Exit(1)
 
-    # Validate send_from if provided
+    # Require send_from for email platform
     valid_accounts = config.comm_manager.get_valid_account_names()
+    if plat == Platform.EMAIL and not send_from:
+        acct_list = ", ".join(valid_accounts) if valid_accounts else "(none configured)"
+        if not json_output:
+            console.print("[red]ERROR:[/red] --send-from is required for email.")
+            console.print(f"Valid accounts: {acct_list}")
+        else:
+            console.print(json.dumps({"success": False, "error": f"--send-from is required for email. Valid accounts: {acct_list}"}))
+        raise typer.Exit(1)
+
+    # Validate send_from if provided
     if send_from and valid_accounts and send_from.lower() not in valid_accounts:
         if not json_output:
             console.print(f"[red]ERROR:[/red] Invalid send_from: {send_from}")
@@ -278,7 +291,10 @@ def add(
                     attachment_paths.append(str(p.resolve()))
             item.email_specific = EmailSpecific(
                 to=[email_to],
+                cc=email_cc or [],
+                bcc=email_bcc or [],
                 subject=email_subject,
+                reply_to_message_id=email_reply_to,
                 attachments=attachment_paths,
             )
 
@@ -613,6 +629,85 @@ def delete_content(
         else:
             console.print(f"[red]ERROR:[/red] Failed to delete ticket #{ticket_number}")
             raise typer.Exit(1)
+
+
+@app.command("mark-posted")
+def mark_posted_cmd(
+    content_id: str = typer.Argument(..., help="Ticket number or content ID (can be partial)"),
+    posted_by: str = typer.Option("cc_director", "--by", help="Who posted the content"),
+):
+    """Mark a content item as posted (sent)."""
+    qm = get_queue_manager()
+
+    item = None
+    ticket_number = None
+    if content_id.isdigit():
+        ticket_number = int(content_id)
+        item = qm.get_content_by_ticket(ticket_number)
+    else:
+        item = qm.get_content_by_id(content_id)
+        if item:
+            ticket_number = item.get("ticket_number")
+
+    if not item:
+        console.print(f"[red]ERROR:[/red] Content not found: {content_id}")
+        raise typer.Exit(1)
+
+    if ticket_number is None:
+        console.print("[red]ERROR:[/red] Item has no ticket number")
+        raise typer.Exit(1)
+
+    success = qm.mark_posted(ticket_number, posted_by=posted_by)
+    if success:
+        console.print(f"[green]OK:[/green] Marked ticket #{ticket_number} as posted")
+        # Auto-log to vault
+        vault_id = qm.log_to_vault(ticket_number)
+        if vault_id is not None:
+            console.print(f"[green]OK:[/green] Logged to vault (interaction #{vault_id})")
+        else:
+            console.print("[yellow]NOTE:[/yellow] Could not log to vault (no matching contact or cc-vault unavailable)")
+    else:
+        console.print(f"[red]ERROR:[/red] Failed to mark ticket #{ticket_number} as posted")
+        raise typer.Exit(1)
+
+
+@app.command("log-to-vault")
+def log_to_vault_cmd(
+    content_id: str = typer.Argument(..., help="Ticket number or content ID"),
+):
+    """Log a posted communication to the vault as an interaction.
+
+    Resolves the recipient to a vault contact and creates an interaction record.
+    This is called automatically by mark-posted, but can also be run manually.
+
+    Usage:
+      cc-comm-queue log-to-vault 42
+    """
+    qm = get_queue_manager()
+
+    item = None
+    ticket_number = None
+    if content_id.isdigit():
+        ticket_number = int(content_id)
+        item = qm.get_content_by_ticket(ticket_number)
+    else:
+        item = qm.get_content_by_id(content_id)
+        if item:
+            ticket_number = item.get("ticket_number")
+
+    if not item:
+        console.print(f"[red]ERROR:[/red] Content not found: {content_id}")
+        raise typer.Exit(1)
+
+    if ticket_number is None:
+        console.print("[red]ERROR:[/red] Item has no ticket number")
+        raise typer.Exit(1)
+
+    vault_id = qm.log_to_vault(ticket_number)
+    if vault_id is not None:
+        console.print(f"[green]OK:[/green] Logged ticket #{ticket_number} to vault (interaction #{vault_id})")
+    else:
+        console.print(f"[yellow]NOTE:[/yellow] Could not log ticket #{ticket_number} to vault (no matching contact or cc-vault unavailable)")
 
 
 # =============================================================================

@@ -149,6 +149,9 @@ async function handleCommand(msg) {
       case 'upload':
         result = await forwardToContent(command, params);
         break;
+      case 'paste':
+        result = await cmdPaste(params);
+        break;
       default:
         error = `Unknown command: ${command}`;
     }
@@ -372,6 +375,83 @@ async function cmdEvaluate(params) {
   const frame = results[0].result;
   if (frame.error) throw new Error(`Evaluate failed: ${frame.error}`);
   return { result: frame.result };
+}
+
+async function cmdPaste(params) {
+  const tabId = await resolveTabId(params);
+  const selector = params.selector;
+  const text = params.pasteText || '';
+
+  if (!text) throw new Error('pasteText is required');
+  if (!selector) throw new Error('selector is required for paste');
+
+  // Run in MAIN world so React/Draft.js editors see the events in their context.
+  // Uses synthetic ClipboardEvent which frameworks intercept natively.
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: (sel, textToPaste, shouldClear) => {
+      try {
+        const element = document.querySelector(sel);
+        if (!element) return { error: 'Element not found: ' + sel };
+
+        element.focus();
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // Clear existing content if requested
+        if (shouldClear) {
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.execCommand('delete', false);
+        }
+
+        // Build clipboard data with both plain text and HTML
+        const html = textToPaste.split('\n').map(l => l || '<br>').join('<br>');
+        const dt = new DataTransfer();
+        dt.setData('text/plain', textToPaste);
+        dt.setData('text/html', html);
+
+        // Dispatch synthetic paste event -- React/Draft.js editors intercept this
+        // and update their internal state from clipboardData
+        const pasteEvent = new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt,
+        });
+        const handled = !element.dispatchEvent(pasteEvent);
+
+        // If the editor did NOT handle the paste (did not call preventDefault),
+        // use execCommand as the insertion mechanism
+        if (!handled) {
+          const lines = textToPaste.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (i > 0) document.execCommand('insertLineBreak', false);
+            if (lines[i]) document.execCommand('insertText', false, lines[i]);
+          }
+        }
+
+        // Fire input event to trigger any remaining listeners
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+
+        return {
+          ok: true,
+          length: textToPaste.length,
+          method: handled ? 'clipboardEvent' : 'execCommand',
+        };
+      } catch (err) {
+        return { error: err.message || String(err) };
+      }
+    },
+    args: [selector, text, params.clear !== false],
+  });
+
+  if (!results || !results[0]) throw new Error('No result from paste');
+  const frame = results[0].result;
+  if (frame.error) throw new Error(`Paste failed: ${frame.error}`);
+  return { pasted: true, length: frame.length, method: frame.method };
 }
 
 // ---------------------------------------------------------------------------

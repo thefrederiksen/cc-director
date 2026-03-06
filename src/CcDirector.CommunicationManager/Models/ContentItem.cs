@@ -192,7 +192,28 @@ public class ContentItem
     public bool HasAttachments => EmailSpecific?.Attachments?.Count > 0;
 
     [JsonIgnore]
+    public bool HasEmailCc => EmailSpecific?.Cc?.Count > 0;
+
+    [JsonIgnore]
+    public string EmailCcDisplay => EmailSpecific?.Cc != null ? string.Join(", ", EmailSpecific.Cc) : "";
+
+    [JsonIgnore]
+    public bool HasEmailBcc => EmailSpecific?.Bcc?.Count > 0;
+
+    [JsonIgnore]
+    public string EmailBccDisplay => EmailSpecific?.Bcc != null ? string.Join(", ", EmailSpecific.Bcc) : "";
+
+    [JsonIgnore]
     public List<AttachmentDisplayItem> AttachmentDisplayItems => GetAttachmentDisplayItems();
+
+    [JsonIgnore]
+    public string RecipientDisplay => GetRecipientDisplay();
+
+    [JsonIgnore]
+    public bool HasRecipient => !string.IsNullOrEmpty(RecipientDisplay);
+
+    [JsonIgnore]
+    public bool HasRecipientProfile => Recipient != null && !string.IsNullOrEmpty(Recipient.ProfileUrl);
 
     [JsonIgnore]
     public int MediaCount => Media?.Count ?? 0;
@@ -285,6 +306,36 @@ public class ContentItem
             return $"{scheduled:ddd h:mm tt}";
 
         return $"{scheduled:MMM d, h:mm tt}";
+    }
+
+    private string GetRecipientDisplay()
+    {
+        // Use explicit Recipient field if available
+        if (Recipient != null && !string.IsNullOrEmpty(Recipient.Name))
+        {
+            var parts = new List<string> { Recipient.Name };
+            if (!string.IsNullOrEmpty(Recipient.Title))
+                parts.Add(Recipient.Title);
+            if (!string.IsNullOrEmpty(Recipient.Company))
+                parts.Add(Recipient.Company);
+            return string.Join(" - ", parts);
+        }
+
+        // Fall back: parse from Notes field (e.g. "LinkedIn DM to Andrew Opala - CEO/COO")
+        if (!string.IsNullOrEmpty(Notes))
+        {
+            var dmPrefix = "LinkedIn DM to ";
+            var idx = Notes.IndexOf(dmPrefix, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+                return Notes[(idx + dmPrefix.Length)..];
+
+            var msgPrefix = "LinkedIn message to ";
+            idx = Notes.IndexOf(msgPrefix, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+                return Notes[(idx + msgPrefix.Length)..];
+        }
+
+        return string.Empty;
     }
 
     private string GetDisplayTitle()

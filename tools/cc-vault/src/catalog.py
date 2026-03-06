@@ -191,100 +191,104 @@ class CatalogScanner:
     def summarize_entries(self, library_id: Optional[int] = None,
                           batch_size: int = 10, stream: bool = False,
                           dry_run: bool = False) -> Dict[str, Any]:
-        """Generate AI summaries for pending catalog entries."""
-        entries = db.get_pending_catalog_entries(library_id=library_id, limit=batch_size)
+        """Generate AI summaries for pending catalog entries.
 
+        Processes ALL pending entries in batches of batch_size until none remain.
+        """
         if dry_run:
+            entries = db.get_pending_catalog_entries(library_id=library_id, limit=batch_size)
             return {"pending": len(entries)}
 
-        total = len(entries)
         counts = {"summarized": 0, "deduped": 0, "errors": 0}
+        processed_total = 0
 
-        for idx, entry in enumerate(entries, 1):
-            try:
-                # Dedup check: same hash already summarized?
-                if entry.get('file_hash'):
-                    donor = db.get_catalog_entry_by_hash(entry['file_hash'])
-                    if donor and donor['id'] != entry['id']:
-                        # Copy summary from donor
-                        db.update_catalog_entry_summary(
-                            entry_id=entry['id'],
-                            title=donor.get('title', ''),
-                            summary=donor.get('summary', ''),
-                            tags=donor.get('tags', ''),
-                            dedup_source_id=donor['id'],
-                        )
-                        counts["deduped"] += 1
+        while True:
+            entries = db.get_pending_catalog_entries(library_id=library_id, limit=batch_size)
+            if not entries:
+                break
+
+            for idx, entry in enumerate(entries, 1):
+                processed_total += 1
+                try:
+                    # Dedup check: same hash already summarized?
+                    if entry.get('file_hash'):
+                        donor = db.get_catalog_entry_by_hash(entry['file_hash'])
+                        if donor and donor['id'] != entry['id']:
+                            # Copy summary from donor
+                            db.update_catalog_entry_summary(
+                                entry_id=entry['id'],
+                                title=donor.get('title', ''),
+                                summary=donor.get('summary', ''),
+                                tags=donor.get('tags', ''),
+                                dedup_source_id=donor['id'],
+                            )
+                            counts["deduped"] += 1
+                            if stream:
+                                _stream_event({
+                                    "event": "progress",
+                                    "phase": "summarize",
+                                    "processed": processed_total,
+                                    "file": entry['file_name'],
+                                    "status": "deduped",
+                                })
+                            continue
+
+                    # Extract text
+                    text = self._extract_text(entry['file_path'], entry['file_ext'])
+                    if not text:
+                        db.update_catalog_entry_status(entry['id'], 'error',
+                                                       'No text extracted')
+                        counts["errors"] += 1
                         if stream:
                             _stream_event({
                                 "event": "progress",
                                 "phase": "summarize",
-                                "processed": idx,
-                                "total": total,
+                                "processed": processed_total,
                                 "file": entry['file_name'],
-                                "status": "deduped",
+                                "status": "error",
+                                "error": "No text extracted",
                             })
                         continue
 
-                # Extract text
-                text = self._extract_text(entry['file_path'], entry['file_ext'])
-                if not text:
-                    db.update_catalog_entry_status(entry['id'], 'error',
-                                                   'No text extracted')
+                    # Truncate for LLM
+                    text_truncated = text[:8000]
+
+                    # Call LLM for summary
+                    result = self._llm_summarize(entry['file_name'], text_truncated)
+
+                    # Update entry
+                    db.update_catalog_entry_summary(
+                        entry_id=entry['id'],
+                        title=result.get('title', entry['file_name']),
+                        summary=result.get('summary', ''),
+                        tags=result.get('tags', ''),
+                    )
+
+                    # Embed summary into vector store
+                    self._embed_summary(entry['id'], result)
+
+                    counts["summarized"] += 1
+                    if stream:
+                        _stream_event({
+                            "event": "progress",
+                            "phase": "summarize",
+                            "processed": processed_total,
+                            "file": entry['file_name'],
+                            "status": "summarized",
+                        })
+
+                except Exception as e:
+                    db.update_catalog_entry_status(entry['id'], 'error', str(e))
                     counts["errors"] += 1
                     if stream:
                         _stream_event({
                             "event": "progress",
                             "phase": "summarize",
-                            "processed": idx,
-                            "total": total,
+                            "processed": processed_total,
                             "file": entry['file_name'],
                             "status": "error",
-                            "error": "No text extracted",
+                            "error": str(e),
                         })
-                    continue
-
-                # Truncate for LLM
-                text_truncated = text[:8000]
-
-                # Call LLM for summary
-                result = self._llm_summarize(entry['file_name'], text_truncated)
-
-                # Update entry
-                db.update_catalog_entry_summary(
-                    entry_id=entry['id'],
-                    title=result.get('title', entry['file_name']),
-                    summary=result.get('summary', ''),
-                    tags=result.get('tags', ''),
-                )
-
-                # Embed summary into vector store
-                self._embed_summary(entry['id'], result)
-
-                counts["summarized"] += 1
-                if stream:
-                    _stream_event({
-                        "event": "progress",
-                        "phase": "summarize",
-                        "processed": idx,
-                        "total": total,
-                        "file": entry['file_name'],
-                        "status": "summarized",
-                    })
-
-            except Exception as e:
-                db.update_catalog_entry_status(entry['id'], 'error', str(e))
-                counts["errors"] += 1
-                if stream:
-                    _stream_event({
-                        "event": "progress",
-                        "phase": "summarize",
-                        "processed": idx,
-                        "total": total,
-                        "file": entry['file_name'],
-                        "status": "error",
-                        "error": str(e),
-                    })
 
         if stream:
             _stream_event({

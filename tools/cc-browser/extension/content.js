@@ -785,6 +785,55 @@
     return { uploaded: params.filename, ref: description };
   }
 
+  function cmdPaste(params) {
+    const { element, description } = resolveElement(params);
+    const text = params.pasteText || params.text || params.value || '';
+
+    element.focus();
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // Select all existing content first if element has content and we want to replace
+    if (params.clear !== false) {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.execCommand('delete', false);
+    }
+
+    // Build clipboard data with both plain text and HTML (with <br> for newlines)
+    const html = text.split('\n').map(line => line || '<br>').join('<br>');
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    dt.setData('text/html', html);
+
+    // Dispatch synthetic paste event -- React/Ember editors intercept this
+    // and update their internal state from clipboardData
+    const pasteEvent = new ClipboardEvent('paste', {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: dt,
+    });
+
+    const cancelled = !element.dispatchEvent(pasteEvent);
+
+    // If the editor handled the paste (called preventDefault), we're done.
+    // If not, fall back to execCommand insertText.
+    if (!cancelled) {
+      document.execCommand('insertText', false, text);
+    }
+
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+
+    return {
+      pasted: true,
+      length: text.length,
+      ref: description,
+      method: cancelled ? 'clipboardEvent' : 'execCommand',
+    };
+  }
+
   function cmdLinks(params) {
     const selector = params?.selector || 'a[href]';
     const elements = document.querySelectorAll(selector);
@@ -943,6 +992,9 @@
             break;
           case 'upload':
             result = cmdUpload(params);
+            break;
+          case 'paste':
+            result = cmdPaste(params);
             break;
           case 'links':
             result = cmdLinks(params);

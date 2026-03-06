@@ -268,6 +268,134 @@ class QueueManager:
         """
         return self.db.search(query, limit)
 
+    def log_to_vault(self, ticket_number: int) -> Optional[int]:
+        """Log a posted communication to the vault as an interaction.
+
+        Resolves the recipient to a vault contact and creates an interaction record.
+
+        Args:
+            ticket_number: The ticket number of the posted item
+
+        Returns:
+            The vault interaction ID, or None if logging was not possible
+        """
+        import subprocess
+        import json
+
+        item = self.get_content_by_ticket(ticket_number)
+        if not item:
+            logger.warning("log_to_vault: ticket #%d not found", ticket_number)
+            return None
+
+        platform = item.get('platform', '')
+        content_type = item.get('type', '')
+        content = item.get('content', '')
+        posted_at = item.get('posted_at', '')
+        send_from = item.get('send_from', '')
+
+        # Determine recipient email/identifier for vault lookup
+        recipient_email = None
+        recipient_name = None
+        subject = None
+
+        # Try email_specific first
+        email_spec = item.get('email_specific')
+        if email_spec:
+            if isinstance(email_spec, str):
+                try:
+                    email_spec = json.loads(email_spec)
+                except (json.JSONDecodeError, TypeError):
+                    email_spec = None
+            if email_spec and isinstance(email_spec, dict):
+                to_list = email_spec.get('to', [])
+                if to_list:
+                    recipient_email = to_list[0]
+                subject = email_spec.get('subject', '')
+
+        # Try recipient info (LinkedIn messages, etc.)
+        recipient_info = item.get('recipient')
+        if recipient_info:
+            if isinstance(recipient_info, str):
+                try:
+                    recipient_info = json.loads(recipient_info)
+                except (json.JSONDecodeError, TypeError):
+                    recipient_info = None
+            if recipient_info and isinstance(recipient_info, dict):
+                recipient_name = recipient_info.get('name', '')
+                profile_url = recipient_info.get('profile_url', '')
+                if not recipient_email and recipient_name:
+                    recipient_email = recipient_name
+                if not recipient_email and profile_url:
+                    recipient_email = profile_url
+
+        if not recipient_email:
+            logger.info("log_to_vault: no recipient for ticket #%d, skipping", ticket_number)
+            return None
+
+        # Determine interaction type from platform
+        type_map = {
+            'email': 'email',
+            'linkedin': 'linkedin',
+            'twitter': 'twitter',
+            'reddit': 'reddit',
+            'facebook': 'facebook',
+            'whatsapp': 'whatsapp',
+            'youtube': 'youtube',
+        }
+        interaction_type = type_map.get(platform, platform or 'message')
+
+        # Build summary from content (truncate)
+        summary = content[:200] if content else ''
+
+        # Determine account
+        account = send_from or platform or ''
+
+        # Use cc-vault CLI to add interaction (avoids importing vault db directly)
+        if not posted_at:
+            from datetime import datetime
+            posted_at = datetime.now().isoformat()
+
+        cmd = [
+            "cc-vault", "contacts", "log-interaction",
+            recipient_email,
+            "--type", interaction_type,
+            "--date", posted_at,
+            "--direction", "outbound",
+            "--summary", summary,
+            "--format", "json",
+        ]
+        if subject:
+            cmd.extend(["--subject", subject])
+        if account:
+            cmd.extend(["--account", account])
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                logger.info("log_to_vault: logged ticket #%d to vault", ticket_number)
+                # Try to parse interaction ID from output
+                for line in result.stdout.splitlines():
+                    if 'interaction' in line.lower() and '#' in line:
+                        try:
+                            return int(line.split('#')[1].split()[0])
+                        except (IndexError, ValueError):
+                            pass
+                return 0
+            else:
+                logger.warning(
+                    "log_to_vault: cc-vault failed for ticket #%d: %s",
+                    ticket_number, result.stderr or result.stdout
+                )
+                return None
+        except FileNotFoundError:
+            logger.warning("log_to_vault: cc-vault not found on PATH")
+            return None
+        except subprocess.TimeoutExpired:
+            logger.warning("log_to_vault: cc-vault timed out for ticket #%d", ticket_number)
+            return None
+
     def close(self) -> None:
         """Close database connection."""
         self.db.close()

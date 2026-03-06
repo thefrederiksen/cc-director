@@ -475,6 +475,13 @@ async function cmdBrowserAction(command, connectionName, rest) {
       body._output = flags.output || flags.o;
       break;
 
+    case 'paste':
+      body.ref = flags.ref;
+      body.selector = flags.selector;
+      body.value = flags.text || flags.value || flags._positional;
+      body.clear = flags.clear !== 'false';
+      break;
+
     case 'back':
     case 'forward':
       body.tabId = flags.tab || flags.tabId;
@@ -833,7 +840,7 @@ async function main() {
     'hover', 'drag', 'select', 'scroll', 'wait', 'evaluate',
     'screenshot', 'tabs', 'tabs/open', 'tabs/close', 'tabs/focus',
     'text', 'html', 'info', 'upload', 'resize',
-    'back', 'forward', 'reload', 'links', 'waitNetworkIdle',
+    'back', 'forward', 'reload', 'links', 'waitNetworkIdle', 'paste',
   ];
 
   if (browserCommands.includes(command)) {

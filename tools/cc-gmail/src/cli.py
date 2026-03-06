@@ -1080,8 +1080,10 @@ def reply(
     body: str = typer.Option(None, "-b", "--body", help="Reply body"),
     body_file: Path = typer.Option(None, "-f", "--file", help="Read body from file"),
     reply_all: bool = typer.Option(False, "--all", help="Reply to all recipients"),
+    send_flag: bool = typer.Option(False, "--send", help="Send immediately instead of saving as draft"),
+    html: bool = typer.Option(False, "--html", help="Body is HTML"),
 ):
-    """Create a draft reply to an existing email."""
+    """Create a reply to an existing email (draft or send)."""
     acct, auth_method = _resolve_and_get_auth()
 
     # Get body content
@@ -1105,6 +1107,8 @@ def reply(
                 message_uid=message_id,
                 body=body,
                 reply_all=reply_all,
+                send=send_flag,
+                html=html,
             )
         else:
             api_client = get_client()
@@ -1116,12 +1120,19 @@ def reply(
                 message_id=message_id,
                 body=body,
                 reply_all=reply_all,
+                send=send_flag,
+                html=html,
             )
 
-        console.print(f"[green]Reply draft created.[/green]")
-        console.print(f"  To: {original_from}")
-        console.print(f"  Subject: Re: {original_subject}" if not original_subject.lower().startswith("re:") else f"  Subject: {original_subject}")
-        console.print(f"  Draft ID: {result.get('id')}")
+        if send_flag:
+            console.print(f"[green]Reply sent.[/green]")
+            console.print(f"  To: {original_from}")
+            console.print(f"  Subject: Re: {original_subject}" if not original_subject.lower().startswith("re:") else f"  Subject: {original_subject}")
+        else:
+            console.print(f"[green]Reply draft created.[/green]")
+            console.print(f"  To: {original_from}")
+            console.print(f"  Subject: Re: {original_subject}" if not original_subject.lower().startswith("re:") else f"  Subject: {original_subject}")
+            console.print(f"  Draft ID: {result.get('id')}")
 
     except HttpError as e:
         logger.error(f"Gmail API error creating reply: {e}")

@@ -577,6 +577,17 @@ const routes = {
     jsonSuccess(res, result);
   },
 
+  'POST /paste': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'paste', {
+      ref: body.ref, selector: body.selector,
+      pasteText: body.text || body.value,
+      clear: body.clear,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
   'POST /tabs': async (req, res, body) => {
     const conn = requireConnected(body);
     const result = await transport.sendCommand(conn, 'tabs', {});

@@ -575,17 +575,20 @@ class OutlookClient:
     # Reply/Forward Operations
     # =========================================================================
 
-    def reply_message(self, message_id: str, body: str, reply_all: bool = False) -> dict:
+    def reply_message(self, message_id: str, body: str, reply_all: bool = False,
+                      send: bool = False, html: bool = False) -> dict:
         """
-        Create a draft reply to a message.
+        Create a draft reply (or send immediately) to a message.
 
         Args:
             message_id: Message ID to reply to
             body: Reply body text
             reply_all: If True, reply to all recipients
+            send: If True, send immediately instead of saving as draft
+            html: If True, body is HTML
 
         Returns:
-            Dict with draft reply details
+            Dict with reply details
         """
         mailbox = self.account.mailbox()
         message = mailbox.get_message(object_id=message_id)
@@ -599,11 +602,19 @@ class OutlookClient:
             reply = message.reply()
 
         reply.body = body
-        reply.save_draft()
+        if html:
+            reply.body_type = 'HTML'
+
+        if send:
+            reply.send()
+        else:
+            reply.save_draft()
+
+        status = 'sent' if send else 'draft'
 
         return {
-            'status': 'draft',
-            'id': reply.object_id,
+            'status': status,
+            'id': reply.object_id if not send else None,
             'subject': reply.subject,
             'to': [r.address for r in reply.to],
             'reply_to': message_id,
