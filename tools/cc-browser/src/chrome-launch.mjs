@@ -164,19 +164,29 @@ function prepareProfileForLaunch(profileDir) {
     changed = true;
   }
 
-  // Enable "Continue where you left off" so session cookies survive restarts.
-  // Session cookies (no expiry) are only kept in memory. Without this setting,
-  // closing the browser loses all session-only auth tokens (e.g. Upwork login).
-  // restore_on_startup: 1 = "Continue where you left off"
-  if (!prefs.session) prefs.session = {};
-  if (prefs.session.restore_on_startup !== 1) {
-    prefs.session.restore_on_startup = 1;
-    changed = true;
-  }
-
   if (changed) {
     writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf8');
-    console.log('[chrome-launch] Profile prepared (developer mode, session restore, clean exit state)');
+    console.log('[chrome-launch] Profile prepared (developer mode, clean exit state)');
+  }
+
+  // Delete session restore files so Chrome starts with a clean tab slate.
+  // Chrome stores open tabs in these files and restores them on next launch,
+  // causing tab accumulation over time. We pass the URL as a launch arg instead.
+  const sessionTargets = [
+    join(defaultDir, 'Sessions'),
+    join(defaultDir, 'Current Session'),
+    join(defaultDir, 'Current Tabs'),
+    join(defaultDir, 'Last Session'),
+    join(defaultDir, 'Last Tabs'),
+  ];
+  for (const target of sessionTargets) {
+    if (existsSync(target)) {
+      try {
+        rmSync(target, { recursive: true, force: true });
+      } catch {
+        // File may be locked if browser is still shutting down
+      }
+    }
   }
 }
 
@@ -285,56 +295,65 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
 
 export async function killChromeForConnection(profileDir) {
   const { execSync } = await import('child_process');
+  const execOpts = { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
 
   if (process.platform === 'win32') {
-    // Find the main browser process for this profile using PowerShell.
-    // We search for brave.exe, chrome.exe, and msedge.exe.
-    try {
-      const ps = `Get-CimInstance Win32_Process | Where-Object { $_.Name -match '(brave|chrome|msedge)\\.exe' -and $_.CommandLine -match [regex]::Escape('${profileDir.replace(/'/g, "''")}') } | Select-Object -ExpandProperty ProcessId`;
-      const output = execSync(`powershell -NoProfile -Command "${ps}"`, {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      const pids = output.trim().split(/\r?\n/).filter(p => /^\d+$/.test(p.trim()));
-      if (pids.length === 0) {
-        return { stopped: false };
+    // Try stored PID first (from cc-browser.json written at launch)
+    let storedPid = null;
+    const configPath = join(profileDir, 'cc-browser.json');
+    if (existsSync(configPath)) {
+      try {
+        const config = JSON.parse(readFileSync(configPath, 'utf8'));
+        if (config.chromePid) storedPid = config.chromePid;
+      } catch {
+        // Corrupted config, fall through to scan
       }
+    }
 
-      // Graceful shutdown: taskkill WITHOUT /F sends WM_CLOSE, letting Chrome
-      // save cookies, session data, and set exit_type = Normal.
-      for (const pid of pids) {
-        try {
-          execSync(`taskkill /PID ${pid.trim()}`, { stdio: 'pipe' });
-        } catch {
-          // Process may already be gone
+    if (storedPid) {
+      try {
+        // Graceful kill of parent process (WM_CLOSE saves cookies/session)
+        execSync(`taskkill /PID ${storedPid}`, execOpts);
+
+        // Wait up to 5 seconds for graceful exit
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          try {
+            const count = execSync(
+              `powershell -NoProfile -Command "Get-Process -Id ${storedPid} -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"`,
+              execOpts,
+            ).trim();
+            if (count === '0') break;
+          } catch {
+            break;
+          }
+          await new Promise(r => setTimeout(r, 500));
         }
-      }
 
-      // Wait up to 5 seconds for graceful exit, then force-kill stragglers
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        const checkPs = `Get-Process -Id ${pids.join(',')} -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count`;
+        // Force-kill with /T (tree kill gets children too) if still alive
         try {
-          const count = execSync(`powershell -NoProfile -Command "${checkPs}"`, {
-            encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
-          }).trim();
-          if (count === '0') break;
-        } catch {
-          break;
-        }
-        await new Promise(r => setTimeout(r, 500));
-      }
-
-      // Force-kill any remaining processes
-      for (const pid of pids) {
-        try {
-          execSync(`taskkill /F /PID ${pid.trim()} /T`, { stdio: 'pipe' });
+          execSync(`taskkill /F /PID ${storedPid} /T`, execOpts);
         } catch {
           // Already gone
         }
-      }
 
+        return { stopped: true };
+      } catch {
+        // Stored PID process not found, fall through to scan
+      }
+    }
+
+    // Fallback: scan for processes matching this profile dir.
+    // Use a SINGLE PowerShell invocation to find and kill all matching PIDs.
+    try {
+      const escapedDir = profileDir.replace(/'/g, "''");
+      const ps = [
+        `$pids = Get-CimInstance Win32_Process |`,
+        `  Where-Object { $_.Name -match '(brave|chrome|msedge)\\.exe' -and $_.CommandLine -match [regex]::Escape('${escapedDir}') } |`,
+        `  Select-Object -ExpandProperty ProcessId;`,
+        `if ($pids) { $pids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`,
+      ].join(' ');
+      execSync(`powershell -NoProfile -Command "${ps}"`, execOpts);
       return { stopped: true };
     } catch {
       return { stopped: false };
@@ -343,7 +362,7 @@ export async function killChromeForConnection(profileDir) {
 
   // Unix: find by user-data-dir argument
   try {
-    execSync(`pkill -f "user-data-dir=${profileDir}"`, { stdio: 'pipe' });
+    execSync(`pkill -f "user-data-dir=${profileDir}"`, { stdio: 'pipe', windowsHide: true });
     return { stopped: true };
   } catch {
     return { stopped: false };
