@@ -16,7 +16,7 @@ CC Director runs on Windows and requires a few prerequisites. This guide walks y
 |-------------|------------|
 | FFmpeg | cc-transcribe, cc-video |
 | Graphviz | cc-docgen (C4 diagrams) |
-| Playwright browsers | cc-browser, cc-linkedin, cc-reddit, cc-crawl4ai |
+| Playwright browsers | cc-browser, cc-reddit, cc-crawl4ai |
 | OpenAI API key | cc-image, cc-voice, cc-whisper, cc-computer, cc-transcribe, cc-photos |
 | Google OAuth credentials | cc-gmail |
 | Azure App Registration | cc-outlook |
@@ -92,7 +92,7 @@ cc-gmail auth
 
 ## Setting Up Browser Automation
 
-Install Playwright browsers (needed for cc-browser, cc-linkedin, cc-reddit):
+Install Playwright browsers (needed for cc-browser, cc-reddit):
 
 ```bash
 npx playwright install chromium

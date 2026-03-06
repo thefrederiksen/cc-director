@@ -126,6 +126,6 @@ pip install -e ".[dev]"
 ## Used By
 
 Every Python tool in the cc-director suite:
-cc-comm-queue, cc-crawl4ai, cc-gmail, cc-hardware, cc-image, cc-linkedin,
+cc-comm-queue, cc-crawl4ai, cc-gmail, cc-hardware, cc-image,
 cc-markdown, cc-outlook, cc-photos, cc-powerpoint, cc-reddit, cc-setup,
 cc-transcribe, cc-vault, cc-video, cc-voice, cc-whisper, cc-youtube-info

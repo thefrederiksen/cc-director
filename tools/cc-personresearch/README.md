@@ -10,7 +10,7 @@ Given a person's name and email address, cc-personresearch queries dozens of fre
 
 - Python 3.10+
 - cc-browser daemon running (for browser-based sources)
-- cc-linkedin installed (for LinkedIn lookups)
+- cc-browser with LinkedIn connection (for LinkedIn lookups)
 
 ## Quick Start
 
@@ -82,7 +82,7 @@ Targeted Google searches combining name + email + site-specific queries.
 | company_website | Bio, title from company team page |
 | opencorporates | Corporate officer/director records |
 
-### Phase 5: LinkedIn (via cc-linkedin)
+### Phase 5: LinkedIn (via cc-browser + LinkedIn skill)
 
 | Source | Returns |
 |--------|---------|

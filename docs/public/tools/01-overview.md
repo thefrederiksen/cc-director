@@ -27,7 +27,6 @@ CC Director includes 33 command-line tools for document conversion, media proces
 |------|-------------|--------------|
 | cc-browser | Browser automation with persistent connections | Chrome Extension |
 | cc-fox-browser | Anti-detection browser automation (Camoufox/Firefox) | Node.js, Camoufox |
-| cc-linkedin | LinkedIn automation with human-like delays | Playwright, cc-browser |
 | cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
 | cc-twitter | Twitter/X CLI: post, reply, thread, like, retweet, timeline | Twitter API v2 credentials |
 | cc-facebook | Facebook Page CLI: post, comment, reply, list via Graph API | Facebook App + Page Access Token |
@@ -214,21 +213,6 @@ cc-fox-browser stop
 **Profiles:** Persistent per workspace at `%LOCALAPPDATA%\cc-fox-browser\camoufox-{workspace}\`
 
 **When to use:** Sites with Cloudflare Turnstile or aggressive bot detection that blocks cc-browser.
-
-### cc-linkedin
-
-LinkedIn automation with built-in human-like delays.
-
-```bash
-cc-linkedin status
-cc-linkedin feed --limit 10
-cc-linkedin messages --unread
-cc-linkedin search "query" --type people
-cc-linkedin create "Post content"
-cc-linkedin profile <username>
-```
-
-**Important:** Always use cc-linkedin for LinkedIn operations. Never use cc-browser directly with LinkedIn.
 
 ### cc-reddit
 

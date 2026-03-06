@@ -281,48 +281,6 @@ COMMANDS:
 
 ---
 
-## cc-linkedin
-
-LinkedIn CLI via browser automation.
-
-```
-USAGE: cc-linkedin [OPTIONS] COMMAND [ARGS]...
-
-OPTIONS:
-  --connection -c TEXT    cc-browser connection name
-  --workspace  -w TEXT    Deprecated: use --connection
-  --format        TEXT    Output: text, json, markdown [default: text]
-  --delay         FLOAT   Delay between actions [default: 1.0]
-  --verbose    -v         Verbose output
-
-COMMANDS:
-  status         Check daemon and LinkedIn login status
-  whoami         Show logged-in LinkedIn user
-  me             View your profile summary
-  feed           View LinkedIn home feed
-  create         Create a new post
-  post           View a specific post
-  like           Like a post
-  comment        Comment on a post
-  profile        View someone's profile
-  connections    List connections
-  connect        Send connection request
-  messages       View recent messages
-  message        Send a message
-  search         Search LinkedIn
-  notifications  View notifications
-  invitations    View pending invitations
-  accept         Accept invitation
-  ignore         Ignore invitation
-  repost         Repost content
-  save           Save a post
-  company        View company page
-  jobs           Search for jobs
-  goto           Navigate to a LinkedIn URL
-  snapshot       Get current page snapshot
-  screenshot     Take a screenshot
-```
-
 ---
 
 ## cc-html

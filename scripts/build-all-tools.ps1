@@ -77,7 +77,6 @@ $pythonTools = @(
     "cc-hardware",
     "cc-html",
     "cc-image",
-    "cc-linkedin",
     "cc-outlook",
     "cc-pdf",
     "cc-personresearch",

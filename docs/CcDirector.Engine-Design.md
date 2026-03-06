@@ -107,7 +107,7 @@ src/
     Dispatcher/
       CommunicationDispatcher.cs  -- Polls communications table, dispatches approved items
       EmailSender.cs              -- Sends via cc-outlook / cc-gmail CLI
-      LinkedInSender.cs           -- Sends via cc-linkedin CLI
+      LinkedInSender.cs           -- Sends via cc-browser connections + LinkedIn skill
       SenderConfig.cs             -- Account routing (mindzie, personal, consulting)
     Vault/
       VaultBridge.cs              -- Writes outcomes to vault.db via cc-vault.exe CLI
@@ -214,7 +214,7 @@ Polls the `communications` table in engine.db for approved items and dispatches 
 
 Dispatches by platform:
 - `email` -> `EmailSender` (shells out to `cc-outlook` or `cc-gmail`)
-- `linkedin` -> `LinkedInSender` (shells out to `cc-linkedin`)
+- `linkedin` -> `LinkedInSender` (uses cc-browser connections + LinkedIn navigation skill)
 
 **Account routing** (ported from Python config):
 
@@ -444,7 +444,7 @@ Once the Engine is working and validated:
 
 ### Phase 2: Communication Dispatcher + Tool Migration
 - Implement `EmailSender` (cc-outlook / cc-gmail shell-out)
-- Implement `LinkedInSender` (cc-linkedin shell-out)
+- Implement `LinkedInSender` (cc-browser connections + LinkedIn skill)
 - Implement `CommunicationDispatcher` (poll communications table, dispatch approved items)
 - Implement account routing config
 - Update dependent tools to point at engine.db (see "Dependent Tools Migration" below)

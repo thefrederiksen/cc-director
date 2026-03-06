@@ -32,8 +32,7 @@ Node.js and .NET tools include both `.cmd` (Windows) and extensionless (Git Bash
 
 | Tool | Description | Requirements |
 |------|-------------|--------------|
-| cc-browser | Browser automation with persistent connections | Chrome Extension |
-| cc-linkedin | LinkedIn automation with human-like delays | Playwright, cc-browser |
+| cc-browser | Browser automation with persistent connections and navigation skills | Chrome Extension |
 | cc-reddit | Reddit automation with human-like delays | Playwright, cc-browser |
 | cc-spotify | Spotify playback control via browser | cc-browser |
 | cc-crawl4ai | AI-ready web crawler to clean markdown | Playwright browsers |
@@ -348,62 +347,9 @@ cc-browser wait --text "loaded"
 cc-browser wait --selector ".done"
 ```
 
-**Note:** NEVER use cc-browser directly with LinkedIn or Reddit. Use cc-linkedin and cc-reddit instead.
+**LinkedIn:** Use `cc-browser connections open linkedin` to launch, then use cc-browser commands with the LinkedIn navigation skill for site-specific selectors and workflows. See `cc-browser skills show linkedin`.
 
----
-
-### cc-linkedin
-
-LinkedIn automation CLI with human-like delays. Communicates through cc-browser daemon.
-
-```bash
-# Status
-cc-linkedin status
-cc-linkedin whoami
-cc-linkedin me
-
-# Feed and posts
-cc-linkedin feed --limit 10
-cc-linkedin post <url>
-cc-linkedin create "Post content here"
-cc-linkedin create "Post with image" --image photo.png
-cc-linkedin like <url>
-cc-linkedin comment <url>
-cc-linkedin repost <url>
-cc-linkedin save <url>
-
-# Profiles and connections
-cc-linkedin profile <username>
-cc-linkedin connections --limit 20
-cc-linkedin connect <username>
-cc-linkedin company <name>
-
-# Messages
-cc-linkedin messages --unread
-cc-linkedin message <username> --text "Hello"
-
-# Search
-cc-linkedin search "query" --type people
-cc-linkedin search "query" --type companies
-
-# Invitations
-cc-linkedin invitations
-cc-linkedin accept <invitation>
-cc-linkedin ignore <invitation>
-
-# Notifications
-cc-linkedin notifications
-
-# Jobs
-cc-linkedin jobs "search query"
-
-# Navigation and debugging
-cc-linkedin goto <url>
-cc-linkedin snapshot
-cc-linkedin screenshot
-```
-
-**Note:** NEVER use cc-browser directly with LinkedIn. Always use cc-linkedin.
+**Note:** NEVER use cc-browser directly with Reddit. Use cc-reddit instead.
 
 ---
 
@@ -1052,7 +998,7 @@ set OPENAI_API_KEY=your-key-here
 | FFmpeg | cc-video, cc-transcribe |
 | Chrome/Chromium | cc-markdown, cc-websiteaudit |
 | Node.js + Playwright | cc-browser, cc-websiteaudit, cc-brandingrecommendations |
-| cc-browser | cc-linkedin, cc-reddit, cc-spotify |
+| cc-browser | cc-reddit, cc-spotify |
 | Google OAuth | cc-gmail |
 | Azure OAuth | cc-outlook |
 | Windows + .NET | cc-click, cc-trisight, cc-computer |

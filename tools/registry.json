@@ -74,14 +74,6 @@
       "requirements": ["Node.js", "Playwright"]
     },
     {
-      "name": "cc-linkedin",
-      "category": "web-social",
-      "type": "python",
-      "description": "LinkedIn automation with human-like delays",
-      "built": true,
-      "requirements": ["Playwright browsers", "cc-browser"]
-    },
-    {
       "name": "cc-reddit",
       "category": "web-social",
       "type": "python",

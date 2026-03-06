@@ -49,7 +49,6 @@ echo Python tools (compiled executables):
 if exist "%INSTALL_DIR%\cc-crawl4ai.exe" echo   - cc-crawl4ai
 if exist "%INSTALL_DIR%\cc-gmail.exe" echo   - cc-gmail
 if exist "%INSTALL_DIR%\cc-image.exe" echo   - cc-image
-if exist "%INSTALL_DIR%\cc-linkedin.exe" echo   - cc-linkedin
 if exist "%INSTALL_DIR%\cc-html.exe" echo   - cc-html
 if exist "%INSTALL_DIR%\cc-pdf.exe" echo   - cc-pdf
 if exist "%INSTALL_DIR%\cc-word.exe" echo   - cc-word

@@ -45,7 +45,7 @@ Last updated: 2026-03-02
 | # | Tool | Type | Description | Status | Date | Notes |
 |---|------|------|-------------|--------|------|-------|
 | 6 | cc-browser | Node.js | Persistent browser automation with workspaces | PASS | 2026-03-02 | 159/159 unit tests pass. BUG: daemon drops --text/--selector/--exact for click/hover/type |
-| 7 | cc-linkedin | Python | LinkedIn automation with human-like delays | NOT TESTED | | Requires cc-browser |
+| 7 | cc-linkedin | Python | LinkedIn automation with human-like delays | REMOVED | 2026-03-05 | Replaced by cc-browser connections + LinkedIn navigation skill (#71) |
 | 8 | cc-reddit | Python | Reddit automation with human-like delays | NOT TESTED | | Requires cc-browser |
 | 9 | cc-spotify | Python | Spotify playback control via browser | NOT TESTED | | Requires cc-browser |
 | 10 | cc-crawl4ai | Python | AI-ready web crawler to clean markdown | NOT TESTED | | Requires Playwright |

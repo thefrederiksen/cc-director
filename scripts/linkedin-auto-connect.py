@@ -2,7 +2,14 @@
 
 Scheduled by cc_scheduler to run at 7 AM weekdays.
 Adds a random delay (0-120 min) so actual execution is 7:00-9:00 AM,
-ensures cc-browser daemon is running, then invokes cc-linkedin auto-connect.
+ensures cc-browser daemon is running, then uses cc-browser with the
+LinkedIn navigation skill to send connection requests.
+
+NOTE: cc-linkedin CLI has been removed (issue #71). This script now uses
+cc-browser connections + the LinkedIn navigation skill directly. The actual
+connection logic must be performed by an LLM agent using the skill's
+workflow guidance. This script just ensures the browser is ready and
+provides the orchestration wrapper.
 
 Exit codes:
     0 - Success
@@ -19,8 +26,6 @@ import time
 # Set MIN_DELAY=0 and MAX_DELAY=0 for testing (skip random wait)
 MIN_DELAY = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 MAX_DELAY = int(sys.argv[2]) if len(sys.argv) > 2 else 7200  # 120 minutes
-MIN_COUNT = 3
-MAX_COUNT = 5
 
 
 def main() -> int:
@@ -43,14 +48,14 @@ def main() -> int:
         if result.returncode != 0 or "running" not in result.stdout.lower():
             print("[linkedin-auto-connect] Browser daemon not running, starting...")
             start_result = subprocess.run(
-                ["cc-browser", "start", "--workspace", "linkedin"],
+                ["cc-browser", "daemon"],
                 capture_output=True, text=True, timeout=30
             )
             if start_result.returncode != 0:
-                print(f"[linkedin-auto-connect] ERROR: Failed to start browser daemon")
+                print("[linkedin-auto-connect] ERROR: Failed to start browser daemon")
                 print(start_result.stderr)
                 return 1
-            # Give browser time to fully initialize
+            # Give daemon time to fully initialize
             time.sleep(5)
     except FileNotFoundError:
         print("[linkedin-auto-connect] ERROR: cc-browser not found on PATH")
@@ -59,27 +64,29 @@ def main() -> int:
         print("[linkedin-auto-connect] ERROR: cc-browser timed out")
         return 1
 
-    # Step 3: Run auto-connect with random count
-    count = random.randint(MIN_COUNT, MAX_COUNT)
-    print(f"[linkedin-auto-connect] Connecting with {count} people...")
-
+    # Step 3: Open linkedin connection (launches Chrome with LinkedIn profile)
     try:
         result = subprocess.run(
-            ["cc-linkedin", "auto-connect", "--count", str(count)],
-            capture_output=False,  # Let output flow to stdout for scheduler logging
-            timeout=600,  # 10 min should be more than enough for 3-5 connections
+            ["cc-browser", "connections", "open", "linkedin"],
+            capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
-            print(f"[linkedin-auto-connect] ERROR: cc-linkedin exited with code {result.returncode}")
-            return 2
+            print(f"[linkedin-auto-connect] ERROR: Failed to open linkedin connection")
+            print(result.stderr)
+            return 1
     except FileNotFoundError:
-        print("[linkedin-auto-connect] ERROR: cc-linkedin not found on PATH")
+        print("[linkedin-auto-connect] ERROR: cc-browser not found on PATH")
         return 1
     except subprocess.TimeoutExpired:
-        print("[linkedin-auto-connect] ERROR: cc-linkedin timed out after 10 minutes")
-        return 2
+        print("[linkedin-auto-connect] ERROR: cc-browser timed out opening connection")
+        return 1
 
-    print("[linkedin-auto-connect] Done.")
+    # Step 4: Auto-connect is now handled by LLM agent using the LinkedIn
+    # navigation skill. This script ensures the browser is ready.
+    # The /linkedin-connect Claude Code skill orchestrates the actual
+    # connection requests using cc-browser commands with skill guidance.
+    print("[linkedin-auto-connect] LinkedIn connection opened.")
+    print("[linkedin-auto-connect] Use /linkedin-connect skill to send connection requests.")
     return 0
 
 

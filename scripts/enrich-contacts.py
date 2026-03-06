@@ -1,16 +1,21 @@
 """
 LinkedIn Contact Enrichment Script
 
-Visits LinkedIn profiles for vault contacts that have a LinkedIn URL but no name,
-extracts profile data via cc-linkedin, and updates the vault via cc-vault.
+NOTE: cc-linkedin CLI has been removed (issue #71). This script previously used
+cc-linkedin enrich to visit LinkedIn profiles and extract data. That functionality
+is now available through cc-browser with the LinkedIn navigation skill.
+
+This script is DEPRECATED. Contact enrichment should be done via an LLM agent
+using cc-browser commands with the LinkedIn skill's "View a Profile" workflow.
+
+The script is kept for reference and dry-run mode (to see which contacts need
+enrichment), but the actual enrichment calls will fail without cc-linkedin.
 
 Usage:
-    python scripts/enrich-contacts.py                  # Run enrichment
-    python scripts/enrich-contacts.py --dry-run        # Preview without changes
-    python scripts/enrich-contacts.py --max 10         # Limit to 10 contacts
+    python scripts/enrich-contacts.py --dry-run        # Preview contacts needing enrichment
     python scripts/enrich-contacts.py --reset          # Reset state and start over
 
-Rate limits:
+Rate limits (for future cc-browser implementation):
     - 45-90 seconds between profiles (random jitter)
     - 30 profiles per session, then 15-30 min cool-down
     - 150 profiles per day max
