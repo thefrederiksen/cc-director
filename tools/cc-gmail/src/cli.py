@@ -349,7 +349,7 @@ def get_client(account: Optional[str] = None) -> GmailClient:
         raise typer.Exit(1)
 
     try:
-        creds = authenticate(acct)
+        creds = authenticate(acct, interactive=False)
         return GmailClient(creds)
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")

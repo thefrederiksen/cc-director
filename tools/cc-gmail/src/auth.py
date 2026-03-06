@@ -368,7 +368,8 @@ def save_credentials(account: str, creds: Credentials) -> None:
     get_token_path(account).write_text(creds.to_json())
 
 
-def authenticate(account: str, force: bool = False, open_browser: bool = True) -> Credentials:
+def authenticate(account: str, force: bool = False, open_browser: bool = True,
+                 interactive: bool = True) -> Credentials:
     """Authenticate with Gmail API via OAuth for a specific account.
 
     Args:
@@ -376,12 +377,15 @@ def authenticate(account: str, force: bool = False, open_browser: bool = True) -
         force: If True, force re-authentication even if valid token exists.
         open_browser: If True, auto-open default browser. If False, print the
             auth URL so the user can open it in a specific browser.
+        interactive: If True, run OAuth browser flow when token is missing/expired.
+            If False, raise ValueError instead of opening browser.
 
     Returns:
         Valid credentials for Gmail API.
 
     Raises:
         FileNotFoundError: If credentials.json is missing.
+        ValueError: If interactive=False and no valid credentials available.
     """
     creds_path = get_credentials_path(account)
 
@@ -398,8 +402,15 @@ def authenticate(account: str, force: bool = False, open_browser: bool = True) -
     if not force:
         creds = load_credentials(account)
 
-    # If no valid credentials, run OAuth flow
+    # If no valid credentials, either run OAuth flow or raise error
     if not creds:
+        if not interactive:
+            raise ValueError(
+                f"OAuth token expired or missing for account '{account}'.\n\n"
+                f"Re-authenticate by running:\n"
+                f"  cc-gmail auth\n\n"
+                f"Then retry your command."
+            )
         flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
         creds = flow.run_local_server(port=0, open_browser=open_browser)
         save_credentials(account, creds)
