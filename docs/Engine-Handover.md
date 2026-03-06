@@ -100,7 +100,7 @@ Port the Python dispatcher to C#. The Python source to reference:
 Create these files:
 - `src/CcDirector.Engine/Dispatcher/CommunicationDispatcher.cs` -- Polls communications table every 5 seconds for `status='approved'` items with `send_timing IN ('immediate','asap')` or `scheduled_for <= now`. Dispatches by platform, marks as `posted`.
 - `src/CcDirector.Engine/Dispatcher/EmailSender.cs` -- Shells out to `cc-outlook` or `cc-gmail` CLI. Accounts selected by `send_from` / `persona` field.
-- `src/CcDirector.Engine/Dispatcher/LinkedInSender.cs` -- Shells out to `cc-linkedin` CLI. Routes by type (post/comment/message).
+- `src/CcDirector.Engine/Dispatcher/LinkedInSender.cs` -- Uses `cc-browser` with LinkedIn connection. Routes by type (post/comment/message).
 - `src/CcDirector.Engine/Dispatcher/SenderConfig.cs` -- Account routing table.
 - `src/CcDirector.Engine/Storage/CommunicationRecord.cs` -- Data model matching the communications table schema.
 

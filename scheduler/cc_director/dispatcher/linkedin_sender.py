@@ -1,4 +1,4 @@
-"""LinkedIn sender using cc-linkedin CLI tool."""
+"""LinkedIn sender using cc-browser CLI with LinkedIn connection."""
 
 import asyncio
 import logging
@@ -18,7 +18,7 @@ def _bin_dir() -> Path:
     return Path.home() / ".cc-director" / "bin"
 
 
-CC_LINKEDIN_PATH = _bin_dir() / "cc-linkedin.exe"
+CC_BROWSER_PATH = _bin_dir() / "cc-browser.exe"
 TEMP_MEDIA_DIR = Path(os.environ.get("TEMP", r"C:\temp")) / "cc_director_media"
 
 
@@ -34,20 +34,22 @@ class SendResult:
 
 
 class LinkedInSender:
-    """Send LinkedIn posts and comments via cc-linkedin CLI."""
+    """Send LinkedIn posts, comments, and messages via cc-browser CLI."""
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None, connection: str = "linkedin"):
         """Initialize the LinkedIn sender.
 
         Args:
             db_path: Path to SQLite database (for extracting media BLOBs)
+            connection: cc-browser connection name for LinkedIn
         """
         self.db_path = db_path
+        self.connection = connection
         TEMP_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
     async def send(self, item: Dict[str, Any]) -> SendResult:
         """
-        Send LinkedIn content using cc-linkedin CLI.
+        Send LinkedIn content using cc-browser CLI.
 
         Args:
             item: Content item dictionary with platform=linkedin
@@ -73,18 +75,21 @@ class LinkedInSender:
                 message="Missing post content"
             )
 
-        # Build command
-        cmd = [str(CC_LINKEDIN_PATH), "create", content]
+        # Navigate to LinkedIn feed and create post via browser automation
+        cmd = [
+            str(CC_BROWSER_PATH),
+            "--connection", self.connection,
+            "navigate", "--url", "https://www.linkedin.com/feed/"
+        ]
 
-        # Extract and attach media if present
-        media = item.get("media", [])
-        if media:
-            image_path = await self._extract_first_image(item, media)
-            if image_path:
-                cmd.extend(["--image", str(image_path)])
-
-        # Execute the command
-        return await self._execute_command(cmd, "post")
+        # For posts, we need multi-step browser automation.
+        # This is a placeholder -- post creation requires LLM agent orchestration
+        # using the LinkedIn navigation skill's "Create a Post" workflow.
+        logger.warning("LinkedIn post dispatch requires LLM agent orchestration via cc-browser")
+        return SendResult(
+            success=False,
+            message="LinkedIn post dispatch not yet implemented via cc-browser. Use LLM agent with LinkedIn navigation skill."
+        )
 
     async def _send_comment(self, item: Dict[str, Any]) -> SendResult:
         """Post a comment on LinkedIn."""
@@ -103,14 +108,22 @@ class LinkedInSender:
                 message="Missing comment content"
             )
 
-        cmd = [str(CC_LINKEDIN_PATH), "comment", context_url, content]
-        return await self._execute_command(cmd, "comment")
+        # Comment creation requires multi-step browser automation.
+        logger.warning("LinkedIn comment dispatch requires LLM agent orchestration via cc-browser")
+        return SendResult(
+            success=False,
+            message="LinkedIn comment dispatch not yet implemented via cc-browser. Use LLM agent with LinkedIn navigation skill."
+        )
 
     async def _send_message(self, item: Dict[str, Any]) -> SendResult:
         """Send a LinkedIn direct message."""
         content = item.get("content", "")
         recipient = item.get("recipient", {})
         profile_url = recipient.get("profile_url", "")
+
+        if not profile_url:
+            # Try destination_url as fallback
+            profile_url = item.get("destination_url", "")
 
         if not profile_url:
             return SendResult(
@@ -124,8 +137,12 @@ class LinkedInSender:
                 message="Missing message content"
             )
 
-        cmd = [str(CC_LINKEDIN_PATH), "message", profile_url, content]
-        return await self._execute_command(cmd, "message")
+        # Message sending requires multi-step browser automation.
+        logger.warning("LinkedIn message dispatch requires LLM agent orchestration via cc-browser")
+        return SendResult(
+            success=False,
+            message="LinkedIn message dispatch not yet implemented via cc-browser. Use LLM agent with LinkedIn navigation skill."
+        )
 
     async def _extract_first_image(
         self,
@@ -189,65 +206,3 @@ class LinkedInSender:
         except Exception as e:
             logger.error(f"Error extracting media: {e}")
             return None
-
-    async def _execute_command(
-        self,
-        cmd: List[str],
-        action_type: str
-    ) -> SendResult:
-        """Execute cc-linkedin command.
-
-        Args:
-            cmd: Command and arguments
-            action_type: Type of action (post, comment, message)
-
-        Returns:
-            SendResult
-        """
-        try:
-            logger.info(f"Sending LinkedIn {action_type}")
-            logger.debug(f"Command: {' '.join(cmd[:3])}...")  # Don't log full content
-
-            result = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await result.communicate()
-
-            stdout_str = stdout.decode() if stdout else ""
-            stderr_str = stderr.decode() if stderr else ""
-
-            if result.returncode == 0:
-                logger.info(f"LinkedIn {action_type} sent successfully")
-                return SendResult(
-                    success=True,
-                    message=f"LinkedIn {action_type} sent",
-                    stdout=stdout_str,
-                    stderr=stderr_str
-                )
-            else:
-                logger.error(f"LinkedIn {action_type} failed: {stderr_str}")
-                logger.error(f"stdout: {stdout_str}")
-                logger.error(f"Command was: {cmd[0]} {cmd[1]} [content...] {cmd[3:] if len(cmd) > 3 else ''}")
-                return SendResult(
-                    success=False,
-                    message=f"Failed with exit code {result.returncode}",
-                    stdout=stdout_str,
-                    stderr=stderr_str
-                )
-
-        except FileNotFoundError:
-            error_msg = f"cc-linkedin not found at {CC_LINKEDIN_PATH}"
-            logger.error(error_msg)
-            return SendResult(
-                success=False,
-                message=error_msg
-            )
-        except Exception as e:
-            error_msg = f"Error sending LinkedIn {action_type}: {e}"
-            logger.error(error_msg)
-            return SendResult(
-                success=False,
-                message=error_msg
-            )

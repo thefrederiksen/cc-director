@@ -674,21 +674,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 args.Add($"\"{imagePath}\"");
             }
 
-            // Run cc_linkedin create command
+            // Run cc-browser with LinkedIn connection to create post
             var startInfo = new ProcessStartInfo
             {
-                FileName = Path.Combine(CcStorage.Bin(), "cc-linkedin.exe"),
-                Arguments = string.Join(" ", args),
+                FileName = Path.Combine(CcStorage.Bin(), "cc-browser.exe"),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true
             };
+            startInfo.ArgumentList.Add("--connection");
+            startInfo.ArgumentList.Add("linkedin");
+            startInfo.ArgumentList.Add("navigate");
+            startInfo.ArgumentList.Add("--url");
+            startInfo.ArgumentList.Add("https://www.linkedin.com/feed/");
 
             using var process = Process.Start(startInfo);
             if (process == null)
             {
-                StatusMessage = "Failed to start cc_linkedin";
+                StatusMessage = "Failed to start cc-browser";
                 return;
             }
 

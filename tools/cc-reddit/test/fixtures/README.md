@@ -2,7 +2,7 @@
 
 ## Overview
 Mock Reddit response structures for testing parse and display logic offline.
-Like cc-linkedin, cc-reddit uses live browser automation with human-like delays,
+Like other browser-based tools, cc-reddit uses live browser automation with human-like delays,
 so fixtures provide representative data structures rather than live interactions.
 
 ## Fixtures

@@ -1,4 +1,4 @@
-"""LinkedIn source - uses cc-linkedin CLI tool."""
+"""LinkedIn source - uses cc-browser CLI with LinkedIn connection."""
 
 import json
 import logging
@@ -15,13 +15,8 @@ logger = logging.getLogger(__name__)
 def _extract_json(text: str):
     """Extract JSON array or object from text that may have non-JSON header lines.
 
-    cc-linkedin --format json outputs a human-readable header line before the
-    JSON payload, e.g.:
-        Search Results for 'Jane Doe' (people)
-
-        [{"name": "Jane Doe", ...}]
-
-    This function finds and parses just the JSON portion.
+    cc-browser --format json may output a human-readable header line before the
+    JSON payload. This function finds and parses just the JSON portion.
     """
     text = text.strip()
     if not text:
@@ -46,7 +41,7 @@ def _extract_json(text: str):
 
 class LinkedInSource(BaseSource):
     name = "linkedin"
-    requires_browser = False  # Uses cc-linkedin CLI, not direct browser
+    requires_browser = True  # Uses cc-browser with LinkedIn connection
 
     def __init__(self, *args, linkedin_connection: str = "linkedin", **kwargs):
         super().__init__(*args, **kwargs)
@@ -104,17 +99,15 @@ class LinkedInSource(BaseSource):
         )
 
     def _search(self, query: str) -> list[dict]:
-        """Run cc-linkedin search command.
+        """Run cc-browser search on LinkedIn.
 
-        --format and --connection are GLOBAL options that go BEFORE the subcommand.
+        Uses the LinkedIn connection to search for people.
         """
         cmd = [
-            "cc-linkedin",
-            "--format", "json",
+            "cc-browser",
             "--connection", self.linkedin_connection,
-            "search", query,
-            "--type", "people",
-            "--limit", "5",
+            "evaluate", "--fn",
+            f"() => {{ window.location.href = 'https://www.linkedin.com/search/results/people/?keywords={query}'; }}",
         ]
         try:
             result = subprocess.run(
@@ -129,10 +122,23 @@ class LinkedInSource(BaseSource):
                     logger.warning("search stderr: %s", stderr)
                 return []
 
-            output = result.stdout.strip()
+            # After navigation, get the page text to extract results
+            snapshot_cmd = [
+                "cc-browser",
+                "--connection", self.linkedin_connection,
+                "text",
+            ]
+            snap_result = subprocess.run(
+                snapshot_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            output = snap_result.stdout.strip()
             if not output:
                 if self.verbose:
-                    logger.debug("search returned empty stdout")
+                    logger.debug("search returned empty snapshot")
                 return []
 
             data = _extract_json(output)
@@ -147,7 +153,7 @@ class LinkedInSource(BaseSource):
             return []
         except FileNotFoundError:
             if self.verbose:
-                logger.warning("cc-linkedin CLI not found on PATH")
+                logger.warning("cc-browser CLI not found on PATH")
             return []
         except subprocess.TimeoutExpired:
             if self.verbose:
@@ -155,15 +161,11 @@ class LinkedInSource(BaseSource):
             return []
 
     def _get_profile(self, username: str) -> dict:
-        """Run cc-linkedin profile command.
-
-        --format and --connection are GLOBAL options that go BEFORE the subcommand.
-        """
+        """Navigate to LinkedIn profile and extract data via cc-browser."""
         cmd = [
-            "cc-linkedin",
-            "--format", "json",
+            "cc-browser",
             "--connection", self.linkedin_connection,
-            "profile", username,
+            "navigate", "--url", f"https://www.linkedin.com/in/{username}",
         ]
         try:
             result = subprocess.run(
@@ -178,7 +180,20 @@ class LinkedInSource(BaseSource):
                     logger.warning("profile stderr: %s", stderr)
                 return {}
 
-            output = result.stdout.strip()
+            # Get page text after navigation
+            text_cmd = [
+                "cc-browser",
+                "--connection", self.linkedin_connection,
+                "text",
+            ]
+            text_result = subprocess.run(
+                text_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            output = text_result.stdout.strip()
             if not output:
                 return {}
 

@@ -31,7 +31,6 @@ public static class ProfileToolLists
     [
         "cc-browser",
         "cc-fox-browser",
-        "cc-linkedin",
         "cc-reddit",
         "cc-twitter",
         "cc-facebook",

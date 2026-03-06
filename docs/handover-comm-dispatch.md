@@ -40,7 +40,7 @@ Expand the SEND ALL button to dispatch **all platforms**, not just email. Each p
 |----------|------|-------------|--------|
 | Email (Gmail) | `cc-gmail` | `cc-gmail send -t <to> -s <subject> -b <body> --html` | WORKING |
 | Email (Outlook) | `cc-outlook` | `cc-outlook send -t <to> -s <subject> -b <body> --html` | WORKING |
-| LinkedIn | `cc-linkedin` | `cc-linkedin create "<content>" [--image <path>]` | WORKING |
+| LinkedIn | `cc-browser (LinkedIn connection)` | `cc-browser (LinkedIn connection) create "<content>" [--image <path>]` | WORKING |
 | Reddit | `cc-reddit` | `cc-reddit comment <post_url> --text "<text>"` | PARTIAL (comment/reply only, no new posts) |
 | Twitter/X | `cc-twitter` | Does not exist yet | NOT BUILT |
 | Facebook | `cc-facebook` | Does not exist yet | NOT BUILT |
@@ -50,7 +50,7 @@ Expand the SEND ALL button to dispatch **all platforms**, not just email. Each p
 
 ### Priority Order
 1. **Email** -- already working in SendAll
-2. **LinkedIn** -- tool exists (`cc-linkedin create`), just needs wiring into SendAll
+2. **LinkedIn** -- tool exists (`cc-browser (LinkedIn connection) create`), just needs wiring into SendAll
 3. **Reddit** -- tool exists for comments/replies, needs wiring
 4. Twitter, Facebook, WhatsApp, YouTube, Blog -- future tools
 
@@ -88,7 +88,7 @@ Expand the SEND ALL button to dispatch **all platforms**, not just email. Each p
 | `tools/cc-gmail/src/gmail_api.py` | Gmail API -- `send_message()` |
 | `tools/cc-outlook/src/cli.py` | Outlook CLI -- `send` command |
 | `tools/cc-outlook/src/outlook_api.py` | Outlook API -- `send_message()` |
-| `tools/cc-linkedin/src/cli.py` | LinkedIn CLI -- `create` command |
+| `tools/cc-browser (LinkedIn connection)/src/cli.py` | LinkedIn CLI -- `create` command |
 | `tools/cc-reddit/src/cli.py` | Reddit CLI -- `comment`, `reply` commands |
 
 ---
@@ -139,11 +139,11 @@ cc-outlook send -t <to> -s <subject> -b <body> --html [--cc <cc>] [--bcc <bcc>] 
 
 **LinkedIn**:
 ```
-cc-linkedin create "<content>" [--image <path>]
+cc-browser (LinkedIn connection) create "<content>" [--image <path>]
 ```
 - Content comes from the `content` field
 - Image comes from the media table (extract via `ContentService.ExtractMediaToTemp()`)
-- The `linkedin_specific` JSON has `visibility` (public/connections) -- cc-linkedin doesn't support this flag yet, may need adding
+- The `linkedin_specific` JSON has `visibility` (public/connections) -- cc-browser (LinkedIn connection) doesn't support this flag yet, may need adding
 
 **Reddit**:
 ```
@@ -203,7 +203,8 @@ cc-comm-queue add linkedin post --content "Test LinkedIn post" --persona persona
 
 ## Rules and Constraints
 
-- **LinkedIn/Reddit**: NEVER use cc-browser directly. Always use cc-linkedin/cc-reddit (they have human-like delays)
+- **LinkedIn**: Use cc-browser with the LinkedIn connection and navigation skill (has human-like delays)
+- **Reddit**: Use cc-reddit (has human-like delays built in)
 - **Email**: Must go through approval workflow. Direct `cc-gmail send` / `cc-outlook send` is forbidden except through the dispatcher
 - **Hold items**: Must NOT be auto-sent. Query filters out `send_timing = 'hold'`
 - **No fallback programming**: If a tool fails, report the error clearly. Don't try alternative approaches

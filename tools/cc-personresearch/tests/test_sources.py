@@ -263,7 +263,7 @@ class TestLinkedInSource:
     @patch("src.sources.linkedin.subprocess.run")
     def test_handles_missing_cli(self, mock_run):
         from src.sources.linkedin import LinkedInSource
-        mock_run.side_effect = FileNotFoundError("cc-linkedin not found")
+        mock_run.side_effect = FileNotFoundError("cc-browser not found")
 
         src = LinkedInSource(person_name="Test")
         result = src.fetch()
@@ -273,7 +273,7 @@ class TestLinkedInSource:
     def test_handles_timeout(self, mock_run):
         from src.sources.linkedin import LinkedInSource
         import subprocess
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="cc-linkedin", timeout=90)
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="cc-browser", timeout=90)
 
         src = LinkedInSource(person_name="Test")
         result = src.fetch()

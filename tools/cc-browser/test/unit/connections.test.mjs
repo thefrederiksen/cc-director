@@ -72,9 +72,9 @@ describe('Connection Registry', () => {
       const conn = createConnection({
         name: 'linked',
         url: 'https://linkedin.com',
-        toolBinding: 'cc-linkedin',
+        toolBinding: 'cc-browser',
       });
-      assert.equal(conn.toolBinding, 'cc-linkedin');
+      assert.equal(conn.toolBinding, 'cc-browser');
     });
   });
 
@@ -132,10 +132,10 @@ describe('Connection Registry', () => {
 
   describe('findConnectionByTool', () => {
     it('should find connection by tool binding', () => {
-      createConnection({ name: 'li', toolBinding: 'cc-linkedin' });
+      createConnection({ name: 'li', toolBinding: 'linkedin' });
       createConnection({ name: 'rd', toolBinding: 'cc-reddit' });
 
-      const li = findConnectionByTool('cc-linkedin');
+      const li = findConnectionByTool('linkedin');
       assert.ok(li);
       assert.equal(li.name, 'li');
 

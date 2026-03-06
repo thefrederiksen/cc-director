@@ -76,7 +76,7 @@ Each screen is large, clean, dark-themed (matching CC Director style). One prere
 
 ### Screen 3: Node.js 18+
 
-- **Why**: "Required for browser automation tools (cc-browser, cc-linkedin, cc-reddit)"
+- **Why**: "Required for browser automation tools (cc-browser, cc-reddit)"
 - **Check**: `node --version` and parse version >= 18
 - **If installed**: Show version, green status
 - **If not installed**: [Install via winget] button runs `winget install OpenJS.NodeJS.LTS`
@@ -167,7 +167,7 @@ Every prerequisite screen follows the same layout:
 |  [Icon]  Node.js 18+                                     |
 |                                                          |
 |  Required for browser automation tools                   |
-|  (cc-browser, cc-linkedin, cc-reddit, cc-crawl4ai)       |
+|  (cc-browser, cc-reddit, cc-crawl4ai)                    |
 |                                                          |
 |  Status: [Checking...] / [Installed v22.5.0] / [Missing] |
 |                                                          |

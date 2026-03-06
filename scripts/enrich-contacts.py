@@ -1,15 +1,15 @@
 """
 LinkedIn Contact Enrichment Script
 
-NOTE: cc-linkedin CLI has been removed (issue #71). This script previously used
-cc-linkedin enrich to visit LinkedIn profiles and extract data. That functionality
+NOTE: cc-browser (LinkedIn) CLI has been removed (issue #71). This script previously used
+cc-browser (LinkedIn) enrich to visit LinkedIn profiles and extract data. That functionality
 is now available through cc-browser with the LinkedIn navigation skill.
 
 This script is DEPRECATED. Contact enrichment should be done via an LLM agent
 using cc-browser commands with the LinkedIn skill's "View a Profile" workflow.
 
 The script is kept for reference and dry-run mode (to see which contacts need
-enrichment), but the actual enrichment calls will fail without cc-linkedin.
+enrichment), but the actual enrichment calls will fail without cc-browser (LinkedIn).
 
 Usage:
     python scripts/enrich-contacts.py --dry-run        # Preview contacts needing enrichment
@@ -105,10 +105,10 @@ def extract_username(linkedin_url: str) -> str:
 
 
 def run_linkedin_enrich(username: str) -> dict:
-    """Call cc-linkedin enrich and return parsed JSON."""
+    """Call cc-browser (LinkedIn) enrich and return parsed JSON."""
     try:
         result = subprocess.run(
-            ["cc-linkedin", "enrich", username],
+            ["cc-browser (LinkedIn)", "enrich", username],
             capture_output=True,
             text=True,
             timeout=60,
@@ -116,7 +116,7 @@ def run_linkedin_enrich(username: str) -> dict:
             errors="replace",
         )
         if result.returncode != 0:
-            log.error("cc-linkedin enrich failed for %s: %s", username, result.stderr.strip())
+            log.error("cc-browser (LinkedIn) enrich failed for %s: %s", username, result.stderr.strip())
             return {"profile_exists": False, "error": result.stderr.strip()}
 
         output = result.stdout.strip()
@@ -126,10 +126,10 @@ def run_linkedin_enrich(username: str) -> dict:
         return json.loads(output)
 
     except subprocess.TimeoutExpired:
-        log.error("cc-linkedin enrich timed out for %s", username)
+        log.error("cc-browser (LinkedIn) enrich timed out for %s", username)
         return {"profile_exists": False, "error": "Timeout"}
     except json.JSONDecodeError as e:
-        log.error("Invalid JSON from cc-linkedin for %s: %s", username, e)
+        log.error("Invalid JSON from cc-browser (LinkedIn) for %s: %s", username, e)
         return {"profile_exists": False, "error": str(e)}
 
 

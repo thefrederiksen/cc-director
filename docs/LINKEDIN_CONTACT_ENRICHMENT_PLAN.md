@@ -16,14 +16,14 @@ The original database has been deleted, so we cannot recover the data from the s
 
 We successfully tested this with contact #3097:
 
-1. Navigated to `https://linkedin.com/in/aakarsh-rana` via cc-linkedin
+1. Navigated to `https://linkedin.com/in/aakarsh-rana` via cc-browser (LinkedIn)
 2. Extracted: Name (Aakarsh Rana), Company (ZS), Title (Decision Analytics Associate Intern), Location (Delhi, India)
 3. Updated the vault contact with all extracted info
 4. Added a memory note about origin
 
 ## What Data We Can Extract
 
-The cc-linkedin `profile` command runs JavaScript on the profile page. Currently it extracts:
+The cc-browser (LinkedIn) `profile` command runs JavaScript on the profile page. Currently it extracts:
 
 | Field | LinkedIn Source | Vault Column |
 |-------|---------------|--------------|
@@ -48,10 +48,10 @@ With additional JavaScript extraction we can also get:
 
 ## Architecture
 
-### New cc-linkedin command: `enrich`
+### New cc-browser (LinkedIn) command: `enrich`
 
 ```
-cc-linkedin enrich <linkedin-url-or-username> --format json
+cc-browser (LinkedIn) enrich <linkedin-url-or-username> --format json
 ```
 
 Returns a JSON object with all extractable profile data:
@@ -84,10 +84,10 @@ If the profile doesn't exist (404, "page not found"), returns:
 ### New cc-vault command: `contacts enrich`
 
 ```
-cc-vault contacts enrich <contact-id> --data '<json from cc-linkedin>'
+cc-vault contacts enrich <contact-id> --data '<json from cc-browser (LinkedIn)>'
 ```
 
-Takes the JSON output from `cc-linkedin enrich` and updates the vault contact:
+Takes the JSON output from `cc-browser (LinkedIn) enrich` and updates the vault contact:
 
 - Sets `name`, `company`, `title`, `location` from the JSON
 - Stores headline, about, education, pronouns as memories
@@ -101,7 +101,7 @@ A Python script that:
 1. Queries the vault for all contacts where `name = ''` and `linkedin IS NOT NULL`
 2. For each contact:
    a. Extracts the username from the LinkedIn URL
-   b. Calls `cc-linkedin enrich <username> --format json`
+   b. Calls `cc-browser (LinkedIn) enrich <username> --format json`
    c. Parses the JSON response
    d. If profile exists: calls `cc-vault contacts update` with extracted data
    e. If profile doesn't exist: marks contact with a memory "LinkedIn profile not found"
@@ -142,12 +142,12 @@ The script should:
 
 ## Implementation Steps
 
-### Step 1: Add `enrich` command to cc-linkedin
+### Step 1: Add `enrich` command to cc-browser (LinkedIn)
 
 - Add new JavaScript extraction that gets all available profile data
 - Return structured JSON
 - Handle missing/private profiles gracefully
-- Rebuild cc-linkedin
+- Rebuild cc-browser (LinkedIn)
 
 ### Step 2: Add `contacts enrich` command to cc-vault
 
@@ -197,12 +197,12 @@ Profile URL              ->    linkedin (already set)
 
 ## Prerequisites
 
-- [x] cc-linkedin build fixed (ModuleNotFoundError resolved)
+- [x] cc-browser (LinkedIn) build fixed (ModuleNotFoundError resolved)
 - [x] cc-vault contacts update works without email
 - [x] cc-vault contacts memory works without email
 - [x] cc-vault contacts show displays all fields
 - [x] Unicode handling fixed for non-ASCII names
-- [ ] cc-linkedin `enrich` command implemented
+- [ ] cc-browser (LinkedIn) `enrich` command implemented
 - [ ] cc-vault `contacts enrich` command implemented
 - [ ] Orchestration script created
 - [ ] Test run on 10 contacts
@@ -212,7 +212,7 @@ Profile URL              ->    linkedin (already set)
 
 | File | Action |
 |------|--------|
-| `tools/cc-linkedin/src/cli.py` | Add `enrich` command |
+| `tools/cc-browser (LinkedIn)/src/cli.py` | Add `enrich` command |
 | `tools/cc-vault/src/cli.py` | Add `contacts enrich` command |
 | `tools/cc-vault/src/db.py` | Add `enrich_contact()` helper |
 | `scripts/enrich-contacts.py` | New orchestration script |

@@ -1709,7 +1709,7 @@ def contacts_delete(
 @contacts_app.command("enrich")
 def contacts_enrich(
     contact_id: int = typer.Argument(..., help="Contact ID to enrich"),
-    data: str = typer.Argument(..., help="JSON string with profile data from cc-linkedin enrich"),
+    data: str = typer.Argument(..., help="JSON string with profile data from linkedin-enrich"),
 ):
     """Enrich a contact with data from LinkedIn profile extraction."""
     db = get_db()
@@ -1727,7 +1727,7 @@ def contacts_enrich(
                 contact_id=contact_id,
                 category="linkedin",
                 fact="LinkedIn profile not found or unavailable",
-                source="cc-linkedin enrich",
+                source="linkedin-enrich",
             )
             console.print(f"[yellow]Contact #{contact_id}: profile not found, memory added[/yellow]")
             return
@@ -1761,7 +1761,7 @@ def contacts_enrich(
                 contact_id=contact_id,
                 category="about",
                 fact=profile["about"],
-                source="cc-linkedin enrich",
+                source="linkedin-enrich",
             )
 
         if profile.get("education"):
@@ -1769,7 +1769,7 @@ def contacts_enrich(
                 contact_id=contact_id,
                 category="education",
                 fact=profile["education"],
-                source="cc-linkedin enrich",
+                source="linkedin-enrich",
             )
 
         if profile.get("pronouns"):
@@ -1777,7 +1777,7 @@ def contacts_enrich(
                 contact_id=contact_id,
                 category="personal",
                 fact=f"Pronouns: {profile['pronouns']}",
-                source="cc-linkedin enrich",
+                source="linkedin-enrich",
             )
 
         if profile.get("connections"):
@@ -1785,7 +1785,7 @@ def contacts_enrich(
                 contact_id=contact_id,
                 category="linkedin",
                 fact=f"Connections: {profile['connections']}",
-                source="cc-linkedin enrich",
+                source="linkedin-enrich",
             )
 
         display_name = update_fields.get("name") or contact.get("name") or f"#{contact_id}"

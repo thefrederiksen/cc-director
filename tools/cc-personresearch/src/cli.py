@@ -50,7 +50,7 @@ def search(
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", hidden=True,
                                             help="Deprecated: use --connection"),
     linkedin_connection: str = typer.Option("linkedin", "--linkedin-connection",
-                                            help="cc-linkedin connection (default: linkedin)"),
+                                            help="cc-browser connection for LinkedIn (default: linkedin)"),
     linkedin_workspace: Optional[str] = typer.Option(None, "--linkedin-workspace", hidden=True,
                                                      help="Deprecated: use --linkedin-connection"),
     api_only: bool = typer.Option(False, "--api-only", help="Only run API sources (no browser)"),
@@ -110,7 +110,7 @@ def sources() -> None:
         src = cls(person_name="test")
         console.print(f"  - {src.name}")
 
-    console.print("\n[bold]Tool Sources[/bold] (require cc-linkedin):")
+    console.print("\n[bold]Tool Sources[/bold] (require cc-browser with LinkedIn connection):")
     for cls in TOOL_SOURCES:
         src = cls(person_name="test")
         console.print(f"  - {src.name}")

@@ -44,7 +44,6 @@
                   BorderBrush="#3C3C3C" Padding="6"
                   SelectedIndex="0">
             <ComboBoxItem Content="(none)" />
-            <ComboBoxItem Content="cc-linkedin" />
             <ComboBoxItem Content="cc-reddit" />
         </ComboBox>
 

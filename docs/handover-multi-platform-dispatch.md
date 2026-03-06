@@ -179,7 +179,7 @@ Handles two content types:
 
 **Post** (`item.Type == "post"`):
 ```
-cc-linkedin create "<content>" [--image <path>]
+cc-browser (LinkedIn) create "<content>" [--image <path>]
 ```
 - Args: `"create"`, `item.Content`
 - If media image exists: add `"--image"`, `imagePath`
@@ -187,13 +187,13 @@ cc-linkedin create "<content>" [--image <path>]
 
 **Comment** (`item.Type == "comment"`):
 ```
-cc-linkedin comment <url> --text "<text>"
+cc-browser (LinkedIn) comment <url> --text "<text>"
 ```
 - Args: `"comment"`, `targetUrl`, `"--text"`, `item.Content`
 - URL from `item.DestinationUrl ?? item.ContextUrl`
 - Return false if no URL
 
-Unsupported types (e.g. "reply" -- cc-linkedin doesn't have a reply command): log and return false.
+Unsupported types (e.g. "reply" -- cc-browser (LinkedIn) doesn't have a reply command): log and return false.
 
 ### Step 10: Add `DispatchRedditItemAsync`
 
@@ -245,8 +245,8 @@ Change to use `ArgumentList` like the rest of the dispatch methods. Remove the m
 |----------|------|-------------|
 | Email (Gmail) | email | `cc-gmail send -t <to> -s <subject> -b <body> --html [--cc <cc>] [--bcc <bcc>] [--attach <path>]` |
 | Email (Outlook) | email | `cc-outlook send -t <to> -s <subject> -b <body> --html [--cc <cc>] [--bcc <bcc>] [-a <path>]` |
-| LinkedIn | post | `cc-linkedin create "<content>" [--image <path>]` |
-| LinkedIn | comment | `cc-linkedin comment <post-url> --text "<text>"` |
+| LinkedIn | post | `cc-browser (LinkedIn) create "<content>" [--image <path>]` |
+| LinkedIn | comment | `cc-browser (LinkedIn) comment <post-url> --text "<text>"` |
 | Reddit | comment | `cc-reddit comment <post-url> --text "<text>"` |
 | Reddit | reply | `cc-reddit reply <comment-url> --text "<text>"` |
 
@@ -259,7 +259,7 @@ Tool binaries are at `CcStorage.Bin()` -> `%LOCALAPPDATA%\cc-director\bin\`.
 | Column | Key Fields |
 |--------|------------|
 | `email_specific` | `to` (list), `cc` (list), `bcc` (list), `subject`, `attachments` (list) |
-| `linkedin_specific` | `visibility` (public/connections) -- cc-linkedin doesn't support this flag yet |
+| `linkedin_specific` | `visibility` (public/connections) -- cc-browser (LinkedIn) doesn't support this flag yet |
 | `reddit_specific` | `subreddit`, `subreddit_url`, `parent_comment`, `title`, `flair` |
 
 ---

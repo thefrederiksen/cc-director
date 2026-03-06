@@ -46,7 +46,7 @@ This architecture is **undetectable** because the extension operates within Chro
 - **Undetectable automation**: Browser instances indistinguishable from manual use
 - **Connection-per-site model**: Each connection is a named, single-site browser instance
 - **Director UI integration**: New "Connections" tab in CC Director for managing connections
-- **Tool binding**: cc-linkedin, cc-reddit, etc. bind to named connections
+- **Tool binding**: linkedin, cc-reddit, etc. bind to named connections
 - **Persistent sessions**: Browser profiles persist logins, cookies, and state across restarts
 - **Same CLI interface**: `cc-browser navigate`, `cc-browser click`, etc. work identically
 - **ARIA snapshots**: Maintain the accessibility tree snapshot system for element refs
@@ -172,7 +172,7 @@ A new tab appears in the center content TabControl alongside Terminal, Source Co
 | - Sessions       | | |  CONNECTIONS                        [+]  |
 |   ...            | | |                                          |
 |                  | | |  linkedin          linkedin.com     [Open]|
-|                  | | |    Tool: cc-linkedin                     |
+|                  | | |    Tool: linkedin                     |
 |                  | | |    Status: Connected                     |
 |                  | | |                                          |
 |                  | | |  reddit            reddit.com       [Open]|
@@ -199,7 +199,7 @@ Triggered by the [+] button. Simple dialog following VisualStyle.md.
 |                                            |
 |  URL:      [https://linkedin.com____]      |
 |                                            |
-|  Tool:     [cc-linkedin_________|v]        |
+|  Tool:     [linkedin_________|v]        |
 |            (optional tool binding)         |
 |                                            |
 |                         [OK]  [Cancel]     |
@@ -208,7 +208,7 @@ Triggered by the [+] button. Simple dialog following VisualStyle.md.
 
 - **Name**: Unique identifier. Lowercase alphanumeric + hyphens. Used in CLI as `--connection <name>`.
 - **URL**: The primary site URL. Chrome opens to this URL on first launch.
-- **Tool**: Optional dropdown binding to a cc-tool (cc-linkedin, cc-reddit, or none). When a tool is bound, calling that tool automatically uses this connection.
+- **Tool**: Optional dropdown binding to a cc-tool (linkedin, cc-reddit, or none). When a tool is bound, calling that tool automatically uses this connection.
 
 ### Flow: Creating a New Connection
 
@@ -220,7 +220,7 @@ Triggered by the [+] button. Simple dialog following VisualStyle.md.
 6. Chrome launches immediately with the extension loaded, navigating to the URL
 7. User logs in manually in the browser
 8. Connection is now ready -- browser stays open
-9. Tools (cc-linkedin, etc.) can now use this connection
+9. Tools (linkedin, etc.) can now use this connection
 
 ### Flow: Daily Usage
 
@@ -228,16 +228,16 @@ Triggered by the [+] button. Simple dialog following VisualStyle.md.
 2. User clicks [Open] on the "linkedin" connection
 3. Chrome launches with the linkedin profile, extension auto-connects
 4. Status changes to "Connected" in the UI
-5. User (or cc-linkedin) runs commands against the connection
+5. User (or linkedin) runs commands against the connection
 6. When done, user closes the Chrome window
 7. Status changes to "Disconnected"
 8. Next time, clicking [Open] restores the same profile with cookies/logins intact
 
-### Flow: Tool Usage (cc-linkedin)
+### Flow: Tool Usage (linkedin)
 
 ```bash
-# cc-linkedin internally resolves its connection
-cc-linkedin messages --unread
+# linkedin internally resolves its connection
+linkedin messages --unread
 
 # Equivalent to:
 cc-browser --connection linkedin navigate --url https://linkedin.com/messaging
@@ -245,7 +245,7 @@ cc-browser --connection linkedin snapshot
 # ... process ARIA snapshot ...
 ```
 
-The tool binding in the connection config tells cc-linkedin which connection to use without the user specifying `--connection` every time.
+The tool binding in the connection config tells linkedin which connection to use without the user specifying `--connection` every time.
 
 ---
 
@@ -257,7 +257,7 @@ The tool binding in the connection config tells cc-linkedin which connection to 
 {
   "name": "linkedin",           // Unique identifier (lowercase, alphanumeric + hyphens)
   "url": "https://linkedin.com", // Primary site URL
-  "toolBinding": "cc-linkedin", // Optional: which cc-tool uses this connection
+  "toolBinding": "linkedin", // Optional: which cc-tool uses this connection
   "createdAt": "2026-03-04T10:00:00Z",
   "browser": "chrome",          // Browser kind (chrome, edge, brave)
   "profileDir": null,           // null = isolated profile (default), or system profile name
@@ -776,23 +776,23 @@ The ARIA snapshot logic moves entirely to the content script. The existing `buil
 
 ### Tool Binding Resolution
 
-When a cc-tool (e.g., cc-linkedin) needs to interact with a browser, it resolves its connection:
+When a cc-tool (e.g., linkedin) needs to interact with a browser, it resolves its connection:
 
 ```javascript
-// In cc-linkedin:
+// In linkedin:
 function getConnectionName() {
   // 1. Explicit --connection flag (highest priority)
   if (args.connection) return args.connection;
 
-  // 2. Read connection registry, find binding for "cc-linkedin"
+  // 2. Read connection registry, find binding for "linkedin"
   const connections = readConnectionRegistry();
-  const bound = connections.find(c => c.toolBinding === 'cc-linkedin');
+  const bound = connections.find(c => c.toolBinding === 'linkedin');
   if (bound) return bound.name;
 
   // 3. Error: no connection configured
   throw new Error(
-    'No connection configured for cc-linkedin. ' +
-    'Create one: cc-browser connections add linkedin --url https://linkedin.com --tool cc-linkedin'
+    'No connection configured for linkedin. ' +
+    'Create one: cc-browser connections add linkedin --url https://linkedin.com --tool linkedin'
   );
 }
 ```
@@ -801,7 +801,7 @@ function getConnectionName() {
 
 | Tool | Default Connection Name | URL |
 |------|------------------------|-----|
-| cc-linkedin | linkedin | https://linkedin.com |
+| linkedin | linkedin | https://linkedin.com |
 | cc-reddit | reddit | https://reddit.com |
 | (general browsing) | (user-defined) | (any URL) |
 
@@ -945,7 +945,7 @@ Each connection manages one Chrome window. Multiple tabs within that window are 
 | Test | What It Validates |
 |------|-------------------|
 | Full CLI flow | `cc-browser connections add` -> `open` -> `navigate` -> `snapshot` -> `click` |
-| Tool binding | cc-linkedin resolves connection and executes commands |
+| Tool binding | linkedin resolves connection and executes commands |
 | Profile persistence | Close and reopen connection, verify cookies survive |
 | Large page handling | Snapshot and interaction on complex real-world pages |
 
@@ -1033,15 +1033,15 @@ Build the WPF UI for connection management.
 
 ### Phase 6: Tool Integration
 
-Wire up cc-linkedin and cc-reddit to use connections.
+Wire up linkedin and cc-reddit to use connections.
 
 **Deliverables:**
 - Shared `connections.mjs` module for tool binding resolution
-- cc-linkedin updated to use `--connection` (or auto-resolve via binding)
+- linkedin updated to use `--connection` (or auto-resolve via binding)
 - cc-reddit updated to use `--connection` (or auto-resolve via binding)
 - Tool binding validation (error if connection not found)
 
-**Validation:** `cc-linkedin messages --unread` works through a connection.
+**Validation:** `linkedin messages --unread` works through a connection.
 
 ### Phase 7: Polish + Bot Detection Verification
 

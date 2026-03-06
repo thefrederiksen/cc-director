@@ -140,9 +140,9 @@ def run_search(
         console.print("[dim]--api-only: skipping browser and tool sources[/dim]")
         return report
 
-    # --- Phase 2: LinkedIn (via cc-linkedin CLI - most valuable professional data) ---
+    # --- Phase 2: LinkedIn (via cc-browser - most valuable professional data) ---
     if "linkedin" not in skip:
-        console.print("[bold]Phase 2:[/bold] LinkedIn (via cc-linkedin)")
+        console.print("[bold]Phase 2:[/bold] LinkedIn (via cc-browser)")
         li_src = LinkedInSource(
             person_name=name,
             email=email,
