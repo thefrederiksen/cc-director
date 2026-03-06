@@ -20,6 +20,15 @@ export class Transport {
     this._connections = new Map(); // connectionName -> WebSocket
     this._pendingRequests = new Map(); // requestId -> { resolve, reject, timer }
     this._requestCounter = 0;
+    this._onConnectCallback = null;
+  }
+
+  /**
+   * Register a callback invoked when a new connection is established.
+   * @param {(connectionName: string) => void} callback
+   */
+  onConnect(callback) {
+    this._onConnectCallback = callback;
   }
 
   /**
@@ -43,6 +52,10 @@ export class Transport {
       }
 
       this._connections.set(connectionName, ws);
+
+      if (this._onConnectCallback) {
+        this._onConnectCallback(connectionName);
+      }
 
       ws.on('message', (data) => {
         this._handleMessage(connectionName, data);

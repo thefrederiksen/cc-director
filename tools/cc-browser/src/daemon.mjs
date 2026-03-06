@@ -31,6 +31,10 @@ import {
 
 const DEFAULT_DAEMON_PORT = 9280;
 
+// Action history buffer (capped at 1000 entries, in-memory only)
+const MAX_HISTORY = 1000;
+const actionHistory = [];
+
 // ---------------------------------------------------------------------------
 // Lockfile
 // ---------------------------------------------------------------------------
@@ -259,6 +263,7 @@ const routes = {
       url: body.url,
       toolBinding: body.tool || body.toolBinding,
       browser: body.browser,
+      skillName: body.skillName || null,
     });
     jsonSuccess(res, { connection: conn });
   },
@@ -274,12 +279,13 @@ const routes = {
     const result = await launchChromeForConnection(name, profileDir, {
       browser: conn.browser,
       url: body.url || conn.url,
+      background: body.background || false,
     });
 
     setConnectionStatus(name, 'connecting');
 
-    // Resolve navigation skill for this connection
-    const skill = resolveSkill(name);
+    // Resolve navigation skill for this connection (use skillName override if set)
+    const skill = resolveSkill(name, conn.skillName);
 
     jsonSuccess(res, {
       connection: name,
@@ -382,7 +388,10 @@ const routes = {
       if (!content) return jsonError(res, 404, `No managed skill "${name}"`);
       jsonSuccess(res, { type: 'managed', name, content });
     } else {
-      const skill = resolveSkill(name);
+      // Look up connection to get skillName override
+      const conn = getConnection(name);
+      const skillNameOverride = conn?.skillName || null;
+      const skill = resolveSkill(name, skillNameOverride);
       jsonSuccess(res, { name, ...skill });
     }
   },
@@ -443,6 +452,7 @@ const routes = {
       compact: body.compact,
       maxDepth: body.maxDepth,
       maxChars: body.maxChars,
+      selector: body.selector,
       tabId: body.tab || body.tabId,
     });
     jsonSuccess(res, result);
@@ -460,9 +470,11 @@ const routes = {
 
   'POST /type': async (req, res, body) => {
     const conn = requireConnected(body);
+    // inputText is the text to type; text/ref/selector identify the element
     const result = await transport.sendCommand(conn, 'type', {
-      ref: body.ref, text: body.text, selector: body.selector,
+      ref: body.ref, text: body.findText, selector: body.selector,
       exact: body.exact, submit: body.submit,
+      inputText: body.text || body.inputText,
       tabId: body.tab || body.tabId,
     });
     jsonSuccess(res, result);
@@ -480,7 +492,7 @@ const routes = {
   'POST /press': async (req, res, body) => {
     const conn = requireConnected(body);
     const result = await transport.sendCommand(conn, 'press', {
-      key: body.key, ref: body.ref,
+      key: body.key, ref: body.ref, selector: body.selector,
       tabId: body.tab || body.tabId,
     });
     jsonSuccess(res, result);
@@ -508,7 +520,7 @@ const routes = {
   'POST /select': async (req, res, body) => {
     const conn = requireConnected(body);
     const result = await transport.sendCommand(conn, 'select', {
-      ref: body.ref,
+      ref: body.ref, selector: body.selector,
       value: body.value, values: body.values,
       tabId: body.tab || body.tabId,
     });
@@ -625,6 +637,137 @@ const routes = {
     // Resize is handled via Chrome API, not content script
     jsonError(res, 501, 'Resize not yet implemented in v2');
   },
+
+  // --- Navigation: back, forward, reload ---
+
+  'POST /back': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'back', {
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /forward': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'forward', {
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /reload': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'reload', {
+      tabId: body.tab || body.tabId,
+      timeout: body.timeout,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- Cookie Management ---
+
+  'POST /cookies/list': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'cookies.list', {
+      domain: body.domain,
+      url: body.url,
+      name: body.name,
+    });
+    jsonSuccess(res, { cookies: result });
+  },
+
+  'POST /cookies/set': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'cookies.set', {
+      url: body.url,
+      name: body.name,
+      value: body.value,
+      domain: body.domain,
+      path: body.path,
+      secure: body.secure,
+      httpOnly: body.httpOnly,
+      expirationDate: body.expirationDate,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /cookies/delete': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'cookies.delete', {
+      url: body.url,
+      name: body.name,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /cookies/export': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'cookies.export', {
+      domain: body.domain,
+      url: body.url,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- Link Extraction ---
+
+  'POST /links': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'links', {
+      selector: body.selector,
+      pattern: body.pattern,
+      unique: body.unique,
+      includeAttrs: body.includeAttrs,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- Wait for Network Idle ---
+
+  'POST /waitNetworkIdle': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'waitNetworkIdle', {
+      idleTime: body.idleTime,
+      timeout: body.timeout,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- Command Batching ---
+
+  'POST /batch': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const commands = body.commands;
+    if (!Array.isArray(commands) || commands.length === 0) {
+      return jsonError(res, 400, 'commands array is required');
+    }
+    if (commands.length > 50) {
+      return jsonError(res, 400, 'Maximum 50 commands per batch');
+    }
+
+    const results = [];
+    for (const cmd of commands) {
+      try {
+        const result = await transport.sendCommand(conn, cmd.command, cmd.params || {});
+        results.push({ command: cmd.command, result });
+      } catch (err) {
+        results.push({ command: cmd.command, error: err.message });
+        if (body.stopOnError) break;
+      }
+    }
+    jsonSuccess(res, { results, count: results.length });
+  },
+
+  // --- Action History ---
+
+  'GET /history': async (req, res) => {
+    const limit = 100;
+    const recent = actionHistory.slice(-limit);
+    jsonSuccess(res, { actions: recent, total: actionHistory.length });
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -643,7 +786,22 @@ async function handleRequest(req, res) {
 
   try {
     const body = method === 'GET' ? {} : await parseBody(req);
+    const startMs = Date.now();
     await handler(req, res, body);
+    const elapsed = Date.now() - startMs;
+
+    // Log browser action commands to history (skip GET and management routes)
+    if (method === 'POST' && !pathname.startsWith('/connections') && !pathname.startsWith('/skills') && pathname !== '/batch') {
+      actionHistory.push({
+        command: pathname.slice(1),
+        connection: body.connection || null,
+        timestamp: new Date().toISOString(),
+        elapsedMs: elapsed,
+      });
+      if (actionHistory.length > MAX_HISTORY) {
+        actionHistory.splice(0, actionHistory.length - MAX_HISTORY);
+      }
+    }
   } catch (err) {
     const status = err.statusCode || 500;
     console.error(`[ERROR] ${routeKey}: ${err.message}`);
@@ -671,6 +829,37 @@ const server = createServer(handleRequest);
 
 // Attach WebSocket transport to the HTTP server
 transport.attach(server);
+
+// Auto-close duplicate tabs when a connection is established.
+// Session restore reopens all tabs from the previous session, which causes
+// tab accumulation over time. Keep only the active tab on connect.
+transport.onConnect(async (connectionName) => {
+  // Wait briefly for the browser to finish restoring tabs
+  await new Promise(r => setTimeout(r, 2000));
+
+  if (!transport.isConnected(connectionName)) return;
+
+  try {
+    const tabs = await transport.sendCommand(connectionName, 'tabs', {});
+    if (!Array.isArray(tabs) || tabs.length <= 1) return;
+
+    const activeTab = tabs.find(t => t.active);
+    const tabsToClose = tabs.filter(t => !t.active);
+
+    if (tabsToClose.length > 0) {
+      console.log(`[cc-browser] Closing ${tabsToClose.length} restored tab(s) for ${connectionName}`);
+      for (const tab of tabsToClose) {
+        try {
+          await transport.sendCommand(connectionName, 'tabs.close', { tabId: tab.id });
+        } catch {
+          // Tab may already be gone
+        }
+      }
+    }
+  } catch (err) {
+    console.log(`[cc-browser] Tab cleanup skipped for ${connectionName}: ${err.message}`);
+  }
+});
 
 server.listen(daemonPort, '127.0.0.1', () => {
   console.log(`[cc-browser] Daemon v2 listening on http://127.0.0.1:${daemonPort}`);

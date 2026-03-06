@@ -5,7 +5,7 @@
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -169,7 +169,7 @@ async function cmdConnections(rest) {
         console.log('No connections configured.');
         console.log('');
         console.log('Create one with:');
-        console.log('  cc-browser connections add <name> --url <url> [--tool <tool>]');
+        console.log('  cc-browser connections add <name> --url <url> [--tool <tool>] [--skill-name <skill>]');
         return;
       }
       console.log('Connections:');
@@ -185,7 +185,7 @@ async function cmdConnections(rest) {
     case 'add': {
       const name = flags._positional || rest[1];
       if (!name) {
-        console.error('Usage: cc-browser connections add <name> [--url <url>] [--tool <tool>]');
+        console.error('Usage: cc-browser connections add <name> [--url <url>] [--tool <tool>] [--skill-name <skill>]');
         process.exit(1);
       }
       const data = await post('/connections/add', {
@@ -193,6 +193,7 @@ async function cmdConnections(rest) {
         url: flags.url,
         tool: flags.tool,
         browser: flags.browser,
+        skillName: flags['skill-name'] || flags.skillName || null,
       });
       console.log(`Connection "${data.connection.name}" created.`);
       break;
@@ -201,14 +202,16 @@ async function cmdConnections(rest) {
     case 'open': {
       const name = flags._positional || rest[1];
       if (!name) {
-        console.error('Usage: cc-browser connections open <name>');
+        console.error('Usage: cc-browser connections open <name> [--background]');
         process.exit(1);
       }
       const data = await post('/connections/open', {
         name,
         url: flags.url,
+        background: flags.background || false,
       });
       console.log(`Opening "${name}" (${data.browserKind}, pid: ${data.pid})`);
+      if (flags.background) console.log('Running in background (minimized).');
       console.log(`Extension will connect automatically.`);
       break;
     }
@@ -394,6 +397,8 @@ async function cmdBrowserAction(command, connectionName, rest) {
       if (flags.compact) body.compact = true;
       if (flags.maxDepth) body.maxDepth = parseInt(flags.maxDepth, 10);
       if (flags.maxChars) body.maxChars = parseInt(flags.maxChars, 10);
+      if (flags.selector) body.selector = flags.selector;
+      if (flags['no-limit']) body.maxChars = 0;
       break;
 
     case 'click':
@@ -406,19 +411,26 @@ async function cmdBrowserAction(command, connectionName, rest) {
 
     case 'type':
       body.ref = flags.ref;
-      body.text = flags.text || flags._positional;
       body.selector = flags.selector;
+      body.findText = flags['find-text'];
+      body.text = flags.text || flags._positional;
       body.submit = flags.submit;
       break;
 
-    case 'fill':
+    case 'fill': {
       body.ref = flags.ref;
-      body.value = flags.value || flags.text || flags._positional;
+      const rawValue = flags.value || flags.text || flags._positional;
+      // Convert literal \n sequences to actual newlines so CLI callers
+      // don't need special shell quoting (e.g. $'...' syntax)
+      body.value = rawValue ? rawValue.replace(/\\n/g, '\n') : rawValue;
       body.selector = flags.selector;
       break;
+    }
 
     case 'press':
       body.key = flags.key || flags._positional;
+      body.ref = flags.ref;
+      body.selector = flags.selector;
       break;
 
     case 'hover':
@@ -434,6 +446,7 @@ async function cmdBrowserAction(command, connectionName, rest) {
 
     case 'select':
       body.ref = flags.ref;
+      body.selector = flags.selector;
       body.value = flags.value || flags._positional;
       break;
 
@@ -457,8 +470,31 @@ async function cmdBrowserAction(command, connectionName, rest) {
       break;
 
     case 'screenshot':
-      body.type = flags.type || 'jpeg';
+      body.type = flags.type || 'png';
       body.quality = flags.quality ? parseInt(flags.quality, 10) : 80;
+      body._output = flags.output || flags.o;
+      break;
+
+    case 'back':
+    case 'forward':
+      body.tabId = flags.tab || flags.tabId;
+      break;
+
+    case 'reload':
+      body.tabId = flags.tab || flags.tabId;
+      body.timeout = flags.timeout ? parseInt(flags.timeout, 10) : undefined;
+      break;
+
+    case 'links':
+      body.selector = flags.selector;
+      body.pattern = flags.pattern || flags._positional;
+      body.unique = flags.unique !== 'false';
+      body.includeAttrs = flags.attrs || false;
+      break;
+
+    case 'waitNetworkIdle':
+      body.idleTime = flags.idleTime ? parseInt(flags.idleTime, 10) : undefined;
+      body.timeout = flags.timeout ? parseInt(flags.timeout, 10) : undefined;
       break;
 
     case 'tabs':
@@ -504,8 +540,12 @@ async function cmdBrowserAction(command, connectionName, rest) {
       console.error(`--- ${data.stats.refs} refs, ${data.stats.interactive} interactive, ${data.stats.chars} chars ---`);
     }
   } else if (command === 'screenshot') {
-    // Write base64 to stdout (CLI consumers pipe to file)
-    process.stdout.write(data.screenshot || '');
+    const base64 = data.screenshot || '';
+    const ext = body.type === 'jpeg' ? 'jpg' : 'png';
+    const outputPath = body._output || `screenshot-${Date.now()}.${ext}`;
+    const buffer = Buffer.from(base64, 'base64');
+    writeFileSync(outputPath, buffer);
+    console.log(`Saved: ${outputPath} (${buffer.length} bytes)`);
   } else if (command === 'tabs') {
     const tabs = data.tabs || data;
     if (Array.isArray(tabs)) {
@@ -513,11 +553,134 @@ async function cmdBrowserAction(command, connectionName, rest) {
         console.log(`  [${tab.tabId}] ${tab.title || '(no title)'} - ${tab.url}`);
       }
     }
+  } else if (command === 'links') {
+    const links = data.links || [];
+    console.log(`Found ${links.length} links (${data.total} total on page):`);
+    for (const link of links) {
+      const text = link.text ? ` "${link.text}"` : '';
+      console.log(`  ${link.href}${text}`);
+    }
   } else {
     // Generic JSON output
     const { success, ...rest } = data;
     const output = Object.keys(rest).length > 0 ? rest : data;
     console.log(JSON.stringify(output, null, 2));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cookies Command
+// ---------------------------------------------------------------------------
+
+async function cmdCookies(connectionName, rest) {
+  const subcommand = rest[0] || 'list';
+  const flags = parseFlags(rest.slice(1));
+  const body = { connection: connectionName };
+
+  switch (subcommand) {
+    case 'list': {
+      body.domain = flags.domain;
+      body.url = flags.url;
+      body.name = flags.name;
+      const data = await post('/cookies/list', body);
+      const cookies = data.cookies || [];
+      if (cookies.length === 0) {
+        console.log('No cookies found.');
+      } else {
+        console.log(`Cookies (${cookies.length}):`);
+        for (const c of cookies) {
+          console.log(`  ${c.domain} | ${c.name} = ${c.value.slice(0, 60)}${c.value.length > 60 ? '...' : ''}`);
+        }
+      }
+      break;
+    }
+
+    case 'set': {
+      if (!flags.url || !flags.name) {
+        console.error('Usage: cc-browser cookies set --url <url> --name <name> --value <value> [--domain <d>] [--path <p>]');
+        process.exit(1);
+      }
+      body.url = flags.url;
+      body.name = flags.name;
+      body.value = flags.value || '';
+      body.domain = flags.domain;
+      body.path = flags.path;
+      body.secure = flags.secure || false;
+      body.httpOnly = flags.httpOnly || false;
+      const data = await post('/cookies/set', body);
+      console.log(`Cookie set: ${data.name} on ${data.domain}`);
+      break;
+    }
+
+    case 'delete': {
+      if (!flags.url || !flags.name) {
+        console.error('Usage: cc-browser cookies delete --url <url> --name <name>');
+        process.exit(1);
+      }
+      body.url = flags.url;
+      body.name = flags.name;
+      await post('/cookies/delete', body);
+      console.log(`Cookie deleted: ${flags.name}`);
+      break;
+    }
+
+    case 'export': {
+      body.domain = flags.domain;
+      body.url = flags.url;
+      const data = await post('/cookies/export', body);
+      console.log(JSON.stringify(data.cookies, null, 2));
+      console.log(`--- ${data.count} cookies exported ---`);
+      break;
+    }
+
+    default:
+      console.error(`Unknown cookies subcommand: ${subcommand}`);
+      console.error('Available: list, set, delete, export');
+      process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Batch Command
+// ---------------------------------------------------------------------------
+
+async function cmdBatch(connectionName, rest) {
+  const flags = parseFlags(rest);
+  const input = flags._positional;
+
+  if (!input) {
+    console.error('Usage: cc-browser batch <json-file-or-inline-json> [--stop-on-error]');
+    console.error('');
+    console.error('JSON format: [{"command": "navigate", "params": {"url": "..."}}, ...]');
+    process.exit(1);
+  }
+
+  let commands;
+  if (existsSync(input)) {
+    commands = JSON.parse(readFileSync(input, 'utf8'));
+  } else {
+    commands = JSON.parse(input);
+  }
+
+  if (!Array.isArray(commands)) {
+    console.error('Batch input must be a JSON array of {command, params} objects.');
+    process.exit(1);
+  }
+
+  const body = {
+    connection: connectionName,
+    commands,
+    stopOnError: flags['stop-on-error'] || false,
+  };
+
+  const data = await post('/batch', body);
+  console.log(`Batch completed: ${data.count} commands`);
+  for (const r of data.results) {
+    if (r.error) {
+      console.log(`  [X] ${r.command}: ${r.error}`);
+    } else {
+      console.log(`  [+] ${r.command}: OK`);
+    }
   }
 }
 
@@ -532,7 +695,7 @@ function printUsage() {
   console.log('');
   console.log('Connection Management:');
   console.log('  connections list                   List all connections');
-  console.log('  connections add <name> [--url URL] [--tool TOOL]');
+  console.log('  connections add <name> [--url URL] [--tool TOOL] [--skill-name SKILL]');
   console.log('  connections open <name>            Launch Chrome for connection');
   console.log('  connections close <name>           Close Chrome for connection');
   console.log('  connections remove <name>          Delete connection');
@@ -540,22 +703,37 @@ function printUsage() {
   console.log('');
   console.log('Browser Commands (require --connection or single active connection):');
   console.log('  navigate --url <url>               Navigate to URL');
-  console.log('  snapshot [--interactive] [--compact]');
-  console.log('  click --ref <ref>                  Click element');
-  console.log('  type --ref <ref> --text "..."       Type text');
-  console.log('  fill --ref <ref> --value "..."      Fill input');
-  console.log('  press --key Enter                  Press key');
-  console.log('  hover --ref <ref>                  Hover element');
+  console.log('  back                               Go back in history');
+  console.log('  forward                            Go forward in history');
+  console.log('  reload                             Reload current page');
+  console.log('  snapshot [--interactive] [--compact] [--selector "css"] [--maxChars N] [--no-limit]');
+  console.log('  click --ref <ref> | --selector "css" | --text "..."');
+  console.log('  type --ref <ref> | --selector "css" --text "..."');
+  console.log('  fill --ref <ref> | --selector "css" --value "..."');
+  console.log('  press --key Enter [--ref <ref> | --selector "css"]');
+  console.log('  hover --ref <ref> | --selector "css"');
   console.log('  scroll [--direction down] [--amount 500]');
   console.log('  wait --text "..." | --selector "..."');
+  console.log('  waitNetworkIdle [--idleTime 500] [--timeout 30000]');
   console.log('  evaluate --fn "() => document.title"');
-  console.log('  screenshot [--type jpeg]');
+  console.log('  screenshot [--output file.png] [--type png|jpeg]');
+  console.log('  links [--pattern "regex"] [--selector "a.nav"] [--attrs]');
   console.log('  tabs                               List tabs');
   console.log('  tabs/open [--url URL]              Open new tab');
   console.log('  tabs/close --tab <id>              Close tab');
   console.log('  info                               Page URL, title, viewport');
   console.log('  text [--selector "..."]            Get text content');
   console.log('  html [--selector "..."]            Get HTML content');
+  console.log('');
+  console.log('Cookie Management:');
+  console.log('  cookies list [--domain <d>] [--url <u>]');
+  console.log('  cookies set --url <url> --name <n> --value <v>');
+  console.log('  cookies delete --url <url> --name <n>');
+  console.log('  cookies export [--domain <d>]');
+  console.log('');
+  console.log('Batch and History:');
+  console.log('  batch <json-file-or-json> [--stop-on-error]');
+  console.log('  history                            Show recent action log');
   console.log('');
   console.log('Navigation Skills:');
   console.log('  skills list                        List all skills (managed + custom)');
@@ -621,12 +799,41 @@ async function main() {
     return;
   }
 
+  // Cookies subcommand
+  if (command === 'cookies') {
+    await cmdCookies(connectionName, rest);
+    return;
+  }
+
+  // Batch command
+  if (command === 'batch') {
+    await cmdBatch(connectionName, rest);
+    return;
+  }
+
+  // History command
+  if (command === 'history') {
+    const data = await get('/history');
+    const actions = data.actions || [];
+    if (actions.length === 0) {
+      console.log('No actions in history.');
+    } else {
+      console.log(`Action history (${actions.length} of ${data.total}):`);
+      for (const a of actions) {
+        const conn = a.connection ? ` [${a.connection}]` : '';
+        console.log(`  ${a.timestamp} ${a.command}${conn} (${a.elapsedMs}ms)`);
+      }
+    }
+    return;
+  }
+
   // Browser commands
   const browserCommands = [
     'navigate', 'snapshot', 'click', 'type', 'fill', 'press',
     'hover', 'drag', 'select', 'scroll', 'wait', 'evaluate',
     'screenshot', 'tabs', 'tabs/open', 'tabs/close', 'tabs/focus',
     'text', 'html', 'info', 'upload', 'resize',
+    'back', 'forward', 'reload', 'links', 'waitNetworkIdle',
   ];
 
   if (browserCommands.includes(command)) {

@@ -202,6 +202,7 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
   const {
     browser: preferredBrowser,
     url,
+    background,
   } = opts;
 
   // Find Chrome executable
@@ -249,6 +250,11 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
       '--no-service-autorun',
       '--disable-background-mode',
     );
+  }
+
+  // Start minimized if background mode requested
+  if (background) {
+    args.push('--start-minimized');
   }
 
   // Open URL if specified

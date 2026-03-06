@@ -241,7 +241,7 @@
   }
 
   function buildSnapshot(options = {}) {
-    const { interactive, compact, maxDepth, maxChars = 10000 } = options;
+    const { interactive, compact, maxDepth, maxChars = 30000, selector } = options;
     refMap.clear();
 
     const tracker = createRoleNameTracker();
@@ -325,7 +325,14 @@
       }
     }
 
-    walk(document.body, 0);
+    let rootElement = document.body;
+    if (selector) {
+      const scoped = document.querySelector(selector);
+      if (!scoped) throw new Error(`Snapshot selector "${selector}" not found on page`);
+      rootElement = scoped;
+    }
+
+    walk(rootElement, 0);
 
     removeNthFromNonDuplicates(refs, tracker);
 
@@ -336,8 +343,8 @@
       snapshot = compactTree(snapshot);
     }
 
-    // Truncate
-    if (maxChars && snapshot.length > maxChars) {
+    // Truncate (maxChars=0 means no limit)
+    if (maxChars > 0 && snapshot.length > maxChars) {
       snapshot = snapshot.substring(0, maxChars) + '\n... (truncated)';
     }
 
@@ -475,7 +482,7 @@
 
   async function cmdType(params) {
     const { element, description } = resolveElement(params);
-    const textStr = String(params.text || '');
+    const textStr = String(params.inputText || params.text || '');
 
     try {
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -529,7 +536,29 @@
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       element.focus();
 
-      if ('value' in element) {
+      if (element.isContentEditable) {
+        // ContentEditable: clear existing content and insert new text
+        // Select all existing content and delete it
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand('delete', false);
+
+        // Insert text line by line, using insertParagraph for newlines
+        const lines = value.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (i > 0) {
+            document.execCommand('insertParagraph', false);
+          }
+          if (lines[i]) {
+            document.execCommand('insertText', false, lines[i]);
+          }
+        }
+
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+      } else if ('value' in element) {
         // Native input setter to trigger React/Vue change detection
         const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
           HTMLInputElement.prototype, 'value'
@@ -756,6 +785,105 @@
     return { uploaded: params.filename, ref: description };
   }
 
+  function cmdLinks(params) {
+    const selector = params?.selector || 'a[href]';
+    const elements = document.querySelectorAll(selector);
+    const links = [];
+    const seen = new Set();
+
+    for (const el of elements) {
+      const href = el.href || el.getAttribute('href') || '';
+      if (!href || href === '#' || href.startsWith('javascript:')) continue;
+
+      const key = href;
+      if (params?.unique !== false && seen.has(key)) continue;
+      seen.add(key);
+
+      const text = (el.textContent || '').trim().slice(0, 200);
+      const link = { href, text };
+
+      if (params?.includeAttrs) {
+        if (el.title) link.title = el.title;
+        if (el.target) link.target = el.target;
+        if (el.rel) link.rel = el.rel;
+      }
+
+      links.push(link);
+    }
+
+    // Filter by pattern if provided
+    if (params?.pattern) {
+      const re = new RegExp(params.pattern, 'i');
+      return { links: links.filter(l => re.test(l.href) || re.test(l.text)), total: links.length };
+    }
+
+    return { links, total: links.length };
+  }
+
+  function cmdWaitNetworkIdle(params) {
+    const idleTime = params?.idleTime || 500;
+    const timeout = params?.timeout || 30000;
+
+    return new Promise((resolve, reject) => {
+      let pending = 0;
+      let idleTimer = null;
+      let timeoutTimer = null;
+
+      const checkIdle = () => {
+        if (pending <= 0) {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            cleanup();
+            resolve({ idle: true, elapsed: Date.now() - startTime });
+          }, idleTime);
+        } else {
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+        }
+      };
+
+      const startTime = Date.now();
+
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.responseEnd === 0) {
+            pending++;
+          } else {
+            pending = Math.max(0, pending - 1);
+          }
+        }
+        checkIdle();
+      });
+
+      const cleanup = () => {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+        try { observer.disconnect(); } catch {}
+      };
+
+      timeoutTimer = setTimeout(() => {
+        cleanup();
+        resolve({ idle: false, timedOut: true, pending, elapsed: Date.now() - startTime });
+      }, timeout);
+
+      try {
+        observer.observe({ type: 'resource', buffered: false });
+      } catch {
+        // PerformanceObserver not available, just wait the idle time
+        cleanup();
+        setTimeout(() => {
+          resolve({ idle: true, elapsed: idleTime, fallback: true });
+        }, idleTime);
+        return;
+      }
+
+      // Initial check - if nothing is pending, start idle timer
+      checkIdle();
+    });
+  }
+
   // =========================================================================
   // Message Handler
   // =========================================================================
@@ -815,6 +943,12 @@
             break;
           case 'upload':
             result = cmdUpload(params);
+            break;
+          case 'links':
+            result = cmdLinks(params);
+            break;
+          case 'waitNetworkIdle':
+            result = await cmdWaitNetworkIdle(params);
             break;
           default:
             sendResponse({ error: `Unknown content command: ${command}` });

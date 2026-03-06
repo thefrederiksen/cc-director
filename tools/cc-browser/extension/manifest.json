@@ -7,7 +7,9 @@
     "tabs",
     "scripting",
     "nativeMessaging",
-    "activeTab"
+    "activeTab",
+    "cookies",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "<all_urls>"

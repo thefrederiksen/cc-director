@@ -90,7 +90,7 @@ export function getConnection(name) {
   return connections.find(c => c.name === name) || null;
 }
 
-export function createConnection({ name, url, toolBinding, browser = 'chrome', description = '' }) {
+export function createConnection({ name, url, toolBinding, browser = 'chrome', description = '', skillName = null }) {
   validateName(name);
 
   const connections = readRegistry();
@@ -98,8 +98,9 @@ export function createConnection({ name, url, toolBinding, browser = 'chrome', d
     throw new Error(`Connection "${name}" already exists`);
   }
 
-  // Auto-detect managed skill by connection name
-  const skillType = managedSkillExists(name) ? 'managed' : 'none';
+  // Auto-detect managed skill: explicit skillName, or fall back to connection name
+  const resolvedSkillName = skillName || name;
+  const skillType = managedSkillExists(resolvedSkillName) ? 'managed' : 'none';
 
   const connection = {
     name,
@@ -107,11 +108,12 @@ export function createConnection({ name, url, toolBinding, browser = 'chrome', d
     url: url || null,
     toolBinding: toolBinding || null,
     browser,
+    skillName: skillName || null,
     createdAt: new Date().toISOString(),
     status: 'disconnected',
     skill: {
       type: skillType,
-      managedName: skillType === 'managed' ? name : null,
+      managedName: skillType === 'managed' ? resolvedSkillName : null,
     },
   };
 
@@ -131,7 +133,7 @@ export function updateConnection(name, updates) {
     throw new Error(`Connection "${name}" not found`);
   }
 
-  const allowed = ['url', 'toolBinding', 'browser', 'status', 'description', 'skill'];
+  const allowed = ['url', 'toolBinding', 'browser', 'status', 'description', 'skill', 'skillName'];
   for (const key of Object.keys(updates)) {
     if (allowed.includes(key)) {
       connections[idx][key] = updates[key];

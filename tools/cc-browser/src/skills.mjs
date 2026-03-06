@@ -123,8 +123,10 @@ export function clearLearnedPatterns(connName) {
 // Skill Resolution
 // ---------------------------------------------------------------------------
 
-export function resolveSkill(connName) {
-  // 1. Custom skill (highest priority)
+export function resolveSkill(connName, skillNameOverride) {
+  const skillName = skillNameOverride || connName;
+
+  // 1. Custom skill (always keyed by connection name)
   const custom = getCustomSkill(connName);
   if (custom) {
     return {
@@ -134,8 +136,8 @@ export function resolveSkill(connName) {
     };
   }
 
-  // 2. Managed skill matched by connection name
-  const managed = getManagedSkill(connName);
+  // 2. Managed skill by skillName (allows "my-work-linkedin" -> "linkedin")
+  const managed = getManagedSkill(skillName);
   if (managed) {
     return {
       type: 'managed',
@@ -156,10 +158,11 @@ export function resolveSkill(connName) {
 // Fork / Reset
 // ---------------------------------------------------------------------------
 
-export function forkSkill(connName) {
-  const managed = getManagedSkill(connName);
+export function forkSkill(connName, skillNameOverride) {
+  const skillName = skillNameOverride || connName;
+  const managed = getManagedSkill(skillName);
   if (!managed) {
-    throw new Error(`No managed skill found for "${connName}" to fork`);
+    throw new Error(`No managed skill found for "${skillName}" to fork`);
   }
 
   const dir = getConnectionDir(connName);

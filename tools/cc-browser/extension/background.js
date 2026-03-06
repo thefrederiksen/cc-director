@@ -100,11 +100,38 @@ async function handleCommand(msg) {
       case 'navigate':
         result = await cmdNavigate(params);
         break;
+      case 'back':
+        result = await cmdBack(params);
+        break;
+      case 'forward':
+        result = await cmdForward(params);
+        break;
+      case 'reload':
+        result = await cmdReload(params);
+        break;
       case 'screenshot':
         result = await cmdScreenshot(params);
         break;
+      case 'cookies.list':
+        result = await cmdCookiesList(params);
+        break;
+      case 'cookies.set':
+        result = await cmdCookiesSet(params);
+        break;
+      case 'cookies.delete':
+        result = await cmdCookiesDelete(params);
+        break;
+      case 'cookies.export':
+        result = await cmdCookiesExport(params);
+        break;
+      case 'links':
+        result = await forwardToContent('links', params);
+        break;
       case 'snapshot':
         result = await cmdSnapshot(params);
+        break;
+      case 'evaluate':
+        result = await cmdEvaluate(params);
         break;
       case 'click':
       case 'dblclick':
@@ -116,7 +143,6 @@ async function handleCommand(msg) {
       case 'scroll':
       case 'drag':
       case 'wait':
-      case 'evaluate':
       case 'getText':
       case 'getHtml':
       case 'getInfo':
@@ -161,14 +187,14 @@ async function cmdTabOpen(params) {
 }
 
 async function cmdTabClose(params) {
-  const tabId = params?.tabId;
+  const tabId = parseInt(params?.tabId, 10);
   if (!tabId) throw new Error('tabId is required');
   await chrome.tabs.remove(tabId);
   return { closed: tabId };
 }
 
 async function cmdTabFocus(params) {
-  const tabId = params?.tabId;
+  const tabId = parseInt(params?.tabId, 10);
   if (!tabId) throw new Error('tabId is required');
   await chrome.tabs.update(tabId, { active: true });
   const tab = await chrome.tabs.get(tabId);
@@ -205,12 +231,104 @@ async function cmdNavigate(params) {
   });
 }
 
+async function cmdBack(params) {
+  const tabId = await resolveTabId(params);
+  await chrome.tabs.goBack(tabId);
+  // Wait for navigation to settle
+  await new Promise(r => setTimeout(r, 500));
+  const tab = await chrome.tabs.get(tabId);
+  return { url: tab.url, title: tab.title };
+}
+
+async function cmdForward(params) {
+  const tabId = await resolveTabId(params);
+  await chrome.tabs.goForward(tabId);
+  await new Promise(r => setTimeout(r, 500));
+  const tab = await chrome.tabs.get(tabId);
+  return { url: tab.url, title: tab.title };
+}
+
+async function cmdReload(params) {
+  const tabId = await resolveTabId(params);
+  await chrome.tabs.reload(tabId);
+  // Wait for reload to complete
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error('Reload timeout (30s)'));
+    }, params?.timeout || 30000);
+
+    function listener(updatedTabId, changeInfo, tab) {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.status === 'complete') {
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve({ url: tab.url, title: tab.title });
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+async function cmdCookiesList(params) {
+  const details = {};
+  if (params?.domain) details.domain = params.domain;
+  if (params?.url) details.url = params.url;
+  if (params?.name) details.name = params.name;
+  const cookies = await chrome.cookies.getAll(details);
+  return cookies.map(c => ({
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    path: c.path,
+    secure: c.secure,
+    httpOnly: c.httpOnly,
+    expirationDate: c.expirationDate,
+  }));
+}
+
+async function cmdCookiesSet(params) {
+  if (!params?.url) throw new Error('url is required');
+  if (!params?.name) throw new Error('name is required');
+  const cookie = await chrome.cookies.set({
+    url: params.url,
+    name: params.name,
+    value: params.value || '',
+    domain: params.domain,
+    path: params.path || '/',
+    secure: params.secure,
+    httpOnly: params.httpOnly,
+    expirationDate: params.expirationDate,
+  });
+  return { set: true, name: cookie.name, domain: cookie.domain };
+}
+
+async function cmdCookiesDelete(params) {
+  if (!params?.url) throw new Error('url is required');
+  if (!params?.name) throw new Error('name is required');
+  await chrome.cookies.remove({ url: params.url, name: params.name });
+  return { deleted: true, name: params.name };
+}
+
+async function cmdCookiesExport(params) {
+  const details = {};
+  if (params?.domain) details.domain = params.domain;
+  if (params?.url) details.url = params.url;
+  const cookies = await chrome.cookies.getAll(details);
+  return { cookies, count: cookies.length };
+}
+
 async function cmdScreenshot(params) {
   const tabId = await resolveTabId(params);
   const tab = await chrome.tabs.get(tabId);
 
-  // Focus the tab for capture
+  // Focus WINDOW and tab for capture
+  await chrome.windows.update(tab.windowId, { focused: true });
   await chrome.tabs.update(tabId, { active: true });
+
+  // Brief delay for GPU buffer to populate after window focus
+  await new Promise(r => setTimeout(r, 150));
 
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
     format: params?.type === 'jpeg' ? 'jpeg' : 'png',
@@ -224,6 +342,36 @@ async function cmdScreenshot(params) {
 
 async function cmdSnapshot(params) {
   return await forwardToContent('snapshot', params);
+}
+
+async function cmdEvaluate(params) {
+  const code = params?.fn || params?.js || params?.code || '';
+  if (!code.trim()) throw new Error('fn/js/code is required');
+
+  const tabId = await resolveTabId(params);
+
+  // Use chrome.scripting.executeScript to bypass page CSP restrictions.
+  // This runs in the MAIN world so it has access to page globals.
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: (codeStr) => {
+      try {
+        const fn = new Function('return (' + codeStr + ')');
+        let result = fn();
+        if (typeof result === 'function') result = result();
+        return { result };
+      } catch (err) {
+        return { error: err.message || String(err) };
+      }
+    },
+    args: [code],
+  });
+
+  if (!results || !results[0]) throw new Error('No result from evaluate');
+  const frame = results[0].result;
+  if (frame.error) throw new Error(`Evaluate failed: ${frame.error}`);
+  return { result: frame.result };
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +420,7 @@ async function forwardToContent(command, params) {
 // ---------------------------------------------------------------------------
 
 async function resolveTabId(params) {
-  if (params?.tabId) return params.tabId;
+  if (params?.tabId) return parseInt(params.tabId, 10);
 
   // Use active tab in focused window
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
