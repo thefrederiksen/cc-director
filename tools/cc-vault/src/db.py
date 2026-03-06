@@ -84,6 +84,41 @@ def _migrate_schema(conn: sqlite3.Connection):
             except sqlite3.OperationalError as e:
                 logger.debug("Column %s already exists or migration skipped: %s", col_name, e)
 
+    # Migrate interactions table: add account and source_url columns
+    cursor.execute("PRAGMA table_info(interactions)")
+    interactions_columns = {row[1] for row in cursor.fetchall()}
+
+    interactions_new_columns = [
+        ('account', 'TEXT'),
+        ('source_url', 'TEXT'),
+    ]
+
+    for col_name, col_def in interactions_new_columns:
+        if col_name not in interactions_columns:
+            try:
+                cursor.execute(f"ALTER TABLE interactions ADD COLUMN {col_name} {col_def}")
+            except sqlite3.OperationalError as e:
+                logger.debug("Column %s already exists or migration skipped: %s", col_name, e)
+
+    # Add unique index on message_id for idempotent email scanning
+    try:
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_interactions_message_id
+            ON interactions(message_id) WHERE message_id IS NOT NULL
+        """)
+    except sqlite3.OperationalError as e:
+        logger.debug("Index idx_interactions_message_id already exists or skipped: %s", e)
+
+    # Populate contact_emails from existing contacts (idempotent)
+    try:
+        cursor.execute("""
+            INSERT OR IGNORE INTO contact_emails (contact_id, email, label, is_primary)
+            SELECT id, email, 'primary', 1 FROM contacts
+            WHERE email IS NOT NULL AND email != ''
+        """)
+    except sqlite3.OperationalError as e:
+        logger.debug("contact_emails migration skipped: %s", e)
+
     conn.commit()
 
 
@@ -172,6 +207,19 @@ def init_db(silent: bool = False):
             contact_frequency TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Contact emails table (multiple emails per contact)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contact_emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            email TEXT NOT NULL,
+            label TEXT DEFAULT 'primary',
+            is_primary INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(email)
         )
     """)
 
@@ -729,6 +777,9 @@ def init_db(silent: bool = False):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_relationship ON contacts(relationship)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_company ON contacts(company)")
 
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_contact_emails_contact ON contact_emails(contact_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_contact_emails_email ON contact_emails(email)")
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_contact ON interactions(contact_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_date ON interactions(interaction_date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_type ON interactions(type)")
@@ -1062,9 +1113,18 @@ def get_contact(identifier: str) -> Optional[dict]:
     conn = get_db()
     cursor = conn.cursor()
 
-    # Try exact email match first
+    # Try exact email match on contacts table first
     cursor.execute("SELECT * FROM contacts WHERE email = ?", (identifier,))
     row = cursor.fetchone()
+
+    if not row:
+        # Try contact_emails table (secondary/merged emails)
+        cursor.execute("""
+            SELECT c.* FROM contacts c
+            JOIN contact_emails ce ON ce.contact_id = c.id
+            WHERE ce.email = ?
+        """, (identifier,))
+        row = cursor.fetchone()
 
     if not row:
         # Try partial name match (case-insensitive)
@@ -1087,6 +1147,602 @@ def get_contact_by_id(contact_id: int) -> Optional[dict]:
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_contact_by_linkedin(url: str) -> Optional[dict]:
+    """Get a contact by LinkedIn URL (exact or partial match on the linkedin field)."""
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Normalize: strip trailing slashes for matching
+    normalized = url.rstrip('/')
+
+    cursor.execute(
+        "SELECT * FROM contacts WHERE REPLACE(linkedin, '/', '') = REPLACE(?, '/', '') "
+        "OR linkedin LIKE ?",
+        (normalized, f"%{normalized}%")
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ===========================================
+# CONTACT EMAIL MANAGEMENT
+# ===========================================
+
+def get_contact_emails(contact_id: int) -> List[dict]:
+    """Get all emails for a contact from contact_emails table."""
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM contact_emails WHERE contact_id = ? ORDER BY is_primary DESC, label",
+        (contact_id,)
+    )
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return results
+
+
+def add_contact_email(contact_id: int, email: str, label: str = 'other', is_primary: bool = False) -> int:
+    """Add an email address to a contact. Returns the new row ID."""
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if is_primary:
+        # Unset any existing primary
+        cursor.execute(
+            "UPDATE contact_emails SET is_primary = 0 WHERE contact_id = ?",
+            (contact_id,)
+        )
+        # Also update contacts.email
+        cursor.execute(
+            "UPDATE contacts SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (email, contact_id)
+        )
+
+    cursor.execute(
+        "INSERT INTO contact_emails (contact_id, email, label, is_primary) VALUES (?, ?, ?, ?)",
+        (contact_id, email, label, 1 if is_primary else 0)
+    )
+    row_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def remove_contact_email(contact_id: int, email: str) -> bool:
+    """Remove an email from a contact. Cannot remove the primary email."""
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT is_primary FROM contact_emails WHERE contact_id = ? AND email = ?",
+        (contact_id, email)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise ValueError(f"Email {email} not found on contact #{contact_id}")
+    if row[0] == 1:
+        conn.close()
+        raise ValueError("Cannot remove primary email. Set a different primary first.")
+
+    cursor.execute(
+        "DELETE FROM contact_emails WHERE contact_id = ? AND email = ?",
+        (contact_id, email)
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def set_primary_email(contact_id: int, email: str) -> bool:
+    """Set an email as primary for a contact. Updates contacts.email too."""
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM contact_emails WHERE contact_id = ? AND email = ?",
+        (contact_id, email)
+    )
+    if not cursor.fetchone():
+        conn.close()
+        raise ValueError(f"Email {email} not found on contact #{contact_id}")
+
+    cursor.execute(
+        "UPDATE contact_emails SET is_primary = 0 WHERE contact_id = ?",
+        (contact_id,)
+    )
+    cursor.execute(
+        "UPDATE contact_emails SET is_primary = 1 WHERE contact_id = ? AND email = ?",
+        (contact_id, email)
+    )
+    cursor.execute(
+        "UPDATE contacts SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (email, contact_id)
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def update_contact_email_label(contact_id: int, email: str, label: str) -> bool:
+    """Update the label for an existing email on a contact."""
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM contact_emails WHERE contact_id = ? AND email = ?",
+        (contact_id, email)
+    )
+    if not cursor.fetchone():
+        conn.close()
+        raise ValueError(f"Email {email} not found on contact #{contact_id}")
+
+    cursor.execute(
+        "UPDATE contact_emails SET label = ? WHERE contact_id = ? AND email = ?",
+        (label, contact_id, email)
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ===========================================
+# CONTACT MERGE
+# ===========================================
+
+def merge_contacts(target_id: int, source_ids: List[int], email_labels: Optional[Dict[str, str]] = None) -> dict:
+    """Merge source contacts into target contact.
+
+    Reassigns all related records, moves emails, creates audit trail, deletes sources.
+    Runs in a single transaction for atomicity.
+
+    Args:
+        target_id: The surviving contact ID
+        source_ids: List of contact IDs to absorb into target
+        email_labels: Optional dict mapping email -> label (work, personal, other)
+
+    Returns:
+        Summary dict with counts of reassigned records
+    """
+    init_db(silent=True)
+
+    if not email_labels:
+        email_labels = {}
+
+    target = get_contact_by_id(target_id)
+    if not target:
+        raise ValueError(f"Target contact #{target_id} not found")
+
+    sources = []
+    for sid in source_ids:
+        s = get_contact_by_id(sid)
+        if not s:
+            raise ValueError(f"Source contact #{sid} not found")
+        if sid == target_id:
+            raise ValueError(f"Cannot merge contact #{sid} into itself")
+        sources.append(s)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    summary = {
+        'target_id': target_id,
+        'source_ids': source_ids,
+        'interactions': 0,
+        'memories': 0,
+        'notes': 0,
+        'tags': 0,
+        'list_members': 0,
+        'actions': 0,
+        'tasks': 0,
+        'documents': 0,
+        'photos': 0,
+        'email_activity': 0,
+        'entity_links': 0,
+        'emails_added': 0,
+        'sources_deleted': 0,
+    }
+
+    try:
+        placeholders = ','.join('?' * len(source_ids))
+
+        # Reassign interactions
+        cursor.execute(
+            f"UPDATE interactions SET contact_id = ? WHERE contact_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['interactions'] = cursor.rowcount
+
+        # Reassign memories
+        cursor.execute(
+            f"UPDATE memories SET contact_id = ? WHERE contact_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['memories'] = cursor.rowcount
+
+        # Reassign notes
+        cursor.execute(
+            f"UPDATE notes SET contact_id = ? WHERE contact_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['notes'] = cursor.rowcount
+
+        # Reassign contact_tags (skip duplicates)
+        for sid in source_ids:
+            cursor.execute(
+                "UPDATE OR IGNORE contact_tags SET contact_id = ? WHERE contact_id = ?",
+                (target_id, sid)
+            )
+            summary['tags'] += cursor.rowcount
+            # Delete any remaining (were duplicates)
+            cursor.execute("DELETE FROM contact_tags WHERE contact_id = ?", (sid,))
+
+        # Reassign list_members (skip duplicates)
+        for sid in source_ids:
+            cursor.execute(
+                "UPDATE OR IGNORE list_members SET contact_id = ? WHERE contact_id = ?",
+                (target_id, sid)
+            )
+            summary['list_members'] += cursor.rowcount
+            cursor.execute("DELETE FROM list_members WHERE contact_id = ?", (sid,))
+
+        # Reassign lead_scores (keep the best)
+        cursor.execute(
+            "SELECT contact_id, COALESCE(total_score, 0) FROM lead_scores WHERE contact_id = ?",
+            (target_id,)
+        )
+        target_score_row = cursor.fetchone()
+        target_score = target_score_row[1] if target_score_row else 0
+
+        for sid in source_ids:
+            cursor.execute(
+                "SELECT COALESCE(total_score, 0) FROM lead_scores WHERE contact_id = ?", (sid,)
+            )
+            src_row = cursor.fetchone()
+            if src_row and src_row[0] > target_score:
+                if target_score_row:
+                    cursor.execute(
+                        "UPDATE lead_scores SET total_score = ? WHERE contact_id = ?",
+                        (src_row[0], target_id)
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO lead_scores (contact_id, total_score) VALUES (?, ?)",
+                        (target_id, src_row[0])
+                    )
+                target_score = src_row[0]
+            cursor.execute("DELETE FROM lead_scores WHERE contact_id = ?", (sid,))
+
+        # Reassign actions
+        cursor.execute(
+            f"UPDATE actions SET contact_id = ? WHERE contact_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['actions'] = cursor.rowcount
+
+        # Reassign tasks (nullable FK)
+        cursor.execute(
+            f"UPDATE tasks SET contact_id = ? WHERE contact_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['tasks'] = cursor.rowcount
+
+        # Reassign documents (nullable FK)
+        cursor.execute(
+            f"UPDATE documents SET contact_id = ? WHERE contact_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['documents'] = cursor.rowcount
+
+        # Reassign photos (nullable FK)
+        cursor.execute(
+            f"UPDATE photos SET contact_id = ? WHERE contact_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['photos'] = cursor.rowcount
+
+        # Merge email_activity (update contact_id, merge counts for same account)
+        for sid in source_ids:
+            cursor.execute(
+                "SELECT account, sent_count, received_count, first_email_date, last_email_date "
+                "FROM email_activity WHERE contact_id = ?", (sid,)
+            )
+            for ea_row in cursor.fetchall():
+                acct = ea_row[0]
+                # Check if target already has this account
+                cursor.execute(
+                    "SELECT sent_count, received_count FROM email_activity "
+                    "WHERE contact_id = ? AND account = ?", (target_id, acct)
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    cursor.execute(
+                        "UPDATE email_activity SET sent_count = sent_count + ?, "
+                        "received_count = received_count + ? "
+                        "WHERE contact_id = ? AND account = ?",
+                        (ea_row[1] or 0, ea_row[2] or 0, target_id, acct)
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE email_activity SET contact_id = ? "
+                        "WHERE contact_id = ? AND account = ?",
+                        (target_id, sid, acct)
+                    )
+                summary['email_activity'] += 1
+            # Clean up any remaining
+            cursor.execute("DELETE FROM email_activity WHERE contact_id = ?", (sid,))
+
+        # Reassign entity_links
+        cursor.execute(
+            f"UPDATE entity_links SET source_id = ? "
+            f"WHERE source_type = 'contact' AND source_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['entity_links'] += cursor.rowcount
+        cursor.execute(
+            f"UPDATE entity_links SET target_id = ? "
+            f"WHERE target_type = 'contact' AND target_id IN ({placeholders})",
+            [target_id] + source_ids
+        )
+        summary['entity_links'] += cursor.rowcount
+
+        # Update referred_by on any contacts pointing to sources
+        cursor.execute(
+            f"UPDATE contacts SET referred_by = ? WHERE referred_by IN ({placeholders})",
+            [target_id] + source_ids
+        )
+
+        # Move emails from sources to target's contact_emails
+        # Collect all emails to move, then delete source rows first
+        # to avoid UNIQUE constraint blocking the inserts
+        emails_to_move = []
+        for source in sources:
+            source_email = source['email']
+            if source_email:
+                label = email_labels.get(source_email, 'other')
+                emails_to_move.append((source_email, label))
+            # Collect contact_emails from source
+            cursor.execute(
+                "SELECT email, label FROM contact_emails WHERE contact_id = ?", (source['id'],)
+            )
+            for ce_row in cursor.fetchall():
+                ce_email = ce_row[0]
+                ce_label = email_labels.get(ce_email, ce_row[1])
+                emails_to_move.append((ce_email, ce_label))
+            # Delete source contact_emails FIRST
+            cursor.execute(
+                "DELETE FROM contact_emails WHERE contact_id = ?", (source['id'],)
+            )
+        # Now insert collected emails into target (skip duplicates already on target)
+        for em, lbl in emails_to_move:
+            cursor.execute(
+                "INSERT OR IGNORE INTO contact_emails "
+                "(contact_id, email, label, is_primary) VALUES (?, ?, ?, 0)",
+                (target_id, em, lbl)
+            )
+            if cursor.rowcount > 0:
+                summary['emails_added'] += 1
+
+        # Create audit trail entity_links
+        for source in sources:
+            cursor.execute(
+                "INSERT INTO entity_links (source_type, source_id, target_type, target_id, relationship, strength) "
+                "VALUES ('contact', ?, 'contact', ?, 'merged_from', 1)",
+                (target_id, source['id'])
+            )
+
+        # Add merge note
+        merged_list = ', '.join(
+            f"{s['email']} (#{s['id']})" for s in sources
+        )
+        cursor.execute(
+            "INSERT INTO notes (contact_id, note, context) VALUES (?, ?, ?)",
+            (target_id, f"Merged from: {merged_list}", "contact_merge")
+        )
+
+        # Delete source contacts (CASCADE handles remaining FKs)
+        cursor.execute(
+            f"DELETE FROM contacts WHERE id IN ({placeholders})",
+            source_ids
+        )
+        summary['sources_deleted'] = cursor.rowcount
+
+        # Update last_contact on target to the most recent interaction
+        cursor.execute(
+            "SELECT MAX(interaction_date) FROM interactions WHERE contact_id = ?",
+            (target_id,)
+        )
+        max_date_row = cursor.fetchone()
+        if max_date_row and max_date_row[0]:
+            max_date = max_date_row[0][:10] if len(max_date_row[0]) > 10 else max_date_row[0]
+            cursor.execute(
+                "UPDATE contacts SET last_contact = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (max_date, target_id)
+            )
+
+        conn.commit()
+        return summary
+
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_merge_preview(target_id: int, source_ids: List[int]) -> dict:
+    """Preview what a merge would do without executing it.
+
+    Returns counts of records that would be reassigned.
+    """
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+
+    target = get_contact_by_id(target_id)
+    if not target:
+        raise ValueError(f"Target contact #{target_id} not found")
+
+    placeholders = ','.join('?' * len(source_ids))
+    preview = {
+        'target': target,
+        'sources': [],
+        'interactions': 0,
+        'memories': 0,
+        'notes': 0,
+        'tags': 0,
+        'list_members': 0,
+        'actions': 0,
+        'email_activity': 0,
+        'emails_to_add': [],
+    }
+
+    for sid in source_ids:
+        s = get_contact_by_id(sid)
+        if s:
+            # Count interactions for this source
+            cursor.execute(
+                "SELECT COUNT(*) FROM interactions WHERE contact_id = ?", (sid,)
+            )
+            s['interaction_count'] = cursor.fetchone()[0]
+            preview['sources'].append(s)
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM interactions WHERE contact_id IN ({placeholders})",
+        source_ids
+    )
+    preview['interactions'] = cursor.fetchone()[0]
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM memories WHERE contact_id IN ({placeholders})",
+        source_ids
+    )
+    preview['memories'] = cursor.fetchone()[0]
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM notes WHERE contact_id IN ({placeholders})",
+        source_ids
+    )
+    preview['notes'] = cursor.fetchone()[0]
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM contact_tags WHERE contact_id IN ({placeholders})",
+        source_ids
+    )
+    preview['tags'] = cursor.fetchone()[0]
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM list_members WHERE contact_id IN ({placeholders})",
+        source_ids
+    )
+    preview['list_members'] = cursor.fetchone()[0]
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM actions WHERE contact_id IN ({placeholders})",
+        source_ids
+    )
+    preview['actions'] = cursor.fetchone()[0]
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM email_activity WHERE contact_id IN ({placeholders})",
+        source_ids
+    )
+    preview['email_activity'] = cursor.fetchone()[0]
+
+    # Emails that would be added
+    for sid in source_ids:
+        s = get_contact_by_id(sid)
+        if s and s.get('email'):
+            preview['emails_to_add'].append(s['email'])
+
+    conn.close()
+    return preview
+
+
+def get_last_communication(contact_id: int) -> dict:
+    """Get last communication summary for a contact.
+
+    Returns dict with:
+        last_touch: most recent interaction (any direction)
+        last_inbound: most recent inbound interaction
+        last_outbound: most recent outbound interaction
+        days_since_last: days since last interaction
+        email_activity: list of email_activity records
+    """
+    init_db(silent=True)
+    conn = get_db()
+    cursor = conn.cursor()
+
+    result = {
+        'contact_id': contact_id,
+        'last_touch': None,
+        'last_inbound': None,
+        'last_outbound': None,
+        'days_since_last': None,
+        'email_activity': [],
+    }
+
+    # Last touch overall
+    cursor.execute("""
+        SELECT * FROM interactions
+        WHERE contact_id = ?
+        ORDER BY interaction_date DESC
+        LIMIT 1
+    """, (contact_id,))
+    row = cursor.fetchone()
+    if row:
+        result['last_touch'] = dict(row)
+        # Calculate days since last
+        last_date_str = row['interaction_date']
+        if last_date_str:
+            try:
+                last_dt = datetime.fromisoformat(last_date_str.replace('Z', '+00:00'))
+                delta = datetime.now() - last_dt.replace(tzinfo=None)
+                result['days_since_last'] = delta.days
+            except (ValueError, TypeError):
+                pass
+
+    # Last inbound
+    cursor.execute("""
+        SELECT * FROM interactions
+        WHERE contact_id = ? AND direction = 'inbound'
+        ORDER BY interaction_date DESC
+        LIMIT 1
+    """, (contact_id,))
+    row = cursor.fetchone()
+    if row:
+        result['last_inbound'] = dict(row)
+
+    # Last outbound
+    cursor.execute("""
+        SELECT * FROM interactions
+        WHERE contact_id = ? AND direction = 'outbound'
+        ORDER BY interaction_date DESC
+        LIMIT 1
+    """, (contact_id,))
+    row = cursor.fetchone()
+    if row:
+        result['last_outbound'] = dict(row)
+
+    # Email activity aggregates
+    cursor.execute("""
+        SELECT ea.*, c.name, c.email
+        FROM email_activity ea
+        JOIN contacts c ON c.id = ea.contact_id
+        WHERE ea.contact_id = ?
+    """, (contact_id,))
+    result['email_activity'] = [dict(r) for r in cursor.fetchall()]
+
+    conn.close()
+    return result
 
 
 def list_contacts(
@@ -1945,11 +2601,14 @@ def add_interaction(
     sentiment: Optional[str] = None,
     action_required: bool = False,
     action_description: Optional[str] = None,
-    message_id: Optional[str] = None
+    message_id: Optional[str] = None,
+    account: Optional[str] = None,
+    source_url: Optional[str] = None,
 ) -> int:
     """
     Log an interaction with a contact.
     Returns the interaction ID.
+    If message_id is provided and already exists, returns the existing interaction ID (dedup).
     """
     contact = get_contact(email)
     if not contact:
@@ -1958,15 +2617,27 @@ def add_interaction(
     conn = get_db()
     cursor = conn.cursor()
 
+    # Dedup: if message_id provided, check if it already exists.
+    # Returns negative ID if deduped (existing record found).
+    if message_id:
+        cursor.execute(
+            "SELECT id FROM interactions WHERE message_id = ?", (message_id,)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return -existing[0]
+
     cursor.execute("""
         INSERT INTO interactions
         (contact_id, type, direction, subject, summary, content, sentiment,
-         action_required, action_description, message_id, interaction_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         action_required, action_description, message_id, interaction_date,
+         account, source_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         contact['id'], interaction_type, direction, subject, summary, content,
         sentiment, 1 if action_required else 0, action_description, message_id,
-        interaction_date
+        interaction_date, account, source_url
     ))
 
     interaction_id = cursor.lastrowid
@@ -5149,11 +5820,34 @@ def list_catalog_entries(library_id: Optional[int] = None,
         conn.close()
 
 
+def _sanitize_fts_query(query: str) -> str:
+    """Sanitize a query string for FTS5 MATCH.
+
+    Wraps each whitespace-separated term in double quotes so that
+    special characters like hyphens are treated as literals instead
+    of FTS5 operators.
+    """
+    import re
+    terms = query.split()
+    quoted = []
+    for term in terms:
+        # Already quoted - leave as-is
+        if term.startswith('"') and term.endswith('"'):
+            quoted.append(term)
+        # Contains characters that FTS5 interprets as operators
+        elif re.search(r'[-+*/^~()]', term):
+            quoted.append('"' + term.replace('"', '""') + '"')
+        else:
+            quoted.append(term)
+    return " ".join(quoted)
+
+
 def search_catalog_fts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
     """Full-text search across catalog entries."""
     init_db(silent=True)
     conn = get_db()
     try:
+        safe_query = _sanitize_fts_query(query)
         rows = conn.execute("""
             SELECT ce.*, bm25(catalog_fts) AS rank
             FROM catalog_fts
@@ -5161,7 +5855,7 @@ def search_catalog_fts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
             WHERE catalog_fts MATCH ?
             ORDER BY bm25(catalog_fts)
             LIMIT ?
-        """, (query, limit)).fetchall()
+        """, (safe_query, limit)).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

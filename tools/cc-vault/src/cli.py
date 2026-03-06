@@ -1466,6 +1466,7 @@ def contacts_add(
 @contacts_app.command("show")
 def contacts_show(
     contact_id: int = typer.Argument(..., help="Contact ID"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
 ):
     """Show contact details."""
     db = get_db()
@@ -1476,6 +1477,18 @@ def contacts_show(
         if not contact:
             console.print(f"[red]Contact #{contact_id} not found[/red]")
             raise typer.Exit(1)
+
+        if format == "json":
+            import json as json_mod
+            result = dict(contact)
+            result['tags'] = db.get_tags(contact_id)
+            result['memories'] = db.get_memories(contact_id)
+            if contact.get('email'):
+                result['recent_interactions'] = db.get_interactions(contact['email'], limit=5)
+            result['email_activity'] = db.get_email_activity(contact_id=contact_id)
+            result['emails'] = db.get_contact_emails(contact_id)
+            print(json_mod.dumps(result, indent=2, default=str, ensure_ascii=False))
+            return
 
         # Header
         display_name = contact.get('name') or "(no name)"
@@ -1557,7 +1570,24 @@ def contacts_show(
         if contact.get('first_contact'):
             table.add_row("First Contact", contact['first_contact'][:10])
         if contact.get('last_contact'):
-            table.add_row("Last Contact", contact['last_contact'][:10])
+            # Enrich last contact with interaction details
+            last_comm = db.get_last_communication(contact['id'])
+            last_touch = last_comm.get('last_touch')
+            if last_touch:
+                touch_type = last_touch.get('type', '')
+                direction = last_touch.get('direction', '')
+                subject = last_touch.get('subject', '')
+                detail = contact['last_contact'][:10]
+                if touch_type:
+                    label = touch_type
+                    if direction:
+                        label += f" ({direction})"
+                    detail += f" - {label}"
+                if subject:
+                    detail += f": {subject}"
+                table.add_row("Last Contact", detail)
+            else:
+                table.add_row("Last Contact", contact['last_contact'][:10])
 
         # Context/notes
         if contact.get('context'):
@@ -1586,7 +1616,14 @@ def contacts_show(
             if interactions:
                 console.print("\n[cyan]Recent Interactions:[/cyan]")
                 for i in interactions:
-                    console.print(f"  [{i.get('interaction_date', '')[:10]}] {i.get('type', '')} - {i.get('summary', '')[:50]}")
+                    idate = (i.get('interaction_date') or '')[:10]
+                    itype = i.get('type') or ''
+                    idir = i.get('direction') or ''
+                    isubject = i.get('subject') or i.get('summary') or ''
+                    label = itype
+                    if idir:
+                        label += f" ({idir})"
+                    console.print(f"  [{idate}] {label} - {isubject}")
 
     except sqlite3.Error as e:
         console.print(f"[red]Error showing contact:[/red] {e}")
@@ -2049,6 +2086,340 @@ def contacts_email_activity(
         raise typer.Exit(1)
 
 
+@contacts_app.command("last-comm")
+def contacts_last_comm(
+    identifier: str = typer.Argument(..., help="Contact name, email, or ID"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
+):
+    """Show last communication summary for a contact.
+
+    Usage:
+      cc-vault contacts last-comm "John Smith"
+      cc-vault contacts last-comm 42 --format json
+    """
+    db = get_db()
+
+    try:
+        # Resolve contact: try ID first, then name/email
+        contact = None
+        if identifier.isdigit():
+            contact = db.get_contact_by_id(int(identifier))
+        if not contact:
+            contact = db.get_contact(identifier)
+        if not contact:
+            console.print(f"[red]Contact not found: {identifier}[/red]")
+            raise typer.Exit(1)
+
+        result = db.get_last_communication(contact['id'])
+        result['contact_name'] = contact.get('name', '(unknown)')
+        result['contact_email'] = contact.get('email', '')
+
+        if format == "json":
+            import json as json_mod
+            console.print(json_mod.dumps(result, indent=2, ensure_ascii=False, default=str))
+            return
+
+        display_name = contact.get('name') or f"#{contact['id']}"
+        console.print(f"\n[bold cyan]Communication History: {display_name}[/bold cyan]\n")
+
+        def _format_touch(touch):
+            if not touch:
+                return "[dim]None[/dim]"
+            date_str = (touch.get('interaction_date', '') or '')[:10]
+            touch_type = touch.get('type', '')
+            direction = touch.get('direction', '')
+            subject = touch.get('subject', '') or ''
+            account = touch.get('account', '') or ''
+            parts = [date_str]
+            if touch_type:
+                label = touch_type
+                if direction:
+                    label += f" ({direction})"
+                parts.append(label)
+            if subject:
+                parts.append(subject)
+            if account:
+                parts.append(f"[dim]via {account}[/dim]")
+            return " - ".join(parts)
+
+        table = Table(show_header=False, box=None)
+        table.add_column("Property", style="cyan", width=20)
+        table.add_column("Value")
+
+        table.add_row("Last Touch", _format_touch(result.get('last_touch')))
+        table.add_row("Last Inbound", _format_touch(result.get('last_inbound')))
+        table.add_row("Last Outbound", _format_touch(result.get('last_outbound')))
+
+        days = result.get('days_since_last')
+        if days is not None:
+            table.add_row("Days Since Last", str(days))
+        else:
+            table.add_row("Days Since Last", "[dim]No interactions[/dim]")
+
+        console.print(table)
+
+        # Email activity
+        ea = result.get('email_activity', [])
+        if ea:
+            console.print("\n[cyan]Email Activity:[/cyan]")
+            ea_table = Table()
+            ea_table.add_column("Account")
+            ea_table.add_column("Sent", justify="right", style="green")
+            ea_table.add_column("Received", justify="right", style="blue")
+            ea_table.add_column("Last Email", style="dim")
+            for r in ea:
+                ea_table.add_row(
+                    r.get('account', '-'),
+                    str(r.get('sent_count', 0)),
+                    str(r.get('received_count', 0)),
+                    (r.get('last_email_date', '') or '')[:10],
+                )
+            console.print(ea_table)
+
+    except sqlite3.Error as e:
+        console.print(f"[red]Error getting communication history:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@contacts_app.command("merge")
+def contacts_merge(
+    target_id: int = typer.Argument(..., help="Target contact ID (the survivor)"),
+    source_ids: List[int] = typer.Argument(..., help="Source contact IDs to merge into target"),
+    email_labels: Optional[str] = typer.Option(None, "--email-labels", help='JSON map of email->label, e.g. \'{"foo@bar.com": "work"}\''),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation and execute"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
+):
+    """Merge duplicate contacts into one.
+
+    Moves all interactions, memories, notes, tags, and emails from source contacts
+    into the target contact, then deletes the sources.
+
+    Usage:
+      cc-vault contacts merge 156 4993 5230 5537
+      cc-vault contacts merge 156 4993 --email-labels '{"sergei@accessair.ca": "work"}'
+      cc-vault contacts merge 156 4993 5230 --yes --format json
+    """
+    db = get_db()
+
+    labels = {}
+    if email_labels:
+        try:
+            labels = json.loads(email_labels)
+        except json.JSONDecodeError:
+            console.print("[red]ERROR:[/red] --email-labels must be valid JSON")
+            raise typer.Exit(1)
+
+    try:
+        # Preview
+        preview = db.get_merge_preview(target_id, source_ids)
+
+        if format == "json" and not yes:
+            import json as json_mod
+            console.print(json_mod.dumps(preview, indent=2, default=str))
+            return
+
+        target = preview['target']
+        console.print(f"\n[bold cyan]Merge Preview[/bold cyan]\n")
+        console.print(f"[green]Target (survivor):[/green] #{target_id} - {target.get('name', '?')} ({target.get('email', '?')})")
+        console.print()
+
+        for s in preview['sources']:
+            console.print(f"[yellow]Source (will be deleted):[/yellow] #{s['id']} - {s.get('name', '?')} ({s.get('email', '?')}) - {s.get('interaction_count', 0)} interactions")
+        console.print()
+
+        table = Table(title="Records to Reassign", show_header=True)
+        table.add_column("Type", style="cyan")
+        table.add_column("Count", justify="right")
+
+        table.add_row("Interactions", str(preview['interactions']))
+        table.add_row("Memories", str(preview['memories']))
+        table.add_row("Notes", str(preview['notes']))
+        table.add_row("Tags", str(preview['tags']))
+        table.add_row("List Memberships", str(preview['list_members']))
+        table.add_row("Actions", str(preview['actions']))
+        table.add_row("Email Activity", str(preview['email_activity']))
+        console.print(table)
+
+        if preview['emails_to_add']:
+            console.print(f"\n[cyan]Emails to add:[/cyan] {', '.join(preview['emails_to_add'])}")
+
+        if not yes:
+            console.print("\n[dim]Run with --yes to execute the merge[/dim]")
+            return
+
+        # Execute
+        result = db.merge_contacts(target_id, source_ids, email_labels=labels)
+
+        if format == "json":
+            import json as json_mod
+            console.print(json_mod.dumps(result, indent=2))
+        else:
+            console.print(f"\n[green]OK:[/green] Merge complete!")
+            console.print(f"  Interactions reassigned: {result['interactions']}")
+            console.print(f"  Memories reassigned: {result['memories']}")
+            console.print(f"  Notes reassigned: {result['notes']}")
+            console.print(f"  Tags reassigned: {result['tags']}")
+            console.print(f"  Emails added: {result['emails_added']}")
+            console.print(f"  Sources deleted: {result['sources_deleted']}")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except sqlite3.Error as e:
+        console.print(f"[red]Database error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@contacts_app.command("emails")
+def contacts_emails(
+    contact_id: int = typer.Argument(..., help="Contact ID"),
+    add: Optional[str] = typer.Option(None, "--add", help="Add an email address"),
+    remove: Optional[str] = typer.Option(None, "--remove", help="Remove an email address"),
+    set_primary: Optional[str] = typer.Option(None, "--set-primary", help="Set an email as primary"),
+    update_label: Optional[str] = typer.Option(None, "--update-label", help="Email address to update the label for"),
+    label: str = typer.Option("other", "--label", "-l", help="Label for new email or --update-label: primary, work, personal, other"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
+):
+    """Manage email addresses for a contact.
+
+    Usage:
+      cc-vault contacts emails 156                                      # list
+      cc-vault contacts emails 156 --add foo@bar.com --label work       # add
+      cc-vault contacts emails 156 --remove foo@bar.com                 # remove
+      cc-vault contacts emails 156 --set-primary foo@bar.com            # change primary
+      cc-vault contacts emails 156 --update-label foo@bar.com -l work   # change label
+    """
+    db = get_db()
+
+    try:
+        contact = db.get_contact_by_id(contact_id)
+        if not contact:
+            console.print(f"[red]Contact #{contact_id} not found[/red]")
+            raise typer.Exit(1)
+
+        if add:
+            row_id = db.add_contact_email(contact_id, add, label=label, is_primary=(label == 'primary'))
+            console.print(f"[green]OK:[/green] Added {add} ({label}) to {contact.get('name', '')} (row #{row_id})")
+            return
+
+        if remove:
+            db.remove_contact_email(contact_id, remove)
+            console.print(f"[green]OK:[/green] Removed {remove} from {contact.get('name', '')}")
+            return
+
+        if set_primary:
+            db.set_primary_email(contact_id, set_primary)
+            console.print(f"[green]OK:[/green] Set {set_primary} as primary for {contact.get('name', '')}")
+            return
+
+        if update_label:
+            db.update_contact_email_label(contact_id, update_label, label)
+            console.print(f"[green]OK:[/green] Updated label for {update_label} to '{label}' on {contact.get('name', '')}")
+            return
+
+        # List mode
+        emails = db.get_contact_emails(contact_id)
+
+        if format == "json":
+            import json as json_mod
+            console.print(json_mod.dumps(emails, indent=2, default=str))
+            return
+
+        display_name = contact.get('name') or f"#{contact_id}"
+        if not emails:
+            console.print(f"[yellow]No emails in contact_emails table for {display_name}[/yellow]")
+            console.print(f"[dim]Primary email from contacts table: {contact.get('email', 'N/A')}[/dim]")
+            return
+
+        table = Table(title=f"Emails for {display_name}")
+        table.add_column("Email")
+        table.add_column("Label")
+        table.add_column("Primary", justify="center")
+
+        for e in emails:
+            primary_marker = "[green]*[/green]" if e.get('is_primary') else ""
+            table.add_row(e.get('email', ''), e.get('label', ''), primary_marker)
+
+        console.print(table)
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except sqlite3.Error as e:
+        console.print(f"[red]Database error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@contacts_app.command("log-interaction")
+def contacts_log_interaction(
+    identifier: str = typer.Argument(..., help="Contact name, email, or ID"),
+    interaction_type: str = typer.Option(..., "--type", "-t", help="Type: email, linkedin, phone, meeting, sms"),
+    date: str = typer.Option(..., "--date", "-d", help="Interaction date (ISO format)"),
+    direction: str = typer.Option("outbound", "--direction", help="Direction: inbound, outbound"),
+    subject: Optional[str] = typer.Option(None, "--subject", "-s", help="Subject/title"),
+    summary: Optional[str] = typer.Option(None, "--summary", help="Brief summary"),
+    account: Optional[str] = typer.Option(None, "--account", "-a", help="Account used (e.g. mindzie-outlook)"),
+    source_url: Optional[str] = typer.Option(None, "--source-url", help="URL to original communication"),
+    message_id: Optional[str] = typer.Option(None, "--message-id", help="Email Message-ID for dedup"),
+    sentiment: Optional[str] = typer.Option(None, "--sentiment", help="Tone: positive, neutral, negative"),
+    action_required: bool = typer.Option(False, "--action-required", help="Follow-up needed"),
+    action_description: Optional[str] = typer.Option(None, "--action-description", help="What follow-up is needed"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
+):
+    """Log a communication interaction with a contact.
+
+    Usage:
+      cc-vault contacts log-interaction "John" --type email --date 2026-03-06 --direction outbound --subject "Proposal"
+      cc-vault contacts log-interaction 42 --type linkedin --date 2026-03-06 --summary "Connected on LinkedIn"
+    """
+    db = get_db()
+
+    try:
+        # Resolve contact
+        contact = None
+        if identifier.isdigit():
+            contact = db.get_contact_by_id(int(identifier))
+        if not contact:
+            contact = db.get_contact(identifier)
+        if not contact:
+            console.print(f"[red]Contact not found: {identifier}[/red]")
+            raise typer.Exit(1)
+
+        interaction_id = db.add_interaction(
+            email=contact['email'],
+            interaction_type=interaction_type,
+            interaction_date=date,
+            direction=direction,
+            subject=subject,
+            summary=summary,
+            sentiment=sentiment,
+            action_required=action_required,
+            action_description=action_description,
+            message_id=message_id,
+            account=account,
+            source_url=source_url,
+        )
+
+        if format == "json":
+            import json as json_mod
+            console.print(json_mod.dumps({
+                "success": True,
+                "interaction_id": interaction_id,
+                "contact_id": contact['id'],
+                "contact_name": contact.get('name', ''),
+            }, indent=2))
+        else:
+            display_name = contact.get('name') or f"#{contact['id']}"
+            console.print(f"[green]OK:[/green] Logged interaction #{interaction_id} for {display_name}")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except sqlite3.Error as e:
+        console.print(f"[red]Database error:[/red] {e}")
+        raise typer.Exit(1)
+
+
 @contacts_app.command("sync-recipients")
 def contacts_sync_recipients(
     account: str = typer.Option(..., "-a", "--account", help="Account name (e.g. consulting, personal)"),
@@ -2112,6 +2483,238 @@ def contacts_sync_recipients(
             console.print(f"  - {err}")
         if len(result["errors"]) > 10:
             console.print(f"  ... and {len(result['errors']) - 10} more")
+
+
+@contacts_app.command("scan-emails")
+def contacts_scan_emails(
+    identifier: str = typer.Argument(..., help="Contact name, email, or ID"),
+    account: str = typer.Option(..., "-a", "--account", help="Account: outlook, gmail, or gmail:consulting"),
+    count: int = typer.Option(20, "-n", "--count", help="Number of emails to scan per direction"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json"),
+):
+    """Scan recent emails for a contact and create interaction records.
+
+    Pulls recent inbound and outbound emails for the contact using cc-outlook or cc-gmail,
+    then creates interaction entries with dedup via message_id.
+
+    For Gmail sub-accounts, use colon syntax: gmail:consulting, gmail:personal
+
+    Usage:
+      cc-vault contacts scan-emails "John" --account outlook
+      cc-vault contacts scan-emails 42 --account gmail -n 30
+      cc-vault contacts scan-emails 42 --account gmail:consulting -n 20
+    """
+    import subprocess
+    import re
+
+    db = get_db()
+
+    def _normalize_date(date_str: str) -> str:
+        """Convert RFC 2822 or other date formats to ISO format."""
+        from email.utils import parsedate_to_datetime
+        try:
+            dt = parsedate_to_datetime(date_str)
+            return dt.strftime('%Y-%m-%dT%H:%M:%S')
+        except (ValueError, TypeError):
+            pass
+        # Already ISO or close enough
+        return date_str
+
+    def _parse_search_output(text: str) -> list:
+        """Parse cc-gmail/cc-outlook search output into email dicts.
+
+        Expected format:
+        [ ] <message_id>
+            From: Name <email>
+            Subject: subject line
+            Date: date string
+        """
+        emails = []
+        current = None
+        for line in text.splitlines():
+            line = line.rstrip()
+            # Match message ID line: [ ] <id> or [x] <id>
+            id_match = re.match(r'^\[.\]\s+(\S+)', line)
+            if id_match:
+                if current:
+                    emails.append(current)
+                current = {'message_id': id_match.group(1), 'subject': '', 'date': '', 'from': ''}
+                continue
+            if current is None:
+                continue
+            stripped = line.strip()
+            if stripped.startswith('From:'):
+                current['from'] = stripped[5:].strip()
+            elif stripped.startswith('Subject:'):
+                current['subject'] = stripped[8:].strip()
+            elif stripped.startswith('Date:'):
+                current['date'] = _normalize_date(stripped[5:].strip())
+        if current:
+            emails.append(current)
+        return emails
+
+    try:
+        # Resolve contact
+        contact = None
+        if identifier.isdigit():
+            contact = db.get_contact_by_id(int(identifier))
+        if not contact:
+            contact = db.get_contact(identifier)
+        if not contact:
+            console.print(f"[red]Contact not found: {identifier}[/red]")
+            raise typer.Exit(1)
+
+        contact_email = contact.get('email')
+        if not contact_email:
+            console.print(f"[red]Contact #{contact['id']} has no email address[/red]")
+            raise typer.Exit(1)
+
+        display_name = contact.get('name') or f"#{contact['id']}"
+
+        # Parse account: "gmail:consulting" -> tool="cc-gmail", sub_account="consulting"
+        sub_account = None
+        if ':' in account:
+            base_account, sub_account = account.split(':', 1)
+            tool = f"cc-{base_account}"
+            account_label = account
+        else:
+            tool = f"cc-{account}"
+            account_label = account
+
+        console.print(f"Scanning {account_label} emails for {display_name} ({contact_email})...")
+
+        created = 0
+        skipped = 0
+        errors = 0
+
+        for direction, search_flag in [("inbound", "from"), ("outbound", "to")]:
+            cmd = [
+                tool,
+            ]
+            if sub_account:
+                cmd.extend(["-a", sub_account])
+            cmd.extend([
+                "search",
+                f"{search_flag}:{contact_email}",
+                "--count", str(count),
+            ])
+
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=60,
+                    encoding='utf-8', errors='replace',
+                )
+            except FileNotFoundError:
+                console.print(f"[red]ERROR:[/red] {tool} not found on PATH")
+                raise typer.Exit(1)
+            except subprocess.TimeoutExpired:
+                console.print(f"[red]ERROR:[/red] {tool} search timed out")
+                raise typer.Exit(1)
+
+            if result.returncode != 0:
+                console.print(f"[red]ERROR:[/red] {tool} search failed: {result.stderr or result.stdout}")
+                errors += 1
+                continue
+
+            emails = _parse_search_output(result.stdout)
+            console.print(f"  {direction}: found {len(emails)} emails")
+
+            for email in emails:
+                msg_id = email.get('message_id', '')
+                email_subject = email.get('subject', '')
+                email_date = email.get('date', '')
+
+                if not email_date:
+                    continue
+
+                try:
+                    interaction_id = db.add_interaction(
+                        email=contact_email,
+                        interaction_type='email',
+                        interaction_date=email_date,
+                        direction=direction,
+                        subject=email_subject,
+                        message_id=msg_id if msg_id else None,
+                        account=account_label,
+                    )
+                    if interaction_id > 0:
+                        created += 1
+                    else:
+                        # Negative ID means dedup hit
+                        skipped += 1
+                except (ValueError, sqlite3.IntegrityError):
+                    skipped += 1
+
+        # Update email_activity from actual interaction records
+        conn = db.get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                COUNT(CASE WHEN direction = 'outbound' THEN 1 END) AS sent,
+                COUNT(CASE WHEN direction = 'inbound' THEN 1 END) AS received,
+                MIN(interaction_date) AS first_date,
+                MAX(interaction_date) AS last_date
+            FROM interactions
+            WHERE contact_id = ? AND type = 'email' AND account = ?
+        """, (contact['id'], account_label))
+        row = cursor.fetchone()
+        conn.close()
+
+        sent_total = row['sent'] if row else 0
+        recv_total = row['received'] if row else 0
+        first_date = row['first_date'] if row else None
+        last_date_val = row['last_date'] if row else None
+
+        db.upsert_email_activity(
+            contact_id=contact['id'],
+            account=account_label,
+            sent_count=sent_total,
+            received_count=recv_total,
+            first_email_date=first_date,
+            last_email_date=last_date_val,
+        )
+
+        # Update last_contact on the contact
+        last_comm = db.get_last_communication(contact['id'])
+        if last_comm.get('last_touch'):
+            last_date = last_comm['last_touch'].get('interaction_date', '')
+            if last_date:
+                conn = db.get_db()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE contacts SET last_contact = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (last_date[:10], contact['id'])
+                )
+                conn.commit()
+                conn.close()
+
+        if format == "json":
+            import json as json_mod
+            console.print(json_mod.dumps({
+                "success": True,
+                "contact_id": contact['id'],
+                "contact_name": display_name,
+                "created": created,
+                "skipped_dedup": skipped,
+                "errors": errors,
+                "email_activity": {
+                    "sent": sent_total,
+                    "received": recv_total,
+                    "first_date": first_date,
+                    "last_date": last_date_val,
+                },
+            }, indent=2))
+        else:
+            console.print(f"\n[green]OK:[/green] Scan complete for {display_name}")
+            console.print(f"  Created: {created} interactions")
+            console.print(f"  Skipped (dedup): {skipped}")
+            if errors:
+                console.print(f"  Errors: {errors}")
+            console.print(f"  Email activity: {sent_total} sent, {recv_total} received")
+
+    except sqlite3.Error as e:
+        console.print(f"[red]Database error:[/red] {e}")
+        raise typer.Exit(1)
 
 
 # =============================================================================
