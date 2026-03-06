@@ -305,15 +305,60 @@ Connections search input selector cascade (try in order):
 5. If note dialog appears: click "Add a note", type note, click send/done
 6. Wait 30-90s random before next connection request
 
+### Text Input on LinkedIn (contentEditable)
+
+LinkedIn message boxes and post editors use contentEditable divs (React/Draft.js),
+not regular `<input>` or `<textarea>` elements.
+
+**Use `paste` for contentEditable fields** -- this is the only reliable method:
+```
+cc-browser -c linkedin paste --selector "div.msg-form__contenteditable" --text "Your message here"
+```
+The paste command creates a synthetic ClipboardEvent in MAIN world, which React editors
+handle correctly. It preserves newlines (converted to `<br>` tags).
+
+**NEVER use `type`** on contentEditable -- it sends characters one-by-one and breaks mid-stream.
+**NEVER use `evaluate`** on LinkedIn -- CSP blocks unsafe-eval.
+**`fill` works for regular inputs** (search boxes, login fields) but is unreliable for
+contentEditable editors. Use `paste` for message composition and post creation.
+
 ### Send a Message
 
-1. Navigate to `/in/{username}` (profile), wait 3s
-2. Find Message button (indicates already connected)
-3. Click Message, wait 2s
-4. Find message input (textbox or contenteditable)
-5. Click input, wait 0.3s
-6. Type message text, wait 0.5s
-7. Find send button OR press Enter to send
+Use the full messaging page, NOT the profile message popup (profile popups are tiny,
+hard to verify, and fragile).
+
+All commands require `--connection linkedin`. Abbreviated as `-c linkedin` below.
+
+**Steps:**
+1. Open fresh browser: `cc-browser connections open linkedin`
+2. Navigate to messaging: `cc-browser -c linkedin navigate "https://www.linkedin.com/messaging/"`
+3. Wait 3s + jitter, then snapshot
+4. Click the search box: `cc-browser -c linkedin click --text "Search messages"`
+5. Type contact name: `cc-browser -c linkedin type --selector "input[type='search'], input[name='searchTerm'], .msg-search-form input" --text "ContactName"`
+6. Press Enter: `cc-browser -c linkedin press --key Enter`
+7. Wait 3s + jitter, then screenshot -- find contact in left sidebar results
+8. Click their conversation (use `--text "ContactName"` from snapshot)
+9. Wait 2s + jitter, screenshot -- verify correct person's conversation is open (check header name)
+10. Click the message textbox to focus it
+11. Paste message: `cc-browser -c linkedin paste --selector "div.msg-form__contenteditable" --text "Your message"`
+12. Screenshot -- MANDATORY before sending: verify correct recipient, correct text, Send button is blue/active
+13. Click Send (via snapshot ref or `--text "Send"`)
+14. Wait 2s, screenshot -- verify message sent (empty editor, message visible in thread with timestamp)
+
+**Critical rules:**
+- NEVER use the profile page message button -- it opens a tiny popup that is hard to verify
+- ALWAYS use the full /messaging/ page for reliable conversation management
+- ALWAYS screenshot before clicking Send to verify recipient and content
+- Fresh browser for each messaging session (prevents stale overlay state)
+
+### Batch Sending from Queue
+
+When sending multiple messages from the communication queue:
+1. Get approved items: `cc-comm-queue list --status approved`
+2. Close and reopen browser fresh for EACH message (prevents stale state)
+3. Send each message using the single message workflow above
+4. Mark as posted immediately after each successful send: `cc-comm-queue mark-posted <id>`
+5. If any send fails, fix the issue and retry before continuing to next
 
 ### Read Messages
 
