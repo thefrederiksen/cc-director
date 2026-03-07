@@ -36,6 +36,7 @@ tmp_build_output/right_click_session.png
 tools/cc-gmail/sent_contacts.json
 
 # Screenshots with potential PII
+screenshot-*.png
 docs/simple-chat-plain-text-table.png
 
 # Debug/temp output files
