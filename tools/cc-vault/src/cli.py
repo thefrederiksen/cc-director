@@ -2385,8 +2385,14 @@ def contacts_log_interaction(
             console.print(f"[red]Contact not found: {identifier}[/red]")
             raise typer.Exit(1)
 
+        # Use email if available, otherwise use name for lookup
+        contact_email = contact.get('email') or contact.get('name')
+        if not contact_email:
+            console.print(f"[red]Contact has no email or name: #{contact.get('id')}[/red]")
+            raise typer.Exit(1)
+
         interaction_id = db.add_interaction(
-            email=contact['email'],
+            email=contact_email,
             interaction_type=interaction_type,
             interaction_date=date,
             direction=direction,

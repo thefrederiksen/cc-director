@@ -1,6 +1,7 @@
 """Queue operations for Communication Manager."""
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -268,6 +269,66 @@ class QueueManager:
         """
         return self.db.search(query, limit)
 
+    def backfill_recipients(self) -> Dict[str, int]:
+        """Backfill null recipient fields from destination_url and notes.
+
+        For items where recipient is null but destination_url contains a LinkedIn
+        profile URL, parse the URL and notes to populate the recipient field.
+
+        Returns:
+            Dict with 'updated' and 'skipped' counts
+        """
+        import json
+
+        # Get all items with null recipient
+        if self.db.conn is None:
+            raise RuntimeError("Database not connected")
+
+        cursor = self.db.conn.execute(
+            "SELECT ticket_number, destination_url, notes, content FROM communications WHERE recipient IS NULL AND destination_url IS NOT NULL"
+        )
+        rows = cursor.fetchall()
+
+        updated = 0
+        skipped = 0
+
+        for row in rows:
+            ticket_number = row['ticket_number']
+            destination_url = row['destination_url'] or ''
+            notes = row['notes'] or ''
+            content = row['content'] or ''
+
+            # Only handle LinkedIn profile URLs
+            if '/in/' not in destination_url:
+                skipped += 1
+                continue
+
+            # Extract name from notes ("DM to {Name}" pattern)
+            name = None
+            dm_match = re.search(r'DM to (.+?)(?:\s*$)', notes)
+            if dm_match:
+                name = dm_match.group(1).strip()
+
+            # Fallback: extract first name from content (first line is "{FirstName},")
+            if not name:
+                first_line = content.split('\n')[0].strip().rstrip(',')
+                if first_line and len(first_line) < 50:
+                    name = first_line
+
+            if not name:
+                skipped += 1
+                continue
+
+            recipient = {
+                "name": name,
+                "profile_url": destination_url,
+            }
+
+            self.db.update_recipient(ticket_number, json.dumps(recipient))
+            updated += 1
+
+        return {"updated": updated, "skipped": skipped}
+
     def log_to_vault(self, ticket_number: int) -> Optional[int]:
         """Log a posted communication to the vault as an interaction.
 
@@ -329,6 +390,20 @@ class QueueManager:
                     recipient_email = profile_url
 
         if not recipient_email:
+            # Check destination_url for LinkedIn profile URLs
+            destination_url = item.get('destination_url', '') or ''
+            if '/in/' in destination_url:
+                recipient_email = destination_url
+                logger.info("log_to_vault: using destination_url as recipient for ticket #%d: %s", ticket_number, destination_url)
+                # Try to extract name from notes "DM to {Name}" pattern
+                notes = item.get('notes', '') or ''
+                dm_match = re.search(r'DM to ([A-Za-z ]+)', notes)
+                if dm_match:
+                    recipient_name = dm_match.group(1).strip()
+                    recipient_email = recipient_name
+                    logger.info("log_to_vault: extracted recipient name from notes: %s", recipient_name)
+
+        if not recipient_email:
             logger.info("log_to_vault: no recipient for ticket #%d, skipping", ticket_number)
             return None
 
@@ -371,7 +446,7 @@ class QueueManager:
 
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30
+                cmd, capture_output=True, text=True, timeout=30, encoding='utf-8', errors='replace'
             )
             if result.returncode == 0:
                 logger.info("log_to_vault: logged ticket #%d to vault", ticket_number)

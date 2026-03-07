@@ -528,6 +528,26 @@ class Database:
         self.conn.commit()
         return self.conn.total_changes > 0
 
+    def update_recipient(self, ticket_number: int, recipient_json: str) -> bool:
+        """Update recipient field for a communication.
+
+        Args:
+            ticket_number: The ticket number
+            recipient_json: JSON string of recipient info
+
+        Returns:
+            True if successful
+        """
+        if self.conn is None:
+            raise RuntimeError("Database not connected")
+
+        self.conn.execute(
+            "UPDATE communications SET recipient = ? WHERE ticket_number = ?",
+            (recipient_json, ticket_number)
+        )
+        self.conn.commit()
+        return self.conn.total_changes > 0
+
     def delete_communication(self, ticket_number: int) -> bool:
         """Delete a communication and its media.
 

@@ -333,10 +333,23 @@ async function cmdScreenshot(params) {
   // Brief delay for GPU buffer to populate after window focus
   await new Promise(r => setTimeout(r, 150));
 
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: params?.type === 'jpeg' ? 'jpeg' : 'png',
-    quality: params?.quality || 80,
-  });
+  // Retry loop -- captureVisibleTab can fail intermittently with
+  // "image readback failed" when the GPU buffer is not ready (#95)
+  const maxRetries = 3;
+  let dataUrl;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+        format: params?.type === 'jpeg' ? 'jpeg' : 'png',
+        quality: params?.quality || 80,
+      });
+      break;
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      const delayMs = attempt * 500;
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
 
   // Strip data:image/...;base64, prefix
   const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');

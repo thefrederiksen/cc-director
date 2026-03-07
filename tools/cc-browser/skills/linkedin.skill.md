@@ -1,6 +1,6 @@
 ---
 name: linkedin
-version: 2026.03.05.1
+version: 2026.03.06.3
 description: Navigate LinkedIn web interface
 site: linkedin.com
 flavor: managed
@@ -8,6 +8,32 @@ forked_from: null
 ---
 
 # LinkedIn Navigation Skill
+
+## Workflow Status
+
+Each workflow in this skill has a maturity level based on live-site validation.
+
+| Status | Meaning |
+|--------|---------|
+| Tested | Proven end-to-end on the live site. Date noted. |
+| Partial | Some parts tested, some not. Notes explain what's missing. |
+| Untested | Written from DOM knowledge but never validated on live site. |
+
+| Workflow | Status | Notes |
+|----------|--------|-------|
+| Send a Message | Partial (2026-03-06) | Path A (profile -> Message button -> existing thread) proven. Path B (compose new) proven. Attachment workflow untested. |
+| View a Profile | Untested | |
+| Search for People | Untested | |
+| List Connections | Untested | |
+| Send Connection Request | Untested | |
+| Read Messages | Untested | |
+| Like a Post | Untested | |
+| Comment on a Post | Untested | |
+| Create a Post | Untested | |
+| Browse Network Suggestions | Untested | |
+| Batch Sending from Queue | Partial (2026-03-06) | Single send from queue proven. Multi-send loop untested. |
+
+**Caution for Untested workflows:** Screenshot every step, expect selectors to be wrong, and be ready to adapt. If a selector fails, inspect the page and update this skill with what actually works. Tested/Partial workflows can be followed with confidence.
 
 ## IMPORTANT: Bot Detection
 
@@ -195,11 +221,14 @@ document.querySelectorAll('a[href*="/in/"]')  // all profile links on page
 
 ### Messaging
 
-| Element | Selector |
-|---------|----------|
+| Element | Selector / Discovery |
+|---------|---------------------|
+| Search messages box | snapshot: `searchbox "Search messages"` |
+| Compose new message button | snapshot: button with text "Compose a new message" |
+| Recipient input (new message) | snapshot: `combobox "Type a name or multiple names"` |
 | Thread card | `div.msg-conversation-card` |
 | Message input | `div.msg-form__contenteditable` |
-| Send button | `button.msg-form__send-button` |
+| Send button | `button.msg-form__send-button` (use snapshot ref to click -- `--text "Send"` is unreliable) |
 | Message body | `div.msg-s-event-listitem__body` |
 
 ### Search
@@ -324,41 +353,174 @@ contentEditable editors. Use `paste` for message composition and post creation.
 
 ### Send a Message
 
-Use the full messaging page, NOT the profile message popup (profile popups are tiny,
-hard to verify, and fragile).
-
 All commands require `--connection linkedin`. Abbreviated as `-c linkedin` below.
 
-**Steps:**
+There are THREE paths depending on situation:
+- **Path A (Direct)**: You have the profile URL -> navigate to profile -> click "Message {Name}" button (opens correct thread directly)
+- **Path B (Search)**: No profile URL -> go to /messaging/ -> search for existing conversation
+- **Path C (Compose)**: No existing conversation found via search -> use "Compose a new message"
+
+When sending from the comm queue, prefer Path A (queue items include the profile URL).
+When you don't have a profile URL, use Path B, falling back to Path C if search returns nothing.
+
+**Step 0 -- Open browser with retry:**
 1. Open fresh browser: `cc-browser connections open linkedin`
-2. Navigate to messaging: `cc-browser -c linkedin navigate "https://www.linkedin.com/messaging/"`
-3. Wait 3s + jitter, then snapshot
-4. Click the search box: `cc-browser -c linkedin click --text "Search messages"`
-5. Type contact name: `cc-browser -c linkedin type --selector "input[type='search'], input[name='searchTerm'], .msg-search-form input" --text "ContactName"`
+2. Wait 5s, check connection: `cc-browser connections status`
+3. If status shows disconnected: `cc-browser connections close linkedin`, wait 2s, `cc-browser connections open linkedin`, wait 10s, check status again
+4. If still disconnected after retry, STOP and report to user
+
+**Screenshot fallback:** If `screenshot` fails with "image readback failed", use
+`cc-browser -c linkedin snapshot --interactive` instead. Snapshots show element names,
+text content, and refs -- sufficient to verify recipient name, message text in textbox,
+and Send button ref. Snapshot-based verification is equivalent to screenshot verification.
+
+**Path A -- Direct from profile (preferred when you have profile URL):**
+1. Navigate to profile: `cc-browser -c linkedin navigate "https://www.linkedin.com/in/{username}"`
+2. Wait 4s + jitter
+3. Click the Message button on profile: `cc-browser -c linkedin click --text "Message {FirstName}"`
+   - The button text is "Message {FirstName}" (e.g., "Message Bohdan")
+   - ALWAYS use the full text "Message {FirstName}", NEVER just "Message" -- the short text
+     matches nav elements and silently clicks the wrong thing
+   - Extract first name from the message content (first line is usually "{FirstName},")
+     or from `destination_url`/`notes` field
+   - This opens a **chat overlay** at the bottom-right of the page (NOT full-page navigation)
+4. Wait 3s + jitter
+5. Snapshot to verify correct conversation overlay opened (look for the recipient name in overlay header)
+6. If other conversation overlays are already open, close them first:
+   - Look for `text "Close your conversation with..."` for the OTHER conversations
+   - Click to close them so only the target conversation remains
+7. Continue to "Compose and Send" below
+
+**Path B -- Search existing conversations (when no profile URL):**
+1. Navigate to messaging: `cc-browser -c linkedin navigate "https://www.linkedin.com/messaging/"`
+2. Wait 3s + jitter
+3. Snapshot to find search box: `cc-browser -c linkedin snapshot --interactive 2>&1 | grep -i "search"`
+   - Look for `searchbox "Search messages" [ref=eXX]`
+4. Click search box BY REF: `cc-browser -c linkedin click --ref eXX`
+5. Wait 1s, type contact name: `cc-browser -c linkedin type --selector "input[type='search'], input[name='searchTerm'], .msg-search-form input" --text "ContactName"`
 6. Press Enter: `cc-browser -c linkedin press --key Enter`
-7. Wait 3s + jitter, then screenshot -- find contact in left sidebar results
-8. Click their conversation (use `--text "ContactName"` from snapshot)
-9. Wait 2s + jitter, screenshot -- verify correct person's conversation is open (check header name)
-10. Click the message textbox to focus it
-11. Paste message: `cc-browser -c linkedin paste --selector "div.msg-form__contenteditable" --text "Your message"`
-12. Screenshot -- MANDATORY before sending: verify correct recipient, correct text, Send button is blue/active
-13. Click Send (via snapshot ref or `--text "Send"`)
-14. Wait 2s, screenshot -- verify message sent (empty editor, message visible in thread with timestamp)
+7. Wait 3s + jitter, then screenshot/snapshot -- check results
+8. If conversation found: click their conversation: `cc-browser -c linkedin click --text "ContactName"`
+9. Wait 2s + jitter, verify correct person's header name
+10. Continue to "Compose and Send" below
+11. If "We didn't find anything" -- switch to Path C
+
+**Path C -- Compose new message (no existing conversation):**
+1. Snapshot to find compose button: look for button with text "Compose a new message"
+2. Click compose BY REF: `cc-browser -c linkedin click --ref eXX`
+3. Wait 2s, screenshot/snapshot -- verify "New message" dialog with "Type a name or multiple names" input
+4. Snapshot to find recipient input: look for `combobox "Type a name or multiple names" [ref=eXX]`
+5. Click recipient input BY REF, then type contact name: `cc-browser -c linkedin type --ref eXX --text "ContactName"`
+6. Wait 3s for dropdown to populate, then screenshot/snapshot
+7. Select the correct person from dropdown (verify connection degree and headline)
+   Click their name or headline text: `cc-browser -c linkedin click --text "Their headline text"`
+8. Wait 2s, verify green name pill appears in recipient field
+9. Continue to "Compose and Send" below
+
+**Compose and Send (all paths converge here):**
+1. Click the message textbox to focus (use ref from snapshot -- there may be multiple textboxes if overlays stacked):
+   `cc-browser -c linkedin click --ref eXX`
+2. Wait 1s, paste message: `cc-browser -c linkedin paste --selector "div.msg-form__contenteditable" --text "Your message"`
+   NOTE: `paste` requires `--selector`, NOT `--ref`. It does not accept `--ref`.
+   NOTE: If multiple overlays are open, close others first so there is only ONE `div.msg-form__contenteditable`.
+3. Snapshot to find Send button ref: look for `button "Send" [ref=eXX]`
+4. Click Send BY REF: `cc-browser -c linkedin click --ref eXX`
+   IMPORTANT: `click --text "Send"` is unreliable -- always use `--ref` for Send
+5. Wait 3s, screenshot/snapshot -- verify message sent:
+   - Message appears in conversation thread
+   - Editor is empty ("Write a message..." placeholder visible)
+   - No error messages
+
+User approval is NOT required before sending -- items in the queue have already been
+approved. Send immediately after pasting and verifying the recipient is correct.
 
 **Critical rules:**
-- NEVER use the profile page message button -- it opens a tiny popup that is hard to verify
-- ALWAYS use the full /messaging/ page for reliable conversation management
-- ALWAYS screenshot before clicking Send to verify recipient and content
-- Fresh browser for each messaging session (prevents stale overlay state)
+- ALWAYS click Send by ref (from snapshot), never by text -- `--text "Send"` is unreliable
+- `paste` requires `--selector`, not `--ref` -- these are different cc-browser commands
+- Reuse browser session for batch sends -- just close each overlay after sending
+- Close other conversation overlays before pasting to avoid targeting wrong textbox
+- If screenshot fails with "image readback failed", use snapshot instead -- snapshots are sufficient
+- If any step fails silently, take a screenshot/snapshot to diagnose before retrying
+- Queue items are pre-approved -- send immediately, no user confirmation needed
 
 ### Batch Sending from Queue
 
-When sending multiple messages from the communication queue:
-1. Get approved items: `cc-comm-queue list --status approved`
-2. Close and reopen browser fresh for EACH message (prevents stale state)
-3. Send each message using the single message workflow above
-4. Mark as posted immediately after each successful send: `cc-comm-queue mark-posted <id>`
-5. If any send fails, fix the issue and retry before continuing to next
+Complete step-by-step for sending approved messages from the communication queue:
+
+1. **List approved items:** `cc-comm-queue list --status approved`
+2. **Open browser once:** `cc-browser connections open linkedin` (with retry per Step 0 above)
+3. **For each message:**
+   a. `cc-comm-queue show <id> --json` -- get details
+      - Extract `destination_url` (or `recipient.profile_url`) for profile navigation
+      - Extract first name from `content` (first line is typically "{FirstName},")
+      - Extract `content` for the message text
+   b. Navigate to profile URL
+   c. Click "Message {FirstName}" -- opens chat overlay
+   d. Close any other open overlays (snapshot, look for "Close your conversation with...")
+   e. Focus textbox (by ref), paste message content
+   f. Snapshot for Send button ref, click Send by ref
+   g. Verify sent (snapshot: "sent the following messages" + empty textbox)
+   h. Close the chat overlay: click "Close your conversation with {Name}" text
+   i. `cc-comm-queue mark-posted <id>`
+   j. Wait 3-5s before next message (human-like pacing)
+4. **If send fails:** diagnose, fix, retry before moving to next
+5. **Close browser when done:** `cc-browser connections close linkedin`
+
+Reusing the same browser session is fine -- just close each chat overlay after sending.
+No need to close/reopen browser between messages. If the session gets into a bad state
+(stale overlays, errors), close and reopen the browser as recovery.
+
+### Failure Handling
+
+During any LinkedIn workflow (especially batch sends), watch for these failure cases.
+Detect them via URL checks, snapshot text, or command output after each step.
+
+**1. Profile 404**
+- Detection: After navigation, URL contains `/404` or snapshot shows "page not found"
+  or "profile is not available".
+- Recovery: Skip this item, log the error with the profile URL. Continue to next item.
+
+**2. Not connected**
+- Detection: Snapshot shows no "Message {FirstName}" button. Instead, only "Connect"
+  or "Follow" buttons are visible on the profile.
+- Recovery: Skip this item. You cannot send a message without an existing connection.
+  Log which contact was skipped and why.
+
+**3. Paste failed**
+- Detection: `paste` command returns `pasted: false`, or a snapshot after pasting shows
+  the textbox is still empty (placeholder text "Write a message..." still visible).
+- Recovery: Retry once -- click the textbox again (by ref), wait 1s, then re-paste.
+  If it fails a second time, skip and log the error.
+
+**4. Send button not found**
+- Detection: Snapshot after opening the message overlay has no `button "Send"` element.
+  The chat overlay may not have opened properly.
+- Recovery: Close any open overlay (click "Close your conversation with..." if present),
+  wait 2s, then retry by clicking "Message {FirstName}" on the profile again. If it
+  fails a second time, skip and log the error.
+
+**5. Rate limiting**
+- Detection: Snapshot or page text contains "you've reached the limit",
+  "you've hit a limit", "too many requests", or any other unusual restriction text.
+- Recovery: STOP the entire batch immediately. Do NOT continue sending. Report the
+  exact message text to the user. Wait for user instructions before resuming.
+
+**6. Session expired**
+- Detection: After navigation, URL contains "login" or "authwall", or the page shows
+  a login form instead of the expected content.
+- Recovery: STOP the entire batch immediately. Report to the user that the LinkedIn
+  session has expired. The user must re-authenticate before any further actions.
+
+**7. Chat overlay targets wrong person**
+- Detection: After clicking "Message {FirstName}", snapshot shows a different name
+  in the chat overlay header than the intended recipient.
+- Recovery: Close the overlay (click "Close your conversation with..." for the wrong
+  person), wait 2s, then retry clicking "Message {FirstName}" on the profile. If
+  the wrong person appears again, skip this item and log the error.
+
+**Batch size guidance:** Send no more than 20 messages per session. Insert 3-5s delays
+between each send (in addition to normal jitter delays). If you need to send more,
+close the browser, wait several minutes, then start a new session for the next batch.
 
 ### Read Messages
 
@@ -409,6 +571,12 @@ When sending multiple messages from the communication queue:
    using regex: `,?\s*(Verified|Premium|Influencer|Ver)\b.*$`
 
 ## Gotchas
+
+### Messaging: Search vs Compose
+"Search messages" only searches EXISTING conversations. If you have never messaged
+someone before, search returns "We didn't find anything with [name]". You MUST use
+the "Compose a new message" button (pencil icon next to search) to start a new thread.
+Always check the search results screenshot before assuming the contact was found.
 
 ### Bot Detection
 LinkedIn actively detects automation. Critical rules:

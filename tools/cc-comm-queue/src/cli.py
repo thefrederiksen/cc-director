@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import os
 import sys
 from pathlib import Path
@@ -523,14 +524,31 @@ def status_cmd():
 @app.command("show")
 def show_content(
     content_id: str = typer.Argument(..., help="Content ID (can be partial)"),
+    json_output: bool = typer.Option(False, "--json", help="Output full record as JSON"),
 ):
     """Show details of a specific content item."""
     qm = get_queue_manager()
-    item = qm.get_content_by_id(content_id)
+
+    # Support ticket number lookup
+    item = None
+    if content_id.isdigit():
+        item = qm.get_content_by_ticket(int(content_id))
+    if not item:
+        item = qm.get_content_by_id(content_id)
 
     if not item:
-        console.print(f"[red]ERROR:[/red] Content not found: {content_id}")
+        if json_output:
+            console.print(json.dumps({"error": f"Content not found: {content_id}"}))
+        else:
+            console.print(f"[red]ERROR:[/red] Content not found: {content_id}")
         raise typer.Exit(1)
+
+    # JSON output mode -- full record for automation
+    if json_output:
+        # Remove internal fields
+        output = {k: v for k, v in item.items() if not k.startswith("_")}
+        console.print(json.dumps(output, indent=2, default=str))
+        return
 
     # Header
     console.print(f"\n[bold cyan]{item.get('platform', '')} {item.get('type', '')}[/bold cyan]")
@@ -545,6 +563,17 @@ def show_content(
     table.add_row("Persona", f"{item.get('persona', '-')} ({item.get('persona_display', '-')})")
     table.add_row("Created By", item.get("created_by", "-"))
     table.add_row("Created At", item.get("created_at", "-"))
+
+    # Recipient info
+    recipient = item.get("recipient")
+    if recipient and isinstance(recipient, dict):
+        table.add_row("Recipient", recipient.get("name", "-"))
+        if recipient.get("profile_url"):
+            table.add_row("Profile URL", recipient["profile_url"])
+        if recipient.get("title"):
+            table.add_row("Title", recipient["title"])
+        if recipient.get("company"):
+            table.add_row("Company", recipient["company"])
 
     if item.get("destination_url"):
         table.add_row("Destination", item["destination_url"])
@@ -708,6 +737,252 @@ def log_to_vault_cmd(
         console.print(f"[green]OK:[/green] Logged ticket #{ticket_number} to vault (interaction #{vault_id})")
     else:
         console.print(f"[yellow]NOTE:[/yellow] Could not log ticket #{ticket_number} to vault (no matching contact or cc-vault unavailable)")
+
+
+@app.command("backfill-recipients")
+def backfill_recipients_cmd():
+    """Backfill null recipient fields from destination_url and notes.
+
+    For LinkedIn messages where recipient is null but destination_url has
+    a profile URL, parses the URL and notes to populate the recipient field.
+    """
+    qm = get_queue_manager()
+    result = qm.backfill_recipients()
+
+    console.print(f"[green]OK:[/green] Backfill complete")
+    console.print(f"  Updated: {result['updated']}")
+    console.print(f"  Skipped: {result['skipped']}")
+
+
+@app.command("send")
+def send_cmd(
+    content_id: str = typer.Argument(..., help="Ticket number or content ID"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be sent without sending"),
+):
+    """Send a LinkedIn message from the queue via cc-browser.
+
+    Opens the LinkedIn browser, navigates to the recipient's profile,
+    clicks Message, pastes content, and sends. Marks as posted on success.
+
+    Only works for LinkedIn messages. The item must be in 'approved' status.
+    """
+    import subprocess
+    import time
+    import random
+
+    qm = get_queue_manager()
+
+    # Resolve item
+    item = None
+    if content_id.isdigit():
+        item = qm.get_content_by_ticket(int(content_id))
+    if not item:
+        item = qm.get_content_by_id(content_id)
+
+    if not item:
+        console.print(f"[red]ERROR:[/red] Content not found: {content_id}")
+        raise typer.Exit(1)
+
+    # Validate
+    if item.get('platform') != 'linkedin':
+        console.print(f"[red]ERROR:[/red] Only LinkedIn messages are supported. This item is: {item.get('platform')}")
+        raise typer.Exit(1)
+
+    if item.get('type') != 'message':
+        console.print(f"[red]ERROR:[/red] Only messages are supported. This item is: {item.get('type')}")
+        raise typer.Exit(1)
+
+    if item.get('status') != 'approved':
+        console.print(f"[red]ERROR:[/red] Item must be approved. Current status: {item.get('status')}")
+        raise typer.Exit(1)
+
+    ticket_number = item.get('ticket_number')
+    content = item.get('content', '')
+    destination_url = item.get('destination_url', '')
+
+    # Get profile URL
+    profile_url = None
+    recipient = item.get('recipient')
+    if recipient and isinstance(recipient, dict):
+        profile_url = recipient.get('profile_url')
+    if not profile_url:
+        profile_url = destination_url
+
+    if not profile_url or '/in/' not in profile_url:
+        console.print(f"[red]ERROR:[/red] No LinkedIn profile URL found for this item")
+        raise typer.Exit(1)
+
+    # Ensure full URL
+    if not profile_url.startswith('http'):
+        profile_url = f"https://{profile_url}"
+    if 'linkedin.com' not in profile_url:
+        console.print(f"[red]ERROR:[/red] Not a LinkedIn URL: {profile_url}")
+        raise typer.Exit(1)
+
+    # Extract first name from content (first line is "{FirstName},")
+    first_name = content.split('\n')[0].strip().rstrip(',').strip()
+    if not first_name or len(first_name) > 30:
+        console.print(f"[red]ERROR:[/red] Could not extract first name from message content")
+        raise typer.Exit(1)
+
+    # Show plan
+    console.print(f"\n[cyan]Sending LinkedIn message[/cyan]")
+    console.print(f"  Ticket: #{ticket_number}")
+    console.print(f"  To: {first_name} ({profile_url})")
+    console.print(f"  Content: {content[:60]}...")
+
+    if dry_run:
+        console.print(f"\n[yellow]DRY RUN:[/yellow] Would send the above message. Use without --dry-run to send.")
+        return
+
+    # Resolve cc-browser path (frozen exes may not inherit PATH)
+    import shutil
+    cc_browser_path = shutil.which("cc-browser") or shutil.which("cc-browser.cmd")
+    if not cc_browser_path:
+        # Fallback to known install location
+        cc_browser_path = os.path.join(
+            os.environ.get("LOCALAPPDATA", ""), "cc-director", "bin", "cc-browser.cmd"
+        )
+        if not os.path.exists(cc_browser_path):
+            console.print("[red]ERROR:[/red] cc-browser not found on PATH or in default location")
+            raise typer.Exit(1)
+
+    def run_browser(args, check=True):
+        """Run a cc-browser command and return stdout."""
+        cmd = [cc_browser_path, "-c", "linkedin"] + args
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding='utf-8', errors='replace')
+        if check and result.returncode != 0:
+            err = (result.stderr or '').strip() or (result.stdout or '').strip()
+            raise RuntimeError(f"cc-browser failed: {err}")
+        return (result.stdout or '').strip()
+
+    def run_browser_raw(args):
+        """Run a cc-browser command without -c linkedin."""
+        cmd = [cc_browser_path] + args
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding='utf-8', errors='replace')
+        return (result.stdout or '').strip()
+
+    def jitter(base_seconds):
+        """Sleep with random jitter."""
+        time.sleep(base_seconds + random.uniform(0, base_seconds * 0.5))
+
+    try:
+        # Step 1: Check if browser is connected
+        console.print("  [dim]Checking browser connection...[/dim]")
+        status_out = run_browser_raw(["connections", "status"])
+        if "linkedin: CONNECTED" not in status_out:
+            console.print("  [dim]Opening LinkedIn browser...[/dim]")
+            run_browser_raw(["connections", "open", "linkedin"])
+            jitter(6)
+            status_out = run_browser_raw(["connections", "status"])
+            if "linkedin: CONNECTED" not in status_out:
+                # Retry once
+                run_browser_raw(["connections", "close", "linkedin"])
+                jitter(3)
+                run_browser_raw(["connections", "open", "linkedin"])
+                jitter(10)
+                status_out = run_browser_raw(["connections", "status"])
+                if "linkedin: CONNECTED" not in status_out:
+                    console.print("[red]ERROR:[/red] Could not connect to LinkedIn browser")
+                    raise typer.Exit(1)
+
+        # Step 2: Navigate to profile
+        console.print(f"  [dim]Navigating to profile...[/dim]")
+        run_browser(["navigate", profile_url])
+        jitter(5)
+
+        # Step 3: Check for 404 or auth issues
+        snapshot = run_browser(["snapshot", "--interactive"])
+        if "page not found" in snapshot.lower() or "/404" in snapshot.lower():
+            console.print(f"[red]ERROR:[/red] Profile not found: {profile_url}")
+            raise typer.Exit(1)
+        if "authwall" in snapshot.lower() or "login" in snapshot.lower():
+            console.print(f"[red]ERROR:[/red] Session expired -- login required")
+            raise typer.Exit(1)
+
+        # Step 4: Find and click Message button
+        # LinkedIn may show "Message Allan" or "Message Allan J." -- match prefix
+        msg_match = re.search(r'button "(Message ' + re.escape(first_name) + r'[^"]*)" \[ref=(e\d+)\]', snapshot)
+        if not msg_match:
+            console.print(f"[red]ERROR:[/red] No 'Message {first_name}...' button found. Not connected to this person?")
+            raise typer.Exit(1)
+
+        message_btn_text = msg_match.group(1)
+        msg_ref = msg_match.group(2)
+        console.print(f"  [dim]Clicking {message_btn_text}...[/dim]")
+        run_browser(["click", "--ref", msg_ref])
+        jitter(3)
+
+        # Step 5: Close any stale overlays, find the right textbox
+        snapshot = run_browser(["snapshot", "--interactive"])
+
+        # Close other overlays if present
+        for close_match in re.finditer(r'text "Close your conversation with (?!.*' + re.escape(first_name) + r').*?"', snapshot):
+            close_text = close_match.group(0).replace('text "', '').rstrip('"')
+            run_browser(["click", "--text", close_text], check=False)
+            jitter(1)
+            snapshot = run_browser(["snapshot", "--interactive"])
+
+        # Find textbox
+        textbox_match = re.search(r'textbox "Write a message.*?" \[ref=(e\d+)\]', snapshot)
+        if not textbox_match:
+            console.print(f"[red]ERROR:[/red] No message textbox found")
+            raise typer.Exit(1)
+
+        # Step 6: Focus and paste
+        console.print(f"  [dim]Pasting message...[/dim]")
+        textbox_ref = textbox_match.group(1)
+        run_browser(["click", "--ref", textbox_ref])
+        jitter(1)
+
+        paste_result = run_browser(["paste", "--selector", "div.msg-form__contenteditable", "--text", content])
+        if '"pasted": false' in paste_result or '"pasted":false' in paste_result:
+            console.print("[red]ERROR:[/red] Paste failed")
+            raise typer.Exit(1)
+
+        # Step 7: Find Send button and click
+        snapshot = run_browser(["snapshot", "--interactive"])
+        send_match = re.search(r'button "Send" \[ref=(e\d+)\]', snapshot)
+        if not send_match:
+            console.print("[red]ERROR:[/red] Send button not found")
+            raise typer.Exit(1)
+
+        send_ref = send_match.group(1)
+        console.print(f"  [dim]Sending...[/dim]")
+        run_browser(["click", "--ref", send_ref])
+        jitter(3)
+
+        # Step 8: Verify sent
+        snapshot = run_browser(["snapshot", "--interactive"])
+        if "sent the following message" in snapshot.lower() or "Write a message" in snapshot:
+            console.print(f"[green]OK:[/green] Message sent to {first_name}")
+        else:
+            console.print(f"[yellow]WARNING:[/yellow] Could not verify message was sent. Check manually.")
+
+        # Step 9: Close overlay
+        close_match = re.search(r'text "(Close your conversation with .*?)"', snapshot)
+        if close_match:
+            run_browser(["click", "--text", close_match.group(1)], check=False)
+            jitter(1)
+
+        # Step 10: Mark as posted
+        success = qm.mark_posted(ticket_number, posted_by="cc-comm-queue-send")
+        if success:
+            console.print(f"[green]OK:[/green] Marked ticket #{ticket_number} as posted")
+        vault_id = qm.log_to_vault(ticket_number)
+        if vault_id is not None:
+            console.print(f"[green]OK:[/green] Logged to vault (interaction #{vault_id})")
+
+        # Step 11: Close browser
+        console.print("  [dim]Closing browser...[/dim]")
+        run_browser_raw(["connections", "close", "linkedin"])
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]ERROR:[/red] Browser command timed out")
+        raise typer.Exit(1)
+    except RuntimeError as e:
+        console.print(f"[red]ERROR:[/red] {e}")
+        raise typer.Exit(1)
 
 
 # =============================================================================

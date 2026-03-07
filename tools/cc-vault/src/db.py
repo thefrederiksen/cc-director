@@ -1109,6 +1109,9 @@ def add_contact(email: str, name: str, account: str, **kwargs) -> int:
 
 def get_contact(identifier: str) -> Optional[dict]:
     """Get a contact by email or partial name match."""
+    if not identifier:
+        return None
+
     init_db(silent=True)
     conn = get_db()
     cursor = conn.cursor()
