@@ -9,6 +9,7 @@ using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Engine;
+using CcDirector.Terminal;
 using CcDirector.Wpf.Controls;
 using CcDirector.Wpf.Teams;
 using CcDirector.Wpf.Teams.Models;
@@ -97,6 +98,16 @@ public partial class App : Application
         MigrateRecentSessionsToHistory();
 
         FileLog.Start();
+
+        DispatcherUnhandledException += (_, args) =>
+        {
+            FileLog.Write($"[App] UNHANDLED EXCEPTION: {args.Exception}");
+            System.Windows.MessageBox.Show(
+                $"An unexpected error occurred:\n\n{args.Exception.Message}\n\nThe error has been logged.",
+                "CC Director Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            args.Handled = true;
+        };
+
         try
         {
             CcDirector.Core.Storage.CcStorageMigration.EnsureMigrated();

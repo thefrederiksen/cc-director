@@ -1,6 +1,7 @@
 using System.Windows.Threading;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Terminal;
 using CcDirector.Wpf.Controls;
 using CcDirector.Wpf.Teams.Commands;
 using CcDirector.Wpf.Teams.Models;

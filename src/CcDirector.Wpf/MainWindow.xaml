@@ -4,6 +4,7 @@
         xmlns:controls="clr-namespace:CcDirector.Wpf.Controls"
         xmlns:cm="clr-namespace:CommunicationManager;assembly=CcDirector.CommunicationManager"
         xmlns:doclib="clr-namespace:CcDirector.DocumentLibrary.Views;assembly=CcDirector.DocumentLibrary"
+        xmlns:cw="clr-namespace:CcDirector.ContentWriter.Views;assembly=CcDirector.ContentWriter"
         Title="CC Director v2"
         Icon="app.ico"
         Width="1400" Height="700"
@@ -299,6 +300,17 @@
                             Focusable="False"
                             Height="30" Margin="8,2,8,2"
                             Background="#68217A"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand" />
+
+                    <!-- Writer button (bottom of sidebar) -->
+                    <Button x:Name="BtnWriter" DockPanel.Dock="Bottom"
+                            Content="Writer"
+                            Click="BtnWriter_Click"
+                            Focusable="False"
+                            Height="30" Margin="8,2,8,2"
+                            Background="#9C4221"
                             Foreground="White"
                             BorderThickness="0"
                             Cursor="Hand" />
@@ -796,7 +808,7 @@
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition x:Name="SummaryColumn" Width="0" />
                                     </Grid.ColumnDefinitions>
-                                    <Border x:Name="TerminalArea" Grid.Column="0" Background="#1E1E1E" />
+                                    <Border x:Name="TerminalArea" Grid.Column="0" Background="#0C0C0C" />
                                     <ScrollBar x:Name="TerminalScrollBar" Grid.Column="1"
                                                Orientation="Vertical"
                                                Visibility="Collapsed"
@@ -887,6 +899,33 @@
                             </TabItem>
                         </TabControl>
 
+                        <!-- Renderer mode toggle (floats top-right of tab strip, left of Close All) -->
+                        <StackPanel x:Name="RendererModePanel" Grid.Row="0"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Margin="0,0,70,0"
+                                    Visibility="Collapsed">
+                            <Button x:Name="ModeOrg" Content="ORG" Tag="ORG"
+                                    Click="OnRendererMode_Click"
+                                    Background="Transparent" Foreground="#888888"
+                                    BorderThickness="0" Padding="8,6"
+                                    FontSize="11" FontWeight="SemiBold"
+                                    Cursor="Hand" Height="28" />
+                            <Button x:Name="ModePro" Content="PRO" Tag="PRO"
+                                    Click="OnRendererMode_Click"
+                                    Background="Transparent" Foreground="#888888"
+                                    BorderThickness="0" Padding="8,6"
+                                    FontSize="11" FontWeight="SemiBold"
+                                    Cursor="Hand" Height="28" />
+                            <Button x:Name="ModeLite" Content="LITE" Tag="LITE"
+                                    Click="OnRendererMode_Click"
+                                    Background="Transparent" Foreground="#888888"
+                                    BorderThickness="0" Padding="8,6"
+                                    FontSize="11" FontWeight="SemiBold"
+                                    Cursor="Hand" Height="28" />
+                        </StackPanel>
+
                         <!-- Close All Docs button (floats top-right of tab strip) -->
                         <Button x:Name="CloseAllDocsButton" Grid.Row="0"
                                 Content="Close All"
@@ -963,7 +1002,7 @@
                                          FontSize="13"
                                          AllowDrop="True"
                                          PreviewDragOver="PromptInput_PreviewDragOver"
-                                         Drop="PromptInput_Drop"
+                                         PreviewDrop="PromptInput_Drop"
                                          KeyDown="PromptInput_KeyDown"
                                          GotFocus="PromptInput_GotFocus" />
                                 <StackPanel Grid.Column="1" Orientation="Vertical" VerticalAlignment="Bottom">
@@ -1316,6 +1355,11 @@
                     <controls:ConnectionsView x:Name="ConnectionsView"
                                               Grid.ColumnSpan="3"
                                               Visibility="Collapsed" />
+
+                    <!-- Content Writer (full-area overlay, spans all columns) -->
+                    <cw:ContentWriterView x:Name="ContentWriterView"
+                                          Grid.ColumnSpan="3"
+                                          Visibility="Collapsed" />
                 </Grid>
 
     </Grid>

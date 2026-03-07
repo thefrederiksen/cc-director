@@ -1,6 +1,6 @@
 using System.Windows.Media;
 
-namespace CcDirector.Wpf.Helpers;
+namespace CcDirector.Terminal;
 
 public struct TerminalCell
 {

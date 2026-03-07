@@ -10,9 +10,9 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
-using CcDirector.Wpf.Helpers;
+using CcDirector.Terminal.Rendering;
 
-namespace CcDirector.Wpf.Controls;
+namespace CcDirector.Terminal;
 
 /// <summary>
 /// Pure WPF terminal control that renders ANSI terminal output using DrawingVisual.
@@ -94,6 +94,9 @@ public class TerminalControl : FrameworkElement
     // Paste state
     private bool _isPasting;
 
+    // Renderer mode
+    private ITerminalRenderer _renderer = new OriginalRenderer();
+
     // Path existence cache - avoids disk I/O in OnRender
     private readonly ConcurrentDictionary<string, bool> _pathExistsCache = new();
     private int _pathCacheInvalidateNeeded;
@@ -103,6 +106,24 @@ public class TerminalControl : FrameworkElement
 
     /// <summary>Raised when the user requests to view a file from a terminal link.</summary>
     public event Action<string>? ViewFileRequested;
+
+    /// <summary>Raised when the renderer mode changes (so MainWindow can update TerminalArea background).</summary>
+    public event Action<Color>? RendererBackgroundChanged;
+
+    /// <summary>The currently active renderer.</summary>
+    public ITerminalRenderer Renderer => _renderer;
+
+    /// <summary>
+    /// Switch to a different terminal renderer.
+    /// </summary>
+    public void SetRenderer(ITerminalRenderer renderer)
+    {
+        FileLog.Write($"[TerminalControl] SetRenderer: {renderer.Name}");
+        _renderer = renderer;
+        _renderer.ApplyControlSettings(this);
+        RendererBackgroundChanged?.Invoke(_renderer.GetBackgroundColor());
+        InvalidateVisual();
+    }
 
     /// <summary>Number of lines scrolled up from bottom. 0 = current view.</summary>
     public int ScrollOffset
@@ -225,7 +246,7 @@ public class TerminalControl : FrameworkElement
         RecalculateGridSize();
         InitializeCells();
 
-        _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines);
+        _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
 
         // If the control hasn't been laid out yet (ActualWidth/Height are 0),
         // defer buffer parsing and poll timer until OnRenderSizeChanged provides real dimensions.
@@ -315,161 +336,81 @@ public class TerminalControl : FrameworkElement
 
     protected override void OnRender(DrawingContext drawingContext)
     {
+        // Always fill the full control area with the renderer background first.
+        // This prevents: (a) grey flash during deferred attach when _parser is null
+        // and ActualWidth/Height are 0, and (b) edge gaps where grid is smaller
+        // than ActualWidth/Height due to integer truncation in RecalculateGridSize.
+        if (ActualWidth > 0 && ActualHeight > 0)
+        {
+            var bgFill = GetCachedBrush(_renderer.GetBackgroundColor());
+            drawingContext.DrawRectangle(bgFill, null, new Rect(0, 0, ActualWidth, ActualHeight));
+        }
+
         // Reset so background path checks can schedule one more InvalidateVisual
         Interlocked.Exchange(ref _pathCacheInvalidateNeeded, 0);
-
-        var bg = GetCachedBrush(Color.FromRgb(30, 30, 30));
-        drawingContext.DrawRectangle(bg, null, new Rect(0, 0, ActualWidth, ActualHeight));
 
         // Clear link regions for fresh hit-testing
         _linkRegions.Clear();
 
-        if (_parser == null) return;
+        if (_parser == null)
+            return;  // Background already drawn above
 
-        // Link color - light blue like web links
-        var linkColor = Color.FromRgb(0x6C, 0xB6, 0xFF);
-        var linkBrush = GetCachedBrush(linkColor);
-
-        // Underline pen for links
-        var underlinePen = new Pen(linkBrush, 1);
-        underlinePen.Freeze();
-
+        // Build link regions for this frame
+        var renderLinkRegions = new List<LinkRegionInfo>();
         for (int row = 0; row < _rows; row++)
         {
-            // Get line text and find link matches for this row
             string lineText = GetLineText(row);
             var linkMatches = FindAllLinkMatches(lineText);
 
-            // Create a lookup for which columns are part of a link
-            var columnToLink = new Dictionary<int, LinkDetector.LinkMatch>();
             foreach (var match in linkMatches)
             {
-                for (int c = match.StartCol; c < match.EndCol && c < _cols; c++)
-                {
-                    columnToLink[c] = match;
-                }
-
-                // Store link region for hover detection
                 double linkX = match.StartCol * _cellWidth;
                 double linkY = row * _cellHeight;
                 double linkWidth = (match.EndCol - match.StartCol) * _cellWidth;
-                _linkRegions.Add(new LinkRegion(
-                    new Rect(linkX, linkY, linkWidth, _cellHeight),
-                    match.Text,
-                    match.Type));
-            }
+                var rect = new Rect(linkX, linkY, linkWidth, _cellHeight);
 
-            for (int col = 0; col < _cols; col++)
-            {
-                TerminalCell cell;
-
-                if (_scrollOffset > 0)
-                {
-                    // Virtual index into combined scrollback + current screen
-                    int virtualIndex = _scrollback.Count - _scrollOffset + row;
-
-                    if (virtualIndex < 0)
-                    {
-                        // Scrolled beyond available history
-                        cell = default;
-                    }
-                    else if (virtualIndex < _scrollback.Count)
-                    {
-                        // This row comes from scrollback
-                        var line = _scrollback[virtualIndex];
-                        cell = col < line.Length ? line[col] : default;
-                    }
-                    else
-                    {
-                        // This row comes from current screen buffer
-                        int screenRow = virtualIndex - _scrollback.Count;
-                        cell = (screenRow >= 0 && screenRow < _rows)
-                            ? _cells[col, screenRow]
-                            : default;
-                    }
-                }
-                else
-                {
-                    // Not scrolled - show current buffer
-                    cell = _cells[col, row];
-                }
-
-                // Draw background if not default
-                if (cell.Background != default && cell.Background != Color.FromRgb(30, 30, 30))
-                {
-                    var cellBg = GetCachedBrush(cell.Background);
-                    drawingContext.DrawRectangle(cellBg, null,
-                        new Rect(col * _cellWidth, row * _cellHeight, _cellWidth, _cellHeight));
-                }
-
-                // Draw character
-                char ch = cell.Character;
-                if (ch == '\0' || ch == ' ') continue;
-
-                // Determine if this character is part of a link
-                bool isLink = columnToLink.ContainsKey(col);
-
-                var fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground);
-                var brush = isLink ? linkBrush : GetCachedBrush(fg);
-
-                var tf = GetCachedTypeface(cell.Bold, cell.Italic);
-
-                var formattedText = new FormattedText(
-                    ch.ToString(),
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    FlowDirection.LeftToRight,
-                    tf,
-                    _fontSize,
-                    brush,
-                    _dpiScale);
-
-                double charX = col * _cellWidth;
-                double charY = row * _cellHeight;
-
-                drawingContext.DrawText(formattedText, new Point(charX, charY));
-
-                // Draw underline for links
-                if (isLink)
-                {
-                    double underlineY = charY + _cellHeight - 2;
-                    drawingContext.DrawLine(underlinePen,
-                        new Point(charX, underlineY),
-                        new Point(charX + _cellWidth, underlineY));
-                }
+                var linkType = match.Type == LinkDetector.LinkType.Url ? TerminalLinkType.Url : TerminalLinkType.Path;
+                renderLinkRegions.Add(new LinkRegionInfo(rect, match.Text, linkType));
+                _linkRegions.Add(new LinkRegion(rect, match.Text, match.Type));
             }
         }
 
-        // Draw selection highlight
+        // Build selection info
+        int selStartCol = 0, selStartRow = 0, selEndCol = 0, selEndRow = 0;
         if (_hasSelection)
+            (selStartCol, selStartRow, selEndCol, selEndRow) = NormalizeSelection();
+
+        // Build cursor info
+        bool cursorVisible = _parser.IsCursorVisible;
+        var (curCol, curRow) = _parser.GetCursorPosition();
+
+        var ctx = new RenderContext(
+            _scrollback, _scrollOffset,
+            _hasSelection, selStartCol, selStartRow, selEndCol, selEndRow,
+            cursorVisible, curCol, curRow,
+            renderLinkRegions,
+            _dpiScale, _fontSize,
+            _session?.RepoPath);
+
+        try
         {
-            var (startCol, startRow, endCol, endRow) = NormalizeSelection();
-            var highlightBrush = GetCachedBrush(Color.FromArgb(100, 50, 100, 200));
-
-            for (int row = startRow; row <= endRow; row++)
-            {
-                int colStart = (row == startRow) ? startCol : 0;
-                int colEnd = (row == endRow) ? endCol : _cols - 1;
-
-                double x = colStart * _cellWidth;
-                double y = row * _cellHeight;
-                double width = (colEnd - colStart + 1) * _cellWidth;
-
-                drawingContext.DrawRectangle(highlightBrush, null,
-                    new Rect(x, y, width, _cellHeight));
-            }
+            _renderer.Render(drawingContext, _cells, _cols, _rows, _cellWidth, _cellHeight, ctx);
         }
-
-        // Draw cursor (only when visible and not scrolled)
-        if (_scrollOffset == 0 && _parser != null && _parser.IsCursorVisible)
+        catch (Exception ex)
         {
-            var (cursorCol, cursorRow) = _parser.GetCursorPosition();
-            if (cursorCol >= 0 && cursorCol < _cols && cursorRow >= 0 && cursorRow < _rows)
-            {
-                var cursorBrush = GetCachedBrush(Color.FromArgb(180, 200, 200, 200));
-                drawingContext.DrawRectangle(cursorBrush, null,
-                    new Rect(cursorCol * _cellWidth, cursorRow * _cellHeight,
-                        _cellWidth, _cellHeight));
-            }
+            FileLog.Write($"[TerminalControl] OnRender FAILED ({_renderer.Name}): {ex.Message}");
+            var errorBrush = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+            errorBrush.Freeze();
+            drawingContext.DrawRectangle(errorBrush, null, new Rect(0, 0, ActualWidth, ActualHeight));
+            var errorText = new FormattedText(
+                $"Renderer error ({_renderer.Name}): {ex.Message}",
+                System.Globalization.CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                new Typeface("Consolas"),
+                12,
+                Brushes.Red,
+                _dpiScale);
+            drawingContext.DrawText(errorText, new Point(10, 10));
         }
     }
 

@@ -22,6 +22,7 @@ using CcDirector.Wpf.Backends;
 using System.IO;
 using System.Text.Json;
 using System.Windows.Media.Imaging;
+using CcDirector.Terminal;
 using CcDirector.Wpf.Controls;
 using CcDirector.Wpf.Voice;
 using CcDirector.VoskStt;
@@ -221,6 +222,9 @@ public partial class MainWindow : Window
 
         // Dispose Document Library
         DocumentLibraryView.Dispose();
+
+        // Dispose Content Writer
+        ContentWriterView.Dispose();
 
         // Dispose screenshot watcher
         _screenshotDebounceTimer?.Stop();
@@ -1201,7 +1205,7 @@ public partial class MainWindow : Window
     }
 
     // --- Sidebar Panel (QA / Communications full-area takeover) ---
-    private enum SidebarPanel { None, QuickActions, Communications, Documents, Connections }
+    private enum SidebarPanel { None, QuickActions, Communications, Documents, Connections, Writer }
     private SidebarPanel _activeSidebarPanel = SidebarPanel.None;
 
     private void BtnQuickActions_Click(object sender, RoutedEventArgs e)
@@ -1240,6 +1244,15 @@ public partial class MainWindow : Window
             ShowSidebarPanel(SidebarPanel.Connections);
     }
 
+    private void BtnWriter_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnWriter_Click");
+        if (_activeSidebarPanel == SidebarPanel.Writer)
+            HideSidebarPanel();
+        else
+            ShowSidebarPanel(SidebarPanel.Writer);
+    }
+
     private void ShowSidebarPanel(SidebarPanel panel)
     {
         FileLog.Write($"[MainWindow] ShowSidebarPanel: {panel}");
@@ -1264,6 +1277,15 @@ public partial class MainWindow : Window
             ? Visibility.Visible : Visibility.Collapsed;
         ConnectionsView.Visibility = panel == SidebarPanel.Connections
             ? Visibility.Visible : Visibility.Collapsed;
+        ContentWriterView.Visibility = panel == SidebarPanel.Writer
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        // Update Writer session list when shown
+        if (panel == SidebarPanel.Writer)
+        {
+            var sessionNames = _sessions.Select(s => s.DisplayName).ToList();
+            ContentWriterView.UpdateSessionList(sessionNames);
+        }
 
         // Start/stop CM polling
         if (panel == SidebarPanel.Communications)
@@ -1295,6 +1317,7 @@ public partial class MainWindow : Window
         CommunicationsView.Visibility = Visibility.Collapsed;
         DocumentLibraryView.Visibility = Visibility.Collapsed;
         ConnectionsView.Visibility = Visibility.Collapsed;
+        ContentWriterView.Visibility = Visibility.Collapsed;
 
         // Restore placeholder if no session selected
         if (SessionList.SelectedItem == null)
@@ -1572,8 +1595,14 @@ public partial class MainWindow : Window
                 try { OpenDocumentFile(path); }
                 catch (Exception ex) { FileLog.Write($"[MainWindow] TerminalControl.ViewFileRequested FAILED: {ex.Message}"); }
             };
+            _terminalControl.RendererBackgroundChanged += color =>
+            {
+                TerminalArea.Background = new SolidColorBrush(color);
+            };
+            ApplyRendererToTerminal(_terminalControl);
             _terminalControl.Attach(session);
             UpdateScrollBar();
+            RendererModePanel.Visibility = Visibility.Visible;
         }
 
         // Show session header banner
@@ -1610,6 +1639,7 @@ public partial class MainWindow : Window
         _activeEmbeddedBackend?.Hide();
         _activeEmbeddedBackend = null;
         TerminalArea.Child = null;
+        RendererModePanel.Visibility = Visibility.Collapsed;
 
         // Reset scrollbar
         TerminalScrollBar.Visibility = Visibility.Collapsed;
@@ -1849,6 +1879,117 @@ public partial class MainWindow : Window
         {
             FileLog.Write($"[MainWindow] CloseAllDocumentTabs_Click FAILED: {ex.Message}");
         }
+    }
+
+    // --- Renderer Mode ---
+
+    private static readonly SolidColorBrush RendererSelectedFg = FreezeBrush(0xCC, 0xCC, 0xCC);
+    private static readonly SolidColorBrush RendererDimFg = FreezeBrush(0x88, 0x88, 0x88);
+    private static readonly SolidColorBrush RendererAccentBorder = FreezeBrush(0x00, 0x7A, 0xCC);
+    private string _activeRendererMode = "ORG";
+
+    private void OnRendererMode_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (sender is not System.Windows.Controls.Button btn || btn.Tag is not string mode)
+                return;
+
+            FileLog.Write($"[MainWindow] OnRendererMode_Click: mode={mode}");
+            _activeRendererMode = mode;
+
+            var renderer = CreateRenderer(mode);
+            _terminalControl?.SetRenderer(renderer);
+
+            UpdateRendererModeButtons();
+            SaveRendererPreference(mode);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OnRendererMode_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private static CcDirector.Terminal.Rendering.ITerminalRenderer CreateRenderer(string mode)
+    {
+        return mode switch
+        {
+            "PRO" => new CcDirector.Terminal.Rendering.ProRenderer(),
+            "LITE" => new CcDirector.Terminal.Rendering.LiteRenderer(),
+            _ => new CcDirector.Terminal.Rendering.OriginalRenderer(),
+        };
+    }
+
+    private void ApplyRendererToTerminal(TerminalControl terminal)
+    {
+        var mode = LoadRendererPreference();
+        _activeRendererMode = mode;
+        var renderer = CreateRenderer(mode);
+        terminal.SetRenderer(renderer);
+
+        // Update TerminalArea background to match
+        TerminalArea.Background = new SolidColorBrush(renderer.GetBackgroundColor());
+        UpdateRendererModeButtons();
+    }
+
+    private void UpdateRendererModeButtons()
+    {
+        var buttons = new[] { ModeOrg, ModePro, ModeLite };
+        foreach (var btn in buttons)
+        {
+            bool isSelected = (btn.Tag as string) == _activeRendererMode;
+            btn.Foreground = isSelected ? RendererSelectedFg : RendererDimFg;
+            btn.BorderThickness = isSelected ? new Thickness(0, 0, 0, 2) : new Thickness(0);
+            btn.BorderBrush = isSelected ? RendererAccentBorder : null;
+        }
+    }
+
+    private static void SaveRendererPreference(string mode)
+    {
+        try
+        {
+            var configPath = CcDirector.Core.Storage.CcStorage.ConfigJson();
+            var dir = Path.GetDirectoryName(configPath)!;
+            if (!Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            Dictionary<string, object>? config = null;
+            if (File.Exists(configPath))
+            {
+                var json = File.ReadAllText(configPath);
+                config = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            }
+            config ??= new Dictionary<string, object>();
+            config["terminal.renderer"] = mode;
+
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(configPath, JsonSerializer.Serialize(config, options));
+            FileLog.Write($"[MainWindow] SaveRendererPreference: saved mode={mode}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] SaveRendererPreference FAILED: {ex.Message}");
+        }
+    }
+
+    private static string LoadRendererPreference()
+    {
+        try
+        {
+            var configPath = CcDirector.Core.Storage.CcStorage.ConfigJson();
+            if (!File.Exists(configPath))
+                return "ORG";
+
+            var json = File.ReadAllText(configPath);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("terminal.renderer", out var prop))
+                return prop.GetString() ?? "ORG";
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] LoadRendererPreference FAILED: {ex.Message}");
+        }
+        return "ORG";
     }
 
     /// <summary>
@@ -3555,9 +3696,12 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(path))
         {
             FileLog.Write($"[MainWindow] PromptInput_Drop: inserting path={path}");
+            var insertion = path + "\n";
             var idx = PromptInput.CaretIndex;
-            PromptInput.Text = PromptInput.Text.Insert(idx, path);
-            PromptInput.CaretIndex = idx + path.Length;
+            PromptInput.Text = PromptInput.Text.Insert(idx, insertion);
+            PromptInput.CaretIndex = idx + insertion.Length;
+            PromptInput.Select(PromptInput.CaretIndex, 0);
+            PromptInput.Focus();
         }
 
         e.Handled = true;

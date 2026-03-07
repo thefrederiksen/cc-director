@@ -15,11 +15,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CcDirector.Terminal\CcDirector.Terminal.csproj" />
     <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
     <ProjectReference Include="..\CcDirector.Engine\CcDirector.Engine.csproj" />
     <ProjectReference Include="..\CcDirector.VoskStt\CcDirector.VoskStt.csproj" />
     <ProjectReference Include="..\CcDirector.CommunicationManager\CcDirector.CommunicationManager.csproj" />
     <ProjectReference Include="..\CcDirector.DocumentLibrary\CcDirector.DocumentLibrary.csproj" />
+    <ProjectReference Include="..\CcDirector.ContentWriter\CcDirector.ContentWriter.csproj" />
   </ItemGroup>
 
   <ItemGroup>

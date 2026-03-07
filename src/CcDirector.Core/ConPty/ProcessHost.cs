@@ -146,6 +146,9 @@ public sealed class ProcessHost : IDisposable
             vars[key] = value;
         }
 
+        // Enable 24-bit color output from CLI tools
+        vars["COLORTERM"] = "truecolor";
+
         // Inject extra variables (e.g. CC_SESSION_ID)
         if (extraVars != null)
         {

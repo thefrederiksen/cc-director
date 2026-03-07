@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using CcDirector.Terminal;
 using CcDirector.Wpf.Controls;
 
 namespace CcDirector.Wpf.Teams.Utilities;

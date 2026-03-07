@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows.Threading;
 using CcDirector.Core.Sessions;
+using CcDirector.Terminal;
 using CcDirector.Wpf.Controls;
 using CcDirector.Wpf.Teams.Utilities;
 using Microsoft.Bot.Builder;

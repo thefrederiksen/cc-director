@@ -1,7 +1,6 @@
 using System.Windows.Media;
-using CcDirector.Core.Utilities;
 
-namespace CcDirector.Wpf.Helpers;
+namespace CcDirector.Terminal;
 
 /// <summary>
 /// VT100/ANSI escape sequence parser. Reads raw bytes and updates a TerminalCell grid.
@@ -53,6 +52,9 @@ public class AnsiParser
     private int _utf8Needed;  // remaining continuation bytes expected
     private int _utf8Len;     // bytes collected so far
 
+    // Optional log callback (replaces hard FileLog dependency)
+    private Action<string>? _logCallback;
+
     private enum ParserState
     {
         Ground,
@@ -84,7 +86,8 @@ public class AnsiParser
     };
 
     public AnsiParser(TerminalCell[,] cells, int cols, int rows,
-        List<TerminalCell[]> scrollback, int maxScrollback)
+        List<TerminalCell[]> scrollback, int maxScrollback,
+        Action<string>? logCallback = null)
     {
         _cells = cells;
         _cols = cols;
@@ -93,6 +96,7 @@ public class AnsiParser
         _scrollBottom = rows - 1;
         _scrollback = scrollback;
         _maxScrollback = maxScrollback;
+        _logCallback = logCallback;
     }
 
     public void UpdateGrid(TerminalCell[,] cells, int cols, int rows)
@@ -140,12 +144,12 @@ public class AnsiParser
         }
 
         sw.Stop();
-        if (sw.ElapsedMilliseconds > 20 || data.Length > 50000)
+        if (_logCallback != null && (sw.ElapsedMilliseconds > 20 || data.Length > 50000))
         {
             _slowParseCount++;
             if ((DateTime.UtcNow - _lastSlowParseLogTime).TotalSeconds >= 1)
             {
-                FileLog.Write($"[AnsiParser] Parse slow: {sw.ElapsedMilliseconds}ms, bytes={data.Length}, totalParsed={_totalBytesParsed}, slowCount={_slowParseCount}");
+                _logCallback($"[AnsiParser] Parse slow: {sw.ElapsedMilliseconds}ms, bytes={data.Length}, totalParsed={_totalBytesParsed}, slowCount={_slowParseCount}");
                 _lastSlowParseLogTime = DateTime.UtcNow;
                 _slowParseCount = 0;
             }
