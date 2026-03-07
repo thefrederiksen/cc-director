@@ -1,5 +1,5 @@
 @echo off
-powershell -ExecutionPolicy Bypass -File "%~dp0scripts\release.ps1" -Slot 1 %*
+powershell -ExecutionPolicy Bypass -File "%~dp0..\scripts\release.ps1" -Slot 1 %*
 if %ERRORLEVEL% neq 0 (
     echo.
     echo BUILD FAILED - see errors above
@@ -7,5 +7,5 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 echo.
-echo Exe location: %~dp0releases\cc-director1.exe
+echo Exe location: %~dp0cc-director1.exe
 pause
