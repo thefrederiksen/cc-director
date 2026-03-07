@@ -503,8 +503,8 @@ public class AnsiParser
                     if (!_reverse)
                     {
                         _reverse = true;
-                        var oldFg = _fg == default ? Colors.LightGray : _fg;
-                        var oldBg = _bg == default ? Color.FromRgb(30, 30, 30) : _bg;
+                        var oldFg = _fg == default ? Color.FromRgb(0x50, 0x50, 0x50) : _fg;
+                        var oldBg = _bg == default ? Color.FromRgb(0xE0, 0xE0, 0xE0) : _bg;
                         _fg = oldBg;
                         _bg = oldFg;
                     }
@@ -518,8 +518,8 @@ public class AnsiParser
                         _reverse = false;
                         var oldFg = _fg;
                         var oldBg = _bg;
-                        _fg = oldBg == Color.FromRgb(30, 30, 30) ? default : oldBg;
-                        _bg = oldFg == Colors.LightGray ? default : oldFg;
+                        _fg = oldBg == Color.FromRgb(0x50, 0x50, 0x50) ? default : oldBg;
+                        _bg = oldFg == Color.FromRgb(0xE0, 0xE0, 0xE0) ? default : oldFg;
                     }
                     break;
                 case >= 30 and <= 37:
