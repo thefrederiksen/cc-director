@@ -11,6 +11,7 @@ using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Terminal;
 using CcDirector.Terminal.Rendering;
+using CcDirector.Terminal.Rendering.CardView;
 
 namespace TerminalTest;
 
@@ -18,6 +19,7 @@ public partial class MainWindow : Window
 {
     // Live mode: uses real TerminalControl + Session (same as cc-director)
     private TerminalControl? _terminalControl;
+    private CardWebView? _cardWebView;
     private Session? _session;
 
     // Test mode: uses standalone TerminalView with synthetic data
@@ -230,6 +232,8 @@ public partial class MainWindow : Window
 
     private void CleanupLiveMode()
     {
+        _cardWebView?.Detach();
+        _cardWebView = null;
         if (_session != null)
         {
             _session.Dispose();
@@ -284,6 +288,37 @@ public partial class MainWindow : Window
         if (sender is not Button btn) return;
         var mode = btn.Tag?.ToString() ?? "ORG";
 
+        if (mode == "CARD" && _currentMode == "Live" && _session != null)
+        {
+            // Switch to CardWebView
+            if (_terminalControl != null)
+                _terminalControl.Visibility = Visibility.Collapsed;
+
+            if (_cardWebView == null)
+            {
+                _cardWebView = new CardWebView();
+                TerminalArea.Child = null;
+                var grid = new Grid();
+                if (_terminalControl != null)
+                {
+                    _terminalControl.Visibility = Visibility.Collapsed;
+                    grid.Children.Add(_terminalControl);
+                }
+                grid.Children.Add(_cardWebView);
+                TerminalArea.Child = grid;
+                _cardWebView.Attach(_session);
+            }
+            else
+            {
+                _cardWebView.Visibility = Visibility.Visible;
+            }
+            return;
+        }
+
+        // Switch back to cell-grid renderer
+        if (_cardWebView != null)
+            _cardWebView.Visibility = Visibility.Collapsed;
+
         ITerminalRenderer renderer = mode switch
         {
             "PRO" => new ProRenderer(),
@@ -292,9 +327,14 @@ public partial class MainWindow : Window
         };
 
         if (_currentMode == "Live" && _terminalControl != null)
+        {
+            _terminalControl.Visibility = Visibility.Visible;
             _terminalControl.SetRenderer(renderer);
+        }
         else if (_currentMode == "Test" && _terminalView != null)
+        {
             _terminalView.SetRenderer(renderer);
+        }
     }
 
     private void BtnCapture_Click(object sender, RoutedEventArgs e)

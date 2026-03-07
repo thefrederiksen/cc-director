@@ -1,0 +1,78 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background: #0e0e14;
+    font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 8px;
+    color: #d4d4d8;
+    overflow-x: hidden;
+}
+
+#content {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.block {
+    background: #1a1a24;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.06);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.status-bar {
+    background: #2a2a3a;
+    border-radius: 6px;
+    padding: 6px 12px;
+    margin: 0;
+    font-weight: bold;
+    border-left: 3px solid #007acc;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.line {
+    min-height: 1.5em;
+}
+
+a {
+    color: #7cb8ff;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+::selection {
+    background: rgba(59, 89, 152, 0.5);
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #0e0e14;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #3a3a4a;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #4a4a5a;
+}

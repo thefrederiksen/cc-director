@@ -23,6 +23,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows.Media.Imaging;
 using CcDirector.Terminal;
+using CcDirector.Terminal.Rendering.CardView;
 using CcDirector.Wpf.Controls;
 using CcDirector.Wpf.Voice;
 using CcDirector.VoskStt;
@@ -45,6 +46,7 @@ public partial class MainWindow : Window
     private bool _updatingScrollBar;
     private SessionManager _sessionManager = null!;
     private TerminalControl? _terminalControl;
+    private CardWebView? _cardWebView;
     private EmbeddedBackend? _activeEmbeddedBackend;
     private Session? _activeSession;
     private CancellationTokenSource? _enterRetryCts;
@@ -1636,6 +1638,11 @@ public partial class MainWindow : Window
             _terminalControl.Detach();
             _terminalControl = null;
         }
+        if (_cardWebView != null)
+        {
+            _cardWebView.Detach();
+            _cardWebView = null;
+        }
         _activeEmbeddedBackend?.Hide();
         _activeEmbeddedBackend = null;
         TerminalArea.Child = null;
@@ -1898,8 +1905,50 @@ public partial class MainWindow : Window
             FileLog.Write($"[MainWindow] OnRendererMode_Click: mode={mode}");
             _activeRendererMode = mode;
 
-            var renderer = CreateRenderer(mode);
-            _terminalControl?.SetRenderer(renderer);
+            if (mode == "CARD")
+            {
+                // Switch to CardWebView mode
+                if (_terminalControl != null)
+                    _terminalControl.Visibility = Visibility.Collapsed;
+
+                if (_cardWebView == null && _activeSession != null)
+                {
+                    _cardWebView = new CardWebView();
+                    TerminalArea.Child = null;
+
+                    // Use a Grid to hold both controls in the same space
+                    var grid = new System.Windows.Controls.Grid();
+                    if (_terminalControl != null)
+                    {
+                        _terminalControl.Visibility = Visibility.Collapsed;
+                        grid.Children.Add(_terminalControl);
+                    }
+                    grid.Children.Add(_cardWebView);
+                    TerminalArea.Child = grid;
+
+                    _cardWebView.Attach(_activeSession);
+                }
+                else if (_cardWebView != null)
+                {
+                    _cardWebView.Visibility = Visibility.Visible;
+                }
+
+                TerminalArea.Background = new SolidColorBrush(Color.FromRgb(0x0E, 0x0E, 0x14));
+            }
+            else
+            {
+                // Switch back to TerminalControl mode
+                if (_cardWebView != null)
+                    _cardWebView.Visibility = Visibility.Collapsed;
+
+                if (_terminalControl != null)
+                {
+                    _terminalControl.Visibility = Visibility.Visible;
+                    var renderer = CreateRenderer(mode);
+                    _terminalControl.SetRenderer(renderer);
+                    TerminalArea.Background = new SolidColorBrush(renderer.GetBackgroundColor());
+                }
+            }
 
             UpdateRendererModeButtons();
             SaveRendererPreference(mode);
@@ -1924,17 +1973,37 @@ public partial class MainWindow : Window
     {
         var mode = LoadRendererPreference();
         _activeRendererMode = mode;
-        var renderer = CreateRenderer(mode);
-        terminal.SetRenderer(renderer);
 
-        // Update TerminalArea background to match
-        TerminalArea.Background = new SolidColorBrush(renderer.GetBackgroundColor());
+        if (mode == "CARD" && _activeSession != null)
+        {
+            // CARD mode: hide terminal control, show CardWebView
+            terminal.SetRenderer(CreateRenderer("ORG")); // Set a default renderer on the hidden terminal
+            terminal.Visibility = Visibility.Collapsed;
+
+            _cardWebView = new CardWebView();
+            TerminalArea.Child = null;
+
+            var grid = new System.Windows.Controls.Grid();
+            grid.Children.Add(terminal);
+            grid.Children.Add(_cardWebView);
+            TerminalArea.Child = grid;
+
+            _cardWebView.Attach(_activeSession);
+            TerminalArea.Background = new SolidColorBrush(Color.FromRgb(0x0E, 0x0E, 0x14));
+        }
+        else
+        {
+            var renderer = CreateRenderer(mode);
+            terminal.SetRenderer(renderer);
+            TerminalArea.Background = new SolidColorBrush(renderer.GetBackgroundColor());
+        }
+
         UpdateRendererModeButtons();
     }
 
     private void UpdateRendererModeButtons()
     {
-        var buttons = new[] { ModeOrg, ModePro, ModeLite };
+        var buttons = new[] { ModeOrg, ModePro, ModeLite, ModeCard };
         foreach (var btn in buttons)
         {
             bool isSelected = (btn.Tag as string) == _activeRendererMode;

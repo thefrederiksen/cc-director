@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+/*CARD_STYLES*/
+</style>
+</head>
+<body>
+<div id="content">
+<!--CONTENT-->
+</div>
+<script>
+function appendHtml(fragment) {
+    var content = document.getElementById('content');
+    content.insertAdjacentHTML('beforeend', fragment);
+    window.scrollTo(0, document.body.scrollHeight);
+}
+
+function replaceAll(html) {
+    document.getElementById('content').innerHTML = html;
+    window.scrollTo(0, document.body.scrollHeight);
+}
+
+function scrollToBottom() {
+    window.scrollTo(0, document.body.scrollHeight);
+}
+</script>
+</body>
+</html>

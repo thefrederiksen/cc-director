@@ -12,6 +12,7 @@
             <Button x:Name="BtnOrg" Content="ORG" Width="50" Margin="4,2" Click="BtnRenderer_Click" Tag="ORG"/>
             <Button x:Name="BtnPro" Content="PRO" Width="50" Margin="4,2" Click="BtnRenderer_Click" Tag="PRO"/>
             <Button x:Name="BtnLite" Content="LITE" Width="50" Margin="4,2" Click="BtnRenderer_Click" Tag="LITE"/>
+            <Button x:Name="BtnCard" Content="CARD" Width="50" Margin="4,2" Click="BtnRenderer_Click" Tag="CARD"/>
             <Separator Width="10"/>
             <Button x:Name="BtnCapture" Content="Capture" Width="70" Margin="4,2" Click="BtnCapture_Click"/>
             <TextBlock x:Name="TxtStatus" Foreground="#888" VerticalAlignment="Center" Margin="10,0" Text="Starting..."/>

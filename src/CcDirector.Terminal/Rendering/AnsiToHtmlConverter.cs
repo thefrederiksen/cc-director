@@ -1,0 +1,264 @@
+using System.Text;
+
+namespace CcDirector.Terminal.Rendering;
+
+/// <summary>
+/// Converts a TerminalCell grid + scrollback into styled HTML.
+/// Works on the parsed cell grid (not raw bytes) so all cursor positioning,
+/// erasing, and scroll regions are already resolved by AnsiParser.
+/// </summary>
+public static class AnsiToHtmlConverter
+{
+    // Standard ANSI colors matching AnsiParser
+    private static readonly string[] AnsiColorsCss =
+    {
+        "#000000", "#CD3131", "#0DBC79", "#E5E510",
+        "#2472C8", "#BC3FBC", "#11A8CD", "#CCCCCC",
+        "#666666", "#F14C4C", "#23D18B", "#F5F543",
+        "#3B8EEA", "#D670D6", "#29B8DB", "#F2F2F2",
+    };
+
+    private static readonly string DefaultFg = "#D4D4D8";
+
+    /// <summary>
+    /// Convert scrollback lines + current visible grid into full HTML content.
+    /// Groups output into card-style blocks separated by empty lines.
+    /// </summary>
+    public static string ConvertToHtml(List<TerminalCell[]> scrollback, TerminalCell[,] cells, int cols, int rows)
+    {
+        var allLines = new List<string>();
+
+        // 1. Convert scrollback lines
+        foreach (var row in scrollback)
+        {
+            allLines.Add(RenderCellRow(row, row.Length));
+        }
+
+        // 2. Convert current grid rows
+        for (int r = 0; r < rows; r++)
+        {
+            allLines.Add(RenderGridRow(cells, cols, r));
+        }
+
+        // 3. Trim trailing empty lines
+        while (allLines.Count > 0 && string.IsNullOrEmpty(allLines[^1]))
+            allLines.RemoveAt(allLines.Count - 1);
+
+        // 4. Group lines into blocks (separated by 1+ empty lines)
+        var html = new StringBuilder();
+        var blockLines = new List<string>();
+
+        foreach (string line in allLines)
+        {
+            if (string.IsNullOrEmpty(line))
+            {
+                if (blockLines.Count > 0)
+                {
+                    html.Append(RenderBlock(blockLines));
+                    blockLines.Clear();
+                }
+            }
+            else
+            {
+                blockLines.Add(line);
+            }
+        }
+
+        // Flush remaining block
+        if (blockLines.Count > 0)
+            html.Append(RenderBlock(blockLines));
+
+        return html.ToString();
+    }
+
+    /// <summary>
+    /// Build the full HTML document with CSS and content.
+    /// </summary>
+    public static string BuildDocument(string templateHtml, string cssContent, string bodyHtml)
+    {
+        return templateHtml
+            .Replace("/*CARD_STYLES*/", cssContent)
+            .Replace("<!--CONTENT-->", bodyHtml);
+    }
+
+    private static string RenderBlock(List<string> lines)
+    {
+        if (lines.Count == 0)
+            return "";
+
+        // Detect if first line is reverse-video (status bar)
+        bool isStatusBar = lines[0].Contains("class=\"rv\"");
+
+        string cssClass = isStatusBar ? "status-bar" : "block";
+        var sb = new StringBuilder();
+        sb.Append($"<div class=\"{cssClass}\">");
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            sb.Append($"<div class=\"line\">{lines[i]}</div>");
+        }
+
+        sb.Append("</div>\n");
+        return sb.ToString();
+    }
+
+    private static string RenderGridRow(TerminalCell[,] cells, int cols, int row)
+    {
+        // cells is [cols, rows] (column-first, matching AnsiParser)
+        // Find last non-empty column to trim trailing spaces
+        int lastCol = -1;
+        for (int c = cols - 1; c >= 0; c--)
+        {
+            char ch = cells[c, row].Character;
+            if (ch != '\0' && ch != ' ')
+            {
+                lastCol = c;
+                break;
+            }
+            if (cells[c, row].Background != default)
+            {
+                lastCol = c;
+                break;
+            }
+        }
+
+        if (lastCol < 0)
+            return "";
+
+        return RenderCells(cells, cols, row, lastCol + 1);
+    }
+
+    private static string RenderCellRow(TerminalCell[] row, int count)
+    {
+        // Find last non-empty cell
+        int lastCol = -1;
+        for (int c = count - 1; c >= 0; c--)
+        {
+            char ch = row[c].Character;
+            if (ch != '\0' && ch != ' ')
+            {
+                lastCol = c;
+                break;
+            }
+            if (row[c].Background != default)
+            {
+                lastCol = c;
+                break;
+            }
+        }
+
+        if (lastCol < 0)
+            return "";
+
+        var sb = new StringBuilder();
+        var runSb = new StringBuilder();
+        var runStyle = "";
+
+        for (int c = 0; c <= lastCol; c++)
+        {
+            var cell = row[c];
+            char ch = cell.Character;
+            if (ch == '\0') ch = ' ';
+
+            string style = CellStyle(cell);
+
+            if (style != runStyle)
+            {
+                FlushRun(sb, runSb, runStyle);
+                runStyle = style;
+            }
+
+            AppendChar(runSb, ch);
+        }
+
+        FlushRun(sb, runSb, runStyle);
+        return sb.ToString();
+    }
+
+    private static string RenderCells(TerminalCell[,] cells, int cols, int row, int endCol)
+    {
+        // cells is [cols, rows] (column-first, matching AnsiParser)
+        var sb = new StringBuilder();
+        var runSb = new StringBuilder();
+        var runStyle = "";
+
+        for (int c = 0; c < endCol; c++)
+        {
+            var cell = cells[c, row];
+            char ch = cell.Character;
+            if (ch == '\0') ch = ' ';
+
+            string style = CellStyle(cell);
+
+            if (style != runStyle)
+            {
+                FlushRun(sb, runSb, runStyle);
+                runStyle = style;
+            }
+
+            AppendChar(runSb, ch);
+        }
+
+        FlushRun(sb, runSb, runStyle);
+        return sb.ToString();
+    }
+
+    private static void FlushRun(StringBuilder output, StringBuilder run, string style)
+    {
+        if (run.Length == 0) return;
+
+        if (string.IsNullOrEmpty(style))
+        {
+            output.Append(run);
+        }
+        else
+        {
+            output.Append($"<span style=\"{style}\">{run}</span>");
+        }
+
+        run.Clear();
+    }
+
+    private static void AppendChar(StringBuilder sb, char ch)
+    {
+        switch (ch)
+        {
+            case '<': sb.Append("&lt;"); break;
+            case '>': sb.Append("&gt;"); break;
+            case '&': sb.Append("&amp;"); break;
+            case '"': sb.Append("&quot;"); break;
+            default: sb.Append(ch); break;
+        }
+    }
+
+    private static string CellStyle(TerminalCell cell)
+    {
+        var parts = new List<string>(4);
+
+        if (cell.Foreground != default)
+        {
+            string fg = ColorToCss(cell.Foreground);
+            if (fg != DefaultFg)
+                parts.Add($"color:{fg}");
+        }
+
+        if (cell.Background != default)
+            parts.Add($"background:{ColorToCss(cell.Background)}");
+
+        if (cell.Bold)
+            parts.Add("font-weight:bold");
+
+        if (cell.Italic)
+            parts.Add("font-style:italic");
+
+        if (cell.Underline)
+            parts.Add("text-decoration:underline");
+
+        return parts.Count > 0 ? string.Join(";", parts) : "";
+    }
+
+    private static string ColorToCss(System.Windows.Media.Color c)
+    {
+        return $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+    }
+}

@@ -9,6 +9,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Rendering\CardView\card-template.html" />
+    <EmbeddedResource Include="Rendering\CardView\card-style.css" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
   </ItemGroup>
 

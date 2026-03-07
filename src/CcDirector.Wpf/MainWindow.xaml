@@ -924,6 +924,12 @@
                                     BorderThickness="0" Padding="8,6"
                                     FontSize="11" FontWeight="SemiBold"
                                     Cursor="Hand" Height="28" />
+                            <Button x:Name="ModeCard" Content="CARD" Tag="CARD"
+                                    Click="OnRendererMode_Click"
+                                    Background="Transparent" Foreground="#888888"
+                                    BorderThickness="0" Padding="8,6"
+                                    FontSize="11" FontWeight="SemiBold"
+                                    Cursor="Hand" Height="28" />
                         </StackPanel>
 
                         <!-- Close All Docs button (floats top-right of tab strip) -->
