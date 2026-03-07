@@ -1107,10 +1107,11 @@ def add_contact(email: str, name: str, account: str, **kwargs) -> int:
         conn.close()
 
 
-def get_contact(identifier: str) -> Optional[dict]:
+def get_contact(identifier) -> Optional[dict]:
     """Get a contact by email or partial name match."""
     if not identifier:
         return None
+    identifier = str(identifier)
 
     init_db(silent=True)
     conn = get_db()
@@ -1131,9 +1132,10 @@ def get_contact(identifier: str) -> Optional[dict]:
 
     if not row:
         # Try partial name match (case-insensitive)
+        search_term = f"%{identifier.lower()}%"
         cursor.execute(
             "SELECT * FROM contacts WHERE LOWER(name) LIKE ? OR LOWER(nickname) LIKE ?",
-            (f"%{identifier.lower()}%", f"%{identifier.lower()}%")
+            (search_term, search_term)
         )
         row = cursor.fetchone()
 
@@ -2654,6 +2656,58 @@ def add_interaction(
     conn.commit()
     conn.close()
 
+    return interaction_id
+
+
+def add_interaction_direct(
+    contact_id: int,
+    interaction_type: str,
+    interaction_date: str,
+    direction: Optional[str] = None,
+    subject: Optional[str] = None,
+    summary: Optional[str] = None,
+    content: Optional[str] = None,
+    sentiment: Optional[str] = None,
+    action_required: bool = False,
+    action_description: Optional[str] = None,
+    message_id: Optional[str] = None,
+    account: Optional[str] = None,
+    source_url: Optional[str] = None,
+) -> int:
+    """Log an interaction using contact_id directly (no re-lookup)."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if message_id:
+        cursor.execute(
+            "SELECT id FROM interactions WHERE message_id = ?", (message_id,)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return -existing[0]
+
+    cursor.execute("""
+        INSERT INTO interactions
+        (contact_id, type, direction, subject, summary, content, sentiment,
+         action_required, action_description, message_id, interaction_date,
+         account, source_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        contact_id, interaction_type, direction, subject, summary, content,
+        sentiment, 1 if action_required else 0, action_description, message_id,
+        interaction_date, account, source_url
+    ))
+
+    interaction_id = cursor.lastrowid
+
+    cursor.execute(
+        "UPDATE contacts SET last_contact = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (interaction_date.split('T')[0] if 'T' in interaction_date else interaction_date, contact_id)
+    )
+
+    conn.commit()
+    conn.close()
     return interaction_id
 
 

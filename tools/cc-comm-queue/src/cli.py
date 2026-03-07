@@ -1,5 +1,6 @@
 """CLI for cc-comm-queue - Communication Manager Queue Tool."""
 
+import atexit
 import json
 import logging
 import re
@@ -7,6 +8,28 @@ import os
 import sys
 from pathlib import Path
 from typing import List, Optional
+
+# Force unbuffered stdout/stderr for PyInstaller frozen executables.
+# Without this, output may be swallowed when the parent process reads via pipe.
+if getattr(sys, 'frozen', False):
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(write_through=True)
+        sys.stderr.reconfigure(write_through=True)
+    else:
+        # Python < 3.7 fallback
+        sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+        sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+
+    def _flush_on_exit():
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+    atexit.register(_flush_on_exit)
 
 import typer
 from rich.console import Console
@@ -44,7 +67,8 @@ app = typer.Typer(
 config_app = typer.Typer(help="Configuration management")
 app.add_typer(config_app, name="config")
 
-console = Console()
+_is_tty = sys.stdout.isatty()
+console = Console(force_terminal=_is_tty, no_color=not _is_tty)
 
 
 def get_config():
@@ -836,20 +860,34 @@ def send_cmd(
         return
 
     # Resolve cc-browser path (frozen exes may not inherit PATH)
+    # IMPORTANT: On Windows, .cmd wrappers use cmd.exe which truncates
+    # arguments at newlines. We must call node + cli.mjs directly to
+    # pass multi-line content (e.g., paste --text with message body).
     import shutil
-    cc_browser_path = shutil.which("cc-browser") or shutil.which("cc-browser.cmd")
-    if not cc_browser_path:
-        # Fallback to known install location
-        cc_browser_path = os.path.join(
-            os.environ.get("LOCALAPPDATA", ""), "cc-director", "bin", "cc-browser.cmd"
-        )
+    cc_browser_bin = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""), "cc-director", "bin"
+    )
+    cc_browser_cli = os.path.join(cc_browser_bin, "_cc-browser", "src", "cli.mjs")
+    node_path = shutil.which("node")
+
+    if not node_path or not os.path.exists(cc_browser_cli):
+        # Fallback: try the .cmd wrapper (won't work for multi-line paste)
+        cc_browser_path = shutil.which("cc-browser") or shutil.which("cc-browser.cmd")
+        if not cc_browser_path:
+            cc_browser_path = os.path.join(cc_browser_bin, "cc-browser.cmd")
         if not os.path.exists(cc_browser_path):
             console.print("[red]ERROR:[/red] cc-browser not found on PATH or in default location")
             raise typer.Exit(1)
+        use_node_direct = False
+    else:
+        use_node_direct = True
 
     def run_browser(args, check=True):
         """Run a cc-browser command and return stdout."""
-        cmd = [cc_browser_path, "-c", "linkedin"] + args
+        if use_node_direct:
+            cmd = [node_path, cc_browser_cli, "-c", "linkedin"] + args
+        else:
+            cmd = [cc_browser_path, "-c", "linkedin"] + args
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding='utf-8', errors='replace')
         if check and result.returncode != 0:
             err = (result.stderr or '').strip() or (result.stdout or '').strip()
@@ -858,7 +896,10 @@ def send_cmd(
 
     def run_browser_raw(args):
         """Run a cc-browser command without -c linkedin."""
-        cmd = [cc_browser_path] + args
+        if use_node_direct:
+            cmd = [node_path, cc_browser_cli] + args
+        else:
+            cmd = [cc_browser_path] + args
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding='utf-8', errors='replace')
         return (result.stdout or '').strip()
 
@@ -900,7 +941,14 @@ def send_cmd(
             console.print(f"[red]ERROR:[/red] Session expired -- login required")
             raise typer.Exit(1)
 
-        # Step 4: Find and click Message button
+        # Step 4: Check connection status and find Message button
+        # If "Invite ... to connect" is present, this person is NOT a 1st-degree
+        # connection. The Message button would open InMail, not regular chat.
+        invite_match = re.search(r'button "Invite ' + re.escape(first_name) + r'[^"]*to connect"', snapshot)
+        if invite_match:
+            console.print(f"[red]ERROR:[/red] {first_name} is not a 1st-degree connection. Cannot send regular message.")
+            raise typer.Exit(1)
+
         # LinkedIn may show "Message Allan" or "Message Allan J." -- match prefix
         msg_match = re.search(r'button "(Message ' + re.escape(first_name) + r'[^"]*)" \[ref=(e\d+)\]', snapshot)
         if not msg_match:
@@ -914,19 +962,27 @@ def send_cmd(
         jitter(3)
 
         # Step 5: Close any stale overlays, find the right textbox
-        snapshot = run_browser(["snapshot", "--interactive"])
-
-        # Close other overlays if present
-        for close_match in re.finditer(r'text "Close your conversation with (?!.*' + re.escape(first_name) + r').*?"', snapshot):
-            close_text = close_match.group(0).replace('text "', '').rstrip('"')
-            run_browser(["click", "--text", close_text], check=False)
-            jitter(1)
+        textbox_match = None
+        for attempt in range(3):
             snapshot = run_browser(["snapshot", "--interactive"])
 
-        # Find textbox
-        textbox_match = re.search(r'textbox "Write a message.*?" \[ref=(e\d+)\]', snapshot)
+            # Close other overlays if present
+            for close_match in re.finditer(r'text "Close your conversation with (?!.*' + re.escape(first_name) + r').*?"', snapshot):
+                close_text = close_match.group(0).replace('text "', '').rstrip('"')
+                run_browser(["click", "--text", close_text], check=False)
+                jitter(1)
+                snapshot = run_browser(["snapshot", "--interactive"])
+
+            # Find textbox
+            textbox_match = re.search(r'textbox "Write a message.*?" \[ref=(e\d+)\]', snapshot)
+            if textbox_match:
+                break
+            if attempt < 2:
+                console.print(f"  [dim]Waiting for chat overlay (attempt {attempt + 2}/3)...[/dim]")
+                jitter(3)
+
         if not textbox_match:
-            console.print(f"[red]ERROR:[/red] No message textbox found")
+            console.print(f"[red]ERROR:[/red] No message textbox found after 3 attempts")
             raise typer.Exit(1)
 
         # Step 6: Focus and paste
@@ -979,10 +1035,24 @@ def send_cmd(
 
     except subprocess.TimeoutExpired:
         console.print("[red]ERROR:[/red] Browser command timed out")
+        try:
+            run_browser_raw(["connections", "close", "linkedin"])
+        except Exception:
+            pass
         raise typer.Exit(1)
     except RuntimeError as e:
         console.print(f"[red]ERROR:[/red] {e}")
+        try:
+            run_browser_raw(["connections", "close", "linkedin"])
+        except Exception:
+            pass
         raise typer.Exit(1)
+    except typer.Exit:
+        try:
+            run_browser_raw(["connections", "close", "linkedin"])
+        except Exception:
+            pass
+        raise
 
 
 # =============================================================================
