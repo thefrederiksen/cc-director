@@ -5,66 +5,72 @@
         AllowsTransparency="True"
         Background="Transparent"
         WindowStartupLocation="CenterScreen"
-        Width="480" Height="320"
+        Width="480" Height="300"
         ResizeMode="NoResize"
         Topmost="True"
         ShowInTaskbar="False">
 
     <Border Background="#1E1E1E" CornerRadius="8" BorderBrush="#3C3C3C" BorderThickness="1">
-        <Grid>
+        <Grid Margin="32,28,32,20">
             <Grid.RowDefinitions>
-                <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <!-- CC Logo: simple terminal prompt style -->
-            <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,0,0,24">
+            <!-- Logo -->
+            <StackPanel Grid.Row="0" HorizontalAlignment="Left">
                 <TextBlock Text="CC"
                            FontFamily="Cascadia Mono, Consolas, Courier New"
-                           FontSize="64"
+                           FontSize="56"
                            FontWeight="Bold"
                            Foreground="#007ACC"
-                           HorizontalAlignment="Center" />
+                           Margin="0,0,0,-6" />
                 <TextBlock Text="DIRECTOR"
                            FontFamily="Cascadia Mono, Consolas, Courier New"
-                           FontSize="16"
+                           FontSize="15"
                            Foreground="#666666"
-                           HorizontalAlignment="Center"
-                           Margin="0,-4,0,0" />
+                           Padding="1,0,0,0" />
             </StackPanel>
 
-            <!-- "Embrace the ugly" + blinking cursor -->
-            <StackPanel Grid.Row="2" HorizontalAlignment="Center" Orientation="Horizontal">
-                <TextBlock Text="&gt; Embrace the ugly"
-                           FontFamily="Cascadia Mono, Consolas, Courier New"
-                           FontSize="16"
-                           Foreground="#CCCCCC" />
-                <TextBlock x:Name="BlinkingCursor" Text="_"
-                           FontFamily="Cascadia Mono, Consolas, Courier New"
-                           FontSize="16"
-                           Foreground="#CCCCCC">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Style.Resources>
-                                <Storyboard x:Key="BlinkAnimation">
-                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                                     From="1" To="0"
-                                                     Duration="0:0:0.5"
-                                                     AutoReverse="True"
-                                                     RepeatBehavior="Forever" />
-                                </Storyboard>
-                            </Style.Resources>
-                            <Style.Triggers>
-                                <EventTrigger RoutedEvent="Loaded">
-                                    <BeginStoryboard Storyboard="{StaticResource BlinkAnimation}" />
-                                </EventTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
+            <!-- Accent line -->
+            <Rectangle Grid.Row="1"
+                       Height="2"
+                       Fill="#007ACC"
+                       HorizontalAlignment="Left"
+                       Width="60"
+                       Margin="0,12,0,0" />
+
+            <!-- Version and date -->
+            <StackPanel Grid.Row="2" VerticalAlignment="Bottom" Margin="0,0,0,8">
+                <TextBlock x:Name="VersionText"
+                           FontFamily="Segoe UI"
+                           FontSize="12"
+                           Foreground="#888888" />
+                <TextBlock x:Name="DateText"
+                           FontFamily="Segoe UI"
+                           FontSize="11"
+                           Foreground="#555555"
+                           Margin="0,2,0,0" />
             </StackPanel>
+
+            <!-- Footer: creator + loading -->
+            <DockPanel Grid.Row="3">
+                <TextBlock Text="Soren Frederiksen"
+                           FontFamily="Segoe UI"
+                           FontSize="11"
+                           Foreground="#555555"
+                           VerticalAlignment="Center" />
+                <TextBlock x:Name="StatusText"
+                           Text="Loading..."
+                           FontFamily="Segoe UI"
+                           FontSize="11"
+                           FontStyle="Italic"
+                           Foreground="#555555"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center" />
+            </DockPanel>
         </Grid>
     </Border>
 </Window>
