@@ -1,5 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <AssemblyName>cc-director-setup</AssemblyName>
@@ -7,15 +6,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
-
   <ItemGroup>
     <Resource Include="app.ico" />
   </ItemGroup>
-
 </Project>

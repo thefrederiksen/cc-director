@@ -1,5 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <AssemblyName>cc-director</AssemblyName>
@@ -7,13 +6,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\CcDirector.Terminal\CcDirector.Terminal.csproj" />
     <ProjectReference Include="..\CcDirector.Core\CcDirector.Core.csproj" />
@@ -23,7 +21,6 @@
     <ProjectReference Include="..\CcDirector.DocumentLibrary\CcDirector.DocumentLibrary.csproj" />
     <ProjectReference Include="..\CcDirector.ContentWriter\CcDirector.ContentWriter.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="Microsoft.Bot.Builder" Version="4.22.9" />
     <PackageReference Include="Microsoft.Bot.Builder.Integration.AspNet.Core" Version="4.22.9" />
@@ -38,15 +35,12 @@
     <PackageReference Include="Markdig" Version="0.38.0" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.*" />
   </ItemGroup>
-
   <ItemGroup>
     <Resource Include="app.ico" />
   </ItemGroup>
-
   <ItemGroup>
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-
 </Project>
