@@ -12,13 +12,28 @@ public partial class WelcomeStep : UserControl
     private InstallProfile _profile;
     private readonly Action<InstallProfile> _onProfileChanged;
 
-    public WelcomeStep(InstallProfile initial, Action<InstallProfile> onProfileChanged)
+    public WelcomeStep(InstallProfile initial, Action<InstallProfile> onProfileChanged,
+        bool isUpdate, string? installedVersion)
     {
         InitializeComponent();
         _profile = initial;
         _onProfileChanged = onProfileChanged;
         UpdateSelection();
-        SetupLog.Write($"[WelcomeStep] Created with profile={initial}");
+
+        if (isUpdate)
+        {
+            TitleText.Text = "Update CC Director";
+            DescriptionText.Text = "A new version is available. Select your profile and click Next to update.";
+            ProfilePromptText.Text = "Choose your update profile:";
+
+            if (installedVersion != null)
+            {
+                VersionInfoText.Text = $"Currently installed: v{installedVersion}";
+                VersionInfoText.Visibility = Visibility.Visible;
+            }
+        }
+
+        SetupLog.Write($"[WelcomeStep] Created: profile={initial}, isUpdate={isUpdate}");
     }
 
     public void UpdateProfile(ref InstallProfile profile)

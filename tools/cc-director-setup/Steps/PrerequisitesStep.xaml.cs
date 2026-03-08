@@ -12,13 +12,17 @@ public partial class PrerequisitesStep : UserControl
     private readonly Action<List<PrerequisiteInfo>> _onChecksComplete;
     private List<PrerequisiteInfo> _items;
 
-    public PrerequisitesStep(Action<List<PrerequisiteInfo>> onChecksComplete)
+    public PrerequisitesStep(Action<List<PrerequisiteInfo>> onChecksComplete, bool isUpdate)
     {
         InitializeComponent();
         _onChecksComplete = onChecksComplete;
         _items = PrerequisiteChecker.CreateChecklist();
         PrereqList.ItemsSource = _items;
-        SetupLog.Write("[PrerequisitesStep] Created");
+
+        if (isUpdate)
+            SubtitleText.Text = "Verifying your environment...";
+
+        SetupLog.Write($"[PrerequisitesStep] Created: isUpdate={isUpdate}");
     }
 
     public async void RunChecks()

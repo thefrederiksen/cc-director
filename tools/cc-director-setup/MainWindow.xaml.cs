@@ -16,6 +16,9 @@ public partial class MainWindow : Window
     private int _skippedCount;
     private string _installPath = "";
 
+    private readonly bool _isUpdate;
+    private readonly string? _installedVersion;
+
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
     private InstallStep? _installStep;
@@ -27,7 +30,18 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        SetupLog.Write("[MainWindow] Started");
+
+        _isUpdate = InstallDetector.IsInstalled();
+        _installedVersion = _isUpdate ? InstallDetector.GetInstalledVersion() : null;
+        SetupLog.Write($"[MainWindow] Started: isUpdate={_isUpdate}, installedVersion={_installedVersion}");
+
+        if (_isUpdate)
+        {
+            Title = "CC Director Update";
+            SubtitleText.Text = "Update";
+            Step3Label.Text = "Update";
+        }
+
         ShowStep(1);
     }
 
@@ -51,12 +65,15 @@ public partial class MainWindow : Window
 
         StepContent.Content = step switch
         {
-            1 => _welcomeStep ??= new WelcomeStep(_selectedProfile, p => _selectedProfile = p),
-            2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked),
+            1 => _welcomeStep ??= new WelcomeStep(_selectedProfile, p => _selectedProfile = p, _isUpdate, _installedVersion),
+            2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
             3 => _installStep ??= new InstallStep(),
-            4 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath),
+            4 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate),
             _ => null
         };
+
+        if (step == 3 && _isUpdate)
+            _installStep?.SetUpdateMode();
 
         // Trigger prerequisite check when entering step 2
         if (step == 2)
@@ -122,7 +139,7 @@ public partial class MainWindow : Window
         }
         else if (_currentStep == 3)
         {
-            NextButton.Content = "Installing...";
+            NextButton.Content = _isUpdate ? "Updating..." : "Installing...";
             NextButton.IsEnabled = false;
         }
         else if (_currentStep == 2)
@@ -180,7 +197,10 @@ public partial class MainWindow : Window
 
         var (version, assets) = releaseResult.Value;
         VersionText.Text = version;
-        _installStep?.SetStatus($"Installing from {version}...");
+        var statusText = _isUpdate && _installedVersion != null
+            ? $"Updating from v{_installedVersion} to {version}..."
+            : $"Installing {version}...";
+        _installStep?.SetStatus(statusText);
 
         var (installed, skipped) = await installer.InstallToolsAsync(downloadItems, assets);
         _installedCount = installed;
@@ -188,6 +208,14 @@ public partial class MainWindow : Window
 
         // Add to PATH
         PathManager.AddToPath(_installPath);
+
+        // Create Start Menu shortcut
+        var directorExe = Path.Combine(_installPath, "cc-director.exe");
+        if (File.Exists(directorExe))
+        {
+            _installStep?.SetStatus("Creating Start Menu shortcut...");
+            ShortcutCreator.CreateStartMenuShortcut(directorExe);
+        }
 
         // Install skills
         _installStep?.SetStatus("Installing skills...");

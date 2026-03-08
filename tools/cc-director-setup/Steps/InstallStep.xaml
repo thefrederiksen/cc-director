@@ -3,7 +3,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <DockPanel>
         <StackPanel DockPanel.Dock="Top">
-            <TextBlock Text="Installing"
+            <TextBlock x:Name="HeadingText"
+                       Text="Installing"
                        Foreground="White"
                        FontSize="22"
                        FontWeight="SemiBold" />

@@ -10,14 +10,22 @@ public partial class CompleteStep : UserControl
 {
     private readonly string _installPath;
 
-    public CompleteStep(int installed, int skipped, string installPath)
+    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate)
     {
         InitializeComponent();
         _installPath = installPath;
         InstalledText.Text = installed.ToString();
         SkippedText.Text = skipped.ToString();
         PathText.Text = installPath;
-        SetupLog.Write($"[CompleteStep] Created: installed={installed}, skipped={skipped}");
+
+        if (isUpdate)
+        {
+            HeadingText.Text = "Update Complete";
+            DescriptionText.Text = "CC Director tools have been updated successfully.";
+            PathNote.Visibility = Visibility.Collapsed;
+        }
+
+        SetupLog.Write($"[CompleteStep] Created: installed={installed}, skipped={skipped}, isUpdate={isUpdate}");
     }
 
     private void LaunchButton_Click(object sender, RoutedEventArgs e)

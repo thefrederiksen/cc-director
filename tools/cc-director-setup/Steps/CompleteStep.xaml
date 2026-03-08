@@ -2,12 +2,14 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <StackPanel>
-        <TextBlock Text="Setup Complete"
+        <TextBlock x:Name="HeadingText"
+                   Text="Setup Complete"
                    Foreground="#22C55E"
                    FontSize="22"
                    FontWeight="SemiBold" />
 
-        <TextBlock Text="CC Director tools have been installed successfully."
+        <TextBlock x:Name="DescriptionText"
+                   Text="CC Director tools have been installed successfully."
                    Foreground="{StaticResource TextForeground}"
                    FontSize="13"
                    Margin="0,12,0,24"
@@ -89,7 +91,8 @@
         </Button>
 
         <!-- Note about terminal PATH -->
-        <TextBlock Text="NOTE: Open a new terminal for cc-* commands to be available on PATH."
+        <TextBlock x:Name="PathNote"
+                   Text="NOTE: Open a new terminal for cc-* commands to be available on PATH."
                    Foreground="#666666"
                    FontSize="11"
                    TextWrapping="Wrap" />

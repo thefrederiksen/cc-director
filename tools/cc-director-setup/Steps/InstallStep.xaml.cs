@@ -69,6 +69,11 @@ public partial class InstallStep : UserControl
         }
     }
 
+    public void SetUpdateMode()
+    {
+        HeadingText.Text = "Updating";
+    }
+
     public void SetStatus(string status)
     {
         StatusText.Text = status;
