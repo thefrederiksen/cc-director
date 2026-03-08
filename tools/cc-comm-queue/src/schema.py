@@ -18,6 +18,7 @@ class Platform(str, Enum):
     BLOG = "blog"
     FACEBOOK = "facebook"
     WHATSAPP = "whatsapp"
+    MEDIUM = "medium"
 
 
 class ContentType(str, Enum):

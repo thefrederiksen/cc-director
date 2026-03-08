@@ -9,7 +9,9 @@
     "nativeMessaging",
     "activeTab",
     "cookies",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "debugger",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"

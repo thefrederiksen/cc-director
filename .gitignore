@@ -77,3 +77,6 @@ tools/cc-fox-browser/package-lock.json
 
 # Terminal test screenshots (may contain PII)
 playground/terminal-test/*.png
+
+# Playwright CLI session artifacts
+.playwright-cli/

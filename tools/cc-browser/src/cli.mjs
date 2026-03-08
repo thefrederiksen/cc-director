@@ -5,7 +5,7 @@
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -15,6 +15,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DAEMON_PORT = 9280;
+
+const MIME_TYPES = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp',
+  pdf: 'application/pdf', txt: 'text/plain', html: 'text/html',
+  json: 'application/json', xml: 'application/xml',
+  mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg',
+  zip: 'application/zip', csv: 'text/csv',
+};
+
+function guessMimeType(filename) {
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+  return MIME_TYPES[ext] || 'application/octet-stream';
+}
 
 function getLockfilePath() {
   const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
@@ -399,6 +413,8 @@ async function cmdBrowserAction(command, connectionName, rest) {
       if (flags.maxChars) body.maxChars = parseInt(flags.maxChars, 10);
       if (flags.selector) body.selector = flags.selector;
       if (flags['no-limit']) body.maxChars = 0;
+      body._filename = flags.filename || null;
+      if (flags.full) body._full = true;
       break;
 
     case 'click':
@@ -473,14 +489,19 @@ async function cmdBrowserAction(command, connectionName, rest) {
       body.type = flags.type || 'png';
       body.quality = flags.quality ? parseInt(flags.quality, 10) : 80;
       body._output = flags.output || flags.o;
+      body.fullPage = flags['full-page'] || false;
       break;
 
-    case 'paste':
+    case 'paste': {
       body.ref = flags.ref;
       body.selector = flags.selector;
-      body.value = flags.text || flags.value || flags._positional;
+      const rawPaste = flags.text || flags.value || flags._positional;
+      body.value = rawPaste ? rawPaste.replace(/\\n/g, '\n') : rawPaste;
       body.clear = flags.clear !== 'false';
+      body.format = flags.format;
+      if (flags.html) body.html = flags.html;
       break;
+    }
 
     case 'back':
     case 'forward':
@@ -533,6 +554,52 @@ async function cmdBrowserAction(command, connectionName, rest) {
     case 'info':
       break;
 
+    case 'upload':
+      body.ref = flags.ref;
+      body.selector = flags.selector;
+      body.data = flags.data;
+      body.filename = flags.filename;
+      body.mimeType = flags.mimeType || flags['mime-type'];
+      break;
+
+    case 'dialog-accept':
+      body.text = flags.text || flags._positional || '';
+      break;
+
+    case 'dialog-dismiss':
+      break;
+
+    case 'check':
+      body.ref = flags.ref || flags._positional;
+      body.text = flags.text;
+      body.selector = flags.selector;
+      break;
+
+    case 'uncheck':
+      body.ref = flags.ref || flags._positional;
+      body.text = flags.text;
+      body.selector = flags.selector;
+      break;
+
+    case 'set-file': {
+      body.ref = flags.ref;
+      body.selector = flags.selector;
+      const filePath = flags.file || flags._positional;
+      if (!filePath) {
+        console.error('Usage: cc-browser set-file --selector "input[type=file]" --file path/to/file.png');
+        process.exit(1);
+      }
+      if (!existsSync(filePath)) {
+        console.error(`File not found: ${filePath}`);
+        process.exit(1);
+      }
+      const fileBuffer = readFileSync(filePath);
+      body.data = fileBuffer.toString('base64');
+      body.filename = flags.filename || filePath.split(/[\\/]/).pop();
+      body.mimeType = flags.mimeType || flags['mime-type'] || guessMimeType(body.filename);
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command}`);
       process.exit(1);
@@ -542,10 +609,60 @@ async function cmdBrowserAction(command, connectionName, rest) {
 
   // Format output
   if (command === 'snapshot') {
-    console.log(data.snapshot);
-    if (data.stats) {
-      console.error(`--- ${data.stats.refs} refs, ${data.stats.interactive} interactive, ${data.stats.chars} chars ---`);
+    // --full: old behavior, dump entire tree to stdout
+    if (body._full) {
+      console.log(data.snapshot);
+      if (data.stats) {
+        console.error(`--- ${data.stats.refs} refs, ${data.stats.interactive} interactive, ${data.stats.chars} chars ---`);
+      }
+    } else {
+    // Default: save full snapshot to disk, print summary to stdout
+    const snapshotDir = '.cc-browser';
+    if (!existsSync(snapshotDir)) mkdirSync(snapshotDir, { recursive: true });
+
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const snapshotFilename = body._filename || `snapshot-${ts}.yaml`;
+    const snapshotPath = join(snapshotDir, snapshotFilename);
+
+    // Build YAML-like file with metadata + full tree
+    const header = [
+      '# cc-browser snapshot',
+      'url: ' + (data.pageUrl || '(unknown)'),
+      'title: ' + (data.pageTitle || '(unknown)'),
+      'timestamp: ' + new Date().toISOString(),
+      'refs: ' + (data.stats?.refs || 0),
+      'interactive: ' + (data.stats?.interactive || 0),
+      '---',
+    ].join('\n');
+
+    writeFileSync(snapshotPath, header + '\n' + (data.snapshot || ''));
+
+    // Build ref summary: list interactive elements with their roles and names
+    const refs = data.refs || {};
+    const refEntries = Object.entries(refs);
+    const interactiveRefs = refEntries.filter(([, r]) =>
+      ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'listbox',
+       'menuitem', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab', 'option',
+      ].includes(r.role)
+    );
+
+    // Print summary to stdout (this is what goes into Claude's context)
+    console.log('### Snapshot');
+    console.log('- Page URL: ' + (data.pageUrl || '(unknown)'));
+    console.log('- Page Title: ' + (data.pageTitle || '(unknown)'));
+    console.log('- Full snapshot: [' + snapshotFilename + '](' + snapshotPath + ')');
+    console.log('- Elements: ' + (data.stats?.refs || 0) + ' refs, ' + (data.stats?.interactive || 0) + ' interactive');
+    if (interactiveRefs.length > 0) {
+      console.log('');
+      console.log('### Interactive Elements');
+      for (const [ref, r] of interactiveRefs) {
+        let line = '- ' + r.role;
+        if (r.name) line += ' "' + r.name + '"';
+        line += ' [ref=' + ref + ']';
+        console.log(line);
+      }
     }
+    } // end else (non-full)
   } else if (command === 'screenshot') {
     const base64 = data.screenshot || '';
     const ext = body.type === 'jpeg' ? 'jpg' : 'png';
@@ -692,6 +809,138 @@ async function cmdBatch(connectionName, rest) {
 }
 
 // ---------------------------------------------------------------------------
+// Console Command
+// ---------------------------------------------------------------------------
+
+async function cmdConsole(connectionName, rest) {
+  const subcommand = rest[0] || 'read';
+  const flags = parseFlags(rest.slice(subcommand === 'start' || subcommand === 'clear' ? 1 : 0));
+  const body = { connection: connectionName };
+
+  switch (subcommand) {
+    case 'start': {
+      const data = await post('/console/start', body);
+      if (data.alreadyActive) {
+        console.log('Console capture already active.');
+      } else {
+        console.log('Console capture started.');
+      }
+      break;
+    }
+
+    case 'clear': {
+      await post('/console/clear', body);
+      console.log('Console buffer cleared.');
+      break;
+    }
+
+    default: {
+      // Read mode: 'read' or a level filter like 'error', 'warn', etc.
+      if (subcommand !== 'read') {
+        body.level = subcommand;
+      } else if (flags.level) {
+        body.level = flags.level;
+      }
+      const data = await post('/console', body);
+      const messages = data.messages || [];
+      if (messages.length === 0) {
+        console.log('No console messages captured.');
+      } else {
+        console.log('Console messages (' + messages.length + ' of ' + (data.total || messages.length) + '):');
+        for (const m of messages) {
+          const ts = new Date(m.timestamp).toISOString().slice(11, 23);
+          console.log('  [' + ts + '] ' + m.level.toUpperCase().padEnd(5) + ' ' + m.text);
+        }
+      }
+      break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Network Command
+// ---------------------------------------------------------------------------
+
+async function cmdNetwork(connectionName, rest) {
+  const flags = parseFlags(rest);
+  const body = {
+    connection: connectionName,
+    filter: flags.filter || flags._positional,
+    type: flags.type,
+    limit: flags.limit ? parseInt(flags.limit, 10) : undefined,
+  };
+
+  const data = await post('/network', body);
+  const requests = data.requests || [];
+
+  if (requests.length === 0) {
+    console.log('No network requests captured.');
+  } else {
+    console.log('Network requests (' + requests.length + ' of ' + (data.total || requests.length) + '):');
+    for (const r of requests) {
+      const ts = new Date(r.timestamp).toISOString().slice(11, 23);
+      const status = r.error ? 'ERR' : String(r.status);
+      const method = (r.method || 'GET').padEnd(4);
+      // Truncate long URLs
+      const url = r.url.length > 120 ? r.url.slice(0, 117) + '...' : r.url;
+      console.log('  [' + ts + '] ' + status.padStart(3) + ' ' + method + ' ' + url);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// State Save / Load
+// ---------------------------------------------------------------------------
+
+async function cmdStateSave(connectionName, rest) {
+  const flags = parseFlags(rest);
+  const body = { connection: connectionName };
+  const outputPath = flags.output || flags.o || flags._positional || 'state-' + Date.now() + '.json';
+
+  const data = await post('/state-save', body);
+
+  // Build state object (strip daemon wrapper fields)
+  const state = {
+    url: data.url,
+    cookies: data.cookies,
+    localStorage: data.localStorage,
+    sessionStorage: data.sessionStorage,
+    savedAt: data.savedAt,
+  };
+
+  writeFileSync(outputPath, JSON.stringify(state, null, 2));
+  const cookieCount = (state.cookies || []).length;
+  const localCount = Object.keys(state.localStorage || {}).length;
+  const sessionCount = Object.keys(state.sessionStorage || {}).length;
+  console.log('State saved: ' + outputPath);
+  console.log('  Cookies: ' + cookieCount + ', localStorage: ' + localCount + ' keys, sessionStorage: ' + sessionCount + ' keys');
+}
+
+async function cmdStateLoad(connectionName, rest) {
+  const flags = parseFlags(rest);
+  const inputPath = flags._positional || rest[0];
+
+  if (!inputPath) {
+    console.error('Usage: cc-browser state-load <state-file.json>');
+    process.exit(1);
+  }
+
+  if (!existsSync(inputPath)) {
+    console.error('File not found: ' + inputPath);
+    process.exit(1);
+  }
+
+  const state = JSON.parse(readFileSync(inputPath, 'utf8'));
+  const body = { connection: connectionName, state };
+
+  const data = await post('/state-load', body);
+  console.log('State loaded from: ' + inputPath);
+  console.log('  Cookies restored: ' + data.cookies);
+  console.log('  localStorage keys: ' + data.localStorage);
+  console.log('  sessionStorage keys: ' + data.sessionStorage);
+}
+
+// ---------------------------------------------------------------------------
 // Usage
 // ---------------------------------------------------------------------------
 
@@ -713,7 +962,7 @@ function printUsage() {
   console.log('  back                               Go back in history');
   console.log('  forward                            Go forward in history');
   console.log('  reload                             Reload current page');
-  console.log('  snapshot [--interactive] [--compact] [--selector "css"] [--maxChars N] [--no-limit]');
+  console.log('  snapshot [--interactive] [--compact] [--filename name.yaml] [--full]');
   console.log('  click --ref <ref> | --selector "css" | --text "..."');
   console.log('  type --ref <ref> | --selector "css" --text "..."');
   console.log('  fill --ref <ref> | --selector "css" --value "..."');
@@ -723,7 +972,7 @@ function printUsage() {
   console.log('  wait --text "..." | --selector "..."');
   console.log('  waitNetworkIdle [--idleTime 500] [--timeout 30000]');
   console.log('  evaluate --fn "() => document.title"');
-  console.log('  screenshot [--output file.png] [--type png|jpeg]');
+  console.log('  screenshot [--output file.png] [--type png|jpeg] [--full-page]');
   console.log('  links [--pattern "regex"] [--selector "a.nav"] [--attrs]');
   console.log('  tabs                               List tabs');
   console.log('  tabs/open [--url URL]              Open new tab');
@@ -731,6 +980,22 @@ function printUsage() {
   console.log('  info                               Page URL, title, viewport');
   console.log('  text [--selector "..."]            Get text content');
   console.log('  html [--selector "..."]            Get HTML content');
+  console.log('');
+  console.log('Interaction:');
+  console.log('  dialog-accept [--text "response"]   Accept JS alert/confirm/prompt');
+  console.log('  dialog-dismiss                      Dismiss JS alert/confirm/prompt');
+  console.log('  check --ref <ref>                   Check a checkbox or radio button');
+  console.log('  uncheck --ref <ref>                 Uncheck a checkbox');
+  console.log('');
+  console.log('Debugging:');
+  console.log('  console start                       Start capturing console output');
+  console.log('  console [--level error|warn|info]    Read captured console messages');
+  console.log('  console clear                       Clear console buffer');
+  console.log('  network [--filter pattern] [--limit N] [--type xmlhttprequest]');
+  console.log('');
+  console.log('State Management:');
+  console.log('  state-save [--output file.json]     Save cookies + storage to file');
+  console.log('  state-load <file.json>              Restore cookies + storage from file');
   console.log('');
   console.log('Cookie Management:');
   console.log('  cookies list [--domain <d>] [--url <u>]');
@@ -818,6 +1083,29 @@ async function main() {
     return;
   }
 
+  // Console command (subcommands: start, clear, or read)
+  if (command === 'console') {
+    await cmdConsole(connectionName, rest);
+    return;
+  }
+
+  // Network command
+  if (command === 'network') {
+    await cmdNetwork(connectionName, rest);
+    return;
+  }
+
+  // State save/load commands
+  if (command === 'state-save') {
+    await cmdStateSave(connectionName, rest);
+    return;
+  }
+
+  if (command === 'state-load') {
+    await cmdStateLoad(connectionName, rest);
+    return;
+  }
+
   // History command
   if (command === 'history') {
     const data = await get('/history');
@@ -839,8 +1127,9 @@ async function main() {
     'navigate', 'snapshot', 'click', 'type', 'fill', 'press',
     'hover', 'drag', 'select', 'scroll', 'wait', 'evaluate',
     'screenshot', 'tabs', 'tabs/open', 'tabs/close', 'tabs/focus',
-    'text', 'html', 'info', 'upload', 'resize',
+    'text', 'html', 'info', 'upload', 'set-file', 'resize',
     'back', 'forward', 'reload', 'links', 'waitNetworkIdle', 'paste',
+    'dialog-accept', 'dialog-dismiss', 'check', 'uncheck',
   ];
 
   if (browserCommands.includes(command)) {

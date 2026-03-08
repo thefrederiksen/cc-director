@@ -10,6 +10,10 @@ const NATIVE_HOST_NAME = 'com.cc_browser.bridge';
 let nativePort = null;
 const pendingRequests = new Map(); // id -> { resolve, reject, timer }
 
+// Network request log buffer
+const networkLog = [];
+const MAX_NETWORK_LOG = 500;
+
 // ---------------------------------------------------------------------------
 // Native Messaging Connection
 // ---------------------------------------------------------------------------
@@ -133,6 +137,30 @@ async function handleCommand(msg) {
       case 'evaluate':
         result = await cmdEvaluate(params);
         break;
+      case 'dialog.accept':
+        result = await cmdDialogAccept(params);
+        break;
+      case 'dialog.dismiss':
+        result = await cmdDialogDismiss(params);
+        break;
+      case 'console.start':
+        result = await cmdConsoleStart(params);
+        break;
+      case 'console':
+        result = await cmdConsoleRead(params);
+        break;
+      case 'console.clear':
+        result = await cmdConsoleClear(params);
+        break;
+      case 'network':
+        result = cmdNetwork(params);
+        break;
+      case 'state.save':
+        result = await cmdStateSave(params);
+        break;
+      case 'state.load':
+        result = await cmdStateLoad(params);
+        break;
       case 'click':
       case 'dblclick':
       case 'hover':
@@ -147,6 +175,8 @@ async function handleCommand(msg) {
       case 'getHtml':
       case 'getInfo':
       case 'upload':
+      case 'check':
+      case 'uncheck':
         result = await forwardToContent(command, params);
         break;
       case 'paste':
@@ -323,6 +353,11 @@ async function cmdCookiesExport(params) {
 }
 
 async function cmdScreenshot(params) {
+  // Full-page screenshot uses CDP via chrome.debugger
+  if (params?.fullPage) {
+    return cmdScreenshotFullPage(params);
+  }
+
   const tabId = await resolveTabId(params);
   const tab = await chrome.tabs.get(tabId);
 
@@ -394,8 +429,10 @@ async function cmdPaste(params) {
   const tabId = await resolveTabId(params);
   const selector = params.selector;
   const text = params.pasteText || '';
+  const format = params.format || 'text';
+  const explicitHtml = params.html || null;
 
-  if (!text) throw new Error('pasteText is required');
+  if (!text && !explicitHtml) throw new Error('pasteText is required');
   if (!selector) throw new Error('selector is required for paste');
 
   // Run in MAIN world so React/Draft.js editors see the events in their context.
@@ -403,7 +440,7 @@ async function cmdPaste(params) {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     world: 'MAIN',
-    func: (sel, textToPaste, shouldClear) => {
+    func: (sel, textToPaste, shouldClear, fmt, htmlContent) => {
       try {
         const element = document.querySelector(sel);
         if (!element) return { error: 'Element not found: ' + sel };
@@ -422,10 +459,21 @@ async function cmdPaste(params) {
         }
 
         // Build clipboard data with both plain text and HTML
-        const html = textToPaste.split('\n').map(l => l || '<br>').join('<br>');
         const dt = new DataTransfer();
         dt.setData('text/plain', textToPaste);
-        dt.setData('text/html', html);
+
+        if (fmt === 'html') {
+          // Use explicit HTML if provided, otherwise auto-convert text to paragraphs
+          const html = htmlContent || textToPaste
+            .split('\n\n')
+            .map(block => '<p>' + block.replace(/\n/g, '<br>') + '</p>')
+            .join('');
+          dt.setData('text/html', html);
+        } else {
+          // Default: simple newline-to-br conversion
+          const html = textToPaste.split('\n').map(l => l || '<br>').join('<br>');
+          dt.setData('text/html', html);
+        }
 
         // Dispatch synthetic paste event -- React/Draft.js editors intercept this
         // and update their internal state from clipboardData
@@ -453,18 +501,398 @@ async function cmdPaste(params) {
           ok: true,
           length: textToPaste.length,
           method: handled ? 'clipboardEvent' : 'execCommand',
+          format: fmt,
         };
       } catch (err) {
         return { error: err.message || String(err) };
       }
     },
-    args: [selector, text, params.clear !== false],
+    args: [selector, text, params.clear !== false, format, explicitHtml],
   });
 
   if (!results || !results[0]) throw new Error('No result from paste');
   const frame = results[0].result;
   if (frame.error) throw new Error(`Paste failed: ${frame.error}`);
-  return { pasted: true, length: frame.length, method: frame.method };
+  return { pasted: true, length: frame.length, method: frame.method, format: frame.format };
+}
+
+// ---------------------------------------------------------------------------
+// Chrome DevTools Protocol Helper
+// ---------------------------------------------------------------------------
+
+function sendDebuggerCommand(tabId, method, commandParams) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand({ tabId }, method, commandParams || {}, (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve(result);
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dialog Handling (via Chrome DevTools Protocol)
+// ---------------------------------------------------------------------------
+
+async function cmdDialogAccept(params) {
+  const tabId = await resolveTabId(params);
+
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+  } catch (err) {
+    if (!err.message.includes('Already attached')) throw err;
+  }
+
+  try {
+    await sendDebuggerCommand(tabId, 'Page.enable');
+    await sendDebuggerCommand(tabId, 'Page.handleJavaScriptDialog', {
+      accept: true,
+      promptText: params?.text || '',
+    });
+    return { accepted: true, promptText: params?.text || null };
+  } finally {
+    try { await chrome.debugger.detach({ tabId }); } catch {}
+  }
+}
+
+async function cmdDialogDismiss(params) {
+  const tabId = await resolveTabId(params);
+
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+  } catch (err) {
+    if (!err.message.includes('Already attached')) throw err;
+  }
+
+  try {
+    await sendDebuggerCommand(tabId, 'Page.enable');
+    await sendDebuggerCommand(tabId, 'Page.handleJavaScriptDialog', {
+      accept: false,
+    });
+    return { dismissed: true };
+  } finally {
+    try { await chrome.debugger.detach({ tabId }); } catch {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Console Capture (via MAIN world script injection)
+// ---------------------------------------------------------------------------
+
+async function cmdConsoleStart(params) {
+  const tabId = await resolveTabId(params);
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      if (window.__ccConsoleCapture) return { alreadyActive: true };
+      window.__ccConsoleCapture = true;
+
+      var captured = [];
+      var MAX = 500;
+      var orig = {};
+
+      ['log', 'warn', 'error', 'info', 'debug'].forEach(function(level) {
+        orig[level] = console[level].bind(console);
+        console[level] = function() {
+          var args = Array.prototype.slice.call(arguments);
+          captured.push({
+            level: level,
+            text: args.map(function(a) {
+              try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
+              catch(e) { return String(a); }
+            }).join(' '),
+            timestamp: Date.now(),
+          });
+          if (captured.length > MAX) captured.splice(0, captured.length - MAX);
+          orig[level].apply(console, args);
+        };
+      });
+
+      window.addEventListener('error', function(e) {
+        captured.push({
+          level: 'error',
+          text: 'Uncaught: ' + (e.message || '') + ' at ' + (e.filename || '') + ':' + (e.lineno || ''),
+          timestamp: Date.now(),
+        });
+      });
+
+      window.__ccConsoleLogs = captured;
+      return { started: true };
+    },
+  });
+
+  if (!results || !results[0]) throw new Error('Failed to inject console capture');
+  return results[0].result;
+}
+
+async function cmdConsoleRead(params) {
+  const tabId = await resolveTabId(params);
+  const level = params?.level || null;
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: (filterLevel) => {
+      var logs = window.__ccConsoleLogs;
+      if (!logs) return { error: 'Console capture not started. Run console.start first.' };
+      var messages = filterLevel ? logs.filter(function(m) { return m.level === filterLevel; }) : logs.slice();
+      return { messages: messages, total: logs.length };
+    },
+    args: [level],
+  });
+
+  if (!results || !results[0]) throw new Error('Failed to read console logs');
+  const frame = results[0].result;
+  if (frame.error) throw new Error(frame.error);
+  return frame;
+}
+
+async function cmdConsoleClear(params) {
+  const tabId = await resolveTabId(params);
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      var logs = window.__ccConsoleLogs;
+      if (!logs) return { error: 'Console capture not started.' };
+      logs.length = 0;
+      return { cleared: true };
+    },
+  });
+
+  if (!results || !results[0]) throw new Error('Failed to clear console');
+  const frame = results[0].result;
+  if (frame.error) throw new Error(frame.error);
+  return frame;
+}
+
+// ---------------------------------------------------------------------------
+// Network Request Log (via chrome.webRequest)
+// ---------------------------------------------------------------------------
+
+chrome.webRequest.onCompleted.addListener(
+  (details) => {
+    networkLog.push({
+      url: details.url,
+      method: details.method,
+      status: details.statusCode,
+      type: details.type,
+      tabId: details.tabId,
+      timestamp: Date.now(),
+    });
+    if (networkLog.length > MAX_NETWORK_LOG) {
+      networkLog.splice(0, networkLog.length - MAX_NETWORK_LOG);
+    }
+  },
+  { urls: ['<all_urls>'] }
+);
+
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => {
+    networkLog.push({
+      url: details.url,
+      method: details.method,
+      status: 0,
+      error: details.error,
+      type: details.type,
+      tabId: details.tabId,
+      timestamp: Date.now(),
+    });
+    if (networkLog.length > MAX_NETWORK_LOG) {
+      networkLog.splice(0, networkLog.length - MAX_NETWORK_LOG);
+    }
+  },
+  { urls: ['<all_urls>'] }
+);
+
+function cmdNetwork(params) {
+  let entries = networkLog.slice();
+
+  // Filter by tab
+  if (params?.tabId) {
+    const tid = parseInt(params.tabId, 10);
+    entries = entries.filter(e => e.tabId === tid);
+  }
+
+  // Filter by URL pattern
+  if (params?.filter) {
+    const re = new RegExp(params.filter, 'i');
+    entries = entries.filter(e => re.test(e.url));
+  }
+
+  // Filter by resource type
+  if (params?.type) {
+    entries = entries.filter(e => e.type === params.type);
+  }
+
+  const limit = params?.limit || 100;
+  const recent = entries.slice(-limit);
+
+  return { requests: recent, total: entries.length };
+}
+
+// ---------------------------------------------------------------------------
+// State Save / Load (cookies + localStorage + sessionStorage)
+// ---------------------------------------------------------------------------
+
+async function cmdStateSave(params) {
+  const tabId = await resolveTabId(params);
+  const tab = await chrome.tabs.get(tabId);
+
+  // Get cookies for current page's domain
+  const url = new URL(tab.url);
+  const cookies = await chrome.cookies.getAll({ domain: url.hostname });
+
+  // Get localStorage and sessionStorage via MAIN world
+  const storageResults = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      var local = {};
+      for (var i = 0; i < localStorage.length; i++) {
+        var key = localStorage.key(i);
+        local[key] = localStorage.getItem(key);
+      }
+      var session = {};
+      for (var j = 0; j < sessionStorage.length; j++) {
+        var skey = sessionStorage.key(j);
+        session[skey] = sessionStorage.getItem(skey);
+      }
+      return { localStorage: local, sessionStorage: session };
+    },
+  });
+
+  const storage = storageResults?.[0]?.result || {};
+
+  return {
+    url: tab.url,
+    cookies: cookies.map(c => ({
+      name: c.name, value: c.value, domain: c.domain,
+      path: c.path, secure: c.secure, httpOnly: c.httpOnly,
+      expirationDate: c.expirationDate, sameSite: c.sameSite,
+    })),
+    localStorage: storage.localStorage || {},
+    sessionStorage: storage.sessionStorage || {},
+    savedAt: new Date().toISOString(),
+  };
+}
+
+async function cmdStateLoad(params) {
+  const tabId = await resolveTabId(params);
+  const state = params?.state;
+  if (!state) throw new Error('state object is required');
+
+  let cookiesRestored = 0;
+
+  // Restore cookies
+  if (state.cookies && Array.isArray(state.cookies)) {
+    for (const c of state.cookies) {
+      try {
+        const cookieUrl = 'http' + (c.secure ? 's' : '') + '://' + (c.domain || '').replace(/^\./, '') + (c.path || '/');
+        await chrome.cookies.set({
+          url: cookieUrl,
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path || '/',
+          secure: c.secure || false,
+          httpOnly: c.httpOnly || false,
+          expirationDate: c.expirationDate,
+          sameSite: c.sameSite || 'unspecified',
+        });
+        cookiesRestored++;
+      } catch (err) {
+        console.log('[cc-browser] Failed to restore cookie ' + c.name + ': ' + err.message);
+      }
+    }
+  }
+
+  // Restore storage
+  const storageResults = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: (localData, sessionData) => {
+      var localCount = 0, sessionCount = 0;
+      if (localData) {
+        for (var key in localData) {
+          if (localData.hasOwnProperty(key)) {
+            localStorage.setItem(key, localData[key]);
+            localCount++;
+          }
+        }
+      }
+      if (sessionData) {
+        for (var skey in sessionData) {
+          if (sessionData.hasOwnProperty(skey)) {
+            sessionStorage.setItem(skey, sessionData[skey]);
+            sessionCount++;
+          }
+        }
+      }
+      return { localStorage: localCount, sessionStorage: sessionCount };
+    },
+    args: [state.localStorage || null, state.sessionStorage || null],
+  });
+
+  const storageResult = storageResults?.[0]?.result || {};
+
+  return {
+    restored: true,
+    cookies: cookiesRestored,
+    localStorage: storageResult.localStorage || 0,
+    sessionStorage: storageResult.sessionStorage || 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Full-Page Screenshot (via Chrome DevTools Protocol)
+// ---------------------------------------------------------------------------
+
+async function cmdScreenshotFullPage(params) {
+  const tabId = await resolveTabId(params);
+  const tab = await chrome.tabs.get(tabId);
+
+  // Focus window and tab
+  await chrome.windows.update(tab.windowId, { focused: true });
+  await chrome.tabs.update(tabId, { active: true });
+  await new Promise(r => setTimeout(r, 150));
+
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+  } catch (err) {
+    if (!err.message.includes('Already attached')) throw err;
+  }
+
+  try {
+    // Get page dimensions via CDP
+    const layoutMetrics = await sendDebuggerCommand(tabId, 'Page.getLayoutMetrics');
+    const contentSize = layoutMetrics.cssContentSize || layoutMetrics.contentSize;
+    const width = Math.ceil(contentSize.width);
+    const height = Math.ceil(contentSize.height);
+
+    // Capture full page screenshot
+    const captureResult = await sendDebuggerCommand(tabId, 'Page.captureScreenshot', {
+      format: params?.type === 'jpeg' ? 'jpeg' : 'png',
+      quality: params?.type === 'jpeg' ? (params?.quality || 80) : undefined,
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width, height, scale: 1 },
+    });
+
+    return {
+      screenshot: captureResult.data,
+      type: params?.type || 'png',
+      fullPage: true,
+      width,
+      height,
+    };
+  } finally {
+    try { await chrome.debugger.detach({ tabId }); } catch {}
+  }
 }
 
 // ---------------------------------------------------------------------------

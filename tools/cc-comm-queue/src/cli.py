@@ -110,7 +110,7 @@ def main(
 
 @app.command()
 def add(
-    platform: str = typer.Argument(..., help="Platform: linkedin, twitter, reddit, youtube, email, blog, facebook, whatsapp"),
+    platform: str = typer.Argument(..., help="Platform: linkedin, twitter, reddit, youtube, email, blog, facebook, whatsapp, medium"),
     content_type: str = typer.Argument(..., help="Type: post, comment, reply, message, article, email"),
     content: str = typer.Argument(..., help="The actual content text"),
     persona: str = typer.Option("personal", "--persona", "-p", help="Persona: mindzie, center_consulting, personal"),
@@ -173,7 +173,7 @@ def add(
     except ValueError:
         if not json_output:
             console.print(f"[red]ERROR:[/red] Invalid platform: {platform}")
-            console.print("Valid platforms: linkedin, twitter, reddit, youtube, email, blog, facebook, whatsapp")
+            console.print("Valid platforms: linkedin, twitter, reddit, youtube, email, blog, facebook, whatsapp, medium")
         else:
             console.print(json.dumps({"success": False, "error": f"Invalid platform: {platform}"}))
         raise typer.Exit(1)

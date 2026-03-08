@@ -788,6 +788,8 @@
   function cmdPaste(params) {
     const { element, description } = resolveElement(params);
     const text = params.pasteText || params.text || params.value || '';
+    const format = params.format || 'text';
+    const explicitHtml = params.html || null;
 
     element.focus();
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -802,11 +804,22 @@
       document.execCommand('delete', false);
     }
 
-    // Build clipboard data with both plain text and HTML (with <br> for newlines)
-    const html = text.split('\n').map(line => line || '<br>').join('<br>');
+    // Build clipboard data with both plain text and HTML
     const dt = new DataTransfer();
     dt.setData('text/plain', text);
-    dt.setData('text/html', html);
+
+    if (format === 'html') {
+      // Use explicit HTML if provided, otherwise auto-convert text to paragraphs
+      const html = explicitHtml || text
+        .split('\n\n')
+        .map(block => '<p>' + block.replace(/\n/g, '<br>') + '</p>')
+        .join('');
+      dt.setData('text/html', html);
+    } else {
+      // Default: simple newline-to-br conversion
+      const html = text.split('\n').map(line => line || '<br>').join('<br>');
+      dt.setData('text/html', html);
+    }
 
     // Dispatch synthetic paste event -- React/Ember editors intercept this
     // and update their internal state from clipboardData
@@ -831,7 +844,42 @@
       length: text.length,
       ref: description,
       method: cancelled ? 'clipboardEvent' : 'execCommand',
+      format: format,
     };
+  }
+
+  function cmdCheck(params) {
+    const { element, description } = resolveElement(params);
+    const tag = element.tagName.toLowerCase();
+    const type = (element.getAttribute('type') || '').toLowerCase();
+
+    if (tag !== 'input' || (type !== 'checkbox' && type !== 'radio')) {
+      throw new Error('Element "' + description + '" is not a checkbox or radio button');
+    }
+
+    if (!element.checked) {
+      element.checked = true;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return { checked: true, ref: description, wasAlreadyChecked: element.checked };
+  }
+
+  function cmdUncheck(params) {
+    const { element, description } = resolveElement(params);
+    const tag = element.tagName.toLowerCase();
+    const type = (element.getAttribute('type') || '').toLowerCase();
+
+    if (tag !== 'input' || type !== 'checkbox') {
+      throw new Error('Element "' + description + '" is not a checkbox');
+    }
+
+    if (element.checked) {
+      element.checked = false;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return { unchecked: true, ref: description };
   }
 
   function cmdLinks(params) {
@@ -992,6 +1040,12 @@
             break;
           case 'upload':
             result = cmdUpload(params);
+            break;
+          case 'check':
+            result = cmdCheck(params);
+            break;
+          case 'uncheck':
+            result = cmdUncheck(params);
             break;
           case 'paste':
             result = cmdPaste(params);
