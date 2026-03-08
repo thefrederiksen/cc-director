@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Data;
 using System.Windows.Media;
 using CcDirector.Core.QuickActions;
 using CcDirector.Core.Storage;
@@ -17,6 +18,8 @@ public partial class QuickActionsView : UserControl
 {
     private readonly ObservableCollection<ThreadViewModel> _threads = new();
     private readonly ObservableCollection<ChatBubbleViewModel> _chatBubbles = new();
+    private readonly object _threadsLock = new();
+    private readonly object _chatBubblesLock = new();
     private QuickActionDatabase? _db;
     private QuickActionService? _service;
     private string? _activeThreadId;
@@ -42,6 +45,8 @@ public partial class QuickActionsView : UserControl
         InitializeComponent();
         ThreadList.ItemsSource = _threads;
         ChatMessages.ItemsSource = _chatBubbles;
+        BindingOperations.EnableCollectionSynchronization(_threads, _threadsLock);
+        BindingOperations.EnableCollectionSynchronization(_chatBubbles, _chatBubblesLock);
 
         Loaded += QuickActionsView_Loaded;
     }

@@ -4,10 +4,12 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Data;
 using System.Windows.Threading;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Storage;
@@ -129,6 +131,7 @@ public partial class ConnectionsView : UserControl
 {
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
     private readonly ObservableCollection<ConnectionItem> _connections = new();
+    private readonly object _connectionsLock = new();
     private DispatcherTimer? _pollTimer;
 
     public ConnectionsView()
@@ -136,6 +139,7 @@ public partial class ConnectionsView : UserControl
         InitializeComponent();
 
         ConnectionList.ItemsSource = _connections;
+        BindingOperations.EnableCollectionSynchronization(_connections, _connectionsLock);
 
         Loaded += async (_, _) =>
         {
@@ -532,18 +536,21 @@ public partial class ConnectionsView : UserControl
 
     private static string? FindChromePath()
     {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var progFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+        // Brave first (preferred - supports --load-extension unlike Chrome stable)
         var candidates = new[]
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Microsoft", "Edge", "Application", "msedge.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(progFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(progFilesX86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(progFiles, "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(progFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(localAppData, "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(progFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
         };
 
         foreach (var path in candidates)
@@ -647,6 +654,147 @@ public partial class ConnectionsView : UserControl
         return null;
     }
 
+    private async void BtnWorkflow_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string name) return;
+        var item = _connections.FirstOrDefault(c => c.Name == name);
+        if (item == null) return;
+
+        FileLog.Write($"[ConnectionsView] BtnWorkflow_Click: name={name}");
+
+        // Step 1: Show confirmation dialog
+        var confirm = new WorkflowConfirmDialog { Owner = Window.GetWindow(this) };
+        if (confirm.ShowDialog() != true)
+        {
+            FileLog.Write("[ConnectionsView] BtnWorkflow_Click: user cancelled");
+            return;
+        }
+
+        // Step 2: Close existing connection if open
+        if (item.Connected)
+        {
+            FileLog.Write($"[ConnectionsView] BtnWorkflow_Click: closing existing connection for {name}");
+            await CloseConnection(item);
+            await Task.Delay(500); // allow process cleanup
+        }
+
+        // Step 3: Calculate screen layout -- recorder left 20%, browser right 80%
+        var screenW = (int)SystemParameters.PrimaryScreenWidth;
+        var screenH = (int)SystemParameters.PrimaryScreenHeight;
+        var recorderWidth = (int)(screenW * 0.2);
+        var browserX = recorderWidth;
+        var browserWidth = screenW - recorderWidth;
+
+        // Step 4: Open recorder window on left 20%
+        var recorder = new WorkflowRecorderWindow(name, GetDaemonPort());
+        recorder.Left = 0;
+        recorder.Top = 0;
+        recorder.Width = recorderWidth;
+        recorder.Height = screenH;
+        recorder.Show();
+
+        // Step 5: Launch browser positioned on right 80%
+        await OpenConnectionPositioned(item, browserX, 0, browserWidth, screenH);
+
+        // Step 6: Ensure browser is positioned correctly (Chromium flags are best-effort)
+        await Task.Delay(2000);
+        RepositionBrowserWindow(item, browserX, 0, browserWidth, screenH);
+    }
+
+    private async Task OpenConnectionPositioned(ConnectionItem item, int x, int y, int width, int height)
+    {
+        FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: name={item.Name}, x={x}, y={y}, w={width}, h={height}");
+
+        item.SetBusy(true);
+
+        var chromePath = FindChromePath();
+        if (chromePath == null)
+        {
+            FileLog.Write("[ConnectionsView] OpenConnectionPositioned FAILED: Browser not found");
+            item.SetBusy(false);
+            MessageBox.Show(
+                "Brave/Chrome not found. Install Brave Browser.",
+                "Browser Not Found",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var profileDir = CcStorage.ConnectionProfile(item.Name);
+        if (!Directory.Exists(profileDir))
+            Directory.CreateDirectory(profileDir);
+
+        var extensionDir = FindExtensionDir();
+
+        var args = $"--user-data-dir=\"{profileDir}\" --no-first-run --no-default-browser-check --disable-features=TranslateUI --disable-sync";
+        args += $" --window-position={x},{y} --window-size={width},{height}";
+
+        if (extensionDir != null)
+            args += $" --load-extension=\"{extensionDir}\"";
+
+        if (!string.IsNullOrEmpty(item.Url))
+            args += $" \"{item.Url}\"";
+
+        FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: chromePath={chromePath}");
+        FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: args={args}");
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = chromePath,
+                Arguments = args,
+                UseShellExecute = false,
+            };
+
+            var process = Process.Start(psi);
+            FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: launched pid={process?.Id}");
+
+            item.ChromePid = process?.Id;
+            item.Connected = true;
+            item.SetBusy(false);
+
+            _ = NotifyDaemonAsync("open", item.Name);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ConnectionsView] OpenConnectionPositioned FAILED: {ex.Message}");
+            item.SetBusy(false);
+            MessageBox.Show(
+                $"Failed to launch browser for \"{item.Name}\".\n\n{ex.Message}",
+                "Launch Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private void RepositionBrowserWindow(ConnectionItem item, int x, int y, int width, int height)
+    {
+        FileLog.Write($"[ConnectionsView] RepositionBrowserWindow: name={item.Name}, pid={item.ChromePid}");
+        if (item.ChromePid is not int pid) return;
+
+        try
+        {
+            var proc = Process.GetProcessById(pid);
+            var hwnd = proc.MainWindowHandle;
+            if (hwnd == IntPtr.Zero)
+            {
+                FileLog.Write("[ConnectionsView] RepositionBrowserWindow: no main window handle yet");
+                proc.Dispose();
+                return;
+            }
+
+            SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+            FileLog.Write($"[ConnectionsView] RepositionBrowserWindow: moved to x={x}, w={width}, h={height}");
+            proc.Dispose();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[ConnectionsView] RepositionBrowserWindow FAILED: {ex.Message}");
+        }
+    }
+
     private void ContextDelete_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem mi || mi.Tag is not string name) return;
@@ -694,4 +842,15 @@ public partial class ConnectionsView : UserControl
             FileLog.Write($"[ConnectionsView] DeleteConnectionFromFile FAILED: {ex.Message}");
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Win32 Interop
+    // -----------------------------------------------------------------------
+
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int x, int y, int cx, int cy, uint uFlags);
 }

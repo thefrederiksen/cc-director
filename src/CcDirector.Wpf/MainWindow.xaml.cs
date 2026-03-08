@@ -21,6 +21,7 @@ using CcDirector.Core.Utilities;
 using CcDirector.Wpf.Backends;
 using System.IO;
 using System.Text.Json;
+using System.Windows.Data;
 using System.Windows.Media.Imaging;
 using CcDirector.Terminal;
 using CcDirector.Terminal.Rendering.CardView;
@@ -37,6 +38,13 @@ public partial class MainWindow : Window
     private readonly List<HookEventViewModel> _allHookEvents = new();
     private readonly ObservableCollection<QueueItemViewModel> _queueItems = new();
     private readonly ObservableCollection<TurnSummaryViewModel> _summaryItems = new();
+
+    // Lock objects for BindingOperations.EnableCollectionSynchronization
+    private readonly object _sessionsLock = new();
+    private readonly object _hookEventsLock = new();
+    private readonly object _queueItemsLock = new();
+    private readonly object _summaryItemsLock = new();
+    private readonly object _screenshotsLock = new();
     private readonly Dictionary<Guid, List<TurnSummaryViewModel>> _turnSummariesBySession = new();
     private readonly Dictionary<Guid, int> _turnCounters = new();
     private ClaudeClient? _claudeClient;
@@ -110,6 +118,15 @@ public partial class MainWindow : Window
         QueueItemsList.ItemsSource = _queueItems;
         SummaryItemsControl.ItemsSource = _summaryItems;
         ScreenshotList.ItemsSource = _screenshots;
+
+        // Enable cross-thread collection synchronization so pipe-thread events
+        // cannot race with WPF's CollectionView while Dispatcher.BeginInvoke is queued.
+        BindingOperations.EnableCollectionSynchronization(_sessions, _sessionsLock);
+        BindingOperations.EnableCollectionSynchronization(_hookEvents, _hookEventsLock);
+        BindingOperations.EnableCollectionSynchronization(_queueItems, _queueItemsLock);
+        BindingOperations.EnableCollectionSynchronization(_summaryItems, _summaryItemsLock);
+        BindingOperations.EnableCollectionSynchronization(_screenshots, _screenshotsLock);
+
         Loaded += MainWindow_Loaded;
         LocationChanged += (_, _) => DeferConsolePositionUpdate();
         SizeChanged += (_, _) => DeferConsolePositionUpdate();

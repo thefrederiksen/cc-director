@@ -3,6 +3,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Data;
 using System.Windows.Threading;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Sessions;
@@ -24,11 +25,13 @@ public partial class SimpleChatView : UserControl
     private bool _summarizing;
 
     private readonly ObservableCollection<ChatMessageViewModel> _messages = new();
+    private readonly object _messagesLock = new();
 
     public SimpleChatView()
     {
         InitializeComponent();
         ChatItems.ItemsSource = _messages;
+        BindingOperations.EnableCollectionSynchronization(_messages, _messagesLock);
     }
 
     /// <summary>Attach to a session and start monitoring.</summary>

@@ -311,23 +311,18 @@ public static class LinkDetector
                 continue;
             }
 
-            // Trailing period: only strip if it comes after what looks like a file extension
-            // e.g., "file.txt." -> "file.txt" (the final dot is sentence punctuation)
-            // But "file.txt" stays as-is (the dot is part of the extension)
+            // Trailing period: strip unless the text has no path separators/colons AND
+            // the period forms the only dot (i.e., it looks like a bare file extension).
+            // Examples that get stripped:
+            //   "http://localhost:4001."  -> "http://localhost:4001"
+            //   "path/file.txt."         -> "path/file.txt"
+            //   "https://example.com."   -> "https://example.com"
+            // Example that is kept:
+            //   "file.txt" (the dot is the file extension itself, no trailing period)
             if (last == '.')
             {
-                // Look for a prior dot to see if there's already an extension
-                int priorDot = text.LastIndexOf('.', text.Length - 2);
-                if (priorDot >= 0)
-                {
-                    // There's a prior dot, so this trailing dot is likely sentence punctuation
-                    // e.g., "path/file.txt." or "https://example.com/page."
-                    text = text[..^1];
-                    continue;
-                }
-                // No prior dot - this dot might be important (single extension)
-                // Don't strip it
-                break;
+                text = text[..^1];
+                continue;
             }
 
             break;

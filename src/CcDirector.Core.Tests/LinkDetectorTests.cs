@@ -183,10 +183,10 @@ public class LinkDetectorTests
     }
 
     [Fact]
-    public void StripTrailingPunctuation_SingleDot_NotStripped()
+    public void StripTrailingPunctuation_SingleDot_Stripped()
     {
-        // Single dot with no prior dot - could be meaningful, don't strip
-        Assert.Equal("file.", LinkDetector.StripTrailingPunctuation("file."));
+        // Trailing period is always sentence punctuation
+        Assert.Equal("file", LinkDetector.StripTrailingPunctuation("file."));
     }
 
     [Fact]
@@ -217,6 +217,16 @@ public class LinkDetectorTests
 
         Assert.Single(matches);
         Assert.Equal("https://example.com/page", matches[0].Text);
+    }
+
+    [Fact]
+    public void FindAllLinkMatches_LocalhostUrlWithTrailingPeriod_StrippedInResult()
+    {
+        var matches = LinkDetector.FindAllLinkMatches(
+            "available at http://localhost:4001.", null, null);
+
+        Assert.Single(matches);
+        Assert.Equal("http://localhost:4001", matches[0].Text);
     }
 
     // ========================================================================
