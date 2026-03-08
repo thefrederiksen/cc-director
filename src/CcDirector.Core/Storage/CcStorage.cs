@@ -142,6 +142,10 @@ public static class CcStorage
     /// <summary>Chrome profile directory for a specific connection: connections/{name}/</summary>
     public static string ConnectionProfile(string name) => Path.Combine(Connections(), name);
 
+    /// <summary>Workflow storage for a connection: connections/{name}/workflows/</summary>
+    public static string ConnectionWorkflows(string name) =>
+        Ensure(Path.Combine(ConnectionProfile(name), "workflows"));
+
     // -- Utilities --
 
     /// <summary>Create directory if it doesn't exist and return the path.</summary>

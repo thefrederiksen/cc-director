@@ -203,6 +203,8 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
     browser: preferredBrowser,
     url,
     background,
+    windowPosition,
+    windowSize,
   } = opts;
 
   // Find Chrome executable
@@ -255,6 +257,14 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
   // Start minimized if background mode requested
   if (background) {
     args.push('--start-minimized');
+  }
+
+  // Window positioning (used by workflow recorder to place browser on right side)
+  if (windowPosition) {
+    args.push(`--window-position=${windowPosition.x},${windowPosition.y}`);
+  }
+  if (windowSize) {
+    args.push(`--window-size=${windowSize.width},${windowSize.height}`);
   }
 
   // Open URL if specified

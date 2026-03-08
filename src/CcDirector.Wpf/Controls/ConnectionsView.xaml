@@ -79,6 +79,16 @@
                                             Background="{Binding ActionBackground}"
                                             Foreground="{Binding ActionForeground}" />
 
+                                    <!-- Workflow button (right, before action) -->
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Workflow"
+                                            Click="BtnWorkflow_Click"
+                                            Tag="{Binding Name}"
+                                            MinWidth="70" Height="26" FontSize="11"
+                                            BorderThickness="0" Cursor="Hand"
+                                            VerticalAlignment="Center" Margin="4,0,0,0"
+                                            Background="#3C3C3C" Foreground="#CCCCCC" />
+
                                     <!-- Status text (right of name) -->
                                     <TextBlock DockPanel.Dock="Right"
                                                Text="{Binding StatusDisplay}"

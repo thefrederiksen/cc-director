@@ -280,6 +280,8 @@ const routes = {
       browser: conn.browser,
       url: body.url || conn.url,
       background: body.background || false,
+      windowPosition: body.windowPosition,
+      windowSize: body.windowSize,
     });
 
     setConnectionStatus(name, 'connecting');
@@ -447,14 +449,23 @@ const routes = {
 
   'POST /snapshot': async (req, res, body) => {
     const conn = requireConnected(body);
+    const tabParams = { tabId: body.tab || body.tabId };
     const result = await transport.sendCommand(conn, 'snapshot', {
       interactive: body.interactive,
       compact: body.compact,
       maxDepth: body.maxDepth,
       maxChars: body.maxChars,
       selector: body.selector,
-      tabId: body.tab || body.tabId,
+      ...tabParams,
     });
+    // Enrich with page info for snapshot-to-disk summary
+    try {
+      const info = await transport.sendCommand(conn, 'getInfo', tabParams);
+      result.pageUrl = info.url;
+      result.pageTitle = info.title;
+    } catch {
+      // Non-critical -- snapshot still works without page info
+    }
     jsonSuccess(res, result);
   },
 
@@ -562,11 +573,25 @@ const routes = {
       tabId: body.tab || body.tabId,
       type: body.type || 'jpeg',
       quality: body.quality || 80,
+      fullPage: body.fullPage || false,
     });
     jsonSuccess(res, result);
   },
 
   'POST /upload': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'upload', {
+      ref: body.ref, selector: body.selector,
+      data: body.data, filename: body.filename,
+      mimeType: body.mimeType,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // set-file: CLI reads file from disk and base64-encodes it, then we forward
+  // to the existing 'upload' extension command which sets element.files via DataTransfer
+  'POST /set-file': async (req, res, body) => {
     const conn = requireConnected(body);
     const result = await transport.sendCommand(conn, 'upload', {
       ref: body.ref, selector: body.selector,
@@ -583,6 +608,8 @@ const routes = {
       ref: body.ref, selector: body.selector,
       pasteText: body.text || body.value,
       clear: body.clear,
+      format: body.format,
+      html: body.html,
       tabId: body.tab || body.tabId,
     });
     jsonSuccess(res, result);
@@ -735,6 +762,104 @@ const routes = {
     jsonSuccess(res, result);
   },
 
+  // --- Dialog Handling ---
+
+  'POST /dialog-accept': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'dialog.accept', {
+      text: body.text,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /dialog-dismiss': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'dialog.dismiss', {
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- Check / Uncheck ---
+
+  'POST /check': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'check', {
+      ref: body.ref, text: body.text, selector: body.selector,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /uncheck': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'uncheck', {
+      ref: body.ref, text: body.text, selector: body.selector,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- Console Capture ---
+
+  'POST /console/start': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'console.start', {
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /console': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'console', {
+      level: body.level,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /console/clear': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'console.clear', {
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- Network Request Log ---
+
+  'POST /network': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'network', {
+      filter: body.filter,
+      type: body.type,
+      limit: body.limit,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  // --- State Save / Load ---
+
+  'POST /state-save': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'state.save', {
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
+  'POST /state-load': async (req, res, body) => {
+    const conn = requireConnected(body);
+    const result = await transport.sendCommand(conn, 'state.load', {
+      state: body.state,
+      tabId: body.tab || body.tabId,
+    });
+    jsonSuccess(res, result);
+  },
+
   // --- Wait for Network Idle ---
 
   'POST /waitNetworkIdle': async (req, res, body) => {
@@ -775,9 +900,17 @@ const routes = {
   // --- Action History ---
 
   'GET /history': async (req, res) => {
-    const limit = 100;
-    const recent = actionHistory.slice(-limit);
-    jsonSuccess(res, { actions: recent, total: actionHistory.length });
+    const { query } = parseUrl(req.url, true);
+    let filtered = actionHistory;
+    if (query.connection) {
+      filtered = filtered.filter(a => a.connection === query.connection);
+    }
+    if (query.since) {
+      filtered = filtered.filter(a => a.timestamp > query.since);
+    }
+    const limit = parseInt(query.limit) || 100;
+    const recent = filtered.slice(-limit);
+    jsonSuccess(res, { actions: recent, total: filtered.length });
   },
 };
 
@@ -803,9 +936,11 @@ async function handleRequest(req, res) {
 
     // Log browser action commands to history (skip GET and management routes)
     if (method === 'POST' && !pathname.startsWith('/connections') && !pathname.startsWith('/skills') && pathname !== '/batch') {
+      const { connection: conn, owner: _o, timeout: _t, ...actionParams } = body;
       actionHistory.push({
         command: pathname.slice(1),
-        connection: body.connection || null,
+        params: Object.keys(actionParams).length > 0 ? actionParams : undefined,
+        connection: conn || null,
         timestamp: new Date().toISOString(),
         elapsedMs: elapsed,
       });
