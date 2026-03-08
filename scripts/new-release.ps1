@@ -35,7 +35,7 @@ $setupXaml   = Join-Path $repoRoot "tools\cc-director-setup\MainWindow.xaml"
 
 # --- Read current version ---
 [xml]$csproj = Get-Content $wpfCsproj
-$currentVersion = $csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+$currentVersion = $csproj.SelectSingleNode("//Version").InnerText
 if (-not $currentVersion) {
     Write-Error "Could not read <Version> from $wpfCsproj"
     exit 1
@@ -70,13 +70,13 @@ Write-Host "Updating version to $newVersion..." -ForegroundColor Cyan
 
 # 1. WPF csproj
 [xml]$wpfXml = Get-Content $wpfCsproj
-$wpfXml.Project.PropertyGroup.Version = $newVersion
+$wpfXml.SelectSingleNode("//Version").InnerText = $newVersion
 $wpfXml.Save($wpfCsproj)
 Write-Host "  [+] $wpfCsproj" -ForegroundColor Gray
 
 # 2. Setup csproj
 [xml]$setupXml = Get-Content $setupCsproj
-$setupXml.Project.PropertyGroup.Version = $newVersion
+$setupXml.SelectSingleNode("//Version").InnerText = $newVersion
 $setupXml.Save($setupCsproj)
 Write-Host "  [+] $setupCsproj" -ForegroundColor Gray
 
