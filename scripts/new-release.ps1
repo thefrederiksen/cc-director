@@ -16,6 +16,18 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+# --- Check for uncommitted changes ---
+$status = git -C $repoRoot status --porcelain
+if ($status) {
+    Write-Host ""
+    Write-Host "ERROR: Working tree has uncommitted changes." -ForegroundColor Red
+    Write-Host "Commit or stash your changes before running a release." -ForegroundColor Red
+    Write-Host ""
+    git -C $repoRoot status --short
+    Write-Host ""
+    exit 1
+}
+
 # --- Version file paths ---
 $wpfCsproj   = Join-Path $repoRoot "src\CcDirector.Wpf\CcDirector.Wpf.csproj"
 $setupCsproj = Join-Path $repoRoot "tools\cc-director-setup\CcDirectorSetup.csproj"
