@@ -164,6 +164,15 @@ function prepareProfileForLaunch(profileDir) {
     changed = true;
   }
 
+  // Prevent session restore from reopening previous tabs.
+  // Value 1 = "Open the New Tab page" (instead of 5 = "Continue where you left off").
+  // This is more reliable than deleting session files which may be locked or recreated.
+  if (!prefs.session) prefs.session = {};
+  if (prefs.session.restore_on_startup !== 1) {
+    prefs.session.restore_on_startup = 1;
+    changed = true;
+  }
+
   if (changed) {
     writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf8');
     console.log('[chrome-launch] Profile prepared (developer mode, clean exit state)');

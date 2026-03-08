@@ -429,63 +429,53 @@ public partial class ConnectionsView : UserControl
 
         item.SetBusy(true);
 
-        var chromePath = FindChromePath();
-        if (chromePath == null)
-        {
-            FileLog.Write("[ConnectionsView] OpenConnection FAILED: Chrome not found");
-            item.SetBusy(false);
-            MessageBox.Show(
-                "Chrome not found. Install Google Chrome or Microsoft Edge.",
-                "Browser Not Found",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-
-        var profileDir = CcStorage.ConnectionProfile(item.Name);
-        if (!Directory.Exists(profileDir))
-            Directory.CreateDirectory(profileDir);
-
-        // Extension directory (relative to cc-browser tool source)
-        var extensionDir = FindExtensionDir();
-
-        var args = $"--user-data-dir=\"{profileDir}\" --no-first-run --no-default-browser-check --disable-features=TranslateUI --disable-sync";
-
-        if (extensionDir != null)
-            args += $" --load-extension=\"{extensionDir}\"";
-
-        if (!string.IsNullOrEmpty(item.Url))
-            args += $" \"{item.Url}\"";
-
-        FileLog.Write($"[ConnectionsView] OpenConnection: chromePath={chromePath}, profileDir={profileDir}, extensionDir={extensionDir}");
-        FileLog.Write($"[ConnectionsView] OpenConnection: launching with args={args}");
-
         try
         {
-            var psi = new ProcessStartInfo
+            var port = GetDaemonPort();
+            var payload = JsonSerializer.Serialize(new { name = item.Name });
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _http.PostAsync($"http://127.0.0.1:{port}/connections/open", content);
+            var json = await response.Content.ReadAsStringAsync();
+
+            FileLog.Write($"[ConnectionsView] OpenConnection: daemon response status={response.StatusCode}");
+
+            if (!response.IsSuccessStatusCode)
             {
-                FileName = chromePath,
-                Arguments = args,
-                UseShellExecute = false,
-            };
+                FileLog.Write($"[ConnectionsView] OpenConnection FAILED: {json}");
+                item.SetBusy(false);
+                MessageBox.Show(
+                    $"Failed to open connection \"{item.Name}\".\n\n{json}",
+                    "Open Connection Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
 
-            var process = Process.Start(psi);
-            FileLog.Write($"[ConnectionsView] OpenConnection: Chrome launched pid={process?.Id}");
+            var result = JsonSerializer.Deserialize<JsonElement>(json);
+            if (result.TryGetProperty("pid", out var pidEl))
+                item.ChromePid = pidEl.GetInt32();
 
-            item.ChromePid = process?.Id;
             item.Connected = true;
             item.SetBusy(false);
-
-            // Also notify daemon if it's running (fire-and-forget)
-            _ = NotifyDaemonAsync("open", item.Name);
+            FileLog.Write($"[ConnectionsView] OpenConnection: opened pid={item.ChromePid}");
+        }
+        catch (HttpRequestException ex)
+        {
+            FileLog.Write($"[ConnectionsView] OpenConnection FAILED: daemon not reachable: {ex.Message}");
+            item.SetBusy(false);
+            MessageBox.Show(
+                "cc-browser daemon is not running.\n\nStart it with: cc-browser daemon",
+                "Daemon Not Running",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
             FileLog.Write($"[ConnectionsView] OpenConnection FAILED: {ex.Message}");
             item.SetBusy(false);
             MessageBox.Show(
-                $"Failed to launch browser for \"{item.Name}\".\n\n{ex.Message}",
-                "Launch Error",
+                $"Failed to open connection \"{item.Name}\".\n\n{ex.Message}",
+                "Open Connection Error",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
@@ -496,162 +486,22 @@ public partial class ConnectionsView : UserControl
         FileLog.Write($"[ConnectionsView] CloseConnection: name={item.Name}, pid={item.ChromePid}");
         item.SetBusy(true);
 
-        if (item.ChromePid is int pid)
+        try
         {
-            await Task.Run(() => CloseProcessWithFallback(pid));
+            var port = GetDaemonPort();
+            var payload = JsonSerializer.Serialize(new { name = item.Name });
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _http.PostAsync($"http://127.0.0.1:{port}/connections/close", content);
+            FileLog.Write($"[ConnectionsView] CloseConnection: daemon response status={response.StatusCode}");
         }
-        else
+        catch (Exception ex)
         {
-            FileLog.Write("[ConnectionsView] CloseConnection: no tracked PID, skipping process kill");
+            FileLog.Write($"[ConnectionsView] CloseConnection: daemon call failed: {ex.Message}");
         }
-
-        // Also notify daemon if running
-        _ = NotifyDaemonAsync("close", item.Name);
 
         item.ChromePid = null;
         item.Connected = false;
         item.SetBusy(false);
-    }
-
-    private async Task NotifyDaemonAsync(string endpoint, string name)
-    {
-        try
-        {
-            var port = GetDaemonPort();
-            var body = new StringContent(
-                JsonSerializer.Serialize(new { name }),
-                System.Text.Encoding.UTF8,
-                "application/json");
-            await _http.PostAsync($"http://127.0.0.1:{port}/connections/{endpoint}", body);
-        }
-        catch
-        {
-            // Daemon not running - that's OK, Chrome is open directly
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Chrome Detection
-    // -----------------------------------------------------------------------
-
-    private static string? FindChromePath()
-    {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var progFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-
-        // Brave first (preferred - supports --load-extension unlike Chrome stable)
-        var candidates = new[]
-        {
-            Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-            Path.Combine(progFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-            Path.Combine(progFilesX86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-            Path.Combine(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(progFiles, "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(progFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(localAppData, "Microsoft", "Edge", "Application", "msedge.exe"),
-            Path.Combine(progFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
-        };
-
-        foreach (var path in candidates)
-        {
-            if (File.Exists(path))
-            {
-                FileLog.Write($"[ConnectionsView] Found browser: {path}");
-                return path;
-            }
-        }
-
-        return null;
-    }
-
-    private static void CloseProcessWithFallback(int pid)
-    {
-        FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid}");
-        Process proc;
-        try
-        {
-            proc = Process.GetProcessById(pid);
-        }
-        catch (ArgumentException)
-        {
-            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} already exited");
-            return;
-        }
-
-        try
-        {
-            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: process name={proc.ProcessName}, hasExited={proc.HasExited}");
-
-            if (proc.HasExited)
-            {
-                FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} already exited (HasExited=true)");
-                proc.Dispose();
-                return;
-            }
-
-            // Step 1: Try CloseMainWindow (sends WM_CLOSE, like clicking X)
-            var sent = proc.CloseMainWindow();
-            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: CloseMainWindow returned {sent} for pid={pid}");
-
-            if (sent)
-            {
-                var exited = proc.WaitForExit(5000);
-                FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: WaitForExit(5s) returned {exited} for pid={pid}");
-
-                if (exited)
-                {
-                    FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} exited gracefully");
-                    proc.Dispose();
-                    return;
-                }
-            }
-
-            // Step 2: CloseMainWindow failed or process didn't exit - force kill
-            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: force killing pid={pid} (entireProcessTree=true)");
-            proc.Kill(entireProcessTree: true);
-            proc.WaitForExit(3000);
-            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: force kill complete for pid={pid}");
-        }
-        catch (InvalidOperationException ex)
-        {
-            // Process exited between our checks
-            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback: pid={pid} exited during close: {ex.Message}");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[ConnectionsView] CloseProcessWithFallback FAILED pid={pid}: {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
-            proc.Dispose();
-        }
-    }
-
-    private static string? FindExtensionDir()
-    {
-        // Check cc-browser tool source directory
-        var repoExtension = Path.GetFullPath(
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "..",
-                "tools", "cc-browser", "extension"));
-        if (Directory.Exists(repoExtension) && File.Exists(Path.Combine(repoExtension, "manifest.json")))
-        {
-            FileLog.Write($"[ConnectionsView] Found extension (repo): {repoExtension}");
-            return repoExtension;
-        }
-
-        // Check installed location
-        var installedExtension = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "cc-director", "extension");
-        if (Directory.Exists(installedExtension) && File.Exists(Path.Combine(installedExtension, "manifest.json")))
-        {
-            FileLog.Write($"[ConnectionsView] Found extension (installed): {installedExtension}");
-            return installedExtension;
-        }
-
-        FileLog.Write("[ConnectionsView] Extension directory not found (non-critical)");
-        return null;
     }
 
     private async void BtnWorkflow_Click(object sender, RoutedEventArgs e)
@@ -707,62 +557,58 @@ public partial class ConnectionsView : UserControl
 
         item.SetBusy(true);
 
-        var chromePath = FindChromePath();
-        if (chromePath == null)
-        {
-            FileLog.Write("[ConnectionsView] OpenConnectionPositioned FAILED: Browser not found");
-            item.SetBusy(false);
-            MessageBox.Show(
-                "Brave/Chrome not found. Install Brave Browser.",
-                "Browser Not Found",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-
-        var profileDir = CcStorage.ConnectionProfile(item.Name);
-        if (!Directory.Exists(profileDir))
-            Directory.CreateDirectory(profileDir);
-
-        var extensionDir = FindExtensionDir();
-
-        var args = $"--user-data-dir=\"{profileDir}\" --no-first-run --no-default-browser-check --disable-features=TranslateUI --disable-sync";
-        args += $" --window-position={x},{y} --window-size={width},{height}";
-
-        if (extensionDir != null)
-            args += $" --load-extension=\"{extensionDir}\"";
-
-        if (!string.IsNullOrEmpty(item.Url))
-            args += $" \"{item.Url}\"";
-
-        FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: chromePath={chromePath}");
-        FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: args={args}");
-
         try
         {
-            var psi = new ProcessStartInfo
+            var port = GetDaemonPort();
+            var payload = JsonSerializer.Serialize(new
             {
-                FileName = chromePath,
-                Arguments = args,
-                UseShellExecute = false,
-            };
+                name = item.Name,
+                windowPosition = new { x, y },
+                windowSize = new { width, height },
+            });
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _http.PostAsync($"http://127.0.0.1:{port}/connections/open", content);
+            var json = await response.Content.ReadAsStringAsync();
 
-            var process = Process.Start(psi);
-            FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: launched pid={process?.Id}");
+            FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: daemon response status={response.StatusCode}");
 
-            item.ChromePid = process?.Id;
+            if (!response.IsSuccessStatusCode)
+            {
+                FileLog.Write($"[ConnectionsView] OpenConnectionPositioned FAILED: {json}");
+                item.SetBusy(false);
+                MessageBox.Show(
+                    $"Failed to open connection \"{item.Name}\".\n\n{json}",
+                    "Open Connection Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var result = JsonSerializer.Deserialize<JsonElement>(json);
+            if (result.TryGetProperty("pid", out var pidEl))
+                item.ChromePid = pidEl.GetInt32();
+
             item.Connected = true;
             item.SetBusy(false);
-
-            _ = NotifyDaemonAsync("open", item.Name);
+            FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: opened pid={item.ChromePid}");
+        }
+        catch (HttpRequestException ex)
+        {
+            FileLog.Write($"[ConnectionsView] OpenConnectionPositioned FAILED: daemon not reachable: {ex.Message}");
+            item.SetBusy(false);
+            MessageBox.Show(
+                "cc-browser daemon is not running.\n\nStart it with: cc-browser daemon",
+                "Daemon Not Running",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
             FileLog.Write($"[ConnectionsView] OpenConnectionPositioned FAILED: {ex.Message}");
             item.SetBusy(false);
             MessageBox.Show(
-                $"Failed to launch browser for \"{item.Name}\".\n\n{ex.Message}",
-                "Launch Error",
+                $"Failed to open connection \"{item.Name}\".\n\n{ex.Message}",
+                "Open Connection Error",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
