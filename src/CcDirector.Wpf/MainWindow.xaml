@@ -1309,6 +1309,7 @@
                                                         PreviewMouseMove="ScreenshotItem_PreviewMouseMove">
                                                     <Border.ContextMenu>
                                                         <ContextMenu>
+                                                            <MenuItem Header="View" Click="ScreenshotItem_View" />
                                                             <MenuItem Header="Copy Path" Click="ScreenshotItem_CopyPath" />
                                                             <MenuItem Header="Open in Explorer" Click="ScreenshotItem_OpenInExplorer" />
                                                             <Separator />
@@ -1324,13 +1325,20 @@
                                                             <TextBlock Text="{Binding TimeLabel}"
                                                                        Foreground="#888888" FontSize="9"
                                                                        VerticalAlignment="Center" />
-                                                            <Button Content="Copy" Tag="{Binding FilePath}"
-                                                                    Click="ScreenshotItem_CopyPath"
-                                                                    HorizontalAlignment="Right"
-                                                                    Padding="6,1"
-                                                                    Background="{StaticResource ButtonBackground}"
-                                                                    Foreground="{StaticResource TextForeground}"
-                                                                    BorderThickness="0" Cursor="Hand" FontSize="9" />
+                                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                                <Button Content="View"
+                                                                        Click="ScreenshotItem_View"
+                                                                        Padding="6,1" Margin="0,0,4,0"
+                                                                        Background="{StaticResource ButtonBackground}"
+                                                                        Foreground="{StaticResource TextForeground}"
+                                                                        BorderThickness="0" Cursor="Hand" FontSize="9" />
+                                                                <Button Content="Copy" Tag="{Binding FilePath}"
+                                                                        Click="ScreenshotItem_CopyPath"
+                                                                        Padding="6,1"
+                                                                        Background="{StaticResource ButtonBackground}"
+                                                                        Foreground="{StaticResource TextForeground}"
+                                                                        BorderThickness="0" Cursor="Hand" FontSize="9" />
+                                                            </StackPanel>
                                                         </DockPanel>
                                                     </StackPanel>
                                                 </Border>

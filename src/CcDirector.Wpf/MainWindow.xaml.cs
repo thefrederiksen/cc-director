@@ -3614,6 +3614,15 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(() => RefreshScreenshots());
     }
 
+    private void ScreenshotItem_View(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is ScreenshotViewModel vm)
+        {
+            FileLog.Write($"[MainWindow] ScreenshotItem_View: {vm.FilePath}");
+            OpenDocumentFile(vm.FilePath);
+        }
+    }
+
     private void ScreenshotItem_CopyPath(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement fe && fe.DataContext is ScreenshotViewModel vm)
