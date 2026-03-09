@@ -1,12 +1,18 @@
 # CC Director
 
-A desktop application for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions simultaneously. Run, monitor, and switch between independent Claude Code instances — each working on its own repository — from a single unified interface.
+A desktop application for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions simultaneously. Run, monitor, and switch between independent Claude Code instances -- each working on its own repository -- from a single unified interface.
+
+I built CC Director because I needed a way to manage 6-8 Claude Code sessions at once across my consulting, product, and open source work. I use it every day as my primary development environment. It ships with 35+ purpose-built CLI tools and 14 Claude Code skills that handle everything from document generation to browser automation to email management.
+
+> **Status:** I'm currently cleaning up the codebase and preparing a release that will be ready for enterprise use this week. The application is fully functional and I use it daily, but expect rough edges if you build from source today.
 
 > **Live Training:** I'm running a 2-day hands-on course in Toronto covering CC Director and the full Claude Code toolchain. Details and registration at [sorenfrederiksen.com/training](https://sorenfrederiksen.com/training).
 
 > **Mac/Linux Support (Experimental):** Cross-platform backend support has been added but is largely untested -- I don't have a Mac to test on. If you'd like to see CC Director running on Mac, I'd love your help. See [Help Wanted: Mac Testers](#help-wanted-mac-testers) below.
 
 ![CC Director](images/cc-director-main.png)
+
+![CC Director - Multiple sessions with workflow recording](images/cc-director-workflow.png)
 
 ## Download (Windows)
 
@@ -19,6 +25,32 @@ A desktop application for managing multiple [Claude Code](https://docs.anthropic
 | `cc-*.exe` | Individual CLI tools (cc-markdown, cc-transcribe, cc-outlook, etc.) |
 
 *Mac/Linux users: Build from source (see [Building](#building)). GUI not yet available -- backend only.*
+
+## Setup
+
+The installer walks you through setup in 4 steps:
+
+### 1. Choose your profile
+
+Pick **Standard** for core document tools, email, media, and vault, or **Developer** for the full suite including browser automation, LinkedIn, Reddit, social media, and code generation.
+
+![Setup - Choose profile](images/setup-1-welcome.png)
+
+### 2. Prerequisites check
+
+The installer verifies that Claude Code, Python 3.11+, Node.js 20+, and Brave Browser are installed and available. If anything is missing, it tells you exactly what to install.
+
+![Setup - Prerequisites](images/setup-2-prerequisites.png)
+
+### 3. Install tools and skills
+
+CC Director installs itself, 15+ CLI tools, and 14 Claude Code skills. Everything is placed on your PATH so tools are immediately available from any terminal or Claude Code session.
+
+![Setup - Install](images/setup-3-update.png)
+
+### 4. Done
+
+Launch CC Director and start creating sessions.
 
 ## Features
 
@@ -64,6 +96,24 @@ A desktop application for managing multiple [Claude Code](https://docs.anthropic
 ### Logging & Diagnostics
 - File logging to `%LOCALAPPDATA%\CcDirector\logs\`
 - "Open Logs" button in the sidebar for quick access
+
+## Bundled CLI Tools
+
+CC Director ships with 35+ command-line tools that are installed on your PATH and available from any terminal or Claude Code session. Every tool follows the `cc-*` naming convention.
+
+| Category | Tools | Description |
+|----------|-------|-------------|
+| **Documents** | `cc-pdf`, `cc-html`, `cc-word`, `cc-excel`, `cc-powerpoint` | Convert Markdown to PDF, HTML, Word, Excel, and PowerPoint with 7 built-in themes |
+| **Email** | `cc-gmail`, `cc-outlook` | Read, search, and manage Gmail and Outlook (calendar, attachments, labels) |
+| **Browser** | `cc-browser` | Persistent browser automation with named workspaces and connection management |
+| **Social** | `cc-reddit`, `cc-spotify` | Reddit automation with human-like delays, Spotify playback control |
+| **Web** | `cc-crawl4ai`, `cc-websiteaudit`, `cc-brandingrecommendations` | AI-ready web crawling, SEO/security audits, branding action plans |
+| **Desktop** | `cc-click`, `cc-trisight`, `cc-computer` | Windows UI automation, 3-tier element detection (UIA + OCR + pixel), AI desktop agent |
+| **Media** | `cc-image`, `cc-voice`, `cc-whisper`, `cc-video`, `cc-transcribe`, `cc-photos` | Image generation/OCR, text-to-speech, transcription, video processing, photo organization |
+| **Data** | `cc-vault`, `cc-youtube-info`, `cc-personresearch`, `cc-docgen` | Personal vault (contacts/tasks/goals), YouTube transcripts, person research, C4 diagrams |
+| **System** | `cc-hardware`, `cc-comm-queue`, `cc-director-setup` | Hardware info, communication approval queue, installer/updater |
+
+All tools work standalone from the command line and are also designed to be called by Claude Code during sessions.
 
 ## Architecture
 
