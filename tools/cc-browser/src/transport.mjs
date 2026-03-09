@@ -21,6 +21,7 @@ export class Transport {
     this._pendingRequests = new Map(); // requestId -> { resolve, reject, timer }
     this._requestCounter = 0;
     this._onConnectCallback = null;
+    this._onEventCallback = null;
   }
 
   /**
@@ -29,6 +30,14 @@ export class Transport {
    */
   onConnect(callback) {
     this._onConnectCallback = callback;
+  }
+
+  /**
+   * Register a callback for unsolicited events from extensions (e.g. recorded actions).
+   * @param {(connectionName: string, event: object) => void} callback
+   */
+  onEvent(callback) {
+    this._onEventCallback = callback;
   }
 
   /**
@@ -177,8 +186,13 @@ export class Transport {
       return;
     }
 
+    // Handle unsolicited events (e.g. recorded user actions)
+    if (msg.type && this._onEventCallback) {
+      this._onEventCallback(connectionName, msg);
+      return;
+    }
+
     if (!msg.id) {
-      console.warn(`[transport] Message without id from ${connectionName}:`, msg);
       return;
     }
 

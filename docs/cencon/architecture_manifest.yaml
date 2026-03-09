@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-03-07"
+last_updated: "2026-03-09"
 
 # C4 Level 1: System Context
 context:
@@ -83,6 +83,9 @@ containers:
           - GitHubRepoPickerDialog.xaml
           - RepositoryManagerDialog.xaml
           - RootDirectoryDialog.xaml
+      - name: SettingsView
+        description: Read-only settings overlay showing all configuration values grouped by category
+        file: Controls/SettingsView.xaml / Controls/SettingsView.xaml.cs
       - name: Voice UI
         description: Voice mode controls and audio playback/recording
         directory: Voice/
@@ -135,6 +138,12 @@ containers:
       - name: CircularTerminalBuffer
         description: Thread-safe ring buffer for terminal output
         file: Memory/CircularTerminalBuffer.cs
+      - name: AlphaMode
+        description: Global alpha mode toggle for gating experimental features
+        file: Configuration/AlphaMode.cs
+      - name: CcStorage
+        description: Single source of truth for all cc-director storage paths
+        file: Storage/CcStorage.cs
       - name: FileLog
         description: Thread-safe async file logging
         file: Utilities/FileLog.cs

@@ -44,7 +44,7 @@ public partial class WorkflowRecorderWindow : Window
     // Record / Stop / Clear
     // -----------------------------------------------------------------------
 
-    private void BtnRecord_Click(object sender, RoutedEventArgs e)
+    private async void BtnRecord_Click(object sender, RoutedEventArgs e)
     {
         FileLog.Write("[WorkflowRecorder] BtnRecord_Click");
 
@@ -53,6 +53,32 @@ public partial class WorkflowRecorderWindow : Window
         _recordingSince = DateTime.UtcNow.ToString("o");
         _recordingStartTime = DateTime.UtcNow;
 
+        // Tell the browser extension to start capturing user actions
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { connection = _connectionName });
+            var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            var response = await _http.PostAsync($"http://127.0.0.1:{_daemonPort}/record/start", content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var err = await response.Content.ReadAsStringAsync();
+                FileLog.Write($"[WorkflowRecorder] record/start FAILED: {err}");
+                MessageBox.Show($"Failed to start recording:\n{err}",
+                    "Recording Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            FileLog.Write("[WorkflowRecorder] record/start OK");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorkflowRecorder] record/start FAILED: {ex.Message}");
+            MessageBox.Show($"Failed to start recording:\n{ex.Message}",
+                "Recording Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         SetState(RecorderState.Recording);
 
         _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -60,12 +86,25 @@ public partial class WorkflowRecorderWindow : Window
         _pollTimer.Start();
     }
 
-    private void BtnStop_Click(object sender, RoutedEventArgs e)
+    private async void BtnStop_Click(object sender, RoutedEventArgs e)
     {
         FileLog.Write($"[WorkflowRecorder] BtnStop_Click: {_actions.Count} actions recorded");
 
         _pollTimer?.Stop();
         _pollTimer = null;
+
+        // Tell the browser extension to stop capturing user actions
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { connection = _connectionName });
+            var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            await _http.PostAsync($"http://127.0.0.1:{_daemonPort}/record/stop", content);
+            FileLog.Write("[WorkflowRecorder] record/stop OK");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorkflowRecorder] record/stop FAILED: {ex.Message}");
+        }
 
         SetState(RecorderState.Idle);
     }

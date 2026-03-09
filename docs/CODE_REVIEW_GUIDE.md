@@ -194,8 +194,8 @@ cc-director.sln
 |   +-- VisualStyle.md                # UI design guide
 |   +-- [Other design docs]
 |
-+-- releases/
-|   +-- cc-director.exe               # Pre-built executable
++-- local_builds/
+|   +-- cc-director.exe               # Local build output
 |
 +-- images/                           # Screenshots for README
 +-- CLAUDE.md                         # Project instructions for Claude

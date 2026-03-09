@@ -982,6 +982,296 @@
   }
 
   // =========================================================================
+  // User Action Recording
+  // =========================================================================
+
+  let _isRecording = false;
+  let _inputDebounceTimer = null;
+  const INPUT_DEBOUNCE_MS = 800;
+
+  // Track last recorded input to avoid duplicates
+  let _lastInputElement = null;
+  let _lastInputValue = '';
+
+  /**
+   * Generate the best possible selector for an element.
+   * Priority: id > name attr > aria-label > data-testid > stable CSS selector
+   */
+  function generateSelector(el) {
+    if (!el || el === document.body || el === document.documentElement) return null;
+
+    // 1. ID (if it looks stable, not auto-generated)
+    if (el.id && !/^\d/.test(el.id) && !/^(ember|react|vue|ng-|:r)/.test(el.id)) {
+      return { selector: `#${CSS.escape(el.id)}`, strategy: 'id' };
+    }
+
+    // 2. data-testid or data-id
+    const testId = el.getAttribute('data-testid') || el.getAttribute('data-id');
+    if (testId) {
+      const attr = el.hasAttribute('data-testid') ? 'data-testid' : 'data-id';
+      return { selector: `[${attr}="${CSS.escape(testId)}"]`, strategy: attr };
+    }
+
+    // 3. name attribute (form elements)
+    if (el.name && ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName)) {
+      const tag = el.tagName.toLowerCase();
+      const type = el.getAttribute('type');
+      const nameSelector = type
+        ? `${tag}[name="${CSS.escape(el.name)}"][type="${type}"]`
+        : `${tag}[name="${CSS.escape(el.name)}"]`;
+      return { selector: nameSelector, strategy: 'name' };
+    }
+
+    // 4. aria-label
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel) {
+      const tag = el.tagName.toLowerCase();
+      return { selector: `${tag}[aria-label="${CSS.escape(ariaLabel)}"]`, strategy: 'aria-label' };
+    }
+
+    // 5. Text content for clickable elements (buttons, links)
+    const text = getRecordableText(el);
+    if (text) {
+      return { text: text, strategy: 'text' };
+    }
+
+    // 6. Build a CSS path
+    const path = buildCssPath(el);
+    if (path) {
+      return { selector: path, strategy: 'css-path' };
+    }
+
+    return null;
+  }
+
+  function getRecordableText(el) {
+    const tag = el.tagName.toLowerCase();
+    const role = el.getAttribute('role');
+    const isClickable = ['a', 'button', 'summary'].includes(tag) ||
+      role === 'button' || role === 'link' || role === 'tab' || role === 'menuitem';
+
+    if (!isClickable) return null;
+
+    const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+    if (text && text.length > 0 && text.length <= 80) return text;
+    return null;
+  }
+
+  function buildCssPath(el) {
+    const parts = [];
+    let current = el;
+    let depth = 0;
+
+    while (current && current !== document.body && depth < 5) {
+      const tag = current.tagName.toLowerCase();
+      let part = tag;
+
+      // Add class names (filter out dynamic-looking ones)
+      const classes = Array.from(current.classList || [])
+        .filter(c => !/^(active|hover|focus|selected|open|show|hide|ng-|ember-|jsx-)/.test(c))
+        .filter(c => c.length < 40)
+        .slice(0, 2);
+
+      if (classes.length > 0) {
+        part += '.' + classes.map(c => CSS.escape(c)).join('.');
+      }
+
+      // Add nth-of-type if needed for uniqueness
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(s => {
+          if (s.tagName !== current.tagName) return false;
+          if (classes.length > 0 && s.classList) {
+            return classes.every(c => s.classList.contains(c));
+          }
+          return true;
+        });
+        if (siblings.length > 1) {
+          const idx = siblings.indexOf(current) + 1;
+          part += `:nth-of-type(${idx})`;
+        }
+      }
+
+      parts.unshift(part);
+
+      // Check if this partial path is already unique
+      const partialPath = parts.join(' > ');
+      try {
+        const matches = document.querySelectorAll(partialPath);
+        if (matches.length === 1 && matches[0] === el) {
+          return partialPath;
+        }
+      } catch { /* invalid selector, keep building */ }
+
+      current = current.parentElement;
+      depth++;
+    }
+
+    const fullPath = parts.join(' > ');
+    try {
+      const matches = document.querySelectorAll(fullPath);
+      if (matches.length === 1) return fullPath;
+    } catch { /* ignore */ }
+
+    return fullPath;
+  }
+
+  function sendRecordedAction(action) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'recordedAction',
+        action: action,
+      });
+    } catch {
+      // Extension context may be invalidated on navigation
+    }
+  }
+
+  function flushInputDebounce() {
+    if (_inputDebounceTimer) {
+      clearTimeout(_inputDebounceTimer);
+      _inputDebounceTimer = null;
+    }
+    if (_lastInputElement) {
+      const el = _lastInputElement;
+      const value = _lastInputValue;
+      const loc = generateSelector(el);
+      if (loc) {
+        const action = { command: 'fill', params: {} };
+        if (loc.text) action.params.text = loc.text;
+        else action.params.selector = loc.selector;
+        action.params.value = value;
+        sendRecordedAction(action);
+      }
+      _lastInputElement = null;
+      _lastInputValue = '';
+    }
+  }
+
+  function onRecordClick(e) {
+    // Flush any pending input before recording the click
+    flushInputDebounce();
+
+    const el = e.target;
+    if (!el || el === document.body || el === document.documentElement) return;
+
+    // Skip clicks on input fields (they will be captured by input events)
+    const tag = el.tagName.toLowerCase();
+    if (['input', 'textarea', 'select'].includes(tag)) return;
+
+    // Find the closest meaningful clickable element
+    const clickable = el.closest('a, button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], summary') || el;
+
+    const loc = generateSelector(clickable);
+    if (!loc) return;
+
+    const action = { command: 'click', params: {} };
+    if (loc.text) action.params.text = loc.text;
+    else action.params.selector = loc.selector;
+
+    sendRecordedAction(action);
+  }
+
+  function onRecordInput(e) {
+    const el = e.target;
+    if (!el) return;
+
+    const tag = el.tagName.toLowerCase();
+    if (!['input', 'textarea'].includes(tag)) return;
+
+    // Skip non-text inputs
+    const type = (el.getAttribute('type') || 'text').toLowerCase();
+    if (['checkbox', 'radio', 'file', 'submit', 'button', 'hidden', 'image'].includes(type)) return;
+
+    // Debounce: accumulate the final value
+    _lastInputElement = el;
+    _lastInputValue = el.value || '';
+
+    if (_inputDebounceTimer) clearTimeout(_inputDebounceTimer);
+    _inputDebounceTimer = setTimeout(() => {
+      flushInputDebounce();
+    }, INPUT_DEBOUNCE_MS);
+  }
+
+  function onRecordChange(e) {
+    const el = e.target;
+    if (!el) return;
+
+    const tag = el.tagName.toLowerCase();
+
+    // Handle select changes
+    if (tag === 'select') {
+      const loc = generateSelector(el);
+      if (!loc) return;
+      const action = { command: 'select', params: {} };
+      if (loc.text) action.params.text = loc.text;
+      else action.params.selector = loc.selector;
+      action.params.value = el.value;
+      sendRecordedAction(action);
+      return;
+    }
+
+    // Handle checkbox/radio changes
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+      const loc = generateSelector(el);
+      if (!loc) return;
+      const command = el.checked ? 'check' : 'uncheck';
+      const action = { command, params: {} };
+      if (loc.text) action.params.text = loc.text;
+      else action.params.selector = loc.selector;
+      sendRecordedAction(action);
+    }
+  }
+
+  function onRecordKeydown(e) {
+    // Only record special key presses (Enter, Tab, Escape)
+    const specialKeys = ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete'];
+    if (!specialKeys.includes(e.key)) return;
+
+    // Don't record Enter/Tab if inside a text input (captured by input handler)
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (['input', 'textarea'].includes(tag) && e.key !== 'Escape') return;
+
+    // Flush pending input before recording key press
+    flushInputDebounce();
+
+    sendRecordedAction({
+      command: 'press',
+      params: { key: e.key },
+    });
+  }
+
+  function startRecording() {
+    if (_isRecording) return { alreadyRecording: true };
+    _isRecording = true;
+    _lastInputElement = null;
+    _lastInputValue = '';
+
+    document.addEventListener('click', onRecordClick, true);
+    document.addEventListener('input', onRecordInput, true);
+    document.addEventListener('change', onRecordChange, true);
+    document.addEventListener('keydown', onRecordKeydown, true);
+
+    return { recording: true };
+  }
+
+  function stopRecording() {
+    if (!_isRecording) return { alreadyStopped: true };
+
+    // Flush any pending input
+    flushInputDebounce();
+
+    _isRecording = false;
+    document.removeEventListener('click', onRecordClick, true);
+    document.removeEventListener('input', onRecordInput, true);
+    document.removeEventListener('change', onRecordChange, true);
+    document.removeEventListener('keydown', onRecordKeydown, true);
+
+    return { stopped: true };
+  }
+
+  // =========================================================================
   // Message Handler
   // =========================================================================
 
@@ -1055,6 +1345,12 @@
             break;
           case 'waitNetworkIdle':
             result = await cmdWaitNetworkIdle(params);
+            break;
+          case 'record.start':
+            result = startRecording();
+            break;
+          case 'record.stop':
+            result = stopRecording();
             break;
           default:
             sendResponse({ error: `Unknown content command: ${command}` });

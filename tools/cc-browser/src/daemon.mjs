@@ -35,6 +35,9 @@ const DEFAULT_DAEMON_PORT = 9280;
 const MAX_HISTORY = 1000;
 const actionHistory = [];
 
+// Recording state: which connection is currently recording
+let recordingConnection = null;
+
 // ---------------------------------------------------------------------------
 // Lockfile
 // ---------------------------------------------------------------------------
@@ -897,6 +900,34 @@ const routes = {
     jsonSuccess(res, { results, count: results.length });
   },
 
+  // --- Recording: Capture User Actions ---
+
+  'POST /record/start': async (req, res, body) => {
+    const conn = requireConnected(body);
+    recordingConnection = conn;
+    const result = await transport.sendCommand(conn, 'record.start', body);
+    console.log(`[cc-browser] Recording started for connection: ${conn}`);
+    jsonSuccess(res, result);
+  },
+
+  'POST /record/stop': async (req, res, body) => {
+    const conn = body.connection || recordingConnection;
+    if (!conn) {
+      return jsonSuccess(res, { stopped: true, wasRecording: false });
+    }
+    let result = { stopped: true };
+    if (transport.isConnected(conn)) {
+      try {
+        result = await transport.sendCommand(conn, 'record.stop', body);
+      } catch {
+        // Connection may have been lost
+      }
+    }
+    console.log(`[cc-browser] Recording stopped for connection: ${conn}`);
+    recordingConnection = null;
+    jsonSuccess(res, result);
+  },
+
   // --- Action History ---
 
   'GET /history': async (req, res) => {
@@ -935,7 +966,7 @@ async function handleRequest(req, res) {
     const elapsed = Date.now() - startMs;
 
     // Log browser action commands to history (skip GET and management routes)
-    if (method === 'POST' && !pathname.startsWith('/connections') && !pathname.startsWith('/skills') && pathname !== '/batch') {
+    if (method === 'POST' && !pathname.startsWith('/connections') && !pathname.startsWith('/skills') && !pathname.startsWith('/record') && pathname !== '/batch') {
       const { connection: conn, owner: _o, timeout: _t, ...actionParams } = body;
       actionHistory.push({
         command: pathname.slice(1),
@@ -1004,6 +1035,23 @@ transport.onConnect(async (connectionName) => {
     }
   } catch (err) {
     console.log(`[cc-browser] Tab cleanup skipped for ${connectionName}: ${err.message}`);
+  }
+});
+
+// Handle recorded user actions from the extension
+transport.onEvent((connectionName, event) => {
+  if (event.type === 'recordedAction' && event.action) {
+    const action = event.action;
+    actionHistory.push({
+      command: action.command,
+      params: action.params || undefined,
+      connection: connectionName,
+      timestamp: new Date().toISOString(),
+      recorded: true,
+    });
+    if (actionHistory.length > MAX_HISTORY) {
+      actionHistory.splice(0, actionHistory.length - MAX_HISTORY);
+    }
   }
 });
 

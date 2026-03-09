@@ -252,8 +252,8 @@ cc-director/
     INSTALL.md        # Detailed installation
     FEATURES.md       # Feature documentation
     ARCHITECTURE.md   # For contributors
-  releases/
-    cc-director.exe   # Pre-built binary
+  local_builds/
+    cc-director.exe   # Local build output
   src/
     ...
 ```

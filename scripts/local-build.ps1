@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Builds and packages CC Director for release.
+    Builds CC Director locally.
 
 .DESCRIPTION
     Publishes CC Director as a single-file executable. Framework-dependent by
@@ -20,8 +20,8 @@
     Build configuration. Defaults to Release.
 
 .EXAMPLE
-    .\scripts\release.ps1
-    .\scripts\release.ps1 -SelfContained
+    .\scripts\local-build.ps1
+    .\scripts\local-build.ps1 -SelfContained
 #>
 param(
     [switch]$SelfContained,
@@ -115,8 +115,8 @@ if (-not (Test-Path $exePath)) {
     exit 1
 }
 
-# Copy to releases directory
-$releasesDir = Join-Path $repoRoot "releases"
+# Copy to local_builds directory
+$releasesDir = Join-Path $repoRoot "local_builds"
 if (-not (Test-Path $releasesDir)) {
     New-Item -ItemType Directory -Path $releasesDir | Out-Null
 }

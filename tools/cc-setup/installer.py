@@ -69,6 +69,20 @@ class CCDirectorInstaller:
     def __init__(self):
         self.install_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "cc-director" / "bin"
         self.skill_dir = Path(os.environ.get("USERPROFILE", "")) / ".claude" / "skills" / "cc-director"
+        self.alpha_mode = self._read_alpha_mode()
+
+    def _read_alpha_mode(self) -> bool:
+        """Read alpha_mode from config.json."""
+        config_path = Path(os.environ.get("LOCALAPPDATA", "")) / "cc-director" / "config" / "config.json"
+        if not config_path.exists():
+            return False
+        try:
+            import json
+            with open(config_path, "r") as f:
+                config = json.load(f)
+            return config.get("alpha_mode", False)
+        except Exception:
+            return False
 
     def install(self) -> bool:
         """
@@ -77,6 +91,11 @@ class CCDirectorInstaller:
         Returns:
             True if successful, False otherwise
         """
+        if self.alpha_mode:
+            print("Alpha mode: ON -- installing app + tools")
+        else:
+            print("Alpha mode: OFF -- installing app only (no tools)")
+
         # Step 1: Create install directory
         print(f"[1/5] Creating install directory...")
         print(f"      {self.install_dir}")
@@ -91,31 +110,44 @@ class CCDirectorInstaller:
             print(f"      Found release: {version}")
             assets = get_release_assets(release)
 
-            # Step 3: Download tools
-            print(f"[3/5] Downloading tools...")
-            downloaded, skipped = self._download_tools(assets)
-            print(f"      Downloaded: {downloaded}, Skipped (not yet released): {skipped}")
+            if self.alpha_mode:
+                # Step 3: Download tools (alpha only)
+                print(f"[3/5] Downloading tools...")
+                downloaded, skipped = self._download_tools(assets)
+                print(f"      Downloaded: {downloaded}, Skipped (not yet released): {skipped}")
+            else:
+                print(f"[3/5] Skipping tools (alpha mode off)")
+
+            # Download main app exe regardless of alpha mode
+            if "cc-director.exe" in assets:
+                dest_path = self.install_dir / "cc-director.exe"
+                print(f"      Downloading cc-director.exe...")
+                download_file(assets["cc-director.exe"], str(dest_path))
         else:
-            print("      No releases found. Skipping tool downloads.")
+            print("      No releases found. Skipping downloads.")
             print("      (Tools will be available after first release)")
 
-        # Step 4: Add to PATH
-        print(f"[4/5] Configuring PATH...")
-        if self._add_to_path():
-            print(f"      Added {self.install_dir} to user PATH")
-        else:
-            print(f"      Already in PATH")
+        if self.alpha_mode:
+            # Step 4: Add to PATH (alpha only -- tools need PATH)
+            print(f"[4/5] Configuring PATH...")
+            if self._add_to_path():
+                print(f"      Added {self.install_dir} to user PATH")
+            else:
+                print(f"      Already in PATH")
 
-        # Step 5: Install SKILL.md
-        print(f"[5/5] Installing Claude Code skill...")
-        self.skill_dir.mkdir(parents=True, exist_ok=True)
-        skill_path = self.skill_dir / "SKILL.md"
+            # Step 5: Install SKILL.md (alpha only)
+            print(f"[5/5] Installing Claude Code skill...")
+            self.skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_path = self.skill_dir / "SKILL.md"
 
-        if download_raw_file("skills/cc-director/SKILL.md", str(skill_path)):
-            print(f"      Installed: {skill_path}")
+            if download_raw_file("skills/cc-director/SKILL.md", str(skill_path)):
+                print(f"      Installed: {skill_path}")
+            else:
+                print(f"      WARNING: Could not download SKILL.md")
+                print(f"      Claude Code integration may not work until manually installed.")
         else:
-            print(f"      WARNING: Could not download SKILL.md")
-            print(f"      Claude Code integration may not work until manually installed.")
+            print(f"[4/5] Skipping PATH setup (alpha mode off)")
+            print(f"[5/5] Skipping skill install (alpha mode off)")
 
         return True
 
@@ -164,13 +196,6 @@ class CCDirectorInstaller:
                 continue
 
             downloaded += self._install_zipped_tool(tool, assets[asset_name], "dotnet")
-
-        # Main app
-        if "cc-director.exe" in assets:
-            dest_path = self.install_dir / "cc-director.exe"
-            print(f"      Downloading cc-director.exe...")
-            if download_file(assets["cc-director.exe"], str(dest_path)):
-                downloaded += 1
 
         return downloaded, skipped
 

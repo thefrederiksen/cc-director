@@ -23,6 +23,9 @@ public static class CcStorage
 {
     // -- Root categories --
 
+    /// <summary>Root directory for all cc-director storage.</summary>
+    public static string Root() => Base();
+
     private static string Base()
     {
         var overrideRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");

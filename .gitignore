@@ -6,8 +6,8 @@ publish/
 *.suo
 .vs/
 release/
-releases/*
-!releases/_release*.bat
+local_builds/*
+!local_builds/_local_build*.bat
 nul
 tmp_build_output/appsettings.json
 tmp_build_output/cc-director.deps.json

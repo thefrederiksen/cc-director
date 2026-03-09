@@ -14,6 +14,10 @@ const pendingRequests = new Map(); // id -> { resolve, reject, timer }
 const networkLog = [];
 const MAX_NETWORK_LOG = 500;
 
+// Recording state
+let recordingTabId = null;
+let lastRecordedUrl = null;
+
 // ---------------------------------------------------------------------------
 // Native Messaging Connection
 // ---------------------------------------------------------------------------
@@ -181,6 +185,12 @@ async function handleCommand(msg) {
         break;
       case 'paste':
         result = await cmdPaste(params);
+        break;
+      case 'record.start':
+        result = await cmdRecordStart(params);
+        break;
+      case 'record.stop':
+        result = await cmdRecordStop(params);
         break;
       default:
         error = `Unknown command: ${command}`;
@@ -937,6 +947,65 @@ async function forwardToContent(command, params) {
 }
 
 // ---------------------------------------------------------------------------
+// Recording: Capture User Actions
+// ---------------------------------------------------------------------------
+
+async function cmdRecordStart(params) {
+  const tabId = await resolveTabId(params);
+  recordingTabId = tabId;
+
+  const tab = await chrome.tabs.get(tabId);
+  lastRecordedUrl = tab.url;
+
+  // Start recording in content script
+  const result = await forwardToContent('record.start', { tabId });
+
+  console.log('[cc-browser] Recording started on tab ' + tabId);
+  return { recording: true, tabId, url: tab.url };
+}
+
+async function cmdRecordStop(params) {
+  if (!recordingTabId) return { stopped: true, wasRecording: false };
+
+  try {
+    await forwardToContent('record.stop', { tabId: recordingTabId });
+  } catch {
+    // Tab may have navigated or closed
+  }
+
+  console.log('[cc-browser] Recording stopped on tab ' + recordingTabId);
+  recordingTabId = null;
+  lastRecordedUrl = null;
+  return { stopped: true, wasRecording: true };
+}
+
+// Track URL changes to record navigation events and re-inject recording on new pages
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (tabId !== recordingTabId) return;
+
+  // Record navigation when URL changes
+  if (changeInfo.url && changeInfo.url !== lastRecordedUrl) {
+    lastRecordedUrl = changeInfo.url;
+    sendToNative({
+      type: 'recordedAction',
+      action: {
+        command: 'navigate',
+        params: { url: changeInfo.url },
+      },
+    });
+  }
+
+  // Re-inject recording into new page after navigation completes
+  if (changeInfo.status === 'complete' && recordingTabId) {
+    try {
+      await forwardToContent('record.start', { tabId: recordingTabId });
+    } catch {
+      // Content script injection may fail on restricted pages
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -972,7 +1041,7 @@ chrome.runtime.onStartup.addListener(() => {
   connectNative();
 });
 
-// Handle messages from content scripts (unsolicited, e.g. page events)
+// Handle messages from content scripts (unsolicited, e.g. page events, recorded actions)
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'pageEvent') {
     sendToNative({
@@ -982,5 +1051,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       data: msg.data,
     });
   }
+
+  // Relay recorded user actions to daemon via native messaging
+  if (msg.type === 'recordedAction' && msg.action) {
+    sendToNative({
+      type: 'recordedAction',
+      action: msg.action,
+    });
+  }
+
   return false;
 });

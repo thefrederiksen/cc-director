@@ -1,7 +1,7 @@
 # CC Director - CenCon Documentation Index
 
 **Version:** 1.1.0
-**Last Updated:** 2026-03-07
+**Last Updated:** 2026-03-09
 **Schema:** CenCon Method v1.0
 
 ---
@@ -41,6 +41,7 @@ This document serves as the central reference combining product requirements, sy
 | EmbeddedConsoleHost | Control for hosting embedded console windows |
 | TerminalControl | Custom control for terminal rendering with ANSI parsing |
 | Dialogs | Modal dialogs (NewSession, Rename, Relink, Close, Clone, GitHubRepoPicker) |
+| SettingsView | Read-only settings overlay showing all configuration values grouped by category |
 | Voice UI | Voice mode controls and audio playback/recording |
 
 ### Core Services Layer (CcDirector.Core)
@@ -58,6 +59,8 @@ This document serves as the central reference combining product requirements, sy
 | ClaudeClient | Helper library for Claude CLI interactions |
 | VoiceModeController | Orchestrates voice interaction flow |
 | CircularTerminalBuffer | Thread-safe ring buffer for terminal output |
+| AlphaMode | Global alpha mode toggle for gating experimental features |
+| CcStorage | Single source of truth for all cc-director storage paths |
 | FileLog | Thread-safe async file logging |
 
 ### Communication Manager (CcDirector.CommunicationManager)

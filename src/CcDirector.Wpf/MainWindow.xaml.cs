@@ -166,7 +166,7 @@ public partial class MainWindow : Window
                 Dispatcher.BeginInvoke(() =>
                 {
                     var count = CommunicationsView.ViewModel.PendingCount;
-                    if (count > 0)
+                    if (count > 0 && AlphaMode.IsEnabled)
                     {
                         SidebarCommsBadge.Visibility = Visibility.Visible;
                         SidebarCommsBadgeText.Text = count.ToString();
@@ -362,6 +362,10 @@ public partial class MainWindow : Window
 
         // Start cc-browser daemon in background so connections are ready
         _ = StartBrowserDaemonAsync();
+
+        // Apply alpha mode visibility and subscribe to changes
+        ApplyAlphaMode();
+        AlphaMode.Changed += () => Dispatcher.BeginInvoke(ApplyAlphaMode);
     }
 
     private void SetBuildInfo()
@@ -764,9 +768,11 @@ public partial class MainWindow : Window
 
     private void BtnSettings_Click(object sender, RoutedEventArgs e)
     {
-        FileLog.Write("[MainWindow] BtnSettings_Click: opening settings");
-        // Phase 5: Will open SettingsDialog. For now, open Accounts as placeholder.
-        MenuAccounts_Click(sender, e);
+        FileLog.Write("[MainWindow] BtnSettings_Click");
+        if (_activeSidebarPanel == SidebarPanel.Settings)
+            HideSidebarPanel();
+        else
+            ShowSidebarPanel(SidebarPanel.Settings);
     }
 
     private void BtnHelp_Click(object sender, RoutedEventArgs e)
@@ -1226,8 +1232,62 @@ public partial class MainWindow : Window
         return $"{(int)remaining.TotalDays}d{remaining.Hours}h";
     }
 
+    // --- Alpha Mode ---
+
+    /// <summary>
+    /// Shows or hides alpha-gated features based on AlphaMode.IsEnabled.
+    /// </summary>
+    private void ApplyAlphaMode()
+    {
+        var alpha = AlphaMode.IsEnabled;
+        FileLog.Write($"[MainWindow] ApplyAlphaMode: alpha={alpha}");
+
+        var vis = alpha ? Visibility.Visible : Visibility.Collapsed;
+
+        // -- Sidebar buttons --
+        BtnQuickActions.Visibility = vis;
+        BtnWriter.Visibility = vis;
+        BtnDocuments.Visibility = vis;
+        BtnCommunications.Visibility = vis;
+        SidebarCommsBadge.Visibility = alpha && SidebarCommsBadge.Visibility == Visibility.Visible
+            ? Visibility.Visible : Visibility.Collapsed;
+        BtnConnections.Visibility = vis;
+
+        // -- Menu items --
+        MenuAccountsItem.Visibility = vis;
+        MenuSepAfterAccounts.Visibility = vis;
+        MenuSaveWorkspaceItem.Visibility = vis;
+        MenuLoadWorkspaceItem.Visibility = vis;
+        MenuSepAfterWorkspace.Visibility = vis;
+        MenuSepAfterSessions.Visibility = vis;
+        MenuOpenHistoryItem.Visibility = vis;
+        MenuHistoryVsCodeItem.Visibility = vis;
+
+        // -- Session tabs --
+        SimpleChatTab.Visibility = vis;
+
+        // -- Prompt bar buttons --
+        BtnMic.Visibility = vis;
+        BtnHandover.Visibility = vis;
+
+        // -- Terminal features --
+        RendererModePanel.Visibility = Visibility.Collapsed; // always collapsed, shown by code when alpha
+        SummaryPanel.Visibility = Visibility.Collapsed;
+        SummarySplitter.Visibility = Visibility.Collapsed;
+
+        // If we're currently showing an alpha panel that just got hidden, close it
+        if (!alpha && _activeSidebarPanel is SidebarPanel.QuickActions
+                                          or SidebarPanel.Writer
+                                          or SidebarPanel.Documents
+                                          or SidebarPanel.Communications
+                                          or SidebarPanel.Connections)
+        {
+            HideSidebarPanel();
+        }
+    }
+
     // --- Sidebar Panel (QA / Communications full-area takeover) ---
-    private enum SidebarPanel { None, QuickActions, Communications, Documents, Connections, Writer }
+    private enum SidebarPanel { None, QuickActions, Communications, Documents, Connections, Writer, Settings }
     private SidebarPanel _activeSidebarPanel = SidebarPanel.None;
 
     private void BtnQuickActions_Click(object sender, RoutedEventArgs e)
@@ -1301,6 +1361,12 @@ public partial class MainWindow : Window
             ? Visibility.Visible : Visibility.Collapsed;
         ContentWriterView.Visibility = panel == SidebarPanel.Writer
             ? Visibility.Visible : Visibility.Collapsed;
+        SettingsView.Visibility = panel == SidebarPanel.Settings
+            ? Visibility.Visible : Visibility.Collapsed;
+
+        // Load settings when shown
+        if (panel == SidebarPanel.Settings)
+            _ = SettingsView.LoadSettingsAsync();
 
         // Update Writer session list when shown
         if (panel == SidebarPanel.Writer)
@@ -1340,6 +1406,7 @@ public partial class MainWindow : Window
         DocumentLibraryView.Visibility = Visibility.Collapsed;
         ConnectionsView.Visibility = Visibility.Collapsed;
         ContentWriterView.Visibility = Visibility.Collapsed;
+        SettingsView.Visibility = Visibility.Collapsed;
 
         // Restore placeholder if no session selected
         if (SessionList.SelectedItem == null)
@@ -1624,7 +1691,7 @@ public partial class MainWindow : Window
             ApplyRendererToTerminal(_terminalControl);
             _terminalControl.Attach(session);
             UpdateScrollBar();
-            RendererModePanel.Visibility = Visibility.Visible;
+            RendererModePanel.Visibility = AlphaMode.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
         }
 
         // Show session header banner
@@ -3223,7 +3290,8 @@ public partial class MainWindow : Window
 
         var hasSummaries = _summaryItems.Count > 0;
 
-        // Always show the panel when a session is active
+        // Show the panel when a session is active (alpha only)
+        if (!AlphaMode.IsEnabled) return;
         SummaryPanel.Visibility = Visibility.Visible;
         SummarySplitter.Visibility = Visibility.Visible;
         SummaryColumn.Width = new GridLength(280);
