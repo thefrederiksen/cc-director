@@ -1058,7 +1058,7 @@ public class TerminalControl : FrameworkElement
         if (string.IsNullOrEmpty(_detectedLink)) return;
 
         string textToCopy = _detectedLinkType == LinkDetector.LinkType.Path
-            ? ResolvePath(_detectedLink)
+            ? ResolvePath(_detectedLink).Replace('/', '\\').TrimEnd('\\')
             : _detectedLink;
 
         Clipboard.SetText(textToCopy);
@@ -1074,7 +1074,7 @@ public class TerminalControl : FrameworkElement
 
         try
         {
-            string path = ResolvePath(_detectedLink);
+            string path = ResolvePath(_detectedLink).Replace('/', '\\').TrimEnd('\\');
             string target = File.Exists(path) ? Path.GetDirectoryName(path) ?? path : path;
 
             Process.Start("explorer.exe", $"\"{target}\"");
