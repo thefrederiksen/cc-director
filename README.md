@@ -2,7 +2,7 @@
 
 A desktop application for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions simultaneously. Run, monitor, and switch between independent Claude Code instances -- each working on its own repository -- from a single unified interface.
 
-I built CC Director because I needed a way to manage 6-8 Claude Code sessions at once across my consulting, product, and open source work. I use it every day as my primary development environment. It ships with 35+ purpose-built CLI tools and 14 Claude Code skills that handle everything from document generation to browser automation to email management.
+I built CC Director because I was running 5+ Claude Code sessions at once and nothing fit. Terminal programs were missing features I needed -- file browsing, GitHub integration, easy screenshot handling. VS Code had too many things I didn't want getting in the way. So I built my own Claude Code session manager. I use it every day as my primary development environment. It ships with 35+ purpose-built CLI tools and 14 Claude Code skills that handle everything from document generation to browser automation to email management.
 
 > **Status:** I'm currently cleaning up the codebase and preparing a release that will be ready for enterprise use this week. The application is fully functional and I use it daily, but expect rough edges if you build from source today.
 
