@@ -10,7 +10,7 @@ public partial class CompleteStep : UserControl
 {
     private readonly string _installPath;
 
-    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate)
+    public CompleteStep(int installed, int skipped, string installPath, bool isUpdate, bool alreadyUpToDate = false)
     {
         InitializeComponent();
         _installPath = installPath;
@@ -18,14 +18,20 @@ public partial class CompleteStep : UserControl
         SkippedText.Text = skipped.ToString();
         PathText.Text = installPath;
 
-        if (isUpdate)
+        if (alreadyUpToDate)
+        {
+            HeadingText.Text = "Already Up to Date";
+            DescriptionText.Text = "CC Director is already running the latest version.";
+            PathNote.Visibility = Visibility.Collapsed;
+        }
+        else if (isUpdate)
         {
             HeadingText.Text = "Update Complete";
             DescriptionText.Text = "CC Director tools have been updated successfully.";
             PathNote.Visibility = Visibility.Collapsed;
         }
 
-        SetupLog.Write($"[CompleteStep] Created: installed={installed}, skipped={skipped}, isUpdate={isUpdate}");
+        SetupLog.Write($"[CompleteStep] Created: installed={installed}, skipped={skipped}, isUpdate={isUpdate}, alreadyUpToDate={alreadyUpToDate}");
     }
 
     private void LaunchButton_Click(object sender, RoutedEventArgs e)

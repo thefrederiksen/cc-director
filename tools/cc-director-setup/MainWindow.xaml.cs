@@ -18,6 +18,7 @@ public partial class MainWindow : Window
 
     private readonly bool _isUpdate;
     private readonly string? _installedVersion;
+    private bool _alreadyUpToDate;
 
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
@@ -68,7 +69,7 @@ public partial class MainWindow : Window
             1 => _welcomeStep ??= new WelcomeStep(_selectedProfile, p => _selectedProfile = p, _isUpdate, _installedVersion),
             2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
             3 => _installStep ??= new InstallStep(),
-            4 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate),
+            4 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate),
             _ => null
         };
 
@@ -197,8 +198,28 @@ public partial class MainWindow : Window
 
         var (version, assets) = releaseResult.Value;
         VersionText.Text = version;
+
+        // Check if already up to date (compare semantic versions, ignoring +commitHash suffix and v prefix)
+        if (_isUpdate && _installedVersion != null)
+        {
+            var installedSemVer = _installedVersion.Split('+')[0].TrimStart('v');
+            var releaseSemVer = version.TrimStart('v');
+
+            if (installedSemVer == releaseSemVer)
+            {
+                SetupLog.Write($"[MainWindow] Already up to date: installed={installedSemVer}, release={releaseSemVer}");
+                _alreadyUpToDate = true;
+                _installStep?.SetStatus($"Already up to date ({version})");
+                _installedCount = 0;
+                _skippedCount = 0;
+                NextButton.Content = "Next";
+                NextButton.IsEnabled = true;
+                return;
+            }
+        }
+
         var statusText = _isUpdate && _installedVersion != null
-            ? $"Updating from v{_installedVersion} to {version}..."
+            ? $"Updating from v{_installedVersion.Split('+')[0]} to {version}..."
             : $"Installing {version}...";
         _installStep?.SetStatus(statusText);
 

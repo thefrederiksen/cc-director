@@ -23,12 +23,13 @@ public partial class WelcomeStep : UserControl
         if (isUpdate)
         {
             TitleText.Text = "Update CC Director";
-            DescriptionText.Text = "A new version is available. Select your profile and click Next to update.";
+            DescriptionText.Text = "Check for updates and reinstall tools. Select your profile and click Next to continue.";
             ProfilePromptText.Text = "Choose your update profile:";
 
             if (installedVersion != null)
             {
-                VersionInfoText.Text = $"Currently installed: v{installedVersion}";
+                var displayVersion = installedVersion.Split('+')[0];
+                VersionInfoText.Text = $"Currently installed: v{displayVersion}";
                 VersionInfoText.Visibility = Visibility.Visible;
             }
         }
