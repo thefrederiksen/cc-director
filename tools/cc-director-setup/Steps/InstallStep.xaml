@@ -8,11 +8,19 @@
                        Foreground="White"
                        FontSize="22"
                        FontWeight="SemiBold" />
-            <TextBlock x:Name="StatusText"
-                       Text="Preparing..."
-                       Foreground="{StaticResource TextForeground}"
-                       FontSize="13"
-                       Margin="0,8,0,20" />
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,20">
+                <TextBlock x:Name="StatusText"
+                           Text="Preparing..."
+                           Foreground="{StaticResource TextForeground}"
+                           FontSize="13"
+                           VerticalAlignment="Center" />
+                <Button x:Name="RepairButton"
+                        Content="Repair"
+                        Width="90" Margin="16,0,0,0"
+                        Style="{StaticResource PrimaryButton}"
+                        Click="RepairButton_Click"
+                        Visibility="Collapsed" />
+            </StackPanel>
         </StackPanel>
 
         <ScrollViewer VerticalScrollBarVisibility="Auto">

@@ -69,9 +69,37 @@ public partial class InstallStep : UserControl
         }
     }
 
+    public event Action? OnRepairRequested;
+
     public void SetUpdateMode()
     {
         HeadingText.Text = "Updating";
+    }
+
+    public void SetUpToDate(string version)
+    {
+        SetupLog.Write($"[InstallStep] SetUpToDate: version={version}");
+
+        HeadingText.Text = "Up to Date";
+        StatusText.Text = $"You are running the latest version ({version}).";
+        RepairButton.Visibility = Visibility.Visible;
+
+        var upToDateColor = new SolidColorBrush(
+            (Color)ColorConverter.ConvertFromString("#22C55E"));
+
+        DirectorStatus.Text = "Up to date";
+        DirectorStatus.Foreground = upToDateColor;
+        ToolsStatus.Text = "Up to date";
+        ToolsStatus.Foreground = upToDateColor;
+        SkillsStatus.Text = "Up to date";
+        SkillsStatus.Foreground = upToDateColor;
+    }
+
+    private void RepairButton_Click(object sender, RoutedEventArgs e)
+    {
+        SetupLog.Write("[InstallStep] RepairButton_Click");
+        RepairButton.Visibility = Visibility.Collapsed;
+        OnRepairRequested?.Invoke();
     }
 
     public void SetStatus(string status)

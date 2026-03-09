@@ -19,6 +19,9 @@ public partial class MainWindow : Window
     private readonly bool _isUpdate;
     private readonly string? _installedVersion;
     private bool _alreadyUpToDate;
+    private string? _latestVersion;
+    private string? _cachedVersion;
+    private Dictionary<string, AssetInfo>? _cachedAssets;
 
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
@@ -34,6 +37,7 @@ public partial class MainWindow : Window
 
         _isUpdate = InstallDetector.IsInstalled();
         _installedVersion = _isUpdate ? InstallDetector.GetInstalledVersion() : null;
+
         SetupLog.Write($"[MainWindow] Started: isUpdate={_isUpdate}, installedVersion={_installedVersion}");
 
         if (_isUpdate)
@@ -43,7 +47,51 @@ public partial class MainWindow : Window
             Step3Label.Text = "Update";
         }
 
+        Loaded += MainWindow_Loaded;
         ShowStep(1);
+    }
+
+    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var savedProfile = await Task.Run(() => ProfileStore.Load());
+            if (savedProfile.HasValue)
+            {
+                _selectedProfile = savedProfile.Value;
+                _welcomeStep?.UpdateProfile(_selectedProfile);
+                SetupLog.Write($"[MainWindow] Restored saved profile: {_selectedProfile}");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetupLog.Write($"[MainWindow] Failed to load saved profile: {ex.Message}");
+        }
+
+        if (_isUpdate)
+            await FetchLatestVersionAsync();
+    }
+
+    private async Task FetchLatestVersionAsync()
+    {
+        SetupLog.Write("[MainWindow] FetchLatestVersionAsync: checking for latest release");
+
+        try
+        {
+            var github = new GitHubReleaseService();
+            var result = await github.GetLatestReleaseAsync();
+
+            if (result != null)
+            {
+                _latestVersion = result.Value.version;
+                SetupLog.Write($"[MainWindow] FetchLatestVersionAsync: latestVersion={_latestVersion}");
+                _welcomeStep?.UpdateVersionInfo(_installedVersion, _latestVersion);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetupLog.Write($"[MainWindow] FetchLatestVersionAsync FAILED: {ex.Message}");
+        }
     }
 
     private List<StepUI> GetStepUIs() =>
@@ -210,7 +258,12 @@ public partial class MainWindow : Window
             {
                 SetupLog.Write($"[MainWindow] Already up to date: installed={installedSemVer}, release={releaseSemVer}");
                 _alreadyUpToDate = true;
-                _installStep?.SetStatus($"Already up to date ({version})");
+                _cachedVersion = version;
+                _cachedAssets = assets;
+                SaveProfileSafe();
+                _installStep?.SetUpToDate(version);
+                if (_installStep != null)
+                    _installStep.OnRepairRequested += OnRepairRequested;
                 _installedCount = 0;
                 _skippedCount = 0;
                 NextButton.Content = "Next";
@@ -248,11 +301,88 @@ public partial class MainWindow : Window
             _installStep?.UpdateSkillsStatus();
         }
 
+        // Persist the selected profile for next time
+        SaveProfileSafe();
+
         _installStep?.SetStatus($"Done - {installed} tools installed, {skipped} skipped");
         SetupLog.Write($"[MainWindow] RunInstallAsync: complete, installed={installed}, skipped={skipped}");
 
         NextButton.Content = "Next";
         NextButton.IsEnabled = true;
+    }
+
+    private void OnRepairRequested()
+    {
+        SetupLog.Write("[MainWindow] OnRepairRequested: user requested repair reinstall");
+        _alreadyUpToDate = false;
+        _ = RunRepairAsync();
+    }
+
+    private async Task RunRepairAsync()
+    {
+        SetupLog.Write("[MainWindow] RunRepairAsync: starting forced reinstall");
+
+        if (_cachedVersion == null || _cachedAssets == null)
+        {
+            SetupLog.Write("[MainWindow] RunRepairAsync: no cached release data");
+            return;
+        }
+
+        NextButton.Content = _isUpdate ? "Updating..." : "Installing...";
+        NextButton.IsEnabled = false;
+
+        var installer = new ToolInstaller();
+        installer.OnProcessBlocking = OnProcessBlockingAsync;
+        _installPath = installer.InstallDir;
+
+        var toolNames = ProfileToolLists.GetToolsForProfile(_selectedProfile);
+        var downloadItems = installer.BuildDownloadList(toolNames);
+
+        _installStep?.SetItems(downloadItems);
+        _installStep?.SetStatus($"Repairing {_cachedVersion}...");
+        _installStep?.ShowProgress();
+
+        var (installed, skipped) = await installer.InstallToolsAsync(downloadItems, _cachedAssets);
+        _installedCount = installed;
+        _skippedCount = skipped;
+
+        PathManager.AddToPath(_installPath);
+
+        var directorExe = Path.Combine(_installPath, "cc-director.exe");
+        if (File.Exists(directorExe))
+        {
+            _installStep?.SetStatus("Creating Start Menu shortcut...");
+            ShortcutCreator.CreateStartMenuShortcut(directorExe);
+        }
+
+        _installStep?.SetStatus("Installing skills...");
+        var skillItems = _installStep?.GetSkillItems() ?? [];
+        if (skillItems.Count > 0)
+        {
+            await installer.InstallSkillsAsync(skillItems);
+            _installStep?.UpdateSkillsStatus();
+        }
+
+        SaveProfileSafe();
+
+        _installStep?.SetStatus($"Repair complete - {installed} tools installed, {skipped} skipped");
+        SetupLog.Write($"[MainWindow] RunRepairAsync: complete, installed={installed}, skipped={skipped}");
+
+        NextButton.Content = "Next";
+        NextButton.IsEnabled = true;
+    }
+
+    private void SaveProfileSafe()
+    {
+        try
+        {
+            ProfileStore.Save(_selectedProfile);
+            SetupLog.Write($"[MainWindow] SaveProfileSafe: saved profile={_selectedProfile}");
+        }
+        catch (Exception ex)
+        {
+            SetupLog.Write($"[MainWindow] SaveProfileSafe FAILED: {ex.Message}");
+        }
     }
 
     private Task<bool> OnProcessBlockingAsync(string processName)
