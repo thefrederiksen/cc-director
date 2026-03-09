@@ -175,6 +175,7 @@ public partial class MainWindow : Window
         SetupLog.Write("[MainWindow] RunInstallAsync: starting");
 
         var installer = new ToolInstaller();
+        installer.OnProcessBlocking = OnProcessBlockingAsync;
         _installPath = installer.InstallDir;
 
         var toolNames = ProfileToolLists.GetToolsForProfile(_selectedProfile);
@@ -252,6 +253,20 @@ public partial class MainWindow : Window
 
         NextButton.Content = "Next";
         NextButton.IsEnabled = true;
+    }
+
+    private Task<bool> OnProcessBlockingAsync(string processName)
+    {
+        var result = MessageBox.Show(
+            this,
+            $"CC Director is currently running and cannot be updated.\n\n" +
+            $"Please close CC Director and click OK to retry,\n" +
+            $"or click Cancel to skip updating the main application.",
+            "CC Director is Running",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        return Task.FromResult(result == MessageBoxResult.OK);
     }
 
     private void BackButton_Click(object sender, RoutedEventArgs e)

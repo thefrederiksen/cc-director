@@ -100,9 +100,10 @@ public partial class InstallStep : UserControl
     {
         var done = _toolItems.Count(t => t.Status == "Done");
         var failed = _toolItems.Count(t => t.Status == "Failed");
+        var locked = _toolItems.Count(t => t.Status == "Locked");
         var skipped = _toolItems.Count(t => t.Status == "Skipped");
         var total = _toolItems.Count;
-        var processed = done + failed + skipped;
+        var processed = done + failed + locked + skipped;
 
         if (processed == total)
         {

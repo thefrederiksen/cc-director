@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using CcDirectorSetup.Models;
 
@@ -5,6 +6,12 @@ namespace CcDirectorSetup.Services;
 
 public class ToolInstaller
 {
+    /// <summary>
+    /// Callback invoked when a target file is locked by a running process.
+    /// Parameter: process name. Returns: true to retry, false to skip.
+    /// </summary>
+    public Func<string, Task<bool>>? OnProcessBlocking { get; set; }
+
     private readonly string _installDir;
     private readonly string _skillsBaseDir;
     private readonly GitHubReleaseService _github = new();
@@ -60,6 +67,14 @@ public class ToolInstaller
 
             var asset = assets[item.AssetName];
             item.SizeText = FormatSize(asset.Size);
+
+            // Check if the target executable is locked by a running process
+            if (await CheckAndHandleLockedProcess(item))
+            {
+                skipped++;
+                continue;
+            }
+
             item.Status = "Downloading";
 
             try
@@ -79,6 +94,12 @@ public class ToolInstaller
                 item.Status = "Done";
                 item.Progress = 100;
                 installed++;
+            }
+            catch (IOException ex) when (IsFileLocked(ex))
+            {
+                SetupLog.Write($"[ToolInstaller] InstallToolsAsync LOCKED: {item.Name} - {ex.Message}");
+                item.Status = "Locked";
+                item.StatusDetail = "File is in use by another process";
             }
             catch (Exception ex)
             {
@@ -185,6 +206,65 @@ public class ToolInstaller
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// Checks if the target file is locked by a running process.
+    /// If so, invokes OnProcessBlocking callback to let user decide.
+    /// Returns true if the item should be skipped.
+    /// </summary>
+    private async Task<bool> CheckAndHandleLockedProcess(ToolDownloadItem item)
+    {
+        var exeName = item.Name;
+        var processes = Process.GetProcessesByName(exeName);
+        if (processes.Length == 0)
+            return false;
+
+        SetupLog.Write($"[ToolInstaller] Process blocking: {exeName} ({processes.Length} instance(s) running)");
+
+        foreach (var p in processes)
+            p.Dispose();
+
+        if (OnProcessBlocking == null)
+        {
+            item.Status = "Locked";
+            item.StatusDetail = $"{exeName} is currently running";
+            return true;
+        }
+
+        // Ask user what to do - loop until resolved or skipped
+        while (true)
+        {
+            var retry = await OnProcessBlocking(exeName);
+            if (!retry)
+            {
+                item.Status = "Skipped";
+                item.StatusDetail = $"Skipped - {exeName} was running";
+                return true;
+            }
+
+            // User said they closed it, check again
+            var stillRunning = Process.GetProcessesByName(exeName);
+            var running = stillRunning.Length > 0;
+            foreach (var p in stillRunning)
+                p.Dispose();
+
+            if (!running)
+            {
+                SetupLog.Write($"[ToolInstaller] Process no longer blocking: {exeName}");
+                return false;
+            }
+
+            SetupLog.Write($"[ToolInstaller] Process still running after retry: {exeName}");
+        }
+    }
+
+    private static bool IsFileLocked(IOException ex)
+    {
+        // HResult 0x80070020 = ERROR_SHARING_VIOLATION
+        // HResult 0x80070021 = ERROR_LOCK_VIOLATION
+        var hr = ex.HResult & 0xFFFF;
+        return hr == 0x0020 || hr == 0x0021;
     }
 
     private static string FormatSize(long bytes)

@@ -5,6 +5,7 @@ namespace CcDirectorSetup.Models;
 public class ToolDownloadItem : INotifyPropertyChanged
 {
     private string _status = "Pending";
+    private string _statusDetail = "";
     private double _progress;
     private string _sizeText = "";
 
@@ -15,6 +16,12 @@ public class ToolDownloadItem : INotifyPropertyChanged
     {
         get => _status;
         set { _status = value; OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(StatusColor)); }
+    }
+
+    public string StatusDetail
+    {
+        get => _statusDetail;
+        set { _statusDetail = value; OnPropertyChanged(nameof(StatusDetail)); }
     }
 
     public double Progress
@@ -35,6 +42,7 @@ public class ToolDownloadItem : INotifyPropertyChanged
         "Downloading" => "#007ACC",
         "Skipped" => "#888888",
         "Failed" => "#CC4444",
+        "Locked" => "#E5A100",
         _ => "#CCCCCC"
     };
 
