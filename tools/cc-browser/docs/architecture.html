@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cc-browser Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Consolas, monospace;
+    background: #1e1e1e;
+    color: #cccccc;
+    padding: 40px;
+    line-height: 1.6;
+  }
+  h1 {
+    color: #569cd6;
+    font-size: 28px;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    color: #888;
+    font-size: 14px;
+    margin-bottom: 32px;
+  }
+  h2 {
+    color: #4ec9b0;
+    font-size: 20px;
+    margin: 32px 0 16px 0;
+    border-bottom: 1px solid #333;
+    padding-bottom: 6px;
+  }
+  h3 {
+    color: #dcdcaa;
+    font-size: 16px;
+    margin: 20px 0 10px 0;
+  }
+  p { margin-bottom: 12px; max-width: 800px; }
+  pre {
+    background: #0d0d0d;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 20px;
+    overflow-x: auto;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #d4d4d4;
+    margin-bottom: 20px;
+  }
+  .highlight { color: #569cd6; }
+  .comment { color: #6a9955; }
+  .string { color: #ce9178; }
+  .keyword { color: #c586c0; }
+  table {
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    width: 100%;
+    max-width: 800px;
+  }
+  th {
+    background: #252526;
+    color: #4ec9b0;
+    text-align: left;
+    padding: 8px 14px;
+    border: 1px solid #333;
+    font-size: 13px;
+  }
+  td {
+    padding: 8px 14px;
+    border: 1px solid #333;
+    font-size: 13px;
+  }
+  tr:nth-child(even) { background: #252526; }
+  code {
+    background: #252526;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: Consolas, monospace;
+    font-size: 13px;
+    color: #d7ba7d;
+  }
+  .section { margin-bottom: 32px; }
+  .callout {
+    background: #1a2a1a;
+    border-left: 3px solid #4ec9b0;
+    padding: 12px 16px;
+    margin: 16px 0;
+    max-width: 800px;
+  }
+  .warning {
+    background: #2a2a1a;
+    border-left: 3px solid #d7ba7d;
+    padding: 12px 16px;
+    margin: 16px 0;
+    max-width: 800px;
+  }
+  ul { margin: 8px 0 12px 24px; max-width: 800px; }
+  li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>cc-browser Architecture</h1>
+<p class="subtitle">Chrome Extension + Native Messaging + HTTP Daemon</p>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>Overview</h2>
+<p>
+  cc-browser is a browser automation system built on three components:
+  an HTTP daemon, a Chrome extension, and a native messaging host.
+  The daemon is a <strong>single background process</strong> that manages
+  all browser connections. Multiple clients (CC Director instances,
+  CLI calls, other tools) talk to the same daemon over HTTP.
+</p>
+<div class="callout">
+  <strong>Key insight:</strong> One daemon serves all clients.
+  Two CC Director windows both talk to the same daemon on port 9280.
+  The daemon is a separate Node.js process, independent from any WPF application.
+</div>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>High-Level Architecture</h2>
+<pre>
+  CLIENTS                           DAEMON                        BROWSERS
+  =======                           ======                        ========
+
+  +------------------+
+  | CC Director #1   |
+  | (WPF process)    +---------+
+  +------------------+         |
+                               |    +----------------------------+
+  +------------------+         |    |    cc-browser DAEMON        |     +----------------+
+  | CC Director #2   |         +--->|    (Node.js process)        |     |  Brave/Chrome  |
+  | (WPF process)    +---------+--->|                             +---->|  upwork        |
+  +------------------+         |    |    HTTP  :9280              |     +----------------+
+                               |    |    WS    :9280/ws           |
+  +------------------+         |    |                             |     +----------------+
+  | cc-browser CLI   +---------+--->|    daemon.lock file         +---->|  Brave/Chrome  |
+  | (any terminal)   |         |    |    stores port + PID        |     |  linkedin      |
+  +------------------+         |    |                             |     +----------------+
+                               |    |                             |
+  +------------------+         |    |                             |     +----------------+
+  | Claude Code      +---------+    |                             +---->|  Brave/Chrome  |
+  | (via cc-browser) |              +----------------------------+     |  reddit        |
+  +------------------+                                                 +----------------+
+</pre>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>Communication Chain</h2>
+<p>
+  When a client sends a browser command (e.g. "click element #submit"),
+  the request flows through four layers:
+</p>
+<pre>
+  CLIENT              DAEMON              NATIVE HOST          EXTENSION            BROWSER
+  ======              ======              ===========          =========            =======
+
+  HTTP POST -------> Receives request
+  /command            on port 9280
+                           |
+                           | WebSocket (ws://localhost:9280/ws)
+                           |
+                           +----------> native-host.mjs
+                                        (stdio bridge)
+                                              |
+                                              | Chrome Native Messaging
+                                              | (stdin/stdout JSON)
+                                              |
+                                              +----------> background.js
+                                                           (service worker)
+                                                                 |
+                                                                 | chrome.tabs API
+                                                                 | + content scripts
+                                                                 |
+                                                                 +----------> Page DOM
+                                                                              (click, type,
+                                                                               snapshot, etc.)
+
+  <--- HTTP response with result ---
+</pre>
+
+<h3>Why This Chain?</h3>
+<ul>
+  <li><strong>HTTP daemon</strong> -- universal interface, any language/tool can call it</li>
+  <li><strong>WebSocket</strong> -- persistent bidirectional channel for real-time command/response</li>
+  <li><strong>Native Messaging</strong> -- Chrome's official way for local apps to talk to extensions</li>
+  <li><strong>Extension</strong> -- has full access to chrome.tabs, DOM, network, cookies</li>
+</ul>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>Component Details</h2>
+
+<h3>1. HTTP Daemon (daemon.mjs)</h3>
+<p>
+  A plain Node.js HTTP server. No Express, no frameworks. Manages all state:
+  connections, locks, action history, and the WebSocket transport layer.
+</p>
+<ul>
+  <li>Default port: <code>9280</code></li>
+  <li>Lockfile: <code>%LOCALAPPDATA%\cc-browser\daemon.lock</code></li>
+  <li>Auto-started by CLI commands, but NOT by CC Director (known gap)</li>
+  <li>Single instance -- second start detects lockfile and exits</li>
+</ul>
+
+<h3>2. WebSocket Transport (transport.mjs)</h3>
+<p>
+  Manages persistent WebSocket connections from native messaging hosts.
+  Each browser connection registers with a name (e.g. "reddit", "linkedin").
+  Commands are routed to the correct browser by connection name.
+</p>
+<ul>
+  <li>Path: <code>ws://127.0.0.1:9280/ws</code></li>
+  <li>One WebSocket per browser instance</li>
+  <li>Request/response matching via unique request IDs</li>
+  <li>Default command timeout: 30 seconds</li>
+</ul>
+
+<h3>3. Native Messaging Host (native-host.mjs)</h3>
+<p>
+  A small Node.js script that bridges Chrome's native messaging protocol
+  (length-prefixed JSON over stdin/stdout) with the daemon's WebSocket.
+  Chrome launches it automatically when the extension connects.
+</p>
+
+<h3>4. Chrome Extension (extension/)</h3>
+<p>
+  A Manifest V3 extension with a background service worker and content scripts.
+  The service worker receives commands from the native host and executes them
+  using Chrome APIs (tabs, scripting, debugger).
+</p>
+<ul>
+  <li><code>background.js</code> -- command router, native messaging, network logging</li>
+  <li><code>content.js</code> -- DOM interaction, ARIA snapshots, element targeting</li>
+</ul>
+
+<h3>5. CLI Client (cli.mjs)</h3>
+<p>
+  The <code>cc-browser</code> command users type in terminals. Translates
+  command-line arguments into HTTP requests to the daemon. Auto-starts the
+  daemon if it is not running.
+</p>
+
+<h3>6. CC Director Integration (WPF)</h3>
+<p>
+  The Connections panel in CC Director sends HTTP requests directly to the
+  daemon. The Workflow feature opens a recorder window alongside a positioned
+  browser.
+</p>
+<div class="warning">
+  <strong>Known gap:</strong> CC Director does NOT auto-start the daemon.
+  If the daemon is not running, connection operations fail with
+  "target machine actively refused it" on port 9280.
+</div>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>Daemon API Endpoints</h2>
+
+<h3>Connection Management</h3>
+<table>
+  <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+  <tr><td>GET</td><td>/connections</td><td>List all connections and their status</td></tr>
+  <tr><td>POST</td><td>/connections/add</td><td>Create a new connection</td></tr>
+  <tr><td>POST</td><td>/connections/open</td><td>Launch browser for a connection</td></tr>
+  <tr><td>POST</td><td>/connections/close</td><td>Close browser for a connection</td></tr>
+  <tr><td>POST</td><td>/connections/remove</td><td>Delete a connection</td></tr>
+</table>
+
+<h3>Connection Locking</h3>
+<table>
+  <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+  <tr><td>POST</td><td>/connections/acquire</td><td>Acquire exclusive lock (5min TTL)</td></tr>
+  <tr><td>POST</td><td>/connections/release</td><td>Release lock</td></tr>
+  <tr><td>POST</td><td>/connections/renew</td><td>Extend lock TTL</td></tr>
+</table>
+
+<h3>Browser Commands</h3>
+<table>
+  <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+  <tr><td>POST</td><td>/command</td><td>Send single command (navigate, click, type, etc.)</td></tr>
+  <tr><td>POST</td><td>/batch</td><td>Send multiple commands in sequence</td></tr>
+  <tr><td>GET</td><td>/history</td><td>Retrieve action history for a connection</td></tr>
+</table>
+
+<h3>Skills</h3>
+<table>
+  <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+  <tr><td>GET</td><td>/skills</td><td>List all available skills</td></tr>
+  <tr><td>GET</td><td>/skills/managed</td><td>List managed (forked) skills</td></tr>
+  <tr><td>POST</td><td>/skills/show</td><td>Get skill content for a connection</td></tr>
+  <tr><td>POST</td><td>/skills/fork</td><td>Fork a skill for customization</td></tr>
+  <tr><td>POST</td><td>/skills/reset</td><td>Reset forked skill to original</td></tr>
+  <tr><td>POST</td><td>/skills/learn</td><td>Append learned pattern to a skill</td></tr>
+  <tr><td>POST</td><td>/skills/learned</td><td>Get learned patterns</td></tr>
+  <tr><td>POST</td><td>/skills/clear-learned</td><td>Clear learned patterns</td></tr>
+</table>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>Daemon Lifecycle</h2>
+<pre>
+  START
+  =====
+  1. CLI runs any command (e.g. "cc-browser connections status")
+  2. CLI checks daemon.lock -- daemon not running
+  3. CLI spawns: node daemon.mjs --port 9280
+  4. Daemon writes daemon.lock: { port: 9280, pid: 12345 }
+  5. Daemon listens on HTTP :9280 + WebSocket :9280/ws
+  6. CLI connects and sends command
+
+  RUNTIME
+  =======
+  - Daemon stays running indefinitely
+  - Multiple clients connect via HTTP
+  - Each browser connection registers via WebSocket
+  - Connection locks prevent concurrent access (5min TTL)
+  - Action history kept in memory (max 1000 entries)
+
+  SHUTDOWN
+  ========
+  1. Daemon receives SIGINT/SIGTERM (or process killed)
+  2. Closes all WebSocket connections
+  3. Removes daemon.lock file
+  4. Process exits
+</pre>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>File Layout</h2>
+<pre>
+  tools/cc-browser/
+  |-- src/
+  |   |-- cli.mjs              # CLI client (cc-browser command)
+  |   |-- daemon.mjs           # HTTP daemon server
+  |   |-- transport.mjs        # WebSocket transport layer
+  |   |-- connections.mjs      # Connection CRUD + profiles
+  |   |-- chrome-launch.mjs    # Browser process management
+  |   |-- skills.mjs           # Skill resolution + management
+  |
+  |-- extension/
+  |   |-- manifest.json        # Chrome extension manifest (MV3)
+  |   |-- background.js        # Service worker (command router)
+  |   |-- content.js           # Content script (DOM interaction)
+  |
+  |-- native-host/
+  |   |-- native-host.mjs      # stdio &lt;-&gt; WebSocket bridge
+  |   |-- install.mjs          # Registry installer for native messaging
+  |   |-- com.cc_browser.bridge.json  # Native messaging manifest
+  |
+  |-- skills/
+  |   |-- linkedin.skill.md    # LinkedIn navigation skill
+  |   |-- reddit.skill.md      # Reddit navigation skill
+  |   |-- spotify.skill.md     # Spotify navigation skill
+  |   |-- manifest.json        # Skill-to-connection mapping
+  |
+  |-- docs/                    # Documentation
+  |-- test/                    # Unit + integration tests
+  |-- build.ps1                # Build script
+  |-- package.json             # Node.js dependencies
+</pre>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>Data Storage</h2>
+<pre>
+  %LOCALAPPDATA%\cc-browser\
+  |-- daemon.lock              # { port, pid, startedAt }
+  |-- connections.json         # All connection definitions
+  |
+  |-- profiles\
+  |   |-- upwork\              # Chrome user data dir (cookies, cache)
+  |   |-- linkedin\            # Each connection gets isolated profile
+  |   |-- reddit\
+  |   |-- medium\
+</pre>
+</div>
+
+<!-- ================================================================== -->
+<div class="section">
+<h2>CC Director Integration</h2>
+<pre>
+  CC Director (WPF)                         cc-browser daemon
+  ====================                      ==================
+
+  GetDaemonPort()
+    |-- reads %LOCALAPPDATA%\cc-browser\daemon.lock
+    |-- extracts port (default: 9280)
+    |
+  BtnOpen_Click / BtnWorkflow_Click
+    |-- POST http://127.0.0.1:{port}/connections/open
+    |       body: { name, windowPosition, windowSize }
+    |
+    |-- If daemon not running:
+    |       ERROR: "target machine actively refused it"
+    |       (CC Director does NOT auto-start the daemon)
+    |
+  Polling (every few seconds)
+    |-- GET http://127.0.0.1:{port}/connections
+    |       Updates status: Connected / Disconnected
+    |
+  Workflow Recorder
+    |-- POST http://127.0.0.1:{port}/batch
+    |       Replays recorded actions
+    |-- GET  http://127.0.0.1:{port}/history
+            Retrieves action log
+</pre>
+</div>
+
+<p style="color: #555; margin-top: 40px; font-size: 12px;">
+  Generated from cc-browser source -- tools/cc-browser/docs/architecture.html
+</p>
+
+</body>
+</html>
