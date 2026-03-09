@@ -254,22 +254,22 @@
                                 <ContextMenu x:Name="AppMenu">
                                     <MenuItem Header="Repositories..." Click="MenuRepositories_Click"
                                               ToolTip="Manage root directories and repositories" />
-                                    <MenuItem Header="Accounts..." Click="MenuAccounts_Click"
+                                    <MenuItem x:Name="MenuAccountsItem" Header="Accounts..." Click="MenuAccounts_Click"
                                               ToolTip="Manage Claude subscription accounts" />
-                                    <Separator />
-                                    <MenuItem Header="Save Workspace..." Click="MenuSaveWorkspace_Click"
+                                    <Separator x:Name="MenuSepAfterAccounts" />
+                                    <MenuItem x:Name="MenuSaveWorkspaceItem" Header="Save Workspace..." Click="MenuSaveWorkspace_Click"
                                               ToolTip="Save current sessions as a named workspace" />
-                                    <MenuItem Header="Load Workspace..." Click="MenuLoadWorkspace_Click"
+                                    <MenuItem x:Name="MenuLoadWorkspaceItem" Header="Load Workspace..." Click="MenuLoadWorkspace_Click"
                                               ToolTip="Load a saved workspace" />
-                                    <Separator />
+                                    <Separator x:Name="MenuSepAfterWorkspace" />
                                     <MenuItem Header="Open Logs" Click="BtnOpenLogs_Click"
                                               ToolTip="Open log directory in Explorer" />
                                     <MenuItem Header="Open Sessions" Click="BtnOpenSessions_Click"
                                               ToolTip="Open sessions.json in default editor" />
-                                    <Separator />
-                                    <MenuItem Header="Open History" Click="BtnOpenHistory_Click"
+                                    <Separator x:Name="MenuSepAfterSessions" />
+                                    <MenuItem x:Name="MenuOpenHistoryItem" Header="Open History" Click="BtnOpenHistory_Click"
                                               ToolTip="Open session history folder in Explorer" />
-                                    <MenuItem Header="History in VS Code" Click="BtnOpenHistoryVsCode_Click"
+                                    <MenuItem x:Name="MenuHistoryVsCodeItem" Header="History in VS Code" Click="BtnOpenHistoryVsCode_Click"
                                               ToolTip="Open session history folder in VS Code" />
                                 </ContextMenu>
                             </Button.ContextMenu>
@@ -1041,7 +1041,7 @@
                                             BorderThickness="0"
                                             Cursor="Hand"
                                             ToolTip="Add to prompt queue (Ctrl+Shift+Enter)" />
-                                    <Button Content="Handover"
+                                    <Button x:Name="BtnHandover" Content="Handover"
                                             Click="BtnHandover_Click"
                                             Width="60" Margin="8,4,0,0"
                                             Height="30"
@@ -1099,6 +1099,108 @@
                                     </Setter>
                                 </Style>
                             </TabControl.Resources>
+
+                            <!-- Screenshots Tab -->
+                            <TabItem Header="Screenshots">
+                                <DockPanel>
+                                    <DockPanel DockPanel.Dock="Top" Margin="8,8,8,4">
+                                        <TextBlock Text="SCREENSHOTS"
+                                                   Foreground="{StaticResource TextForeground}"
+                                                   FontWeight="SemiBold" FontSize="10"
+                                                   VerticalAlignment="Center" />
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button Content="Refresh" Click="BtnRefreshScreenshots_Click"
+                                                    Padding="8,2" Margin="0,0,6,0"
+                                                    Background="{StaticResource ButtonBackground}"
+                                                    Foreground="{StaticResource TextForeground}"
+                                                    BorderThickness="0" Cursor="Hand" FontSize="10" />
+                                            <Button Content="Clear All" Click="BtnClearScreenshots_Click"
+                                                    Padding="8,2"
+                                                    Background="{StaticResource ButtonBackground}"
+                                                    Foreground="{StaticResource TextForeground}"
+                                                    BorderThickness="0" Cursor="Hand" FontSize="10" />
+                                        </StackPanel>
+                                    </DockPanel>
+
+                                    <ListBox x:Name="ScreenshotList"
+                                             Background="Transparent" BorderThickness="0"
+                                             Foreground="{StaticResource TextForeground}"
+                                             Margin="4,0"
+                                             VirtualizingPanel.IsVirtualizing="True"
+                                             VirtualizingPanel.VirtualizationMode="Recycling"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                <Setter Property="Background" Value="Transparent" />
+                                                <Setter Property="BorderThickness" Value="0" />
+                                                <Setter Property="Padding" Value="2" />
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="ListBoxItem">
+                                                            <Border Background="{TemplateBinding Background}"
+                                                                    Padding="{TemplateBinding Padding}"
+                                                                    Margin="0,1">
+                                                                <ContentPresenter />
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter Property="Background" Value="#2A2A2A" />
+                                                                </Trigger>
+                                                                <Trigger Property="IsSelected" Value="True">
+                                                                    <Setter Property="Background" Value="#333333" />
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Padding="4"
+                                                        PreviewMouseLeftButtonDown="ScreenshotItem_PreviewMouseLeftButtonDown"
+                                                        PreviewMouseMove="ScreenshotItem_PreviewMouseMove">
+                                                    <Border.ContextMenu>
+                                                        <ContextMenu>
+                                                            <MenuItem Header="View" Click="ScreenshotItem_View" />
+                                                            <MenuItem Header="Copy Path" Click="ScreenshotItem_CopyPath" />
+                                                            <MenuItem Header="Open in Explorer" Click="ScreenshotItem_OpenInExplorer" />
+                                                            <Separator />
+                                                            <MenuItem Header="Delete" Click="ScreenshotItem_Delete" />
+                                                        </ContextMenu>
+                                                    </Border.ContextMenu>
+                                                    <StackPanel>
+                                                        <Image Source="{Binding Thumbnail}"
+                                                               Stretch="Uniform"
+                                                               MaxHeight="200"
+                                                               HorizontalAlignment="Left" />
+                                                        <DockPanel Margin="0,4,0,0">
+                                                            <TextBlock Text="{Binding TimeLabel}"
+                                                                       Foreground="#888888" FontSize="9"
+                                                                       VerticalAlignment="Center" />
+                                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                                <Button Content="View"
+                                                                        Click="ScreenshotItem_View"
+                                                                        Padding="6,1" Margin="0,0,4,0"
+                                                                        Background="{StaticResource ButtonBackground}"
+                                                                        Foreground="{StaticResource TextForeground}"
+                                                                        BorderThickness="0" Cursor="Hand" FontSize="9" />
+                                                                <Button Content="Copy" Tag="{Binding FilePath}"
+                                                                        Click="ScreenshotItem_CopyPath"
+                                                                        Padding="6,1"
+                                                                        Background="{StaticResource ButtonBackground}"
+                                                                        Foreground="{StaticResource TextForeground}"
+                                                                        BorderThickness="0" Cursor="Hand" FontSize="9" />
+                                                            </StackPanel>
+                                                        </DockPanel>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </DockPanel>
+                            </TabItem>
 
                             <!-- Queue Tab -->
                             <TabItem x:Name="QueueTab">
@@ -1246,108 +1348,6 @@
                                 </DockPanel>
                             </TabItem>
 
-                            <!-- Screenshots Tab -->
-                            <TabItem Header="Snips">
-                                <DockPanel>
-                                    <DockPanel DockPanel.Dock="Top" Margin="8,8,8,4">
-                                        <TextBlock Text="SCREENSHOTS"
-                                                   Foreground="{StaticResource TextForeground}"
-                                                   FontWeight="SemiBold" FontSize="10"
-                                                   VerticalAlignment="Center" />
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                            <Button Content="Refresh" Click="BtnRefreshScreenshots_Click"
-                                                    Padding="8,2" Margin="0,0,6,0"
-                                                    Background="{StaticResource ButtonBackground}"
-                                                    Foreground="{StaticResource TextForeground}"
-                                                    BorderThickness="0" Cursor="Hand" FontSize="10" />
-                                            <Button Content="Clear All" Click="BtnClearScreenshots_Click"
-                                                    Padding="8,2"
-                                                    Background="{StaticResource ButtonBackground}"
-                                                    Foreground="{StaticResource TextForeground}"
-                                                    BorderThickness="0" Cursor="Hand" FontSize="10" />
-                                        </StackPanel>
-                                    </DockPanel>
-
-                                    <ListBox x:Name="ScreenshotList"
-                                             Background="Transparent" BorderThickness="0"
-                                             Foreground="{StaticResource TextForeground}"
-                                             Margin="4,0"
-                                             VirtualizingPanel.IsVirtualizing="True"
-                                             VirtualizingPanel.VirtualizationMode="Recycling"
-                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                        <ListBox.ItemContainerStyle>
-                                            <Style TargetType="ListBoxItem">
-                                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                                <Setter Property="Background" Value="Transparent" />
-                                                <Setter Property="BorderThickness" Value="0" />
-                                                <Setter Property="Padding" Value="2" />
-                                                <Setter Property="Template">
-                                                    <Setter.Value>
-                                                        <ControlTemplate TargetType="ListBoxItem">
-                                                            <Border Background="{TemplateBinding Background}"
-                                                                    Padding="{TemplateBinding Padding}"
-                                                                    Margin="0,1">
-                                                                <ContentPresenter />
-                                                            </Border>
-                                                            <ControlTemplate.Triggers>
-                                                                <Trigger Property="IsMouseOver" Value="True">
-                                                                    <Setter Property="Background" Value="#2A2A2A" />
-                                                                </Trigger>
-                                                                <Trigger Property="IsSelected" Value="True">
-                                                                    <Setter Property="Background" Value="#333333" />
-                                                                </Trigger>
-                                                            </ControlTemplate.Triggers>
-                                                        </ControlTemplate>
-                                                    </Setter.Value>
-                                                </Setter>
-                                            </Style>
-                                        </ListBox.ItemContainerStyle>
-                                        <ListBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <Border Padding="4"
-                                                        PreviewMouseLeftButtonDown="ScreenshotItem_PreviewMouseLeftButtonDown"
-                                                        PreviewMouseMove="ScreenshotItem_PreviewMouseMove">
-                                                    <Border.ContextMenu>
-                                                        <ContextMenu>
-                                                            <MenuItem Header="View" Click="ScreenshotItem_View" />
-                                                            <MenuItem Header="Copy Path" Click="ScreenshotItem_CopyPath" />
-                                                            <MenuItem Header="Open in Explorer" Click="ScreenshotItem_OpenInExplorer" />
-                                                            <Separator />
-                                                            <MenuItem Header="Delete" Click="ScreenshotItem_Delete" />
-                                                        </ContextMenu>
-                                                    </Border.ContextMenu>
-                                                    <StackPanel>
-                                                        <Image Source="{Binding Thumbnail}"
-                                                               Stretch="Uniform"
-                                                               MaxHeight="200"
-                                                               HorizontalAlignment="Left" />
-                                                        <DockPanel Margin="0,4,0,0">
-                                                            <TextBlock Text="{Binding TimeLabel}"
-                                                                       Foreground="#888888" FontSize="9"
-                                                                       VerticalAlignment="Center" />
-                                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                                                <Button Content="View"
-                                                                        Click="ScreenshotItem_View"
-                                                                        Padding="6,1" Margin="0,0,4,0"
-                                                                        Background="{StaticResource ButtonBackground}"
-                                                                        Foreground="{StaticResource TextForeground}"
-                                                                        BorderThickness="0" Cursor="Hand" FontSize="9" />
-                                                                <Button Content="Copy" Tag="{Binding FilePath}"
-                                                                        Click="ScreenshotItem_CopyPath"
-                                                                        Padding="6,1"
-                                                                        Background="{StaticResource ButtonBackground}"
-                                                                        Foreground="{StaticResource TextForeground}"
-                                                                        BorderThickness="0" Cursor="Hand" FontSize="9" />
-                                                            </StackPanel>
-                                                        </DockPanel>
-                                                    </StackPanel>
-                                                </Border>
-                                            </DataTemplate>
-                                        </ListBox.ItemTemplate>
-                                    </ListBox>
-                                </DockPanel>
-                            </TabItem>
-
                         </TabControl>
                     </Border>
                     <!-- Quick Actions (full-area overlay, spans all columns) -->
@@ -1374,6 +1374,11 @@
                     <cw:ContentWriterView x:Name="ContentWriterView"
                                           Grid.ColumnSpan="3"
                                           Visibility="Collapsed" />
+
+                    <!-- Settings (full-area overlay, spans all columns) -->
+                    <controls:SettingsView x:Name="SettingsView"
+                                           Grid.ColumnSpan="3"
+                                           Visibility="Collapsed" />
                 </Grid>
 
     </Grid>
