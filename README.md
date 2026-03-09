@@ -239,6 +239,14 @@ The core backend (`CcDirector.Core`) is now cross-platform. The UI layer (`CcDir
 
 See [docs/plan-mac-support.md](docs/plan-mac-support.md) for the full implementation plan.
 
+## Stay Updated
+
+This project is actively developed. To stay in the loop:
+
+- **Watch this repo** (click "Watch" at the top) to get notified of new releases
+- **Join the [Discussions](https://github.com/thefrederiksen/cc-director/discussions)** to ask questions, share your setup, or request features
+- **Follow along** at [sorenfrederiksen.com](https://sorenfrederiksen.com)
+
 ## License
 
 MIT

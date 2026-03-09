@@ -1980,7 +1980,7 @@ public partial class MainWindow : Window
     private static readonly SolidColorBrush RendererSelectedFg = FreezeBrush(0xCC, 0xCC, 0xCC);
     private static readonly SolidColorBrush RendererDimFg = FreezeBrush(0x88, 0x88, 0x88);
     private static readonly SolidColorBrush RendererAccentBorder = FreezeBrush(0x00, 0x7A, 0xCC);
-    private string _activeRendererMode = "ORG";
+    private string _activeRendererMode = "PRO";
 
     private void OnRendererMode_Click(object sender, RoutedEventArgs e)
     {
@@ -2134,18 +2134,18 @@ public partial class MainWindow : Window
         {
             var configPath = CcDirector.Core.Storage.CcStorage.ConfigJson();
             if (!File.Exists(configPath))
-                return "ORG";
+                return "PRO";
 
             var json = File.ReadAllText(configPath);
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.TryGetProperty("terminal.renderer", out var prop))
-                return prop.GetString() ?? "ORG";
+                return prop.GetString() ?? "PRO";
         }
         catch (Exception ex)
         {
             FileLog.Write($"[MainWindow] LoadRendererPreference FAILED: {ex.Message}");
         }
-        return "ORG";
+        return "PRO";
     }
 
     /// <summary>
@@ -3179,31 +3179,32 @@ public partial class MainWindow : Window
             HookEventList.ScrollIntoView(_hookEvents[^1]);
     }
 
-    private async void OnSessionTurnCompleted(Session session, TurnData turnData)
+    private void OnSessionTurnCompleted(Session session, TurnData turnData)
     {
+        // This event fires from the pipe thread - dispatch to UI thread to avoid
+        // CollectionView threading violations when modifying _turnCounters/_summaryItems.
         FileLog.Write($"[MainWindow] OnSessionTurnCompleted: session={session.Id}, prompt={turnData.UserPrompt.Length} chars");
 
-        try
+        Dispatcher.BeginInvoke(async () =>
         {
-            // Increment turn counter for this session
-            if (!_turnCounters.TryGetValue(session.Id, out var turnNumber))
-                turnNumber = 0;
-            turnNumber++;
-            _turnCounters[session.Id] = turnNumber;
-
-            // Summarize on background thread
-            var client = GetOrCreateClaudeClient(session.WorkingDirectory);
-            if (client == null)
+            try
             {
-                FileLog.Write("[MainWindow] OnSessionTurnCompleted: no ClaudeClient available, skipping summarization");
-                return;
-            }
+                // Increment turn counter for this session
+                if (!_turnCounters.TryGetValue(session.Id, out var turnNumber))
+                    turnNumber = 0;
+                turnNumber++;
+                _turnCounters[session.Id] = turnNumber;
 
-            var summary = await SessionSummarizer.SummarizeTurnAsync(client, turnData, turnNumber);
+                // Summarize on background thread
+                var client = GetOrCreateClaudeClient(session.WorkingDirectory);
+                if (client == null)
+                {
+                    FileLog.Write("[MainWindow] OnSessionTurnCompleted: no ClaudeClient available, skipping summarization");
+                    return;
+                }
 
-            // Dispatch result to UI thread
-            await Dispatcher.BeginInvoke(() =>
-            {
+                var summary = await SessionSummarizer.SummarizeTurnAsync(client, turnData, turnNumber);
+
                 var item = new TurnSummaryViewModel($"Turn {turnNumber}:", summary);
 
                 if (!_turnSummariesBySession.TryGetValue(session.Id, out var list))
@@ -3219,47 +3220,53 @@ public partial class MainWindow : Window
 
                 // Persist to session history
                 PersistTurnSummary(session, summary);
-            });
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OnSessionTurnCompleted FAILED: {ex.Message}");
-        }
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] OnSessionTurnCompleted FAILED: {ex.Message}");
+            }
+        });
     }
 
-    private async void OnSimpleChatTurnCompleted(Session session, TurnData turnData)
+    private void OnSimpleChatTurnCompleted(Session session, TurnData turnData)
     {
+        // This event fires from the pipe thread - dispatch to UI thread so that
+        // await continuations return to the UI thread (SynchronizationContext),
+        // preventing CollectionView threading violations.
         FileLog.Write($"[MainWindow] OnSimpleChatTurnCompleted: session={session.Id}, prompt={turnData.UserPrompt.Length} chars");
 
-        try
+        Dispatcher.BeginInvoke(async () =>
         {
-            var client = GetOrCreateClaudeClient(session.WorkingDirectory);
-            if (client == null)
+            try
             {
-                FileLog.Write("[MainWindow] OnSimpleChatTurnCompleted: no ClaudeClient, adding plain summary");
-                session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, "Done."));
-                return;
-            }
+                var client = GetOrCreateClaudeClient(session.WorkingDirectory);
+                if (client == null)
+                {
+                    FileLog.Write("[MainWindow] OnSimpleChatTurnCompleted: no ClaudeClient, adding plain summary");
+                    session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, "Done."));
+                    return;
+                }
 
-            // Read terminal text for context
-            var terminalText = "";
-            if (session.Buffer != null)
+                // Read terminal text for context
+                var terminalText = "";
+                if (session.Buffer != null)
+                {
+                    var bytes = session.Buffer.DumpAll();
+                    if (bytes.Length > 0)
+                        terminalText = TerminalOutputParser.StripAnsi(System.Text.Encoding.UTF8.GetString(bytes));
+                }
+
+                var summary = await Task.Run(
+                    () => SimpleChatSummarizer.SummarizeCompletionAsync(client, turnData, terminalText));
+
+                session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, summary));
+            }
+            catch (Exception ex)
             {
-                var bytes = session.Buffer.DumpAll();
-                if (bytes.Length > 0)
-                    terminalText = TerminalOutputParser.StripAnsi(System.Text.Encoding.UTF8.GetString(bytes));
+                FileLog.Write($"[MainWindow] OnSimpleChatTurnCompleted FAILED: {ex.Message}");
+                session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, $"Turn completed. (Summary unavailable: {ex.Message})"));
             }
-
-            var summary = await Task.Run(
-                () => SimpleChatSummarizer.SummarizeCompletionAsync(client, turnData, terminalText));
-
-            session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, summary));
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OnSimpleChatTurnCompleted FAILED: {ex.Message}");
-            session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, $"Turn completed. (Summary unavailable: {ex.Message})"));
-        }
+        });
     }
 
     private ClaudeClient? GetOrCreateClaudeClient(string workingDirectory)
