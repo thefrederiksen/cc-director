@@ -101,11 +101,29 @@ public partial class App : Application
 
         DispatcherUnhandledException += (_, args) =>
         {
-            FileLog.Write($"[App] UNHANDLED EXCEPTION: {args.Exception}");
-            System.Windows.MessageBox.Show(
-                $"An unexpected error occurred:\n\n{args.Exception.Message}\n\nThe error has been logged.",
-                "CC Director Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            FileLog.Write($"[App] UNHANDLED UI EXCEPTION: {args.Exception}");
+            try
+            {
+                System.Windows.MessageBox.Show(
+                    $"An unexpected error occurred:\n\n{args.Exception.Message}\n\nThe error has been logged.\nLog: {FileLog.CurrentLogPath}",
+                    "CC Director Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (Exception msgEx)
+            {
+                FileLog.Write($"[App] Failed to show error dialog: {msgEx.Message}");
+            }
             args.Handled = true;
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            FileLog.Write($"[App] UNHANDLED DOMAIN EXCEPTION (isTerminating={args.IsTerminating}): {args.ExceptionObject}");
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            FileLog.Write($"[App] UNOBSERVED TASK EXCEPTION: {args.Exception}");
+            args.SetObserved();
         };
 
         try
