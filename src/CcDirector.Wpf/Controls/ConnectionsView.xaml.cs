@@ -352,6 +352,82 @@ public partial class ConnectionsView : UserControl
         return 9280;
     }
 
+    /// <summary>
+    /// Checks if the cc-browser daemon is reachable. If not, starts it
+    /// via "cc-browser connections status" and waits for it to become available.
+    /// </summary>
+    public async Task EnsureDaemonRunningAsync()
+    {
+        FileLog.Write("[ConnectionsView] EnsureDaemonRunningAsync: checking daemon");
+
+        var port = GetDaemonPort();
+        if (await IsDaemonReachableAsync(port))
+        {
+            FileLog.Write("[ConnectionsView] EnsureDaemonRunningAsync: daemon already running");
+            return;
+        }
+
+        FileLog.Write("[ConnectionsView] EnsureDaemonRunningAsync: daemon not running, starting...");
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var ccBrowserPath = Path.Combine(localAppData, "cc-director", "bin", "cc-browser.cmd");
+
+        if (!File.Exists(ccBrowserPath))
+        {
+            FileLog.Write($"[ConnectionsView] EnsureDaemonRunningAsync FAILED: cc-browser not found at {ccBrowserPath}");
+            throw new FileNotFoundException(
+                $"cc-browser not found at {ccBrowserPath}. Run the setup wizard to install tools.");
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ccBrowserPath,
+            Arguments = "connections status",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        var proc = Process.Start(psi);
+        if (proc is null)
+        {
+            FileLog.Write("[ConnectionsView] EnsureDaemonRunningAsync FAILED: Process.Start returned null");
+            throw new InvalidOperationException("Failed to start cc-browser process");
+        }
+
+        // Don't block on the process -- just wait for daemon to become reachable
+        _ = proc.StandardOutput.ReadToEndAsync();
+        _ = proc.StandardError.ReadToEndAsync();
+
+        for (var i = 0; i < 20; i++)
+        {
+            await Task.Delay(250);
+            port = GetDaemonPort();
+            if (await IsDaemonReachableAsync(port))
+            {
+                FileLog.Write($"[ConnectionsView] EnsureDaemonRunningAsync: daemon started on port {port}");
+                return;
+            }
+        }
+
+        FileLog.Write("[ConnectionsView] EnsureDaemonRunningAsync FAILED: daemon did not start within 5 seconds");
+        throw new TimeoutException("cc-browser daemon did not start within 5 seconds");
+    }
+
+    private async Task<bool> IsDaemonReachableAsync(int port)
+    {
+        try
+        {
+            var response = await _http.GetAsync($"http://127.0.0.1:{port}/connections");
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // -----------------------------------------------------------------------
     // UI Helpers
     // -----------------------------------------------------------------------
@@ -431,6 +507,8 @@ public partial class ConnectionsView : UserControl
 
         try
         {
+            await EnsureDaemonRunningAsync();
+
             var port = GetDaemonPort();
             var payload = JsonSerializer.Serialize(new { name = item.Name });
             var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
@@ -458,16 +536,6 @@ public partial class ConnectionsView : UserControl
             item.Connected = true;
             item.SetBusy(false);
             FileLog.Write($"[ConnectionsView] OpenConnection: opened pid={item.ChromePid}");
-        }
-        catch (HttpRequestException ex)
-        {
-            FileLog.Write($"[ConnectionsView] OpenConnection FAILED: daemon not reachable: {ex.Message}");
-            item.SetBusy(false);
-            MessageBox.Show(
-                "cc-browser daemon is not running.\n\nStart it with: cc-browser daemon",
-                "Daemon Not Running",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
@@ -559,6 +627,8 @@ public partial class ConnectionsView : UserControl
 
         try
         {
+            await EnsureDaemonRunningAsync();
+
             var port = GetDaemonPort();
             var payload = JsonSerializer.Serialize(new
             {
@@ -591,16 +661,6 @@ public partial class ConnectionsView : UserControl
             item.Connected = true;
             item.SetBusy(false);
             FileLog.Write($"[ConnectionsView] OpenConnectionPositioned: opened pid={item.ChromePid}");
-        }
-        catch (HttpRequestException ex)
-        {
-            FileLog.Write($"[ConnectionsView] OpenConnectionPositioned FAILED: daemon not reachable: {ex.Message}");
-            item.SetBusy(false);
-            MessageBox.Show(
-                "cc-browser daemon is not running.\n\nStart it with: cc-browser daemon",
-                "Daemon Not Running",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {

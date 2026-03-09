@@ -359,6 +359,9 @@ public partial class MainWindow : Window
 
         // Initialize screenshots panel (async - reads config from disk)
         _ = InitializeScreenshotsPanelAsync();
+
+        // Start cc-browser daemon in background so connections are ready
+        _ = StartBrowserDaemonAsync();
     }
 
     private void SetBuildInfo()
@@ -3483,6 +3486,20 @@ public partial class MainWindow : Window
     }
 
     // ── Screenshots Panel ──────────────────────────────────────────
+
+    private async Task StartBrowserDaemonAsync()
+    {
+        FileLog.Write("[MainWindow] StartBrowserDaemonAsync: starting cc-browser daemon");
+        try
+        {
+            await ConnectionsView.EnsureDaemonRunningAsync();
+            FileLog.Write("[MainWindow] StartBrowserDaemonAsync: daemon is running");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] StartBrowserDaemonAsync: {ex.Message}");
+        }
+    }
 
     private async Task InitializeScreenshotsPanelAsync()
     {
