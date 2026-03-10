@@ -12,6 +12,7 @@ public partial class ContentWriterViewModel : ObservableObject
     private readonly ContentStorageService _storage = new();
     private FileSystemWatcher? _watcher;
     private string? _currentFilePath;
+    private List<DocumentListItem>? _pendingDocumentList;
 
     public ObservableCollection<DocumentListItem> InProgressDocuments { get; } = new();
     public ObservableCollection<DocumentListItem> CompletedDocuments { get; } = new();
@@ -34,36 +35,52 @@ public partial class ContentWriterViewModel : ObservableObject
 
     public string? CurrentFilePath => _currentFilePath;
 
-    public void Initialize()
+    /// <summary>
+    /// Loads the document list from disk. Safe to call from a background thread.
+    /// Call ApplyDocumentList() on the UI thread afterwards.
+    /// </summary>
+    public void LoadDocumentList()
     {
-        FileLog.Write("[ContentWriterViewModel] Initialize");
-        RefreshDocumentList();
+        FileLog.Write("[ContentWriterViewModel] LoadDocumentList");
+        var docs = _storage.ListDocuments();
+        _pendingDocumentList = docs.Select(doc => new DocumentListItem
+        {
+            FilePath = doc.FilePath,
+            Name = doc.Name,
+            Status = doc.Status,
+            Modified = doc.Modified
+        }).ToList();
+        FileLog.Write($"[ContentWriterViewModel] LoadDocumentList: loaded {_pendingDocumentList.Count} documents");
     }
 
-    public void RefreshDocumentList()
+    /// <summary>
+    /// Applies the loaded document list to the ObservableCollections. Must be called on the UI thread.
+    /// </summary>
+    public void ApplyDocumentList()
     {
-        FileLog.Write("[ContentWriterViewModel] RefreshDocumentList");
+        FileLog.Write("[ContentWriterViewModel] ApplyDocumentList");
         InProgressDocuments.Clear();
         CompletedDocuments.Clear();
 
-        var docs = _storage.ListDocuments();
-        foreach (var doc in docs)
-        {
-            var item = new DocumentListItem
-            {
-                FilePath = doc.FilePath,
-                Name = doc.Name,
-                Status = doc.Status,
-                Modified = doc.Modified
-            };
+        var items = _pendingDocumentList ?? [];
+        _pendingDocumentList = null;
 
-            if (doc.Status == "completed")
+        foreach (var item in items)
+        {
+            if (item.Status == "completed")
                 CompletedDocuments.Add(item);
             else
                 InProgressDocuments.Add(item);
         }
 
-        FileLog.Write($"[ContentWriterViewModel] RefreshDocumentList: {InProgressDocuments.Count} in progress, {CompletedDocuments.Count} completed");
+        FileLog.Write($"[ContentWriterViewModel] ApplyDocumentList: {InProgressDocuments.Count} in progress, {CompletedDocuments.Count} completed");
+    }
+
+    public void RefreshDocumentList()
+    {
+        FileLog.Write("[ContentWriterViewModel] RefreshDocumentList");
+        LoadDocumentList();
+        ApplyDocumentList();
     }
 
     public void LoadDocument(string filePath)

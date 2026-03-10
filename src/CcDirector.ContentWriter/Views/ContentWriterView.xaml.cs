@@ -62,9 +62,10 @@ public partial class ContentWriterView : UserControl, IDisposable
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         LoadingOverlay.Visibility = Visibility.Visible;
-        await Task.Run(() => ViewModel.Initialize());
         InProgressList.ItemsSource = ViewModel.InProgressDocuments;
         CompletedList.ItemsSource = ViewModel.CompletedDocuments;
+        await Task.Run(() => ViewModel.LoadDocumentList());
+        ViewModel.ApplyDocumentList();
         LoadingOverlay.Visibility = Visibility.Collapsed;
     }
 
