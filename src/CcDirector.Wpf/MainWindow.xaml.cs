@@ -17,6 +17,7 @@ using CcDirector.Core.Git;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Skills;
 using CcDirector.Core.Utilities;
 using CcDirector.Wpf.Backends;
 using System.IO;
@@ -58,6 +59,44 @@ public partial class MainWindow : Window
     private EmbeddedBackend? _activeEmbeddedBackend;
     private Session? _activeSession;
     private CancellationTokenSource? _enterRetryCts;
+    private bool _isInteractiveTuiMode;
+
+    /// <summary>
+    /// Claude Code slash commands that launch interactive TUI dialogs requiring direct keyboard input.
+    /// When sent from PromptInput, these are intercepted and handled via native WPF dialogs or redirected.
+    /// When typed directly in the Terminal tab's ConPTY, they still work natively.
+    /// </summary>
+    private static readonly HashSet<string> InteractiveTuiCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "config", "settings",
+        "status",
+        "help",
+        "context",
+        "copy",
+        "diff",
+        "hooks",
+        "model",
+        "theme",
+        "permissions", "allowed-tools",
+        "resume", "continue",
+        "rewind", "checkpoint",
+        "export",
+        "output-style",
+        "memory",
+        "stats",
+        "plugin",
+        "mcp",
+        "agents",
+    };
+
+    /// <summary>
+    /// Commands that require a live terminal session and cannot be replicated in a native dialog.
+    /// These show a redirect message pointing the user to the Terminal tab.
+    /// </summary>
+    private static readonly HashSet<string> TerminalOnlyCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "context", "copy", "diff", "rewind", "checkpoint", "export", "mcp", "agents",
+    };
     private SessionViewModel? _headerBoundVm;
     private readonly GitStatusProvider _gitStatusProvider = new();
     private readonly System.Windows.Threading.DispatcherTimer _sessionGitTimer;
@@ -70,6 +109,10 @@ public partial class MainWindow : Window
 
     /// <summary>Tracks whether the read-only mode warning has been shown to avoid repeated dialogs.</summary>
     private bool _readOnlyWarningShown;
+
+    // Slash command autocomplete
+    private readonly SlashCommandProvider _slashCommandProvider = new();
+    private List<SlashCommandItem> _filteredSlashCommands = new();
 
     // Voice input
     private VoskSttService? _voskStt;
@@ -763,6 +806,14 @@ public partial class MainWindow : Window
             MessageBox.Show(this, $"Failed to load workspace:\n{ex.Message}", "Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void BtnClaudeConfig_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnClaudeConfig_Click: opening Claude Code config dialog");
+        var repoPath = _activeSession?.RepoPath;
+        var dialog = new ClaudeConfigDialog(repoPath) { Owner = this };
+        dialog.ShowDialog();
     }
 
     private void BtnSettings_Click(object sender, RoutedEventArgs e)
@@ -2623,6 +2674,10 @@ public partial class MainWindow : Window
 
     private void PromptInput_GotFocus(object sender, RoutedEventArgs e)
     {
+        // Exit interactive TUI mode if the user clicks back to the prompt input
+        if (_isInteractiveTuiMode)
+            ExitInteractiveTuiMode();
+
         // Re-show console overlay when text box gets focus — covers the case
         // where the user clicked the console window then clicked back here,
         // which can cause the console to slip behind the WPF window.
@@ -2652,6 +2707,138 @@ public partial class MainWindow : Window
             e.Handled = true;
             await SendPromptAsync();
         }
+    }
+
+    // ── Slash Command Autocomplete ─────────────────────────────────
+
+    private void PromptInput_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var text = PromptInput.Text;
+
+        // Only trigger when / is the first non-whitespace character
+        var trimmed = text.TrimStart();
+        if (!trimmed.StartsWith("/"))
+        {
+            SlashCommandPopup.IsOpen = false;
+            return;
+        }
+
+        // Extract the slash command prefix (text from / to cursor or first space)
+        var slashIndex = text.IndexOf('/');
+        var afterSlash = trimmed.Substring(1); // text after the /
+        var spaceIndex = afterSlash.IndexOf(' ');
+        var filter = spaceIndex >= 0 ? afterSlash.Substring(0, spaceIndex) : afterSlash;
+
+        // If there's a space after the command, popup should close (command is complete)
+        if (spaceIndex >= 0)
+        {
+            SlashCommandPopup.IsOpen = false;
+            return;
+        }
+
+        var repoPath = _activeSession?.RepoPath;
+        var allCommands = _slashCommandProvider.GetCommands(repoPath);
+
+        // Exclude interactive TUI commands from PromptInput autocomplete -- they don't work here.
+        // Users who know these commands can use them in the Terminal tab directly.
+        var available = allCommands.Where(c => !InteractiveTuiCommands.Contains(c.Name)).ToList();
+
+        _filteredSlashCommands = string.IsNullOrEmpty(filter)
+            ? available
+            : available.Where(c => c.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        if (_filteredSlashCommands.Count == 0)
+        {
+            SlashCommandPopup.IsOpen = false;
+            return;
+        }
+
+        SlashCommandList.ItemsSource = _filteredSlashCommands;
+        SlashCommandList.SelectedIndex = 0;
+        SlashCommandPopup.IsOpen = true;
+    }
+
+    private void PromptInput_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!SlashCommandPopup.IsOpen)
+            return;
+
+        switch (e.Key)
+        {
+            case Key.Down:
+                if (SlashCommandList.SelectedIndex < _filteredSlashCommands.Count - 1)
+                    SlashCommandList.SelectedIndex++;
+                SlashCommandList.ScrollIntoView(SlashCommandList.SelectedItem);
+                e.Handled = true;
+                break;
+
+            case Key.Up:
+                if (SlashCommandList.SelectedIndex > 0)
+                    SlashCommandList.SelectedIndex--;
+                SlashCommandList.ScrollIntoView(SlashCommandList.SelectedItem);
+                e.Handled = true;
+                break;
+
+            case Key.Tab:
+            case Key.Enter:
+                if (Keyboard.Modifiers != ModifierKeys.None && e.Key == Key.Enter)
+                    break; // Let Ctrl+Enter / Ctrl+Shift+Enter pass through
+                InsertSelectedSlashCommand();
+                e.Handled = true;
+                break;
+
+            case Key.Escape:
+                SlashCommandPopup.IsOpen = false;
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void SlashCommandList_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        InsertSelectedSlashCommand();
+    }
+
+    private void SlashCommandList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SlashCommandList.SelectedItem is not SlashCommandItem selected)
+        {
+            SlashCommandDocPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        SlashCommandDocTitle.Text = "/" + selected.Name;
+        SlashCommandDocSource.Text = selected.Source == "project" ? "Project skill" : "Global skill";
+        SlashCommandDocDesc.Text = selected.Description;
+
+        if (!string.IsNullOrWhiteSpace(selected.Documentation))
+        {
+            SlashCommandDocBody.Text = selected.Documentation;
+            SlashCommandDocBody.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            SlashCommandDocBody.Text = string.Empty;
+            SlashCommandDocBody.Visibility = Visibility.Collapsed;
+        }
+
+        SlashCommandDocPanel.Visibility = Visibility.Visible;
+    }
+
+    private void InsertSelectedSlashCommand()
+    {
+        if (SlashCommandList.SelectedItem is not SlashCommandItem selected)
+            return;
+
+        FileLog.Write($"[MainWindow] InsertSelectedSlashCommand: /{selected.Name}");
+
+        // Replace the text from start through the slash-prefix with the selected command
+        var text = PromptInput.Text;
+        var leadingSpaces = text.Length - text.TrimStart().Length;
+        PromptInput.Text = "/" + selected.Name + " ";
+        PromptInput.CaretIndex = PromptInput.Text.Length;
+        SlashCommandPopup.IsOpen = false;
+        PromptInput.Focus();
     }
 
     private async void BtnSendPrompt_Click(object sender, RoutedEventArgs e)
@@ -2937,6 +3124,99 @@ public partial class MainWindow : Window
         }
     }
 
+    // ── Slash Command Interception ───────────────────────────────
+
+    /// <summary>
+    /// Intercepts interactive slash commands from PromptInput and handles them via native WPF dialogs
+    /// or shows a redirect message. Returns true if the command was handled (should not be sent to terminal).
+    /// </summary>
+    private bool TryHandleSlashCommand(string text)
+    {
+        if (string.IsNullOrEmpty(text) || !text.StartsWith("/"))
+            return false;
+
+        var command = text.ToLowerInvariant();
+        var commandName = command.TrimStart('/');
+
+        // Terminal-only commands: show redirect message, keep text in prompt
+        if (TerminalOnlyCommands.Contains(commandName))
+        {
+            FileLog.Write($"[MainWindow] TryHandleSlashCommand: terminal-only command blocked: {command}");
+            ShowNotification($"Use the Terminal tab for {text}");
+            // Restore the text so user can switch to Terminal tab and resend
+            PromptInput.Text = text;
+            PromptInput.CaretIndex = text.Length;
+            return true;
+        }
+
+        // Commands handled by ClaudeConfigDialog (with tab selection)
+        var configTab = commandName switch
+        {
+            "config" or "settings" => "general",
+            "permissions" or "allowed-tools" => "permissions",
+            "model" => "general",
+            "hooks" => "hooks",
+            "plugin" => "plugins",
+            _ => (string?)null
+        };
+
+        if (configTab != null)
+        {
+            FileLog.Write($"[MainWindow] TryHandleSlashCommand: opening ClaudeConfigDialog tab={configTab} for {command}");
+            var dialog = new ClaudeConfigDialog(_activeSession?.RepoPath, configTab) { Owner = this };
+            dialog.ShowDialog();
+            return true;
+        }
+
+        // Commands with their own native dialogs
+        switch (commandName)
+        {
+            case "status":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening StatusDialog");
+                new StatusDialog { Owner = this }.ShowDialog();
+                return true;
+
+            case "help":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening HelpDialog");
+                new HelpDialog { Owner = this }.ShowDialog();
+                return true;
+
+            case "theme":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening ThemeDialog");
+                new ThemeDialog { Owner = this }.ShowDialog();
+                return true;
+
+            case "memory":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening MemoryDialog");
+                new MemoryDialog(_activeSession?.RepoPath) { Owner = this }.ShowDialog();
+                return true;
+
+            case "stats":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening StatsDialog");
+                new StatsDialog { Owner = this }.ShowDialog();
+                return true;
+
+            case "output-style":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening OutputStyleDialog");
+                new OutputStyleDialog { Owner = this }.ShowDialog();
+                return true;
+
+            case "resume" or "continue":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening ResumeDialog");
+                var resumeDialog = new ResumeDialog(_activeSession?.RepoPath) { Owner = this };
+                if (resumeDialog.ShowDialog() == true && resumeDialog.SelectedSessionId != null)
+                {
+                    // Switch to Terminal tab and send resume command
+                    SessionTabs.SelectedIndex = 0;
+                    PromptInput.Text = $"claude --resume {resumeDialog.SelectedSessionId}";
+                    ShowNotification("Session selected -- press Enter to resume in Terminal");
+                }
+                return true;
+        }
+
+        return false;
+    }
+
     // ── Send / Queue ─────────────────────────────────────────────
 
     private async Task SendPromptAsync()
@@ -2946,6 +3226,14 @@ public partial class MainWindow : Window
 
         // Strip newlines — Claude Code prompt expects single-line input
         var text = PromptInput.Text.ReplaceLineEndings(" ").Trim();
+
+        // Intercept interactive slash commands from PromptInput
+        if (TryHandleSlashCommand(text))
+        {
+            // Command was handled by a native dialog -- don't send to terminal
+            return;
+        }
+
         PromptInput.Clear();
 
         // Clear saved prompt text so switching away and back shows empty box
@@ -2955,6 +3243,9 @@ public partial class MainWindow : Window
             activeVm.PendingPromptText = string.Empty;
             FileLog.Write($"[MainWindow] SendPromptAsync: cleared PendingPromptText for {_activeSession.Id}");
         }
+
+        // Inject user prompt into Clean view immediately for instant feedback
+        CleanView.InjectUserPrompt(text);
 
         // Notify user when large input is redirected to a temp file, otherwise clear
         if (LargeInputHandler.IsLargeInput(text))
@@ -2966,11 +3257,19 @@ public partial class MainWindow : Window
             ClearNotification();
         }
 
+        // Check if this is an interactive TUI command (e.g. /config, /help)
+        // Note: These should be caught by TryHandleSlashCommand above, but kept as safety net
+        // for commands sent from other code paths (e.g. slash command autocomplete)
+        var isInteractiveCommand = text.StartsWith("/") && InteractiveTuiCommands.Contains(text.TrimStart('/'));
+        if (isInteractiveCommand)
+            FileLog.Write($"[MainWindow] SendPromptAsync: interactive TUI command detected: {text}");
+
         if (_activeSession.BackendType == SessionBackendType.Embedded && _activeEmbeddedBackend != null)
         {
             // Send keystrokes directly to the embedded console window
             await _activeEmbeddedBackend.SendTextAsync(text);
-            ScheduleEnterRetry(_activeSession);
+            if (!isInteractiveCommand)
+                ScheduleEnterRetry(_activeSession);
         }
         else if (_activeSession.BackendType == SessionBackendType.Studio)
         {
@@ -2980,10 +3279,18 @@ public partial class MainWindow : Window
         else
         {
             await _activeSession.SendTextAsync(text);
-            ScheduleEnterRetry(_activeSession);
+            if (!isInteractiveCommand)
+                ScheduleEnterRetry(_activeSession);
         }
 
-        PromptInput.Focus();
+        if (isInteractiveCommand)
+        {
+            EnterInteractiveTuiMode(_activeSession);
+        }
+        else
+        {
+            PromptInput.Focus();
+        }
     }
 
     private void ShowNotification(string message)
@@ -3034,6 +3341,57 @@ public partial class MainWindow : Window
         {
             session.OnActivityStateChanged -= handler;
         }
+    }
+
+    // ── Interactive TUI Mode ────────────────────────────────────────
+
+    /// <summary>
+    /// Enters interactive TUI mode: focuses the terminal control so keystrokes
+    /// (arrows, Tab, Escape) go directly to the ConPTY process instead of PromptInput.
+    /// Subscribes to activity state changes to auto-exit when the TUI closes.
+    /// </summary>
+    private void EnterInteractiveTuiMode(Session session)
+    {
+        FileLog.Write("[MainWindow] EnterInteractiveTuiMode: focusing terminal for interactive TUI");
+        _isInteractiveTuiMode = true;
+
+        // Cancel any pending Enter retry - interactive TUIs must not receive stray Enters
+        _enterRetryCts?.Cancel();
+
+        // Focus the terminal so keystrokes go to the ConPTY process
+        if (_terminalControl != null)
+        {
+            _terminalControl.Focus();
+            Keyboard.Focus(_terminalControl);
+        }
+
+        // Show notification so the user knows what's happening
+        ShowNotification("Interactive mode -- keys go to terminal. Click prompt input to exit.");
+
+        // Auto-exit when the session transitions back to idle (TUI closed)
+        void OnStateChanged(ActivityState oldState, ActivityState newState)
+        {
+            if (newState is ActivityState.Idle or ActivityState.WaitingForInput)
+            {
+                session.OnActivityStateChanged -= OnStateChanged;
+                Dispatcher.BeginInvoke(() => ExitInteractiveTuiMode());
+            }
+        }
+
+        session.OnActivityStateChanged += OnStateChanged;
+    }
+
+    /// <summary>
+    /// Exits interactive TUI mode: returns focus to PromptInput.
+    /// </summary>
+    private void ExitInteractiveTuiMode()
+    {
+        if (!_isInteractiveTuiMode) return;
+
+        FileLog.Write("[MainWindow] ExitInteractiveTuiMode: returning focus to PromptInput");
+        _isInteractiveTuiMode = false;
+        ClearNotification();
+        PromptInput.Focus();
     }
 
     private void PersistSessionState()

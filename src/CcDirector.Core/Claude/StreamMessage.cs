@@ -216,16 +216,27 @@ public static class StreamMessageParser
         {
             if (msgEl.ValueKind == JsonValueKind.String)
             {
+                // message is a plain string: {"type":"user","message":"Tell a joke"}
                 text = msgEl.GetString() ?? string.Empty;
                 blocks.Add(new ContentBlock { Type = ContentBlockType.Text, Text = text });
             }
-            else if (msgEl.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.Array)
+            else if (msgEl.TryGetProperty("content", out var contentEl))
             {
-                foreach (var item in contentEl.EnumerateArray())
+                if (contentEl.ValueKind == JsonValueKind.Array)
                 {
-                    var block = ParseContentBlock(item);
-                    if (block != null)
-                        blocks.Add(block);
+                    // message.content is an array of content blocks
+                    foreach (var item in contentEl.EnumerateArray())
+                    {
+                        var block = ParseContentBlock(item);
+                        if (block != null)
+                            blocks.Add(block);
+                    }
+                }
+                else if (contentEl.ValueKind == JsonValueKind.String)
+                {
+                    // message.content is a plain string: {"message":{"role":"user","content":"Tell a joke"}}
+                    text = contentEl.GetString() ?? string.Empty;
+                    blocks.Add(new ContentBlock { Type = ContentBlockType.Text, Text = text });
                 }
             }
         }

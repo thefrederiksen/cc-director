@@ -127,6 +127,7 @@ public sealed class ConPtyBackend : ISessionBackend
 
     private void OnProcessExited(int exitCode)
     {
+        FileLog.Write($"[ConPtyBackend] ProcessExited: pid={ProcessId}, exitCode={exitCode}");
         SetStatus($"Exited ({exitCode})");
         ProcessExited?.Invoke(exitCode);
     }

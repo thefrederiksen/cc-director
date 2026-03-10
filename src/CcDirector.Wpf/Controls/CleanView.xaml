@@ -254,14 +254,87 @@
 
         <!-- ===== USER MESSAGE WIDGET ===== -->
         <DataTemplate x:Key="UserWidgetTemplate" DataType="{x:Type local:CleanWidgetViewModel}">
-            <Border Margin="60,4,8,4" Padding="12,10"
-                    Background="#094771" CornerRadius="6"
-                    HorizontalAlignment="Right">
-                <TextBlock Text="{Binding Content}"
-                           Foreground="White"
-                           FontFamily="Segoe UI" FontSize="13"
-                           TextWrapping="Wrap"
-                           MaxWidth="600" />
+            <Grid Margin="60,4,8,4" HorizontalAlignment="Right">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <!-- Rewind button -->
+                <Button Grid.Column="0"
+                        Click="RewindButton_Click"
+                        Tag="{Binding SnapshotEntryNumber}"
+                        Visibility="{Binding RewindVisibility}"
+                        ToolTip="Rewind to before this prompt"
+                        Width="20" Height="20"
+                        Margin="0,0,6,0"
+                        VerticalAlignment="Center"
+                        Cursor="Hand">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="BorderThickness" Value="0" />
+                            <Setter Property="Opacity" Value="0.4" />
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderThickness="{TemplateBinding BorderThickness}">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                            <Style.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Opacity" Value="1.0" />
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                    <TextBlock Text="X" Foreground="#EF4444"
+                               FontFamily="Segoe UI" FontSize="12" FontWeight="Bold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Button>
+                <!-- Message bubble -->
+                <Border Grid.Column="1" Padding="12,10"
+                        Background="#094771" CornerRadius="6">
+                    <TextBlock Text="{Binding Content}"
+                               Foreground="White"
+                               FontFamily="Segoe UI" FontSize="13"
+                               TextWrapping="Wrap"
+                               MaxWidth="600" />
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <!-- ===== SKILL WIDGET - Slash command invocations ===== -->
+        <DataTemplate x:Key="SkillWidgetTemplate" DataType="{x:Type local:CleanWidgetViewModel}">
+            <Border Style="{StaticResource CardBorder}">
+                <StackPanel>
+                    <!-- Header -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border Style="{StaticResource IconBadge}">
+                            <TextBlock Text="{Binding IconText}" Foreground="White"
+                                       FontFamily="Cascadia Mono" FontSize="14" FontWeight="Bold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding Header}" Style="{StaticResource HeaderText}" />
+                        <TextBlock Text="{Binding Subheader}" Style="{StaticResource SubheaderText}"
+                                   Visibility="{Binding SubheaderVisibility}" />
+                    </StackPanel>
+                    <!-- Result -->
+                    <Border Style="{StaticResource ResultBorder}"
+                            Visibility="{Binding ResultVisibility}">
+                        <TextBlock Text="{Binding Result}"
+                                   Foreground="{Binding ResultForeground}"
+                                   Style="{StaticResource ContentText}"
+                                   FontSize="11" />
+                    </Border>
+                    <!-- Pending -->
+                    <TextBlock Style="{StaticResource PendingText}"
+                               Visibility="{Binding PendingVisibility}" />
+                </StackPanel>
             </Border>
         </DataTemplate>
 
@@ -311,6 +384,7 @@
                                       SearchTemplate="{StaticResource SearchWidgetTemplate}"
                                       TodoTemplate="{StaticResource TodoWidgetTemplate}"
                                       UserTemplate="{StaticResource UserWidgetTemplate}"
+                                      SkillTemplate="{StaticResource SkillWidgetTemplate}"
                                       GenericToolTemplate="{StaticResource GenericToolWidgetTemplate}" />
 
     </UserControl.Resources>

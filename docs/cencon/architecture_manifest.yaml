@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-03-09"
+last_updated: "2026-03-10"
 
 # C4 Level 1: System Context
 context:
@@ -73,7 +73,7 @@ containers:
         description: Custom control for terminal rendering with ANSI parsing
         file: Controls/TerminalControl.cs
       - name: Dialogs
-        description: Modal dialogs for session management
+        description: Modal dialogs for session management and Claude Code configuration
         files:
           - NewSessionDialog.xaml
           - RenameSessionDialog.xaml
@@ -83,6 +83,17 @@ containers:
           - GitHubRepoPickerDialog.xaml
           - RepositoryManagerDialog.xaml
           - RootDirectoryDialog.xaml
+          - ClaudeConfigDialog.xaml
+          - StatusDialog.xaml
+          - HelpDialog.xaml
+          - MemoryDialog.xaml
+          - StatsDialog.xaml
+          - ThemeDialog.xaml
+          - OutputStyleDialog.xaml
+          - ResumeDialog.xaml
+      - name: CleanView
+        description: Card-based conversation view with rewind buttons and Skill widget support
+        file: Controls/CleanView.xaml / Controls/CleanView.xaml.cs
       - name: SettingsView
         description: Read-only settings overlay showing all configuration values grouped by category
         file: Controls/SettingsView.xaml / Controls/SettingsView.xaml.cs
@@ -132,6 +143,12 @@ containers:
       - name: ClaudeClient
         description: Helper library for Claude CLI interactions
         file: Claude/ClaudeClient.cs
+      - name: SessionHistory
+        description: JSONL session history snapshots in zip archives for rewind/fork support
+        file: Claude/SessionHistory.cs
+      - name: SlashCommandProvider
+        description: Provides slash command metadata for autocomplete in prompt input
+        file: Skills/SlashCommandProvider.cs
       - name: VoiceModeController
         description: Orchestrates voice interaction flow
         file: Voice/Controllers/VoiceModeController.cs

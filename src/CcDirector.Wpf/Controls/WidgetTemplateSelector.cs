@@ -16,6 +16,7 @@ public class WidgetTemplateSelector : DataTemplateSelector
     public DataTemplate? SearchTemplate { get; set; }
     public DataTemplate? TodoTemplate { get; set; }
     public DataTemplate? UserTemplate { get; set; }
+    public DataTemplate? SkillTemplate { get; set; }
     public DataTemplate? GenericToolTemplate { get; set; }
 
     public override DataTemplate? SelectTemplate(object item, DependencyObject container)
@@ -33,6 +34,7 @@ public class WidgetTemplateSelector : DataTemplateSelector
             WidgetKind.TodoWrite => TodoTemplate,
             WidgetKind.UserMessage => UserTemplate,
             WidgetKind.Agent => GenericToolTemplate,
+            WidgetKind.Skill => SkillTemplate,
             WidgetKind.GenericTool => GenericToolTemplate,
             _ => GenericToolTemplate
         };

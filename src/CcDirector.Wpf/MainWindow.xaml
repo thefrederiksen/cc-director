@@ -372,13 +372,29 @@
                         <!-- Populated dynamically; shows compact usage per account -->
                     </StackPanel>
 
-                    <!-- StatusFooter: build info at bottom -->
-                    <TextBlock x:Name="BuildInfoText" DockPanel.Dock="Bottom"
-                               Text="Build: ---"
-                               Foreground="#555555"
-                               FontSize="9"
-                               HorizontalAlignment="Center"
-                               Margin="0,4,0,8" />
+                    <!-- StatusFooter: build info + Claude config gear -->
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
+                                HorizontalAlignment="Center" Margin="0,4,0,8">
+                        <TextBlock x:Name="BuildInfoText"
+                                   Text="Build: ---"
+                                   Foreground="#555555"
+                                   FontSize="9"
+                                   VerticalAlignment="Center" />
+                        <Button x:Name="BtnClaudeConfig"
+                                Click="BtnClaudeConfig_Click"
+                                ToolTip="Claude Code Settings"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Focusable="False"
+                                Padding="4,2"
+                                Margin="6,0,0,0"
+                                VerticalAlignment="Center">
+                            <Path Data="M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94c0,-0.32 -0.02,-0.64 -0.07,-0.94l2.03,-1.58c0.18,-0.14 0.23,-0.41 0.12,-0.61l-1.92,-3.32c-0.12,-0.22 -0.37,-0.29 -0.59,-0.22l-2.39,0.96c-0.5,-0.38 -1.03,-0.7 -1.62,-0.94L14.4,2.81c-0.04,-0.24 -0.24,-0.41 -0.48,-0.41h-3.84c-0.24,0 -0.43,0.17 -0.47,0.41L9.25,5.35C8.66,5.59 8.12,5.92 7.63,6.29L5.24,5.33c-0.22,-0.08 -0.47,0 -0.59,0.22L2.74,8.87C2.62,9.08 2.66,9.34 2.86,9.48l2.03,1.58C4.84,11.36 4.8,11.69 4.8,12s0.02,0.64 0.07,0.94l-2.03,1.58c-0.18,0.14 -0.23,0.41 -0.12,0.61l1.92,3.32c0.12,0.22 0.37,0.29 0.59,0.22l2.39,-0.96c0.5,0.38 1.03,0.7 1.62,0.94l0.36,2.54c0.05,0.24 0.24,0.41 0.48,0.41h3.84c0.24,0 0.44,-0.17 0.47,-0.41l0.36,-2.54c0.59,-0.24 1.13,-0.56 1.62,-0.94l2.39,0.96c0.22,0.08 0.47,0 0.59,-0.22l1.92,-3.32c0.12,-0.22 0.07,-0.47 -0.12,-0.61L19.14,12.94z M12,15.6c-1.98,0 -3.6,-1.62 -3.6,-3.6s1.62,-3.6 3.6,-3.6s3.6,1.62 3.6,3.6S13.98,15.6 12,15.6z"
+                                  Fill="#555555" Width="12" Height="12"
+                                  Stretch="Uniform" />
+                        </Button>
+                    </StackPanel>
 
                     <ListBox x:Name="SessionList"
                              SelectionChanged="SessionList_SelectionChanged"
@@ -890,7 +906,123 @@
                                          PreviewDragOver="PromptInput_PreviewDragOver"
                                          PreviewDrop="PromptInput_Drop"
                                          KeyDown="PromptInput_KeyDown"
-                                         GotFocus="PromptInput_GotFocus" />
+                                         GotFocus="PromptInput_GotFocus"
+                                         TextChanged="PromptInput_TextChanged"
+                                         PreviewKeyDown="PromptInput_PreviewKeyDown" />
+
+                                <!-- Slash command autocomplete popup -->
+                                <Popup x:Name="SlashCommandPopup"
+                                       PlacementTarget="{Binding ElementName=PromptInput}"
+                                       Placement="Top"
+                                       StaysOpen="False"
+                                       AllowsTransparency="True"
+                                       PopupAnimation="None">
+                                    <Border Background="#252526"
+                                            BorderBrush="#3C3C3C"
+                                            BorderThickness="1"
+                                            CornerRadius="4"
+                                            MinWidth="700"
+                                            MaxWidth="900"
+                                            MaxHeight="420">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="260" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <!-- Command list -->
+                                            <ListBox x:Name="SlashCommandList"
+                                                     Grid.Column="0"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                     MouseLeftButtonUp="SlashCommandList_MouseLeftButtonUp"
+                                                     SelectionChanged="SlashCommandList_SelectionChanged"
+                                                     MaxHeight="410">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Margin="4,2">
+                                                            <TextBlock Text="{Binding Name, StringFormat=/\{0\}}"
+                                                                       Foreground="#FFFFFF"
+                                                                       FontFamily="Cascadia Mono, Consolas, Courier New"
+                                                                       FontSize="13" />
+                                                            <TextBlock Text="{Binding Description}"
+                                                                       Foreground="#888888"
+                                                                       FontSize="11"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       Margin="0,1,0,0" />
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                                <ListBox.ItemContainerStyle>
+                                                    <Style TargetType="ListBoxItem">
+                                                        <Setter Property="Background" Value="Transparent" />
+                                                        <Setter Property="Foreground" Value="#CCCCCC" />
+                                                        <Setter Property="Padding" Value="4,2" />
+                                                        <Setter Property="Cursor" Value="Hand" />
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="ListBoxItem">
+                                                                    <Border x:Name="Bd"
+                                                                            Background="{TemplateBinding Background}"
+                                                                            Padding="{TemplateBinding Padding}">
+                                                                        <ContentPresenter />
+                                                                    </Border>
+                                                                    <ControlTemplate.Triggers>
+                                                                        <Trigger Property="IsSelected" Value="True">
+                                                                            <Setter TargetName="Bd" Property="Background" Value="#094771" />
+                                                                        </Trigger>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter TargetName="Bd" Property="Background" Value="#2A2D2E" />
+                                                                        </Trigger>
+                                                                    </ControlTemplate.Triggers>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </ListBox.ItemContainerStyle>
+                                            </ListBox>
+
+                                            <!-- Divider -->
+                                            <Border Grid.Column="1" Width="1" Background="#3C3C3C" />
+
+                                            <!-- Documentation panel -->
+                                            <ScrollViewer Grid.Column="2"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled"
+                                                          Margin="0">
+                                                <StackPanel x:Name="SlashCommandDocPanel" Margin="12,8">
+                                                    <TextBlock x:Name="SlashCommandDocTitle"
+                                                               Foreground="#FFFFFF"
+                                                               FontFamily="Cascadia Mono, Consolas, Courier New"
+                                                               FontSize="14"
+                                                               FontWeight="SemiBold"
+                                                               Margin="0,0,0,4" />
+                                                    <TextBlock x:Name="SlashCommandDocSource"
+                                                               Foreground="#4EC9B0"
+                                                               FontSize="11"
+                                                               Margin="0,0,0,6" />
+                                                    <TextBlock x:Name="SlashCommandDocDesc"
+                                                               Foreground="#CCCCCC"
+                                                               FontSize="12"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,0,0,8" />
+                                                    <Border Background="#1E1E1E"
+                                                            CornerRadius="3"
+                                                            Padding="10,8"
+                                                            Margin="0,0,0,0">
+                                                        <TextBlock x:Name="SlashCommandDocBody"
+                                                                   Foreground="#D4D4D4"
+                                                                   FontFamily="Cascadia Mono, Consolas, Courier New"
+                                                                   FontSize="11.5"
+                                                                   TextWrapping="Wrap" />
+                                                    </Border>
+                                                </StackPanel>
+                                            </ScrollViewer>
+                                        </Grid>
+                                    </Border>
+                                </Popup>
                                 <StackPanel Grid.Column="1" Orientation="Vertical" VerticalAlignment="Bottom">
                                     <Button Content="Send"
                                             Click="BtnSendPrompt_Click"

@@ -20,6 +20,7 @@ public enum WidgetKind
     Glob,
     TodoWrite,
     Agent,
+    Skill,
     UserMessage,
     GenericTool
 }
@@ -53,6 +54,13 @@ public sealed class CleanWidgetViewModel
     /// <summary>Tool use ID for matching with results.</summary>
     public string ToolUseId { get; init; } = string.Empty;
 
+    /// <summary>Snapshot entry number for this user prompt (for rewind). -1 if no snapshot available.</summary>
+    public int SnapshotEntryNumber { get; init; } = -1;
+
+    /// <summary>Whether the rewind button should be visible on this widget.</summary>
+    public Visibility RewindVisibility => Kind == WidgetKind.UserMessage && SnapshotEntryNumber >= 0
+        ? Visibility.Visible : Visibility.Collapsed;
+
     // -- Computed display properties --
 
     public string IconText => Kind switch
@@ -65,6 +73,7 @@ public sealed class CleanWidgetViewModel
         WidgetKind.Glob => "*",
         WidgetKind.TodoWrite => "#",
         WidgetKind.Agent => "A",
+        WidgetKind.Skill => "/",
         WidgetKind.Text => "T",
         WidgetKind.Thinking => "...",
         WidgetKind.UserMessage => ">",
@@ -81,6 +90,7 @@ public sealed class CleanWidgetViewModel
         WidgetKind.Glob => new SolidColorBrush(Color.FromRgb(0xA8, 0x55, 0xF7)),       // purple
         WidgetKind.TodoWrite => new SolidColorBrush(Color.FromRgb(0x06, 0xB6, 0xD4)),  // cyan
         WidgetKind.Agent => new SolidColorBrush(Color.FromRgb(0xF4, 0x3F, 0x5E)),      // red
+        WidgetKind.Skill => new SolidColorBrush(Color.FromRgb(0x0D, 0x94, 0x88)),      // teal
         WidgetKind.Text => new SolidColorBrush(Color.FromRgb(0x64, 0x74, 0x8B)),       // slate
         WidgetKind.Thinking => new SolidColorBrush(Color.FromRgb(0x4B, 0x55, 0x63)),   // dark slate
         WidgetKind.UserMessage => new SolidColorBrush(Color.FromRgb(0x09, 0x47, 0x71)),// dark blue
@@ -127,11 +137,14 @@ public sealed class CleanWidgetViewModel
     /// Build a list of widget view models from parsed stream messages.
     /// Pairs tool_use blocks with their corresponding tool_result blocks.
     /// </summary>
-    public static List<CleanWidgetViewModel> BuildFromMessages(List<StreamMessage> messages)
+    /// <param name="messages">Parsed stream messages from the JSONL file.</param>
+    /// <param name="snapshotCount">Number of snapshots available for rewind. Pass 0 to disable rewind buttons.</param>
+    public static List<CleanWidgetViewModel> BuildFromMessages(List<StreamMessage> messages, int snapshotCount = 0)
     {
         var widgets = new List<CleanWidgetViewModel>();
         // Map tool_use_id -> widget for pairing with results
         var pendingTools = new Dictionary<string, CleanWidgetViewModel>();
+        int userPromptIndex = 0;
 
         foreach (var msg in messages)
         {
@@ -140,6 +153,8 @@ public sealed class CleanWidgetViewModel
 
             if (msg.Type == StreamMessageType.User)
             {
+                bool addedUserText = false;
+
                 foreach (var block in msg.ContentBlocks)
                 {
                     if (block.Type == ContentBlockType.ToolResult)
@@ -156,14 +171,33 @@ public sealed class CleanWidgetViewModel
                     }
                     else if (block.Type == ContentBlockType.Text && !string.IsNullOrWhiteSpace(block.Text))
                     {
+                        var entryNumber = userPromptIndex < snapshotCount ? userPromptIndex : -1;
                         widgets.Add(new CleanWidgetViewModel
                         {
                             Kind = WidgetKind.UserMessage,
                             Header = "You",
-                            Content = block.Text
+                            Content = block.Text,
+                            SnapshotEntryNumber = entryNumber
                         });
+                        userPromptIndex++;
+                        addedUserText = true;
                     }
                 }
+
+                // Fallback: user message as simple text string (no content blocks)
+                if (!addedUserText && !string.IsNullOrWhiteSpace(msg.Text))
+                {
+                    var entryNumber = userPromptIndex < snapshotCount ? userPromptIndex : -1;
+                    widgets.Add(new CleanWidgetViewModel
+                    {
+                        Kind = WidgetKind.UserMessage,
+                        Header = "You",
+                        Content = msg.Text,
+                        SnapshotEntryNumber = entryNumber
+                    });
+                    userPromptIndex++;
+                }
+
                 continue;
             }
 
@@ -219,6 +253,7 @@ public sealed class CleanWidgetViewModel
             "Glob" => WidgetKind.Glob,
             "TodoWrite" => WidgetKind.TodoWrite,
             "Agent" => WidgetKind.Agent,
+            "Skill" => WidgetKind.Skill,
             _ => WidgetKind.GenericTool
         };
 
@@ -265,6 +300,11 @@ public sealed class CleanWidgetViewModel
                 block.ToolInput.GetValueOrDefault("prompt", "").Length > 200
                     ? block.ToolInput.GetValueOrDefault("prompt", "")[..200] + "..."
                     : block.ToolInput.GetValueOrDefault("prompt", "")
+            ),
+            WidgetKind.Skill => (
+                $"Skill: {block.ToolInput.GetValueOrDefault("skill", "unknown")}",
+                block.ToolInput.GetValueOrDefault("args", ""),
+                ""
             ),
             _ => (
                 block.ToolName,

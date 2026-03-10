@@ -133,6 +133,28 @@ public sealed class Session : IDisposable
         }
     }
 
+    /// <summary>JSONL history snapshots for rewind/fork support.</summary>
+    public SessionHistory? History { get; private set; }
+
+    /// <summary>
+    /// Initialize the session history tracker once the ClaudeSessionId is known.
+    /// Must be called after ClaudeSessionId is set.
+    /// </summary>
+    public void InitializeHistory()
+    {
+        if (History != null)
+            return;
+
+        if (string.IsNullOrEmpty(ClaudeSessionId))
+        {
+            FileLog.Write("[Session] InitializeHistory: no ClaudeSessionId, skipping");
+            return;
+        }
+
+        FileLog.Write($"[Session] InitializeHistory: sessionId={ClaudeSessionId}");
+        History = new SessionHistory(ClaudeSessionId, RepoPath);
+    }
+
     /// <summary>Chat messages for the Simple Chat view.</summary>
     public SessionChatHistory ChatHistory { get; } = new();
 
@@ -212,6 +234,9 @@ public sealed class Session : IDisposable
 
         _backend.ProcessExited += OnBackendProcessExited;
         _backend.StatusChanged += OnBackendStatusChanged;
+
+        // Initialize history for restored sessions that already have a ClaudeSessionId
+        InitializeHistory();
     }
 
     /// <summary>Send raw bytes to the backend.</summary>
@@ -605,6 +630,7 @@ public sealed class Session : IDisposable
 
     private void OnBackendProcessExited(int exitCode)
     {
+        FileLog.Write($"[Session] ProcessExited: session={Id}, exitCode={exitCode}, pid={ProcessId}, uptime={(DateTimeOffset.UtcNow - CreatedAt).TotalSeconds:F1}s");
         ExitCode = exitCode;
         Status = SessionStatus.Exited;
         HandlePipeEvent(new PipeMessage { HookEventName = "SessionEnd" });
@@ -612,7 +638,7 @@ public sealed class Session : IDisposable
 
     private void OnBackendStatusChanged(string status)
     {
-        System.Diagnostics.Debug.WriteLine($"[Session] Backend status: {status}");
+        FileLog.Write($"[Session] BackendStatus: session={Id}, status={status}");
     }
 
     public void Dispose()

@@ -26,6 +26,12 @@ public partial class CleanView : UserControl
     private readonly ObservableCollection<CleanWidgetViewModel> _widgets = new();
     private readonly object _widgetsLock = new();
 
+    /// <summary>
+    /// Fired when the user clicks the rewind button on a user prompt card.
+    /// Args: (session, snapshotEntryNumber).
+    /// </summary>
+    public event Action<Session, int>? RewindRequested;
+
     public CleanView()
     {
         InitializeComponent();
@@ -57,7 +63,8 @@ public partial class CleanView : UserControl
             var existing = studio.GetMessages();
             if (existing.Count > 0)
             {
-                var widgets = CleanWidgetViewModel.BuildFromMessages(existing);
+                var studioSnapshotCount = session.History?.SnapshotCount ?? 0;
+                var widgets = CleanWidgetViewModel.BuildFromMessages(existing, studioSnapshotCount);
                 _widgets.Clear();
                 foreach (var w in widgets)
                     _widgets.Add(w);
@@ -216,11 +223,13 @@ public partial class CleanView : UserControl
                 return;
             }
 
+            var snapshotCount = _session?.History?.SnapshotCount ?? 0;
+
             if (_lastLineCount == 0)
             {
                 // Full initial load
                 var allMessages = StreamMessageParser.ParseFile(_jsonlPath);
-                var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages);
+                var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages, snapshotCount);
 
                 _widgets.Clear();
                 foreach (var w in allWidgets)
@@ -233,7 +242,7 @@ public partial class CleanView : UserControl
                 // Incremental update - rebuild all widgets from scratch
                 // (needed because tool results reference earlier tool_use blocks)
                 var allMessages = StreamMessageParser.ParseFile(_jsonlPath);
-                var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages);
+                var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages, snapshotCount);
 
                 _widgets.Clear();
                 foreach (var w in allWidgets)
@@ -290,6 +299,39 @@ public partial class CleanView : UserControl
         });
     }
 
+    private void RewindButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button button)
+            return;
+
+        if (button.Tag is not int entryNumber || entryNumber < 0)
+            return;
+
+        if (_session == null)
+            return;
+
+        FileLog.Write($"[CleanView] RewindButton_Click: entry={entryNumber}, session={_session.Id}");
+        RewindRequested?.Invoke(_session, entryNumber);
+    }
+
+    /// <summary>Inject a user prompt immediately so it appears before the JSONL poll picks it up.</summary>
+    public void InjectUserPrompt(string text)
+    {
+        FileLog.Write($"[CleanView] InjectUserPrompt: {text.Length} chars");
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        _widgets.Add(new CleanWidgetViewModel
+        {
+            Kind = WidgetKind.UserMessage,
+            Header = "You",
+            Content = text
+        });
+
+        UpdateEmptyState();
+        ScrollToBottom();
+    }
+
     /// <summary>Handle live stream messages from StudioBackend.</summary>
     private void OnStreamMessageReceived(StreamMessage msg)
     {
@@ -301,7 +343,8 @@ public partial class CleanView : UserControl
 
             // Rebuild all widgets from the accumulated messages
             var allMessages = studio.GetMessages();
-            var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages);
+            var snapshotCount = _session?.History?.SnapshotCount ?? 0;
+            var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages, snapshotCount);
 
             _widgets.Clear();
             foreach (var w in allWidgets)
