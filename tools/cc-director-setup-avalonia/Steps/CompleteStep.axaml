@@ -1,0 +1,88 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirectorSetup.Steps.CompleteStep">
+    <StackPanel>
+        <TextBlock x:Name="HeadingText"
+                   Text="Setup Complete"
+                   Foreground="#22C55E"
+                   FontSize="22"
+                   FontWeight="SemiBold" />
+
+        <TextBlock x:Name="DescriptionText"
+                   Text="CC Director tools have been installed successfully."
+                   Foreground="#CCCCCC"
+                   FontSize="13"
+                   Margin="0,12,0,24"
+                   LineHeight="20" />
+
+        <!-- Summary -->
+        <Border Background="#2A2D2E" CornerRadius="6" Padding="16" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Summary"
+                           Foreground="White"
+                           FontSize="15"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,12" />
+
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Tools installed:"
+                               Foreground="#888888" FontSize="13" />
+                    <TextBlock x:Name="InstalledText"
+                               Grid.Column="1"
+                               Foreground="#22C55E" FontSize="13" FontWeight="SemiBold" />
+                </Grid>
+
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Skipped:"
+                               Foreground="#888888" FontSize="13" />
+                    <TextBlock x:Name="SkippedText"
+                               Grid.Column="1"
+                               Foreground="#888888" FontSize="13" />
+                </Grid>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Install path:"
+                               Foreground="#888888" FontSize="13" />
+                    <TextBlock x:Name="PathText"
+                               Grid.Column="1"
+                               Foreground="#AAAAAA" FontSize="12"
+                               TextWrapping="Wrap" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Launch button -->
+        <Button x:Name="LaunchButton"
+                Height="44"
+                HorizontalAlignment="Stretch"
+                Margin="0,8,0,16"
+                Cursor="Hand"
+                Background="#22C55E"
+                Foreground="White"
+                FontSize="16"
+                FontWeight="SemiBold"
+                HorizontalContentAlignment="Center"
+                CornerRadius="6"
+                Content="Launch CC Director"
+                Click="LaunchButton_Click" />
+
+        <!-- Note about terminal PATH -->
+        <TextBlock x:Name="PathNote"
+                   Text="NOTE: Open a new terminal for cc-* commands to be available on PATH."
+                   Foreground="#666666"
+                   FontSize="11"
+                   TextWrapping="Wrap" />
+    </StackPanel>
+</UserControl>

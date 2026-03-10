@@ -1,0 +1,94 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirectorSetup.Steps.WelcomeStep">
+    <StackPanel>
+        <TextBlock x:Name="TitleText"
+                   Text="Welcome to CC Director"
+                   Foreground="White"
+                   FontSize="22"
+                   FontWeight="SemiBold" />
+
+        <TextBlock x:Name="DescriptionText"
+                   Text="CC Director is a suite of AI-powered CLI tools that extend Claude Code with document generation, browser automation, communication, media processing, and more."
+                   Foreground="#CCCCCC"
+                   FontSize="13"
+                   TextWrapping="Wrap"
+                   Margin="0,12,0,0"
+                   LineHeight="20" />
+
+        <TextBlock x:Name="VersionInfoText"
+                   Foreground="#888888"
+                   FontSize="12"
+                   Margin="0,8,0,0"
+                   IsVisible="False" />
+
+        <TextBlock x:Name="ProfilePromptText"
+                   Text="Choose your experience:"
+                   Foreground="#CCCCCC"
+                   FontSize="13"
+                   Margin="0,28,0,12" />
+
+        <!-- Standard card -->
+        <Border x:Name="StandardCard"
+                Background="#2A2D2E"
+                BorderBrush="#007ACC"
+                BorderThickness="2"
+                CornerRadius="6"
+                Padding="16"
+                Cursor="Hand"
+                PointerPressed="StandardCard_Click">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="StandardRadio" Text="(*)"
+                               Foreground="#007ACC"
+                               FontSize="14" FontWeight="Bold"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,0" />
+                    <TextBlock Text="Standard"
+                               Foreground="White"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock Text="Simplified experience with a clean, guided interface. Ideal for everyday use -- document generation, email, media, and data tools."
+                           Foreground="#888888"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Margin="28,6,0,0"
+                           LineHeight="18" />
+            </StackPanel>
+        </Border>
+
+        <!-- Developer card -->
+        <Border x:Name="DeveloperCard"
+                Background="#2A2D2E"
+                BorderBrush="#3C3C3C"
+                BorderThickness="2"
+                CornerRadius="6"
+                Padding="16"
+                Margin="0,8,0,0"
+                Cursor="Hand"
+                PointerPressed="DeveloperCard_Click">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="DeveloperRadio" Text="( )"
+                               Foreground="#888888"
+                               FontSize="14" FontWeight="Bold"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,0" />
+                    <TextBlock Text="Developer"
+                               Foreground="White"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock Text="Terminal-first experience closer to raw Claude Code. GitHub integration, advanced configuration, and developer-oriented workflows."
+                           Foreground="#888888"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Margin="28,6,0,0"
+                           LineHeight="18" />
+            </StackPanel>
+        </Border>
+    </StackPanel>
+</UserControl>

@@ -1,4 +1,4 @@
-namespace CcDirector.Terminal.Rendering;
+namespace CcDirector.Terminal.Core.Rendering;
 
 /// <summary>
 /// Type of detected link in terminal output.

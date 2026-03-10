@@ -4,9 +4,10 @@
     Bumps version, commits, tags, and pushes to trigger a GitHub Actions release.
 
 .DESCRIPTION
-    Updates the version in all 3 locations (WPF csproj, Setup csproj, Setup XAML),
-    commits the changes, creates a git tag, and pushes to origin. The existing
-    GitHub Actions workflow handles building and creating the GitHub Release.
+    Updates the version in all 6 locations (WPF csproj, Avalonia csproj, Setup csproj,
+    Setup XAML, Setup Avalonia csproj, Setup Avalonia AXAML), commits the changes,
+    creates a git tag, and pushes to origin. The existing GitHub Actions workflow
+    handles building and creating the GitHub Release for both Windows and macOS.
 
 .EXAMPLE
     .\scripts\new-release.ps1
@@ -29,9 +30,12 @@ if ($status) {
 }
 
 # --- Version file paths ---
-$wpfCsproj   = Join-Path $repoRoot "src\CcDirector.Wpf\CcDirector.Wpf.csproj"
-$setupCsproj = Join-Path $repoRoot "tools\cc-director-setup\CcDirectorSetup.csproj"
-$setupXaml   = Join-Path $repoRoot "tools\cc-director-setup\MainWindow.xaml"
+$wpfCsproj        = Join-Path $repoRoot "src\CcDirector.Wpf\CcDirector.Wpf.csproj"
+$avaloniaCsproj   = Join-Path $repoRoot "src\CcDirector.Avalonia\CcDirector.Avalonia.csproj"
+$setupCsproj      = Join-Path $repoRoot "tools\cc-director-setup\CcDirectorSetup.csproj"
+$setupXaml        = Join-Path $repoRoot "tools\cc-director-setup\MainWindow.xaml"
+$setupAvCsproj    = Join-Path $repoRoot "tools\cc-director-setup-avalonia\CcDirectorSetup.csproj"
+$setupAvAxaml     = Join-Path $repoRoot "tools\cc-director-setup-avalonia\MainWindow.axaml"
 
 # --- Read current version ---
 [xml]$csproj = Get-Content $wpfCsproj
@@ -86,6 +90,24 @@ $xamlContent = $xamlContent -replace 'Text="v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?"
 Set-Content $setupXaml $xamlContent -NoNewline
 Write-Host "  [+] $setupXaml" -ForegroundColor Gray
 
+# 4. Avalonia csproj
+[xml]$avaloniaXml = Get-Content $avaloniaCsproj
+$avaloniaXml.SelectSingleNode("//Version").InnerText = $newVersion
+$avaloniaXml.Save($avaloniaCsproj)
+Write-Host "  [+] $avaloniaCsproj" -ForegroundColor Gray
+
+# 5. Setup Avalonia csproj
+[xml]$setupAvXml = Get-Content $setupAvCsproj
+$setupAvXml.SelectSingleNode("//Version").InnerText = $newVersion
+$setupAvXml.Save($setupAvCsproj)
+Write-Host "  [+] $setupAvCsproj" -ForegroundColor Gray
+
+# 6. Setup Avalonia AXAML (replace version text like v1.2.0)
+$axamlContent = Get-Content $setupAvAxaml -Raw
+$axamlContent = $axamlContent -replace 'Text="v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?"', "Text=`"v$newVersion`""
+Set-Content $setupAvAxaml $axamlContent -NoNewline
+Write-Host "  [+] $setupAvAxaml" -ForegroundColor Gray
+
 # --- Determine pre-release ---
 $isPreRelease = $newVersion -match '-rc\d+$'
 
@@ -101,9 +123,14 @@ if ($isPreRelease) {
 }
 Write-Host ""
 Write-Host "Files changed:" -ForegroundColor Yellow
+Write-Host "  Windows:"
 Write-Host "  - src\CcDirector.Wpf\CcDirector.Wpf.csproj"
 Write-Host "  - tools\cc-director-setup\CcDirectorSetup.csproj"
 Write-Host "  - tools\cc-director-setup\MainWindow.xaml"
+Write-Host "  macOS (Avalonia):"
+Write-Host "  - src\CcDirector.Avalonia\CcDirector.Avalonia.csproj"
+Write-Host "  - tools\cc-director-setup-avalonia\CcDirectorSetup.csproj"
+Write-Host "  - tools\cc-director-setup-avalonia\MainWindow.axaml"
 Write-Host ""
 
 $confirm = Read-Host "Commit, tag, and push? (Y/N)"
@@ -117,7 +144,7 @@ if ($confirm -ne 'Y' -and $confirm -ne 'y') {
 # --- Git operations ---
 Write-Host ""
 Write-Host "Committing..." -ForegroundColor Cyan
-git -C $repoRoot add $wpfCsproj $setupCsproj $setupXaml
+git -C $repoRoot add $wpfCsproj $avaloniaCsproj $setupCsproj $setupXaml $setupAvCsproj $setupAvAxaml
 git -C $repoRoot commit -m "release: v$newVersion"
 
 Write-Host "Tagging $tagName..." -ForegroundColor Cyan

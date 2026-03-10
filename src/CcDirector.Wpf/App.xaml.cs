@@ -26,6 +26,7 @@ public partial class App : Application
     public RepositoryRegistry RepositoryRegistry { get; private set; } = null!; // Initialized in OnStartup
     public RootDirectoryStore RootDirectoryStore { get; private set; } = null!; // Initialized in OnStartup
     public IDirectorServer PipeServer { get; private set; } = null!; // Initialized in OnStartup
+    public DirectorFileEventWatcher FileEventWatcher { get; private set; } = null!; // Initialized in OnStartup
     public EventRouter EventRouter { get; private set; } = null!; // Initialized in OnStartup
     public SessionStateStore SessionStateStore { get; private set; } = null!; // Initialized in OnStartup
     public RecentSessionStore RecentSessionStore { get; private set; } = null!; // Initialized in OnStartup
@@ -157,6 +158,11 @@ public partial class App : Application
         PipeServer.OnMessageReceived += EventRouter.Route;
         PipeServer.Start();
 
+        // Start file-based event watcher (broadcasts to ALL instances, unlike the pipe which is point-to-point)
+        FileEventWatcher = new DirectorFileEventWatcher(log);
+        FileEventWatcher.OnMessageReceived += EventRouter.Route;
+        FileEventWatcher.Start();
+
         // Install hooks (fire-and-forget, non-blocking startup)
         _ = InstallHooksAsync(log);
 
@@ -264,6 +270,7 @@ public partial class App : Application
             ClaudeUsageService?.Dispose();
             BackupCleaner?.Dispose();
             NulFileWatcher?.Dispose();
+            FileEventWatcher?.Dispose();
             PipeServer?.Dispose();
             SessionManager?.Dispose();
 

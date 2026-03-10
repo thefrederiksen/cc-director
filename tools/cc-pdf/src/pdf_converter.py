@@ -97,7 +97,7 @@ def convert_to_pdf(
             '--no-pdf-header-footer',
             '--allow-file-access-from-files',
             f'--print-to-pdf={abs_output_path}',
-            '--virtual-time-budget=3000',
+            '--run-all-compositor-stages-before-draw',
             file_uri
         ]
 

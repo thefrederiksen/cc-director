@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace CcDirector.Terminal.Rendering;
+namespace CcDirector.Terminal.Core.Rendering;
 
 /// <summary>
 /// Converts a TerminalCell grid + scrollback into styled HTML.
@@ -257,7 +257,7 @@ public static class AnsiToHtmlConverter
         return parts.Count > 0 ? string.Join(";", parts) : "";
     }
 
-    private static string ColorToCss(System.Windows.Media.Color c)
+    private static string ColorToCss(TerminalColor c)
     {
         return $"#{c.R:X2}{c.G:X2}{c.B:X2}";
     }

@@ -1,0 +1,55 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Core brushes (matching CC Director dark theme) -->
+    <Style Selector="Window">
+        <Style.Resources>
+            <SolidColorBrush x:Key="PanelBackground" Color="#1E1E1E" />
+            <SolidColorBrush x:Key="SidebarBackground" Color="#252526" />
+            <SolidColorBrush x:Key="ButtonBackground" Color="#3C3C3C" />
+            <SolidColorBrush x:Key="ButtonHover" Color="#505050" />
+            <SolidColorBrush x:Key="TextForeground" Color="#CCCCCC" />
+            <SolidColorBrush x:Key="AccentBrush" Color="#007ACC" />
+            <SolidColorBrush x:Key="SuccessBrush" Color="#22C55E" />
+            <SolidColorBrush x:Key="ErrorBrush" Color="#CC4444" />
+            <SolidColorBrush x:Key="DimText" Color="#888888" />
+            <SolidColorBrush x:Key="MutedText" Color="#666666" />
+            <SolidColorBrush x:Key="StepInactive" Color="#3C3C3C" />
+        </Style.Resources>
+    </Style>
+
+    <!-- Default button style -->
+    <Style Selector="Button.setup">
+        <Setter Property="Background" Value="#3C3C3C" />
+        <Setter Property="Foreground" Value="#CCCCCC" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Padding" Value="16,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="CornerRadius" Value="3" />
+    </Style>
+    <Style Selector="Button.setup:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#505050" />
+    </Style>
+    <Style Selector="Button.setup:disabled">
+        <Setter Property="Opacity" Value="0.5" />
+    </Style>
+
+    <!-- Primary (accent) button style -->
+    <Style Selector="Button.primary">
+        <Setter Property="Background" Value="#007ACC" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Padding" Value="20,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="CornerRadius" Value="3" />
+    </Style>
+    <Style Selector="Button.primary:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#1A8AD4" />
+    </Style>
+    <Style Selector="Button.primary:disabled">
+        <Setter Property="Opacity" Value="0.5" />
+    </Style>
+
+</Styles>

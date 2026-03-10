@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Text;
 using System.Windows;
 using System.Windows.Media;
+using CcDirector.Terminal.Core;
+using CcDirector.Terminal.Core.Rendering;
 
 namespace CcDirector.Terminal.Rendering;
 
@@ -61,8 +63,8 @@ public class ProRenderer : ITerminalRenderer
                 if (col < cols)
                 {
                     TerminalCell cell = OriginalRenderer.GetCell(cells, cols, rows, col, row, ctx);
-                    if (cell.Background != default && cell.Background != bgColor)
-                        cellBgColor = cell.Background;
+                    if (cell.Background != default && cell.Background.ToWpf() != bgColor)
+                        cellBgColor = cell.Background.ToWpf();
                 }
 
                 if (cellBgColor != runBgColor)
@@ -91,7 +93,7 @@ public class ProRenderer : ITerminalRenderer
                 if (ch < '\u2500' || ch > '\u257F') continue;
 
                 bool isLink = OriginalRenderer.IsInLinkRegion(col, row, cellWidth, cellHeight, ctx.LinkRegions);
-                var fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground);
+                var fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground.ToWpf());
                 double colX = Math.Round(col * cellWidth);
                 BoxDrawingHelper.TryDrawBoxChar(dc, ch, fg, colX, rowY, roundedCellWidth, roundedCellHeight);
             }
@@ -118,7 +120,7 @@ public class ProRenderer : ITerminalRenderer
                     cell = OriginalRenderer.GetCell(cells, cols, rows, col, row, ctx);
                     ch = cell.Character;
                     isLink = OriginalRenderer.IsInLinkRegion(col, row, cellWidth, cellHeight, ctx.LinkRegions);
-                    fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground);
+                    fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground.ToWpf());
                     bold = cell.Bold;
                     italic = cell.Italic;
                 }

@@ -73,29 +73,34 @@ public static class HookRelayScript
     /// </summary>
     public const string WindowsContent = """
         # CC Director Hook Relay
-        # Reads Claude Code hook JSON from stdin and relays it to the Director named pipe.
+        # Reads Claude Code hook JSON from stdin and writes it as a file to the shared events directory.
+        # File-based relay ensures ALL running CC Director instances receive every event.
         # Called by Claude Code hooks with async: true, so ~200ms PowerShell startup is fine.
 
         try {
             $json = [Console]::In.ReadToEnd()
             if ([string]::IsNullOrWhiteSpace($json)) { exit 0 }
 
-            $pipeName = "CC_ClaudeDirector"
-            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", $pipeName, [System.IO.Pipes.PipeDirection]::Out)
+            # Write to shared event directory (broadcasts to all instances)
+            $eventDir = Join-Path $env:LOCALAPPDATA "cc-director\config\director\events"
+            [System.IO.Directory]::CreateDirectory($eventDir) | Out-Null
+            $fileName = [System.Guid]::NewGuid().ToString("N") + ".json"
+            $filePath = Join-Path $eventDir $fileName
+            [System.IO.File]::WriteAllText($filePath, $json.Trim())
 
+            # Also send via named pipe for backward compatibility
             try {
-                $pipe.Connect(2000)  # 2 second timeout
+                $pipeName = "CC_ClaudeDirector"
+                $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", $pipeName, [System.IO.Pipes.PipeDirection]::Out)
+                $pipe.Connect(1000)
                 $writer = New-Object System.IO.StreamWriter($pipe)
                 $writer.WriteLine($json.Trim())
                 $writer.Flush()
                 $writer.Close()
+                $pipe.Dispose()
             }
             catch {
-                # Silent failure if Director is not running
-                exit 0
-            }
-            finally {
-                $pipe.Dispose()
+                # Pipe failure is OK - file relay is the primary mechanism
             }
         }
         catch {

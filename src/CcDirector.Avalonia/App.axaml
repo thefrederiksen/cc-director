@@ -1,0 +1,18 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.App"
+             RequestedThemeVariant="Dark">
+    <Application.Styles>
+        <FluentTheme />
+    </Application.Styles>
+
+    <Application.Resources>
+        <SolidColorBrush x:Key="PanelBackground" Color="#1E1E1E" />
+        <SolidColorBrush x:Key="SidebarBackground" Color="#252526" />
+        <SolidColorBrush x:Key="ButtonBackground" Color="#3C3C3C" />
+        <SolidColorBrush x:Key="ButtonHover" Color="#505050" />
+        <SolidColorBrush x:Key="TextForeground" Color="#CCCCCC" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#007ACC" />
+        <SolidColorBrush x:Key="SelectedItemBrush" Color="#094771" />
+    </Application.Resources>
+</Application>

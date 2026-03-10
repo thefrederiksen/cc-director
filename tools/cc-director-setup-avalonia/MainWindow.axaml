@@ -1,0 +1,174 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CcDirectorSetup.MainWindow"
+        Title="CC Director Setup"
+        Width="900" Height="720"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1E1E">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Left Sidebar -->
+        <Border Grid.Column="0" Background="#252526">
+            <DockPanel Margin="20">
+                <!-- Header -->
+                <StackPanel DockPanel.Dock="Top" Margin="0,8,0,32">
+                    <TextBlock Text="CC Director"
+                               Foreground="White"
+                               FontSize="20"
+                               FontWeight="SemiBold" />
+                    <TextBlock x:Name="SubtitleText"
+                               Text="Setup"
+                               Foreground="#888888"
+                               FontSize="16"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+
+                <!-- Version at bottom -->
+                <TextBlock x:Name="VersionText"
+                           DockPanel.Dock="Bottom"
+                           Text="v0.2.0"
+                           Foreground="#666666"
+                           FontSize="11"
+                           Margin="0,0,0,4" />
+
+                <!-- Step indicators -->
+                <StackPanel x:Name="StepIndicators" VerticalAlignment="Top">
+                    <!-- Step 1: Welcome -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Step1Circle" Width="28" Height="28" CornerRadius="14"
+                                Background="#007ACC">
+                            <TextBlock Text="1" Foreground="White" FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock x:Name="Step1Label" Text="Welcome"
+                                   Foreground="White" FontSize="13"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <Border Width="2" Height="24" Margin="13,0,0,0"
+                            HorizontalAlignment="Left"
+                            Background="#3C3C3C"
+                            x:Name="Line12" />
+
+                    <!-- Step 2: Prerequisites -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Step2Circle" Width="28" Height="28" CornerRadius="14"
+                                Background="#3C3C3C">
+                            <TextBlock Text="2" Foreground="#888888" FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       x:Name="Step2Num" />
+                        </Border>
+                        <TextBlock x:Name="Step2Label" Text="Prerequisites"
+                                   Foreground="#888888" FontSize="13"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <Border Width="2" Height="24" Margin="13,0,0,0"
+                            HorizontalAlignment="Left"
+                            Background="#3C3C3C"
+                            x:Name="Line23" />
+
+                    <!-- Step 3: Tools -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Step3Circle" Width="28" Height="28" CornerRadius="14"
+                                Background="#3C3C3C">
+                            <TextBlock Text="3" Foreground="#888888" FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       x:Name="Step3Num" />
+                        </Border>
+                        <TextBlock x:Name="Step3Label" Text="Tools"
+                                   Foreground="#888888" FontSize="13"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <Border Width="2" Height="24" Margin="13,0,0,0"
+                            HorizontalAlignment="Left"
+                            Background="#3C3C3C"
+                            x:Name="Line34" />
+
+                    <!-- Step 4: Skills -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Step4Circle" Width="28" Height="28" CornerRadius="14"
+                                Background="#3C3C3C">
+                            <TextBlock Text="4" Foreground="#888888" FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       x:Name="Step4Num" />
+                        </Border>
+                        <TextBlock x:Name="Step4Label" Text="Skills"
+                                   Foreground="#888888" FontSize="13"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <Border Width="2" Height="24" Margin="13,0,0,0"
+                            HorizontalAlignment="Left"
+                            Background="#3C3C3C"
+                            x:Name="Line45" />
+
+                    <!-- Step 5: Install -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Step5Circle" Width="28" Height="28" CornerRadius="14"
+                                Background="#3C3C3C">
+                            <TextBlock Text="5" Foreground="#888888" FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       x:Name="Step5Num" />
+                        </Border>
+                        <TextBlock x:Name="Step5Label" Text="Install"
+                                   Foreground="#888888" FontSize="13"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <Border Width="2" Height="24" Margin="13,0,0,0"
+                            HorizontalAlignment="Left"
+                            Background="#3C3C3C"
+                            x:Name="Line56" />
+
+                    <!-- Step 6: Complete -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Step6Circle" Width="28" Height="28" CornerRadius="14"
+                                Background="#3C3C3C">
+                            <TextBlock Text="6" Foreground="#888888" FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       x:Name="Step6Num" />
+                        </Border>
+                        <TextBlock x:Name="Step6Label" Text="Complete"
+                                   Foreground="#888888" FontSize="13"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Right Content Area -->
+        <DockPanel Grid.Column="1" Margin="0">
+            <!-- Bottom navigation bar -->
+            <Border DockPanel.Dock="Bottom" Background="#252526"
+                    Padding="20,12">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="BackButton" Content="Back"
+                            Classes="setup"
+                            Width="90" Click="BackButton_Click"
+                            IsVisible="False" />
+                    <Button x:Name="NextButton" Content="Next"
+                            Classes="primary"
+                            Width="90" Margin="8,0,0,0"
+                            Click="NextButton_Click" />
+                </StackPanel>
+            </Border>
+
+            <!-- Step content -->
+            <ContentControl x:Name="StepContent" Margin="32,24" />
+        </DockPanel>
+    </Grid>
+</Window>

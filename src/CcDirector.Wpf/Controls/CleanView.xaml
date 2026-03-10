@@ -69,7 +69,7 @@
             <Setter Property="Margin" Value="0,6,0,0" />
         </Style>
 
-        <!-- ===== TEXT WIDGET - Assistant text messages ===== -->
+        <!-- ===== TEXT WIDGET - Assistant text messages (with markdown rendering) ===== -->
         <DataTemplate x:Key="TextWidgetTemplate" DataType="{x:Type local:CleanWidgetViewModel}">
             <Border Style="{StaticResource CardBorder}">
                 <StackPanel>
@@ -82,12 +82,46 @@
                         </Border>
                         <TextBlock Text="{Binding Header}" Style="{StaticResource HeaderText}" />
                     </StackPanel>
-                    <!-- Content -->
+                    <!-- Rendered markdown content (RichTextBox in read-only mode sizes to content) -->
+                    <RichTextBox x:Name="RichContent"
+                                 local:FlowDocumentBinder.Document="{Binding RenderedDocument}"
+                                 IsReadOnly="True"
+                                 IsDocumentEnabled="True"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 Padding="0"
+                                 Margin="0,4,0,0"
+                                 Focusable="False"
+                                 IsHitTestVisible="True"
+                                 IsTabStop="False">
+                        <RichTextBox.Style>
+                            <Style TargetType="RichTextBox">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding RenderedDocument}" Value="{x:Null}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </RichTextBox.Style>
+                    </RichTextBox>
+                    <!-- Fallback: plain text when no rendered document -->
                     <TextBlock Text="{Binding Content}"
                                Foreground="#CCCCCC"
                                FontFamily="Segoe UI" FontSize="13"
                                TextWrapping="Wrap" Margin="0,8,0,0"
-                               LineHeight="20" />
+                               LineHeight="20">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding RenderedDocument}" Value="{x:Null}">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
             </Border>
         </DataTemplate>
@@ -137,7 +171,7 @@
                                    Foreground="#22C55E"
                                    Style="{StaticResource ContentText}" />
                     </Border>
-                    <!-- Result -->
+                    <!-- Result: plain text (default) -->
                     <Border Style="{StaticResource ResultBorder}"
                             Visibility="{Binding ResultVisibility}">
                         <TextBlock Text="{Binding Result}"
@@ -436,30 +470,84 @@
         <!-- Status bar area -->
         <Border x:Name="StatusArea" Grid.Row="1" Padding="12,6">
             <Grid>
-                <!-- Working state: progress bar + text -->
-                <StackPanel x:Name="ProgressArea" Visibility="Collapsed">
-                    <ProgressBar IsIndeterminate="True"
-                                 Height="3"
-                                 Background="#3C3C3C"
-                                 Foreground="#007ACC"
-                                 BorderThickness="0" />
-                    <TextBlock x:Name="ProgressText"
-                               Text="Claude is working..."
-                               Foreground="#888888"
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Filter toggle button (left side, always visible) -->
+                <ToggleButton x:Name="FilterToggle"
+                              Grid.Column="0"
+                              Click="FilterToggle_Click"
+                              ToolTip="Show only your messages"
+                              VerticalAlignment="Center"
+                              Margin="0,0,12,0"
+                              Cursor="Hand">
+                    <ToggleButton.Style>
+                        <Style TargetType="ToggleButton">
+                            <Setter Property="Background" Value="#2D2D2D" />
+                            <Setter Property="Foreground" Value="#888888" />
+                            <Setter Property="BorderBrush" Value="#3C3C3C" />
+                            <Setter Property="BorderThickness" Value="1" />
+                            <Setter Property="Padding" Value="8,3" />
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="4"
+                                                Padding="{TemplateBinding Padding}">
+                                            <TextBlock Text="My Messages"
+                                                       Foreground="{TemplateBinding Foreground}"
+                                                       FontFamily="Segoe UI"
+                                                       FontSize="10"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                            <Style.Triggers>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter Property="Background" Value="#094771" />
+                                    <Setter Property="Foreground" Value="White" />
+                                    <Setter Property="BorderBrush" Value="#1177BB" />
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="BorderBrush" Value="#555555" />
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ToggleButton.Style>
+                </ToggleButton>
+
+                <!-- Status indicators (right side) -->
+                <Grid Grid.Column="1">
+                    <!-- Working state: progress bar + text -->
+                    <StackPanel x:Name="ProgressArea" Visibility="Collapsed">
+                        <ProgressBar IsIndeterminate="True"
+                                     Height="3"
+                                     Background="#3C3C3C"
+                                     Foreground="#007ACC"
+                                     BorderThickness="0" />
+                        <TextBlock x:Name="ProgressText"
+                                   Text="Claude is working..."
+                                   Foreground="#888888"
+                                   FontFamily="Segoe UI"
+                                   FontSize="10"
+                                   FontStyle="Italic"
+                                   Margin="0,4,0,0" />
+                    </StackPanel>
+                    <!-- Your Turn state -->
+                    <TextBlock x:Name="YourTurnText"
+                               Text="Your Turn"
+                               Foreground="#22C55E"
                                FontFamily="Segoe UI"
-                               FontSize="10"
-                               FontStyle="Italic"
-                               Margin="0,4,0,0" />
-                </StackPanel>
-                <!-- Your Turn state -->
-                <TextBlock x:Name="YourTurnText"
-                           Text="Your Turn"
-                           Foreground="#22C55E"
-                           FontFamily="Segoe UI"
-                           FontSize="11"
-                           FontWeight="SemiBold"
-                           Visibility="Collapsed"
-                           HorizontalAlignment="Left" />
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Visibility="Collapsed"
+                               HorizontalAlignment="Left" />
+                </Grid>
             </Grid>
         </Border>
     </Grid>

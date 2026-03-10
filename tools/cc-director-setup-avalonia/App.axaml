@@ -1,0 +1,8 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirectorSetup.App">
+    <Application.Styles>
+        <FluentTheme />
+        <StyleInclude Source="avares://cc-director-setup/Styles.axaml" />
+    </Application.Styles>
+</Application>

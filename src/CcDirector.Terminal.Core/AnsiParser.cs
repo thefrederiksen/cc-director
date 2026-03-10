@@ -1,10 +1,9 @@
-using System.Windows.Media;
-
-namespace CcDirector.Terminal;
+namespace CcDirector.Terminal.Core;
 
 /// <summary>
 /// VT100/ANSI escape sequence parser. Reads raw bytes and updates a TerminalCell grid.
 /// Handles SGR (colors/bold), cursor movement, erase, and scrolling.
+/// Platform-independent -- uses TerminalColor instead of WPF/Avalonia Color.
 /// </summary>
 public class AnsiParser
 {
@@ -23,8 +22,8 @@ public class AnsiParser
     private int _scrollBottom;
 
     // Current text attributes
-    private Color _fg = Colors.LightGray;
-    private Color _bg = default;
+    private TerminalColor _fg = TerminalColor.LightGray;
+    private TerminalColor _bg = default;
     private bool _bold;
     private bool _italic;
     private bool _underline;
@@ -64,25 +63,25 @@ public class AnsiParser
     }
 
     // Standard 8 colors + bright variants
-    private static readonly Color[] AnsiColors =
+    private static readonly TerminalColor[] AnsiColors =
     {
-        Color.FromRgb(0, 0, 0),       // 0 Black
-        Color.FromRgb(205, 49, 49),    // 1 Red
-        Color.FromRgb(13, 188, 121),   // 2 Green
-        Color.FromRgb(229, 229, 16),   // 3 Yellow
-        Color.FromRgb(36, 114, 200),   // 4 Blue
-        Color.FromRgb(188, 63, 188),   // 5 Magenta
-        Color.FromRgb(17, 168, 205),   // 6 Cyan
-        Color.FromRgb(204, 204, 204),  // 7 White
+        TerminalColor.FromRgb(0, 0, 0),       // 0 Black
+        TerminalColor.FromRgb(205, 49, 49),    // 1 Red
+        TerminalColor.FromRgb(13, 188, 121),   // 2 Green
+        TerminalColor.FromRgb(229, 229, 16),   // 3 Yellow
+        TerminalColor.FromRgb(36, 114, 200),   // 4 Blue
+        TerminalColor.FromRgb(188, 63, 188),   // 5 Magenta
+        TerminalColor.FromRgb(17, 168, 205),   // 6 Cyan
+        TerminalColor.FromRgb(204, 204, 204),  // 7 White
         // Bright variants
-        Color.FromRgb(102, 102, 102),  // 8 Bright Black
-        Color.FromRgb(241, 76, 76),    // 9 Bright Red
-        Color.FromRgb(35, 209, 139),   // 10 Bright Green
-        Color.FromRgb(245, 245, 67),   // 11 Bright Yellow
-        Color.FromRgb(59, 142, 234),   // 12 Bright Blue
-        Color.FromRgb(214, 112, 214),  // 13 Bright Magenta
-        Color.FromRgb(41, 184, 219),   // 14 Bright Cyan
-        Color.FromRgb(242, 242, 242),  // 15 Bright White
+        TerminalColor.FromRgb(102, 102, 102),  // 8 Bright Black
+        TerminalColor.FromRgb(241, 76, 76),    // 9 Bright Red
+        TerminalColor.FromRgb(35, 209, 139),   // 10 Bright Green
+        TerminalColor.FromRgb(245, 245, 67),   // 11 Bright Yellow
+        TerminalColor.FromRgb(59, 142, 234),   // 12 Bright Blue
+        TerminalColor.FromRgb(214, 112, 214),  // 13 Bright Magenta
+        TerminalColor.FromRgb(41, 184, 219),   // 14 Bright Cyan
+        TerminalColor.FromRgb(242, 242, 242),  // 15 Bright White
     };
 
     public AnsiParser(TerminalCell[,] cells, int cols, int rows,
@@ -507,8 +506,8 @@ public class AnsiParser
                     if (!_reverse)
                     {
                         _reverse = true;
-                        var oldFg = _fg == default ? Color.FromRgb(0x50, 0x50, 0x50) : _fg;
-                        var oldBg = _bg == default ? Color.FromRgb(0xE0, 0xE0, 0xE0) : _bg;
+                        var oldFg = _fg == default ? TerminalColor.FromRgb(0x50, 0x50, 0x50) : _fg;
+                        var oldBg = _bg == default ? TerminalColor.FromRgb(0xE0, 0xE0, 0xE0) : _bg;
                         _fg = oldBg;
                         _bg = oldFg;
                     }
@@ -522,8 +521,8 @@ public class AnsiParser
                         _reverse = false;
                         var oldFg = _fg;
                         var oldBg = _bg;
-                        _fg = oldBg == Color.FromRgb(0x50, 0x50, 0x50) ? default : oldBg;
-                        _bg = oldFg == Color.FromRgb(0xE0, 0xE0, 0xE0) ? default : oldFg;
+                        _fg = oldBg == TerminalColor.FromRgb(0x50, 0x50, 0x50) ? default : oldBg;
+                        _bg = oldFg == TerminalColor.FromRgb(0xE0, 0xE0, 0xE0) ? default : oldFg;
                     }
                     break;
                 case >= 30 and <= 37:
@@ -532,7 +531,7 @@ public class AnsiParser
                 case 38: // Extended foreground
                     i = ParseExtendedColor(i, out _fg);
                     break;
-                case 39: _fg = Colors.LightGray; break;
+                case 39: _fg = TerminalColor.LightGray; break;
                 case >= 40 and <= 47:
                     _bg = AnsiColors[p - 40];
                     break;
@@ -550,9 +549,9 @@ public class AnsiParser
         }
     }
 
-    private int ParseExtendedColor(int index, out Color color)
+    private int ParseExtendedColor(int index, out TerminalColor color)
     {
-        color = Colors.LightGray;
+        color = TerminalColor.LightGray;
 
         if (index + 1 >= _params.Count) return index;
 
@@ -572,14 +571,14 @@ public class AnsiParser
             int r = Math.Clamp(_params[index + 2], 0, 255);
             int g = Math.Clamp(_params[index + 3], 0, 255);
             int b = Math.Clamp(_params[index + 4], 0, 255);
-            color = Color.FromRgb((byte)r, (byte)g, (byte)b);
+            color = TerminalColor.FromRgb((byte)r, (byte)g, (byte)b);
             return index + 4;
         }
 
         return index;
     }
 
-    private static Color Get256Color(int index)
+    private static TerminalColor Get256Color(int index)
     {
         if (index < 16)
             return AnsiColors[index];
@@ -591,7 +590,7 @@ public class AnsiParser
             int r = index / 36;
             int g = (index % 36) / 6;
             int b = index % 6;
-            return Color.FromRgb(
+            return TerminalColor.FromRgb(
                 (byte)(r > 0 ? 55 + r * 40 : 0),
                 (byte)(g > 0 ? 55 + g * 40 : 0),
                 (byte)(b > 0 ? 55 + b * 40 : 0));
@@ -599,12 +598,12 @@ public class AnsiParser
 
         // Grayscale ramp
         int gray = 8 + (index - 232) * 10;
-        return Color.FromRgb((byte)gray, (byte)gray, (byte)gray);
+        return TerminalColor.FromRgb((byte)gray, (byte)gray, (byte)gray);
     }
 
     private void ResetAttributes()
     {
-        _fg = Colors.LightGray;
+        _fg = TerminalColor.LightGray;
         _bg = default;
         _bold = false;
         _italic = false;

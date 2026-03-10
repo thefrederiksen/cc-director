@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Media;
+using CcDirector.Terminal.Core;
+using CcDirector.Terminal.Core.Rendering;
 
 namespace CcDirector.Terminal.Rendering;
 

@@ -1,0 +1,11 @@
+@echo off
+powershell -ExecutionPolicy Bypass -File "%~dp0..\scripts\local-build.ps1" -Slot 4 %*
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo BUILD FAILED - see errors above
+    pause
+    exit /b %ERRORLEVEL%
+)
+echo.
+echo Exe location: %~dp0cc-director4.exe
+pause

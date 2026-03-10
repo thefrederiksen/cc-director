@@ -86,14 +86,14 @@ public class LiteRenderer : ITerminalRenderer
                 {
                     TerminalCell cell = OriginalRenderer.GetCell(cells, cols, rows, col, row, ctx);
 
-                    if (cell.Background != default && cell.Background != bgColor)
+                    if (cell.Background != default && cell.Background.ToWpf() != bgColor)
                     {
                         // Skip dark backgrounds (they came from dark-theme terminal output)
                         if (!(cell.Background.R < darkBgThreshold &&
                               cell.Background.G < darkBgThreshold &&
                               cell.Background.B < darkBgThreshold))
                         {
-                            cellBgColor = cell.Background;
+                            cellBgColor = cell.Background.ToWpf();
                         }
                     }
                 }
@@ -124,7 +124,7 @@ public class LiteRenderer : ITerminalRenderer
                 if (ch < '\u2500' || ch > '\u257F') continue;
 
                 bool isLink = OriginalRenderer.IsInLinkRegion(col, row, cellWidth, cellHeight, ctx.LinkRegions);
-                var fg = isLink ? linkColor : RemapColorForLight(cell.Foreground == default ? defaultFg : cell.Foreground);
+                var fg = isLink ? linkColor : RemapColorForLight(cell.Foreground == default ? defaultFg : cell.Foreground.ToWpf());
                 double colX = Math.Round(col * cellWidth);
                 BoxDrawingHelper.TryDrawBoxChar(dc, ch, fg, colX, rowY, roundedCellWidth, roundedCellHeight);
             }
@@ -151,7 +151,7 @@ public class LiteRenderer : ITerminalRenderer
                     cell = OriginalRenderer.GetCell(cells, cols, rows, col, row, ctx);
                     ch = cell.Character;
                     isLink = OriginalRenderer.IsInLinkRegion(col, row, cellWidth, cellHeight, ctx.LinkRegions);
-                    fg = isLink ? linkColor : RemapColorForLight(cell.Foreground == default ? defaultFg : cell.Foreground);
+                    fg = isLink ? linkColor : RemapColorForLight(cell.Foreground == default ? defaultFg : cell.Foreground.ToWpf());
                     bold = cell.Bold;
                     italic = cell.Italic;
                 }

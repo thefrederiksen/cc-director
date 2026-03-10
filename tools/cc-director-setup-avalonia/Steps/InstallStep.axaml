@@ -1,0 +1,204 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirectorSetup.Steps.InstallStep">
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock x:Name="HeadingText"
+                       Text="Installing"
+                       Foreground="White"
+                       FontSize="22"
+                       FontWeight="SemiBold" />
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,20">
+                <TextBlock x:Name="StatusText"
+                           Text="Preparing..."
+                           Foreground="#CCCCCC"
+                           FontSize="13"
+                           VerticalAlignment="Center" />
+                <Button x:Name="RepairButton"
+                        Content="Repair"
+                        Classes="primary"
+                        Width="90" Margin="16,0,0,0"
+                        Click="RepairButton_Click"
+                        IsVisible="False" />
+            </StackPanel>
+        </StackPanel>
+
+        <ScrollViewer>
+            <StackPanel>
+                <!-- CC Director (main app) -->
+                <Border Background="#2A2D2E" CornerRadius="6" Padding="16" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="CC Director"
+                                       Foreground="White"
+                                       FontSize="16"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="Main application"
+                                       Foreground="#888888"
+                                       FontSize="12"
+                                       Margin="0,2,0,0" />
+                            <ProgressBar x:Name="DirectorProgress"
+                                         Height="3" Margin="0,8,24,0"
+                                         Background="#3C3C3C" Foreground="#007ACC"
+                                         IsVisible="False"
+                                         Minimum="0" Maximum="100" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center"
+                                    HorizontalAlignment="Right">
+                            <TextBlock x:Name="DirectorSize"
+                                       Foreground="#888888" FontSize="11"
+                                       HorizontalAlignment="Right" />
+                            <TextBlock x:Name="DirectorStatus"
+                                       Text="Pending"
+                                       Foreground="#CCCCCC"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       HorizontalAlignment="Right"
+                                       Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Tools section -->
+                <Border Background="#2A2D2E" CornerRadius="6" Padding="16">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Tools"
+                                           Foreground="White"
+                                           FontSize="16"
+                                           FontWeight="SemiBold" />
+                                <TextBlock x:Name="ToolsSummary"
+                                           Text="0 tools"
+                                           Foreground="#888888"
+                                           FontSize="12"
+                                           Margin="0,2,0,0" />
+                                <ProgressBar x:Name="ToolsOverallProgress"
+                                             Height="3" Margin="0,8,24,0"
+                                             Background="#3C3C3C" Foreground="#007ACC"
+                                             IsVisible="False"
+                                             Minimum="0" Maximum="100" />
+                            </StackPanel>
+
+                            <TextBlock x:Name="ToolsStatus"
+                                       Grid.Column="1"
+                                       Text="Pending"
+                                       Foreground="#CCCCCC"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+
+                        <!-- Tool details -->
+                        <Expander Header="Show details"
+                                  Foreground="#888888"
+                                  FontSize="11"
+                                  Margin="0,12,0,0"
+                                  IsExpanded="False">
+                            <ItemsControl x:Name="ToolList" Margin="0,8,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,0,0,3">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="60" />
+                                                <ColumnDefinition Width="70" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBlock Text="{Binding Name}"
+                                                       Foreground="#AAAAAA"
+                                                       FontSize="12" />
+
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding SizeText}"
+                                                       Foreground="#666666"
+                                                       FontSize="11"
+                                                       HorizontalAlignment="Right" />
+
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding Status}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       HorizontalAlignment="Right"
+                                                       Foreground="#666666" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Expander>
+                    </StackPanel>
+                </Border>
+
+                <!-- Skills section -->
+                <Border Background="#2A2D2E" CornerRadius="6" Padding="16" Margin="0,12,0,0">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Skills"
+                                           Foreground="White"
+                                           FontSize="16"
+                                           FontWeight="SemiBold" />
+                                <TextBlock x:Name="SkillsSummary"
+                                           Text="Claude Code skill files"
+                                           Foreground="#888888"
+                                           FontSize="12"
+                                           Margin="0,2,0,0" />
+                            </StackPanel>
+
+                            <TextBlock x:Name="SkillsStatus"
+                                       Grid.Column="1"
+                                       Text="Pending"
+                                       Foreground="#CCCCCC"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+
+                        <Expander Header="Show details"
+                                  Foreground="#888888"
+                                  FontSize="11"
+                                  Margin="0,12,0,0"
+                                  IsExpanded="False">
+                            <ItemsControl x:Name="SkillList" Margin="0,8,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,0,0,3">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="70" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBlock Text="{Binding Name}"
+                                                       Foreground="#AAAAAA"
+                                                       FontSize="12" />
+
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding Status}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       HorizontalAlignment="Right"
+                                                       Foreground="#666666" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Expander>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

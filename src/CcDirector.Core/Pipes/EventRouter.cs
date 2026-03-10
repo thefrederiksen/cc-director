@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using CcDirector.Core.Sessions;
 
 namespace CcDirector.Core.Pipes;
@@ -6,11 +7,18 @@ namespace CcDirector.Core.Pipes;
 /// Routes pipe messages to the correct Session by session_id.
 /// Session ID discovery is handled by terminal content matching;
 /// this router only delivers events to already-linked sessions.
+/// Includes deduplication to handle the same event arriving via multiple transports
+/// (named pipe + file watcher).
 /// </summary>
 public sealed class EventRouter
 {
     private readonly SessionManager _sessionManager;
     private readonly Action<string>? _log;
+
+    // Deduplication: track recently seen messages to avoid processing the same event twice.
+    // Key = "sessionId:hookEvent:toolUseId" or "sessionId:hookEvent:prompt_hash"
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _recentMessages = new();
+    private Timer? _dedupeCleanupTimer;
 
     /// <summary>Raised for every message regardless of routing, for UI display.</summary>
     public event Action<PipeMessage>? OnRawMessage;
@@ -19,11 +27,25 @@ public sealed class EventRouter
     {
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
         _log = log;
+
+        // Clean up old dedup entries every 30 seconds
+        _dedupeCleanupTimer = new Timer(CleanupDedupeCache, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     /// <summary>Route a pipe message to its target session.</summary>
     public void Route(PipeMessage msg)
     {
+        // Deduplicate: if we've seen this exact message recently, skip it
+        var dedupeKey = BuildDedupeKey(msg);
+        if (dedupeKey != null)
+        {
+            if (!_recentMessages.TryAdd(dedupeKey, DateTimeOffset.UtcNow))
+            {
+                // Already seen this message - skip silently
+                return;
+            }
+        }
+
         OnRawMessage?.Invoke(msg);
 
         if (string.IsNullOrEmpty(msg.SessionId))
@@ -41,5 +63,49 @@ public sealed class EventRouter
 
         _log?.Invoke($"Routing {msg.HookEventName} to session {session.Id} (claude={msg.SessionId[..Math.Min(8, msg.SessionId.Length)]}...)");
         session.HandlePipeEvent(msg);
+    }
+
+    /// <summary>
+    /// Build a deduplication key for a message.
+    /// Uses session_id + event_name + a distinguishing field (tool_use_id, prompt hash, etc.)
+    /// Returns null if the message can't be deduplicated (will always be processed).
+    /// </summary>
+    private static string? BuildDedupeKey(PipeMessage msg)
+    {
+        if (string.IsNullOrEmpty(msg.SessionId) || string.IsNullOrEmpty(msg.HookEventName))
+            return null;
+
+        var prefix = $"{msg.SessionId}:{msg.HookEventName}";
+
+        // Use tool_use_id for tool events (most specific)
+        if (!string.IsNullOrEmpty(msg.ToolUseId))
+            return $"{prefix}:{msg.ToolUseId}";
+
+        // Use agent_id for subagent events
+        if (!string.IsNullOrEmpty(msg.AgentId))
+            return $"{prefix}:{msg.AgentId}";
+
+        // For Stop/SessionStart/SessionEnd/UserPromptSubmit - use prompt hash or just the event
+        // These events don't have a unique ID, so we use a time-based key to prevent exact duplicates
+        // arriving within a short window (same relay, different transport)
+        if (!string.IsNullOrEmpty(msg.Prompt))
+            return $"{prefix}:{msg.Prompt.GetHashCode()}";
+
+        // For events without unique identifiers (Stop, SessionStart, SessionEnd, Notification),
+        // use a coarse timestamp (1-second resolution) to deduplicate rapid arrivals
+        var coarseTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return $"{prefix}:{coarseTime}";
+    }
+
+    private void CleanupDedupeCache(object? state)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddSeconds(-10);
+        foreach (var kvp in _recentMessages)
+        {
+            if (kvp.Value < cutoff)
+            {
+                _recentMessages.TryRemove(kvp.Key, out _);
+            }
+        }
     }
 }

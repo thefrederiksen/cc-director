@@ -1,0 +1,96 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CcDirector.Avalonia.MainWindow"
+        Title="CC Director"
+        Width="1400" Height="900"
+        MinWidth="800" MinHeight="500"
+        Background="{DynamicResource PanelBackground}">
+
+    <Grid ColumnDefinitions="250,*">
+        <!-- Sidebar -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource SidebarBackground}"
+                BorderBrush="#3C3C3C" BorderThickness="0,0,1,0">
+            <DockPanel>
+                <!-- Sidebar header -->
+                <Border DockPanel.Dock="Top" Padding="12,8">
+                    <DockPanel>
+                        <TextBlock Text="CC Director"
+                                   Foreground="{DynamicResource TextForeground}"
+                                   FontSize="16" FontWeight="Bold"
+                                   VerticalAlignment="Center" />
+                        <Button x:Name="NewSessionButton"
+                                Content="+"
+                                HorizontalAlignment="Right"
+                                Background="{DynamicResource AccentBrush}"
+                                Foreground="White"
+                                FontSize="16" FontWeight="Bold"
+                                Width="28" Height="28"
+                                Padding="0"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"
+                                ToolTip.Tip="New Session" />
+                    </DockPanel>
+                </Border>
+
+                <!-- Session list -->
+                <ListBox x:Name="SessionList"
+                         Background="Transparent"
+                         Foreground="{DynamicResource TextForeground}"
+                         Padding="4">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding DisplayName}"
+                                       Foreground="{DynamicResource TextForeground}"
+                                       Padding="8,4" />
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Border>
+
+        <!-- Main content area -->
+        <Grid Grid.Column="1">
+            <DockPanel>
+                <!-- Tab bar -->
+                <Border DockPanel.Dock="Top"
+                        Background="{DynamicResource SidebarBackground}"
+                        Height="36"
+                        Padding="8,0">
+                    <StackPanel Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                Spacing="4">
+                        <Button x:Name="TerminalTabButton"
+                                Content="Terminal"
+                                Background="{DynamicResource AccentBrush}"
+                                Foreground="White"
+                                Padding="12,4"
+                                FontSize="12" />
+                        <Button x:Name="CleanTabButton"
+                                Content="Clean"
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}"
+                                Padding="12,4"
+                                FontSize="12" />
+                        <Button x:Name="AgentTabButton"
+                                Content="Agent"
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}"
+                                Padding="12,4"
+                                FontSize="12" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Terminal area (placeholder) -->
+                <Border Background="#1E1E1E">
+                    <TextBlock x:Name="PlaceholderText"
+                               Text="Select or create a session to begin"
+                               Foreground="#666666"
+                               FontSize="16"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                </Border>
+            </DockPanel>
+        </Grid>
+    </Grid>
+</Window>

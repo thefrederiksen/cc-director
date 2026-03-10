@@ -1,4 +1,4 @@
-namespace CcDirector.Terminal.Rendering;
+namespace CcDirector.Terminal.Core.Rendering;
 
 /// <summary>
 /// Carries all state the renderer needs beyond the cell grid:

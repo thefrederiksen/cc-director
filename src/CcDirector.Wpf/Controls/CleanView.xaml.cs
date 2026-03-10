@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -26,6 +27,7 @@ public partial class CleanView : UserControl
     private readonly ObservableCollection<CleanWidgetViewModel> _widgets = new();
     private readonly object _widgetsLock = new();
     private string? _pendingInjection;
+    private bool _showUserOnly;
 
     /// <summary>
     /// Fired when the user clicks the rewind button on a user prompt card.
@@ -36,9 +38,16 @@ public partial class CleanView : UserControl
     public CleanView()
     {
         InitializeComponent();
-        WidgetItems.ItemsSource = _widgets;
+
+        var viewSource = new CollectionViewSource { Source = _widgets };
+        viewSource.Filter += WidgetFilter;
+        _widgetView = viewSource.View;
+        WidgetItems.ItemsSource = _widgetView;
+
         BindingOperations.EnableCollectionSynchronization(_widgets, _widgetsLock);
     }
+
+    private ICollectionView _widgetView;
 
     /// <summary>Attach to a session and start monitoring its JSONL output.</summary>
     public void Attach(Session session)
@@ -128,6 +137,8 @@ public partial class CleanView : UserControl
         _lastLineCount = 0;
         _parsing = false;
         _pendingInjection = null;
+        _showUserOnly = false;
+        FilterToggle.IsChecked = false;
         _widgets.Clear();
         ProgressArea.Visibility = Visibility.Collapsed;
         LoadingText.Visibility = Visibility.Collapsed;
@@ -184,8 +195,8 @@ public partial class CleanView : UserControl
             {
                 ProgressArea.Visibility = Visibility.Collapsed;
 
-                // Show "Your Turn" when Claude finishes and there are widgets visible
-                if (oldState == ActivityState.Working && _widgets.Count > 0)
+                // Show "Your Turn" when Claude finishes or needs input, and there are widgets visible
+                if ((newState == ActivityState.WaitingForInput || oldState == ActivityState.Working) && _widgets.Count > 0)
                 {
                     YourTurnText.Visibility = Visibility.Visible;
                 }
@@ -379,6 +390,24 @@ public partial class CleanView : UserControl
         });
 
         UpdateEmptyState();
+        ScrollToBottom();
+    }
+
+    private void WidgetFilter(object sender, FilterEventArgs e)
+    {
+        if (!_showUserOnly)
+        {
+            e.Accepted = true;
+            return;
+        }
+        e.Accepted = e.Item is CleanWidgetViewModel vm && vm.Kind == WidgetKind.UserMessage;
+    }
+
+    private void FilterToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _showUserOnly = FilterToggle.IsChecked == true;
+        FileLog.Write($"[CleanView] FilterToggle_Click: showUserOnly={_showUserOnly}");
+        _widgetView.Refresh();
         ScrollToBottom();
     }
 

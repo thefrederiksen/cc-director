@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-import pymupdf
+import fitz as pymupdf
 
 try:
     from cc_shared.image_extractor import ExtractedImage, save_extracted_images

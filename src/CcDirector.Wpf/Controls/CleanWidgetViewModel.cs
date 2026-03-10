@@ -1,7 +1,9 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Documents;
 using System.Windows.Media;
 using CcDirector.Core.Claude;
+using CcDirector.Wpf.Helpers;
 
 namespace CcDirector.Wpf.Controls;
 
@@ -132,6 +134,58 @@ public sealed class CleanWidgetViewModel
 
     public Visibility StandardContentVisibility => Kind == WidgetKind.Thinking
         ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>
+    /// Rendered FlowDocument for assistant text content (markdown -> rich text).
+    /// Lazily created on first access.
+    /// </summary>
+    private FlowDocument? _renderedDocument;
+    public FlowDocument? RenderedDocument
+    {
+        get
+        {
+            if (Kind != WidgetKind.Text || string.IsNullOrEmpty(Content))
+                return null;
+            return _renderedDocument ??= MarkdownFlowDocumentRenderer.Render(Content, embedded: true);
+        }
+    }
+
+    /// <summary>Whether this widget's content should be rendered as markdown (FlowDocument).</summary>
+    public bool IsRichContent => Kind == WidgetKind.Text && !string.IsNullOrEmpty(Content);
+
+    /// <summary>
+    /// Rendered FlowDocument for tool result content (markdown -> rich text).
+    /// Only rendered when result contains markdown indicators (tables, headers, lists).
+    /// </summary>
+    private FlowDocument? _renderedResultDocument;
+    public FlowDocument? RenderedResultDocument
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(Result) || IsError)
+                return null;
+            if (!LooksLikeMarkdown(Result))
+                return null;
+            return _renderedResultDocument ??= MarkdownFlowDocumentRenderer.Render(Result, embedded: true);
+        }
+    }
+
+    /// <summary>Whether this widget's result should be rendered as rich markdown.</summary>
+    public bool IsRichResult => RenderedResultDocument != null;
+
+    private static bool LooksLikeMarkdown(string text)
+    {
+        // Check for markdown table indicators (pipe-delimited rows with header separator)
+        if (text.Contains("| ") && text.Contains(" |") && text.Contains("---"))
+            return true;
+        // Check for markdown headers
+        if (text.StartsWith("# ") || text.Contains("\n# ") || text.Contains("\n## "))
+            return true;
+        // Check for bullet lists
+        if (text.StartsWith("- ") || text.Contains("\n- ") || text.StartsWith("* ") || text.Contains("\n* "))
+            return true;
+        return false;
+    }
 
     /// <summary>
     /// Build a list of widget view models from parsed stream messages.
@@ -302,6 +356,21 @@ public sealed class CleanWidgetViewModel
             WidgetKind.Skill => (
                 $"Skill: {block.ToolInput.GetValueOrDefault("skill", "unknown")}",
                 block.ToolInput.GetValueOrDefault("args", ""),
+                ""
+            ),
+            _ when block.ToolName == "AskUserQuestion" => (
+                "Question",
+                "Claude needs your input",
+                block.ToolInput.GetValueOrDefault("question", "See terminal for details")
+            ),
+            _ when block.ToolName == "ExitPlanMode" => (
+                "Plan Ready",
+                "Waiting for your approval",
+                "See terminal to approve or modify the plan"
+            ),
+            _ when block.ToolName == "EnterPlanMode" => (
+                "Plan Mode",
+                "Requesting plan mode",
                 ""
             ),
             _ => (

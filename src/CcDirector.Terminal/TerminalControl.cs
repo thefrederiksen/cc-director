@@ -367,11 +367,12 @@ public class TerminalControl : FrameworkElement
                 double linkX = match.StartCol * _cellWidth;
                 double linkY = row * _cellHeight;
                 double linkWidth = (match.EndCol - match.StartCol) * _cellWidth;
-                var rect = new Rect(linkX, linkY, linkWidth, _cellHeight);
+                var termRect = new TerminalRect(linkX, linkY, linkWidth, _cellHeight);
+                var wpfRect = new Rect(linkX, linkY, linkWidth, _cellHeight);
 
                 var linkType = match.Type == LinkDetector.LinkType.Url ? TerminalLinkType.Url : TerminalLinkType.Path;
-                renderLinkRegions.Add(new LinkRegionInfo(rect, match.Text, linkType));
-                _linkRegions.Add(new LinkRegion(rect, match.Text, match.Type));
+                renderLinkRegions.Add(new LinkRegionInfo(termRect, match.Text, linkType));
+                _linkRegions.Add(new LinkRegion(wpfRect, match.Text, match.Type));
             }
         }
 

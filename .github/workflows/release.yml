@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------
-  # Job 1: Build the main CC Director WPF app
+  # Job 1: Build the main CC Director WPF app (Windows)
   # ---------------------------------------------------------------
-  build-director:
-    name: Build CC Director
+  build-director-win:
+    name: Build CC Director (Windows)
     runs-on: windows-latest
 
     steps:
@@ -50,15 +50,43 @@ jobs:
       - name: Upload cc-director artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cc-director
+          name: cc-director-win
           path: src/CcDirector.Wpf/bin/Release/net10.0-windows/win-x64/publish/cc-director.exe
           if-no-files-found: error
 
   # ---------------------------------------------------------------
-  # Job 2: Build Python tools (core document tools)
+  # Job 2: Build CC Director Avalonia app (macOS)
   # ---------------------------------------------------------------
-  build-python-tools:
-    name: Build Python Tools
+  build-director-mac:
+    name: Build CC Director (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish for macOS ARM64
+        run: >
+          dotnet publish src/CcDirector.Avalonia/CcDirector.Avalonia.csproj
+          -c Release -r osx-arm64 --self-contained true
+          -p:PublishSingleFile=true
+
+      - name: Upload cc-director-mac artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-director-mac
+          path: src/CcDirector.Avalonia/bin/Release/net10.0/osx-arm64/publish/cc-director
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 3: Build Python tools (Windows)
+  # ---------------------------------------------------------------
+  build-python-tools-win:
+    name: Build Python Tools (Windows)
     runs-on: windows-latest
 
     steps:
@@ -131,15 +159,80 @@ jobs:
       - name: Upload Python tools artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-tools
+          name: python-tools-win
           path: artifacts/
           if-no-files-found: error
 
   # ---------------------------------------------------------------
-  # Job 3: Build Setup Wizard (.NET WPF, self-contained)
+  # Job 4: Build Python tools (macOS)
   # ---------------------------------------------------------------
-  build-setup-wizard:
-    name: Build Setup Wizard
+  build-python-tools-mac:
+    name: Build Python Tools (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build Python tools
+        run: |
+          tools=("cc-pdf" "cc-html" "cc-word")
+          mkdir -p artifacts
+          failed=()
+
+          for tool in "${tools[@]}"; do
+            echo ""
+            echo "============================================"
+            echo "Building $tool..."
+            echo "============================================"
+
+            cd "tools/$tool"
+
+            # Install dependencies
+            pip install -e ".[dev]" 2>&1
+            pip install -e "../cc_shared" 2>&1
+
+            # Build with PyInstaller using the .spec file if available
+            if [ -f "$tool.spec" ]; then
+              pyinstaller "$tool.spec" --clean --noconfirm
+            else
+              pyinstaller --onefile --name "$tool" main.py
+            fi
+
+            if [ -f "dist/$tool" ]; then
+              cp "dist/$tool" "../../artifacts/$tool"
+              echo "[OK] $tool"
+            else
+              echo "[FAIL] $tool not found after build"
+              failed+=("$tool")
+            fi
+
+            cd ../..
+          done
+
+          echo ""
+          echo "Python tools built: $(( ${#tools[@]} - ${#failed[@]} )) / ${#tools[@]}"
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "Failed tools: ${failed[*]}"
+            exit 1
+          fi
+
+      - name: Upload Python tools artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-tools-mac
+          path: artifacts/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 5: Build Setup Wizard (Windows)
+  # ---------------------------------------------------------------
+  build-setup-wizard-win:
+    name: Build Setup Wizard (Windows)
     runs-on: windows-latest
 
     steps:
@@ -161,8 +254,36 @@ jobs:
       - name: Upload setup wizard artifact
         uses: actions/upload-artifact@v4
         with:
-          name: setup-wizard
+          name: setup-wizard-win
           path: tools/cc-director-setup/bin/Release/net10.0-windows/win-x64/publish/cc-director-setup.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 6: Build Setup Wizard (macOS)
+  # ---------------------------------------------------------------
+  build-setup-wizard-mac:
+    name: Build Setup Wizard (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish for macOS ARM64
+        run: >
+          dotnet publish tools/cc-director-setup-avalonia/CcDirectorSetup.csproj
+          -c Release -r osx-arm64 --self-contained true
+          -p:PublishSingleFile=true
+
+      - name: Upload setup wizard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-wizard-mac
+          path: tools/cc-director-setup-avalonia/bin/Release/net10.0/osx-arm64/publish/cc-director-setup
           if-no-files-found: error
 
   # ---------------------------------------------------------------
@@ -172,9 +293,12 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     needs:
-      - build-director
-      - build-python-tools
-      - build-setup-wizard
+      - build-director-win
+      - build-director-mac
+      - build-python-tools-win
+      - build-python-tools-mac
+      - build-setup-wizard-win
+      - build-setup-wizard-mac
 
     steps:
       - uses: actions/checkout@v4
@@ -192,14 +316,29 @@ jobs:
           RELEASE_DIR="$(pwd)/release-files"
           mkdir -p "$RELEASE_DIR"
 
-          # Main app
-          cp release-artifacts/cc-director/cc-director.exe "$RELEASE_DIR/"
+          # Windows main app
+          cp release-artifacts/cc-director-win/cc-director.exe "$RELEASE_DIR/cc-director-win-x64.exe"
 
-          # Python tools (individual .exe files)
-          cp release-artifacts/python-tools/*.exe "$RELEASE_DIR/"
+          # macOS main app
+          cp release-artifacts/cc-director-mac/cc-director "$RELEASE_DIR/cc-director-mac-arm64"
 
-          # Setup wizard
-          cp release-artifacts/setup-wizard/cc-director-setup.exe "$RELEASE_DIR/"
+          # Windows Python tools
+          for exe in release-artifacts/python-tools-win/*.exe; do
+            name=$(basename "$exe" .exe)
+            cp "$exe" "$RELEASE_DIR/${name}-win-x64.exe"
+          done
+
+          # macOS Python tools
+          for bin in release-artifacts/python-tools-mac/*; do
+            name=$(basename "$bin")
+            cp "$bin" "$RELEASE_DIR/${name}-mac-arm64"
+          done
+
+          # Windows setup wizard
+          cp release-artifacts/setup-wizard-win/cc-director-setup.exe "$RELEASE_DIR/cc-director-setup-win-x64.exe"
+
+          # macOS setup wizard
+          cp release-artifacts/setup-wizard-mac/cc-director-setup "$RELEASE_DIR/cc-director-setup-mac-arm64"
 
           echo ""
           echo "Release files:"
@@ -227,13 +366,22 @@ jobs:
             size=$(stat -c%s "$file")
             sha256=$(sha256sum "$file" | cut -d' ' -f1)
 
+            # Determine platform from filename
+            if echo "$filename" | grep -q "win-x64"; then
+              platform="windows"
+            elif echo "$filename" | grep -q "mac-arm64"; then
+              platform="macos"
+            else
+              platform="unknown"
+            fi
+
             if [ "$first" = true ]; then
               first=false
             else
               echo "," >> "$MANIFEST"
             fi
 
-            printf "    \"%s\": {\"size\": %s, \"sha256\": \"%s\"}" "$filename" "$size" "$sha256" >> "$MANIFEST"
+            printf "    \"%s\": {\"size\": %s, \"sha256\": \"%s\", \"platform\": \"%s\"}" "$filename" "$size" "$sha256" "$platform" >> "$MANIFEST"
           done
 
           echo "" >> "$MANIFEST"

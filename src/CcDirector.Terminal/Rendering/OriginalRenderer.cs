@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using CcDirector.Terminal.Core;
+using CcDirector.Terminal.Core.Rendering;
 
 namespace CcDirector.Terminal.Rendering;
 
@@ -63,8 +65,8 @@ public class OriginalRenderer : ITerminalRenderer
                 if (col < cols)
                 {
                     TerminalCell cell = GetCell(cells, cols, rows, col, row, ctx);
-                    if (cell.Background != default && cell.Background != bgColor)
-                        cellBgColor = cell.Background;
+                    if (cell.Background != default && cell.Background.ToWpf() != bgColor)
+                        cellBgColor = cell.Background.ToWpf();
                 }
 
                 if (cellBgColor != runBgColor)
@@ -94,7 +96,7 @@ public class OriginalRenderer : ITerminalRenderer
                 // Check if this position is inside a link region
                 bool isLink = IsInLinkRegion(col, row, cellWidth, cellHeight, ctx.LinkRegions);
 
-                var fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground);
+                var fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground.ToWpf());
                 double charX = Math.Round(col * cellWidth);
                 double charY = rowY;
 
@@ -198,7 +200,7 @@ public class OriginalRenderer : ITerminalRenderer
 
         for (int i = 0; i < linkRegions.Count; i++)
         {
-            if (linkRegions[i].Bounds.Contains(point))
+            if (linkRegions[i].Bounds.Contains(point.X, point.Y))
                 return true;
         }
         return false;

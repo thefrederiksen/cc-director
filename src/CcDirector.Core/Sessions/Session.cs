@@ -297,6 +297,7 @@ public sealed class Session : IDisposable
         {
             "Stop" => ActivityState.WaitingForInput,
             "UserPromptSubmit" => ActivityState.Working,
+            "PreToolUse" when IsInteractiveTool(msg.ToolName) => ActivityState.WaitingForInput,
             "PreToolUse" => ActivityState.Working,
             "PostToolUse" => ActivityState.Working,
             "PostToolUseFailure" => ActivityState.Working,
@@ -336,6 +337,9 @@ public sealed class Session : IDisposable
         FileLog.Write($"[Session] HandlePipeEvent: session={Id}, {ActivityState}->{newState.Value}");
         SetActivityState(newState.Value);
     }
+
+    private static bool IsInteractiveTool(string? toolName) =>
+        toolName is "ExitPlanMode" or "AskUserQuestion" or "EnterPlanMode" or "EnterWorktree" or "ExitWorktree";
 
     private void SetActivityState(ActivityState newState)
     {

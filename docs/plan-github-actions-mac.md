@@ -177,6 +177,25 @@ Release assets:
 - Verify setup wizard runs on Mac and installs tools correctly
 - Verify cc-director Avalonia app launches on Mac with working terminal
 
+## Implementation Status
+
+- [x] Step 1: Rename existing jobs for clarity (build-director-win, build-python-tools-win, build-setup-wizard-win)
+- [x] Step 2: Add Mac Director build job (build-director-mac)
+- [x] Step 3: Add Mac Python tools build job (build-python-tools-mac)
+- [x] Step 4: Add Mac Setup Wizard build job (build-setup-wizard-mac)
+- [x] Step 5: Update CI workflow (macOS matrix with cc-director-crossplatform.sln)
+- [x] Step 6: Update create-release job (collects both Win + Mac artifacts with platform suffix)
+- [x] Step 7: Asset naming convention applied
+
+### Files created/modified:
+- `.github/workflows/release.yml` -- 6 build jobs + create-release (was 3+1)
+- `.github/workflows/ci.yml` -- matrix build: windows-latest + macos-latest
+- `cc-director-crossplatform.sln` -- Avalonia-only solution (7 cross-platform projects)
+- `tools/cc-director-setup-avalonia/` -- full Avalonia port of setup wizard (cross-platform)
+
+### Remaining:
+- `build-node-tools` job -- add when cc-browser packaging is ready
+
 ## Execution Order (across both plans)
 
 1. Multi-target Core libs + create Avalonia project skeleton
