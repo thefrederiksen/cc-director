@@ -1,0 +1,36 @@
+<UserControl x:Class="CcDirectorSetup.Steps.SkillsStep"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <DockPanel>
+        <!-- Header area (fixed) -->
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock x:Name="TitleText"
+                       Text="Claude Code Skills"
+                       Foreground="White"
+                       FontSize="22"
+                       FontWeight="SemiBold" />
+
+            <TextBlock x:Name="DescriptionText"
+                       Text="The following skills will be installed for Claude Code. Skills add specialized capabilities like email drafting, vault management, and coaching."
+                       Foreground="{StaticResource TextForeground}"
+                       FontSize="13"
+                       TextWrapping="Wrap"
+                       Margin="0,12,0,0"
+                       LineHeight="20" />
+        </StackPanel>
+
+        <!-- Footer (fixed) -->
+        <TextBlock x:Name="SkillCountText"
+                   DockPanel.Dock="Bottom"
+                   Foreground="{StaticResource DimText}"
+                   FontSize="12"
+                   Margin="0,8,0,0" />
+
+        <!-- Scrollable skill list -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Margin="0,16,0,0">
+            <StackPanel x:Name="SkillList" />
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

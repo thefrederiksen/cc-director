@@ -18,20 +18,7 @@ public class ToolInstaller
 
     public static readonly string[] SkillNames =
     [
-        "assistant",
-        "business",
         "cc-director",
-        "cencon",
-        "clone",
-        "growth",
-        "handover",
-        "health",
-        "linkedin-connect",
-        "personal",
-        "send-email",
-        "skill-manager",
-        "vault-manager",
-        "write",
     ];
 
     public ToolInstaller()

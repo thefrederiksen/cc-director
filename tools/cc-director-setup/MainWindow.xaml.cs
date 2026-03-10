@@ -27,6 +27,7 @@ public partial class MainWindow : Window
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
     private ToolsStep? _toolsStep;
+    private SkillsStep? _skillsStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
@@ -46,7 +47,7 @@ public partial class MainWindow : Window
         {
             Title = "CC Director Update";
             SubtitleText.Text = "Update";
-            Step4Label.Text = "Update";
+            Step5Label.Text = "Update";
         }
 
         Loaded += MainWindow_Loaded;
@@ -104,9 +105,10 @@ public partial class MainWindow : Window
         new(Step3Circle, Step3Label, Step3Num),
         new(Step4Circle, Step4Label, Step4Num),
         new(Step5Circle, Step5Label, Step5Num),
+        new(Step6Circle, Step6Label, Step6Num),
     ];
 
-    private Border[] GetLines() => [Line12, Line23, Line34, Line45];
+    private Border[] GetLines() => [Line12, Line23, Line34, Line45, Line56];
 
     private void ShowStep(int step)
     {
@@ -121,18 +123,19 @@ public partial class MainWindow : Window
             1 => _welcomeStep ??= new WelcomeStep(_selectedProfile, p => _selectedProfile = p, _isUpdate, _installedVersion),
             2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
             3 => _toolsStep ??= new ToolsStep(_selectedGroups, g => _selectedGroups = g, _isUpdate),
-            4 => _installStep ??= new InstallStep(),
-            5 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate),
+            4 => _skillsStep ??= new SkillsStep(_isUpdate),
+            5 => _installStep ??= new InstallStep(),
+            6 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate),
             _ => null
         };
 
-        if (step == 4 && _isUpdate)
+        if (step == 5 && _isUpdate)
             _installStep?.SetUpdateMode();
 
         if (step == 2)
             _prerequisitesStep?.RunChecks();
 
-        if (step == 4)
+        if (step == 5)
             _ = RunInstallAsync();
     }
 
@@ -178,14 +181,14 @@ public partial class MainWindow : Window
 
     private void UpdateNavButtons()
     {
-        BackButton.Visibility = _currentStep > 1 && _currentStep < 5
+        BackButton.Visibility = _currentStep > 1 && _currentStep < 6
             ? Visibility.Visible : Visibility.Collapsed;
 
-        if (_currentStep == 5)
+        if (_currentStep == 6)
         {
             NextButton.Content = "Close";
         }
-        else if (_currentStep == 4)
+        else if (_currentStep == 5)
         {
             NextButton.Content = _isUpdate ? "Updating..." : "Installing...";
             NextButton.IsEnabled = false;
@@ -402,20 +405,20 @@ public partial class MainWindow : Window
 
     private void NextButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_currentStep == 5)
+        if (_currentStep == 6)
         {
             Close();
             return;
         }
 
-        if (_currentStep == 4 && NextButton.Content?.ToString() == "Retry")
+        if (_currentStep == 5 && NextButton.Content?.ToString() == "Retry")
         {
             _installStep = null;
-            ShowStep(4);
+            ShowStep(5);
             return;
         }
 
-        if (_currentStep < 5)
+        if (_currentStep < 6)
         {
             // Reset forward steps when going forward from profile selection
             if (_currentStep == 1)
@@ -423,6 +426,7 @@ public partial class MainWindow : Window
                 _welcomeStep?.UpdateProfile(ref _selectedProfile);
                 _prerequisitesStep = null;
                 _toolsStep = null;
+                _skillsStep = null;
                 _installStep = null;
                 _completeStep = null;
             }
@@ -431,11 +435,12 @@ public partial class MainWindow : Window
             if (_currentStep == 3)
             {
                 _selectedGroups = _toolsStep?.GetEnabledGroups() ?? _selectedGroups;
+                _skillsStep = null;
                 _installStep = null;
                 _completeStep = null;
             }
 
-            if (_currentStep == 4)
+            if (_currentStep == 5)
                 _completeStep = null; // Rebuild with final counts
 
             ShowStep(_currentStep + 1);
