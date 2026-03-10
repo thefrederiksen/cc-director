@@ -135,12 +135,12 @@ public class ToolInstaller
         string cmdContent;
         string bashContent;
 
-        if (ProfileToolLists.NodeTools.Contains(toolName))
+        if (ToolGroupRegistry.NodeTools.Contains(toolName))
         {
             cmdContent = $"@node \"%~dp0_{toolName}\\src\\cli.mjs\" %*\n";
             bashContent = $"#!/bin/sh\nnode \"$(dirname \"$0\")/_{toolName}/src/cli.mjs\" \"$@\"\n";
         }
-        else if (ProfileToolLists.DotNetTools.Contains(toolName))
+        else if (ToolGroupRegistry.DotNetTools.Contains(toolName))
         {
             if (toolName == "cc-computer")
             {
@@ -197,7 +197,7 @@ public class ToolInstaller
         foreach (var tool in toolNames)
         {
             string assetName;
-            if (ProfileToolLists.NodeTools.Contains(tool) || ProfileToolLists.DotNetTools.Contains(tool))
+            if (ToolGroupRegistry.NodeTools.Contains(tool) || ToolGroupRegistry.DotNetTools.Contains(tool))
                 assetName = $"{tool}.zip";
             else
                 assetName = $"{tool}.exe";

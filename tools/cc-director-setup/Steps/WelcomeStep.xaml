@@ -23,12 +23,12 @@
                    Visibility="Collapsed" />
 
         <TextBlock x:Name="ProfilePromptText"
-                   Text="Choose your install profile:"
+                   Text="Choose your experience:"
                    Foreground="{StaticResource TextForeground}"
                    FontSize="13"
                    Margin="0,28,0,12" />
 
-        <!-- Standard card (default, first) -->
+        <!-- Standard card -->
         <Border x:Name="StandardCard"
                 Background="#2A2D2E"
                 BorderBrush="{StaticResource AccentBrush}"
@@ -50,7 +50,7 @@
                                FontWeight="SemiBold"
                                VerticalAlignment="Center" />
                 </StackPanel>
-                <TextBlock Text="Core document tools (PDF, HTML, Word, Excel, PowerPoint), communication (Outlook, Gmail), media, and vault."
+                <TextBlock Text="Simplified experience with a clean, guided interface. Ideal for everyday use -- document generation, email, media, and data tools."
                            Foreground="{StaticResource DimText}"
                            FontSize="12"
                            TextWrapping="Wrap"
@@ -82,7 +82,7 @@
                                FontWeight="SemiBold"
                                VerticalAlignment="Center" />
                 </StackPanel>
-                <TextBlock Text="All tools: documents, browser automation, LinkedIn, Reddit, social media, code generation, media processing, and more."
+                <TextBlock Text="Terminal-first experience closer to raw Claude Code. GitHub integration, advanced configuration, and developer-oriented workflows."
                            Foreground="{StaticResource DimText}"
                            FontSize="12"
                            TextWrapping="Wrap"

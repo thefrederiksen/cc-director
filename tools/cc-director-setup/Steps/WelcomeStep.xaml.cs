@@ -24,7 +24,7 @@ public partial class WelcomeStep : UserControl
         {
             TitleText.Text = "Update CC Director";
             DescriptionText.Text = "Checking for updates...";
-            ProfilePromptText.Text = "Update profile:";
+            ProfilePromptText.Text = "Update experience:";
 
             if (installedVersion != null)
             {

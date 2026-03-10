@@ -11,6 +11,7 @@ public partial class MainWindow : Window
 {
     private int _currentStep = 1;
     private InstallProfile _selectedProfile = InstallProfile.Standard;
+    private List<string> _selectedGroups;
     private List<PrerequisiteInfo> _prerequisites = [];
     private int _installedCount;
     private int _skippedCount;
@@ -25,10 +26,10 @@ public partial class MainWindow : Window
 
     private WelcomeStep? _welcomeStep;
     private PrerequisitesStep? _prerequisitesStep;
+    private ToolsStep? _toolsStep;
     private InstallStep? _installStep;
     private CompleteStep? _completeStep;
 
-    // Sidebar UI elements per step
     private readonly record struct StepUI(Border Circle, TextBlock Label, TextBlock? Number);
 
     public MainWindow()
@@ -37,6 +38,7 @@ public partial class MainWindow : Window
 
         _isUpdate = InstallDetector.IsInstalled();
         _installedVersion = _isUpdate ? InstallDetector.GetInstalledVersion() : null;
+        _selectedGroups = ToolGroupRegistry.GetDefaultGroupNames();
 
         SetupLog.Write($"[MainWindow] Started: isUpdate={_isUpdate}, installedVersion={_installedVersion}");
 
@@ -44,7 +46,7 @@ public partial class MainWindow : Window
         {
             Title = "CC Director Update";
             SubtitleText.Text = "Update";
-            Step3Label.Text = "Update";
+            Step4Label.Text = "Update";
         }
 
         Loaded += MainWindow_Loaded;
@@ -55,17 +57,18 @@ public partial class MainWindow : Window
     {
         try
         {
-            var savedProfile = await Task.Run(() => ProfileStore.Load());
-            if (savedProfile.HasValue)
+            var saved = await Task.Run(() => ProfileStore.Load());
+            if (saved != null)
             {
-                _selectedProfile = savedProfile.Value;
+                _selectedProfile = saved.Profile;
+                _selectedGroups = saved.Groups;
                 _welcomeStep?.UpdateProfile(_selectedProfile);
-                SetupLog.Write($"[MainWindow] Restored saved profile: {_selectedProfile}");
+                SetupLog.Write($"[MainWindow] Restored: profile={_selectedProfile}, groups={_selectedGroups.Count}");
             }
         }
         catch (Exception ex)
         {
-            SetupLog.Write($"[MainWindow] Failed to load saved profile: {ex.Message}");
+            SetupLog.Write($"[MainWindow] Failed to load saved settings: {ex.Message}");
         }
 
         if (_isUpdate)
@@ -100,9 +103,10 @@ public partial class MainWindow : Window
         new(Step2Circle, Step2Label, Step2Num),
         new(Step3Circle, Step3Label, Step3Num),
         new(Step4Circle, Step4Label, Step4Num),
+        new(Step5Circle, Step5Label, Step5Num),
     ];
 
-    private Border[] GetLines() => [Line12, Line23, Line34];
+    private Border[] GetLines() => [Line12, Line23, Line34, Line45];
 
     private void ShowStep(int step)
     {
@@ -116,20 +120,19 @@ public partial class MainWindow : Window
         {
             1 => _welcomeStep ??= new WelcomeStep(_selectedProfile, p => _selectedProfile = p, _isUpdate, _installedVersion),
             2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
-            3 => _installStep ??= new InstallStep(),
-            4 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate),
+            3 => _toolsStep ??= new ToolsStep(_selectedGroups, g => _selectedGroups = g, _isUpdate),
+            4 => _installStep ??= new InstallStep(),
+            5 => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate),
             _ => null
         };
 
-        if (step == 3 && _isUpdate)
+        if (step == 4 && _isUpdate)
             _installStep?.SetUpdateMode();
 
-        // Trigger prerequisite check when entering step 2
         if (step == 2)
             _prerequisitesStep?.RunChecks();
 
-        // Trigger install when entering step 3
-        if (step == 3)
+        if (step == 4)
             _ = RunInstallAsync();
     }
 
@@ -149,27 +152,23 @@ public partial class MainWindow : Window
 
             if (stepNum < _currentStep)
             {
-                // Completed
                 ui.Circle.Background = successBrush;
                 ui.Label.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
                 if (ui.Number != null) ui.Number.Foreground = Brushes.White;
             }
             else if (stepNum == _currentStep)
             {
-                // Active
                 ui.Circle.Background = accentBrush;
                 ui.Label.Foreground = Brushes.White;
                 if (ui.Number != null) ui.Number.Foreground = Brushes.White;
             }
             else
             {
-                // Upcoming
                 ui.Circle.Background = inactiveBrush;
                 ui.Label.Foreground = dimBrush;
                 if (ui.Number != null) ui.Number.Foreground = dimBrush;
             }
 
-            // Lines
             if (i < lines.Length)
             {
                 lines[i].Background = stepNum < _currentStep ? successBrush : inactiveBrush;
@@ -179,14 +178,14 @@ public partial class MainWindow : Window
 
     private void UpdateNavButtons()
     {
-        BackButton.Visibility = _currentStep > 1 && _currentStep < 4
+        BackButton.Visibility = _currentStep > 1 && _currentStep < 5
             ? Visibility.Visible : Visibility.Collapsed;
 
-        if (_currentStep == 4)
+        if (_currentStep == 5)
         {
             NextButton.Content = "Close";
         }
-        else if (_currentStep == 3)
+        else if (_currentStep == 4)
         {
             NextButton.Content = _isUpdate ? "Updating..." : "Installing...";
             NextButton.IsEnabled = false;
@@ -226,7 +225,7 @@ public partial class MainWindow : Window
         installer.OnProcessBlocking = OnProcessBlockingAsync;
         _installPath = installer.InstallDir;
 
-        var toolNames = ProfileToolLists.GetToolsForProfile(_selectedProfile);
+        var toolNames = ToolGroupRegistry.GetToolsForGroups(_selectedGroups);
         var downloadItems = installer.BuildDownloadList(toolNames);
 
         _installStep?.SetItems(downloadItems);
@@ -248,7 +247,6 @@ public partial class MainWindow : Window
         var (version, assets) = releaseResult.Value;
         VersionText.Text = version;
 
-        // Check if already up to date (compare semantic versions, ignoring +commitHash suffix and v prefix)
         if (_isUpdate && _installedVersion != null)
         {
             var installedSemVer = _installedVersion.Split('+')[0].TrimStart('v');
@@ -260,7 +258,7 @@ public partial class MainWindow : Window
                 _alreadyUpToDate = true;
                 _cachedVersion = version;
                 _cachedAssets = assets;
-                SaveProfileSafe();
+                SaveSettingsSafe();
                 _installStep?.SetUpToDate(version);
                 if (_installStep != null)
                     _installStep.OnRepairRequested += OnRepairRequested;
@@ -281,10 +279,8 @@ public partial class MainWindow : Window
         _installedCount = installed;
         _skippedCount = skipped;
 
-        // Add to PATH
         PathManager.AddToPath(_installPath);
 
-        // Create Start Menu shortcut
         var directorExe = Path.Combine(_installPath, "cc-director.exe");
         if (File.Exists(directorExe))
         {
@@ -292,7 +288,6 @@ public partial class MainWindow : Window
             ShortcutCreator.CreateStartMenuShortcut(directorExe);
         }
 
-        // Install skills
         _installStep?.SetStatus("Installing skills...");
         var skillItems = _installStep?.GetSkillItems() ?? [];
         if (skillItems.Count > 0)
@@ -301,8 +296,7 @@ public partial class MainWindow : Window
             _installStep?.UpdateSkillsStatus();
         }
 
-        // Persist the selected profile for next time
-        SaveProfileSafe();
+        SaveSettingsSafe();
 
         _installStep?.SetStatus($"Done - {installed} tools installed, {skipped} skipped");
         SetupLog.Write($"[MainWindow] RunInstallAsync: complete, installed={installed}, skipped={skipped}");
@@ -335,7 +329,7 @@ public partial class MainWindow : Window
         installer.OnProcessBlocking = OnProcessBlockingAsync;
         _installPath = installer.InstallDir;
 
-        var toolNames = ProfileToolLists.GetToolsForProfile(_selectedProfile);
+        var toolNames = ToolGroupRegistry.GetToolsForGroups(_selectedGroups);
         var downloadItems = installer.BuildDownloadList(toolNames);
 
         _installStep?.SetItems(downloadItems);
@@ -363,7 +357,7 @@ public partial class MainWindow : Window
             _installStep?.UpdateSkillsStatus();
         }
 
-        SaveProfileSafe();
+        SaveSettingsSafe();
 
         _installStep?.SetStatus($"Repair complete - {installed} tools installed, {skipped} skipped");
         SetupLog.Write($"[MainWindow] RunRepairAsync: complete, installed={installed}, skipped={skipped}");
@@ -372,16 +366,17 @@ public partial class MainWindow : Window
         NextButton.IsEnabled = true;
     }
 
-    private void SaveProfileSafe()
+    private void SaveSettingsSafe()
     {
         try
         {
-            ProfileStore.Save(_selectedProfile);
-            SetupLog.Write($"[MainWindow] SaveProfileSafe: saved profile={_selectedProfile}");
+            var settings = new SavedSettings(_selectedProfile, _selectedGroups);
+            ProfileStore.Save(settings);
+            SetupLog.Write($"[MainWindow] SaveSettingsSafe: profile={_selectedProfile}, groups={_selectedGroups.Count}");
         }
         catch (Exception ex)
         {
-            SetupLog.Write($"[MainWindow] SaveProfileSafe FAILED: {ex.Message}");
+            SetupLog.Write($"[MainWindow] SaveSettingsSafe FAILED: {ex.Message}");
         }
     }
 
@@ -407,31 +402,40 @@ public partial class MainWindow : Window
 
     private void NextButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_currentStep == 4)
+        if (_currentStep == 5)
         {
             Close();
             return;
         }
 
-        if (_currentStep == 3 && NextButton.Content?.ToString() == "Retry")
+        if (_currentStep == 4 && NextButton.Content?.ToString() == "Retry")
         {
             _installStep = null;
-            ShowStep(3);
+            ShowStep(4);
             return;
         }
 
-        if (_currentStep < 4)
+        if (_currentStep < 5)
         {
             // Reset forward steps when going forward from profile selection
             if (_currentStep == 1)
             {
                 _welcomeStep?.UpdateProfile(ref _selectedProfile);
                 _prerequisitesStep = null;
+                _toolsStep = null;
                 _installStep = null;
                 _completeStep = null;
             }
 
+            // Capture tool group selections before leaving step 3
             if (_currentStep == 3)
+            {
+                _selectedGroups = _toolsStep?.GetEnabledGroups() ?? _selectedGroups;
+                _installStep = null;
+                _completeStep = null;
+            }
+
+            if (_currentStep == 4)
                 _completeStep = null; // Rebuild with final counts
 
             ShowStep(_currentStep + 1);

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="CC Director Setup"
         Icon="app.ico"
-        Width="900" Height="650"
+        Width="900" Height="700"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource PanelBackground}">
@@ -40,8 +40,8 @@
 
                 <!-- Step indicators -->
                 <StackPanel x:Name="StepIndicators" VerticalAlignment="Top">
-                    <!-- Step 1 -->
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
+                    <!-- Step 1: Welcome -->
+                    <StackPanel Orientation="Horizontal">
                         <Border x:Name="Step1Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource AccentBrush}">
                             <TextBlock Text="1" Foreground="White" FontSize="13"
@@ -59,8 +59,8 @@
                             Background="{StaticResource StepInactive}"
                             x:Name="Line12" />
 
-                    <!-- Step 2 -->
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
+                    <!-- Step 2: Prerequisites -->
+                    <StackPanel Orientation="Horizontal">
                         <Border x:Name="Step2Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource StepInactive}">
                             <TextBlock Text="2" Foreground="{StaticResource DimText}" FontSize="13"
@@ -79,8 +79,8 @@
                             Background="{StaticResource StepInactive}"
                             x:Name="Line23" />
 
-                    <!-- Step 3 -->
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
+                    <!-- Step 3: Tools -->
+                    <StackPanel Orientation="Horizontal">
                         <Border x:Name="Step3Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource StepInactive}">
                             <TextBlock Text="3" Foreground="{StaticResource DimText}" FontSize="13"
@@ -88,7 +88,7 @@
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step3Num" />
                         </Border>
-                        <TextBlock x:Name="Step3Label" Text="Install"
+                        <TextBlock x:Name="Step3Label" Text="Tools"
                                    Foreground="{StaticResource DimText}" FontSize="13"
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
                     </StackPanel>
@@ -99,8 +99,8 @@
                             Background="{StaticResource StepInactive}"
                             x:Name="Line34" />
 
-                    <!-- Step 4 -->
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
+                    <!-- Step 4: Install -->
+                    <StackPanel Orientation="Horizontal">
                         <Border x:Name="Step4Circle" Width="28" Height="28" CornerRadius="14"
                                 Background="{StaticResource StepInactive}">
                             <TextBlock Text="4" Foreground="{StaticResource DimText}" FontSize="13"
@@ -108,7 +108,27 @@
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
                                        x:Name="Step4Num" />
                         </Border>
-                        <TextBlock x:Name="Step4Label" Text="Complete"
+                        <TextBlock x:Name="Step4Label" Text="Install"
+                                   Foreground="{StaticResource DimText}" FontSize="13"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <!-- Line 4-5 -->
+                    <Border Width="2" Height="24" Margin="13,0,0,0"
+                            HorizontalAlignment="Left"
+                            Background="{StaticResource StepInactive}"
+                            x:Name="Line45" />
+
+                    <!-- Step 5: Complete -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Step5Circle" Width="28" Height="28" CornerRadius="14"
+                                Background="{StaticResource StepInactive}">
+                            <TextBlock Text="5" Foreground="{StaticResource DimText}" FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       x:Name="Step5Num" />
+                        </Border>
+                        <TextBlock x:Name="Step5Label" Text="Complete"
                                    Foreground="{StaticResource DimText}" FontSize="13"
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
                     </StackPanel>
