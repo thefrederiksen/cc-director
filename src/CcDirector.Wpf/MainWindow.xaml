@@ -410,6 +410,9 @@
                                         <ContextMenu Opened="SessionContextMenu_Opened" Closed="SessionContextMenu_Closed">
                                             <MenuItem Header="Rename" Click="MenuRenameSession_Click" />
                                             <Separator />
+                                            <MenuItem Header="Open .jsonl in Explorer" Click="SessionOpenJsonl_Click" />
+                                            <MenuItem Header="Relink Session" Click="SessionRelink_Click" />
+                                            <Separator />
                                             <MenuItem Header="Open in Explorer" Click="MenuOpenInExplorer_Click" />
                                             <MenuItem Header="Open in VS Code" Click="MenuOpenInVsCode_Click" />
                                             <MenuItem Header="GitHub Issues" Click="MenuGitHubIssues_Click" />
@@ -424,191 +427,21 @@
                                             BorderThickness="4,0,0,0"
                                             Padding="6,4,4,4">
                                         <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <!-- Column 0: Main content (3 rows) -->
+                                            <Grid Grid.Column="0">
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
-                                            <!-- Row 0: Display name + Status text -->
-                                            <StackPanel Grid.Row="0">
-                                                <!-- Session name with optional coaching icon -->
-                                                <StackPanel Orientation="Horizontal">
-                                                    <Viewbox Width="16" Height="16" Margin="0,0,6,0">
-                                                        <Viewbox.Style>
-                                                            <Style TargetType="Viewbox">
-                                                                <Setter Property="Visibility" Value="Visible" />
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding IsCoachingMode}" Value="False">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Viewbox.Style>
-                                                        <Canvas Width="24" Height="24">
-                                                            <Path Fill="#CCCCCC" Data="{Binding CoachingIconGeometry}" />
-                                                        </Canvas>
-                                                    </Viewbox>
-                                                    <TextBlock Text="{Binding DisplayName}"
-                                                               FontWeight="Medium"
-                                                               FontSize="13"
-                                                               TextTrimming="CharacterEllipsis" />
-                                                </StackPanel>
-                                                <!-- Status: Working (PID xxx) - ConPTY -->
-                                                <TextBlock Text="{Binding StatusText}"
-                                                           FontSize="10"
-                                                           Foreground="#888888"
-                                                           Margin="0,1,0,0" />
-                                            </StackPanel>
-
-                                            <!-- Row 1: ClaudeSessionId + Verification badge + [Open] [Relink] buttons -->
-                                            <DockPanel Grid.Row="1" Margin="0,4,0,0">
-                                                <!-- Buttons (right-aligned) -->
-                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="6,0,0,0">
-                                                    <!-- Open .jsonl button -->
-                                                    <Button Content="Open"
-                                                            Click="SessionOpenJsonl_Click"
-                                                            Focusable="False"
-                                                            FontSize="9"
-                                                            Padding="6,2"
-                                                            Margin="0,0,4,0"
-                                                            Background="#374151"
-                                                            Foreground="#D1D5DB"
-                                                            BorderThickness="0"
-                                                            Cursor="Hand"
-                                                            ToolTip="Open .jsonl file in Explorer">
-                                                        <Button.Style>
-                                                            <Style TargetType="Button">
-                                                                <Setter Property="Visibility" Value="Visible" />
-                                                                <Setter Property="IsEnabled" Value="True" />
-                                                                <Style.Triggers>
-                                                                    <!-- Hide when waiting for terminal verification -->
-                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                    <!-- Hide when terminal verification failed -->
-                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                    <!-- Disable when file not found or error -->
-                                                                    <DataTrigger Binding="{Binding Session.VerificationStatus}" Value="FileNotFound">
-                                                                        <Setter Property="IsEnabled" Value="False" />
-                                                                    </DataTrigger>
-                                                                    <DataTrigger Binding="{Binding Session.VerificationStatus}" Value="Error">
-                                                                        <Setter Property="IsEnabled" Value="False" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Button.Style>
-                                                    </Button>
-                                                    <!-- Relink button -->
-                                                    <Button Content="Relink"
-                                                            Click="SessionRelink_Click"
-                                                            Focusable="False"
-                                                            FontSize="9"
-                                                            Padding="6,2"
-                                                            Background="#374151"
-                                                            Foreground="#D1D5DB"
-                                                            BorderThickness="0"
-                                                            Cursor="Hand"
-                                                            ToolTip="Re-link to a different Claude session">
-                                                        <Button.Style>
-                                                            <Style TargetType="Button">
-                                                                <Setter Property="Visibility" Value="Visible" />
-                                                                <Style.Triggers>
-                                                                    <!-- Hide when waiting for terminal verification -->
-                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Button.Style>
-                                                    </Button>
-                                                </StackPanel>
-                                                <!-- Terminal Verification badge -->
-                                                <Border CornerRadius="2"
-                                                        Padding="4,1"
-                                                        Margin="0,0,4,0"
-                                                        VerticalAlignment="Center"
-                                                        ToolTip="{Binding TerminalVerificationStatusText}">
-                                                    <Border.Style>
-                                                        <Style TargetType="Border">
-                                                            <Setter Property="Background" Value="#22C55E" />
-                                                            <Setter Property="Visibility" Value="Collapsed" />
-                                                            <Style.Triggers>
-                                                                <!-- Gray for waiting -->
-                                                                <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
-                                                                    <Setter Property="Visibility" Value="Visible" />
-                                                                    <Setter Property="Background" Value="#6B7280" />
-                                                                </DataTrigger>
-                                                                <!-- Yellow/Orange for potential match -->
-                                                                <DataTrigger Binding="{Binding IsTerminalVerificationPotential}" Value="True">
-                                                                    <Setter Property="Visibility" Value="Visible" />
-                                                                    <Setter Property="Background" Value="#F59E0B" />
-                                                                </DataTrigger>
-                                                                <!-- Green for confirmed match -->
-                                                                <DataTrigger Binding="{Binding IsTerminalVerificationMatched}" Value="True">
-                                                                    <Setter Property="Visibility" Value="Visible" />
-                                                                    <Setter Property="Background" Value="#22C55E" />
-                                                                </DataTrigger>
-                                                                <!-- Red for failed -->
-                                                                <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
-                                                                    <Setter Property="Visibility" Value="Visible" />
-                                                                    <Setter Property="Background" Value="#EF4444" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Border.Style>
-                                                    <TextBlock FontSize="8" FontWeight="Bold" Foreground="White">
-                                                        <TextBlock.Style>
-                                                            <Style TargetType="TextBlock">
-                                                                <Setter Property="Text" Value="OK" />
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
-                                                                        <Setter Property="Text" Value="?" />
-                                                                    </DataTrigger>
-                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationPotential}" Value="True">
-                                                                        <Setter Property="Text" Value="?" />
-                                                                    </DataTrigger>
-                                                                    <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
-                                                                        <Setter Property="Text" Value="!" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </TextBlock.Style>
-                                                    </TextBlock>
-                                                </Border>
-                                                <!-- Claude session ID or status text -->
-                                                <TextBlock FontFamily="Consolas, Courier New"
-                                                           FontSize="10"
-                                                           VerticalAlignment="Center">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock">
-                                                            <Setter Property="Text" Value="{Binding ClaudeSessionIdShort}" />
-                                                            <Setter Property="Foreground" Value="#9CA3AF" />
-                                                            <Style.Triggers>
-                                                                <!-- Show "Waiting..." when waiting -->
-                                                                <DataTrigger Binding="{Binding IsTerminalVerificationWaiting}" Value="True">
-                                                                    <Setter Property="Text" Value="Waiting..." />
-                                                                    <Setter Property="Foreground" Value="#6B7280" />
-                                                                </DataTrigger>
-                                                                <!-- Show session ID in yellow/orange when potential match -->
-                                                                <DataTrigger Binding="{Binding IsTerminalVerificationPotential}" Value="True">
-                                                                    <Setter Property="Foreground" Value="#F59E0B" />
-                                                                </DataTrigger>
-                                                                <!-- Show "Verification Failed" in red when failed -->
-                                                                <DataTrigger Binding="{Binding IsTerminalVerificationFailed}" Value="True">
-                                                                    <Setter Property="Text" Value="Verification Failed" />
-                                                                    <Setter Property="Foreground" Value="#EF4444" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                            </DockPanel>
-
-                                            <!-- Row 2: Stats badges + three-dot menu -->
-                                            <DockPanel Grid.Row="2" Margin="0,4,0,0">
+                                            <!-- Row 0: Session name + menu button -->
+                                            <DockPanel Grid.Row="0">
                                                 <!-- Three-dot menu button (right-aligned) -->
                                                 <Button DockPanel.Dock="Right"
                                                         Content="..."
@@ -637,89 +470,136 @@
                                                         </Style>
                                                     </Button.Style>
                                                 </Button>
-                                                <!-- Stats badges -->
-                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                    <!-- Message count badge -->
-                                                    <Border Background="#3B82F6"
-                                                            CornerRadius="8"
-                                                            Padding="6,2"
-                                                            Margin="0,0,6,0"
-                                                            VerticalAlignment="Center">
-                                                        <Border.Style>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="Visibility" Value="Visible" />
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding HasClaudeMetadata}" Value="False">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Border.Style>
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding ClaudeMessageCount}"
-                                                                       Foreground="White"
-                                                                       FontSize="9"
-                                                                       FontWeight="SemiBold" />
-                                                            <TextBlock Text=" msgs"
-                                                                       Foreground="White"
-                                                                       FontSize="9"
-                                                                       Opacity="0.8" />
-                                                        </StackPanel>
-                                                    </Border>
-                                                    <!-- Uncommitted changes badge (orange) -->
-                                                    <Border Background="#D97706"
-                                                            CornerRadius="8"
-                                                            Padding="6,2"
-                                                            VerticalAlignment="Center">
-                                                        <Border.Style>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="Visibility" Value="Visible" />
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding HasUncommittedChanges}" Value="False">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Border.Style>
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding UncommittedCount}"
-                                                                       Foreground="White"
-                                                                       FontSize="9"
-                                                                       FontWeight="SemiBold" />
-                                                            <TextBlock Text=" uncommitted"
-                                                                       Foreground="White"
-                                                                       FontSize="9"
-                                                                       Opacity="0.8" />
-                                                        </StackPanel>
-                                                    </Border>
-                                                    <!-- Queued messages badge (red) -->
-                                                    <Border Background="#DC2626"
-                                                            CornerRadius="8"
-                                                            Padding="6,2"
-                                                            VerticalAlignment="Center">
-                                                        <Border.Style>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="Visibility" Value="Visible" />
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding HasQueuedMessages}" Value="False">
-                                                                        <Setter Property="Visibility" Value="Collapsed" />
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Border.Style>
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding QueuedCount}"
-                                                                       Foreground="White"
-                                                                       FontSize="9"
-                                                                       FontWeight="SemiBold" />
-                                                            <TextBlock Text=" queued"
-                                                                       Foreground="White"
-                                                                       FontSize="9"
-                                                                       Opacity="0.8" />
-                                                        </StackPanel>
-                                                    </Border>
-                                                </StackPanel>
+                                                <!-- Coaching icon (conditional) -->
+                                                <Viewbox DockPanel.Dock="Left" Width="16" Height="16" Margin="0,0,6,0">
+                                                    <Viewbox.Style>
+                                                        <Style TargetType="Viewbox">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsCoachingMode}" Value="False">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Viewbox.Style>
+                                                    <Canvas Width="24" Height="24">
+                                                        <Path Fill="#CCCCCC" Data="{Binding CoachingIconGeometry}" />
+                                                    </Canvas>
+                                                </Viewbox>
+                                                <!-- Session name (fills remaining space) -->
+                                                <TextBlock Text="{Binding DisplayName}"
+                                                           FontWeight="Medium"
+                                                           FontSize="13"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center" />
                                             </DockPanel>
+
+                                            <!-- Row 1: Activity label + verification dot -->
+                                            <DockPanel Grid.Row="1" Margin="0,2,0,0">
+                                                <!-- Verification warning dot (only for problem states) -->
+                                                <Ellipse DockPanel.Dock="Right"
+                                                         Width="6" Height="6"
+                                                         Fill="{Binding VerificationDotBrush}"
+                                                         Margin="6,0,0,0"
+                                                         VerticalAlignment="Center"
+                                                         ToolTip="{Binding TerminalVerificationStatusText}">
+                                                    <Ellipse.Style>
+                                                        <Style TargetType="Ellipse">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding ShowVerificationDot}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Ellipse.Style>
+                                                </Ellipse>
+                                                <!-- Activity label -->
+                                                <TextBlock Text="{Binding ActivityLabel}"
+                                                           FontSize="10"
+                                                           Foreground="#888888"
+                                                           VerticalAlignment="Center"
+                                                           ToolTip="{Binding StatusText}" />
+                                            </DockPanel>
+
+                                            <!-- Row 2: Badges (always present for consistent height) -->
+                                            <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,4,0,0"
+                                                        MinHeight="16">
+                                                <!-- Uncommitted changes badge (orange) -->
+                                                <Border Background="#D97706"
+                                                        CornerRadius="8"
+                                                        Padding="5,1"
+                                                        VerticalAlignment="Center">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasUncommittedChanges}" Value="False">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding UncommittedCount}"
+                                                                   Foreground="White"
+                                                                   FontSize="9"
+                                                                   FontWeight="SemiBold" />
+                                                        <TextBlock Text=" uncommitted"
+                                                                   Foreground="White"
+                                                                   FontSize="9"
+                                                                   Opacity="0.8" />
+                                                    </StackPanel>
+                                                </Border>
+                                                <!-- Queued messages badge (red) -->
+                                                <Border Background="#DC2626"
+                                                        CornerRadius="8"
+                                                        Padding="5,1"
+                                                        Margin="4,0,0,0"
+                                                        VerticalAlignment="Center">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasQueuedMessages}" Value="False">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding QueuedCount}"
+                                                                   Foreground="White"
+                                                                   FontSize="9"
+                                                                   FontWeight="SemiBold" />
+                                                        <TextBlock Text=" queued"
+                                                                   Foreground="White"
+                                                                   FontSize="9"
+                                                                   Opacity="0.8" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </StackPanel>
+                                            </Grid>
+
+                                            <!-- Column 1: Custom color pill (only visible when color is set) -->
+                                            <Border Grid.Column="1"
+                                                    Width="16"
+                                                    CornerRadius="4"
+                                                    Margin="6,2,0,2"
+                                                    Background="{Binding CustomColorBrush}"
+                                                    VerticalAlignment="Stretch"
+                                                    ToolTip="{Binding CustomColor}">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HasCustomColor}" Value="False">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                            </Border>
                                         </Grid>
                                     </Border>
                                 </Grid>
@@ -800,7 +680,7 @@
                                 </Style>
                             </TabControl.Resources>
 
-                            <TabItem Header="Terminal">
+                            <TabItem x:Name="TerminalTab" Header="Terminal">
                                 <Grid Background="#1E1E1E">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -889,6 +769,9 @@
                                         </Grid>
                                     </Border>
                                 </Grid>
+                            </TabItem>
+                            <TabItem x:Name="BusinessTab" Header="Business">
+                                <controls:BusinessView x:Name="BusinessView" />
                             </TabItem>
                             <TabItem x:Name="SimpleChatTab" Header="Simple">
                                 <controls:SimpleChatView x:Name="SimpleChatView" />

@@ -504,7 +504,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var session = _sessionManager.CreateSession(p.RepoPath, null, SessionBackendType.ConPty, resumeSessionId);
+            var session = _sessionManager.CreateSession(p.RepoPath, null, p.BackendType, resumeSessionId);
             if (session == null)
                 return new SingleRestoreResult(RestoreStatus.CreateFailed, $"{repoName} (create failed)");
 
@@ -1437,9 +1437,10 @@ public partial class MainWindow : Window
             if (dialog.BypassPermissions)
                 claudeArgs += "--dangerously-skip-permissions ";
             claudeArgs = claudeArgs.Trim();
-            FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog confirmed, path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}, dialogTime={sw.ElapsedMilliseconds}ms");
+            var backendType = dialog.IsStudioMode ? SessionBackendType.Studio : SessionBackendType.ConPty;
+            FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog confirmed, path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}, mode={backendType}, dialogTime={sw.ElapsedMilliseconds}ms");
 
-            var vm = CreateSession(dialog.SelectedPath, resumeSessionId, claudeArgs);
+            var vm = CreateSession(dialog.SelectedPath, resumeSessionId, claudeArgs, backendType);
             if (vm == null) return;
 
             FileLog.Write($"[MainWindow] BtnNewSession_Click: session created, id={vm.Session.Id}, elapsed={sw.ElapsedMilliseconds}ms");
@@ -1491,16 +1492,28 @@ public partial class MainWindow : Window
         }
     }
 
-    private SessionViewModel? CreateSession(string repoPath, string? resumeSessionId = null, string? claudeArgs = null)
+    private SessionViewModel? CreateSession(string repoPath, string? resumeSessionId = null, string? claudeArgs = null, SessionBackendType backendType = SessionBackendType.ConPty)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        FileLog.Write($"[MainWindow] CreateSession: repoPath={repoPath}, resume={resumeSessionId ?? "null"}, args={claudeArgs ?? "default"}");
+        FileLog.Write($"[MainWindow] CreateSession: repoPath={repoPath}, resume={resumeSessionId ?? "null"}, args={claudeArgs ?? "default"}, backendType={backendType}");
         try
         {
-            // Create session with ConPty backend (default mode)
-            var session = _sessionManager.CreateSession(repoPath, claudeArgs, SessionBackendType.ConPty, resumeSessionId);
+            var session = _sessionManager.CreateSession(repoPath, claudeArgs, backendType, resumeSessionId);
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}, elapsed={sw.ElapsedMilliseconds}ms");
             session.OnTurnCompleted += OnSimpleChatTurnCompleted;
+
+            // Studio mode: hooks don't fire in -p mode, so we manually
+            // transition ActivityState when a prompt completes
+            if (session.Backend is StudioBackend studio)
+            {
+                studio.PromptCompleted += () =>
+                {
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        session.HandlePipeEvent(new PipeMessage { HookEventName = "Stop" });
+                    });
+                };
+            }
             var vm = new SessionViewModel(session, Dispatcher);
             _sessions.Add(vm);
             SessionList.SelectedItem = vm;
@@ -1665,9 +1678,16 @@ public partial class MainWindow : Window
         }
         TerminalArea.Child = null;
 
-        if (session.BackendType == SessionBackendType.Embedded)
+        if (session.BackendType == SessionBackendType.Studio)
         {
-            // Get the embedded backend from the session
+            // Studio mode: hide terminal tab, show Business tab
+            TerminalTab.Visibility = Visibility.Collapsed;
+            RendererModePanel.Visibility = Visibility.Collapsed;
+        }
+        else if (session.BackendType == SessionBackendType.Embedded)
+        {
+            // Embedded mode: show terminal tab
+            TerminalTab.Visibility = Visibility.Visible;
             if (session.Backend is EmbeddedBackend embeddedBackend)
             {
                 _activeEmbeddedBackend = embeddedBackend;
@@ -1677,6 +1697,8 @@ public partial class MainWindow : Window
         }
         else
         {
+            // ConPty/Pipe mode: show terminal tab with terminal control
+            TerminalTab.Visibility = Visibility.Visible;
             _terminalControl = new TerminalControl();
             TerminalArea.Child = _terminalControl;
             _terminalControl.ScrollChanged += OnTerminalScrollChanged;
@@ -1715,8 +1737,11 @@ public partial class MainWindow : Window
         // Rebuild hook events panel for the new session
         RefreshHookEventsPanel();
 
-        // Select Terminal tab and focus
-        SessionTabs.SelectedIndex = 0;
+        // Select appropriate tab: Business for Studio mode, Terminal for others
+        if (session.BackendType == SessionBackendType.Studio)
+            SessionTabs.SelectedItem = BusinessTab;
+        else
+            SessionTabs.SelectedIndex = 0;
     }
 
     private void DetachTerminal()
@@ -2965,6 +2990,11 @@ public partial class MainWindow : Window
             // Send keystrokes directly to the embedded console window
             await _activeEmbeddedBackend.SendTextAsync(text);
             ScheduleEnterRetry(_activeSession);
+        }
+        else if (_activeSession.BackendType == SessionBackendType.Studio)
+        {
+            // Studio mode: stdin pipe, no Enter retry needed
+            await _activeSession.SendTextAsync(text);
         }
         else
         {
@@ -4583,8 +4613,12 @@ public class SessionViewModel : INotifyPropertyChanged
             _customColorBrush = null;
             OnPropertyChanged();
             OnPropertyChanged(nameof(CustomColorBrush));
+            OnPropertyChanged(nameof(HasCustomColor));
         }
     }
+
+    /// <summary>Whether a custom color is set for this session.</summary>
+    public bool HasCustomColor => !string.IsNullOrWhiteSpace(Session.CustomColor);
 
     private SolidColorBrush? _customColorBrush;
     public SolidColorBrush CustomColorBrush
@@ -4625,6 +4659,7 @@ public class SessionViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(DisplayName));
         OnPropertyChanged(nameof(CustomColor));
         OnPropertyChanged(nameof(CustomColorBrush));
+        OnPropertyChanged(nameof(HasCustomColor));
     }
 
     /// <summary>Prompt text the user was composing but hasn't sent yet. Saved/restored on session switch.</summary>
