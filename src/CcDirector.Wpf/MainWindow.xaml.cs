@@ -1264,6 +1264,7 @@ public partial class MainWindow : Window
         MenuHistoryVsCodeItem.Visibility = vis;
 
         // -- Session tabs --
+        BusinessTab.Visibility = vis;
         SimpleChatTab.Visibility = vis;
 
         // -- Prompt bar buttons --
@@ -1708,6 +1709,9 @@ public partial class MainWindow : Window
         SimpleChatView.SetClaudeClient(GetOrCreateClaudeClient(session.WorkingDirectory));
         SimpleChatView.Attach(session);
 
+        // Attach Business view
+        BusinessView.Attach(session);
+
         // Rebuild hook events panel for the new session
         RefreshHookEventsPanel();
 
@@ -1745,6 +1749,7 @@ public partial class MainWindow : Window
         UpdateSessionHeader();
 
         SimpleChatView.Detach();
+        BusinessView.Detach();
         GitChanges.Detach();
         SourceControlTab.Visibility = Visibility.Collapsed;
 
@@ -3412,8 +3417,13 @@ public partial class MainWindow : Window
     {
         FileLog.Write("[MainWindow] SessionOpenJsonl_Click");
 
-        if (sender is not Button button || button.DataContext is not SessionViewModel vm)
-            return;
+        SessionViewModel? vm = sender switch
+        {
+            Button button => button.DataContext as SessionViewModel,
+            MenuItem menuItem => menuItem.DataContext as SessionViewModel,
+            _ => null
+        };
+        if (vm == null) return;
 
         var claudeSessionId = vm.Session.ClaudeSessionId;
         if (string.IsNullOrEmpty(claudeSessionId))
@@ -3440,8 +3450,13 @@ public partial class MainWindow : Window
     {
         FileLog.Write("[MainWindow] SessionRelink_Click");
 
-        if (sender is not Button button || button.DataContext is not SessionViewModel vm)
-            return;
+        SessionViewModel? vm = sender switch
+        {
+            Button button => button.DataContext as SessionViewModel,
+            MenuItem menuItem => menuItem.DataContext as SessionViewModel,
+            _ => null
+        };
+        if (vm == null) return;
 
         var dialog = new RelinkSessionDialog(vm.Session.RepoPath) { Owner = this };
         if (dialog.ShowDialog() == true && !string.IsNullOrEmpty(dialog.SelectedSessionId))
@@ -4425,12 +4440,13 @@ public partial class MainWindow : Window
         if (fromIndex < 0) return;
 
         int toIndex = insertBelow ? targetIndex + 1 : targetIndex;
-        // Clamp
-        toIndex = Math.Max(0, Math.Min(toIndex, _sessions.Count - 1));
+        toIndex = Math.Max(0, Math.Min(toIndex, _sessions.Count));
 
-        // Adjust for removal shift
+        // Adjust for removal shift (moving an item out shifts indices down)
         if (fromIndex < toIndex)
             toIndex--;
+
+        toIndex = Math.Max(0, Math.Min(toIndex, _sessions.Count - 1));
 
         if (fromIndex != toIndex && toIndex >= 0 && toIndex < _sessions.Count)
         {
@@ -4615,6 +4631,7 @@ public class SessionViewModel : INotifyPropertyChanged
     public string PendingPromptText { get; set; } = string.Empty;
 
     public string StatusText => $"{MainWindow.ActivityLabels.GetValueOrDefault(Session.ActivityState, Session.ActivityState.ToString())} (PID {Session.ProcessId})";
+    public string ActivityLabel => MainWindow.ActivityLabels.GetValueOrDefault(Session.ActivityState, Session.ActivityState.ToString());
     public SolidColorBrush ActivityBrush => ActivityBrushes.GetValueOrDefault(Session.ActivityState, ActivityBrushes[ActivityState.Starting]);
 
     /// <summary>Claude session summary (from sessions-index.json).</summary>
@@ -4763,6 +4780,7 @@ public class SessionViewModel : INotifyPropertyChanged
                 _uncommittedCount = value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(HasUncommittedChanges));
+                OnPropertyChanged(nameof(HasAnyBadges));
             }
         }
     }
@@ -4780,11 +4798,33 @@ public class SessionViewModel : INotifyPropertyChanged
                 _queuedCount = value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(HasQueuedMessages));
+                OnPropertyChanged(nameof(HasAnyBadges));
             }
         }
     }
 
     public bool HasQueuedMessages => _queuedCount > 0;
+
+    /// <summary>Whether any badges should be shown (uncommitted or queued).</summary>
+    public bool HasAnyBadges => HasUncommittedChanges || HasQueuedMessages;
+
+    /// <summary>Whether to show the verification warning dot (non-matched states only).</summary>
+    public bool ShowVerificationDot => Session.TerminalVerificationStatus is TerminalVerificationStatus.Waiting
+                                                                           or TerminalVerificationStatus.Potential
+                                                                           or TerminalVerificationStatus.Failed;
+
+    private static readonly SolidColorBrush VerificationWaitingBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)));
+    private static readonly SolidColorBrush VerificationPotentialBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B)));
+    private static readonly SolidColorBrush VerificationFailedBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44)));
+
+    /// <summary>Brush for the verification warning dot.</summary>
+    public SolidColorBrush VerificationDotBrush => Session.TerminalVerificationStatus switch
+    {
+        TerminalVerificationStatus.Waiting => VerificationWaitingBrush,
+        TerminalVerificationStatus.Potential => VerificationPotentialBrush,
+        TerminalVerificationStatus.Failed => VerificationFailedBrush,
+        _ => VerificationWaitingBrush
+    };
 
     /// <summary>Refresh Claude metadata from sessions-index.json.</summary>
     public void RefreshClaudeMetadata()
@@ -4799,6 +4839,7 @@ public class SessionViewModel : INotifyPropertyChanged
         _dispatcher.BeginInvoke(() =>
         {
             OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(ActivityLabel));
             OnPropertyChanged(nameof(ActivityBrush));
         });
     }
@@ -4839,6 +4880,8 @@ public class SessionViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsTerminalVerificationPotential));
             OnPropertyChanged(nameof(IsTerminalVerificationMatched));
             OnPropertyChanged(nameof(IsTerminalVerificationFailed));
+            OnPropertyChanged(nameof(ShowVerificationDot));
+            OnPropertyChanged(nameof(VerificationDotBrush));
             // Also update verification-related properties since ClaudeSessionId may have changed
             OnPropertyChanged(nameof(ClaudeSessionIdShort));
             OnPropertyChanged(nameof(IsVerified));
