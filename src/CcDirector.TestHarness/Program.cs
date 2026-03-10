@@ -35,12 +35,12 @@ internal static class Program
         await HookInstaller.InstallAsync(relayScript, log: msg => Log($"  {msg}"));
         Log("Hooks installed.");
 
-        // 3. Start pipe server
+        // 3. Start file event watcher
         var messages = new ConcurrentBag<PipeMessage>();
         var promptReceived = new TaskCompletionSource<PipeMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var pipeServer = new DirectorPipeServer(log: msg => Log($"[Pipe] {msg}"));
-        pipeServer.OnMessageReceived += msg =>
+        using var watcher = new DirectorFileEventWatcher(log: msg => Log($"[FileEvent] {msg}"));
+        watcher.OnMessageReceived += msg =>
         {
             messages.Add(msg);
             var detail = msg.HookEventName switch
@@ -51,13 +51,13 @@ internal static class Program
                 "Stop" => "",
                 _ => $"tool={msg.ToolName}"
             };
-            Log($"[PipeMsg] {msg.HookEventName,-25} session={msg.SessionId?[..Math.Min(8, msg.SessionId.Length)]}  {detail}");
+            Log($"[EventMsg] {msg.HookEventName,-25} session={msg.SessionId?[..Math.Min(8, msg.SessionId.Length)]}  {detail}");
 
             if (msg.HookEventName == "UserPromptSubmit")
                 promptReceived.TrySetResult(msg);
         };
-        pipeServer.Start();
-        Log("Pipe server listening on CC_ClaudeDirector.");
+        watcher.Start();
+        Log("File event watcher listening.");
 
         // 4. Start claude in pipe mode
         const string prompt = "Say hello";
@@ -116,13 +116,13 @@ internal static class Program
 
         await Task.WhenAll(stdoutTask, stderrTask);
 
-        // 8. Wait a few more seconds for late pipe events
+        // 8. Wait a few more seconds for late events
         Log("Waiting 5s for late hook events...");
         await Task.Delay(5_000);
 
         // 9. Print summary
         Console.WriteLine();
-        Console.WriteLine("--- PIPE MESSAGES ---");
+        Console.WriteLine("--- EVENT MESSAGES ---");
         var ordered = messages.OrderBy(m => m.ReceivedAt).ToList();
         if (ordered.Count == 0)
         {
@@ -143,13 +143,13 @@ internal static class Program
         if (promptReceived.Task.IsCompletedSuccessfully)
         {
             var msg = promptReceived.Task.Result;
-            Console.WriteLine($"RESULT: SUCCESS — UserPromptSubmit received (prompt=\"{msg.Prompt}\")");
+            Console.WriteLine($"RESULT: SUCCESS -- UserPromptSubmit received (prompt=\"{msg.Prompt}\")");
             Console.WriteLine("CONCLUSION: stdin delivery works. ConPTY is the problem.");
             return 0;
         }
         else
         {
-            Console.WriteLine("RESULT: FAILURE — UserPromptSubmit was NOT received.");
+            Console.WriteLine("RESULT: FAILURE -- UserPromptSubmit was NOT received.");
             Console.WriteLine("NEXT: Investigate hooks or relay script issue.");
             return 1;
         }

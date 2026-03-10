@@ -4,6 +4,7 @@ using System.Windows.Documents;
 using System.Windows.Media;
 using CcDirector.Core.Claude;
 using CcDirector.Wpf.Helpers;
+using Thickness = System.Windows.Thickness;
 
 namespace CcDirector.Wpf.Controls;
 
@@ -64,6 +65,15 @@ public sealed class CleanWidgetViewModel
         ? Visibility.Visible : Visibility.Collapsed;
 
     // -- Computed display properties --
+
+    /// <summary>Whether this widget represents a tool call (should be indented and collapsed).</summary>
+    public bool IsToolWidget => Kind is not WidgetKind.Text
+        and not WidgetKind.Thinking and not WidgetKind.UserMessage;
+
+    /// <summary>Card margin: tool widgets are indented 40px from the left.</summary>
+    public Thickness CardMargin => IsToolWidget
+        ? new Thickness(40, 4, 8, 4)
+        : new Thickness(8, 4, 8, 4);
 
     public string IconText => Kind switch
     {

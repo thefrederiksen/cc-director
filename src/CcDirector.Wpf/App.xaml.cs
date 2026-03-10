@@ -25,7 +25,6 @@ public partial class App : Application
     public List<RepositoryConfig> Repositories { get; private set; } = new();
     public RepositoryRegistry RepositoryRegistry { get; private set; } = null!; // Initialized in OnStartup
     public RootDirectoryStore RootDirectoryStore { get; private set; } = null!; // Initialized in OnStartup
-    public IDirectorServer PipeServer { get; private set; } = null!; // Initialized in OnStartup
     public DirectorFileEventWatcher FileEventWatcher { get; private set; } = null!; // Initialized in OnStartup
     public EventRouter EventRouter { get; private set; } = null!; // Initialized in OnStartup
     public SessionStateStore SessionStateStore { get; private set; } = null!; // Initialized in OnStartup
@@ -152,13 +151,8 @@ public partial class App : Application
             RestoredPersistedData = SessionManager.LoadPersistedSessions(SessionStateStore);
         }
 
-        // Start pipe server and event router (platform-appropriate: named pipes on Windows, Unix socket on Mac/Linux)
-        PipeServer = DirectorServerFactory.Create(log);
+        // Start event router and file-based event watcher (broadcasts to ALL instances)
         EventRouter = new EventRouter(SessionManager, log);
-        PipeServer.OnMessageReceived += EventRouter.Route;
-        PipeServer.Start();
-
-        // Start file-based event watcher (broadcasts to ALL instances, unlike the pipe which is point-to-point)
         FileEventWatcher = new DirectorFileEventWatcher(log);
         FileEventWatcher.OnMessageReceived += EventRouter.Route;
         FileEventWatcher.Start();
@@ -271,7 +265,6 @@ public partial class App : Application
             BackupCleaner?.Dispose();
             NulFileWatcher?.Dispose();
             FileEventWatcher?.Dispose();
-            PipeServer?.Dispose();
             SessionManager?.Dispose();
 
             FileLog.Write("[CcDirector] Exiting");

@@ -87,21 +87,6 @@ public static class HookRelayScript
             $fileName = [System.Guid]::NewGuid().ToString("N") + ".json"
             $filePath = Join-Path $eventDir $fileName
             [System.IO.File]::WriteAllText($filePath, $json.Trim())
-
-            # Also send via named pipe for backward compatibility
-            try {
-                $pipeName = "CC_ClaudeDirector"
-                $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", $pipeName, [System.IO.Pipes.PipeDirection]::Out)
-                $pipe.Connect(1000)
-                $writer = New-Object System.IO.StreamWriter($pipe)
-                $writer.WriteLine($json.Trim())
-                $writer.Flush()
-                $writer.Close()
-                $pipe.Dispose()
-            }
-            catch {
-                # Pipe failure is OK - file relay is the primary mechanism
-            }
         }
         catch {
             # Silent failure - don't interfere with Claude Code
