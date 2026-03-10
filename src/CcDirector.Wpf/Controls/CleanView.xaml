@@ -259,7 +259,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <!-- Rewind button -->
+                <!-- Rewind button (opens context menu for confirmation) -->
                 <Button Grid.Column="0"
                         Click="RewindButton_Click"
                         Tag="{Binding SnapshotEntryNumber}"
@@ -269,6 +269,13 @@
                         Margin="0,0,6,0"
                         VerticalAlignment="Center"
                         Cursor="Hand">
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Reset to here"
+                                      Tag="{Binding SnapshotEntryNumber}"
+                                      Click="RewindMenuItem_Click" />
+                        </ContextMenu>
+                    </Button.ContextMenu>
                     <Button.Style>
                         <Style TargetType="Button">
                             <Setter Property="Background" Value="Transparent" />
@@ -426,24 +433,34 @@
                    VerticalAlignment="Center"
                    Visibility="Collapsed" />
 
-        <!-- Progress bar area -->
-        <Border x:Name="ProgressArea" Grid.Row="1"
-                Visibility="Collapsed"
-                Padding="12,6">
-            <StackPanel>
-                <ProgressBar IsIndeterminate="True"
-                             Height="3"
-                             Background="#3C3C3C"
-                             Foreground="#007ACC"
-                             BorderThickness="0" />
-                <TextBlock x:Name="ProgressText"
-                           Text="Claude is working..."
-                           Foreground="#888888"
+        <!-- Status bar area -->
+        <Border x:Name="StatusArea" Grid.Row="1" Padding="12,6">
+            <Grid>
+                <!-- Working state: progress bar + text -->
+                <StackPanel x:Name="ProgressArea" Visibility="Collapsed">
+                    <ProgressBar IsIndeterminate="True"
+                                 Height="3"
+                                 Background="#3C3C3C"
+                                 Foreground="#007ACC"
+                                 BorderThickness="0" />
+                    <TextBlock x:Name="ProgressText"
+                               Text="Claude is working..."
+                               Foreground="#888888"
+                               FontFamily="Segoe UI"
+                               FontSize="10"
+                               FontStyle="Italic"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+                <!-- Your Turn state -->
+                <TextBlock x:Name="YourTurnText"
+                           Text="Your Turn"
+                           Foreground="#22C55E"
                            FontFamily="Segoe UI"
-                           FontSize="10"
-                           FontStyle="Italic"
-                           Margin="0,4,0,0" />
-            </StackPanel>
+                           FontSize="11"
+                           FontWeight="SemiBold"
+                           Visibility="Collapsed"
+                           HorizontalAlignment="Left" />
+            </Grid>
         </Border>
     </Grid>
 </UserControl>

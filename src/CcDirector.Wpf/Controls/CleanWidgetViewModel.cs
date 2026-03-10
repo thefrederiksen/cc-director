@@ -171,13 +171,12 @@ public sealed class CleanWidgetViewModel
                     }
                     else if (block.Type == ContentBlockType.Text && !string.IsNullOrWhiteSpace(block.Text))
                     {
-                        var entryNumber = userPromptIndex < snapshotCount ? userPromptIndex : -1;
                         widgets.Add(new CleanWidgetViewModel
                         {
                             Kind = WidgetKind.UserMessage,
                             Header = "You",
                             Content = block.Text,
-                            SnapshotEntryNumber = entryNumber
+                            SnapshotEntryNumber = userPromptIndex
                         });
                         userPromptIndex++;
                         addedUserText = true;
@@ -187,13 +186,12 @@ public sealed class CleanWidgetViewModel
                 // Fallback: user message as simple text string (no content blocks)
                 if (!addedUserText && !string.IsNullOrWhiteSpace(msg.Text))
                 {
-                    var entryNumber = userPromptIndex < snapshotCount ? userPromptIndex : -1;
                     widgets.Add(new CleanWidgetViewModel
                     {
                         Kind = WidgetKind.UserMessage,
                         Header = "You",
                         Content = msg.Text,
-                        SnapshotEntryNumber = entryNumber
+                        SnapshotEntryNumber = userPromptIndex
                     });
                     userPromptIndex++;
                 }

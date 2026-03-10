@@ -182,6 +182,7 @@ public partial class MainWindow : Window
             try { OpenDocumentFile(path); }
             catch (Exception ex) { FileLog.Write($"[MainWindow] GitChanges.ViewFileRequested FAILED: {ex.Message}"); }
         };
+        CleanView.RewindRequested += OnCleanViewRewindRequested;
 
         _sessionGitTimer = new System.Windows.Threading.DispatcherTimer
         {
@@ -1780,11 +1781,8 @@ public partial class MainWindow : Window
         // Rebuild hook events panel for the new session
         RefreshHookEventsPanel();
 
-        // Select appropriate tab: Clean for Studio mode (preserved for future), Terminal for others
-        if (session.BackendType == SessionBackendType.Studio)
-            SessionTabs.SelectedItem = CleanTab;
-        else
-            SessionTabs.SelectedIndex = 0;
+        // Default to Agent tab (index 0)
+        SessionTabs.SelectedItem = CleanTab;
     }
 
     private void DetachTerminal()
@@ -3124,6 +3122,88 @@ public partial class MainWindow : Window
         }
     }
 
+    // ── Clean View Rewind ─────────────────────────────────────────
+
+    private async void OnCleanViewRewindRequested(Session session, int entryNumber)
+    {
+        FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: session={session.Id}, entry={entryNumber}");
+
+        if (session.History == null)
+        {
+            FileLog.Write("[MainWindow] OnCleanViewRewindRequested: no History on session");
+            ShowNotification("Rewind not available -- no history for this session");
+            return;
+        }
+
+        // Try to restore the snapshot. Entry 0 may not have a JSONL yet (before first prompt).
+        string? newSessionId = null;
+        bool isFreshReset = false;
+
+        if (entryNumber == 0)
+        {
+            // Resetting to before the first prompt = start a fresh session
+            FileLog.Write("[MainWindow] OnCleanViewRewindRequested: entry 0 -- starting fresh session");
+            isFreshReset = true;
+        }
+        else
+        {
+            newSessionId = session.History.RestoreSnapshot(entryNumber, session.RepoPath);
+            if (newSessionId == null)
+            {
+                FileLog.Write("[MainWindow] OnCleanViewRewindRequested: RestoreSnapshot returned null");
+                ShowNotification("Rewind failed -- could not restore snapshot");
+                return;
+            }
+            FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: restored to new session {newSessionId}");
+        }
+
+        var repoPath = session.RepoPath;
+        var sessionId = session.Id;
+
+        // Detach terminal and remove from UI
+        if (_activeSession?.Id == sessionId)
+        {
+            _activeEmbeddedBackend = null;
+            DetachTerminal();
+        }
+
+        var vm = _sessions.FirstOrDefault(s => s.Session.Id == sessionId);
+        if (vm != null)
+            _sessions.Remove(vm);
+
+        // Background cleanup: kill old process
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _sessionManager.KillSessionAsync(sessionId);
+                _sessionManager.RemoveSession(sessionId);
+                FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: old session {sessionId} cleaned up");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: cleanup FAILED: {ex.Message}");
+            }
+        });
+
+        // Create new session: fresh or resumed from snapshot
+        var newVm = isFreshReset
+            ? CreateSession(repoPath)
+            : CreateSession(repoPath, resumeSessionId: newSessionId);
+
+        if (newVm != null)
+        {
+            SessionTabs.SelectedItem = CleanTab;
+            ShowNotification(isFreshReset
+                ? "Session reset -- started fresh"
+                : $"Rewound to turn {entryNumber} -- resumed as new session");
+        }
+        else
+        {
+            ShowNotification("Rewind failed -- could not create new session");
+        }
+    }
+
     // ── Slash Command Interception ───────────────────────────────
 
     /// <summary>
@@ -3207,7 +3287,7 @@ public partial class MainWindow : Window
                 if (resumeDialog.ShowDialog() == true && resumeDialog.SelectedSessionId != null)
                 {
                     // Switch to Terminal tab and send resume command
-                    SessionTabs.SelectedIndex = 0;
+                    SessionTabs.SelectedItem = TerminalTab;
                     PromptInput.Text = $"claude --resume {resumeDialog.SelectedSessionId}";
                     ShowNotification("Session selected -- press Enter to resume in Terminal");
                 }
@@ -3243,6 +3323,10 @@ public partial class MainWindow : Window
             activeVm.PendingPromptText = string.Empty;
             FileLog.Write($"[MainWindow] SendPromptAsync: cleared PendingPromptText for {_activeSession.Id}");
         }
+
+        // Snapshot the JSONL before sending so we can rewind to this point
+        _activeSession.InitializeHistory();
+        _activeSession.History?.TakeSnapshot();
 
         // Inject user prompt into Clean view immediately for instant feedback
         CleanView.InjectUserPrompt(text);

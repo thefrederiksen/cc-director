@@ -25,6 +25,7 @@ public partial class CleanView : UserControl
 
     private readonly ObservableCollection<CleanWidgetViewModel> _widgets = new();
     private readonly object _widgetsLock = new();
+    private string? _pendingInjection;
 
     /// <summary>
     /// Fired when the user clicks the rewind button on a user prompt card.
@@ -126,6 +127,7 @@ public partial class CleanView : UserControl
         _jsonlPath = null;
         _lastLineCount = 0;
         _parsing = false;
+        _pendingInjection = null;
         _widgets.Clear();
         ProgressArea.Visibility = Visibility.Collapsed;
         LoadingText.Visibility = Visibility.Collapsed;
@@ -176,10 +178,17 @@ public partial class CleanView : UserControl
             {
                 ProgressArea.Visibility = Visibility.Visible;
                 ProgressText.Text = "Claude is working...";
+                YourTurnText.Visibility = Visibility.Collapsed;
             }
             else
             {
                 ProgressArea.Visibility = Visibility.Collapsed;
+
+                // Show "Your Turn" when Claude finishes and there are widgets visible
+                if (oldState == ActivityState.Working && _widgets.Count > 0)
+                {
+                    YourTurnText.Visibility = Visibility.Visible;
+                }
 
                 // Do a final parse when Claude finishes a turn
                 if (oldState == ActivityState.Working)
@@ -251,6 +260,26 @@ public partial class CleanView : UserControl
                 _lastLineCount = newLineCount;
             }
 
+            // If we injected a user prompt that isn't in the JSONL yet, re-append it
+            if (_pendingInjection != null)
+            {
+                var lastUserWidget = _widgets.LastOrDefault(w => w.Kind == WidgetKind.UserMessage);
+                if (lastUserWidget == null || lastUserWidget.Content != _pendingInjection)
+                {
+                    _widgets.Add(new CleanWidgetViewModel
+                    {
+                        Kind = WidgetKind.UserMessage,
+                        Header = "You",
+                        Content = _pendingInjection
+                    });
+                }
+                else
+                {
+                    // JSONL caught up -- clear the pending injection
+                    _pendingInjection = null;
+                }
+            }
+
             UpdateEmptyState();
             ScrollToBottom();
         }
@@ -301,16 +330,34 @@ public partial class CleanView : UserControl
 
     private void RewindButton_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.Button button)
+        // Open the context menu for confirmation instead of firing rewind directly
+        if (sender is System.Windows.Controls.Button button && button.ContextMenu != null)
+        {
+            button.ContextMenu.PlacementTarget = button;
+            button.ContextMenu.IsOpen = true;
+        }
+    }
+
+    private void RewindMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem)
             return;
 
-        if (button.Tag is not int entryNumber || entryNumber < 0)
+        FileLog.Write($"[CleanView] RewindMenuItem_Click: Tag={menuItem.Tag} (type={menuItem.Tag?.GetType().Name ?? "null"})");
+
+        if (menuItem.Tag is not int entryNumber || entryNumber < 0)
+        {
+            FileLog.Write("[CleanView] RewindMenuItem_Click: Tag is not valid int");
             return;
+        }
 
         if (_session == null)
+        {
+            FileLog.Write("[CleanView] RewindMenuItem_Click: no session");
             return;
+        }
 
-        FileLog.Write($"[CleanView] RewindButton_Click: entry={entryNumber}, session={_session.Id}");
+        FileLog.Write($"[CleanView] RewindMenuItem_Click: entry={entryNumber}, session={_session.Id}");
         RewindRequested?.Invoke(_session, entryNumber);
     }
 
@@ -320,6 +367,9 @@ public partial class CleanView : UserControl
         FileLog.Write($"[CleanView] InjectUserPrompt: {text.Length} chars");
         if (string.IsNullOrWhiteSpace(text))
             return;
+
+        _pendingInjection = text;
+        YourTurnText.Visibility = Visibility.Collapsed;
 
         _widgets.Add(new CleanWidgetViewModel
         {

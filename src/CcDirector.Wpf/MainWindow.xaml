@@ -696,6 +696,9 @@
                                 </Style>
                             </TabControl.Resources>
 
+                            <TabItem x:Name="CleanTab" Header="Agent">
+                                <controls:CleanView x:Name="CleanView" />
+                            </TabItem>
                             <TabItem x:Name="TerminalTab" Header="Terminal">
                                 <Grid Background="#1E1E1E">
                                     <Grid.ColumnDefinitions>
@@ -785,9 +788,6 @@
                                         </Grid>
                                     </Border>
                                 </Grid>
-                            </TabItem>
-                            <TabItem x:Name="CleanTab" Header="Clean">
-                                <controls:CleanView x:Name="CleanView" />
                             </TabItem>
                             <TabItem x:Name="SourceControlTab" Header="Source Control"
                                      Visibility="Collapsed">
