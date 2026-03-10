@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CcDirector.Core.Backends;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
@@ -20,6 +21,10 @@ public class PersistedSession
 
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public ActivityState ActivityState { get; set; }
+
+    /// <summary>Backend type used by this session (defaults to ConPty for backward compatibility).</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public SessionBackendType BackendType { get; set; } = SessionBackendType.ConPty;
 
     public DateTimeOffset CreatedAt { get; set; }
 

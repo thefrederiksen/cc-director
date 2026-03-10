@@ -81,5 +81,8 @@ public enum SessionBackendType
     Embedded,
 
     /// <summary>Pipe mode - stateless, spawns process per prompt.</summary>
-    Pipe
+    Pipe,
+
+    /// <summary>Studio mode - persistent stream-json backend with card-based UI.</summary>
+    Studio
 }

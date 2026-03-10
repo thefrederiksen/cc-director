@@ -432,6 +432,14 @@ public partial class NewSessionDialog : Window
     /// <summary>Whether to enable remote control mode (uses 'remote-control' subcommand).</summary>
     public bool EnableRemoteControl => RemoteControlCheckBox.IsChecked == true;
 
+    /// <summary>
+    /// Studio mode is disabled. The StudioBackend code is preserved in the codebase
+    /// but hidden from the UI because slash commands are uncertain in -p mode,
+    /// hooks don't fire, and Terminal + Clean tab already provides the same card view.
+    /// To re-enable: add Mode radio buttons back to NewSessionDialog.xaml (Row 6).
+    /// </summary>
+    public bool IsStudioMode => false;
+
     public NewSessionDialog(RepositoryRegistry? registry = null, SessionHistoryStore? historyStore = null)
     {
         FileLog.Write("[NewSessionDialog] Constructor: initializing");

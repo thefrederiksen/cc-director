@@ -770,11 +770,8 @@
                                     </Border>
                                 </Grid>
                             </TabItem>
-                            <TabItem x:Name="BusinessTab" Header="Business">
-                                <controls:BusinessView x:Name="BusinessView" />
-                            </TabItem>
-                            <TabItem x:Name="SimpleChatTab" Header="Simple">
-                                <controls:SimpleChatView x:Name="SimpleChatView" />
+                            <TabItem x:Name="CleanTab" Header="Clean">
+                                <controls:CleanView x:Name="CleanView" />
                             </TabItem>
                             <TabItem x:Name="SourceControlTab" Header="Source Control"
                                      Visibility="Collapsed">

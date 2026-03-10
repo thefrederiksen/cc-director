@@ -530,7 +530,6 @@ public partial class MainWindow : Window
                 session.VerifyClaudeSession();
             }
 
-            session.OnTurnCompleted += OnSimpleChatTurnCompleted;
             var vm = new SessionViewModel(session, Dispatcher) { PendingPromptText = p.PendingPromptText ?? "" };
             _sessions.Add(vm);
 
@@ -1264,8 +1263,7 @@ public partial class MainWindow : Window
         MenuHistoryVsCodeItem.Visibility = vis;
 
         // -- Session tabs --
-        BusinessTab.Visibility = vis;
-        SimpleChatTab.Visibility = vis;
+        // CleanTab is always visible (not alpha-gated)
 
         // -- Prompt bar buttons --
         BtnMic.Visibility = vis;
@@ -1437,7 +1435,8 @@ public partial class MainWindow : Window
             if (dialog.BypassPermissions)
                 claudeArgs += "--dangerously-skip-permissions ";
             claudeArgs = claudeArgs.Trim();
-            var backendType = dialog.IsStudioMode ? SessionBackendType.Studio : SessionBackendType.ConPty;
+            // Studio mode is disabled (code preserved, UI hidden). Always use ConPty.
+            var backendType = SessionBackendType.ConPty;
             FileLog.Write($"[MainWindow] BtnNewSession_Click: dialog confirmed, path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}, mode={backendType}, dialogTime={sw.ElapsedMilliseconds}ms");
 
             var vm = CreateSession(dialog.SelectedPath, resumeSessionId, claudeArgs, backendType);
@@ -1500,9 +1499,8 @@ public partial class MainWindow : Window
         {
             var session = _sessionManager.CreateSession(repoPath, claudeArgs, backendType, resumeSessionId);
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}, elapsed={sw.ElapsedMilliseconds}ms");
-            session.OnTurnCompleted += OnSimpleChatTurnCompleted;
 
-            // Studio mode: hooks don't fire in -p mode, so we manually
+            // Studio mode (preserved for future): hooks don't fire in -p mode, so we manually
             // transition ActivityState when a prompt completes
             if (session.Backend is StudioBackend studio)
             {
@@ -1662,9 +1660,7 @@ public partial class MainWindow : Window
         _activeSession = session;
         PlaceholderText.Visibility = Visibility.Collapsed;
         SessionTabs.Visibility = Visibility.Visible;
-        PromptBar.Visibility = SessionTabs.SelectedItem == SimpleChatTab
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        PromptBar.Visibility = Visibility.Visible;
 
         // Hide previous embedded backend (don't kill it)
         _activeEmbeddedBackend?.Hide();
@@ -1727,19 +1723,15 @@ public partial class MainWindow : Window
         GitChanges.Attach(session.RepoPath);
         UpdateSourceControlTabVisibility(session.RepoPath);
 
-        // Attach Simple Chat view
-        SimpleChatView.SetClaudeClient(GetOrCreateClaudeClient(session.WorkingDirectory));
-        SimpleChatView.Attach(session);
-
-        // Attach Business view
-        BusinessView.Attach(session);
+        // Attach Clean view
+        CleanView.Attach(session);
 
         // Rebuild hook events panel for the new session
         RefreshHookEventsPanel();
 
-        // Select appropriate tab: Business for Studio mode, Terminal for others
+        // Select appropriate tab: Clean for Studio mode (preserved for future), Terminal for others
         if (session.BackendType == SessionBackendType.Studio)
-            SessionTabs.SelectedItem = BusinessTab;
+            SessionTabs.SelectedItem = CleanTab;
         else
             SessionTabs.SelectedIndex = 0;
     }
@@ -1773,8 +1765,7 @@ public partial class MainWindow : Window
         // Hide session header banner
         UpdateSessionHeader();
 
-        SimpleChatView.Detach();
-        BusinessView.Detach();
+        CleanView.Detach();
         GitChanges.Detach();
         SourceControlTab.Visibility = Visibility.Collapsed;
 
@@ -2597,16 +2588,6 @@ public partial class MainWindow : Window
 
     private void SessionTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Hide the main PromptBar when Simple tab is active (it has its own input)
-        if (SessionTabs.SelectedItem == SimpleChatTab)
-        {
-            PromptBar.Visibility = Visibility.Collapsed;
-        }
-        else if (_activeSession != null)
-        {
-            PromptBar.Visibility = Visibility.Visible;
-        }
-
         if (_activeEmbeddedBackend == null) return;
 
         // Terminal tab is index 0 — show overlay only when it's selected
@@ -3259,47 +3240,6 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 FileLog.Write($"[MainWindow] OnSessionTurnCompleted FAILED: {ex.Message}");
-            }
-        });
-    }
-
-    private void OnSimpleChatTurnCompleted(Session session, TurnData turnData)
-    {
-        // This event fires from the pipe thread - dispatch to UI thread so that
-        // await continuations return to the UI thread (SynchronizationContext),
-        // preventing CollectionView threading violations.
-        FileLog.Write($"[MainWindow] OnSimpleChatTurnCompleted: session={session.Id}, prompt={turnData.UserPrompt.Length} chars");
-
-        Dispatcher.BeginInvoke(async () =>
-        {
-            try
-            {
-                var client = GetOrCreateClaudeClient(session.WorkingDirectory);
-                if (client == null)
-                {
-                    FileLog.Write("[MainWindow] OnSimpleChatTurnCompleted: no ClaudeClient, adding plain summary");
-                    session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, "Done."));
-                    return;
-                }
-
-                // Read terminal text for context
-                var terminalText = "";
-                if (session.Buffer != null)
-                {
-                    var bytes = session.Buffer.DumpAll();
-                    if (bytes.Length > 0)
-                        terminalText = TerminalOutputParser.StripAnsi(System.Text.Encoding.UTF8.GetString(bytes));
-                }
-
-                var summary = await Task.Run(
-                    () => SimpleChatSummarizer.SummarizeCompletionAsync(client, turnData, terminalText));
-
-                session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, summary));
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[MainWindow] OnSimpleChatTurnCompleted FAILED: {ex.Message}");
-                session.ChatHistory.AddMessage(new ChatMessage(ChatMessageType.Assistant, $"Turn completed. (Summary unavailable: {ex.Message})"));
             }
         });
     }

@@ -64,6 +64,13 @@ public sealed class SessionManager : IDisposable
             _log?.Invoke($"New session with preassigned ClaudeSessionId {preassignedClaudeSessionId}");
         }
 
+        // Studio mode: prepend -p --output-format stream-json --verbose to args
+        if (backendType == SessionBackendType.Studio)
+        {
+            args = $"-p --output-format stream-json --verbose {args}".Trim();
+            _log?.Invoke($"Studio mode args: {args}");
+        }
+
         ISessionBackend backend = backendType switch
         {
             // ConPty on Windows, UnixPty on macOS/Linux
@@ -72,6 +79,7 @@ public sealed class SessionManager : IDisposable
             SessionBackendType.ConPty
                 => new UnixPtyBackend(_options.DefaultBufferSizeBytes),
             SessionBackendType.Pipe => new PipeBackend(_options.DefaultBufferSizeBytes),
+            SessionBackendType.Studio => new StudioBackend(),
             SessionBackendType.Embedded when RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
                 => throw new InvalidOperationException(
                     "Use CreateEmbeddedSession for embedded mode - requires WPF backend."),
@@ -369,6 +377,7 @@ public sealed class SessionManager : IDisposable
                 SortOrder = s.SortOrder,
                 ExpectedFirstPrompt = s.ExpectedFirstPrompt ?? s.VerifiedFirstPrompt,
                 HistoryEntryId = s.HistoryEntryId,
+                BackendType = s.BackendType,
                 RawStartupText = s.RawStartupText,
                 QueuedPrompts = s.PromptQueue.HasItems
                     ? s.PromptQueue.Items.Select(q => new PersistedPromptQueueItem
