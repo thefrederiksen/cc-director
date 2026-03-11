@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-03-10"
+last_updated: "2026-03-11"
 
 # C4 Level 1: System Context
 context:
@@ -164,6 +164,15 @@ containers:
       - name: FileLog
         description: Thread-safe async file logging
         file: Utilities/FileLog.cs
+      - name: WorkflowTemplate
+        description: Reusable workflow template with parameterization support
+        file: Browser/WorkflowTemplate.cs
+      - name: WorkflowRun
+        description: Immutable execution record with per-step screenshots and timing
+        file: Browser/WorkflowRun.cs
+      - name: WorkflowStore
+        description: Persistence for workflow templates and run records
+        file: Browser/WorkflowStore.cs
 
   - id: native_apis
     name: Platform-Specific APIs

@@ -149,6 +149,18 @@ public static class CcStorage
     public static string ConnectionWorkflows(string name) =>
         Ensure(Path.Combine(ConnectionProfile(name), "workflows"));
 
+    /// <summary>Workflow data directory: connections/{name}/workflows/{workflow}/</summary>
+    public static string ConnectionWorkflowDir(string connectionName, string workflowName) =>
+        Ensure(Path.Combine(ConnectionWorkflows(connectionName), SafeFileName(workflowName)));
+
+    /// <summary>Workflow runs directory: connections/{name}/workflows/{workflow}/runs/</summary>
+    public static string ConnectionWorkflowRuns(string connectionName, string workflowName) =>
+        Ensure(Path.Combine(ConnectionWorkflowDir(connectionName, workflowName), "runs"));
+
+    /// <summary>Workflow run screenshot directory: .../{workflow}/runs/{runId}/</summary>
+    public static string ConnectionWorkflowRunDir(string connectionName, string workflowName, string runId) =>
+        Ensure(Path.Combine(ConnectionWorkflowRuns(connectionName, workflowName), runId));
+
     // -- Utilities --
 
     /// <summary>Create directory if it doesn't exist and return the path.</summary>
@@ -156,5 +168,11 @@ public static class CcStorage
     {
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    /// <summary>Sanitize a name for use as a file/directory name.</summary>
+    internal static string SafeFileName(string name)
+    {
+        return string.Join("_", name.Split(Path.GetInvalidFileNameChars()));
     }
 }

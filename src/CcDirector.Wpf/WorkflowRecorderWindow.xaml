@@ -79,7 +79,7 @@
         <!-- Row 6: Save controls -->
         <StackPanel Grid.Row="6" Orientation="Horizontal" Margin="0,8,0,0">
             <TextBox x:Name="WorkflowNameBox"
-                     Width="140" Height="26" FontSize="11"
+                     Width="100" Height="26" FontSize="11"
                      Background="#1E1E1E" Foreground="#CCCCCC"
                      CaretBrush="#CCCCCC" BorderBrush="#3C3C3C"
                      BorderThickness="1" Padding="6,3"
@@ -88,9 +88,19 @@
                     MinWidth="50" Height="26" FontSize="11"
                     Background="#007ACC" Foreground="White"
                     BorderThickness="0" Cursor="Hand" Margin="4,0,0,0" />
-            <Button x:Name="BtnReplay" Content="Replay" Click="BtnReplay_Click"
-                    MinWidth="60" Height="26" FontSize="11"
+            <Button x:Name="BtnReplay" Content="Run" Click="BtnReplay_Click"
+                    MinWidth="50" Height="26" FontSize="11"
                     Background="#22C55E" Foreground="White"
+                    BorderThickness="0" Cursor="Hand" Margin="4,0,0,0"
+                    IsEnabled="False" />
+            <Button x:Name="BtnParameterize" Content="Params" Click="BtnParameterize_Click"
+                    MinWidth="50" Height="26" FontSize="11"
+                    Background="#3C3C3C" Foreground="#CCCCCC"
+                    BorderThickness="0" Cursor="Hand" Margin="4,0,0,0"
+                    IsEnabled="False" />
+            <Button x:Name="BtnRuns" Content="Runs" Click="BtnRuns_Click"
+                    MinWidth="50" Height="26" FontSize="11"
+                    Background="#3C3C3C" Foreground="#CCCCCC"
                     BorderThickness="0" Cursor="Hand" Margin="4,0,0,0"
                     IsEnabled="False" />
         </StackPanel>
