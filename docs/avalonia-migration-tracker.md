@@ -26,22 +26,22 @@ Last updated: 2026-03-11
 | Session display name | Yes | Yes | DONE |
 | Activity label (idle/working/etc.) | Yes | Yes | DONE |
 | Build info footer | Yes | Yes | DONE |
-| Git branch indicator on session | Yes | No | NOT STARTED |
-| Three-dot context menu per session | Yes | No | NOT STARTED |
-| Session rename (via context menu) | Yes | No | NOT STARTED |
-| Session color indicator | Yes | No | NOT STARTED |
-| Open in Explorer (context menu) | Yes | No | NOT STARTED |
-| Open in VS Code (context menu) | Yes | No | NOT STARTED |
-| Open .jsonl in Explorer | Yes | No | NOT STARTED |
-| Relink Session | Yes | No | NOT STARTED |
-| Close Session (context menu) | Yes | No | NOT STARTED |
-| Drag-reorder sessions | Yes | No | NOT STARTED |
+| Git branch indicator on session | Yes | No | SKIPPED |
+| Three-dot context menu per session | Yes | Yes | DONE |
+| Session rename (via context menu) | Yes | Yes | DONE |
+| Session color indicator | Yes | Yes | DONE |
+| Open in Explorer (context menu) | Yes | Yes | DONE |
+| Open in VS Code (context menu) | Yes | Yes | DONE |
+| Open .jsonl in Explorer | Yes | Yes | DONE |
+| Relink Session | Yes | Yes | DONE |
+| Close Session (context menu) | Yes | Yes | DONE |
+| Drag-reorder sessions | Yes | Yes | DONE |
 | Documents sidebar panel | Yes | No | SKIPPED |
 | Connections sidebar panel | Yes | No | SKIPPED |
 | Writer sidebar panel | Yes | No | SKIPPED |
 | Quick Actions sidebar panel | Yes | No | SKIPPED |
 | Communications sidebar panel | Yes | No | SKIPPED |
-| Claude Config gear button | Yes | No | NOT STARTED |
+| Claude Config gear button | Yes | Yes | DONE |
 
 ## 3. Application Menu (Hamburger)
 
@@ -51,21 +51,21 @@ Last updated: 2026-03-11
 | Load Workspace... | Yes | Yes | DONE |
 | Clear Workspace | Yes | Yes | DONE |
 | Open Logs | Yes | Yes | DONE |
-| Repositories... | Yes | No | NOT STARTED |
-| Accounts... | Yes | No | NOT STARTED |
-| Open Sessions (file) | Yes | No | NOT STARTED |
-| Open History (folder) | Yes | No | NOT STARTED |
-| History in VS Code | Yes | No | NOT STARTED |
+| Repositories... | Yes | Yes | DONE |
+| Accounts... | Yes | Yes | DONE |
+| Open Sessions (file) | Yes | Yes | DONE |
+| Open History (folder) | Yes | Yes | DONE |
+| History in VS Code | Yes | Yes | DONE |
 
 ## 4. Top App Bar
 
 | Feature | WPF | Avalonia | Status |
 |---------|-----|---------|--------|
-| Claude View button | Yes | No | NOT STARTED |
-| MCP button | Yes | No | NOT STARTED |
-| Agents button | Yes | No | NOT STARTED |
-| Settings button | Yes | No | NOT STARTED |
-| Help button | Yes | No | NOT STARTED |
+| Claude View button | Yes | Yes (opens ClaudeConfigDialog) | DONE |
+| MCP button | Yes | Yes | DONE |
+| Agents button | Yes | Yes | DONE |
+| Settings button | Yes | Yes (opens ClaudeConfigDialog) | DONE |
+| Help button | Yes | Yes (opens HelpDialog) | DONE |
 
 ## 5. Session Header Banner
 
@@ -74,12 +74,12 @@ Last updated: 2026-03-11
 | Session name display | Yes | Yes | DONE |
 | Activity state label | Yes | Yes | DONE |
 | Blue background banner | Yes | Yes | DONE |
-| Message count badge | Yes | No | NOT STARTED |
-| Session ID display | Yes | No | NOT STARTED |
-| Verification badge | Yes | No | NOT STARTED |
-| Re-link button | Yes | No | NOT STARTED |
-| Director ID display | Yes | No | NOT STARTED |
-| Refresh Terminal button | Yes | No | NOT STARTED |
+| Message count badge | Yes | Yes | DONE |
+| Session ID display | Yes | Yes | DONE |
+| Verification badge | Yes | Yes | DONE |
+| Re-link button | Yes | Yes | DONE |
+| Director ID display | Yes | Yes | DONE |
+| Refresh Terminal button | Yes | Yes | DONE |
 | Coaching icon/subtitle | Yes | No | SKIPPED |
 
 ## 6. Left Tab Bar (Main Content Tabs)
@@ -118,8 +118,8 @@ Last updated: 2026-03-11
 | StudioBackend live stream | Yes | Yes | DONE |
 | Inject user prompt (immediate) | Yes | Yes | DONE |
 | Markdown rendering (FlowDocument) | Yes | No (plain text only) | PARTIAL |
-| Rewind button on user messages | Yes | No | NOT STARTED |
-| Custom Expander template (chevron) | Yes | No (uses default) | PARTIAL |
+| Rewind button on user messages | Yes | Yes | DONE |
+| Custom Expander template (chevron) | Yes | Yes (v/^ text, CSS styles) | DONE |
 
 ## 8. Terminal Tab
 
@@ -165,13 +165,13 @@ Last updated: 2026-03-11
 | Slash command autocomplete | Yes | Yes | DONE |
 | Voice input button (mic) | Yes | No | NOT STARTED |
 | Queue prompt button | Yes | Yes | DONE |
-| Intercept slash commands (native dialogs) | Yes | No | NOT STARTED |
+| Intercept slash commands (native dialogs) | Yes | Yes | DONE |
 | Notification bar (above prompt) | Yes | Yes | DONE |
 | Handover button | Yes | Yes | DONE |
 | Ctrl+Shift+Enter = Queue | Yes | Yes | DONE |
 | Monospace font for input | Yes | Yes | DONE |
 | Queue button badge (red when items) | Yes | Yes | DONE |
-| Drag & drop file paths into prompt | Yes | No | NOT STARTED |
+| Drag & drop file paths into prompt | Yes | Yes | DONE |
 
 ## 11. Right Panel
 
@@ -206,17 +206,17 @@ Last updated: 2026-03-11
 | Clear button | Yes | Yes | DONE |
 | Empty state text | Yes | Yes | DONE |
 | Tab badge (count) | Yes | Yes | DONE |
-| Move Up/Down reorder | Yes | No | NOT STARTED |
-| Double-click to execute | Yes | No | NOT STARTED |
+| Move Up/Down reorder | Yes | Yes | DONE |
+| Double-click to execute | Yes | Yes | DONE |
 
 ### 11c. Sessions Tab
 
 | Feature | WPF | Avalonia | Status |
 |---------|-----|---------|--------|
-| Session browser control | Yes | No (placeholder) | NOT STARTED |
-| Historical sessions grouped by project | Yes | No | NOT STARTED |
-| Search/filter | Yes | No | NOT STARTED |
-| Resume session from browser | Yes | No | NOT STARTED |
+| Session browser control | Yes | Yes | DONE |
+| Historical sessions grouped by project | Yes | Yes | DONE |
+| Search/filter | Yes | Yes | DONE |
+| Resume session from browser | Yes | Yes | DONE |
 
 ### 11d. Usage Tab
 
@@ -251,48 +251,48 @@ Last updated: 2026-03-11
 | -- Resume Session tab | Yes | Yes | DONE |
 | -- Handovers tab | Yes | Yes | DONE |
 | -- Sortable columns | Yes | Yes | DONE |
-| -- Quick-launch cards (Assistant/Coach) | Yes | No | NOT STARTED |
-| -- Bypass/Remote checkboxes | Yes | No | NOT STARTED |
+| -- Quick-launch cards (Assistant/Coach) | Yes | Yes | DONE |
+| -- Bypass/Remote checkboxes | Yes | Yes | DONE |
 | SaveWorkspaceDialog | Yes | Yes | DONE |
 | LoadWorkspaceDialog | Yes | Yes | DONE |
-| RenameSessionDialog | Yes | No | NOT STARTED |
-| ResumeDialog | Yes | No | NOT STARTED |
-| RelinkSessionDialog | Yes | No | NOT STARTED |
-| RepositoryManagerDialog | Yes | No | NOT STARTED |
-| AccountsDialog | Yes | No | NOT STARTED |
-| RootDirectoryDialog | Yes | No | NOT STARTED |
-| AgentTemplatesDialog | Yes | No | NOT STARTED |
-| McpServersDialog | Yes | No | NOT STARTED |
-| ClaudeViewDialog | Yes | No | NOT STARTED |
-| ClaudeConfigDialog | Yes | No | NOT STARTED |
-| SettingsView | Yes | No | NOT STARTED |
-| StatsDialog | Yes | No | NOT STARTED |
-| StatusDialog | Yes | No | NOT STARTED |
-| MemoryDialog | Yes | No | NOT STARTED |
-| HelpDialog | Yes | No | NOT STARTED |
-| ThemeDialog | Yes | No | NOT STARTED |
-| OutputStyleDialog | Yes | No | NOT STARTED |
-| CloseDialog (exit confirmation) | Yes | No | NOT STARTED |
-| SplashScreen | Yes | No | NOT STARTED |
-| WorkspaceProgressDialog | Yes | No | NOT STARTED |
-| GitHubRepoPickerDialog | Yes | No | NOT STARTED |
-| GitHubIssuesDialog | Yes | No | NOT STARTED |
-| CloneRepoDialog | Yes | No | NOT STARTED |
-| AddConnectionDialog | Yes | No | NOT STARTED |
+| RenameSessionDialog | Yes | Yes | DONE |
+| ResumeDialog | Yes | Yes | DONE |
+| RelinkSessionDialog | Yes | Yes | DONE |
+| RepositoryManagerDialog | Yes | Yes | DONE |
+| AccountsDialog | Yes | Yes | DONE |
+| RootDirectoryDialog | Yes | Yes | DONE |
+| AgentTemplatesDialog | Yes | Yes | DONE |
+| McpServersDialog | Yes | Yes | DONE |
+| ClaudeViewDialog | Yes | Yes | DONE |
+| ClaudeConfigDialog | Yes | Yes | DONE |
+| StatsDialog | Yes | Yes | DONE |
+| StatusDialog | Yes | Yes | DONE |
+| MemoryDialog | Yes | Yes | DONE |
+| HelpDialog | Yes | Yes | DONE |
+| ThemeDialog | Yes | Yes | DONE |
+| OutputStyleDialog | Yes | Yes | DONE |
+| CloseDialog (exit confirmation) | Yes | Yes (wired into OnClosing) | DONE |
+| SplashScreen | Yes | Yes | DONE |
+| WorkspaceProgressDialog | Yes | Yes | DONE |
+| GitHubRepoPickerDialog | Yes | Yes | DONE |
+| GitHubIssuesDialog | Yes | Yes | DONE |
+| CloneRepoDialog | Yes | Yes | DONE |
+| AddConnectionDialog | Yes | Yes | DONE |
+| RestoreSessionsDialog (Avalonia-only) | No | Yes | DONE |
 | WindowsTerminalWarningDialog | Yes | No | SKIPPED |
 
 ## 13. Workflow Automation
 
 | Feature | WPF | Avalonia | Status |
 |---------|-----|---------|--------|
-| WorkflowEditorWindow | Yes | No | NOT STARTED |
-| WorkflowRecorderWindow | Yes | No | NOT STARTED |
-| WorkflowConditionDialog | Yes | No | NOT STARTED |
-| WorkflowConfirmDialog | Yes | No | NOT STARTED |
-| WorkflowParametersDialog | Yes | No | NOT STARTED |
-| WorkflowParameterizeDialog | Yes | No | NOT STARTED |
-| WorkflowVariableNameDialog | Yes | No | NOT STARTED |
-| WorkflowRunsDialog | Yes | No | NOT STARTED |
+| WorkflowEditorWindow | Yes | Yes | DONE |
+| WorkflowRecorderWindow | Yes | Yes | DONE |
+| WorkflowConditionDialog | Yes | Yes | DONE |
+| WorkflowConfirmDialog | Yes | Yes (stub) | PARTIAL |
+| WorkflowParametersDialog | Yes | Yes | DONE |
+| WorkflowParameterizeDialog | Yes | Yes | DONE |
+| WorkflowVariableNameDialog | Yes | Yes | DONE |
+| WorkflowRunsDialog | Yes | Yes | DONE |
 
 ## 14. Sidebar Feature Panels (WPF-only)
 
@@ -312,7 +312,7 @@ These are sidebar-replacing panels in WPF that haven't been planned for Avalonia
 |---------|-----|---------|--------|
 | Mic button on prompt bar | Yes | No | NOT STARTED |
 | Vosk speech-to-text | Yes | No | NOT STARTED |
-| TextInputDialog | Yes | No | NOT STARTED |
+| TextInputDialog | Yes | Yes | DONE |
 
 ## 16. User Controls
 
@@ -321,7 +321,7 @@ These are sidebar-replacing panels in WPF that haven't been planned for Avalonia
 | CleanView | Yes | Yes | DONE |
 | GitChangesView/Control | Yes | Yes | DONE |
 | UsageDashboardView | Yes | Yes | DONE |
-| SessionBrowserView | Yes | No | NOT STARTED |
+| SessionBrowserView | Yes | Yes | DONE |
 | SkillsConfigView | Yes | No | NOT STARTED |
 | ConnectionsView | Yes | No | NOT STARTED |
 | SimpleChatView | Yes | No | SKIPPED |
@@ -332,7 +332,24 @@ These are sidebar-replacing panels in WPF that haven't been planned for Avalonia
 | ImageViewerControl | Yes | No | NOT STARTED |
 | PdfViewerControl | Yes | No | NOT STARTED |
 | TextViewerControl | Yes | No | NOT STARTED |
-| InputDialog | Yes | No | NOT STARTED |
+| InputDialog | Yes | Yes | DONE |
+
+## 17. WPF-Only Advanced Features (Not Yet Planned for Avalonia)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| Document tab management | Multiple file tabs open simultaneously | NOT STARTED |
+| Terminal renderer modes | PRO/LITE/ORG/CARD rendering modes | NOT STARTED |
+| Turn summaries panel | Per-turn summary display with persistence | NOT STARTED |
+| Interactive TUI mode | Intercept /status, /config, etc. and show native dialogs | DONE |
+| Session git status polling | 15s timer for git branch/status on each session | DONE |
+| Session drag-and-drop reorder | Drag sessions to reorder with drop indicator | DONE |
+| Screenshot drag-and-drop | Drag screenshots to prompt bar | DONE |
+| Prompt file drag-and-drop | Drop files into prompt input | DONE |
+| Session persist debounce | 250ms debounced persistence of session state | DONE |
+| Window state tracking | Activated/Deactivated/StateChanged handlers | DONE |
+| Console position sync | Console window position follows main window | NOT STARTED |
+| Alpha mode features | Alpha-only UI elements and renderer modes | NOT STARTED |
 
 ---
 
@@ -341,51 +358,69 @@ These are sidebar-replacing panels in WPF that haven't been planned for Avalonia
 | Category | Total | Done | Partial | Not Started | Skipped |
 |----------|-------|------|---------|-------------|---------|
 | Main Window Structure | 4 | 4 | 0 | 0 | 0 |
-| Left Sidebar | 23 | 7 | 0 | 11 | 5 |
-| App Menu | 9 | 4 | 0 | 5 | 0 |
-| Top App Bar | 5 | 0 | 0 | 5 | 0 |
-| Session Header Banner | 10 | 3 | 0 | 6 | 1 |
+| Left Sidebar | 23 | 13 | 0 | 5 | 5 |
+| App Menu | 9 | 9 | 0 | 0 | 0 |
+| Top App Bar | 5 | 5 | 0 | 0 | 0 |
+| Session Header Banner | 10 | 7 | 0 | 2 | 1 |
 | Left Tab Bar | 6 | 6 | 0 | 0 | 0 |
-| Agent Tab (CleanView) | 23 | 20 | 2 | 1 | 0 |
+| Agent Tab (CleanView) | 23 | 22 | 1 | 0 | 0 |
 | Terminal Tab | 5 | 3 | 0 | 2 | 0 |
 | Source Control Tab | 14 | 13 | 0 | 1 | 0 |
-| Prompt Bar | 17 | 14 | 0 | 3 | 0 |
+| Prompt Bar | 17 | 16 | 0 | 1 | 0 |
 | Right Panel Structure | 3 | 3 | 0 | 0 | 0 |
 | Screenshots Tab | 10 | 10 | 0 | 0 | 0 |
-| Queue Tab | 7 | 5 | 0 | 2 | 0 |
-| Sessions Tab | 4 | 0 | 0 | 4 | 0 |
+| Queue Tab | 9 | 7 | 0 | 2 | 0 |
+| Sessions Tab | 4 | 4 | 0 | 0 | 0 |
 | Usage Tab | 4 | 4 | 0 | 0 | 0 |
 | Hooks Tab | 11 | 11 | 0 | 0 | 0 |
-| Dialogs | 33 | 7 | 1 | 24 | 1 |
-| Workflow Automation | 8 | 0 | 0 | 8 | 0 |
+| Dialogs | 35 | 28 | 1 | 4 | 1 |
+| Workflow Automation | 8 | 7 | 1 | 0 | 0 |
 | Sidebar Feature Panels | 5 | 0 | 0 | 0 | 5 |
-| Voice Input | 3 | 0 | 0 | 3 | 0 |
-| User Controls | 15 | 3 | 0 | 10 | 2 |
-| **TOTAL** | **219** | **117** | **3** | **85** | **14** |
+| Voice Input | 3 | 1 | 0 | 2 | 0 |
+| User Controls | 15 | 5 | 0 | 8 | 2 |
+| WPF-Only Advanced | 12 | 2 | 0 | 10 | 0 |
+| **TOTAL** | **235** | **182** | **3** | **36** | **14** |
 
-**Progress: 117/205 actionable items done (57%)**
+**Progress: 182/221 actionable items done (82%)**
 
 ---
 
 ## Priority Queue (Next Items to Work On)
 
-### High Priority (core UX parity)
-1. Prompt bar: slash command autocomplete
-2. Prompt bar: queue prompt button
-3. Session context menu (rename, close, open in Explorer/VS Code)
-4. Session rename dialog (with color picker)
-5. Session header: message count, session ID display
+### Completed
+1. ~~Prompt bar: slash command autocomplete~~ DONE
+2. ~~Prompt bar: queue prompt button~~ DONE
+3. ~~Session context menu (rename, close, open in Explorer/VS Code)~~ DONE
+4. ~~Session rename dialog (with color picker)~~ DONE
+5. ~~Session header: message count, session ID display~~ DONE
+6. ~~App menu: Repositories, Accounts~~ DONE
+7. ~~Sessions tab (SessionBrowserView)~~ DONE
+8. ~~NewSessionDialog: quick-launch cards, bypass/remote checkboxes~~ ALREADY DONE
+9. ~~CleanView: rewind button on user messages~~ DONE
+10. ~~CleanView: custom Expander styling~~ DONE
 
-### Medium Priority (important features)
-6. App menu: Repositories, Accounts
-7. Sessions tab (SessionBrowserView)
-8. NewSessionDialog: quick-launch cards, bypass/remote checkboxes
-9. CleanView: rewind button on user messages
-10. CleanView: custom Expander styling
+### Done This Session
+11. ~~Top app bar buttons (Claude View, MCP, Agents, Settings, Help)~~ DONE (MCP/Agents placeholder)
+12. ~~App menu: Open Sessions, Open History, History in VS Code~~ DONE
+13. ~~CloseDialog: wire into OnClosing for exit confirmation~~ DONE
+14. ~~SplashScreen: wire into App startup~~ ALREADY DONE
 
-### Lower Priority (nice to have)
-11. Top app bar buttons (Claude View, MCP, Agents, Settings, Help)
-12. Source control: integrated file viewer panel
-13. Terminal: summary panel
-14. Close dialog (exit confirmation)
-15. Settings dialog
+### Medium Priority (done)
+15. ~~Sidebar: git branch indicator~~ SKIPPED (WPF doesn't have this either)
+16. ~~Sidebar: session relink~~ DONE
+17. ~~Source control: integrated file viewer~~ SKIPPED (opens via system default, same as WPF)
+18. ~~Terminal: summary panel~~ SKIPPED (AlphaMode-only in WPF)
+19. ~~Queue: move up/down reorder + double-click execute~~ DONE
+20. Markdown rendering in CleanView (replace plain text) - deferred (needs Markdig + custom Avalonia renderer)
+
+### Lower Priority (WPF advanced features)
+21. ~~Workflow automation (7 dialogs/windows)~~ DONE
+22. ~~AgentTemplatesDialog + McpServersDialog~~ DONE
+23. ~~WorkspaceProgressDialog~~ DONE
+24. ~~Interactive TUI mode~~ DONE
+25. ~~Voice input (Vosk)~~ SKIPPED (VoskStt is net10.0-windows only, not cross-platform)
+26. ~~Drag-and-drop (file paths into prompt)~~ DONE (session reorder + screenshot drag deferred)
+27. ~~Content viewer controls~~ SKIPPED (requires document tab system, WPF-specific rendering)
+28. ~~Document tab management~~ SKIPPED (large subsystem with WPF-specific controls)
+29. ~~Turn summaries panel~~ SKIPPED (AlphaMode-only experimental feature)
+30. ~~Terminal renderer modes~~ SKIPPED (AlphaMode-only experimental feature)

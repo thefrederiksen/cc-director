@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Avalonia.Media;
 using Avalonia.Threading;
+using CcDirector.Core.Claude;
 using CcDirector.Core.Sessions;
 
 namespace CcDirector.Avalonia;
@@ -34,6 +35,8 @@ public class SessionViewModel : INotifyPropertyChanged
     {
         Session = session;
         session.OnActivityStateChanged += OnActivityStateChanged;
+        session.OnVerificationStatusChanged += OnVerificationStatusChanged;
+        session.OnTerminalVerificationStatusChanged += OnTerminalVerificationStatusChanged;
     }
 
     public string DisplayName => Session.CustomName
@@ -79,6 +82,21 @@ public class SessionViewModel : INotifyPropertyChanged
 
     public string RepoPath => Session.RepoPath;
 
+    private int _uncommittedCount;
+    public int UncommittedCount
+    {
+        get => _uncommittedCount;
+        set
+        {
+            if (_uncommittedCount == value) return;
+            _uncommittedCount = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasUncommittedChanges));
+        }
+    }
+
+    public bool HasUncommittedChanges => _uncommittedCount > 0;
+
     public void Rename(string? newName, string? color = null)
     {
         Session.CustomName = newName;
@@ -90,12 +108,83 @@ public class SessionViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CustomColorBrush));
     }
 
+    public bool IsVerified => Session.VerificationStatus == SessionVerificationStatus.Verified;
+
+    public bool HasVerificationWarning =>
+        Session.VerificationStatus is SessionVerificationStatus.FileNotFound
+                                    or SessionVerificationStatus.Error
+                                    or SessionVerificationStatus.ContentMismatch;
+
+    public string VerificationStatusText => Session.VerificationStatus switch
+    {
+        SessionVerificationStatus.Verified => "Verified",
+        SessionVerificationStatus.FileNotFound => "Session file not found",
+        SessionVerificationStatus.NotLinked => "Waiting for Claude session ID...",
+        SessionVerificationStatus.ContentMismatch => "Session content mismatch",
+        SessionVerificationStatus.Error => "Verification error",
+        _ => ""
+    };
+
+    public string? VerifiedFirstPrompt => Session.VerifiedFirstPrompt;
+
+    public TerminalVerificationStatus TerminalVerificationStatus => Session.TerminalVerificationStatus;
+
+    public string TerminalVerificationStatusText => Session.TerminalVerificationStatus switch
+    {
+        TerminalVerificationStatus.Waiting => "Waiting...",
+        TerminalVerificationStatus.Potential => "Potential Match",
+        TerminalVerificationStatus.Matched => "Matched",
+        TerminalVerificationStatus.Failed => "Verification Failed",
+        _ => ""
+    };
+
+    public bool ShowVerificationDot => Session.TerminalVerificationStatus is TerminalVerificationStatus.Waiting
+                                                                           or TerminalVerificationStatus.Potential
+                                                                           or TerminalVerificationStatus.Failed;
+
+    private static readonly ISolidColorBrush VerificationWaitingBrush = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80));
+    private static readonly ISolidColorBrush VerificationPotentialBrush = new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B));
+    private static readonly ISolidColorBrush VerificationFailedBrush = new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44));
+
+    public ISolidColorBrush VerificationDotBrush => Session.TerminalVerificationStatus switch
+    {
+        TerminalVerificationStatus.Waiting => VerificationWaitingBrush,
+        TerminalVerificationStatus.Potential => VerificationPotentialBrush,
+        TerminalVerificationStatus.Failed => VerificationFailedBrush,
+        _ => VerificationWaitingBrush
+    };
+
     private void OnActivityStateChanged(ActivityState oldState, ActivityState newState)
     {
         Dispatcher.UIThread.Post(() =>
         {
             OnPropertyChanged(nameof(ActivityLabel));
             OnPropertyChanged(nameof(ActivityBrush));
+        });
+    }
+
+    private void OnVerificationStatusChanged(SessionVerificationStatus status)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(IsVerified));
+            OnPropertyChanged(nameof(HasVerificationWarning));
+            OnPropertyChanged(nameof(VerificationStatusText));
+            OnPropertyChanged(nameof(VerifiedFirstPrompt));
+        });
+    }
+
+    private void OnTerminalVerificationStatusChanged(TerminalVerificationStatus status)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(TerminalVerificationStatus));
+            OnPropertyChanged(nameof(TerminalVerificationStatusText));
+            OnPropertyChanged(nameof(ShowVerificationDot));
+            OnPropertyChanged(nameof(VerificationDotBrush));
+            OnPropertyChanged(nameof(IsVerified));
+            OnPropertyChanged(nameof(HasVerificationWarning));
+            OnPropertyChanged(nameof(VerificationStatusText));
         });
     }
 

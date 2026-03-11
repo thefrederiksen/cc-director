@@ -7,6 +7,8 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
+using CcDirector.Core.Claude;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Skills;
@@ -101,6 +103,11 @@ public partial class MainWindow : Window
     private readonly SlashCommandProvider _slashCommandProvider = new();
     private List<SlashCommandItem> _filteredSlashCommands = new();
 
+    // Session git status polling
+    private readonly CcDirector.Core.Git.GitStatusProvider _gitStatusProvider = new();
+    private global::Avalonia.Threading.DispatcherTimer? _sessionGitTimer;
+    private bool _sessionGitRefreshRunning;
+
     // Right panel state
     private bool _rightPanelExpanded = true;
     private readonly ObservableCollection<HookEventViewModel> _hookEvents = new();
@@ -117,6 +124,23 @@ public partial class MainWindow : Window
         FileLog.Write("[MainWindow] Avalonia MainWindow initialized");
 
         Loaded += MainWindow_Loaded;
+        Activated += MainWindow_Activated;
+
+        AddHandler(DragDrop.DropEvent, PromptInput_Drop);
+        AddHandler(DragDrop.DragOverEvent, PromptInput_DragOver);
+
+        TerminalHost.ScrollChanged += OnTerminalScrollChanged;
+
+        SessionList.AddHandler(DragDrop.DragOverEvent, SessionList_DragOver);
+        SessionList.AddHandler(DragDrop.DropEvent, SessionList_Drop);
+    }
+
+    private void MainWindow_Activated(object? sender, EventArgs e)
+    {
+        if (_activeLeftTab == "Terminal" && _activeSession != null)
+            Dispatcher.UIThread.Post(() => TerminalHost.Focus());
+        else
+            Dispatcher.UIThread.Post(() => PromptInput.Focus());
     }
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
@@ -137,15 +161,32 @@ public partial class MainWindow : Window
         // Wire source control view file event
         GitChangesView.ViewFileRequested += OnGitViewFileRequested;
 
+        // Wire session browser resume event
+        SessionBrowserView.SessionResumeRequested += OnSessionBrowserResumeRequested;
+
+        // Wire clean view rewind event
+        CleanView.RewindRequested += OnCleanViewRewindRequested;
+
         // Wire usage dashboard to usage service
         UsageDashboardView.SetUsageService(app.ClaudeUsageService);
 
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
 
+        // Wire right panel tab selection to lazy-load session browser
+        RightPanelTabs.SelectionChanged += RightPanelTabs_SelectionChanged;
+
         SetBuildInfo();
         _ = InitializeScreenshotsPanelAsync();
         _ = ShowStartupWorkspacePicker();
+
+        // Start session git status polling (15s interval)
+        _sessionGitTimer = new global::Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(15),
+        };
+        _sessionGitTimer.Tick += async (_, _) => await RefreshSessionGitStatusAsync();
+        _sessionGitTimer.Start();
     }
 
     private void SetBuildInfo()
@@ -198,24 +239,37 @@ public partial class MainWindow : Window
     {
         FileLog.Write($"[MainWindow] LoadWorkspaceAsync: '{workspace.Name}' with {workspace.Sessions.Count} sessions");
 
-        var sorted = workspace.Sessions.OrderBy(s => s.SortOrder).ToList();
-        int total = sorted.Count;
+        var progress = new WorkspaceProgressDialog(workspace.Name);
+        progress.Show(this);
 
-        for (int i = 0; i < total; i++)
+        try
         {
-            var entry = sorted[i];
-            FileLog.Write($"[MainWindow] LoadWorkspaceAsync: creating session {i + 1}/{total}: {entry.RepoPath}");
+            var sorted = workspace.Sessions.OrderBy(s => s.SortOrder).ToList();
+            int total = sorted.Count;
 
-            var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
-            if (vm != null)
-                vm.Rename(entry.CustomName, entry.CustomColor);
+            for (int i = 0; i < total; i++)
+            {
+                var entry = sorted[i];
+                FileLog.Write($"[MainWindow] LoadWorkspaceAsync: creating session {i + 1}/{total}: {entry.RepoPath}");
 
-            // Delay between sessions to prevent Claude Code settings corruption
-            if (i < total - 1)
-                await Task.Delay(2500);
+                progress.UpdateProgress(i + 1, total, entry.CustomName ?? entry.RepoPath);
+
+                var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
+                if (vm != null)
+                    vm.Rename(entry.CustomName, entry.CustomColor);
+
+                // Delay between sessions to prevent Claude Code settings corruption
+                if (i < total - 1)
+                    await Task.Delay(2500);
+            }
+
+            progress.SetComplete();
+            FileLog.Write($"[MainWindow] LoadWorkspaceAsync: workspace '{workspace.Name}' loaded");
         }
-
-        FileLog.Write($"[MainWindow] LoadWorkspaceAsync: workspace '{workspace.Name}' loaded");
+        finally
+        {
+            progress.Close();
+        }
     }
 
     // ==================== SESSION MANAGEMENT ====================
@@ -248,6 +302,8 @@ public partial class MainWindow : Window
         // Detach from previous session
         if (_activeSession != null)
         {
+            _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
+            _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
             TerminalHost.Detach();
             GitChangesView.Detach();
             CleanView.Detach();
@@ -266,10 +322,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Subscribe to metadata and activity changes for header updates
+        vm.Session.OnClaudeMetadataChanged += OnActiveSessionMetadataChanged;
+        vm.Session.OnActivityStateChanged += OnActiveSessionActivityChanged;
+
         // Update header
         SessionHeaderBanner.IsVisible = true;
-        HeaderSessionName.Text = vm.DisplayName;
-        HeaderActivityLabel.Text = vm.ActivityLabel;
+        UpdateSessionHeader();
 
         // Attach terminal
         PlaceholderText.IsVisible = false;
@@ -289,12 +348,30 @@ public partial class MainWindow : Window
         RefreshHookEventsPanel();
         RefreshQueuePanel();
 
+        // Persist session state (debounced)
+        PersistSessionState();
+
         FileLog.Write($"[MainWindow] SelectSession: {vm.DisplayName}");
+    }
+
+    private void OnActiveSessionMetadataChanged(ClaudeSessionMetadata? metadata)
+    {
+        Dispatcher.UIThread.Post(UpdateSessionHeader);
+    }
+
+    private void OnActiveSessionActivityChanged(ActivityState oldState, ActivityState newState)
+    {
+        Dispatcher.UIThread.Post(UpdateSessionHeader);
     }
 
     private async Task CloseAllSessionsAsync()
     {
         FileLog.Write("[MainWindow] CloseAllSessionsAsync");
+        if (_activeSession != null)
+        {
+            _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
+            _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
+        }
         TerminalHost.Detach();
         GitChangesView.Detach();
         CleanView.Detach();
@@ -324,12 +401,508 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] CloseAllSessionsAsync: removed {snapshots.Count} session(s)");
     }
 
+    // ==================== SESSION CONTEXT MENU ====================
+
+    private void SessionMenuButton_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] SessionMenuButton_Click");
+        if (sender is not Button button)
+            return;
+
+        // Find the SessionViewModel from the button's DataContext
+        var vm = button.DataContext as SessionViewModel;
+        if (vm == null)
+            return;
+
+        var menu = new ContextMenu();
+
+        var rename = new MenuItem { Header = "Rename" };
+        rename.Click += (_, _) => ShowRenameDialog(vm);
+
+        var separator1 = new Separator();
+
+        var openJsonl = new MenuItem { Header = "Open .jsonl in Explorer" };
+        openJsonl.Click += (_, _) => OpenSessionJsonl(vm);
+
+        var separator2 = new Separator();
+
+        var openExplorer = new MenuItem { Header = "Open in Explorer" };
+        openExplorer.Click += (_, _) => OpenInExplorer(vm);
+
+        var openVsCode = new MenuItem { Header = "Open in VS Code" };
+        openVsCode.Click += (_, _) => OpenInVsCode(vm);
+
+        var relink = new MenuItem { Header = "Relink Session..." };
+        relink.Click += (_, _) => _ = ShowRelinkDialog(vm);
+
+        var separator3 = new Separator();
+
+        var close = new MenuItem { Header = "Close Session" };
+        close.Click += (_, _) => _ = CloseSessionAsync(vm);
+
+        menu.Items.Add(rename);
+        menu.Items.Add(relink);
+        menu.Items.Add(separator1);
+        menu.Items.Add(openJsonl);
+        menu.Items.Add(separator2);
+        menu.Items.Add(openExplorer);
+        menu.Items.Add(openVsCode);
+        menu.Items.Add(separator3);
+        menu.Items.Add(close);
+
+        menu.Open(button);
+    }
+
+    private async void ShowRenameDialog(SessionViewModel vm)
+    {
+        FileLog.Write($"[MainWindow] ShowRenameDialog: session={vm.Session.Id}, name={vm.DisplayName}");
+        var dialog = new RenameSessionDialog(vm.DisplayName, vm.Session.CustomColor);
+        var result = await dialog.ShowDialog<bool?>(this);
+
+        if (result == true)
+        {
+            vm.Rename(dialog.SessionName, dialog.SelectedColor);
+            PersistSessionState();
+
+            if (_activeSession == vm)
+                UpdateSessionHeader();
+
+            FileLog.Write($"[MainWindow] ShowRenameDialog: confirmed, name={dialog.SessionName}, color={dialog.SelectedColor ?? "null"}");
+        }
+        else
+        {
+            FileLog.Write("[MainWindow] ShowRenameDialog: cancelled");
+        }
+    }
+
+    private async Task ShowRelinkDialog(SessionViewModel vm)
+    {
+        FileLog.Write($"[MainWindow] ShowRelinkDialog: session={vm.Session.Id}");
+        var dialog = new RelinkSessionDialog(vm.Session.RepoPath);
+        var result = await dialog.ShowDialog<bool?>(this);
+
+        if (result == true && !string.IsNullOrEmpty(dialog.SelectedSessionId))
+        {
+            FileLog.Write($"[MainWindow] ShowRelinkDialog: relinking to {dialog.SelectedSessionId}");
+            _sessionManager.RelinkClaudeSession(vm.Session.Id, dialog.SelectedSessionId);
+
+            if (_activeSession == vm)
+            {
+                UpdateSessionHeader();
+                CleanView.Detach();
+                CleanView.Attach(vm.Session);
+            }
+
+            ShowNotification($"Session relinked to {dialog.SelectedSessionId[..8]}...");
+        }
+        else
+        {
+            FileLog.Write("[MainWindow] ShowRelinkDialog: cancelled");
+        }
+    }
+
+    private void OpenSessionJsonl(SessionViewModel vm)
+    {
+        FileLog.Write("[MainWindow] OpenSessionJsonl");
+        var claudeSessionId = vm.Session.ClaudeSessionId;
+        if (string.IsNullOrEmpty(claudeSessionId))
+        {
+            FileLog.Write("[MainWindow] OpenSessionJsonl: no ClaudeSessionId");
+            ShowNotification("Session not linked to Claude yet -- no .jsonl file available");
+            return;
+        }
+
+        var jsonlPath = ClaudeSessionReader.GetJsonlPath(claudeSessionId, vm.Session.RepoPath);
+        if (!File.Exists(jsonlPath))
+        {
+            FileLog.Write($"[MainWindow] OpenSessionJsonl: file not found: {jsonlPath}");
+            ShowNotification($"Session file not found: {jsonlPath}");
+            return;
+        }
+
+        FileLog.Write($"[MainWindow] OpenSessionJsonl: opening {jsonlPath}");
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"/select,\"{jsonlPath}\"",
+            UseShellExecute = true,
+        });
+    }
+
+    private void OpenInExplorer(SessionViewModel vm)
+    {
+        FileLog.Write($"[MainWindow] OpenInExplorer: {vm.Session.RepoPath}");
+        if (!Directory.Exists(vm.Session.RepoPath))
+        {
+            ShowNotification($"Directory not found: {vm.Session.RepoPath}");
+            return;
+        }
+
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = vm.Session.RepoPath,
+            UseShellExecute = true,
+        });
+    }
+
+    private void OpenInVsCode(SessionViewModel vm)
+    {
+        FileLog.Write($"[MainWindow] OpenInVsCode: {vm.Session.RepoPath}");
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "code",
+            Arguments = $"\"{vm.Session.RepoPath}\"",
+            UseShellExecute = true,
+        });
+    }
+
+    private async Task CloseSessionAsync(SessionViewModel vm)
+    {
+        FileLog.Write($"[MainWindow] CloseSessionAsync: session={vm.Session.Id}");
+
+        if (_activeSession == vm)
+        {
+            TerminalHost.Detach();
+            GitChangesView.Detach();
+            CleanView.Detach();
+            _activeSession = null;
+
+            SessionHeaderBanner.IsVisible = false;
+            PlaceholderText.IsVisible = true;
+            TerminalHost.IsVisible = false;
+            PromptBarBorder.IsVisible = false;
+        }
+
+        _sessions.Remove(vm);
+        PersistSessionState();
+
+        await Task.Run(async () =>
+        {
+            try
+            {
+                await _sessionManager.KillSessionAsync(vm.Session.Id);
+                _sessionManager.RemoveSession(vm.Session.Id);
+                FileLog.Write($"[MainWindow] CloseSessionAsync: cleanup complete for {vm.Session.Id}");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] CloseSessionAsync cleanup FAILED: {ex.Message}");
+            }
+        });
+    }
+
+    private const int PersistDebounceMs = 250;
+    private CancellationTokenSource? _persistDebounceCts;
+
+    private void PersistSessionState()
+    {
+        // Sync prompt text on the UI thread before background debounce
+        SyncPromptTextToSessions();
+
+        _persistDebounceCts?.Cancel();
+        _persistDebounceCts = new CancellationTokenSource();
+        var cts = _persistDebounceCts;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(PersistDebounceMs, cts.Token);
+                PersistSessionStateCore();
+            }
+            catch (TaskCanceledException) { /* debounce superseded */ }
+        });
+    }
+
+    private void PersistSessionStateCore()
+    {
+        FileLog.Write("[MainWindow] PersistSessionStateCore");
+        try
+        {
+            var app = (App)global::Avalonia.Application.Current!;
+            var persisted = _sessions.Select((vm, i) => new PersistedSession
+            {
+                Id = vm.Session.Id,
+                RepoPath = vm.Session.RepoPath,
+                ClaudeArgs = vm.Session.ClaudeArgs,
+                CustomName = vm.Session.CustomName,
+                CustomColor = vm.Session.CustomColor,
+                ClaudeSessionId = vm.Session.ClaudeSessionId,
+                ActivityState = vm.Session.ActivityState,
+                BackendType = vm.Session.BackendType,
+                PendingPromptText = vm.Session.PendingPromptText,
+                SortOrder = i,
+            });
+            app.SessionStateStore.Save(persisted);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] PersistSessionStateCore FAILED: {ex.Message}");
+        }
+    }
+
+    private void SyncPromptTextToSessions()
+    {
+        for (int i = 0; i < _sessions.Count; i++)
+        {
+            _sessions[i].Session.SortOrder = i;
+        }
+
+        if (_activeSession != null)
+        {
+            _activeSession.Session.PendingPromptText = PromptInput.Text;
+        }
+    }
+
+    // ==================== SESSION HEADER ====================
+
+    private void UpdateSessionHeader()
+    {
+        if (_activeSession == null) return;
+
+        var session = _activeSession.Session;
+        HeaderSessionName.Text = _activeSession.DisplayName;
+        HeaderActivityLabel.Text = _activeSession.ActivityLabel;
+
+        // Apply custom header color if set
+        if (!string.IsNullOrWhiteSpace(session.CustomColor))
+        {
+            var color = Color.Parse(session.CustomColor);
+            SessionHeaderBanner.Background = new SolidColorBrush(color);
+        }
+        else
+        {
+            SessionHeaderBanner.Background = new SolidColorBrush(Color.Parse("#007ACC"));
+        }
+
+        // Message count
+        var msgCount = session.ClaudeMetadata?.MessageCount ?? 0;
+        if (msgCount > 0)
+        {
+            HeaderMessageCountText.Text = $"{msgCount} msgs";
+            HeaderMessageCountBadge.IsVisible = true;
+        }
+        else
+        {
+            HeaderMessageCountBadge.IsVisible = false;
+        }
+
+        // Session IDs
+        var claudeId = session.ClaudeSessionId;
+        if (!string.IsNullOrEmpty(claudeId))
+        {
+            HeaderSessionId.Text = claudeId.Length > 12 ? claudeId[..12] + "..." : claudeId;
+            HeaderDirectorId.Text = session.Id.ToString()[..8];
+            HeaderSessionIdPanel.IsVisible = true;
+        }
+        else
+        {
+            HeaderSessionId.Text = "Not linked";
+            HeaderDirectorId.Text = session.Id.ToString()[..8];
+            HeaderSessionIdPanel.IsVisible = true;
+        }
+
+        UpdateHeaderVerification(_activeSession);
+    }
+
+    private static readonly ISolidColorBrush VerifiedBadgeBrush = new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E));
+    private static readonly ISolidColorBrush WarningBadgeBrush = new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B));
+
+    private void UpdateHeaderVerification(SessionViewModel vm)
+    {
+        if (vm.IsVerified)
+        {
+            HeaderVerificationBadge.Background = VerifiedBadgeBrush;
+            HeaderVerificationText.Text = "OK";
+            HeaderVerificationBadge.IsVisible = true;
+            BtnRelink.IsVisible = false;
+        }
+        else if (vm.HasVerificationWarning)
+        {
+            HeaderVerificationBadge.Background = WarningBadgeBrush;
+            HeaderVerificationText.Text = "!";
+            HeaderVerificationBadge.IsVisible = true;
+            BtnRelink.IsVisible = true;
+        }
+        else
+        {
+            HeaderVerificationBadge.IsVisible = false;
+            BtnRelink.IsVisible = true;
+        }
+
+        var tooltip = vm.VerificationStatusText;
+        if (!string.IsNullOrEmpty(vm.VerifiedFirstPrompt))
+            tooltip += $"\n\nFirst prompt: {vm.VerifiedFirstPrompt}";
+        ToolTip.SetTip(HeaderVerificationBadge, tooltip);
+    }
+
+    private void CheckTerminalVerification()
+    {
+        if (_activeSession == null) return;
+
+        var status = _activeSession.TerminalVerificationStatus;
+        if (status == TerminalVerificationStatus.Matched)
+            return;
+
+        var session = _activeSession;
+        var terminalText = TerminalHost.GetAllTerminalText();
+        if (string.IsNullOrEmpty(terminalText)) return;
+
+        var lineCount = terminalText.Split('\n').Length;
+        if (lineCount < 5) return;
+
+        FileLog.Write($"[MainWindow] CheckTerminalVerification: contentLines={lineCount}, status={status}, session={session.Session.Id}");
+
+        Task.Run(() =>
+        {
+            try
+            {
+                var result = session.Session.VerifyWithTerminalContent(terminalText, lineCount);
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (result.IsMatched)
+                    {
+                        FileLog.Write($"[MainWindow] Terminal verification CONFIRMED: {result.MatchedSessionId} for {session.Session.Id}");
+                        if (!string.IsNullOrEmpty(result.MatchedSessionId))
+                            _sessionManager.RegisterClaudeSession(result.MatchedSessionId, session.Session.Id);
+                        if (_activeSession?.Session.Id == session.Session.Id)
+                            UpdateSessionHeader();
+                        PersistSessionState();
+                    }
+                    else if (result.IsPotential)
+                    {
+                        FileLog.Write($"[MainWindow] Terminal verification POTENTIAL: {result.MatchedSessionId} for {session.Session.Id} ({lineCount} lines)");
+                        if (!string.IsNullOrEmpty(result.MatchedSessionId))
+                            _sessionManager.RegisterClaudeSession(result.MatchedSessionId, session.Session.Id);
+                        if (_activeSession?.Session.Id == session.Session.Id)
+                            UpdateSessionHeader();
+                        PersistSessionState();
+                    }
+                    else
+                    {
+                        FileLog.Write($"[MainWindow] Terminal verification no match: {result.ErrorMessage} for {session.Session.Id} ({lineCount} lines)");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] CheckTerminalVerification FAILED: {ex.Message}");
+            }
+        });
+    }
+
+    private async void BtnRelink_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnRelink_Click");
+        if (_activeSession == null) return;
+        await ShowRelinkDialog(_activeSession);
+    }
+
+    private void BtnRefreshTerminal_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnRefreshTerminal_Click");
+        if (_activeSession == null) return;
+
+        TerminalHost.Detach();
+        TerminalHost.Attach(_activeSession.Session);
+        FileLog.Write("[MainWindow] BtnRefreshTerminal_Click: terminal reattached");
+    }
+
+    private void OnTerminalScrollChanged(object? sender, EventArgs e)
+    {
+        CheckTerminalVerification();
+    }
+
     // ==================== EVENT HANDLERS ====================
 
     private void SessionList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (SessionList.SelectedItem is SessionViewModel vm)
             SelectSession(vm);
+    }
+
+    // --- Session drag-and-drop reorder ---
+
+    private async void SessionItem_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (sender is not Control control || control.DataContext is not SessionViewModel vm)
+            return;
+
+        if (!e.GetCurrentPoint(control).Properties.IsLeftButtonPressed)
+            return;
+
+        var dataObject = new DataObject();
+        dataObject.Set("SessionViewModel", vm.Session.Id.ToString());
+        await DragDrop.DoDragDrop(e, dataObject, global::Avalonia.Input.DragDropEffects.Move);
+    }
+
+    private void SessionList_DragOver(object? sender, DragEventArgs e)
+    {
+        if (!e.Data.Contains("SessionViewModel"))
+        {
+            e.DragEffects = DragDropEffects.None;
+            return;
+        }
+        e.DragEffects = DragDropEffects.Move;
+        e.Handled = true;
+    }
+
+    private void SessionList_Drop(object? sender, DragEventArgs e)
+    {
+        if (!e.Data.Contains("SessionViewModel")) return;
+
+        var draggedIdStr = e.Data.Get("SessionViewModel") as string;
+        if (string.IsNullOrEmpty(draggedIdStr) || !Guid.TryParse(draggedIdStr, out var draggedId))
+            return;
+
+        var draggedVm = _sessions.FirstOrDefault(s => s.Session.Id == draggedId);
+        if (draggedVm == null) return;
+
+        int fromIndex = _sessions.IndexOf(draggedVm);
+        if (fromIndex < 0) return;
+
+        // Find the target session under the drop point
+        var pos = e.GetPosition(SessionList);
+        int toIndex = GetSessionDropIndex(pos);
+
+        if (fromIndex < toIndex)
+            toIndex--;
+
+        toIndex = Math.Max(0, Math.Min(toIndex, _sessions.Count - 1));
+
+        if (fromIndex != toIndex)
+        {
+            FileLog.Write($"[MainWindow] SessionList_Drop: moving session from {fromIndex} to {toIndex}");
+            _sessions.Move(fromIndex, toIndex);
+            SessionList.SelectedItem = draggedVm;
+            PersistSessionState();
+        }
+    }
+
+    private int GetSessionDropIndex(Point pos)
+    {
+        // Walk list items and find where the drop point falls
+        for (int i = 0; i < _sessions.Count; i++)
+        {
+            var container = SessionList.ContainerFromIndex(i);
+            if (container == null) continue;
+
+            var itemPos = container.TranslatePoint(new Point(0, 0), SessionList);
+            if (itemPos == null) continue;
+
+            var bounds = container.Bounds;
+            double itemTop = itemPos.Value.Y;
+            double itemBottom = itemTop + bounds.Height;
+
+            if (pos.Y >= itemTop && pos.Y <= itemBottom)
+            {
+                bool below = pos.Y > itemTop + bounds.Height / 2;
+                return below ? i + 1 : i;
+            }
+        }
+
+        return _sessions.Count;
     }
 
     private void BtnNewSession_Click(object? sender, RoutedEventArgs e)
@@ -413,13 +986,164 @@ public partial class MainWindow : Window
             }
         };
 
+        var separator2 = new Separator();
+
+        var repositories = new MenuItem { Header = "Repositories..." };
+        repositories.Click += async (_, _) =>
+        {
+            FileLog.Write("[MainWindow] Menu: Repositories");
+            var dialog = new RepositoryManagerDialog(app.RootDirectoryStore);
+            var result = await dialog.ShowDialog<bool?>(this);
+            if (result == true && dialog.LaunchSessionPath != null)
+            {
+                CreateSession(dialog.LaunchSessionPath);
+            }
+        };
+
+        var accounts = new MenuItem { Header = "Accounts..." };
+        accounts.Click += async (_, _) =>
+        {
+            FileLog.Write("[MainWindow] Menu: Accounts");
+            var dialog = new AccountsDialog(app.ClaudeAccountStore);
+            await dialog.ShowDialog<bool?>(this);
+        };
+
+        var separator3 = new Separator();
+
+        var openSessions = new MenuItem { Header = "Open Sessions File" };
+        openSessions.Click += (_, _) =>
+        {
+            FileLog.Write("[MainWindow] Menu: Open Sessions File");
+            var filePath = app.SessionStateStore.FilePath;
+            if (File.Exists(filePath))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(filePath)
+                    { UseShellExecute = true });
+            }
+            else
+            {
+                ShowNotification($"Sessions file not found: {filePath}");
+            }
+        };
+
+        var openHistory = new MenuItem { Header = "Open History Folder" };
+        openHistory.Click += (_, _) =>
+        {
+            FileLog.Write("[MainWindow] Menu: Open History Folder");
+            var folder = app.SessionHistoryStore.FolderPath;
+            if (Directory.Exists(folder))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    { FileName = folder, UseShellExecute = true });
+            }
+            else
+            {
+                ShowNotification($"History folder not found: {folder}");
+            }
+        };
+
+        var historyVsCode = new MenuItem { Header = "History in VS Code" };
+        historyVsCode.Click += (_, _) =>
+        {
+            FileLog.Write("[MainWindow] Menu: History in VS Code");
+            var folder = app.SessionHistoryStore.FolderPath;
+            if (Directory.Exists(folder))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("code", $"\"{folder}\"")
+                    { UseShellExecute = true });
+            }
+            else
+            {
+                ShowNotification($"History folder not found: {folder}");
+            }
+        };
+
         menu.Items.Add(saveWorkspace);
         menu.Items.Add(loadWorkspace);
         menu.Items.Add(clearWorkspace);
         menu.Items.Add(separator1);
+        menu.Items.Add(repositories);
+        menu.Items.Add(accounts);
+        menu.Items.Add(separator2);
         menu.Items.Add(openLogs);
+        menu.Items.Add(openSessions);
+        menu.Items.Add(openHistory);
+        menu.Items.Add(historyVsCode);
 
         menu.Open(BtnAppMenu);
+    }
+
+    // ==================== TOP APP BAR ====================
+
+    private async void BtnClaudeConfig_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnClaudeConfig_Click: opening Claude Code config dialog");
+        var repoPath = _activeSession?.Session.RepoPath;
+        var dialog = new ClaudeConfigDialog(repoPath);
+        await dialog.ShowDialog<bool?>(this);
+    }
+
+    private async void BtnClaudeView_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnClaudeView_Click");
+        var repoPath = _activeSession?.Session.RepoPath;
+        var dialog = new ClaudeViewDialog(repoPath);
+        await dialog.ShowDialog<bool?>(this);
+    }
+
+    private async void BtnMcpServers_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnMcpServers_Click");
+        try
+        {
+            var manager = new McpConfigManager();
+            var projectDir = _activeSession?.Session.RepoPath;
+            var dialog = new McpServersDialog(manager, projectDir);
+            await dialog.ShowDialog<bool?>(this);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnMcpServers_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private async void BtnAgentTemplates_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnAgentTemplates_Click");
+        try
+        {
+            var store = new AgentTemplateStore();
+            store.Load();
+            var dialog = new AgentTemplatesDialog(store);
+            dialog.LaunchRequested += (template, repoPath) =>
+            {
+                FileLog.Write($"[MainWindow] AgentTemplates LaunchRequested: template={template.Name}, repo={repoPath}");
+                var args = template.BuildCliArgs();
+                var vm = CreateSession(repoPath, claudeArgs: string.IsNullOrWhiteSpace(args) ? null : args);
+                if (vm != null)
+                    vm.Rename(template.Name, null);
+            };
+            await dialog.ShowDialog<bool?>(this);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnAgentTemplates_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private async void BtnSettings_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnSettings_Click");
+        var repoPath = _activeSession?.Session.RepoPath;
+        var dialog = new ClaudeConfigDialog(repoPath);
+        await dialog.ShowDialog<bool?>(this);
+    }
+
+    private async void BtnHelp_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnHelp_Click");
+        var dialog = new HelpDialog();
+        await dialog.ShowDialog<bool?>(this);
     }
 
     // ==================== LEFT TAB SWITCHING ====================
@@ -616,12 +1340,114 @@ public partial class MainWindow : Window
 
     // ==================== SEND / QUEUE / HANDOVER ====================
 
+    private static readonly HashSet<string> TerminalOnlyCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "context", "copy", "diff", "rewind", "checkpoint", "export", "mcp", "agents",
+    };
+
+    private bool TryHandleSlashCommand(string text)
+    {
+        if (string.IsNullOrEmpty(text) || !text.StartsWith("/"))
+            return false;
+
+        var commandName = text.ToLowerInvariant().TrimStart('/');
+
+        // Terminal-only commands: show redirect message, keep text in prompt
+        if (TerminalOnlyCommands.Contains(commandName))
+        {
+            FileLog.Write($"[MainWindow] TryHandleSlashCommand: terminal-only command blocked: /{commandName}");
+            ShowNotification($"Use the Terminal tab for {text}");
+            PromptInput.Text = text;
+            PromptInput.CaretIndex = text.Length;
+            return true;
+        }
+
+        // Commands handled by ClaudeConfigDialog (with tab selection)
+        var configTab = commandName switch
+        {
+            "config" or "settings" => "general",
+            "permissions" or "allowed-tools" => "permissions",
+            "model" => "general",
+            "hooks" => "hooks",
+            "plugin" => "plugins",
+            _ => (string?)null
+        };
+
+        if (configTab != null)
+        {
+            FileLog.Write($"[MainWindow] TryHandleSlashCommand: opening ClaudeConfigDialog tab={configTab} for /{commandName}");
+            var dialog = new ClaudeConfigDialog(_activeSession?.Session.RepoPath, configTab);
+            _ = dialog.ShowDialog<bool?>(this);
+            return true;
+        }
+
+        // Commands with their own native dialogs
+        switch (commandName)
+        {
+            case "status":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening StatusDialog");
+                _ = new StatusDialog().ShowDialog<bool?>(this);
+                return true;
+
+            case "help":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening HelpDialog");
+                _ = new HelpDialog().ShowDialog<bool?>(this);
+                return true;
+
+            case "theme":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening ThemeDialog");
+                _ = new ThemeDialog().ShowDialog<bool?>(this);
+                return true;
+
+            case "memory":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening MemoryDialog");
+                _ = new MemoryDialog(_activeSession?.Session.RepoPath).ShowDialog<bool?>(this);
+                return true;
+
+            case "stats":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening StatsDialog");
+                _ = new StatsDialog().ShowDialog<bool?>(this);
+                return true;
+
+            case "output-style":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening OutputStyleDialog");
+                _ = new OutputStyleDialog().ShowDialog<bool?>(this);
+                return true;
+
+            case "resume" or "continue":
+                FileLog.Write("[MainWindow] TryHandleSlashCommand: opening ResumeDialog");
+                _ = HandleResumeCommand();
+                return true;
+        }
+
+        return false;
+    }
+
+    private async Task HandleResumeCommand()
+    {
+        var dialog = new ResumeDialog(_activeSession?.Session.RepoPath);
+        var result = await dialog.ShowDialog<bool?>(this);
+        if (result == true && dialog.SelectedSessionId != null)
+        {
+            SwitchLeftTab("Terminal");
+            PromptInput.Text = $"claude --resume {dialog.SelectedSessionId}";
+            ShowNotification("Session selected -- press Enter to resume in Terminal");
+        }
+    }
+
     private void SendPrompt()
     {
         if (_activeSession == null) return;
 
         var text = PromptInput.Text?.Trim();
         if (string.IsNullOrEmpty(text)) return;
+
+        // Intercept slash commands and show native dialogs
+        if (TryHandleSlashCommand(text))
+        {
+            PromptInput.Text = "";
+            return;
+        }
 
         FileLog.Write($"[MainWindow] SendPrompt: {text.Length} chars to session {_activeSession.Session.Id}");
 
@@ -630,6 +1456,48 @@ public partial class MainWindow : Window
 
         CleanView.InjectUserPrompt(text);
         _activeSession.Session.SendText(text + "\n");
+    }
+
+    private void PromptInput_DragOver(object? sender, DragEventArgs e)
+    {
+        if (e.Data.Contains(DataFormats.Text) || e.Data.Contains(DataFormats.Files))
+        {
+            e.DragEffects = DragDropEffects.Copy;
+            e.Handled = true;
+        }
+    }
+
+    private void PromptInput_Drop(object? sender, DragEventArgs e)
+    {
+        string? path = null;
+
+        if (e.Data.Contains(DataFormats.Text))
+        {
+            path = e.Data.GetText();
+        }
+        else if (e.Data.Contains(DataFormats.Files))
+        {
+            var files = e.Data.GetFiles();
+            if (files != null)
+            {
+                var first = files.FirstOrDefault();
+                if (first != null)
+                    path = first.Path.LocalPath;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(path))
+        {
+            FileLog.Write($"[MainWindow] PromptInput_Drop: inserting path={path}");
+            var insertion = path + "\n";
+            var idx = PromptInput.CaretIndex;
+            var text = PromptInput.Text ?? "";
+            PromptInput.Text = text.Insert(idx, insertion);
+            PromptInput.CaretIndex = idx + insertion.Length;
+            PromptInput.Focus();
+        }
+
+        e.Handled = true;
     }
 
     private void BtnQueuePrompt_Click(object? sender, RoutedEventArgs e)
@@ -841,6 +1709,26 @@ public partial class MainWindow : Window
         RefreshQueuePanel();
     }
 
+    private void QueueItemMoveUp_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not Guid itemId)
+            return;
+
+        FileLog.Write($"[MainWindow] QueueItemMoveUp_Click: {itemId}");
+        _activeSession?.Session.PromptQueue?.MoveUp(itemId);
+        RefreshQueuePanel();
+    }
+
+    private void QueueItemMoveDown_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not Guid itemId)
+            return;
+
+        FileLog.Write($"[MainWindow] QueueItemMoveDown_Click: {itemId}");
+        _activeSession?.Session.PromptQueue?.MoveDown(itemId);
+        RefreshQueuePanel();
+    }
+
     private void QueueItemRemove_Click(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not Guid itemId)
@@ -849,6 +1737,23 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] QueueItemRemove_Click: {itemId}");
         _activeSession?.Session.PromptQueue?.Remove(itemId);
         RefreshQueuePanel();
+    }
+
+    private void QueueItemsList_DoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (_activeSession == null) return;
+
+        var selected = QueueItemsList.SelectedItem as QueueItemViewModel;
+        if (selected == null) return;
+
+        FileLog.Write($"[MainWindow] QueueItemsList_DoubleTapped: {selected.Id}");
+
+        // Pop item and insert into prompt input
+        PromptInput.Text = (PromptInput.Text ?? "") + selected.FullText;
+        PromptInput.CaretIndex = PromptInput.Text.Length;
+        _activeSession.Session.PromptQueue?.Remove(selected.Id);
+        RefreshQueuePanel();
+        PromptInput.Focus();
     }
 
     // ==================== SCREENSHOTS ====================
@@ -987,6 +1892,22 @@ public partial class MainWindow : Window
         _screenshots.Clear();
     }
 
+    private async void ScreenshotItem_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (sender is not Control control || control.DataContext is not ScreenshotViewModel vm)
+            return;
+
+        FileLog.Write($"[MainWindow] ScreenshotItem_PointerPressed: {vm.FilePath}");
+
+        // Only start drag on left button press
+        if (!e.GetCurrentPoint(control).Properties.IsLeftButtonPressed)
+            return;
+
+        var dataObject = new DataObject();
+        dataObject.Set(DataFormats.Text, vm.FilePath);
+        await DragDrop.DoDragDrop(e, dataObject, global::Avalonia.Input.DragDropEffects.Copy);
+    }
+
     private void ScreenshotView_Click(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not string filePath)
@@ -1058,11 +1979,171 @@ public partial class MainWindow : Window
         }
     }
 
+    // ==================== RIGHT PANEL TAB SWITCHING ====================
+
+    private bool _sessionBrowserLoaded;
+
+    private void RightPanelTabs_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        // Lazy-load session browser when Sessions tab is first selected
+        if (RightPanelTabs.SelectedItem is TabItem tab && tab.Header?.ToString() == "Sessions" && !_sessionBrowserLoaded)
+        {
+            _sessionBrowserLoaded = true;
+            _ = SessionBrowserView.LoadAsync();
+        }
+    }
+
+    // ==================== SESSION BROWSER ====================
+
+    private void OnSessionBrowserResumeRequested(string repoPath, string sessionId)
+    {
+        FileLog.Write($"[MainWindow] OnSessionBrowserResumeRequested: repo={repoPath}, session={sessionId}");
+
+        if (string.IsNullOrEmpty(repoPath) || string.IsNullOrEmpty(sessionId))
+        {
+            FileLog.Write("[MainWindow] OnSessionBrowserResumeRequested: missing repoPath or sessionId");
+            return;
+        }
+
+        var vm = CreateSession(repoPath, resumeSessionId: sessionId);
+        if (vm != null)
+            ShowNotification($"Resumed session in {repoPath}");
+    }
+
+    // ==================== REWIND ====================
+
+    private async void OnCleanViewRewindRequested(Session session, int entryNumber)
+    {
+        FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: session={session.Id}, entry={entryNumber}");
+
+        if (session.History == null)
+        {
+            FileLog.Write("[MainWindow] OnCleanViewRewindRequested: no History on session");
+            ShowNotification("Cannot rewind -- session has no history");
+            return;
+        }
+
+        var repoPath = session.RepoPath;
+        var oldSessionVm = _sessions.FirstOrDefault(vm => vm.Session.Id == session.Id);
+
+        if (entryNumber == 0)
+        {
+            // Fresh reset: start a new session from scratch
+            FileLog.Write("[MainWindow] OnCleanViewRewindRequested: entry 0 -- fresh reset");
+
+            // Detach and remove old session
+            if (oldSessionVm != null)
+            {
+                if (_activeSession == oldSessionVm)
+                {
+                    _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
+                    _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
+                    TerminalHost.Detach();
+                    GitChangesView.Detach();
+                    CleanView.Detach();
+                    _activeSession = null;
+                }
+
+                _sessions.Remove(oldSessionVm);
+            }
+
+            // Kill old session in background
+            _ = Task.Run(async () =>
+            {
+                await _sessionManager.KillSessionAsync(session.Id);
+                _sessionManager.RemoveSession(session.Id);
+            });
+
+            CreateSession(repoPath);
+            ShowNotification("Session reset -- started fresh");
+        }
+        else
+        {
+            // Restore from snapshot
+            var newSessionId = session.History.RestoreSnapshot(entryNumber, repoPath);
+            if (newSessionId == null)
+            {
+                FileLog.Write("[MainWindow] OnCleanViewRewindRequested: RestoreSnapshot returned null");
+                ShowNotification("Rewind failed -- snapshot not found");
+                return;
+            }
+
+            FileLog.Write($"[MainWindow] OnCleanViewRewindRequested: restored snapshot -> newSessionId={newSessionId}");
+
+            // Detach and remove old session
+            if (oldSessionVm != null)
+            {
+                if (_activeSession == oldSessionVm)
+                {
+                    _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
+                    _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
+                    TerminalHost.Detach();
+                    GitChangesView.Detach();
+                    CleanView.Detach();
+                    _activeSession = null;
+                }
+
+                _sessions.Remove(oldSessionVm);
+            }
+
+            // Kill old session in background
+            _ = Task.Run(async () =>
+            {
+                await _sessionManager.KillSessionAsync(session.Id);
+                _sessionManager.RemoveSession(session.Id);
+            });
+
+            CreateSession(repoPath, resumeSessionId: newSessionId);
+            ShowNotification($"Rewound to turn {entryNumber} -- resumed as new session");
+        }
+    }
+
     // ==================== WINDOW CLOSING ====================
 
-    protected override void OnClosing(WindowClosingEventArgs e)
+    private bool _closeConfirmed;
+
+    protected override async void OnClosing(WindowClosingEventArgs e)
     {
         FileLog.Write("[MainWindow] OnClosing");
+
+        // Check for working sessions and show close dialog
+        if (!_closeConfirmed)
+        {
+            var workingSessions = _sessions
+                .Where(vm => vm.Session.ActivityState is ActivityState.Working or ActivityState.WaitingForInput)
+                .ToList();
+
+            if (workingSessions.Count > 0)
+            {
+                e.Cancel = true;
+
+                var sessionNames = workingSessions
+                    .Select(vm => vm.DisplayName)
+                    .ToList();
+
+                var dialog = new CloseDialog(_sessionManager, sessionNames);
+                var result = await dialog.ShowDialog<bool?>(this);
+
+                if (result == true)
+                {
+                    _closeConfirmed = true;
+                    Close();
+                }
+
+                return;
+            }
+        }
+
+        // Unsubscribe from active session events
+        if (_activeSession != null)
+        {
+            _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
+            _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
+        }
+
+        // Final persist (immediate, no debounce)
+        SyncPromptTextToSessions();
+        PersistSessionStateCore();
 
         // Detach terminal, source control, clean view, and usage dashboard
         TerminalHost.Detach();
@@ -1070,6 +2151,9 @@ public partial class MainWindow : Window
         CleanView.Detach();
         UsageDashboardView.Detach();
         _activeSession = null;
+
+        // Stop git status polling
+        _sessionGitTimer?.Stop();
 
         // Cleanup screenshot watcher
         _screenshotDebounceTimer?.Stop();
@@ -1084,5 +2168,42 @@ public partial class MainWindow : Window
         catch { /* App may be shutting down */ }
 
         base.OnClosing(e);
+    }
+
+    // ==================== SESSION GIT STATUS POLLING ====================
+
+    private async Task RefreshSessionGitStatusAsync()
+    {
+        if (_sessionGitRefreshRunning) return;
+        _sessionGitRefreshRunning = true;
+
+        try
+        {
+            var sessions = _sessions.ToList();
+            using var semaphore = new SemaphoreSlim(4);
+
+            var tasks = sessions.Select(async vm =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    var repoPath = vm.Session.RepoPath;
+                    if (!Directory.Exists(repoPath)) return;
+
+                    int count = await _gitStatusProvider.GetCountAsync(repoPath);
+                    global::Avalonia.Threading.Dispatcher.UIThread.Post(() => vm.UncommittedCount = count);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+        }
+        finally
+        {
+            _sessionGitRefreshRunning = false;
+        }
     }
 }
