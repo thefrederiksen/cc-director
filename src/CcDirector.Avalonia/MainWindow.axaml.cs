@@ -9,6 +9,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Skills;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia;
@@ -96,6 +97,10 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<SessionViewModel> _sessions = new();
     private SessionViewModel? _activeSession;
 
+    // Slash command autocomplete
+    private readonly SlashCommandProvider _slashCommandProvider = new();
+    private List<SlashCommandItem> _filteredSlashCommands = new();
+
     // Right panel state
     private bool _rightPanelExpanded = true;
     private readonly ObservableCollection<HookEventViewModel> _hookEvents = new();
@@ -134,6 +139,9 @@ public partial class MainWindow : Window
 
         // Wire usage dashboard to usage service
         UsageDashboardView.SetUsageService(app.ClaudeUsageService);
+
+        // Wire prompt input text changes for slash command autocomplete
+        PromptInput.TextChanged += PromptInput_TextChanged;
 
         SetBuildInfo();
         _ = InitializeScreenshotsPanelAsync();
@@ -242,6 +250,7 @@ public partial class MainWindow : Window
         {
             TerminalHost.Detach();
             GitChangesView.Detach();
+            CleanView.Detach();
         }
 
         _activeSession = vm;
@@ -253,6 +262,7 @@ public partial class MainWindow : Window
             TerminalHost.IsVisible = false;
             PromptBarBorder.IsVisible = false;
             GitChangesView.Detach();
+            CleanView.Detach();
             return;
         }
 
@@ -269,6 +279,9 @@ public partial class MainWindow : Window
         // Attach source control
         GitChangesView.Attach(vm.Session.RepoPath);
 
+        // Attach clean view (Agent tab)
+        CleanView.Attach(vm.Session);
+
         // Show prompt bar
         PromptBarBorder.IsVisible = true;
 
@@ -284,6 +297,7 @@ public partial class MainWindow : Window
         FileLog.Write("[MainWindow] CloseAllSessionsAsync");
         TerminalHost.Detach();
         GitChangesView.Detach();
+        CleanView.Detach();
         _activeSession = null;
 
         var snapshots = _sessions.ToList();
@@ -459,6 +473,52 @@ public partial class MainWindow : Window
 
     private void PromptInput_KeyDown(object? sender, KeyEventArgs e)
     {
+        // Slash command popup navigation
+        if (SlashCommandPopup.IsOpen)
+        {
+            switch (e.Key)
+            {
+                case Key.Down:
+                    if (SlashCommandList.SelectedIndex < _filteredSlashCommands.Count - 1)
+                        SlashCommandList.SelectedIndex++;
+                    if (SlashCommandList.SelectedItem is { } downItem)
+                        SlashCommandList.ScrollIntoView(downItem);
+                    e.Handled = true;
+                    return;
+
+                case Key.Up:
+                    if (SlashCommandList.SelectedIndex > 0)
+                        SlashCommandList.SelectedIndex--;
+                    if (SlashCommandList.SelectedItem is { } upItem)
+                        SlashCommandList.ScrollIntoView(upItem);
+                    e.Handled = true;
+                    return;
+
+                case Key.Tab:
+                    InsertSelectedSlashCommand();
+                    e.Handled = true;
+                    return;
+
+                case Key.Enter when e.KeyModifiers == KeyModifiers.None:
+                    InsertSelectedSlashCommand();
+                    e.Handled = true;
+                    return;
+
+                case Key.Escape:
+                    SlashCommandPopup.IsOpen = false;
+                    e.Handled = true;
+                    return;
+            }
+        }
+
+        // Ctrl+Shift+Enter = Queue prompt
+        if (e.Key == Key.Enter && e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift))
+        {
+            e.Handled = true;
+            QueueCurrentPrompt();
+            return;
+        }
+
         // Enter sends, Shift+Enter inserts newline
         if (e.Key == Key.Enter && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {
@@ -466,6 +526,95 @@ public partial class MainWindow : Window
             SendPrompt();
         }
     }
+
+    // ==================== SLASH COMMAND AUTOCOMPLETE ====================
+
+    private void PromptInput_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        var text = PromptInput.Text ?? "";
+
+        // Only trigger when / is the first non-whitespace character
+        var trimmed = text.TrimStart();
+        if (!trimmed.StartsWith("/"))
+        {
+            SlashCommandPopup.IsOpen = false;
+            return;
+        }
+
+        // Extract the slash command prefix (text from / to first space)
+        var afterSlash = trimmed.Substring(1);
+        var spaceIndex = afterSlash.IndexOf(' ');
+        var filter = spaceIndex >= 0 ? afterSlash.Substring(0, spaceIndex) : afterSlash;
+
+        // If there's a space after the command, popup should close (command is complete)
+        if (spaceIndex >= 0)
+        {
+            SlashCommandPopup.IsOpen = false;
+            return;
+        }
+
+        var repoPath = _activeSession?.Session.RepoPath;
+        var allCommands = _slashCommandProvider.GetCommands(repoPath);
+
+        _filteredSlashCommands = string.IsNullOrEmpty(filter)
+            ? allCommands
+            : allCommands.Where(c => c.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        if (_filteredSlashCommands.Count == 0)
+        {
+            SlashCommandPopup.IsOpen = false;
+            return;
+        }
+
+        SlashCommandList.ItemsSource = _filteredSlashCommands;
+        SlashCommandList.SelectedIndex = 0;
+        SlashCommandPopup.IsOpen = true;
+    }
+
+    private void SlashCommandList_Tapped(object? sender, TappedEventArgs e)
+    {
+        InsertSelectedSlashCommand();
+    }
+
+    private void SlashCommandList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (SlashCommandList.SelectedItem is not SlashCommandItem selected)
+        {
+            SlashCommandDocPanel.IsVisible = false;
+            return;
+        }
+
+        SlashCommandDocTitle.Text = "/" + selected.Name;
+        SlashCommandDocSource.Text = selected.Source == "project" ? "Project skill" : "Global skill";
+        SlashCommandDocDesc.Text = selected.Description;
+
+        if (!string.IsNullOrWhiteSpace(selected.Documentation))
+        {
+            SlashCommandDocBody.Text = selected.Documentation;
+            SlashCommandDocBody.IsVisible = true;
+        }
+        else
+        {
+            SlashCommandDocBody.Text = string.Empty;
+            SlashCommandDocBody.IsVisible = false;
+        }
+
+        SlashCommandDocPanel.IsVisible = true;
+    }
+
+    private void InsertSelectedSlashCommand()
+    {
+        if (SlashCommandList.SelectedItem is not SlashCommandItem selected)
+            return;
+
+        FileLog.Write($"[MainWindow] InsertSelectedSlashCommand: /{selected.Name}");
+        PromptInput.Text = "/" + selected.Name + " ";
+        PromptInput.CaretIndex = PromptInput.Text.Length;
+        SlashCommandPopup.IsOpen = false;
+        PromptInput.Focus();
+    }
+
+    // ==================== SEND / QUEUE / HANDOVER ====================
 
     private void SendPrompt()
     {
@@ -476,8 +625,84 @@ public partial class MainWindow : Window
 
         FileLog.Write($"[MainWindow] SendPrompt: {text.Length} chars to session {_activeSession.Session.Id}");
 
-        _activeSession.Session.SendText(text + "\n");
         PromptInput.Text = "";
+        ClearNotification();
+
+        CleanView.InjectUserPrompt(text);
+        _activeSession.Session.SendText(text + "\n");
+    }
+
+    private void BtnQueuePrompt_Click(object? sender, RoutedEventArgs e)
+    {
+        QueueCurrentPrompt();
+    }
+
+    private void QueueCurrentPrompt()
+    {
+        if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text))
+            return;
+
+        var text = PromptInput.Text.Trim();
+        FileLog.Write($"[MainWindow] QueueCurrentPrompt: session={_activeSession.Session.Id}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\"");
+        _activeSession.Session.PromptQueue?.Enqueue(text);
+        PromptInput.Text = "";
+
+        RefreshQueuePanel();
+
+        // Auto-open queue tab
+        if (_rightPanelExpanded)
+            RightPanelTabs.SelectedItem = QueueTab;
+
+        UpdateQueueButtonStyle();
+    }
+
+    private void BtnHandover_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnHandover_Click");
+        if (_activeSession == null)
+        {
+            FileLog.Write("[MainWindow] BtnHandover_Click: no active session");
+            return;
+        }
+
+        _activeSession.Session.SendText("/handover\n");
+        FileLog.Write($"[MainWindow] BtnHandover_Click: sent /handover to session {_activeSession.Session.Id}");
+    }
+
+    private void UpdateQueueButtonStyle()
+    {
+        var queue = _activeSession?.Session.PromptQueue;
+        var count = queue?.Count ?? 0;
+
+        BtnQueuePrompt.Content = count > 0 ? $"Queue ({count})" : "Queue";
+
+        if (count > 0)
+        {
+            BtnQueuePrompt.Background = new SolidColorBrush(Color.FromRgb(0xDC, 0x26, 0x26));
+            BtnQueuePrompt.Foreground = Brushes.White;
+        }
+        else
+        {
+            BtnQueuePrompt.Background = (IBrush)(this.FindResource("ButtonBackground") ?? Brushes.DarkGray);
+            BtnQueuePrompt.Foreground = (IBrush)(this.FindResource("TextForeground") ?? Brushes.LightGray);
+        }
+    }
+
+    // ==================== NOTIFICATION BAR ====================
+
+    private void ShowNotification(string message)
+    {
+        FileLog.Write($"[MainWindow] ShowNotification: {message}");
+        NotificationText.Text = message;
+        NotificationIcon.IsVisible = true;
+        NotificationBar.IsVisible = true;
+    }
+
+    private void ClearNotification()
+    {
+        NotificationText.Text = string.Empty;
+        NotificationIcon.IsVisible = false;
+        NotificationBar.IsVisible = false;
     }
 
     // ==================== RIGHT PANEL TOGGLE ====================
@@ -591,6 +816,7 @@ public partial class MainWindow : Window
         QueueTab.Header = count > 0 ? $"Queue ({count})" : "Queue";
         QueueEmptyText.IsVisible = count == 0;
         QueueItemsList.IsVisible = count > 0;
+        UpdateQueueButtonStyle();
     }
 
     private void BtnClearQueue_Click(object? sender, RoutedEventArgs e)
@@ -838,9 +1064,10 @@ public partial class MainWindow : Window
     {
         FileLog.Write("[MainWindow] OnClosing");
 
-        // Detach terminal, source control, and usage dashboard
+        // Detach terminal, source control, clean view, and usage dashboard
         TerminalHost.Detach();
         GitChangesView.Detach();
+        CleanView.Detach();
         UsageDashboardView.Detach();
         _activeSession = null;
 

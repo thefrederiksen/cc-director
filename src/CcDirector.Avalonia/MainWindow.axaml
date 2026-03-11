@@ -119,7 +119,7 @@
         <Grid Grid.Row="1" Grid.Column="2" ColumnDefinitions="*,Auto,Auto">
 
             <!-- Left: Terminal + Prompt -->
-            <Grid Grid.Column="0" RowDefinitions="Auto,*,Auto">
+            <Grid Grid.Column="0" RowDefinitions="Auto,*,Auto,Auto">
 
                 <!-- Left tab bar -->
                 <Border Grid.Row="0"
@@ -156,15 +156,10 @@
                 <!-- Left tab content area -->
                 <Panel Grid.Row="1" Background="#1E1E1E">
 
-                    <!-- Agent panel (placeholder) -->
-                    <Border x:Name="AgentPanel" IsVisible="False" Padding="20">
-                        <TextBlock Text="Clean view - coming soon"
-                                   Foreground="#555555"
-                                   FontSize="16"
-                                   FontStyle="Italic"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center" />
-                    </Border>
+                    <!-- Agent panel (Clean view) -->
+                    <Panel x:Name="AgentPanel" IsVisible="False">
+                        <controls:CleanView x:Name="CleanView" />
+                    </Panel>
 
                     <!-- Terminal panel -->
                     <Panel x:Name="TerminalPanel" IsVisible="True">
@@ -187,42 +182,161 @@
                     </Panel>
                 </Panel>
 
+                <!-- ==================== NOTIFICATION BAR ==================== -->
+                <Border x:Name="NotificationBar" Grid.Row="2"
+                        Background="{DynamicResource SidebarBackground}"
+                        BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
+                        Padding="8,4"
+                        IsVisible="False">
+                    <DockPanel>
+                        <TextBlock x:Name="NotificationIcon" DockPanel.Dock="Left"
+                                   Text="(i)"
+                                   Foreground="#3B82F6"
+                                   FontSize="12" FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0"
+                                   IsVisible="False" />
+                        <TextBlock x:Name="NotificationText"
+                                   Text=""
+                                   Foreground="{DynamicResource TextForeground}"
+                                   FontSize="12"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                </Border>
+
                 <!-- ==================== PROMPT BAR ==================== -->
-                <Border Grid.Row="2"
+                <Border Grid.Row="3"
                         x:Name="PromptBarBorder"
                         Background="{DynamicResource SidebarBackground}"
                         BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
                         Padding="8,6"
                         IsVisible="False">
-                    <Grid ColumnDefinitions="*,Auto">
-                        <TextBox x:Name="PromptInput"
-                                 Grid.Column="0"
-                                 Watermark="Type a message..."
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 MinHeight="36"
-                                 MaxHeight="160"
-                                 Background="#1E1E1E"
-                                 Foreground="{DynamicResource TextForeground}"
-                                 BorderBrush="#3C3C3C"
-                                 Padding="8,6"
-                                 FontSize="13"
-                                 KeyDown="PromptInput_KeyDown" />
-                        <StackPanel Grid.Column="1"
-                                    Orientation="Vertical"
-                                    VerticalAlignment="Bottom"
-                                    Margin="6,0,0,0"
-                                    Spacing="4">
-                            <Button x:Name="BtnSend"
-                                    Content="Send"
-                                    Width="70" Height="32"
-                                    Background="{DynamicResource AccentBrush}"
-                                    Foreground="White"
-                                    HorizontalContentAlignment="Center"
-                                    FontSize="13"
-                                    Click="BtnSend_Click" />
-                        </StackPanel>
-                    </Grid>
+                    <Panel>
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBox x:Name="PromptInput"
+                                     Grid.Column="0"
+                                     Watermark="Type a message..."
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     MinHeight="65"
+                                     MaxHeight="160"
+                                     Background="#1E1E1E"
+                                     Foreground="{DynamicResource TextForeground}"
+                                     BorderBrush="#3C3C3C"
+                                     Padding="8,6"
+                                     FontFamily="Cascadia Mono,Consolas,monospace"
+                                     FontSize="13"
+                                     KeyDown="PromptInput_KeyDown" />
+                            <StackPanel Grid.Column="1"
+                                        Orientation="Vertical"
+                                        VerticalAlignment="Bottom"
+                                        Margin="8,0,0,0"
+                                        Spacing="4">
+                                <Button x:Name="BtnSend"
+                                        Content="Send"
+                                        Width="70" Height="30"
+                                        Background="{DynamicResource AccentBrush}"
+                                        Foreground="White"
+                                        HorizontalContentAlignment="Center"
+                                        FontSize="13"
+                                        Click="BtnSend_Click" />
+                                <Button x:Name="BtnQueuePrompt"
+                                        Content="Queue"
+                                        Width="70" Height="30"
+                                        Background="{DynamicResource ButtonBackground}"
+                                        Foreground="{DynamicResource TextForeground}"
+                                        HorizontalContentAlignment="Center"
+                                        FontSize="13"
+                                        Click="BtnQueuePrompt_Click"
+                                        ToolTip.Tip="Add to prompt queue (Ctrl+Shift+Enter)" />
+                                <Button x:Name="BtnHandover"
+                                        Content="Handover"
+                                        Width="70" Height="30"
+                                        Background="#2D2D30"
+                                        Foreground="#AAAAAA"
+                                        HorizontalContentAlignment="Center"
+                                        FontSize="13"
+                                        Click="BtnHandover_Click"
+                                        ToolTip.Tip="Create a handover document for this session" />
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- Slash command autocomplete popup -->
+                        <Popup x:Name="SlashCommandPopup"
+                               PlacementTarget="{Binding #PromptInput}"
+                               Placement="Top"
+                               IsLightDismissEnabled="True">
+                            <Border Background="#252526"
+                                    BorderBrush="#3C3C3C"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    MinWidth="700"
+                                    MaxWidth="900"
+                                    MaxHeight="420">
+                                <Grid ColumnDefinitions="260,1,*">
+
+                                    <!-- Command list -->
+                                    <ListBox x:Name="SlashCommandList"
+                                             Grid.Column="0"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             MaxHeight="410"
+                                             Tapped="SlashCommandList_Tapped"
+                                             SelectionChanged="SlashCommandList_SelectionChanged">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding Name, StringFormat=/\{0\}}"
+                                                               Foreground="White"
+                                                               FontFamily="Cascadia Mono,Consolas,monospace"
+                                                               FontSize="13" />
+                                                    <TextBlock Text="{Binding Description}"
+                                                               Foreground="#888888"
+                                                               FontSize="11"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Margin="0,1,0,0" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+
+                                    <!-- Divider -->
+                                    <Border Grid.Column="1" Background="#3C3C3C" />
+
+                                    <!-- Documentation panel -->
+                                    <ScrollViewer Grid.Column="2"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled">
+                                        <StackPanel x:Name="SlashCommandDocPanel" Margin="12,8"
+                                                    IsVisible="False">
+                                            <TextBlock x:Name="SlashCommandDocTitle"
+                                                       Foreground="White"
+                                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                                       FontSize="14" FontWeight="SemiBold"
+                                                       Margin="0,0,0,4" />
+                                            <TextBlock x:Name="SlashCommandDocSource"
+                                                       Foreground="#4EC9B0"
+                                                       FontSize="11"
+                                                       Margin="0,0,0,6" />
+                                            <TextBlock x:Name="SlashCommandDocDesc"
+                                                       Foreground="{DynamicResource TextForeground}"
+                                                       FontSize="12" TextWrapping="Wrap"
+                                                       Margin="0,0,0,8" />
+                                            <Border Background="#1E1E1E"
+                                                    CornerRadius="3"
+                                                    Padding="10,8">
+                                                <TextBlock x:Name="SlashCommandDocBody"
+                                                           Foreground="#D4D4D4"
+                                                           FontFamily="Cascadia Mono,Consolas,monospace"
+                                                           FontSize="11.5" TextWrapping="Wrap" />
+                                            </Border>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                </Grid>
+                            </Border>
+                        </Popup>
+                    </Panel>
                 </Border>
             </Grid>
 

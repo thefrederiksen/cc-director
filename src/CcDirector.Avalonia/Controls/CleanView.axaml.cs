@@ -1,0 +1,412 @@
+using System.Collections.ObjectModel;
+using Avalonia.Controls;
+using Avalonia.Interactivity;
+using Avalonia.Threading;
+using CcDirector.Core.Backends;
+using CcDirector.Core.Claude;
+using CcDirector.Core.Sessions;
+using CcDirector.Core.Utilities;
+
+namespace CcDirector.Avalonia.Controls;
+
+/// <summary>
+/// Rich card-based view of Claude Code session output.
+/// Parses JSONL streaming output and renders each tool call as a styled widget card.
+/// Follows Attach/Detach pattern.
+/// </summary>
+public partial class CleanView : UserControl
+{
+    private Session? _session;
+    private DispatcherTimer? _pollTimer;
+    private int _lastLineCount;
+    private string? _jsonlPath;
+    private bool _parsing;
+
+    private readonly ObservableCollection<CleanWidgetViewModel> _allWidgets = new();
+    private readonly ObservableCollection<CleanWidgetViewModel> _filteredWidgets = new();
+    private string? _pendingInjection;
+    private string _filterMode = "All"; // "All", "UserOnly", "Conversation"
+
+    public CleanView()
+    {
+        InitializeComponent();
+
+        WidgetItems.ItemsSource = _filteredWidgets;
+        FilterCombo.SelectionChanged += FilterCombo_SelectionChanged;
+    }
+
+    /// <summary>Attach to a session and start monitoring its JSONL output.</summary>
+    public void Attach(Session session)
+    {
+        FileLog.Write($"[CleanView] Attach: session={session.Id}, backendType={session.BackendType}");
+        Detach();
+
+        _session = session;
+        _lastLineCount = 0;
+
+        // Subscribe to activity state changes
+        session.OnActivityStateChanged += OnActivityStateChanged;
+
+        if (session.Backend is StudioBackend studio)
+        {
+            // Studio mode: subscribe to live stream events, no file polling
+            FileLog.Write("[CleanView] Attach: Studio mode -- subscribing to StreamMessageReceived");
+            studio.StreamMessageReceived += OnStreamMessageReceived;
+            LoadingText.IsVisible = true;
+            EmptyText.IsVisible = false;
+
+            // Load any messages already received
+            var existing = studio.GetMessages();
+            if (existing.Count > 0)
+            {
+                var studioSnapshotCount = session.History?.SnapshotCount ?? 0;
+                var widgets = CleanWidgetViewModel.BuildFromMessages(existing, studioSnapshotCount);
+                ReplaceAllWidgets(widgets);
+                UpdateEmptyState();
+                ScrollToBottom();
+            }
+        }
+        else
+        {
+            // Terminal mode: file-based polling
+            _jsonlPath = ResolveJsonlPath(session);
+
+            if (_jsonlPath == null)
+            {
+                FileLog.Write("[CleanView] Attach: no JSONL path available yet, will poll");
+                LoadingText.IsVisible = true;
+                EmptyText.IsVisible = false;
+            }
+            else
+            {
+                LoadingText.IsVisible = true;
+                EmptyText.IsVisible = false;
+                Dispatcher.UIThread.Post(() => ParseAndUpdate(), DispatcherPriority.Background);
+            }
+
+            // Subscribe to metadata changes (ClaudeSessionId may arrive later)
+            session.OnClaudeMetadataChanged += OnClaudeMetadataChanged;
+
+            // Start polling timer (2 second interval for incremental updates)
+            _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            _pollTimer.Tick += PollTimer_Tick;
+            _pollTimer.Start();
+        }
+
+        // Show progress if already working
+        if (session.ActivityState == ActivityState.Working)
+        {
+            ProgressArea.IsVisible = true;
+        }
+    }
+
+    /// <summary>Detach from the current session and clean up.</summary>
+    public void Detach()
+    {
+        if (_session != null)
+        {
+            FileLog.Write($"[CleanView] Detach: session={_session.Id}");
+            _session.OnActivityStateChanged -= OnActivityStateChanged;
+            _session.OnClaudeMetadataChanged -= OnClaudeMetadataChanged;
+
+            // Unsubscribe from StudioBackend events
+            if (_session.Backend is StudioBackend studio)
+                studio.StreamMessageReceived -= OnStreamMessageReceived;
+        }
+
+        _pollTimer?.Stop();
+        _pollTimer = null;
+        _session = null;
+        _jsonlPath = null;
+        _lastLineCount = 0;
+        _parsing = false;
+        _pendingInjection = null;
+        _filterMode = "All";
+        FilterCombo.SelectedIndex = 0;
+        _allWidgets.Clear();
+        _filteredWidgets.Clear();
+        ProgressArea.IsVisible = false;
+        LoadingText.IsVisible = false;
+        EmptyText.IsVisible = true;
+    }
+
+    private string? ResolveJsonlPath(Session session)
+    {
+        if (string.IsNullOrEmpty(session.ClaudeSessionId))
+            return null;
+
+        var path = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+        if (!System.IO.File.Exists(path))
+        {
+            FileLog.Write($"[CleanView] ResolveJsonlPath: file not found: {path}");
+            return null;
+        }
+
+        FileLog.Write($"[CleanView] ResolveJsonlPath: {path}");
+        return path;
+    }
+
+    private void OnClaudeMetadataChanged(ClaudeSessionMetadata? metadata)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_session == null)
+                return;
+
+            // Try to resolve JSONL path now that metadata may have updated
+            if (_jsonlPath == null)
+            {
+                _jsonlPath = ResolveJsonlPath(_session);
+                if (_jsonlPath != null)
+                {
+                    FileLog.Write("[CleanView] OnClaudeMetadataChanged: JSONL path resolved, parsing");
+                    ParseAndUpdate();
+                }
+            }
+        });
+    }
+
+    private void OnActivityStateChanged(ActivityState oldState, ActivityState newState)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (newState == ActivityState.Working)
+            {
+                ProgressArea.IsVisible = true;
+                ProgressText.Text = "Claude is working...";
+                YourTurnText.IsVisible = false;
+            }
+            else
+            {
+                ProgressArea.IsVisible = false;
+
+                // Show "Your Turn" when Claude finishes or needs input, and there are widgets visible
+                if ((newState == ActivityState.WaitingForInput || oldState == ActivityState.Working)
+                    && _allWidgets.Count > 0)
+                {
+                    YourTurnText.IsVisible = true;
+                }
+
+                // Do a final parse when Claude finishes a turn
+                if (oldState == ActivityState.Working)
+                {
+                    ParseAndUpdate();
+                }
+            }
+        });
+    }
+
+    private void PollTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_session == null || _parsing)
+            return;
+
+        // Try to resolve path if we don't have it yet
+        if (_jsonlPath == null)
+        {
+            _jsonlPath = ResolveJsonlPath(_session);
+            if (_jsonlPath == null)
+                return;
+        }
+
+        ParseAndUpdate();
+    }
+
+    private void ParseAndUpdate()
+    {
+        if (_jsonlPath == null || _parsing)
+            return;
+
+        _parsing = true;
+
+        try
+        {
+            var (newMessages, newLineCount) = StreamMessageParser.ParseFileFrom(_jsonlPath, _lastLineCount);
+
+            if (newMessages.Count == 0 && _lastLineCount > 0)
+            {
+                // No new messages - nothing to do
+                return;
+            }
+
+            var snapshotCount = _session?.History?.SnapshotCount ?? 0;
+
+            if (_lastLineCount == 0)
+            {
+                // Full initial load
+                var allMessages = StreamMessageParser.ParseFile(_jsonlPath);
+                var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages, snapshotCount);
+
+                ReplaceAllWidgets(allWidgets);
+                _lastLineCount = newLineCount > 0 ? newLineCount : CountLines(_jsonlPath);
+            }
+            else if (newMessages.Count > 0)
+            {
+                // Incremental update - rebuild all widgets from scratch
+                // (needed because tool results reference earlier tool_use blocks)
+                var allMessages = StreamMessageParser.ParseFile(_jsonlPath);
+                var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages, snapshotCount);
+
+                ReplaceAllWidgets(allWidgets);
+                _lastLineCount = newLineCount;
+            }
+
+            // If we injected a user prompt that isn't in the JSONL yet, re-append it
+            if (_pendingInjection != null)
+            {
+                var lastUserWidget = _allWidgets.LastOrDefault(w => w.Kind == WidgetKind.UserMessage);
+                if (lastUserWidget == null || lastUserWidget.Content != _pendingInjection)
+                {
+                    var injected = new CleanWidgetViewModel
+                    {
+                        Kind = WidgetKind.UserMessage,
+                        Header = "You",
+                        Content = _pendingInjection
+                    };
+                    _allWidgets.Add(injected);
+                    if (PassesFilter(injected))
+                        _filteredWidgets.Add(injected);
+                }
+                else
+                {
+                    // JSONL caught up -- clear the pending injection
+                    _pendingInjection = null;
+                }
+            }
+
+            UpdateEmptyState();
+            ScrollToBottom();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CleanView] ParseAndUpdate FAILED: {ex.Message}");
+        }
+        finally
+        {
+            _parsing = false;
+        }
+    }
+
+    private static int CountLines(string path)
+    {
+        using var fs = new System.IO.FileStream(path, System.IO.FileMode.Open,
+            System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+        using var reader = new System.IO.StreamReader(fs);
+
+        int count = 0;
+        while (reader.ReadLine() != null)
+            count++;
+        return count;
+    }
+
+    private void UpdateEmptyState()
+    {
+        LoadingText.IsVisible = false;
+        EmptyText.IsVisible = _filteredWidgets.Count == 0;
+    }
+
+    private void ScrollToBottom()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            WidgetScroller.ScrollToEnd();
+        }, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Inject a user prompt immediately so it appears before the JSONL poll picks it up.</summary>
+    public void InjectUserPrompt(string text)
+    {
+        FileLog.Write($"[CleanView] InjectUserPrompt: {text.Length} chars");
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        _pendingInjection = text;
+        YourTurnText.IsVisible = false;
+
+        var widget = new CleanWidgetViewModel
+        {
+            Kind = WidgetKind.UserMessage,
+            Header = "You",
+            Content = text
+        };
+
+        _allWidgets.Add(widget);
+        if (PassesFilter(widget))
+            _filteredWidgets.Add(widget);
+
+        UpdateEmptyState();
+        ScrollToBottom();
+    }
+
+    // ==================== FILTERING ====================
+
+    private bool PassesFilter(CleanWidgetViewModel vm)
+    {
+        if (_filterMode == "All")
+            return true;
+        if (_filterMode == "UserOnly")
+            return vm.Kind == WidgetKind.UserMessage;
+        // "Conversation" mode: user messages + Claude text responses only
+        return vm.Kind == WidgetKind.UserMessage || vm.Kind == WidgetKind.Text;
+    }
+
+    private void ReplaceAllWidgets(List<CleanWidgetViewModel> widgets)
+    {
+        _allWidgets.Clear();
+        _filteredWidgets.Clear();
+
+        foreach (var w in widgets)
+        {
+            _allWidgets.Add(w);
+            if (PassesFilter(w))
+                _filteredWidgets.Add(w);
+        }
+    }
+
+    private void ApplyFilter()
+    {
+        _filteredWidgets.Clear();
+        foreach (var w in _allWidgets)
+        {
+            if (PassesFilter(w))
+                _filteredWidgets.Add(w);
+        }
+
+        UpdateEmptyState();
+        ScrollToBottom();
+    }
+
+    private void FilterCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (FilterCombo.SelectedItem is not ComboBoxItem item)
+            return;
+
+        var newMode = item.Tag?.ToString() ?? "All";
+        if (newMode == _filterMode)
+            return;
+
+        _filterMode = newMode;
+        FileLog.Write($"[CleanView] FilterCombo_SelectionChanged: filterMode={_filterMode}");
+        ApplyFilter();
+    }
+
+    /// <summary>Handle live stream messages from StudioBackend.</summary>
+    private void OnStreamMessageReceived(StreamMessage msg)
+    {
+        // Called from background thread -- dispatch to UI
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_session == null || _session.Backend is not StudioBackend studio)
+                return;
+
+            // Rebuild all widgets from the accumulated messages
+            var allMessages = studio.GetMessages();
+            var snapshotCount = _session?.History?.SnapshotCount ?? 0;
+            var allWidgets = CleanWidgetViewModel.BuildFromMessages(allMessages, snapshotCount);
+
+            ReplaceAllWidgets(allWidgets);
+            UpdateEmptyState();
+            ScrollToBottom();
+        });
+    }
+}

@@ -1,0 +1,262 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+             x:Class="CcDirector.Avalonia.Controls.CleanView"
+             Background="#1E1E1E">
+    <UserControl.Resources>
+
+        <!-- ===== TEXT WIDGET - Assistant text messages ===== -->
+        <DataTemplate x:Key="TextWidgetTemplate" DataType="controls:CleanWidgetViewModel">
+            <Border Background="{Binding CardBackground}"
+                    BorderBrush="{Binding CardBorderBrush}"
+                    BorderThickness="1" CornerRadius="6"
+                    Margin="{Binding CardMargin}" Padding="12,10">
+                <StackPanel>
+                    <!-- Header -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border Background="{Binding IconBackground}"
+                                CornerRadius="4" Width="26" Height="26"
+                                Margin="0,0,8,0">
+                            <TextBlock Text="{Binding IconText}" Foreground="White"
+                                       FontFamily="Cascadia Mono,Consolas,monospace" FontSize="11"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="{Binding Header}"
+                                   Foreground="#E0E0E0" FontSize="12" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                    <!-- Content (plain text) -->
+                    <TextBlock Text="{Binding Content}"
+                               Foreground="#CCCCCC"
+                               FontSize="13" TextWrapping="Wrap"
+                               Margin="0,8,0,0" LineHeight="20" />
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- ===== THINKING WIDGET - Collapsible thinking block ===== -->
+        <DataTemplate x:Key="ThinkingWidgetTemplate" DataType="controls:CleanWidgetViewModel">
+            <Border Background="{Binding CardBackground}"
+                    BorderBrush="{Binding CardBorderBrush}"
+                    BorderThickness="1" CornerRadius="6"
+                    Margin="{Binding CardMargin}" Padding="12,10"
+                    Opacity="0.6">
+                <Expander IsExpanded="False">
+                    <Expander.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Border Background="{Binding IconBackground}"
+                                    CornerRadius="4" Width="26" Height="26"
+                                    Margin="0,0,8,0">
+                                <TextBlock Text="{Binding IconText}" Foreground="White"
+                                           FontFamily="Cascadia Mono,Consolas,monospace" FontSize="9"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <TextBlock Text="{Binding Header}"
+                                       Foreground="#888888" FontSize="12" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Expander.Header>
+                    <TextBlock Text="{Binding Content}"
+                               Foreground="#666666"
+                               FontSize="11" TextWrapping="Wrap"
+                               Margin="34,4,0,0" FontStyle="Italic" />
+                </Expander>
+            </Border>
+        </DataTemplate>
+
+        <!-- ===== BASH WIDGET - Terminal commands ===== -->
+        <DataTemplate x:Key="BashWidgetTemplate" DataType="controls:CleanWidgetViewModel">
+            <Border Background="{Binding CardBackground}"
+                    BorderBrush="{Binding CardBorderBrush}"
+                    BorderThickness="1" CornerRadius="6"
+                    Margin="{Binding CardMargin}" Padding="12,10">
+                <Expander IsExpanded="False">
+                    <Expander.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Border Background="{Binding IconBackground}"
+                                    CornerRadius="4" Width="26" Height="26"
+                                    Margin="0,0,8,0">
+                                <TextBlock Text="{Binding IconText}" Foreground="White"
+                                           FontFamily="Cascadia Mono,Consolas,monospace"
+                                           FontSize="13" FontWeight="Bold"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <TextBlock Text="{Binding Header}"
+                                       Foreground="#E0E0E0" FontSize="12" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding Subheader}"
+                                       Foreground="#888888" FontSize="11"
+                                       VerticalAlignment="Center" Margin="8,0,0,0"
+                                       IsVisible="{Binding HasSubheader}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Expander.Header>
+                    <StackPanel>
+                        <!-- Command -->
+                        <Border Background="#0C0C0C" CornerRadius="4" Padding="8,6" Margin="0,4,0,0">
+                            <TextBlock Text="{Binding Content}"
+                                       Foreground="#22C55E"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       FontSize="12" TextWrapping="Wrap" MaxHeight="300" />
+                        </Border>
+                        <!-- Result -->
+                        <Border Background="#1E1E1E" CornerRadius="4" Padding="8,6" Margin="0,6,0,0"
+                                IsVisible="{Binding HasResult}">
+                            <TextBlock Text="{Binding Result}"
+                                       Foreground="{Binding ResultForeground}"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       FontSize="11" TextWrapping="Wrap" MaxHeight="300" />
+                        </Border>
+                        <!-- Pending -->
+                        <TextBlock Text="Running..."
+                                   Foreground="#D97706" FontSize="11" FontStyle="Italic"
+                                   Margin="0,6,0,0"
+                                   IsVisible="{Binding IsPending}" />
+                    </StackPanel>
+                </Expander>
+            </Border>
+        </DataTemplate>
+
+        <!-- ===== TOOL WIDGET - File/Search/Todo/Skill/Agent/Generic tools ===== -->
+        <DataTemplate x:Key="ToolWidgetTemplate" DataType="controls:CleanWidgetViewModel">
+            <Border Background="{Binding CardBackground}"
+                    BorderBrush="{Binding CardBorderBrush}"
+                    BorderThickness="1" CornerRadius="6"
+                    Margin="{Binding CardMargin}" Padding="12,10">
+                <Expander IsExpanded="False">
+                    <Expander.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <Border Background="{Binding IconBackground}"
+                                    CornerRadius="4" Width="26" Height="26"
+                                    Margin="0,0,8,0">
+                                <TextBlock Text="{Binding IconText}" Foreground="White"
+                                           FontFamily="Cascadia Mono,Consolas,monospace"
+                                           FontSize="13" FontWeight="Bold"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <TextBlock Text="{Binding Header}"
+                                       Foreground="#E0E0E0" FontSize="12" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding Subheader}"
+                                       Foreground="#888888" FontSize="11"
+                                       VerticalAlignment="Center" Margin="8,0,0,0"
+                                       IsVisible="{Binding HasSubheader}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Expander.Header>
+                    <StackPanel>
+                        <!-- Content -->
+                        <Border Background="#1E1E1E" CornerRadius="4" Padding="8,6" Margin="0,4,0,0"
+                                IsVisible="{Binding HasContent}">
+                            <TextBlock Text="{Binding Content}"
+                                       Foreground="#D4D4D4"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       FontSize="11" TextWrapping="Wrap" MaxHeight="300" />
+                        </Border>
+                        <!-- Result -->
+                        <Border Background="#1E1E1E" CornerRadius="4" Padding="8,6" Margin="0,6,0,0"
+                                IsVisible="{Binding HasResult}">
+                            <TextBlock Text="{Binding Result}"
+                                       Foreground="{Binding ResultForeground}"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       FontSize="11" TextWrapping="Wrap" MaxHeight="300" />
+                        </Border>
+                        <!-- Pending -->
+                        <TextBlock Text="Running..."
+                                   Foreground="#D97706" FontSize="11" FontStyle="Italic"
+                                   Margin="0,6,0,0"
+                                   IsVisible="{Binding IsPending}" />
+                    </StackPanel>
+                </Expander>
+            </Border>
+        </DataTemplate>
+
+        <!-- ===== USER MESSAGE WIDGET ===== -->
+        <DataTemplate x:Key="UserWidgetTemplate" DataType="controls:CleanWidgetViewModel">
+            <Grid Margin="60,4,8,4" HorizontalAlignment="Right">
+                <Border Padding="12,10"
+                        Background="#094771" CornerRadius="6">
+                    <TextBlock Text="{Binding Content}"
+                               Foreground="White"
+                               FontSize="13" TextWrapping="Wrap"
+                               MaxWidth="600" />
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <!-- Template Selector -->
+        <controls:WidgetTemplateSelector x:Key="WidgetSelector"
+                                         TextTemplate="{StaticResource TextWidgetTemplate}"
+                                         ThinkingTemplate="{StaticResource ThinkingWidgetTemplate}"
+                                         BashTemplate="{StaticResource BashWidgetTemplate}"
+                                         ToolTemplate="{StaticResource ToolWidgetTemplate}"
+                                         UserTemplate="{StaticResource UserWidgetTemplate}" />
+
+    </UserControl.Resources>
+
+    <Grid RowDefinitions="*,Auto">
+
+        <!-- Widget cards -->
+        <ScrollViewer x:Name="WidgetScroller" Grid.Row="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl x:Name="WidgetItems"
+                          ItemTemplate="{StaticResource WidgetSelector}"
+                          Margin="4" />
+        </ScrollViewer>
+
+        <!-- Empty state -->
+        <TextBlock x:Name="EmptyText" Grid.Row="0"
+                   Text="Start a Claude Code session to see rich output here."
+                   Foreground="#888888" FontSize="13"
+                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+
+        <!-- Loading state -->
+        <TextBlock x:Name="LoadingText" Grid.Row="0"
+                   Text="Loading session output..."
+                   Foreground="#888888" FontSize="13" FontStyle="Italic"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   IsVisible="False" />
+
+        <!-- Status bar -->
+        <Border x:Name="StatusArea" Grid.Row="1" Padding="12,6">
+            <Grid ColumnDefinitions="Auto,*">
+
+                <!-- Message filter dropdown -->
+                <ComboBox x:Name="FilterCombo"
+                          Grid.Column="0"
+                          SelectedIndex="0"
+                          MinWidth="130"
+                          FontSize="10" FontWeight="SemiBold"
+                          VerticalAlignment="Center"
+                          Margin="0,0,12,0">
+                    <ComboBoxItem Content="All Messages" Tag="All" />
+                    <ComboBoxItem Content="My Messages" Tag="UserOnly" />
+                    <ComboBoxItem Content="Conversation" Tag="Conversation" />
+                </ComboBox>
+
+                <!-- Status indicators -->
+                <Grid Grid.Column="1">
+                    <!-- Working state -->
+                    <StackPanel x:Name="ProgressArea" IsVisible="False">
+                        <ProgressBar IsIndeterminate="True"
+                                     Height="3"
+                                     Background="#3C3C3C"
+                                     Foreground="#007ACC" />
+                        <TextBlock x:Name="ProgressText"
+                                   Text="Claude is working..."
+                                   Foreground="#888888" FontSize="10"
+                                   FontStyle="Italic" Margin="0,4,0,0" />
+                    </StackPanel>
+                    <!-- Your Turn state -->
+                    <TextBlock x:Name="YourTurnText"
+                               Text="Your Turn"
+                               Foreground="#22C55E"
+                               FontSize="11" FontWeight="SemiBold"
+                               IsVisible="False"
+                               HorizontalAlignment="Left" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>
