@@ -1120,15 +1120,15 @@
                                     <Setter Property="Foreground" Value="#AAAAAA" />
                                     <Setter Property="Background" Value="Transparent" />
                                     <Setter Property="BorderThickness" Value="0" />
-                                    <Setter Property="Padding" Value="10,4" />
-                                    <Setter Property="FontSize" Value="11" />
+                                    <Setter Property="Padding" Value="6,3" />
+                                    <Setter Property="FontSize" Value="9" />
                                     <Setter Property="Template">
                                         <Setter.Value>
                                             <ControlTemplate TargetType="TabItem">
                                                 <Border x:Name="TabBorder" Background="{TemplateBinding Background}"
                                                         Padding="{TemplateBinding Padding}"
                                                         BorderThickness="0,0,0,2" BorderBrush="Transparent">
-                                                    <ContentPresenter ContentSource="Header" />
+                                                    <ContentPresenter ContentSource="Header" TextElement.FontSize="11" />
                                                 </Border>
                                                 <ControlTemplate.Triggers>
                                                     <Trigger Property="IsSelected" Value="True">

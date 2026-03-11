@@ -471,7 +471,7 @@
                         <Popup x:Name="SlashCommandPopup"
                                PlacementTarget="{Binding #PromptInput}"
                                Placement="Top"
-                               IsLightDismissEnabled="True">
+                               IsLightDismissEnabled="False">
                             <Border Background="#252526"
                                     BorderBrush="#3C3C3C"
                                     BorderThickness="1"
