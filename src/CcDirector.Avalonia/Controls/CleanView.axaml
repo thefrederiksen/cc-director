@@ -3,6 +3,30 @@
              xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
              x:Class="CcDirector.Avalonia.Controls.CleanView"
              Background="#1E1E1E">
+    <UserControl.Styles>
+        <!-- Custom Expander style with text chevron instead of default arrow -->
+        <Style Selector="Expander.tool-expander /template/ ToggleButton">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
+        <Style Selector="Expander.tool-expander">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
+        <!-- Chevron text: "v" when collapsed, "^" when expanded -->
+        <Style Selector="Expander.tool-expander TextBlock.chevron">
+            <Setter Property="Text" Value="v" />
+        </Style>
+        <Style Selector="Expander.tool-expander:expanded TextBlock.chevron">
+            <Setter Property="Text" Value="^" />
+        </Style>
+        <!-- Chevron hover: brighten on hover -->
+        <Style Selector="Expander.tool-expander:pointerover TextBlock.chevron">
+            <Setter Property="Foreground" Value="#AAAAAA" />
+        </Style>
+    </UserControl.Styles>
+
     <UserControl.Resources>
 
         <!-- ===== TEXT WIDGET - Assistant text messages ===== -->
@@ -41,9 +65,15 @@
                     BorderThickness="1" CornerRadius="6"
                     Margin="{Binding CardMargin}" Padding="12,10"
                     Opacity="0.6">
-                <Expander IsExpanded="False">
+                <Expander Classes="tool-expander" IsExpanded="False">
                     <Expander.Header>
                         <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="v"
+                                       Foreground="#666666"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       FontSize="11" VerticalAlignment="Center"
+                                       Margin="0,0,8,0"
+                                       Classes="chevron" />
                             <Border Background="{Binding IconBackground}"
                                     CornerRadius="4" Width="26" Height="26"
                                     Margin="0,0,8,0">
@@ -70,9 +100,15 @@
                     BorderBrush="{Binding CardBorderBrush}"
                     BorderThickness="1" CornerRadius="6"
                     Margin="{Binding CardMargin}" Padding="12,10">
-                <Expander IsExpanded="False">
+                <Expander Classes="tool-expander" IsExpanded="False">
                     <Expander.Header>
                         <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="v"
+                                       Foreground="#666666"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       FontSize="11" VerticalAlignment="Center"
+                                       Margin="0,0,8,0"
+                                       Classes="chevron" />
                             <Border Background="{Binding IconBackground}"
                                     CornerRadius="4" Width="26" Height="26"
                                     Margin="0,0,8,0">
@@ -123,9 +159,15 @@
                     BorderBrush="{Binding CardBorderBrush}"
                     BorderThickness="1" CornerRadius="6"
                     Margin="{Binding CardMargin}" Padding="12,10">
-                <Expander IsExpanded="False">
+                <Expander Classes="tool-expander" IsExpanded="False">
                     <Expander.Header>
                         <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="v"
+                                       Foreground="#666666"
+                                       FontFamily="Cascadia Mono,Consolas,monospace"
+                                       FontSize="11" VerticalAlignment="Center"
+                                       Margin="0,0,8,0"
+                                       Classes="chevron" />
                             <Border Background="{Binding IconBackground}"
                                     CornerRadius="4" Width="26" Height="26"
                                     Margin="0,0,8,0">
@@ -176,10 +218,29 @@
             <Grid Margin="60,4,8,4" HorizontalAlignment="Right">
                 <Border Padding="12,10"
                         Background="#094771" CornerRadius="6">
-                    <TextBlock Text="{Binding Content}"
-                               Foreground="White"
-                               FontSize="13" TextWrapping="Wrap"
-                               MaxWidth="600" />
+                    <DockPanel>
+                        <!-- Rewind button -->
+                        <Button DockPanel.Dock="Right"
+                                Content="X"
+                                Tag="{Binding SnapshotEntryNumber}"
+                                IsVisible="{Binding IsRewindVisible}"
+                                Click="RewindButton_Click"
+                                VerticalAlignment="Top"
+                                Margin="8,0,0,0"
+                                Padding="4,2"
+                                MinWidth="20" MinHeight="20"
+                                Background="Transparent"
+                                Foreground="#EF4444"
+                                BorderThickness="0"
+                                FontSize="11" FontWeight="Bold"
+                                Cursor="Hand"
+                                Opacity="0.4"
+                                ToolTip.Tip="Rewind to before this prompt" />
+                        <TextBlock Text="{Binding Content}"
+                                   Foreground="White"
+                                   FontSize="13" TextWrapping="Wrap"
+                                   MaxWidth="600" />
+                    </DockPanel>
                 </Border>
             </Grid>
         </DataTemplate>

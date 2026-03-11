@@ -1,0 +1,99 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CcDirector.Avalonia.ClaudeViewDialog"
+        Title="Claude View"
+        Width="900" Height="650"
+        MinWidth="700" MinHeight="500"
+        WindowStartupLocation="CenterOwner"
+        Background="#252526">
+
+    <Grid Margin="16" RowDefinitions="Auto,*,Auto">
+
+        <!-- Header with buttons -->
+        <Grid Grid.Row="0" Margin="0,0,0,12" ColumnDefinitions="*,Auto">
+            <TextBlock Text="Claude View"
+                       Foreground="#CCCCCC"
+                       FontSize="16"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button Content="Refresh" MinWidth="80" Height="28"
+                        Background="#3C3C3C" Foreground="#CCCCCC"
+                        BorderThickness="0" Cursor="Hand"
+                        Click="BtnRefresh_Click" Margin="0,0,8,0" />
+                <Button Content="Open in Explorer" Height="28"
+                        Background="#3C3C3C" Foreground="#CCCCCC"
+                        BorderThickness="0" Cursor="Hand"
+                        Padding="12,0"
+                        Click="BtnOpenInExplorer_Click" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Tree view -->
+        <Border Grid.Row="1" Background="#1E1E1E"
+                BorderBrush="#3C3C3C" BorderThickness="1"
+                CornerRadius="4">
+            <TreeView x:Name="FileTree"
+                      Background="Transparent"
+                      BorderThickness="0"
+                      Padding="4"
+                      DoubleTapped="FileTree_DoubleTapped"
+                      SelectionChanged="FileTree_SelectionChanged">
+                <TreeView.ItemTemplate>
+                    <TreeDataTemplate ItemsSource="{Binding Children}">
+                        <Grid Margin="0,1" ColumnDefinitions="Auto,*,Auto">
+                            <StackPanel Orientation="Horizontal" Grid.Column="0">
+                                <TextBlock Text="{Binding Icon}" FontSize="12" Margin="0,0,6,0"
+                                           VerticalAlignment="Center" Foreground="#888888" />
+                                <TextBlock Text="{Binding Name}" FontSize="12"
+                                           VerticalAlignment="Center"
+                                           Foreground="{Binding NameForeground}"
+                                           FontWeight="{Binding NameWeight}" />
+                                <Border IsVisible="{Binding HasBadge}"
+                                        CornerRadius="8" Background="#404040"
+                                        Padding="6,1" Margin="8,0,0,0"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Badge}" Foreground="#AAAAAA" FontSize="10" />
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding Description}"
+                                       Foreground="#666666" FontSize="10"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       MaxWidth="350"
+                                       Margin="12,0,4,0" />
+                        </Grid>
+                    </TreeDataTemplate>
+                </TreeView.ItemTemplate>
+            </TreeView>
+        </Border>
+
+        <!-- Status bar -->
+        <Grid Grid.Row="2" Margin="0,8,0,0" ColumnDefinitions="*,Auto">
+            <TextBlock x:Name="StatusPathText"
+                       Text="Select a file to see its path"
+                       Foreground="#666666" FontSize="11"
+                       VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"
+                       FontFamily="Cascadia Mono, Consolas" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button x:Name="BtnEdit" Content="Edit" MinWidth="60" Height="28"
+                        Background="#007ACC" Foreground="White"
+                        BorderThickness="0" Cursor="Hand"
+                        Click="BtnEdit_Click" Margin="0,0,8,0"
+                        IsEnabled="False" />
+                <Button x:Name="BtnOpenFolder" Content="Open Folder" Height="28"
+                        Background="#3C3C3C" Foreground="#CCCCCC"
+                        BorderThickness="0" Cursor="Hand"
+                        Padding="12,0"
+                        Click="BtnOpenFolder_Click"
+                        IsEnabled="False" />
+                <Button Content="Close" MinWidth="70" Height="28"
+                        Background="#3C3C3C" Foreground="#CCCCCC"
+                        BorderThickness="0" Cursor="Hand"
+                        Click="BtnClose_Click" Margin="8,0,0,0" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

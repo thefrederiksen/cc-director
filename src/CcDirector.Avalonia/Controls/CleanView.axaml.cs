@@ -27,6 +27,9 @@ public partial class CleanView : UserControl
     private string? _pendingInjection;
     private string _filterMode = "All"; // "All", "UserOnly", "Conversation"
 
+    /// <summary>Fired when user requests a rewind. Args: (session, snapshotEntryNumber).</summary>
+    public event Action<Session, int>? RewindRequested;
+
     public CleanView()
     {
         InitializeComponent();
@@ -388,6 +391,37 @@ public partial class CleanView : UserControl
         _filterMode = newMode;
         FileLog.Write($"[CleanView] FilterCombo_SelectionChanged: filterMode={_filterMode}");
         ApplyFilter();
+    }
+
+    // ==================== REWIND ====================
+
+    private void RewindButton_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[CleanView] RewindButton_Click");
+        if (sender is not Button button || button.Tag is not int entryNumber)
+            return;
+
+        // Open context menu for confirmation
+        var menu = new ContextMenu();
+        var resetItem = new MenuItem { Header = "Reset to here", Tag = entryNumber };
+        resetItem.Click += RewindMenuItem_Click;
+        menu.Items.Add(resetItem);
+        menu.Open(button);
+    }
+
+    private void RewindMenuItem_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem item || item.Tag is not int entryNumber)
+            return;
+
+        if (_session == null)
+        {
+            FileLog.Write("[CleanView] RewindMenuItem_Click: no session");
+            return;
+        }
+
+        FileLog.Write($"[CleanView] RewindMenuItem_Click: entryNumber={entryNumber}, session={_session.Id}");
+        RewindRequested?.Invoke(_session, entryNumber);
     }
 
     /// <summary>Handle live stream messages from StudioBackend.</summary>

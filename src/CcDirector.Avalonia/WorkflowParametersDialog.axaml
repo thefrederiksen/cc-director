@@ -1,0 +1,57 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CcDirector.Avalonia.WorkflowParametersDialog"
+        Title="Fill Parameters"
+        Width="500" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#252526">
+
+    <Grid Margin="16" RowDefinitions="Auto,*,Auto">
+
+        <!-- Header -->
+        <TextBlock Text="Enter values for workflow parameters:"
+                   Foreground="#CCCCCC" FontSize="13"
+                   Margin="0,0,0,12" />
+
+        <!-- Parameter inputs -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      MaxHeight="400">
+            <ItemsControl x:Name="ParamsPanel">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="0,0,0,12">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="{Binding Name}"
+                                           Foreground="#CCCCCC" FontSize="12"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding Description, StringFormat=' -- {0}'}"
+                                           Foreground="#888888" FontSize="11"
+                                           Margin="4,0,0,0" />
+                            </StackPanel>
+                            <TextBox Text="{Binding Value, Mode=TwoWay}"
+                                     Background="#1E1E1E" Foreground="#CCCCCC"
+                                     BorderBrush="#3C3C3C"
+                                     BorderThickness="1" Padding="8,6"
+                                     FontSize="12" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Run" Width="80" Height="28"
+                    Background="#007ACC" Foreground="White"
+                    BorderThickness="0" Cursor="Hand"
+                    Click="BtnRun_Click" />
+            <Button Content="Cancel" Width="80" Height="28"
+                    Background="#3C3C3C" Foreground="#CCCCCC"
+                    BorderThickness="0" Cursor="Hand"
+                    Margin="8,0,0,0"
+                    Click="BtnCancel_Click" />
+        </StackPanel>
+    </Grid>
+</Window>
