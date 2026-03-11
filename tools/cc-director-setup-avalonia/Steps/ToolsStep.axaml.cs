@@ -11,9 +11,14 @@ namespace CcDirectorSetup.Steps;
 
 public partial class ToolsStep : UserControl
 {
-    private readonly HashSet<string> _enabledGroups;
-    private readonly Action<List<string>> _onGroupsChanged;
+    private readonly HashSet<string> _enabledGroups = [];
+    private readonly Action<List<string>>? _onGroupsChanged;
     private readonly Dictionary<string, (TextBlock Checkbox, Border Card)> _groupRows = new();
+
+    public ToolsStep()
+    {
+        InitializeComponent();
+    }
 
     public ToolsStep(List<string> initialGroups, Action<List<string>> onGroupsChanged, bool isUpdate)
     {
@@ -153,7 +158,7 @@ public partial class ToolsStep : UserControl
         else
             _enabledGroups.Add(groupName);
 
-        _onGroupsChanged(_enabledGroups.ToList());
+        _onGroupsChanged?.Invoke(_enabledGroups.ToList());
         UpdateAllVisuals();
     }
 
@@ -207,7 +212,7 @@ public partial class ToolsStep : UserControl
         foreach (var name in ToolGroupRegistry.GetPresetGroupNames(preset))
             _enabledGroups.Add(name);
 
-        _onGroupsChanged(_enabledGroups.ToList());
+        _onGroupsChanged?.Invoke(_enabledGroups.ToList());
         UpdateAllVisuals();
     }
 

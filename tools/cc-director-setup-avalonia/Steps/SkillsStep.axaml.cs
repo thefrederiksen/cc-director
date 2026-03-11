@@ -8,6 +8,11 @@ namespace CcDirectorSetup.Steps;
 
 public partial class SkillsStep : UserControl
 {
+    public SkillsStep()
+    {
+        InitializeComponent();
+    }
+
     public SkillsStep(bool isUpdate)
     {
         InitializeComponent();

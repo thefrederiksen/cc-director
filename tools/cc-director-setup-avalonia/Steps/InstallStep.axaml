@@ -1,6 +1,10 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:CcDirectorSetup.Converters"
              x:Class="CcDirectorSetup.Steps.InstallStep">
+    <UserControl.Resources>
+        <converters:HexColorToBrushConverter x:Key="HexToBrush" />
+    </UserControl.Resources>
     <DockPanel>
         <StackPanel DockPanel.Dock="Top">
             <TextBlock x:Name="HeadingText"
@@ -129,7 +133,7 @@
                                                        FontSize="11"
                                                        FontWeight="SemiBold"
                                                        HorizontalAlignment="Right"
-                                                       Foreground="#666666" />
+                                                       Foreground="{Binding StatusColor, Converter={StaticResource HexToBrush}}" />
                                         </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>

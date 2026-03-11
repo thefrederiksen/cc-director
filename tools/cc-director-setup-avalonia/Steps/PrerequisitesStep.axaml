@@ -1,6 +1,11 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:CcDirectorSetup.Converters"
              x:Class="CcDirectorSetup.Steps.PrerequisitesStep">
+    <UserControl.Resources>
+        <converters:HexColorToBrushConverter x:Key="HexToBrush" />
+    </UserControl.Resources>
+
     <DockPanel>
         <StackPanel DockPanel.Dock="Top">
             <TextBlock Text="Prerequisites"
@@ -90,6 +95,22 @@
                                            FontSize="11"
                                            Margin="0,2,0,0"
                                            IsVisible="{Binding Version, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                                <!-- Install link (shown when prerequisite is not found) -->
+                                <TextBlock Text="Download and install ->"
+                                           Foreground="#007ACC"
+                                           FontSize="11"
+                                           Margin="0,4,0,0"
+                                           Cursor="Hand"
+                                           Tag="{Binding InstallUrl}"
+                                           IsVisible="{Binding !IsFound}"
+                                           PointerPressed="InstallLink_PointerPressed">
+                                    <TextBlock.TextDecorations>
+                                        <TextDecorationCollection>
+                                            <TextDecoration Location="Underline" />
+                                        </TextDecorationCollection>
+                                    </TextBlock.TextDecorations>
+                                </TextBlock>
                             </StackPanel>
 
                             <TextBlock Grid.Column="1"
@@ -98,7 +119,7 @@
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center"
                                        Margin="12,0,0,0"
-                                       Foreground="#888888" />
+                                       Foreground="{Binding StatusColor, Converter={StaticResource HexToBrush}}" />
                         </Grid>
                     </Border>
                 </DataTemplate>

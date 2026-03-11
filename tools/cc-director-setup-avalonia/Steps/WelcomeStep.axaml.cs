@@ -10,7 +10,12 @@ namespace CcDirectorSetup.Steps;
 public partial class WelcomeStep : UserControl
 {
     private InstallProfile _profile;
-    private readonly Action<InstallProfile> _onProfileChanged;
+    private readonly Action<InstallProfile>? _onProfileChanged;
+
+    public WelcomeStep()
+    {
+        InitializeComponent();
+    }
 
     public WelcomeStep(InstallProfile initial, Action<InstallProfile> onProfileChanged,
         bool isUpdate, string? installedVersion)
@@ -79,7 +84,7 @@ public partial class WelcomeStep : UserControl
     private void DeveloperCard_Click(object? sender, PointerPressedEventArgs e)
     {
         _profile = InstallProfile.Developer;
-        _onProfileChanged(_profile);
+        _onProfileChanged?.Invoke(_profile);
         UpdateSelection();
         SetupLog.Write("[WelcomeStep] Selected Developer profile");
     }
@@ -87,7 +92,7 @@ public partial class WelcomeStep : UserControl
     private void StandardCard_Click(object? sender, PointerPressedEventArgs e)
     {
         _profile = InstallProfile.Standard;
-        _onProfileChanged(_profile);
+        _onProfileChanged?.Invoke(_profile);
         UpdateSelection();
         SetupLog.Write("[WelcomeStep] Selected Standard profile");
     }

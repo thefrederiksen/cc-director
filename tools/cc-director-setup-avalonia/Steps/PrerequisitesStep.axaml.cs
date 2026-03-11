@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using CcDirectorSetup.Models;
 using CcDirectorSetup.Services;
@@ -7,8 +9,14 @@ namespace CcDirectorSetup.Steps;
 
 public partial class PrerequisitesStep : UserControl
 {
-    private readonly Action<List<PrerequisiteInfo>> _onChecksComplete;
+    private readonly Action<List<PrerequisiteInfo>>? _onChecksComplete;
     private List<PrerequisiteInfo> _items;
+
+    public PrerequisitesStep()
+    {
+        InitializeComponent();
+        _items = [];
+    }
 
     public PrerequisitesStep(Action<List<PrerequisiteInfo>> onChecksComplete, bool isUpdate)
     {
@@ -47,12 +55,21 @@ public partial class PrerequisitesStep : UserControl
             SuccessBanner.IsVisible = false;
         }
 
-        _onChecksComplete(_items);
+        _onChecksComplete?.Invoke(_items);
         SetupLog.Write($"[PrerequisitesStep] RunChecks: complete, allMet={allMet}");
     }
 
     private void RefreshButton_Click(object? sender, RoutedEventArgs e)
     {
         RunChecks();
+    }
+
+    private void InstallLink_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is TextBlock textBlock && textBlock.Tag is string url && !string.IsNullOrEmpty(url))
+        {
+            SetupLog.Write($"[PrerequisitesStep] InstallLink_PointerPressed: url={url}");
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
     }
 }
