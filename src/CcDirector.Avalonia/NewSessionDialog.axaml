@@ -50,6 +50,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -66,22 +67,61 @@
                              TextChanged="RepoSearchBox_TextChanged"
                              ToolTip.Tip="Filter repositories by name or path" />
 
-                    <ListBox x:Name="RepoList" Grid.Row="2"
+                    <!-- Column headers -->
+                    <Border Grid.Row="2" Background="#2D2D30" Margin="0,8,0,0"
+                            BorderBrush="#3C3C3C" BorderThickness="1,1,1,0"
+                            Padding="4,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="30" />
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="RepoHeaderName" Grid.Column="0"
+                                    Content="Name" Click="RepoHeader_Click" Tag="Name"
+                                    Background="Transparent" Foreground="#AAAAAA"
+                                    BorderThickness="0" Padding="8,6" Cursor="Hand"
+                                    FontSize="11" FontWeight="SemiBold"
+                                    HorizontalContentAlignment="Left" />
+                            <Button x:Name="RepoHeaderPath" Grid.Column="1"
+                                    Content="Path" Click="RepoHeader_Click" Tag="Path"
+                                    Background="Transparent" Foreground="#AAAAAA"
+                                    BorderThickness="0" Padding="8,6" Cursor="Hand"
+                                    FontSize="11" FontWeight="SemiBold"
+                                    HorizontalContentAlignment="Left" />
+                            <Button x:Name="RepoHeaderLastUsed" Grid.Column="2"
+                                    Content="Last Used  v" Click="RepoHeader_Click" Tag="LastUsed"
+                                    Background="Transparent" Foreground="#CCCCCC"
+                                    BorderThickness="0" Padding="8,6" Cursor="Hand"
+                                    FontSize="11" FontWeight="SemiBold"
+                                    HorizontalContentAlignment="Left" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Repository list with columns -->
+                    <ListBox x:Name="RepoList" Grid.Row="3"
                              Background="#1E1E1E" Foreground="#CCCCCC"
-                             BorderBrush="#3C3C3C" Margin="0,8,0,0"
+                             BorderBrush="#3C3C3C"
                              SelectionChanged="RepoList_SelectionChanged">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="4,2">
+                                <Grid Margin="0,2">
                                     <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="220" />
                                         <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="90" />
+                                        <ColumnDefinition Width="30" />
                                     </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Text="{Binding Name}" FontWeight="Medium" />
-                                        <TextBlock Text="{Binding Path}" FontSize="10" Opacity="0.7" />
-                                    </StackPanel>
-                                    <Button Grid.Column="1" Content="X"
+                                    <TextBlock Grid.Column="0" Text="{Binding Name}"
+                                               FontWeight="Medium" Padding="8,4"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Path}"
+                                               FontSize="11" Opacity="0.7" Padding="8,5"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="2" Text="{Binding LastUsedDisplay}"
+                                               FontSize="11" Foreground="#888888" Padding="8,5" />
+                                    <Button Grid.Column="3" Content="X"
                                             Click="BtnRemoveRepo_Click"
                                             Tag="{Binding Path}"
                                             Width="24" Height="24"
@@ -97,7 +137,7 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
 
-                    <Grid Grid.Row="3" Margin="0,8,0,0">
+                    <Grid Grid.Row="4" Margin="0,8,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
@@ -113,14 +153,14 @@
                                 BorderThickness="0" Cursor="Hand" />
                     </Grid>
 
-                    <CheckBox x:Name="BypassPermissionsCheckBox" Grid.Row="4"
+                    <CheckBox x:Name="BypassPermissionsCheckBox" Grid.Row="5"
                               Content="Bypass permission prompts"
                               IsChecked="True"
                               Foreground="#CCCCCC"
                               Margin="0,12,0,0"
                               ToolTip.Tip="When checked, Claude Code will not prompt for permission to execute tools" />
 
-                    <CheckBox x:Name="RemoteControlCheckBox" Grid.Row="5"
+                    <CheckBox x:Name="RemoteControlCheckBox" Grid.Row="6"
                               Content="Enable Remote Control"
                               IsChecked="False"
                               Foreground="#CCCCCC"
@@ -128,7 +168,7 @@
                               ToolTip.Tip="When checked, starts session in Remote Control mode for access from claude.ai or mobile app" />
 
                     <!-- Quick-launch cards -->
-                    <StackPanel Grid.Row="6" Orientation="Horizontal" Margin="0,16,0,0">
+                    <StackPanel Grid.Row="7" Orientation="Horizontal" Margin="0,16,0,0">
                         <!-- Assistant card -->
                         <Button Tag="assistant" Classes="quickLaunchCard"
                                 Click="BtnCoaching_Click"

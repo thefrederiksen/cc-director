@@ -336,6 +336,8 @@ public partial class NewSessionDialog : Window
     private List<HandoverViewModel>? _allHandovers;
     private bool _sessionsLoaded;
     private bool _handoversLoaded;
+    private string _repoSortColumn = "LastUsed";
+    private bool _repoSortAscending;
 
     public string? SelectedPath { get; private set; }
     public string? SelectedResumeSessionId { get; private set; }
@@ -361,7 +363,8 @@ public partial class NewSessionDialog : Window
 
         if (_registry != null && _registry.Repositories.Count > 0)
         {
-            _allRepos = _registry.Repositories.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            _allRepos = _registry.Repositories.ToList();
+            ApplyRepoSort();
             RepoList.ItemsSource = _allRepos;
             FileLog.Write($"[NewSessionDialog] Loaded {_allRepos.Count} repositories");
         }
@@ -547,6 +550,61 @@ public partial class NewSessionDialog : Window
         }
     }
 
+    private void RepoHeader_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string column)
+            return;
+
+        if (_repoSortColumn == column)
+            _repoSortAscending = !_repoSortAscending;
+        else
+        {
+            _repoSortColumn = column;
+            _repoSortAscending = column != "LastUsed"; // LastUsed defaults descending
+        }
+
+        ApplyRepoSort();
+        ApplyRepoFilter();
+        UpdateRepoHeaderLabels();
+        FileLog.Write($"[NewSessionDialog] RepoHeader_Click: sort={_repoSortColumn}, asc={_repoSortAscending}");
+    }
+
+    private void ApplyRepoSort()
+    {
+        if (_allRepos == null || _allRepos.Count == 0)
+            return;
+
+        _allRepos = _repoSortColumn switch
+        {
+            "Name" => _repoSortAscending
+                ? _allRepos.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList()
+                : _allRepos.OrderByDescending(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            "Path" => _repoSortAscending
+                ? _allRepos.OrderBy(r => r.Path, StringComparer.OrdinalIgnoreCase).ToList()
+                : _allRepos.OrderByDescending(r => r.Path, StringComparer.OrdinalIgnoreCase).ToList(),
+            _ => _repoSortAscending
+                ? _allRepos.OrderBy(r => r.LastUsed ?? DateTime.MinValue).ToList()
+                : _allRepos.OrderByDescending(r => r.LastUsed ?? DateTime.MinValue).ToList(),
+        };
+    }
+
+    private void UpdateRepoHeaderLabels()
+    {
+        var arrow = _repoSortAscending ? "  ^" : "  v";
+        RepoHeaderName.Content = "Name" + (_repoSortColumn == "Name" ? arrow : "");
+        RepoHeaderName.Foreground = _repoSortColumn == "Name"
+            ? new SolidColorBrush(Color.Parse("#CCCCCC"))
+            : new SolidColorBrush(Color.Parse("#AAAAAA"));
+        RepoHeaderPath.Content = "Path" + (_repoSortColumn == "Path" ? arrow : "");
+        RepoHeaderPath.Foreground = _repoSortColumn == "Path"
+            ? new SolidColorBrush(Color.Parse("#CCCCCC"))
+            : new SolidColorBrush(Color.Parse("#AAAAAA"));
+        RepoHeaderLastUsed.Content = "Last Used" + (_repoSortColumn == "LastUsed" ? arrow : "");
+        RepoHeaderLastUsed.Foreground = _repoSortColumn == "LastUsed"
+            ? new SolidColorBrush(Color.Parse("#CCCCCC"))
+            : new SolidColorBrush(Color.Parse("#AAAAAA"));
+    }
+
     private void SessionList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (SessionList.SelectedItem is SessionHistoryViewModel vm)
@@ -599,8 +657,9 @@ public partial class NewSessionDialog : Window
             if (_registry != null)
             {
                 _registry.TryAdd(folderPath);
-                _allRepos = _registry.Repositories.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
-                RepoList.ItemsSource = _allRepos;
+                _allRepos = _registry.Repositories.ToList();
+                ApplyRepoSort();
+                ApplyRepoFilter();
             }
 
             UpdateActionButton();
@@ -618,8 +677,8 @@ public partial class NewSessionDialog : Window
         if (_registry != null)
         {
             _registry.Remove(path);
-            _allRepos = _registry.Repositories.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
-
+            _allRepos = _registry.Repositories.ToList();
+            ApplyRepoSort();
             ApplyRepoFilter();
 
             if (PathInput.Text == path)
