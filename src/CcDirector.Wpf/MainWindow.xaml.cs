@@ -106,7 +106,6 @@ public partial class MainWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _commsBadgeTimer;
 
     /// <summary>Tracks whether the read-only mode warning has been shown to avoid repeated dialogs.</summary>
-    private bool _readOnlyWarningShown;
 
     // Slash command autocomplete
     private readonly SlashCommandProvider _slashCommandProvider = new();
@@ -355,12 +354,6 @@ public partial class MainWindow : Window
         var app = (App)Application.Current;
         _sessionManager = app.SessionManager;
 
-        // Update title bar if running in read-only mode
-        if (app.ReadOnlyMode)
-        {
-            Title = "CC Director v2 [READ-ONLY]";
-        }
-
         if (app.EventRouter != null)
             app.EventRouter.OnRawMessage += OnHookEventReceived;
 
@@ -453,206 +446,74 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Restore sessions from previous run via a modal dialog that starts sessions sequentially.
-    /// Uses Claude's --resume flag to continue the conversation.
+    /// Show workspace picker at startup. User selects a workspace to load, or skips to start empty.
     /// </summary>
     private async Task RestorePersistedSessionsAsync()
     {
         var app = (App)Application.Current;
-        var restoreResult = app.RestoredPersistedData;
 
-        if (!ValidateRestoreResult(restoreResult, app, out var persisted))
+        // Clear any persisted session data - workspaces replace session restore
+        app.RestoredPersistedData = null;
+        app.SessionStateStore.Clear();
+
+        // Check if there are any saved workspaces to offer
+        if (!app.WorkspaceStore.LoadAll().Any())
+        {
+            FileLog.Write("[MainWindow] RestorePersistedSessionsAsync: No saved workspaces, skipping picker");
             return;
-
-        var sorted = persisted.OrderBy(s => s.SortOrder).ToList();
-        FileLog.Write($"[MainWindow] RestorePersistedSessionsAsync: Found {sorted.Count} persisted session(s), showing dialog");
-
-        var dialog = new RestoreSessionsDialog(sorted, (p, startFresh) =>
-        {
-            // Delegate runs on background thread via Task.Run inside dialog,
-            // but CreateSession touches ObservableCollection so dispatch to UI
-            SingleRestoreResult result = null!;
-            Dispatcher.Invoke(() => result = RestoreSingleSession(p, startFresh));
-            return result;
-        })
-        {
-            Owner = this
-        };
-
-        var dialogResult = dialog.ShowDialog();
-
-        if (dialogResult == true)
-        {
-            // User clicked Done after restore completed
-            HandleRestoreResults(app, sorted.Count, dialog.RestoredCount, dialog.FailedCount, dialog.FailedRepos);
-        }
-        else
-        {
-            // User clicked Skip All - clear persisted data, start empty
-            FileLog.Write("[MainWindow] RestorePersistedSessionsAsync: User skipped all sessions");
-            app.SessionStateStore.Clear();
-            app.RestoredPersistedData = null;
         }
 
-        await Task.CompletedTask;
-    }
+        FileLog.Write("[MainWindow] RestorePersistedSessionsAsync: Showing workspace picker");
 
-    private bool ValidateRestoreResult(
-        RestoreSessionsResult? restoreResult,
-        App app,
-        out List<PersistedSession> sessions)
-    {
-        sessions = new List<PersistedSession>();
-
-        if (restoreResult == null)
+        var dialog = new LoadWorkspaceDialog(app.WorkspaceStore, startupMode: true) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.SelectedWorkspace == null)
         {
-            FileLog.Write("[MainWindow] RestorePersistedSessions: No restore result");
-            return false;
+            FileLog.Write("[MainWindow] RestorePersistedSessionsAsync: User skipped workspace selection");
+            return;
         }
 
-        if (!restoreResult.LoadSuccess)
-        {
-            FileLog.Write($"[MainWindow] RestorePersistedSessions: Load failed - {restoreResult.LoadErrorMessage}");
-            if (restoreResult.FileExistedButFailed)
-            {
-                MessageBox.Show(this,
-                    $"Failed to load saved sessions:\n\n{restoreResult.LoadErrorMessage}\n\n" +
-                    "A backup was created at sessions.json.bak.\n" +
-                    "Your sessions from the previous run could not be restored.",
-                    "Session Load Error", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-            app.RestoredPersistedData = null;
-            return false;
-        }
+        var workspace = dialog.SelectedWorkspace;
+        FileLog.Write($"[MainWindow] RestorePersistedSessionsAsync: Loading workspace '{workspace.Name}' with {workspace.Sessions.Count} sessions");
 
-        if (restoreResult.Sessions.Count == 0)
-        {
-            FileLog.Write("[MainWindow] RestorePersistedSessions: No sessions to restore");
-            app.RestoredPersistedData = null;
-            return false;
-        }
-
-        sessions = restoreResult.Sessions;
-        return true;
-    }
-
-    internal enum RestoreStatus { Success, RepoNotFound, CreateFailed }
-    internal record SingleRestoreResult(RestoreStatus Status, string? FailureReason = null);
-
-    private SingleRestoreResult RestoreSingleSession(PersistedSession p, bool startFresh)
-    {
-        string repoName = System.IO.Path.GetFileName(p.RepoPath.TrimEnd('\\', '/'));
-
-        if (!System.IO.Directory.Exists(p.RepoPath))
-        {
-            FileLog.Write($"[MainWindow] Skipping session {p.Id}: Repo path not found: {p.RepoPath}");
-            return new SingleRestoreResult(RestoreStatus.RepoNotFound, $"{repoName} (path not found)");
-        }
-
-        string? resumeSessionId = startFresh ? null : GetResumeSessionId(p);
+        // Show progress dialog
+        var progress = new WorkspaceProgressDialog(workspace.Name) { Owner = this };
+        progress.Show();
 
         try
         {
-            var session = _sessionManager.CreateSession(p.RepoPath, null, p.BackendType, resumeSessionId);
-            if (session == null)
-                return new SingleRestoreResult(RestoreStatus.CreateFailed, $"{repoName} (create failed)");
+            var sorted = workspace.Sessions.OrderBy(s => s.SortOrder).ToList();
+            int total = sorted.Count;
 
-            session.CustomName = p.CustomName;
-            session.CustomColor = p.CustomColor;
-            session.HistoryEntryId = p.HistoryEntryId;
-
-            // Restore queued prompts
-            if (p.QueuedPrompts is { Count: > 0 })
+            for (int i = 0; i < total; i++)
             {
-                session.PromptQueue.LoadFrom(p.QueuedPrompts.Select(q => new PromptQueueItem
+                var entry = sorted[i];
+                var sessionName = entry.CustomName ?? System.IO.Path.GetFileName(entry.RepoPath);
+                progress.UpdateProgress(i + 1, total, sessionName);
+                FileLog.Write($"[MainWindow] RestorePersistedSessionsAsync: Creating session {i + 1}/{total}: {entry.RepoPath}");
+
+                var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
+                if (vm != null)
                 {
-                    Id = q.Id,
-                    Text = q.Text,
-                    CreatedAt = q.CreatedAt
-                }));
-                FileLog.Write($"[MainWindow] Restored {p.QueuedPrompts.Count} queued prompt(s) for session {session.Id}");
+                    vm.Rename(entry.CustomName, entry.CustomColor);
+                    SaveSessionToHistory(vm);
+                }
+
+                // Delay between sessions to prevent Claude Code settings corruption
+                if (i < total - 1)
+                    await Task.Delay(2500);
             }
 
-            if (!string.IsNullOrEmpty(session.ClaudeSessionId))
-            {
-                session.MarkAsPreVerified();
-                session.VerifyClaudeSession();
-            }
-
-            session.SelectedTabName = p.SelectedTabName;
-            var vm = new SessionViewModel(session, Dispatcher) { PendingPromptText = p.PendingPromptText ?? "" };
-            _sessions.Add(vm);
-
-            // LoadSavedSummaries(session);
-
-            var resumeInfo = resumeSessionId != null ? $"Resume={resumeSessionId[..8]}..." : "Fresh start";
-            FileLog.Write($"[MainWindow] Restored session {session.Id} from {p.RepoPath} ({resumeInfo})");
-            return new SingleRestoreResult(RestoreStatus.Success);
+            progress.SetComplete();
         }
-        catch (Exception ex)
+        finally
         {
-            FileLog.Write($"[MainWindow] Failed to restore session for {p.RepoPath}: {ex.Message}");
-            return new SingleRestoreResult(RestoreStatus.CreateFailed, $"{repoName} ({ex.Message})");
+            progress.Close();
         }
+
+        FileLog.Write($"[MainWindow] RestorePersistedSessionsAsync: Workspace '{workspace.Name}' loaded");
+        SessionTabs.SelectedItem = TerminalTab;
     }
 
-    private static string? GetResumeSessionId(PersistedSession p)
-    {
-        if (string.IsNullOrEmpty(p.ClaudeSessionId))
-        {
-            FileLog.Write($"[MainWindow] Session {p.Id}: No ClaudeSessionId, starting fresh");
-            return null;
-        }
-
-        if (ClaudeSessionReader.SessionExists(p.ClaudeSessionId, p.RepoPath))
-            return p.ClaudeSessionId;
-
-        FileLog.Write($"[MainWindow] Session {p.Id}: ClaudeSessionId {p.ClaudeSessionId[..8]}... no longer exists, starting fresh");
-        return null;
-    }
-
-    private void HandleRestoreResults(App app, int totalCount, int restored, int totalFailed, List<string> failedRepos)
-    {
-        if (totalFailed > 0)
-        {
-            var failedList = string.Join("\n  - ", failedRepos);
-            MessageBox.Show(this,
-                $"Restored {restored} of {totalCount} sessions.\n\n" +
-                $"{totalFailed} session(s) could not be restored:\n  - {failedList}\n\n" +
-                "The sessions.json backup has been preserved.",
-                "Session Restore Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-
-        if (restored > 0)
-        {
-            FileLog.Write($"[MainWindow] Restored {restored} session(s) from previous run");
-
-            if (totalFailed == 0)
-            {
-                app.SessionStateStore.Clear();
-                FileLog.Write("[MainWindow] All sessions restored successfully, cleared sessions.json");
-            }
-            else
-            {
-                FileLog.Write($"[MainWindow] Keeping sessions.json - {totalFailed} session(s) failed to restore");
-            }
-
-            if (_sessions.Count > 0)
-                SessionList.SelectedItem = _sessions[0];
-
-            PersistSessionState();
-        }
-        else if (totalFailed > 0)
-        {
-            FileLog.Write("[MainWindow] No sessions restored but some failed - keeping sessions.json backup");
-        }
-        else
-        {
-            app.SessionStateStore.Clear();
-        }
-
-        app.RestoredPersistedData = null;
-    }
 
     private void BtnAppMenu_Click(object sender, RoutedEventArgs e)
     {
@@ -765,43 +626,49 @@ public partial class MainWindow : Window
                     FileLog.Write("[MainWindow] MenuLoadWorkspace_Click: user cancelled");
                     return;
                 }
-
-                // Kill all existing sessions
-                FileLog.Write("[MainWindow] MenuLoadWorkspace_Click: killing existing sessions");
-                var sessionIds = _sessions.Select(s => s.Session.Id).ToList();
-                foreach (var id in sessionIds)
-                {
-                    try
-                    {
-                        await _sessionManager.KillSessionAsync(id);
-                    }
-                    catch (Exception ex)
-                    {
-                        FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: failed to kill session {id}: {ex.Message}");
-                    }
-                }
-                DetachTerminal();
             }
 
-            // Create sessions from workspace entries sequentially with delay
-            var sorted = workspace.Sessions.OrderBy(s => s.SortOrder).ToList();
-            int total = sorted.Count;
+            // Show progress dialog
+            var progress = new WorkspaceProgressDialog(workspace.Name) { Owner = this };
+            progress.Show();
 
-            for (int i = 0; i < total; i++)
+            try
             {
-                var entry = sorted[i];
-                FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: creating session {i + 1}/{total}: {entry.RepoPath}");
-
-                var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
-                if (vm != null)
+                // Close existing sessions if any
+                if (_sessions.Count > 0)
                 {
-                    vm.Rename(entry.CustomName, entry.CustomColor);
-                    SaveSessionToHistory(vm);
+                    progress.SetClosing();
+                    await CloseAllSessionsAsync();
                 }
 
-                // Delay between sessions to prevent Claude Code settings corruption
-                if (i < total - 1)
-                    await Task.Delay(2500);
+                // Create sessions from workspace entries sequentially with delay
+                var sorted = workspace.Sessions.OrderBy(s => s.SortOrder).ToList();
+                int total = sorted.Count;
+
+                for (int i = 0; i < total; i++)
+                {
+                    var entry = sorted[i];
+                    var sessionName = entry.CustomName ?? System.IO.Path.GetFileName(entry.RepoPath);
+                    progress.UpdateProgress(i + 1, total, sessionName);
+                    FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: creating session {i + 1}/{total}: {entry.RepoPath}");
+
+                    var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
+                    if (vm != null)
+                    {
+                        vm.Rename(entry.CustomName, entry.CustomColor);
+                        SaveSessionToHistory(vm);
+                    }
+
+                    // Delay between sessions to prevent Claude Code settings corruption
+                    if (i < total - 1)
+                        await Task.Delay(2500);
+                }
+
+                progress.SetComplete();
+            }
+            finally
+            {
+                progress.Close();
             }
 
             FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: workspace '{workspace.Name}' loaded");
@@ -815,12 +682,117 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void MenuClearWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] MenuClearWorkspace_Click");
+        try
+        {
+            if (_sessions.Count == 0)
+            {
+                FileLog.Write("[MainWindow] MenuClearWorkspace_Click: no sessions to clear");
+                return;
+            }
+
+            // Check for actively working sessions - same logic as OnClosing
+            var workingSessions = _sessions
+                .Where(vm => vm.Session.ActivityState is ActivityState.Working or ActivityState.WaitingForInput)
+                .ToList();
+
+            if (workingSessions.Count > 0)
+            {
+                var sessionNames = workingSessions
+                    .Select(vm => vm.DisplayName ?? vm.Session.RepoPath)
+                    .ToList();
+
+                var closeDialog = new CloseDialog(_sessionManager, sessionNames) { Owner = this };
+                if (closeDialog.ShowDialog() != true)
+                {
+                    FileLog.Write("[MainWindow] MenuClearWorkspace_Click: user cancelled (active sessions)");
+                    return;
+                }
+
+                // CloseDialog already killed all sessions, now remove from sidebar
+                _sessions.Clear();
+                DetachTerminal();
+                PersistSessionState();
+                FileLog.Write("[MainWindow] MenuClearWorkspace_Click: all sessions cleared (via CloseDialog)");
+                return;
+            }
+
+            // No working sessions - confirm with simpler dialog
+            var confirm = MessageBox.Show(this,
+                $"Close all {_sessions.Count} session(s)?",
+                "Clear Workspace", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+            if (confirm != MessageBoxResult.Yes)
+            {
+                FileLog.Write("[MainWindow] MenuClearWorkspace_Click: user cancelled");
+                return;
+            }
+
+            await CloseAllSessionsAsync();
+            FileLog.Write("[MainWindow] MenuClearWorkspace_Click: all sessions cleared");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] MenuClearWorkspace_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to clear workspace:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Kill all sessions and remove them from the sidebar and session manager.
+    /// </summary>
+    private async Task CloseAllSessionsAsync()
+    {
+        FileLog.Write("[MainWindow] CloseAllSessionsAsync: closing all sessions");
+        DetachTerminal();
+
+        var snapshots = _sessions.ToList();
+        _sessions.Clear();
+
+        foreach (var vm in snapshots)
+        {
+            var id = vm.Session.Id;
+            try
+            {
+                await _sessionManager.KillSessionAsync(id);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[MainWindow] CloseAllSessionsAsync: failed to kill session {id}: {ex.Message}");
+            }
+            _sessionManager.RemoveSession(id);
+        }
+
+        PersistSessionState();
+        FileLog.Write($"[MainWindow] CloseAllSessionsAsync: removed {snapshots.Count} session(s)");
+    }
+
     private void BtnClaudeConfig_Click(object sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnClaudeConfig_Click: opening Claude Code config dialog");
         var repoPath = _activeSession?.RepoPath;
         var dialog = new ClaudeConfigDialog(repoPath) { Owner = this };
         dialog.ShowDialog();
+    }
+
+    private void BtnClaudeView_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnClaudeView_Click: opening Claude View dialog");
+        try
+        {
+            var repoPath = _activeSession?.RepoPath;
+            var dialog = new ClaudeViewDialog(repoPath) { Owner = this };
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnClaudeView_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open Claude View:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void BtnSettings_Click(object sender, RoutedEventArgs e)
@@ -3200,12 +3172,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (app.ReadOnlyMode)
-        {
-            ShowReadOnlyWarning();
-            return;
-        }
-
         try
         {
             _sessionManager.SaveCurrentState(app.SessionStateStore);
@@ -3214,14 +3180,6 @@ public partial class MainWindow : Window
         {
             FileLog.Write($"[MainWindow] PersistSessionState error: {ex.Message}");
         }
-    }
-
-    private void ShowReadOnlyWarning()
-    {
-        if (_readOnlyWarningShown) return;
-        _readOnlyWarningShown = true;
-
-        FileLog.Write("[MainWindow] Read-only mode: blocked write attempt (header already shows read-only state)");
     }
 
     /// <summary>Copy prompt text from VMs (and the active PromptInput) to Session objects for persistence. Must run on UI thread.</summary>

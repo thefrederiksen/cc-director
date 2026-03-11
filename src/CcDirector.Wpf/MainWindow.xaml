@@ -33,6 +33,48 @@
                 <!-- Right side: Settings + Help buttons -->
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
                             VerticalAlignment="Center">
+                    <Button x:Name="BtnClaudeView"
+                            Click="BtnClaudeView_Click"
+                            ToolTip="Claude View - Browse all Claude config files"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Padding="6,4"
+                            Margin="4,0,0,0"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="Claude"
+                                   Foreground="#888888"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                    </Button>
+                    <Button x:Name="BtnMcpServers"
+                            Click="BtnMcpServers_Click"
+                            ToolTip="MCP Servers"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Padding="6,4"
+                            Margin="4,0,0,0"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="MCP"
+                                   Foreground="#888888"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                    </Button>
+                    <Button x:Name="BtnAgentTemplates"
+                            Click="BtnAgentTemplates_Click"
+                            ToolTip="Agent Templates"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Padding="6,4"
+                            Margin="4,0,0,0"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="Agents"
+                                   Foreground="#888888"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                    </Button>
                     <Button x:Name="BtnSettings"
                             Click="BtnSettings_Click"
                             ToolTip="Settings"
@@ -256,6 +298,8 @@
                                               ToolTip="Save current sessions as a named workspace" />
                                     <MenuItem x:Name="MenuLoadWorkspaceItem" Header="Load Workspace..." Click="MenuLoadWorkspace_Click"
                                               ToolTip="Load a saved workspace" />
+                                    <MenuItem x:Name="MenuClearWorkspaceItem" Header="Clear Workspace" Click="MenuClearWorkspace_Click"
+                                              ToolTip="Close all open sessions" />
                                     <Separator x:Name="MenuSepAfterWorkspace" />
                                     <MenuItem Header="Open Logs" Click="BtnOpenLogs_Click"
                                               ToolTip="Open log directory in Explorer" />
@@ -1301,6 +1345,16 @@
                                         </ListBox.ItemTemplate>
                                     </ListBox>
                                 </DockPanel>
+                            </TabItem>
+
+                            <!-- Sessions Tab -->
+                            <TabItem x:Name="SessionsTab" Header="Sessions">
+                                <controls:SessionBrowserView x:Name="SessionBrowserView" />
+                            </TabItem>
+
+                            <!-- Usage Tab -->
+                            <TabItem x:Name="UsageTab" Header="Usage">
+                                <controls:UsageDashboardView x:Name="UsageDashboardView" />
                             </TabItem>
 
                             <!-- Hook Events Tab -->
