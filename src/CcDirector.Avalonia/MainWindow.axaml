@@ -1,96 +1,485 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:terminal="clr-namespace:CcDirector.Terminal.Avalonia;assembly=CcDirector.Terminal.Avalonia"
+        xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
         x:Class="CcDirector.Avalonia.MainWindow"
-        Title="CC Director"
+        Title="CC Director v2"
         Width="1400" Height="900"
         MinWidth="800" MinHeight="500"
-        Background="{DynamicResource PanelBackground}">
+        Background="{DynamicResource PanelBackground}"
+        Icon="avares://cc-director/app.ico">
 
-    <Grid ColumnDefinitions="250,*">
-        <!-- Sidebar -->
-        <Border Grid.Column="0"
+    <Grid ColumnDefinitions="264,Auto,*" RowDefinitions="Auto,*">
+
+        <!-- ==================== SIDEBAR (spans both rows) ==================== -->
+        <Border Grid.Column="0" Grid.RowSpan="2"
                 Background="{DynamicResource SidebarBackground}"
                 BorderBrush="#3C3C3C" BorderThickness="0,0,1,0">
             <DockPanel>
-                <!-- Sidebar header -->
-                <Border DockPanel.Dock="Top" Padding="12,8">
+                <!-- Sidebar header: hamburger + title -->
+                <Border DockPanel.Dock="Top" Padding="8,6">
                     <DockPanel>
-                        <TextBlock Text="CC Director"
-                                   Foreground="{DynamicResource TextForeground}"
-                                   FontSize="16" FontWeight="Bold"
-                                   VerticalAlignment="Center" />
-                        <Button x:Name="NewSessionButton"
-                                Content="+"
-                                HorizontalAlignment="Right"
-                                Background="{DynamicResource AccentBrush}"
-                                Foreground="White"
-                                FontSize="16" FontWeight="Bold"
+                        <Button x:Name="BtnAppMenu"
+                                Content="="
                                 Width="28" Height="28"
+                                Background="Transparent"
+                                Foreground="{DynamicResource TextForeground}"
+                                FontSize="14" FontWeight="Bold"
                                 Padding="0"
                                 HorizontalContentAlignment="Center"
                                 VerticalContentAlignment="Center"
-                                ToolTip.Tip="New Session" />
+                                Click="BtnAppMenu_Click"
+                                ToolTip.Tip="Application menu" />
+                        <TextBlock Text="SESSIONS"
+                                   Foreground="{DynamicResource TextForeground}"
+                                   FontSize="12" FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0,0,0" />
                     </DockPanel>
+                </Border>
+
+                <!-- + New Session button -->
+                <Button x:Name="BtnNewSession"
+                        DockPanel.Dock="Top"
+                        Content="+ New Session"
+                        Background="{DynamicResource AccentBrush}"
+                        Foreground="White"
+                        FontSize="13"
+                        Height="32"
+                        Margin="8,4,8,8"
+                        HorizontalContentAlignment="Center"
+                        Click="BtnNewSession_Click"
+                        ToolTip.Tip="Create a new session" />
+
+                <!-- Build info at bottom -->
+                <Border DockPanel.Dock="Bottom" Padding="8,4">
+                    <TextBlock x:Name="BuildInfoText"
+                               Text="Build: --"
+                               Foreground="#555555"
+                               FontSize="10" />
                 </Border>
 
                 <!-- Session list -->
                 <ListBox x:Name="SessionList"
                          Background="Transparent"
-                         Foreground="{DynamicResource TextForeground}"
-                         Padding="4">
+                         Padding="4"
+                         SelectionChanged="SessionList_SelectionChanged">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock Text="{Binding DisplayName}"
-                                       Foreground="{DynamicResource TextForeground}"
-                                       Padding="8,4" />
+                            <Border Padding="8,6"
+                                    BorderBrush="{Binding ActivityBrush}"
+                                    BorderThickness="3,0,0,0"
+                                    CornerRadius="2"
+                                    Margin="0,1">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding DisplayName}"
+                                               Foreground="{DynamicResource TextForeground}"
+                                               FontSize="13"
+                                               FontWeight="Medium" />
+                                    <TextBlock Text="{Binding ActivityLabel}"
+                                               Foreground="#888888"
+                                               FontSize="11"
+                                               Margin="0,2,0,0" />
+                                </StackPanel>
+                            </Border>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
             </DockPanel>
         </Border>
 
-        <!-- Main content area -->
-        <Grid Grid.Column="1">
+        <!-- Grid splitter -->
+        <GridSplitter Grid.Column="1" Grid.RowSpan="2"
+                      Width="3"
+                      Background="#3C3C3C"
+                      ResizeDirection="Columns" />
+
+        <!-- ==================== SESSION HEADER BANNER ==================== -->
+        <Border x:Name="SessionHeaderBanner"
+                Grid.Row="0" Grid.Column="2"
+                Background="#007ACC"
+                Padding="12,6"
+                IsVisible="False">
             <DockPanel>
-                <!-- Tab bar -->
-                <Border DockPanel.Dock="Top"
+                <TextBlock x:Name="HeaderSessionName"
+                           Text=""
+                           Foreground="White"
+                           FontSize="16" FontWeight="Bold"
+                           VerticalAlignment="Center" />
+                <TextBlock x:Name="HeaderActivityLabel"
+                           Text=""
+                           Foreground="#FFFFFFCC"
+                           FontSize="13"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Right" />
+            </DockPanel>
+        </Border>
+
+        <!-- ==================== MAIN CONTENT + RIGHT PANEL ==================== -->
+        <Grid Grid.Row="1" Grid.Column="2" ColumnDefinitions="*,Auto,Auto">
+
+            <!-- Left: Terminal + Prompt -->
+            <Grid Grid.Column="0" RowDefinitions="Auto,*,Auto">
+
+                <!-- Left tab bar -->
+                <Border Grid.Row="0"
                         Background="{DynamicResource SidebarBackground}"
-                        Height="36"
-                        Padding="8,0">
+                        Padding="8,0"
+                        Height="36">
                     <StackPanel Orientation="Horizontal"
                                 VerticalAlignment="Center"
-                                Spacing="4">
+                                Spacing="2">
+                        <Button x:Name="AgentTabButton"
+                                Content="Agent"
+                                Background="Transparent"
+                                Foreground="#888888"
+                                Padding="12,4"
+                                FontSize="12"
+                                Click="AgentTabButton_Click" />
                         <Button x:Name="TerminalTabButton"
                                 Content="Terminal"
                                 Background="{DynamicResource AccentBrush}"
                                 Foreground="White"
                                 Padding="12,4"
-                                FontSize="12" />
-                        <Button x:Name="CleanTabButton"
-                                Content="Clean"
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}"
+                                FontSize="12"
+                                Click="TerminalTabButton_Click" />
+                        <Button x:Name="SourceControlTabButton"
+                                Content="Source Control"
+                                Background="Transparent"
+                                Foreground="#888888"
                                 Padding="12,4"
-                                FontSize="12" />
-                        <Button x:Name="AgentTabButton"
-                                Content="Agent"
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}"
-                                Padding="12,4"
-                                FontSize="12" />
+                                FontSize="12"
+                                Click="SourceControlTabButton_Click" />
                     </StackPanel>
                 </Border>
 
-                <!-- Terminal area (placeholder) -->
-                <Border Background="#1E1E1E">
-                    <TextBlock x:Name="PlaceholderText"
-                               Text="Select or create a session to begin"
-                               Foreground="#666666"
-                               FontSize="16"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center" />
+                <!-- Left tab content area -->
+                <Panel Grid.Row="1" Background="#1E1E1E">
+
+                    <!-- Agent panel (placeholder) -->
+                    <Border x:Name="AgentPanel" IsVisible="False" Padding="20">
+                        <TextBlock Text="Clean view - coming soon"
+                                   Foreground="#555555"
+                                   FontSize="16"
+                                   FontStyle="Italic"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </Border>
+
+                    <!-- Terminal panel -->
+                    <Panel x:Name="TerminalPanel" IsVisible="True">
+                        <!-- Placeholder when no session -->
+                        <TextBlock x:Name="PlaceholderText"
+                                   Text="Select or create a session to begin"
+                                   Foreground="#555555"
+                                   FontSize="16"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+
+                        <!-- Terminal control -->
+                        <terminal:TerminalControl x:Name="TerminalHost"
+                                                  IsVisible="False" />
+                    </Panel>
+
+                    <!-- Source Control panel -->
+                    <Panel x:Name="SourceControlPanel" IsVisible="False">
+                        <controls:GitChangesView x:Name="GitChangesView" />
+                    </Panel>
+                </Panel>
+
+                <!-- ==================== PROMPT BAR ==================== -->
+                <Border Grid.Row="2"
+                        x:Name="PromptBarBorder"
+                        Background="{DynamicResource SidebarBackground}"
+                        BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
+                        Padding="8,6"
+                        IsVisible="False">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBox x:Name="PromptInput"
+                                 Grid.Column="0"
+                                 Watermark="Type a message..."
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 MinHeight="36"
+                                 MaxHeight="160"
+                                 Background="#1E1E1E"
+                                 Foreground="{DynamicResource TextForeground}"
+                                 BorderBrush="#3C3C3C"
+                                 Padding="8,6"
+                                 FontSize="13"
+                                 KeyDown="PromptInput_KeyDown" />
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Vertical"
+                                    VerticalAlignment="Bottom"
+                                    Margin="6,0,0,0"
+                                    Spacing="4">
+                            <Button x:Name="BtnSend"
+                                    Content="Send"
+                                    Width="70" Height="32"
+                                    Background="{DynamicResource AccentBrush}"
+                                    Foreground="White"
+                                    HorizontalContentAlignment="Center"
+                                    FontSize="13"
+                                    Click="BtnSend_Click" />
+                        </StackPanel>
+                    </Grid>
                 </Border>
-            </DockPanel>
+            </Grid>
+
+            <!-- Right panel toggle button -->
+            <Button x:Name="RightPanelToggle"
+                    Grid.Column="1"
+                    Content="&lt;&lt;"
+                    Width="24"
+                    Background="#2D2D30"
+                    Foreground="#888888"
+                    BorderThickness="0"
+                    FontSize="10"
+                    Padding="0"
+                    VerticalContentAlignment="Center"
+                    HorizontalContentAlignment="Center"
+                    Click="RightPanelToggle_Click"
+                    ToolTip.Tip="Toggle right panel" />
+
+            <!-- ==================== RIGHT PANEL ==================== -->
+            <Border x:Name="RightPanel"
+                    Grid.Column="2"
+                    Width="280"
+                    Background="{DynamicResource SidebarBackground}"
+                    BorderBrush="#3C3C3C" BorderThickness="1,0,0,0">
+
+                <TabControl x:Name="RightPanelTabs"
+                            Background="Transparent"
+                            Padding="0">
+
+                    <!-- ===== Screenshots Tab ===== -->
+                    <TabItem Header="Screenshots">
+                        <DockPanel>
+                            <!-- Top bar -->
+                            <Border DockPanel.Dock="Top" Padding="8,6"
+                                    BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+                                <DockPanel>
+                                    <Button Content="Clear All" DockPanel.Dock="Right"
+                                            Click="BtnClearScreenshots_Click"
+                                            Background="Transparent" Foreground="#888888"
+                                            BorderThickness="0" FontSize="11" Cursor="Hand"
+                                            Padding="6,2" Margin="4,0,0,0" />
+                                    <Button Content="Refresh" DockPanel.Dock="Right"
+                                            Click="BtnRefreshScreenshots_Click"
+                                            Background="Transparent" Foreground="#888888"
+                                            BorderThickness="0" FontSize="11" Cursor="Hand"
+                                            Padding="6,2" />
+                                    <TextBlock Text="SCREENSHOTS"
+                                               Foreground="#888888" FontSize="11"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center" />
+                                </DockPanel>
+                            </Border>
+
+                            <!-- Screenshot list -->
+                            <ListBox x:Name="ScreenshotList"
+                                     Background="Transparent"
+                                     Padding="4">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="4" Margin="0,2"
+                                                Background="#2A2A2A" CornerRadius="4">
+                                            <StackPanel>
+                                                <Image Source="{Binding Thumbnail}"
+                                                       MaxHeight="160"
+                                                       Stretch="Uniform" />
+                                                <DockPanel Margin="0,4,0,0">
+                                                    <TextBlock Text="{Binding TimeLabel}"
+                                                               Foreground="#888888" FontSize="10"
+                                                               VerticalAlignment="Center" />
+                                                    <StackPanel Orientation="Horizontal"
+                                                                HorizontalAlignment="Right"
+                                                                Spacing="4">
+                                                        <Button Content="View"
+                                                                Tag="{Binding FilePath}"
+                                                                Click="ScreenshotView_Click"
+                                                                Background="Transparent"
+                                                                Foreground="#CCCCCC"
+                                                                BorderThickness="0"
+                                                                FontSize="10" Cursor="Hand"
+                                                                Padding="4,2" />
+                                                        <Button Content="Copy"
+                                                                Tag="{Binding FilePath}"
+                                                                Click="ScreenshotCopyPath_Click"
+                                                                Background="Transparent"
+                                                                Foreground="#CCCCCC"
+                                                                BorderThickness="0"
+                                                                FontSize="10" Cursor="Hand"
+                                                                Padding="4,2" />
+                                                        <Button Content="Del"
+                                                                Tag="{Binding FilePath}"
+                                                                Click="ScreenshotDelete_Click"
+                                                                Background="Transparent"
+                                                                Foreground="#CC4444"
+                                                                BorderThickness="0"
+                                                                FontSize="10" Cursor="Hand"
+                                                                Padding="4,2" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    </TabItem>
+
+                    <!-- ===== Queue Tab ===== -->
+                    <TabItem x:Name="QueueTab" Header="Queue">
+                        <DockPanel>
+                            <!-- Top bar -->
+                            <Border DockPanel.Dock="Top" Padding="8,6"
+                                    BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+                                <DockPanel>
+                                    <Button Content="Clear" DockPanel.Dock="Right"
+                                            Click="BtnClearQueue_Click"
+                                            Background="Transparent" Foreground="#888888"
+                                            BorderThickness="0" FontSize="11" Cursor="Hand"
+                                            Padding="6,2" />
+                                    <TextBlock x:Name="QueueCountText"
+                                               Text="0 items"
+                                               Foreground="#888888" FontSize="11"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center" />
+                                </DockPanel>
+                            </Border>
+
+                            <!-- Empty state -->
+                            <TextBlock x:Name="QueueEmptyText"
+                                       Text="No queued prompts"
+                                       Foreground="#555555" FontSize="12"
+                                       FontStyle="Italic"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+
+                            <!-- Queue items list -->
+                            <ListBox x:Name="QueueItemsList"
+                                     Background="Transparent"
+                                     Padding="4"
+                                     IsVisible="False">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="6,4" Margin="0,1"
+                                                Background="#2A2A2A" CornerRadius="2">
+                                            <Grid ColumnDefinitions="20,*,Auto">
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{Binding Index}"
+                                                           Foreground="#666666" FontSize="11"
+                                                           VerticalAlignment="Top" />
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding Preview}"
+                                                           Foreground="#CCCCCC" FontSize="11"
+                                                           TextWrapping="Wrap" MaxHeight="80"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <StackPanel Grid.Column="2"
+                                                            Orientation="Horizontal"
+                                                            Spacing="2"
+                                                            VerticalAlignment="Top">
+                                                    <Button Content="Pop"
+                                                            Tag="{Binding Id}"
+                                                            Click="QueueItemPop_Click"
+                                                            Background="Transparent"
+                                                            Foreground="#22C55E"
+                                                            BorderThickness="0"
+                                                            FontSize="10" Cursor="Hand"
+                                                            Padding="4,2" />
+                                                    <Button Content="X"
+                                                            Tag="{Binding Id}"
+                                                            Click="QueueItemRemove_Click"
+                                                            Background="Transparent"
+                                                            Foreground="#CC4444"
+                                                            BorderThickness="0"
+                                                            FontSize="10" FontWeight="Bold"
+                                                            Cursor="Hand" Padding="4,2" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    </TabItem>
+
+                    <!-- ===== Sessions Tab ===== -->
+                    <TabItem Header="Sessions">
+                        <TextBlock Text="Session browser - coming soon"
+                                   Foreground="#555555" FontSize="12"
+                                   FontStyle="Italic"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </TabItem>
+
+                    <!-- ===== Usage Tab ===== -->
+                    <TabItem Header="Usage">
+                        <controls:UsageDashboardView x:Name="UsageDashboardView" />
+                    </TabItem>
+
+                    <!-- ===== Hooks Tab ===== -->
+                    <TabItem Header="Hooks">
+                        <DockPanel>
+                            <!-- Top bar -->
+                            <Border DockPanel.Dock="Top" Padding="8,6"
+                                    BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+                                <DockPanel>
+                                    <Button Content="Clear" DockPanel.Dock="Right"
+                                            Click="BtnClearHookEvents_Click"
+                                            Background="Transparent" Foreground="#888888"
+                                            BorderThickness="0" FontSize="11" Cursor="Hand"
+                                            Padding="6,2" />
+                                    <TextBlock Text="HOOK EVENTS"
+                                               Foreground="#888888" FontSize="11"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center" />
+                                </DockPanel>
+                            </Border>
+
+                            <!-- Empty state -->
+                            <TextBlock x:Name="HookEventsEmptyText"
+                                       Text="No hook events yet"
+                                       Foreground="#555555" FontSize="12"
+                                       FontStyle="Italic"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+
+                            <!-- Hook events list -->
+                            <ListBox x:Name="HookEventList"
+                                     Background="Transparent"
+                                     Padding="4"
+                                     IsVisible="False">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="4,3">
+                                            <DockPanel>
+                                                <TextBlock Text="{Binding Timestamp}"
+                                                           Foreground="#888888" FontSize="10"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding EventName}"
+                                                           Foreground="{Binding EventBrush}"
+                                                           FontSize="11" FontWeight="SemiBold"
+                                                           Margin="8,0,0,0"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding SessionIdShort}"
+                                                           Foreground="#666666" FontSize="10"
+                                                           HorizontalAlignment="Right"
+                                                           VerticalAlignment="Center" />
+                                            </DockPanel>
+                                            <TextBlock Text="{Binding Detail}"
+                                                       Foreground="#AAAAAA" FontSize="10"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </Border>
         </Grid>
     </Grid>
 </Window>
