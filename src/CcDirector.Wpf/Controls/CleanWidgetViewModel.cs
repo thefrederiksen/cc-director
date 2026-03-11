@@ -147,16 +147,16 @@ public sealed class CleanWidgetViewModel
 
     /// <summary>
     /// Rendered FlowDocument for assistant text content (markdown -> rich text).
-    /// Lazily created on first access.
+    /// Returns a fresh FlowDocument on each access to avoid single-owner conflicts
+    /// when WPF rebuilds DataTemplates (e.g. CollectionView.Refresh()).
     /// </summary>
-    private FlowDocument? _renderedDocument;
     public FlowDocument? RenderedDocument
     {
         get
         {
             if (Kind != WidgetKind.Text || string.IsNullOrEmpty(Content))
                 return null;
-            return _renderedDocument ??= MarkdownFlowDocumentRenderer.Render(Content, embedded: true);
+            return MarkdownFlowDocumentRenderer.Render(Content, embedded: true);
         }
     }
 
@@ -165,9 +165,9 @@ public sealed class CleanWidgetViewModel
 
     /// <summary>
     /// Rendered FlowDocument for tool result content (markdown -> rich text).
+    /// Returns a fresh FlowDocument on each access to avoid single-owner conflicts.
     /// Only rendered when result contains markdown indicators (tables, headers, lists).
     /// </summary>
-    private FlowDocument? _renderedResultDocument;
     public FlowDocument? RenderedResultDocument
     {
         get
@@ -176,12 +176,12 @@ public sealed class CleanWidgetViewModel
                 return null;
             if (!LooksLikeMarkdown(Result))
                 return null;
-            return _renderedResultDocument ??= MarkdownFlowDocumentRenderer.Render(Result, embedded: true);
+            return MarkdownFlowDocumentRenderer.Render(Result, embedded: true);
         }
     }
 
     /// <summary>Whether this widget's result should be rendered as rich markdown.</summary>
-    public bool IsRichResult => RenderedResultDocument != null;
+    public bool IsRichResult => !string.IsNullOrEmpty(Result) && !IsError && LooksLikeMarkdown(Result);
 
     private static bool LooksLikeMarkdown(string text)
     {

@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using CcDirector.Core.Utilities;
 
 namespace CcDirector.Wpf.Controls;
 
@@ -30,8 +31,20 @@ public static class FlowDocumentBinder
             return;
 
         if (e.NewValue is FlowDocument doc)
+        {
+            // Defense-in-depth: if the FlowDocument is already owned by another RichTextBox,
+            // detach it first. FlowDocument has single-owner semantics in WPF.
+            if (doc.Parent is RichTextBox oldRtb && oldRtb != rtb)
+            {
+                FileLog.Write("[FlowDocumentBinder] Detaching FlowDocument from previous RichTextBox owner");
+                oldRtb.Document = new FlowDocument();
+            }
+
             rtb.Document = doc;
+        }
         else
+        {
             rtb.Document = new FlowDocument();
+        }
     }
 }

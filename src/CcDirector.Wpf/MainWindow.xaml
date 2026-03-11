@@ -61,11 +61,6 @@
                                    FontWeight="Bold" />
                     </Button>
                 </StackPanel>
-                <!-- Left side: Usage badges (always visible, all accounts) -->
-                <StackPanel x:Name="AppBarUsagePanel" Orientation="Horizontal"
-                            VerticalAlignment="Center">
-                    <!-- Populated dynamically by code-behind -->
-                </StackPanel>
             </DockPanel>
         </Border>
 
@@ -365,12 +360,6 @@
                                        FontWeight="SemiBold" />
                         </Border>
                     </Grid>
-
-                    <!-- Usage summary panel (always visible in sidebar) -->
-                    <StackPanel x:Name="SidebarUsagePanel" DockPanel.Dock="Bottom"
-                                Margin="8,4,8,2">
-                        <!-- Populated dynamically; shows compact usage per account -->
-                    </StackPanel>
 
                     <!-- StatusFooter: build info + Claude config gear -->
                     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"

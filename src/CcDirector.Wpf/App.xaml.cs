@@ -61,6 +61,11 @@ public partial class App : Application
     // Mutex for single-instance detection - second instances run in read-only mode
     private Mutex? _singleInstanceMutex;
 
+    // Error dialog throttling - prevents cascading dialog bombs
+    private string? _lastErrorMessage;
+    private DateTime _lastErrorTime;
+    private int _consecutiveErrorCount;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -102,10 +107,34 @@ public partial class App : Application
         DispatcherUnhandledException += (_, args) =>
         {
             FileLog.Write($"[App] UNHANDLED UI EXCEPTION: {args.Exception}");
+
+            // Throttle cascading error dialogs: if same error fires >3 times within 5 seconds, suppress
+            var now = DateTime.UtcNow;
+            var message = args.Exception.Message;
+            if (message == _lastErrorMessage && (now - _lastErrorTime).TotalSeconds < 5)
+            {
+                _consecutiveErrorCount++;
+                if (_consecutiveErrorCount > 3)
+                {
+                    FileLog.Write($"[App] Suppressing repeated error dialog (count={_consecutiveErrorCount}): {message}");
+                    args.Handled = true;
+                    return;
+                }
+            }
+            else
+            {
+                _consecutiveErrorCount = 1;
+            }
+            _lastErrorMessage = message;
+            _lastErrorTime = now;
+
             try
             {
-                System.Windows.MessageBox.Show(
-                    $"An unexpected error occurred:\n\n{args.Exception.Message}\n\nThe error has been logged.\nLog: {FileLog.CurrentLogPath}",
+                var displayMessage = _consecutiveErrorCount == 3
+                    ? $"An error occurred multiple times:\n\n{message}\n\nFurther identical errors will be suppressed.\nLog: {FileLog.CurrentLogPath}"
+                    : $"An unexpected error occurred:\n\n{message}\n\nThe error has been logged.\nLog: {FileLog.CurrentLogPath}";
+
+                System.Windows.MessageBox.Show(displayMessage,
                     "CC Director Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             catch (Exception msgEx)
