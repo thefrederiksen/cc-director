@@ -172,6 +172,7 @@ public partial class MainWindow : Window
 
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
+        PromptInput.LostFocus += (_, _) => SlashCommandPopup.IsOpen = false;
 
         // Wire right panel tab selection to lazy-load session browser
         RightPanelTabs.SelectionChanged += RightPanelTabs_SelectionChanged;
@@ -590,6 +591,8 @@ public partial class MainWindow : Window
             }
         });
     }
+
+    private CancellationTokenSource? _enterRetryCts;
 
     private const int PersistDebounceMs = 250;
     private CancellationTokenSource? _persistDebounceCts;
@@ -1243,6 +1246,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Ctrl+Enter = Send prompt (same as Enter, matches WPF behavior)
+        if (e.Key == Key.Enter && e.KeyModifiers == KeyModifiers.Control)
+        {
+            e.Handled = true;
+            SendPrompt();
+            return;
+        }
+
         // Enter sends, Shift+Enter inserts newline
         if (e.Key == Key.Enter && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {
@@ -1435,7 +1446,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SendPrompt()
+    private async void SendPrompt()
     {
         if (_activeSession == null) return;
 
@@ -1455,7 +1466,43 @@ public partial class MainWindow : Window
         ClearNotification();
 
         CleanView.InjectUserPrompt(text);
-        _activeSession.Session.SendText(text + "\n");
+        await _activeSession.Session.SendTextAsync(text + "\n");
+        ScheduleEnterRetry(_activeSession.Session);
+    }
+
+    private void ScheduleEnterRetry(Session session)
+    {
+        _enterRetryCts?.Cancel();
+        _enterRetryCts = new CancellationTokenSource();
+        var cts = _enterRetryCts;
+
+        void OnStateChanged(ActivityState oldState, ActivityState newState)
+        {
+            if (newState == ActivityState.Working)
+            {
+                cts.Cancel();
+                session.OnActivityStateChanged -= OnStateChanged;
+            }
+        }
+
+        session.OnActivityStateChanged += OnStateChanged;
+        _ = RetryEnterAfterDelay(session, cts, OnStateChanged);
+    }
+
+    private async Task RetryEnterAfterDelay(Session session, CancellationTokenSource cts,
+        Action<ActivityState, ActivityState> handler)
+    {
+        try
+        {
+            await Task.Delay(3000, cts.Token);
+            await session.SendEnterAsync();
+            FileLog.Write("[MainWindow] Enter retry: sent extra Enter (no activity within 3s)");
+        }
+        catch (TaskCanceledException) { /* Activity arrived - no retry needed */ }
+        finally
+        {
+            session.OnActivityStateChanged -= handler;
+        }
     }
 
     private void PromptInput_DragOver(object? sender, DragEventArgs e)
