@@ -35,10 +35,6 @@ public partial class App : Application
     public EngineHost? EngineHost { get; private set; }
 
     public bool SandboxMode { get; private set; }
-    public bool ReadOnlyMode { get; private set; }
-    public RestoreSessionsResult? RestoredPersistedData { get; set; }
-
-    private Mutex? _singleInstanceMutex;
 
     public override void Initialize()
     {
@@ -49,107 +45,118 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            // Parse command-line arguments
+            // Show splash screen IMMEDIATELY -- before any heavy init
+            var splash = new SplashScreen();
+            desktop.MainWindow = splash;
+            splash.Show();
+
+            // Parse command-line arguments (lightweight)
             SandboxMode = desktop.Args?.Contains("--sandbox", StringComparer.OrdinalIgnoreCase) == true;
-
-            // Single-instance detection
-            _singleInstanceMutex = new Mutex(true, @"Global\CcDirector_SingleInstance", out bool createdNew);
-            if (!createdNew)
-                ReadOnlyMode = true;
-
             LoadConfiguration();
 
-            RepositoryRegistry = new RepositoryRegistry();
-            RepositoryRegistry.Load();
-            RepositoryRegistry.SeedFrom(Repositories);
-
-            RootDirectoryStore = new RootDirectoryStore();
-            RootDirectoryStore.Load();
-
-            SessionStateStore = new SessionStateStore();
-
-            RecentSessionStore = new RecentSessionStore();
-            RecentSessionStore.Load();
-
-            SessionHistoryStore = new SessionHistoryStore();
-            MigrateRecentSessionsToHistory();
-
-            FileLog.Start();
-
-            AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            // Run all heavy initialization on background thread, then swap to main window
+            global::Avalonia.Threading.Dispatcher.UIThread.Post(async () =>
             {
-                FileLog.Write($"[App] UNHANDLED DOMAIN EXCEPTION (isTerminating={args.IsTerminating}): {args.ExceptionObject}");
-            };
+                await Task.Run(() => InitializeServices(splash));
 
-            TaskScheduler.UnobservedTaskException += (_, args) =>
-            {
-                FileLog.Write($"[App] UNOBSERVED TASK EXCEPTION: {args.Exception}");
-                args.SetObserved();
-            };
+                var mainWindow = new MainWindow();
+                desktop.MainWindow = mainWindow;
+                mainWindow.Show();
+                splash.Close();
+            }, global::Avalonia.Threading.DispatcherPriority.Background);
 
-            try
-            {
-                CcDirector.Core.Storage.CcStorageMigration.EnsureMigrated();
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[App] Storage migration FAILED: {ex}");
-            }
-
-            Action<string> log = msg => FileLog.Write($"[CcDirector] {msg}");
-            log($"CC Director (Avalonia) starting (SandboxMode={SandboxMode}, ReadOnlyMode={ReadOnlyMode}), log file: {FileLog.CurrentLogPath}");
-
-            SessionManager = new SessionManager(Options, log);
-            SessionManager.ScanForOrphans();
-
-            if (!SandboxMode)
-            {
-                RestoredPersistedData = SessionManager.LoadPersistedSessions(SessionStateStore);
-            }
-
-            // Start event router and file-based event watcher (broadcasts to ALL instances)
-            EventRouter = new EventRouter(SessionManager, log);
-            FileEventWatcher = new DirectorFileEventWatcher(log);
-            FileEventWatcher.OnMessageReceived += EventRouter.Route;
-            FileEventWatcher.Start();
-
-            // Install hooks
-            _ = InstallHooksAsync(log);
-
-            // Start NUL file watcher
-            NulFileWatcher = new NulFileWatcher(log: log);
-            NulFileWatcher.OnNulFileDeleted = path => log($"Deleted NUL file: {path}");
-            NulFileWatcher.OnDeletionFailed = (path, ex) => log($"Failed to delete NUL file {path}: {ex.Message}");
-            NulFileWatcher.Start();
-
-            // Start backup cleaner
-            BackupCleaner = new BackupCleaner(log: log);
-            BackupCleaner.OnCorruptedFileDeleted = path => log($"Deleted corrupted backup: {path}");
-            BackupCleaner.OnDeletionFailed = (path, ex) => log($"Failed to delete corrupted backup {path}: {ex.Message}");
-            BackupCleaner.Start();
-
-            // Claude accounts
-            ClaudeAccountStore = new ClaudeAccountStore();
-            ClaudeAccountStore.Load();
-            log($"Claude accounts loaded: {ClaudeAccountStore.Accounts.Count}");
-
-            ClaudeUsageService = new ClaudeUsageService(ClaudeAccountStore);
-            ClaudeUsageService.Start();
-            log("Claude usage service started");
-
-            WorkspaceStore = new WorkspaceStore();
-            log("Workspace store initialized");
-
-            // Start Engine
-            StartEngine(log);
-
-            // Create and show main window
-            desktop.MainWindow = new MainWindow();
-
-            desktop.ShutdownRequested += (_, _) => OnShutdown(log);
+            desktop.ShutdownRequested += (_, _) => OnShutdown(msg => FileLog.Write($"[CcDirector] {msg}"));
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private void InitializeServices(SplashScreen splash)
+    {
+        RepositoryRegistry = new RepositoryRegistry();
+        RepositoryRegistry.Load();
+        RepositoryRegistry.SeedFrom(Repositories);
+
+        RootDirectoryStore = new RootDirectoryStore();
+        RootDirectoryStore.Load();
+
+        SessionStateStore = new SessionStateStore();
+
+        RecentSessionStore = new RecentSessionStore();
+        RecentSessionStore.Load();
+
+        SessionHistoryStore = new SessionHistoryStore();
+        MigrateRecentSessionsToHistory();
+
+        FileLog.Start();
+
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            FileLog.Write($"[App] UNHANDLED DOMAIN EXCEPTION (isTerminating={args.IsTerminating}): {args.ExceptionObject}");
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            FileLog.Write($"[App] UNOBSERVED TASK EXCEPTION: {args.Exception}");
+            args.SetObserved();
+        };
+
+        try
+        {
+            CcDirector.Core.Storage.CcStorageMigration.EnsureMigrated();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[App] Storage migration FAILED: {ex}");
+        }
+
+        Action<string> log = msg => FileLog.Write($"[CcDirector] {msg}");
+        log($"CC Director (Avalonia) starting (SandboxMode={SandboxMode}), log file: {FileLog.CurrentLogPath}");
+
+        UpdateSplashStatus(splash, "Initializing sessions...");
+        SessionManager = new SessionManager(Options, log);
+        SessionManager.ScanForOrphans();
+
+        // Workspaces replace session restore -- clear persisted data
+        SessionStateStore.Clear();
+
+        UpdateSplashStatus(splash, "Starting event system...");
+        EventRouter = new EventRouter(SessionManager, log);
+        FileEventWatcher = new DirectorFileEventWatcher(log);
+        FileEventWatcher.OnMessageReceived += EventRouter.Route;
+        FileEventWatcher.Start();
+
+        _ = InstallHooksAsync(log);
+
+        NulFileWatcher = new NulFileWatcher(log: log);
+        NulFileWatcher.OnNulFileDeleted = path => log($"Deleted NUL file: {path}");
+        NulFileWatcher.OnDeletionFailed = (path, ex) => log($"Failed to delete NUL file {path}: {ex.Message}");
+        NulFileWatcher.Start();
+
+        BackupCleaner = new BackupCleaner(log: log);
+        BackupCleaner.OnCorruptedFileDeleted = path => log($"Deleted corrupted backup: {path}");
+        BackupCleaner.OnDeletionFailed = (path, ex) => log($"Failed to delete corrupted backup {path}: {ex.Message}");
+        BackupCleaner.Start();
+
+        UpdateSplashStatus(splash, "Loading accounts...");
+        ClaudeAccountStore = new ClaudeAccountStore();
+        ClaudeAccountStore.Load();
+        log($"Claude accounts loaded: {ClaudeAccountStore.Accounts.Count}");
+
+        ClaudeUsageService = new ClaudeUsageService(ClaudeAccountStore);
+        ClaudeUsageService.Start();
+        log("Claude usage service started");
+
+        WorkspaceStore = new WorkspaceStore();
+        log("Workspace store initialized");
+
+        UpdateSplashStatus(splash, "Starting engine...");
+        StartEngine(log);
+    }
+
+    private static void UpdateSplashStatus(SplashScreen splash, string text)
+    {
+        global::Avalonia.Threading.Dispatcher.UIThread.Post(() => splash.StatusText.Text = text);
     }
 
     private void OnShutdown(Action<string> log)
@@ -200,9 +207,7 @@ public partial class App : Application
         }
         finally
         {
-            try { _singleInstanceMutex?.ReleaseMutex(); }
-            catch (ApplicationException) { }
-            _singleInstanceMutex?.Dispose();
+            // Reserved for future cleanup
         }
     }
 

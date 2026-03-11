@@ -45,21 +45,12 @@ public partial class App : Application
     public bool SandboxMode { get; private set; }
 
     /// <summary>
-    /// When true, sessions.json writes are blocked (another instance owns the file).
-    /// Second instances run in read-only mode to prevent data loss from concurrent writes.
-    /// </summary>
-    public bool ReadOnlyMode { get; private set; }
-
-    /// <summary>
     /// Persisted session data loaded on startup, consumed by MainWindow for HWND reattach.
     /// Contains both the session list and any load errors that need to be displayed.
     /// Cleared after MainWindow processes it.
     /// </summary>
     public RestoreSessionsResult? RestoredPersistedData { get; set; }
 
-
-    // Mutex for single-instance detection - second instances run in read-only mode
-    private Mutex? _singleInstanceMutex;
 
     // Error dialog throttling - prevents cascading dialog bombs
     private string? _lastErrorMessage;
@@ -76,13 +67,6 @@ public partial class App : Application
 
         // Parse command-line arguments
         SandboxMode = e.Args.Contains("--sandbox", StringComparer.OrdinalIgnoreCase);
-
-        // Single-instance detection - second instances run in read-only mode
-        _singleInstanceMutex = new Mutex(true, @"Global\CcDirector_SingleInstance", out bool createdNew);
-        if (!createdNew)
-        {
-            ReadOnlyMode = true;
-        }
 
         LoadConfiguration();
 
@@ -167,7 +151,7 @@ public partial class App : Application
                 "Migration Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         Action<string> log = msg => FileLog.Write($"[CcDirector] {msg}");
-        log($"CC Director starting (SandboxMode={SandboxMode}, ReadOnlyMode={ReadOnlyMode}), log file: {FileLog.CurrentLogPath}");
+        log($"CC Director starting (SandboxMode={SandboxMode}), log file: {FileLog.CurrentLogPath}");
 
         SessionManager = new SessionManager(Options, log);
         SessionManager.ScanForOrphans();
@@ -301,16 +285,7 @@ public partial class App : Application
         }
         finally
         {
-            // Always release mutex to prevent "Another instance is running" on restart
-            try
-            {
-                _singleInstanceMutex?.ReleaseMutex();
-            }
-            catch (ApplicationException)
-            {
-                // Mutex was not owned by this thread - ignore
-            }
-            _singleInstanceMutex?.Dispose();
+            // Reserved for future cleanup
         }
 
         base.OnExit(e);

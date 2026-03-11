@@ -12,12 +12,18 @@ public partial class LoadWorkspaceDialog : Window
 
     public WorkspaceDefinition? SelectedWorkspace { get; private set; }
 
-    public LoadWorkspaceDialog(WorkspaceStore store)
+    public LoadWorkspaceDialog(WorkspaceStore store, bool startupMode = false)
     {
-        FileLog.Write("[LoadWorkspaceDialog] Constructor");
+        FileLog.Write($"[LoadWorkspaceDialog] Constructor: startupMode={startupMode}");
         InitializeComponent();
 
         _store = store;
+
+        if (startupMode)
+        {
+            Title = "Select Workspace";
+            BtnCancel.Content = "Skip";
+        }
 
         Loaded += (_, _) => LoadWorkspaces();
     }

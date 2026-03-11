@@ -161,6 +161,9 @@ public sealed class Session : IDisposable
     /// <summary>Prompt text the user was composing but hasn't sent yet. Persisted across switches and restarts.</summary>
     public string? PendingPromptText { get; set; }
 
+    /// <summary>Name of the last selected tab (e.g. "Terminal", "Agent", "SourceControl"). Persisted across switches and restarts.</summary>
+    public string? SelectedTabName { get; set; }
+
     /// <summary>Queue of prompts the user wants to send later. Persisted across switches and restarts.</summary>
     public PromptQueue PromptQueue { get; } = new();
 

@@ -193,6 +193,106 @@ public class WorkflowStoreTests : IDisposable
     }
 
     // -------------------------------------------------------------------
+    // V1 -> V2 migration tests
+    // -------------------------------------------------------------------
+
+    [Fact]
+    public void LoadTemplate_V1Format_MigratesToV2WithSteps()
+    {
+        // Save a v1-style template (actions only, no steps, version=0)
+        var template = MakeTemplate("old-flow", "conn");
+        template.Version = 0; // simulate v1
+        template.Steps.Clear(); // no steps in v1
+        _store.SaveTemplate(template);
+
+        var loaded = _store.LoadTemplate("conn", "old-flow");
+
+        Assert.NotNull(loaded);
+        Assert.Equal(2, loaded.Version);
+        Assert.Equal(2, loaded.Steps.Count);
+        Assert.All(loaded.Steps, s => Assert.Equal("action", s.Type));
+        Assert.Equal("navigate", loaded.Steps[0].Action!.Command);
+        Assert.Equal("click", loaded.Steps[1].Action!.Command);
+    }
+
+    [Fact]
+    public void LoadTemplate_V2Format_PreservesStepsAndConditions()
+    {
+        var template = new WorkflowTemplate
+        {
+            Version = 2,
+            Name = "cond-flow",
+            Connection = "conn",
+            CreatedAt = DateTime.UtcNow.ToString("o"),
+            Steps = new List<WorkflowStep>
+            {
+                new() { Type = "action", Action = new WorkflowAction { Command = "navigate" } },
+                new()
+                {
+                    Type = "condition",
+                    Condition = new WorkflowCondition
+                    {
+                        Check = "elementExists",
+                        Selector = "#login",
+                        ThenSteps = new List<WorkflowStep>
+                        {
+                            new() { Type = "action", Action = new WorkflowAction { Command = "type" } },
+                        },
+                        ElseSteps = new List<WorkflowStep>
+                        {
+                            new() { Type = "action", Action = new WorkflowAction { Command = "click" } },
+                        },
+                    },
+                },
+            },
+        };
+        _store.SaveTemplate(template);
+
+        var loaded = _store.LoadTemplate("conn", "cond-flow");
+
+        Assert.NotNull(loaded);
+        Assert.Equal(2, loaded.Version);
+        Assert.Equal(2, loaded.Steps.Count);
+        Assert.Equal("action", loaded.Steps[0].Type);
+        Assert.Equal("condition", loaded.Steps[1].Type);
+        Assert.NotNull(loaded.Steps[1].Condition);
+        Assert.Equal("elementExists", loaded.Steps[1].Condition!.Check);
+        Assert.Single(loaded.Steps[1].Condition!.ThenSteps);
+        Assert.Single(loaded.Steps[1].Condition!.ElseSteps);
+    }
+
+    [Fact]
+    public void MigrateToV2_AlreadyV2_DoesNotDuplicate()
+    {
+        var template = new WorkflowTemplate
+        {
+            Version = 2,
+            Name = "v2-flow",
+            Steps = new List<WorkflowStep>
+            {
+                new() { Type = "action", Action = new WorkflowAction { Command = "click" } },
+            },
+        };
+
+        WorkflowStore.MigrateToV2(template);
+
+        Assert.Single(template.Steps);
+    }
+
+    [Fact]
+    public void LoadTemplate_InitialScreenshotFile_RoundTrips()
+    {
+        var template = MakeTemplate("ss-flow", "conn");
+        template.InitialScreenshotFile = "step-000.jpg";
+        _store.SaveTemplate(template);
+
+        var loaded = _store.LoadTemplate("conn", "ss-flow");
+
+        Assert.NotNull(loaded);
+        Assert.Equal("step-000.jpg", loaded.InitialScreenshotFile);
+    }
+
+    // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
 

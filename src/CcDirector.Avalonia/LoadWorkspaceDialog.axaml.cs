@@ -23,14 +23,25 @@ public partial class LoadWorkspaceDialog : Window
         _store = null!;
     }
 
-    public LoadWorkspaceDialog(WorkspaceStore store)
+    public LoadWorkspaceDialog(WorkspaceStore store, bool startupMode = false)
     {
-        FileLog.Write("[LoadWorkspaceDialog] Constructor");
+        FileLog.Write($"[LoadWorkspaceDialog] Constructor: startupMode={startupMode}");
         InitializeComponent();
 
         _store = store;
 
+        if (startupMode)
+        {
+            Title = "Select Workspace";
+            BtnCancel.Content = "Skip";
+        }
+
         Loaded += (_, _) => LoadWorkspaces();
+    }
+
+    public void SetOwner(Window owner)
+    {
+        // Avalonia uses ShowDialog<T>(Window) for owner, this is a no-op placeholder
     }
 
     private void LoadWorkspaces()

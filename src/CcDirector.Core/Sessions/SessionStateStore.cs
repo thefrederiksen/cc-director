@@ -42,6 +42,9 @@ public class PersistedSession
 
     /// <summary>Queued prompts for this session. Null = no queued prompts (backward compatible).</summary>
     public List<PersistedPromptQueueItem>? QueuedPrompts { get; set; }
+
+    /// <summary>Name of the last selected tab (e.g. "Terminal", "Agent", "SourceControl"). Null = default (Terminal).</summary>
+    public string? SelectedTabName { get; set; }
 }
 
 public class PersistedPromptQueueItem

@@ -379,6 +379,7 @@ public sealed class SessionManager : IDisposable
                 HistoryEntryId = s.HistoryEntryId,
                 BackendType = s.BackendType,
                 RawStartupText = s.RawStartupText,
+                SelectedTabName = s.SelectedTabName,
                 QueuedPrompts = s.PromptQueue.HasItems
                     ? s.PromptQueue.Items.Select(q => new PersistedPromptQueueItem
                     {

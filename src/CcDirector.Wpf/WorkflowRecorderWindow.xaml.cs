@@ -1,13 +1,13 @@
-using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using CcDirector.Core.Browser;
-using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Wpf;
@@ -25,6 +25,7 @@ public partial class WorkflowRecorderWindow : Window
     private string? _recordingSince;
     private DateTime _recordingStartTime;
     private string? _recordingTempDir;
+    private string? _initialScreenshotFile;
     private int _lastScreenshotCount;
 
     private enum RecorderState { Idle, Recording, Replaying }
@@ -41,7 +42,6 @@ public partial class WorkflowRecorderWindow : Window
 
         FileLog.Write($"[WorkflowRecorder] Created: connection={connectionName}, port={daemonPort}");
 
-        // Position is set by the caller before Show()
         Loaded += (_, _) => LoadSavedWorkflows();
     }
 
@@ -54,6 +54,7 @@ public partial class WorkflowRecorderWindow : Window
         FileLog.Write("[WorkflowRecorder] BtnRecord_Click");
 
         _actions.Clear();
+        _initialScreenshotFile = null;
         UpdateActionLog();
         _recordingSince = DateTime.UtcNow.ToString("o");
         _recordingStartTime = DateTime.UtcNow;
@@ -92,6 +93,19 @@ public partial class WorkflowRecorderWindow : Window
 
         SetState(RecorderState.Recording);
 
+        // Capture initial screenshot BEFORE starting poll timer
+        try
+        {
+            var ssFile = await CaptureScreenshotAsync(_recordingTempDir, -1, "step-000.jpg");
+            _initialScreenshotFile = ssFile;
+            FileLog.Write($"[WorkflowRecorder] Initial screenshot captured: {ssFile}");
+            UpdateActionLog();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorkflowRecorder] Initial screenshot FAILED: {ex.Message}");
+        }
+
         _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _pollTimer.Tick += async (_, _) =>
         {
@@ -108,7 +122,6 @@ public partial class WorkflowRecorderWindow : Window
         _pollTimer?.Stop();
         _pollTimer = null;
 
-        // Tell the browser extension to stop capturing user actions
         try
         {
             var payload = JsonSerializer.Serialize(new { connection = _connectionName });
@@ -128,11 +141,12 @@ public partial class WorkflowRecorderWindow : Window
     {
         FileLog.Write("[WorkflowRecorder] BtnClear_Click");
         _actions.Clear();
+        _initialScreenshotFile = null;
         UpdateActionLog();
     }
 
     // -----------------------------------------------------------------------
-    // Save / Load / Replay
+    // Save / Load / Edit / Replay
     // -----------------------------------------------------------------------
 
     private void BtnSave_Click(object sender, RoutedEventArgs e)
@@ -154,24 +168,30 @@ public partial class WorkflowRecorderWindow : Window
 
         FileLog.Write($"[WorkflowRecorder] BtnSave_Click: name={workflowName}, actions={_actions.Count}");
 
-        // Build the template
         var template = new WorkflowTemplate
         {
+            Version = 2,
             Name = workflowName,
             Connection = _connectionName,
             CreatedAt = DateTime.UtcNow.ToString("o"),
+            InitialScreenshotFile = _initialScreenshotFile,
         };
 
         for (var i = 0; i < _actions.Count; i++)
         {
             var a = _actions[i];
-            var screenshotFile = a.ScreenshotFile;
-
-            template.Actions.Add(new WorkflowAction
+            var action = new WorkflowAction
             {
                 Command = a.Command,
                 Params = ConvertParams(a.Params),
-                ScreenshotFile = screenshotFile,
+                ScreenshotFile = a.ScreenshotFile,
+            };
+
+            template.Actions.Add(action);
+            template.Steps.Add(new WorkflowStep
+            {
+                Type = "action",
+                Action = action,
             });
         }
 
@@ -188,7 +208,6 @@ public partial class WorkflowRecorderWindow : Window
             }
             FileLog.Write($"[WorkflowRecorder] Copied {Directory.GetFiles(recordingDir, "*.jpg").Length} screenshots to recording dir");
 
-            // Clean up temp
             try { Directory.Delete(_recordingTempDir, recursive: true); }
             catch (Exception ex) { FileLog.Write($"[WorkflowRecorder] Temp dir cleanup failed: {ex.Message}"); }
             _recordingTempDir = null;
@@ -208,15 +227,16 @@ public partial class WorkflowRecorderWindow : Window
         foreach (var t in templates)
         {
             var paramCount = t.Parameters.Count;
+            var stepCount = t.Steps.Count > 0 ? t.Steps.Count : t.Actions.Count;
             var suffix = paramCount > 0 ? $" [{paramCount} params]" : "";
             var wf = new WorkflowFile
             {
                 Name = t.Name,
-                ActionCount = t.Actions.Count,
+                ActionCount = stepCount,
                 ParamCount = paramCount,
             };
             _savedWorkflows.Add(wf);
-            WorkflowList.Items.Add($"{t.Name} ({t.Actions.Count} actions{suffix})");
+            WorkflowList.Items.Add($"{t.Name} ({stepCount} steps{suffix})");
         }
 
         FileLog.Write($"[WorkflowRecorder] Loaded {_savedWorkflows.Count} saved workflows");
@@ -228,6 +248,7 @@ public partial class WorkflowRecorderWindow : Window
         if (idx < 0 || idx >= _savedWorkflows.Count)
         {
             BtnReplay.IsEnabled = false;
+            BtnEdit.IsEnabled = false;
             BtnParameterize.IsEnabled = false;
             BtnRuns.IsEnabled = false;
             return;
@@ -236,26 +257,61 @@ public partial class WorkflowRecorderWindow : Window
         var wf = _savedWorkflows[idx];
         FileLog.Write($"[WorkflowRecorder] Selected workflow: {wf.Name}");
 
-        // Load actions from template into the action list for display
         var template = _store.LoadTemplate(_connectionName, wf.Name);
         if (template != null)
         {
             _actions.Clear();
-            foreach (var action in template.Actions)
+            _initialScreenshotFile = template.InitialScreenshotFile;
+
+            // Load from steps if available, otherwise from actions
+            var actions = template.Steps.Count > 0
+                ? template.Steps
+                    .Where(s => s.Action != null)
+                    .Select(s => s.Action)
+                    .OfType<WorkflowAction>()
+                    .ToList()
+                : template.Actions;
+
+            var recordingDir = _store.RecordingDir(_connectionName, wf.Name);
+            foreach (var action in actions)
             {
                 _actions.Add(new RecordedAction
                 {
                     Command = action.Command,
                     Params = ConvertParamsToJsonElement(action.Params),
                     ScreenshotFile = action.ScreenshotFile,
+                    ScreenshotFullPath = !string.IsNullOrEmpty(action.ScreenshotFile)
+                        ? Path.Combine(recordingDir, action.ScreenshotFile)
+                        : null,
                 });
             }
             UpdateActionLog();
         }
 
         BtnReplay.IsEnabled = _actions.Count > 0 && _state != RecorderState.Replaying;
+        BtnEdit.IsEnabled = _state == RecorderState.Idle;
         BtnParameterize.IsEnabled = _actions.Count > 0 && _state == RecorderState.Idle;
         BtnRuns.IsEnabled = _state == RecorderState.Idle;
+    }
+
+    // -----------------------------------------------------------------------
+    // Edit
+    // -----------------------------------------------------------------------
+
+    private void BtnEdit_Click(object sender, RoutedEventArgs e)
+    {
+        var idx = WorkflowList.SelectedIndex;
+        if (idx < 0 || idx >= _savedWorkflows.Count) return;
+
+        var wf = _savedWorkflows[idx];
+        FileLog.Write($"[WorkflowRecorder] BtnEdit_Click: {wf.Name}");
+
+        var editor = new WorkflowEditorWindow(_store, _connectionName, wf.Name);
+        editor.Owner = this;
+        editor.ShowDialog();
+
+        // Refresh after editing
+        LoadSavedWorkflows();
     }
 
     // -----------------------------------------------------------------------
@@ -301,7 +357,7 @@ public partial class WorkflowRecorderWindow : Window
     }
 
     // -----------------------------------------------------------------------
-    // Sequential Replay with Run Records
+    // Sequential Replay with WorkflowRunner
     // -----------------------------------------------------------------------
 
     private async void BtnReplay_Click(object sender, RoutedEventArgs e)
@@ -310,10 +366,10 @@ public partial class WorkflowRecorderWindow : Window
         if (idx < 0 || idx >= _savedWorkflows.Count) return;
 
         var wf = _savedWorkflows[idx];
-        FileLog.Write($"[WorkflowRecorder] BtnReplay_Click: {wf.Name}, {_actions.Count} actions");
+        FileLog.Write($"[WorkflowRecorder] BtnReplay_Click: {wf.Name}");
 
         var template = _store.LoadTemplate(_connectionName, wf.Name);
-        if (template == null || template.Actions.Count == 0) return;
+        if (template == null || template.Steps.Count == 0) return;
 
         // If parameterized, prompt for values
         var paramValues = new Dictionary<string, string>();
@@ -330,119 +386,49 @@ public partial class WorkflowRecorderWindow : Window
 
         // Create run record
         var runId = DateTime.UtcNow.ToString("yyyyMMddTHHmmss");
+        var ssDir = _store.RunScreenshotDir(_connectionName, wf.Name, runId);
+
+        var runner = new WorkflowRunner(_connectionName, _daemonPort, _http, ssDir, paramValues);
+        runner.OnStepProgress = (stepIndex, command) =>
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                StatusText.Text = $"STEP {stepIndex + 1}/{template.Steps.Count}";
+                ActionCountText.Text = $"Running: {command}";
+            });
+        };
+
+        await runner.RunAsync(template.Steps);
+
         var run = new WorkflowRun
         {
             Id = runId,
             WorkflowName = wf.Name,
             Connection = _connectionName,
             StartedAt = DateTime.UtcNow.ToString("o"),
-            Status = "running",
+            CompletedAt = DateTime.UtcNow.ToString("o"),
+            Status = runner.AllSucceeded ? "completed" : "failed",
             ParameterValues = paramValues,
+            Steps = runner.CompletedSteps,
         };
-
-        var ssDir = _store.RunScreenshotDir(_connectionName, wf.Name, runId);
-        FileLog.Write($"[WorkflowRecorder] Run started: id={runId}, ssDir={ssDir}");
-
-        var allSucceeded = true;
-
-        for (var i = 0; i < template.Actions.Count; i++)
-        {
-            var action = template.Actions[i];
-            var sw = Stopwatch.StartNew();
-
-            // Resolve parameter placeholders
-            var resolvedParams = ResolveParams(action.Params, paramValues);
-
-            var step = new WorkflowRunStep
-            {
-                Index = i,
-                Command = action.Command,
-                Params = resolvedParams,
-                Timestamp = DateTime.UtcNow.ToString("o"),
-            };
-
-            // Update status display
-            _ = Dispatcher.BeginInvoke(() =>
-            {
-                StatusText.Text = $"STEP {i + 1}/{template.Actions.Count}";
-                ActionCountText.Text = $"Running: {action.Command}";
-            });
-
-            try
-            {
-                // Send single command to daemon
-                var cmdPayload = new Dictionary<string, object>
-                {
-                    ["connection"] = _connectionName,
-                    ["command"] = action.Command,
-                };
-                if (resolvedParams != null)
-                {
-                    foreach (var kv in resolvedParams)
-                        cmdPayload[kv.Key] = kv.Value;
-                }
-
-                var json = JsonSerializer.Serialize(cmdPayload);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-                var response = await _http.PostAsync(
-                    $"http://127.0.0.1:{_daemonPort}/{action.Command}", content);
-
-                sw.Stop();
-                step.DurationMs = sw.ElapsedMilliseconds;
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    var errBody = await response.Content.ReadAsStringAsync();
-                    step.Status = "failed";
-                    step.Error = $"HTTP {(int)response.StatusCode}: {errBody}";
-                    allSucceeded = false;
-                    FileLog.Write($"[WorkflowRecorder] Step {i} FAILED: {step.Error}");
-                    run.Steps.Add(step);
-                    break;
-                }
-
-                step.Status = "completed";
-                FileLog.Write($"[WorkflowRecorder] Step {i} completed: {action.Command} in {step.DurationMs}ms");
-
-                // Take screenshot after step
-                var ssFile = await CaptureScreenshotAsync(ssDir, i);
-                step.ScreenshotFile = ssFile;
-            }
-            catch (Exception ex)
-            {
-                sw.Stop();
-                step.DurationMs = sw.ElapsedMilliseconds;
-                step.Status = "failed";
-                step.Error = ex.Message;
-                allSucceeded = false;
-                FileLog.Write($"[WorkflowRecorder] Step {i} FAILED: {ex.Message}");
-                run.Steps.Add(step);
-                break;
-            }
-
-            run.Steps.Add(step);
-        }
-
-        run.CompletedAt = DateTime.UtcNow.ToString("o");
-        run.Status = allSucceeded ? "completed" : "failed";
 
         _store.SaveRun(run);
         FileLog.Write($"[WorkflowRecorder] Run finished: id={runId}, status={run.Status}, steps={run.Steps.Count}");
 
         SetState(RecorderState.Idle);
 
-        var resultMsg = allSucceeded
+        var resultMsg = runner.AllSucceeded
             ? $"Workflow completed: {run.Steps.Count} steps"
             : $"Workflow failed at step {run.Steps.Count}";
         MessageBox.Show(resultMsg, "Workflow Run", MessageBoxButton.OK,
-            allSucceeded ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            runner.AllSucceeded ? MessageBoxImage.Information : MessageBoxImage.Warning);
     }
 
     // -----------------------------------------------------------------------
     // Screenshots
     // -----------------------------------------------------------------------
 
-    private async Task<string?> CaptureScreenshotAsync(string targetDir, int stepIndex)
+    private async Task<string?> CaptureScreenshotAsync(string targetDir, int stepIndex, string? overrideFileName = null)
     {
         var payload = JsonSerializer.Serialize(new { connection = _connectionName });
         var content = new StringContent(payload, Encoding.UTF8, "application/json");
@@ -470,7 +456,7 @@ public partial class WorkflowRecorderWindow : Window
             return null;
         }
 
-        var fileName = $"step-{stepIndex + 1:D3}.jpg";
+        var fileName = overrideFileName ?? $"step-{stepIndex + 1:D3}.jpg";
         var filePath = Path.Combine(targetDir, fileName);
         var bytes = Convert.FromBase64String(base64);
         await File.WriteAllBytesAsync(filePath, bytes);
@@ -480,7 +466,7 @@ public partial class WorkflowRecorderWindow : Window
     }
 
     // -----------------------------------------------------------------------
-    // Polling
+    // Polling with deduplication
     // -----------------------------------------------------------------------
 
     private async Task PollHistory()
@@ -501,6 +487,11 @@ public partial class WorkflowRecorderWindow : Window
             var newActions = new List<RecordedAction>();
             foreach (var act in actions.EnumerateArray())
             {
+                // Phase 1: Action deduplication - only keep extension-captured actions (recorded: true)
+                var isRecorded = act.TryGetProperty("recorded", out var recEl)
+                    && recEl.ValueKind == JsonValueKind.True;
+                if (!isRecorded) continue;
+
                 var command = act.GetProperty("command").GetString() ?? "";
                 var timestamp = act.TryGetProperty("timestamp", out var ts) ? ts.GetString() : null;
 
@@ -521,7 +512,6 @@ public partial class WorkflowRecorderWindow : Window
             // Only update if we have new actions beyond what we already have
             if (newActions.Count > _actions.Count)
             {
-                var previousCount = _actions.Count;
                 _actions.Clear();
                 _actions.AddRange(newActions);
 
@@ -534,6 +524,8 @@ public partial class WorkflowRecorderWindow : Window
                         {
                             var ssFile = await CaptureScreenshotAsync(_recordingTempDir, i);
                             _actions[i].ScreenshotFile = ssFile;
+                            if (ssFile != null)
+                                _actions[i].ScreenshotFullPath = Path.Combine(_recordingTempDir, ssFile);
                         }
                         catch (Exception ssEx)
                         {
@@ -558,6 +550,51 @@ public partial class WorkflowRecorderWindow : Window
     }
 
     // -----------------------------------------------------------------------
+    // Thumbnail double-click viewer
+    // -----------------------------------------------------------------------
+
+    private void ActionLogList_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        try
+        {
+            if (ActionLogList.SelectedItem is not ActionDisplayEntry entry) return;
+            if (string.IsNullOrEmpty(entry.ScreenshotFullPath) || !File.Exists(entry.ScreenshotFullPath)) return;
+
+            FileLog.Write($"[WorkflowRecorder] Opening screenshot: {entry.ScreenshotFullPath}");
+
+            var viewer = new Window
+            {
+                Title = $"Screenshot - {entry.CommandDisplay}",
+                Width = 900,
+                Height = 600,
+                Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+            };
+
+            var image = new System.Windows.Controls.Image { Stretch = Stretch.Uniform };
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.UriSource = new Uri(entry.ScreenshotFullPath);
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.EndInit();
+            image.Source = bitmap;
+
+            viewer.Content = new ScrollViewer
+            {
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = image,
+            };
+            viewer.Show();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WorkflowRecorder] Screenshot viewer FAILED: {ex.Message}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // UI Helpers
     // -----------------------------------------------------------------------
 
@@ -568,36 +605,36 @@ public partial class WorkflowRecorderWindow : Window
         {
             case RecorderState.Idle:
                 StatusText.Text = "IDLE";
-                StatusText.Foreground = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromRgb(0xCC, 0xCC, 0xCC));
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
                 BtnRecord.IsEnabled = true;
                 BtnStop.IsEnabled = false;
                 BtnReplay.IsEnabled = _actions.Count > 0;
                 BtnSave.IsEnabled = true;
+                BtnEdit.IsEnabled = WorkflowList.SelectedIndex >= 0;
                 BtnParameterize.IsEnabled = WorkflowList.SelectedIndex >= 0;
                 BtnRuns.IsEnabled = WorkflowList.SelectedIndex >= 0;
                 break;
 
             case RecorderState.Recording:
                 StatusText.Text = "RECORDING";
-                StatusText.Foreground = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromRgb(0xE5, 0x3E, 0x3E));
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x3E, 0x3E));
                 BtnRecord.IsEnabled = false;
                 BtnStop.IsEnabled = true;
                 BtnReplay.IsEnabled = false;
                 BtnSave.IsEnabled = false;
+                BtnEdit.IsEnabled = false;
                 BtnParameterize.IsEnabled = false;
                 BtnRuns.IsEnabled = false;
                 break;
 
             case RecorderState.Replaying:
                 StatusText.Text = "REPLAYING";
-                StatusText.Foreground = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromRgb(0x22, 0xC5, 0x5E));
+                StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x22, 0xC5, 0x5E));
                 BtnRecord.IsEnabled = false;
                 BtnStop.IsEnabled = false;
                 BtnReplay.IsEnabled = false;
                 BtnSave.IsEnabled = false;
+                BtnEdit.IsEnabled = false;
                 BtnParameterize.IsEnabled = false;
                 BtnRuns.IsEnabled = false;
                 break;
@@ -608,7 +645,21 @@ public partial class WorkflowRecorderWindow : Window
 
     private void UpdateActionLog()
     {
-        var sb = new StringBuilder();
+        var entries = new List<ActionDisplayEntry>();
+
+        // Initial screenshot entry
+        if (!string.IsNullOrEmpty(_initialScreenshotFile) && _recordingTempDir != null)
+        {
+            var ssPath = Path.Combine(_recordingTempDir, _initialScreenshotFile);
+            entries.Add(new ActionDisplayEntry
+            {
+                CommandDisplay = "INITIAL STATE",
+                ParamSummary = "Starting state",
+                ThumbnailPath = File.Exists(ssPath) ? ssPath : null,
+                ScreenshotFullPath = File.Exists(ssPath) ? ssPath : null,
+            });
+        }
+
         foreach (var action in _actions)
         {
             var timeStr = "";
@@ -618,52 +669,32 @@ public partial class WorkflowRecorderWindow : Window
                 timeStr = dt.ToLocalTime().ToString("HH:mm:ss") + " ";
             }
 
-            var ssIndicator = action.ScreenshotFile != null ? " [SS]" : "";
-            sb.AppendLine($"{timeStr}{action.Command}{ssIndicator}");
-
+            var paramSummary = "";
             if (action.Params != null)
             {
-                foreach (var kv in action.Params)
+                paramSummary = string.Join(", ", action.Params.Select(kv =>
                 {
                     var val = kv.Value.ValueKind == JsonValueKind.String
                         ? kv.Value.GetString()
                         : kv.Value.GetRawText();
-                    sb.AppendLine($"   -> {kv.Key}: {val}");
-                }
+                    return $"{kv.Key}: {val}";
+                }));
             }
-        }
 
-        ActionLogText.Text = sb.ToString();
-        ActionCountText.Text = $"Actions: {_actions.Count}";
-        ActionLogScroll.ScrollToEnd();
-    }
-
-    // -----------------------------------------------------------------------
-    // Parameter resolution
-    // -----------------------------------------------------------------------
-
-    private static Dictionary<string, object>? ResolveParams(
-        Dictionary<string, object>? templateParams,
-        Dictionary<string, string> values)
-    {
-        if (templateParams == null || templateParams.Count == 0)
-            return templateParams;
-
-        var resolved = new Dictionary<string, object>();
-        foreach (var kv in templateParams)
-        {
-            var strVal = kv.Value?.ToString() ?? "";
-
-            // Replace all {var} placeholders
-            foreach (var pv in values)
+            entries.Add(new ActionDisplayEntry
             {
-                strVal = strVal.Replace($"{{{pv.Key}}}", pv.Value);
-            }
-
-            resolved[kv.Key] = strVal;
+                CommandDisplay = $"{timeStr}{action.Command}",
+                ParamSummary = paramSummary.Length > 60
+                    ? paramSummary.Substring(0, 57) + "..."
+                    : paramSummary,
+                ThumbnailPath = action.ScreenshotFullPath != null && File.Exists(action.ScreenshotFullPath)
+                    ? action.ScreenshotFullPath : null,
+                ScreenshotFullPath = action.ScreenshotFullPath,
+            });
         }
 
-        return resolved;
+        ActionLogList.ItemsSource = entries;
+        ActionCountText.Text = $"Actions: {_actions.Count}";
     }
 
     // -----------------------------------------------------------------------
@@ -703,6 +734,7 @@ public partial class WorkflowRecorderWindow : Window
         public Dictionary<string, JsonElement>? Params { get; set; }
         public string? Timestamp { get; set; }
         public string? ScreenshotFile { get; set; }
+        public string? ScreenshotFullPath { get; set; }
     }
 
     private class WorkflowFile
@@ -710,5 +742,13 @@ public partial class WorkflowRecorderWindow : Window
         public string Name { get; set; } = "";
         public int ActionCount { get; set; }
         public int ParamCount { get; set; }
+    }
+
+    private class ActionDisplayEntry
+    {
+        public string CommandDisplay { get; set; } = "";
+        public string ParamSummary { get; set; } = "";
+        public string? ThumbnailPath { get; set; }
+        public string? ScreenshotFullPath { get; set; }
     }
 }

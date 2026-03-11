@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Configuration;
 
@@ -90,6 +91,7 @@ public class RepositoryRegistry
 
     public void MarkUsed(string folderPath)
     {
+        FileLog.Write($"[RepositoryRegistry] MarkUsed: {folderPath}");
         var normalized = Path.GetFullPath(folderPath).TrimEnd('\\', '/');
 
         var repo = _repositories.FirstOrDefault(r =>
@@ -103,6 +105,11 @@ public class RepositoryRegistry
             repo.LastUsed = DateTime.UtcNow;
             repo.NotifyLastUsedChanged();
             Save();
+            FileLog.Write($"[RepositoryRegistry] MarkUsed: updated LastUsed for {repo.Name}");
+        }
+        else
+        {
+            FileLog.Write($"[RepositoryRegistry] MarkUsed: repo not found for {normalized}");
         }
     }
 

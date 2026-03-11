@@ -61,8 +61,32 @@ public class WorkflowStore
 
         var json = File.ReadAllText(filePath);
         var template = JsonSerializer.Deserialize<WorkflowTemplate>(json, JsonOptions);
-        FileLog.Write($"[WorkflowStore] Template loaded: actions={template?.Actions.Count ?? 0}, params={template?.Parameters.Count ?? 0}");
+        if (template != null)
+            MigrateToV2(template);
+        FileLog.Write($"[WorkflowStore] Template loaded: version={template?.Version}, steps={template?.Steps.Count ?? 0}, params={template?.Parameters.Count ?? 0}");
         return template;
+    }
+
+    /// <summary>Migrate a v1 template (flat actions) to v2 (structured steps).</summary>
+    internal static void MigrateToV2(WorkflowTemplate template)
+    {
+        if (template.Version >= 2 && template.Steps.Count > 0)
+            return;
+
+        if (template.Actions.Count > 0 && template.Steps.Count == 0)
+        {
+            FileLog.Write($"[WorkflowStore] Migrating v1->v2: {template.Name}, {template.Actions.Count} actions");
+            foreach (var action in template.Actions)
+            {
+                template.Steps.Add(new WorkflowStep
+                {
+                    Type = "action",
+                    Action = action,
+                });
+            }
+        }
+
+        template.Version = 2;
     }
 
     /// <summary>List all workflow templates for a connection.</summary>

@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CC Director - Architecture Diagram</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; padding: 32px; }
+  h1 { text-align: center; font-size: 28px; margin-bottom: 8px; color: #e6edf3; }
+  .subtitle { text-align: center; color: #8b949e; margin-bottom: 40px; font-size: 14px; }
+
+  .diagram { max-width: 1200px; margin: 0 auto; }
+
+  /* -- Layer sections -- */
+  .layer { border: 1px solid #30363d; border-radius: 12px; margin-bottom: 24px; overflow: hidden; }
+  .layer-header { padding: 12px 20px; font-weight: 600; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; }
+  .layer-body { padding: 20px; display: flex; flex-wrap: wrap; gap: 16px; }
+
+  /* Layer colors */
+  .layer-ui .layer-header       { background: #1a3a5c; color: #79c0ff; border-bottom: 1px solid #30363d; }
+  .layer-core .layer-header     { background: #2a1a3c; color: #d2a8ff; border-bottom: 1px solid #30363d; }
+  .layer-backend .layer-header  { background: #1a3c2a; color: #7ee787; border-bottom: 1px solid #30363d; }
+  .layer-ipc .layer-header      { background: #3c2a1a; color: #ffa657; border-bottom: 1px solid #30363d; }
+  .layer-ext .layer-header      { background: #3c1a1a; color: #ff7b72; border-bottom: 1px solid #30363d; }
+  .layer-tools .layer-header    { background: #1a3c3c; color: #56d4dd; border-bottom: 1px solid #30363d; }
+
+  /* Component boxes */
+  .box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 18px; min-width: 180px; flex: 1; }
+  .box-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; }
+  .box-desc { font-size: 12px; color: #8b949e; line-height: 1.5; }
+  .box-list { font-size: 12px; color: #8b949e; margin-top: 6px; padding-left: 16px; line-height: 1.7; }
+
+  .box.accent-blue   .box-title { color: #79c0ff; }
+  .box.accent-purple .box-title { color: #d2a8ff; }
+  .box.accent-green  .box-title { color: #7ee787; }
+  .box.accent-orange .box-title { color: #ffa657; }
+  .box.accent-red    .box-title { color: #ff7b72; }
+  .box.accent-teal   .box-title { color: #56d4dd; }
+
+  /* Flow arrows section */
+  .flow-section { margin: 32px auto; max-width: 1200px; }
+  .flow-section h2 { font-size: 18px; color: #e6edf3; margin-bottom: 16px; }
+
+  pre.flow {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 20px 24px; font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 13px; line-height: 1.6; overflow-x: auto; color: #c9d1d9;
+  }
+  pre.flow .hl-blue   { color: #79c0ff; }
+  pre.flow .hl-purple { color: #d2a8ff; }
+  pre.flow .hl-green  { color: #7ee787; }
+  pre.flow .hl-orange { color: #ffa657; }
+  pre.flow .hl-red    { color: #ff7b72; }
+  pre.flow .hl-teal   { color: #56d4dd; }
+  pre.flow .hl-dim    { color: #484f58; }
+  pre.flow .hl-white  { color: #e6edf3; }
+
+  /* UI layout diagram */
+  .ui-layout { display: grid; grid-template-columns: 200px 1fr; grid-template-rows: 40px 1fr 120px; gap: 2px; max-width: 800px; margin: 0 auto; }
+  .ui-cell { background: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 10px; font-size: 12px; display: flex; align-items: center; justify-content: center; text-align: center; }
+  .ui-header  { grid-column: 1 / -1; background: #1a2332; color: #79c0ff; font-weight: 600; }
+  .ui-sidebar { background: #1a1a2e; color: #d2a8ff; }
+  .ui-main    { background: #1a2a1a; color: #7ee787; }
+  .ui-footer  { grid-column: 1 / -1; background: #2a1a1a; color: #ffa657; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 24px auto; max-width: 1200px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8b949e; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  .section-title { font-size: 18px; color: #e6edf3; margin: 32px auto 16px; max-width: 1200px; }
+</style>
+</head>
+<body>
+
+<h1>CC Director -- Architecture Overview</h1>
+<p class="subtitle">Enterprise session manager for Claude Code | .NET 10 | WPF + Avalonia</p>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#79c0ff"></div> UI Layer</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#d2a8ff"></div> Core Services</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#7ee787"></div> Terminal Backends</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ffa657"></div> IPC / Hooks</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff7b72"></div> External</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#56d4dd"></div> CLI Tools</div>
+</div>
+
+<!-- ===================== LAYERS ===================== -->
+
+<div class="diagram">
+
+  <!-- UI Layer -->
+  <div class="layer layer-ui">
+    <div class="layer-header">UI Layer -- Presentation</div>
+    <div class="layer-body">
+      <div class="box accent-blue">
+        <div class="box-title">CcDirector.Wpf</div>
+        <div class="box-desc">Primary Windows desktop app. WPF with XAML data binding.</div>
+        <ul class="box-list">
+          <li>MainWindow -- 3-panel layout</li>
+          <li>SessionViewModel -- ObservableCollection</li>
+          <li>NewSessionDialog, LoadWorkspaceDialog</li>
+          <li>EmbeddedConsoleHost (native overlay)</li>
+          <li>Voice recording UI</li>
+        </ul>
+      </div>
+      <div class="box accent-blue">
+        <div class="box-title">CcDirector.Avalonia</div>
+        <div class="box-desc">Cross-platform UI (in progress). Same layout, .axaml format.</div>
+        <ul class="box-list">
+          <li>Windows + macOS + Linux</li>
+          <li>CommunityToolkit.Mvvm</li>
+          <li>Shared Core backend</li>
+        </ul>
+      </div>
+      <div class="box accent-blue">
+        <div class="box-title">CcDirector.Terminal</div>
+        <div class="box-desc">Custom ANSI terminal renderer for WPF.</div>
+        <ul class="box-list">
+          <li>DrawingVisual-based rendering</li>
+          <li>50ms poll loop from buffer</li>
+          <li>Colors, bold, italic, selection</li>
+        </ul>
+      </div>
+      <div class="box accent-blue">
+        <div class="box-title">CcDirector.Terminal.Avalonia</div>
+        <div class="box-desc">Cross-platform terminal renderer for Avalonia.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Core Services -->
+  <div class="layer layer-core">
+    <div class="layer-header">Core Services -- Business Logic</div>
+    <div class="layer-body">
+      <div class="box accent-purple">
+        <div class="box-title">SessionManager</div>
+        <div class="box-desc">Manages all active Claude sessions.</div>
+        <ul class="box-list">
+          <li>ConcurrentDictionary&lt;Guid, Session&gt;</li>
+          <li>CreateSession / CreateEmbeddedSession</li>
+          <li>Session resumption via --resume</li>
+        </ul>
+      </div>
+      <div class="box accent-purple">
+        <div class="box-title">Session</div>
+        <div class="box-desc">Single Claude Code instance + state machine.</div>
+        <ul class="box-list">
+          <li>ActivityState: Starting -> Idle -> Working -> WaitingForInput</li>
+          <li>SendText / KillAsync / HandlePipeEvent</li>
+          <li>Terminal buffer, process ID, metadata</li>
+        </ul>
+      </div>
+      <div class="box accent-purple">
+        <div class="box-title">Configuration</div>
+        <div class="box-desc">Settings, repos, persistence.</div>
+        <ul class="box-list">
+          <li>RepositoryRegistry (repositories.json)</li>
+          <li>SessionStateStore / RecentSessionStore</li>
+          <li>AgentOptions from appsettings.json</li>
+          <li>RootDirectoryStore</li>
+        </ul>
+      </div>
+      <div class="box accent-purple">
+        <div class="box-title">Claude Integration</div>
+        <div class="box-desc">Claude Code session discovery and metadata.</div>
+        <ul class="box-list">
+          <li>ClaudeSessionReader -- .jsonl parsing</li>
+          <li>ClaudeSessionMetadata</li>
+          <li>McpConfigManager</li>
+          <li>AgentTemplateStore</li>
+          <li>UsageHistoryStore</li>
+        </ul>
+      </div>
+      <div class="box accent-purple">
+        <div class="box-title">CcDirector.Engine</div>
+        <div class="box-desc">Background jobs, dispatch, archival.</div>
+        <ul class="box-list">
+          <li>Dispatcher -- email routing</li>
+          <li>Archival -- vault backup</li>
+          <li>Jobs -- background tasks</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Terminal Backends -->
+  <div class="layer layer-backend">
+    <div class="layer-header">Terminal Backends -- Process Management</div>
+    <div class="layer-body">
+      <div class="box accent-green">
+        <div class="box-title">ConPtyBackend</div>
+        <div class="box-desc">Windows Pseudo-Console API.</div>
+        <ul class="box-list">
+          <li>PseudoConsole + ProcessHost</li>
+          <li>Async I/O pipes</li>
+          <li>CircularTerminalBuffer (2 MB)</li>
+        </ul>
+      </div>
+      <div class="box accent-green">
+        <div class="box-title">UnixPtyBackend</div>
+        <div class="box-desc">Mac/Linux PTY via openpty().</div>
+        <ul class="box-list">
+          <li>UnixPseudoConsole</li>
+          <li>TIOCSWINSZ resize</li>
+        </ul>
+      </div>
+      <div class="box accent-green">
+        <div class="box-title">EmbeddedBackend</div>
+        <div class="box-desc">Native console window overlay (WPF only).</div>
+        <ul class="box-list">
+          <li>SetParent() window reparenting</li>
+          <li>WriteConsoleInput()</li>
+        </ul>
+      </div>
+      <div class="box accent-green">
+        <div class="box-title">PipeBackend / StudioBackend</div>
+        <div class="box-desc">Stateless prompt mode + stream-JSON mode.</div>
+        <ul class="box-list">
+          <li>-p --output-format stream-json</li>
+          <li>Card-based UI rendering</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- IPC / Hooks -->
+  <div class="layer layer-ipc">
+    <div class="layer-header">IPC / Hook System -- Control Plane</div>
+    <div class="layer-body">
+      <div class="box accent-orange">
+        <div class="box-title">HookInstaller</div>
+        <div class="box-desc">Installs 14 hook types into Claude's settings.json.</div>
+        <ul class="box-list">
+          <li>SessionStart, UserPromptSubmit</li>
+          <li>PreToolUse, PostToolUse</li>
+          <li>Notification, Stop, SubagentStart...</li>
+        </ul>
+      </div>
+      <div class="box accent-orange">
+        <div class="box-title">Hook Relay</div>
+        <div class="box-desc">PowerShell (Win) / Python (Unix) relay scripts.</div>
+        <ul class="box-list">
+          <li>Reads JSON from Claude's stdin</li>
+          <li>Sends to named pipe / Unix socket</li>
+        </ul>
+      </div>
+      <div class="box accent-orange">
+        <div class="box-title">EventRouter</div>
+        <div class="box-desc">Routes PipeMessages to correct Session by session_id.</div>
+        <ul class="box-list">
+          <li>Deduplication</li>
+          <li>Session ID -> Guid mapping</li>
+          <li>ActivityState transitions</li>
+        </ul>
+      </div>
+      <div class="box accent-orange">
+        <div class="box-title">DirectorServer</div>
+        <div class="box-desc">IPC listener (named pipe on Win, Unix socket on Mac/Linux).</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- External -->
+  <div class="layer layer-ext">
+    <div class="layer-header">External Systems</div>
+    <div class="layer-body">
+      <div class="box accent-red">
+        <div class="box-title">Claude Code CLI</div>
+        <div class="box-desc">claude.exe -- the AI coding assistant process.</div>
+        <ul class="box-list">
+          <li>Spawned per session</li>
+          <li>--session-id, --resume flags</li>
+          <li>14 hook event types</li>
+        </ul>
+      </div>
+      <div class="box accent-red">
+        <div class="box-title">Git</div>
+        <div class="box-desc">GitStatusProvider polls repo status.</div>
+      </div>
+      <div class="box accent-red">
+        <div class="box-title">MCP Servers</div>
+        <div class="box-desc">Model Context Protocol servers managed via Claude config.</div>
+      </div>
+      <div class="box accent-red">
+        <div class="box-title">Vault (SQLite)</div>
+        <div class="box-desc">Contacts, tasks, goals via cc-vault CLI.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tools -->
+  <div class="layer layer-tools">
+    <div class="layer-header">CLI Tools Ecosystem -- 35+ Bundled Tools</div>
+    <div class="layer-body">
+      <div class="box accent-teal">
+        <div class="box-title">Documents</div>
+        <div class="box-desc">cc-pdf, cc-html, cc-word, cc-excel, cc-powerpoint</div>
+      </div>
+      <div class="box accent-teal">
+        <div class="box-title">Communication</div>
+        <div class="box-desc">cc-gmail, cc-outlook, cc-comm-queue</div>
+      </div>
+      <div class="box accent-teal">
+        <div class="box-title">Browser / Social</div>
+        <div class="box-desc">cc-browser, cc-reddit, cc-spotify, cc-twitter</div>
+      </div>
+      <div class="box accent-teal">
+        <div class="box-title">Media</div>
+        <div class="box-desc">cc-image, cc-voice, cc-whisper, cc-video, cc-photos</div>
+      </div>
+      <div class="box accent-teal">
+        <div class="box-title">Data / System</div>
+        <div class="box-desc">cc-vault, cc-docgen, cc-settings, cc-hardware, cc-click</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end .diagram -->
+
+<!-- ===================== DATA FLOW DIAGRAMS ===================== -->
+
+<h2 class="section-title">Data Flow -- Session Lifecycle</h2>
+
+<pre class="flow">
+<span class="hl-dim">  [User clicks "New Session"]</span>
+          |
+          v
+  <span class="hl-blue">MainWindow.xaml.cs</span> -----------> <span class="hl-blue">NewSessionDialog</span> (repo picker)
+          |                                    |
+          | <span class="hl-dim">repoPath selected</span>                  |
+          v                                    v
+  <span class="hl-purple">SessionManager.CreateSession(repoPath, args)</span>
+          |
+          |--- Creates <span class="hl-purple">Session</span> with Guid, adds to ConcurrentDictionary
+          |--- Sets env var <span class="hl-orange">CC_SESSION_ID</span>
+          |
+          v
+  <span class="hl-green">ISessionBackend.Start()</span>
+          |
+          +---> <span class="hl-green">ConPtyBackend</span> (Windows)  -- spawns claude.exe via PseudoConsole
+          +---> <span class="hl-green">UnixPtyBackend</span> (Mac)     -- spawns via openpty()
+          +---> <span class="hl-green">EmbeddedBackend</span> (WPF)    -- native console overlay
+          |
+          v
+  <span class="hl-red">claude.exe</span> starts with hooks installed
+          |
+          |--- <span class="hl-dim">Data plane:</span>  terminal bytes --> <span class="hl-green">CircularTerminalBuffer</span> --> <span class="hl-blue">TerminalControl</span> (50ms poll)
+          |
+          |--- <span class="hl-dim">Control plane:</span> hook events --> <span class="hl-orange">hook-relay.ps1</span> --> <span class="hl-orange">Named Pipe</span>
+          |                                                              |
+          v                                                              v
+  <span class="hl-blue">UI shows live terminal</span>                              <span class="hl-orange">EventRouter.Route(PipeMessage)</span>
+                                                                         |
+                                                                         v
+                                                              <span class="hl-purple">Session.HandlePipeEvent()</span>
+                                                                         |
+                                                                         v
+                                                              <span class="hl-purple">ActivityState transition</span>
+                                                              <span class="hl-dim">(Starting -> Idle -> Working -> WaitingForInput)</span>
+                                                                         |
+                                                                         v
+                                                              <span class="hl-blue">UI color/badge updates via data binding</span>
+</pre>
+
+<h2 class="section-title">Dual-Channel Architecture</h2>
+
+<pre class="flow">
+  <span class="hl-white">CC Director uses two independent channels per session:</span>
+
+  <span class="hl-green">DATA PLANE (Terminal)</span>                     <span class="hl-orange">CONTROL PLANE (Hooks)</span>
+  ========================                  ========================
+
+  <span class="hl-red">claude.exe</span>                                <span class="hl-red">claude.exe</span>
+       |                                         |
+       | <span class="hl-dim">raw bytes (stdout)</span>                      | <span class="hl-dim">hook events (JSON)</span>
+       v                                         v
+  <span class="hl-green">ConPTY / UnixPTY</span>                        <span class="hl-orange">hook-relay.ps1</span>
+       |                                         |
+       v                                         v
+  <span class="hl-green">CircularTerminalBuffer</span>                  <span class="hl-orange">Named Pipe / Unix Socket</span>
+  <span class="hl-dim">(2 MB ring buffer)</span>                           |
+       |                                         v
+       | <span class="hl-dim">50ms poll</span>                            <span class="hl-orange">DirectorFileEventWatcher</span>
+       v                                         |
+  <span class="hl-blue">TerminalControl</span>                              v
+  <span class="hl-dim">(ANSI parser -> cells)</span>                  <span class="hl-orange">EventRouter</span>
+       |                                         |
+       v                                         v
+  <span class="hl-blue">User sees terminal</span>                     <span class="hl-purple">Session.ActivityState</span>
+                                                  |
+                                                  v
+                                            <span class="hl-blue">UI badges + colors</span>
+</pre>
+
+<h2 class="section-title">UI Layout -- MainWindow (3-Panel)</h2>
+
+<div class="ui-layout" style="margin-bottom: 24px;">
+  <div class="ui-cell ui-header">Header Bar -- App title, toolbar, workspace name</div>
+  <div class="ui-cell ui-sidebar">
+    <div>
+      <strong>Sessions Sidebar</strong><br><br>
+      Session cards<br>
+      ActivityState colors<br>
+      Custom names<br>
+      Quick actions<br>
+      New Session btn
+    </div>
+  </div>
+  <div class="ui-cell ui-main">
+    <div>
+      <strong>Main Content Area</strong><br><br>
+      Tab: Terminal (ConPTY / Embedded)<br>
+      Tab: Clean View (parsed messages)<br>
+      Tab: Git Status<br>
+      Tab: Session Browser<br><br>
+      Prompt input bar at bottom
+    </div>
+  </div>
+  <div class="ui-cell ui-footer">
+    Hook Events Panel -- Last 500 pipe messages, color-coded by type<br>
+    (green = Stop, red = error, blue = tool use, orange = prompt)
+  </div>
+</div>
+
+<h2 class="section-title">Project Dependencies</h2>
+
+<pre class="flow">
+  <span class="hl-blue">CcDirector.Wpf</span>
+       |
+       +-------> <span class="hl-blue">CcDirector.Terminal</span> ---------> <span class="hl-purple">CcDirector.Terminal.Core</span>
+       |                                                    ^
+       +-------> <span class="hl-purple">CcDirector.Core</span> <-----------+    |
+       |              |                        |    |
+       |              +-> Backends/            |    |
+       |              +-> Sessions/            |    |
+       |              +-> Configuration/       |    |
+       |              +-> Claude/              |    |
+       |              +-> ConPty/ <------------+----+
+       |              +-> Pipes/
+       |              +-> Hooks/
+       |              +-> Voice/
+       |
+       +-------> <span class="hl-purple">CcDirector.Engine</span> ----------> <span class="hl-purple">CcDirector.Core</span>
+
+  <span class="hl-blue">CcDirector.Avalonia</span>
+       |
+       +-------> <span class="hl-blue">CcDirector.Terminal.Avalonia</span> -> <span class="hl-purple">CcDirector.Terminal.Core</span>
+       |
+       +-------> <span class="hl-purple">CcDirector.Core</span>
+
+  <span class="hl-teal">tools/*</span> <span class="hl-dim">(35+ standalone CLI tools, no project dependency)</span>
+</pre>
+
+<h2 class="section-title">ActivityState Machine</h2>
+
+<pre class="flow">
+                          <span class="hl-dim">Session created</span>
+                               |
+                               v
+                       +---------------+
+                       |   <span class="hl-orange">Starting</span>    |
+                       +-------+-------+
+                               |
+                      <span class="hl-dim">SessionStart hook</span>
+                               |
+                               v
+              +--------+---------------+--------+
+              |        |     <span class="hl-green">Idle</span>      |        |
+              |        +-------+-------+        |
+              |                |                 |
+         <span class="hl-dim">UserPrompt</span>         |            <span class="hl-dim">Kill/Exit</span>
+              |                |                 |
+              v                |                 v
+      +-------+-------+       |         +-------+-------+
+      |   <span class="hl-blue">Working</span>     |       |         |    <span class="hl-dim">Exited</span>     |
+      +-------+-------+       |         +---------------+
+              |                |
+    +---------+---------+      |
+    |                   |      |
+    v                   v      |
++---+--------+  +-------+-----+-+
+| <span class="hl-purple">WaitForPerm</span> |  | <span class="hl-orange">WaitForInput</span>   |
++---+--------+  +-------+--------+
+    |                   |
+    | <span class="hl-dim">user approves</span>     | <span class="hl-dim">user types</span>
+    |                   |
+    +----->  <span class="hl-blue">Working</span>  <-----+
+</pre>
+
+<div style="text-align:center; color:#484f58; margin-top:48px; padding-bottom:32px; font-size:12px;">
+  CC Director Architecture Diagram | Generated 2026-03-11
+</div>
+
+</body>
+</html>

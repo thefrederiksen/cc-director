@@ -121,7 +121,7 @@
                     Background="#007ACC" Foreground="White"
                     BorderThickness="0" Cursor="Hand"
                     IsEnabled="False" />
-            <Button Content="Cancel"
+            <Button x:Name="BtnCancel" Content="Cancel"
                     Width="80" Height="28"
                     Click="BtnCancel_Click"
                     Background="#3C3C3C" Foreground="#CCCCCC"

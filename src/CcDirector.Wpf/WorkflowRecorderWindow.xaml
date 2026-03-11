@@ -49,19 +49,43 @@
                     BorderThickness="0" Cursor="Hand" Margin="4,0,0,0" />
         </StackPanel>
 
-        <!-- Row 3: Action log -->
+        <!-- Row 3: Action log with thumbnails -->
         <Border Grid.Row="3" BorderBrush="#3C3C3C" BorderThickness="1"
                 Background="#1E1E1E" Margin="0,0,0,8">
-            <ScrollViewer x:Name="ActionLogScroll"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled">
-                <TextBlock x:Name="ActionLogText"
-                           Foreground="#CCCCCC"
-                           FontFamily="Cascadia Mono, Consolas, Courier New"
-                           FontSize="11"
-                           TextWrapping="Wrap"
-                           Padding="8,6" />
-            </ScrollViewer>
+            <ListBox x:Name="ActionLogList"
+                     Background="#1E1E1E" Foreground="#CCCCCC"
+                     BorderThickness="0" FontSize="11"
+                     MouseDoubleClick="ActionLogList_MouseDoubleClick">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="2,2" Height="38">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="54" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Tiny thumbnail -->
+                            <Border Width="50" Height="35"
+                                    Background="#1A1A1A" BorderBrush="#3C3C3C"
+                                    BorderThickness="1" CornerRadius="2">
+                                <Image Source="{Binding ThumbnailPath}"
+                                       Stretch="UniformToFill" />
+                            </Border>
+
+                            <!-- Action info -->
+                            <StackPanel Grid.Column="1" Margin="6,0,0,0"
+                                        VerticalAlignment="Center">
+                                <TextBlock Text="{Binding CommandDisplay}"
+                                           Foreground="#CCCCCC" FontSize="10"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding ParamSummary}"
+                                           Foreground="#888888" FontSize="9"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
         </Border>
 
         <!-- Row 4: Saved workflows header -->
@@ -91,6 +115,11 @@
             <Button x:Name="BtnReplay" Content="Run" Click="BtnReplay_Click"
                     MinWidth="50" Height="26" FontSize="11"
                     Background="#22C55E" Foreground="White"
+                    BorderThickness="0" Cursor="Hand" Margin="4,0,0,0"
+                    IsEnabled="False" />
+            <Button x:Name="BtnEdit" Content="Edit" Click="BtnEdit_Click"
+                    MinWidth="50" Height="26" FontSize="11"
+                    Background="#3C3C3C" Foreground="#CCCCCC"
                     BorderThickness="0" Cursor="Hand" Margin="4,0,0,0"
                     IsEnabled="False" />
             <Button x:Name="BtnParameterize" Content="Params" Click="BtnParameterize_Click"
