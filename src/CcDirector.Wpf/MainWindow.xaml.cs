@@ -281,6 +281,9 @@ public partial class MainWindow : Window
         // Dispose Content Writer
         ContentWriterView.Dispose();
 
+        // Detach usage dashboard from usage service
+        UsageDashboardView.Detach();
+
         // Dispose screenshot watcher
         _screenshotDebounceTimer?.Stop();
         if (_screenshotWatcher != null)
@@ -383,9 +386,35 @@ public partial class MainWindow : Window
         // Start cc-browser daemon in background so connections are ready
         _ = StartBrowserDaemonAsync();
 
+        // Wire up session browser resume event
+        SessionBrowserView.SessionResumeRequested += OnSessionBrowserResumeRequested;
+
+        // Wire up usage dashboard to usage service
+        UsageDashboardView.SetUsageService(app.ClaudeUsageService);
+
         // Apply alpha mode visibility and subscribe to changes
         ApplyAlphaMode();
         AlphaMode.Changed += () => Dispatcher.BeginInvoke(ApplyAlphaMode);
+    }
+
+    private void OnSessionBrowserResumeRequested(string repoPath, string sessionId)
+    {
+        FileLog.Write($"[MainWindow] OnSessionBrowserResumeRequested: repo={repoPath}, session={sessionId}");
+        try
+        {
+            var vm = CreateSession(repoPath, resumeSessionId: sessionId);
+            if (vm != null)
+            {
+                SaveSessionToHistory(vm);
+                SessionList.SelectedItem = vm;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OnSessionBrowserResumeRequested FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to resume session:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void SetBuildInfo()
@@ -550,6 +579,7 @@ public partial class MainWindow : Window
                 session.VerifyClaudeSession();
             }
 
+            session.SelectedTabName = p.SelectedTabName;
             var vm = new SessionViewModel(session, Dispatcher) { PendingPromptText = p.PendingPromptText ?? "" };
             _sessions.Add(vm);
 
@@ -657,7 +687,7 @@ public partial class MainWindow : Window
                 {
                     ShowRenameDialog(vm);
                     SaveSessionToHistory(vm);
-                    SessionTabs.SelectedIndex = 0;
+                    SessionTabs.SelectedItem = TerminalTab;
                 }
             }
         }
@@ -775,7 +805,7 @@ public partial class MainWindow : Window
             }
 
             FileLog.Write($"[MainWindow] MenuLoadWorkspace_Click: workspace '{workspace.Name}' loaded");
-            SessionTabs.SelectedIndex = 0;
+            SessionTabs.SelectedItem = TerminalTab;
         }
         catch (Exception ex)
         {
@@ -819,6 +849,53 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             FileLog.Write($"[MainWindow] BtnHelp_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private void BtnAgentTemplates_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnAgentTemplates_Click");
+        try
+        {
+            var store = new AgentTemplateStore();
+            store.Load();
+            var dialog = new AgentTemplatesDialog(store) { Owner = this };
+            dialog.LaunchRequested += (template, repoPath) =>
+            {
+                FileLog.Write($"[MainWindow] AgentTemplates LaunchRequested: template={template.Name}, repo={repoPath}");
+                var args = template.BuildCliArgs();
+                var vm = CreateSession(repoPath, claudeArgs: string.IsNullOrWhiteSpace(args) ? null : args);
+                if (vm != null)
+                {
+                    vm.Rename(template.Name, null);
+                    SaveSessionToHistory(vm);
+                }
+            };
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnAgentTemplates_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open Agent Templates:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BtnMcpServers_Click(object sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnMcpServers_Click");
+        try
+        {
+            var manager = new McpConfigManager();
+            var projectDir = _activeSession?.RepoPath;
+            var dialog = new McpServersDialog(manager, projectDir) { Owner = this };
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] BtnMcpServers_Click FAILED: {ex.Message}");
+            MessageBox.Show(this, $"Failed to open MCP Servers:\n{ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1076,6 +1153,9 @@ public partial class MainWindow : Window
             var vm = CreateSession(dialog.SelectedPath, resumeSessionId, claudeArgs, backendType);
             if (vm == null) return;
 
+            // Track last used time for repository sorting
+            registry?.MarkUsed(dialog.SelectedPath);
+
             FileLog.Write($"[MainWindow] BtnNewSession_Click: session created, id={vm.Session.Id}, elapsed={sw.ElapsedMilliseconds}ms");
 
             if (!string.IsNullOrEmpty(resumeSessionId))
@@ -1255,11 +1335,12 @@ public partial class MainWindow : Window
 
     private void SessionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Save prompt text for outgoing session
+        // Save prompt text and selected tab for outgoing session
         if (e.RemovedItems.Count > 0 && e.RemovedItems[0] is SessionViewModel outgoing)
         {
             outgoing.PendingPromptText = PromptInput.Text;
-            FileLog.Write($"[MainWindow] SessionSwitch: saved prompt for {outgoing.Session.Id}");
+            outgoing.Session.SelectedTabName = GetSelectedTabName();
+            FileLog.Write($"[MainWindow] SessionSwitch: saved prompt and tab={outgoing.Session.SelectedTabName} for {outgoing.Session.Id}");
         }
 
         if (SessionList.SelectedItem is not SessionViewModel vm)
@@ -1283,7 +1364,7 @@ public partial class MainWindow : Window
         RefreshQueuePanel();
 
         // Redirect focus back to terminal/prompt so the sidebar doesn't keep focus
-        if (_terminalControl != null && SessionTabs.SelectedIndex == 0)
+        if (_terminalControl != null && SessionTabs.SelectedItem == TerminalTab)
             Dispatcher.BeginInvoke(() => _terminalControl?.Focus());
         else
             Dispatcher.BeginInvoke(() => PromptInput.Focus());
@@ -1363,8 +1444,8 @@ public partial class MainWindow : Window
         // Rebuild hook events panel for the new session
         RefreshHookEventsPanel();
 
-        // Default to Agent tab (index 0)
-        SessionTabs.SelectedItem = CleanTab;
+        // Restore last selected tab, or default to Terminal
+        RestoreSelectedTab(session);
     }
 
     private void DetachTerminal()
@@ -1422,6 +1503,31 @@ public partial class MainWindow : Window
         RefreshQueuePanel();
     }
 
+    private string GetSelectedTabName()
+    {
+        if (SessionTabs.SelectedItem == TerminalTab) return "Terminal";
+        if (SessionTabs.SelectedItem == CleanTab) return "Agent";
+        if (SessionTabs.SelectedItem == SourceControlTab) return "SourceControl";
+        return "Terminal";
+    }
+
+    private void RestoreSelectedTab(Session session)
+    {
+        var tabName = session.SelectedTabName;
+        var tab = tabName switch
+        {
+            "Agent" => CleanTab,
+            "SourceControl" when SourceControlTab.Visibility == Visibility.Visible => SourceControlTab,
+            _ => TerminalTab, // Default to Terminal
+        };
+
+        // Only select if the tab is visible
+        if (tab.Visibility == Visibility.Visible)
+            SessionTabs.SelectedItem = tab;
+        else
+            SessionTabs.SelectedItem = TerminalTab.Visibility == Visibility.Visible ? TerminalTab : CleanTab;
+    }
+
     private void SwitchDocumentTabsToSession(Guid sessionId)
     {
         foreach (var info in _documentTabs)
@@ -1450,7 +1556,7 @@ public partial class MainWindow : Window
         // If Source Control tab was selected but is now hidden, switch to Terminal
         if (!hasGit && SessionTabs.SelectedItem == SourceControlTab)
         {
-            SessionTabs.SelectedIndex = 0;
+            SessionTabs.SelectedItem = TerminalTab;
         }
         FileLog.Write($"[MainWindow] UpdateSourceControlTabVisibility: hasGit={hasGit}");
     }
@@ -1577,7 +1683,7 @@ public partial class MainWindow : Window
 
         // Select Terminal tab if nothing else is selected
         if (SessionTabs.SelectedItem == null)
-            SessionTabs.SelectedIndex = 0;
+            SessionTabs.SelectedItem = TerminalTab;
 
         UpdateCloseAllDocumentsButton();
     }
@@ -1611,7 +1717,7 @@ public partial class MainWindow : Window
             _documentTabs.Remove(info);
         }
 
-        SessionTabs.SelectedIndex = 0;
+        SessionTabs.SelectedItem = TerminalTab;
         UpdateCloseAllDocumentsButton();
     }
 
@@ -2172,7 +2278,7 @@ public partial class MainWindow : Window
         }
 
         // Ensure focus goes to terminal or prompt, not sidebar
-        if (_terminalControl != null && SessionTabs.SelectedIndex == 0)
+        if (_terminalControl != null && SessionTabs.SelectedItem == TerminalTab)
             Dispatcher.BeginInvoke(() => _terminalControl?.Focus());
         else
             Dispatcher.BeginInvoke(() => PromptInput.Focus());
@@ -2221,8 +2327,8 @@ public partial class MainWindow : Window
     {
         if (_activeEmbeddedBackend == null) return;
 
-        // Terminal tab is index 0 — show overlay only when it's selected
-        if (SessionTabs.SelectedIndex == 0)
+        // Show embedded overlay only when Terminal tab is selected
+        if (SessionTabs.SelectedItem == TerminalTab)
         {
             _activeEmbeddedBackend.Show();
             DeferConsolePositionUpdate();
@@ -3131,13 +3237,14 @@ public partial class MainWindow : Window
             vm.Session.SortOrder = i;
         }
 
-        // For the active session, capture the live PromptInput text
+        // For the active session, capture the live PromptInput text and selected tab
         if (_activeSession != null)
         {
             var activeVm = _sessions.FirstOrDefault(s => s.Session.Id == _activeSession.Id);
             if (activeVm != null)
             {
                 activeVm.Session.PendingPromptText = PromptInput.Text;
+                activeVm.Session.SelectedTabName = GetSelectedTabName();
             }
         }
     }

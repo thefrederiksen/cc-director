@@ -88,6 +88,24 @@ public class RepositoryRegistry
         return true;
     }
 
+    public void MarkUsed(string folderPath)
+    {
+        var normalized = Path.GetFullPath(folderPath).TrimEnd('\\', '/');
+
+        var repo = _repositories.FirstOrDefault(r =>
+            string.Equals(
+                Path.GetFullPath(r.Path).TrimEnd('\\', '/'),
+                normalized,
+                StringComparison.OrdinalIgnoreCase));
+
+        if (repo != null)
+        {
+            repo.LastUsed = DateTime.UtcNow;
+            repo.NotifyLastUsedChanged();
+            Save();
+        }
+    }
+
     public void SeedFrom(IEnumerable<RepositoryConfig> repos)
     {
         foreach (var repo in repos)

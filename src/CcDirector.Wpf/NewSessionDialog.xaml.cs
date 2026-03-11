@@ -1,8 +1,10 @@
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Media;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
@@ -416,6 +418,8 @@ public partial class NewSessionDialog : Window
     private List<HandoverViewModel>? _allHandovers;
     private bool _sessionsLoaded;
     private bool _handoversLoaded;
+    private GridViewColumnHeader? _lastRepoSortHeader;
+    private ListSortDirection _lastRepoSortDirection = ListSortDirection.Descending;
 
     /// <summary>The selected path (for new session or resume).</summary>
     public string? SelectedPath { get; private set; }
@@ -456,8 +460,9 @@ public partial class NewSessionDialog : Window
         // Load repositories immediately (typically fast)
         if (_registry != null && _registry.Repositories.Count > 0)
         {
-            _allRepos = _registry.Repositories.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            _allRepos = _registry.Repositories.ToList();
             RepoList.ItemsSource = _allRepos;
+            ApplyRepoSort("LastUsed", ListSortDirection.Descending);
             FileLog.Write($"[NewSessionDialog] Loaded {_allRepos.Count} repositories");
         }
         else
@@ -646,6 +651,57 @@ public partial class NewSessionDialog : Window
                          || (r.Path?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false))
                 .ToList();
         }
+
+        // Re-apply current sort after changing ItemsSource
+        var sortProp = _lastRepoSortHeader?.Content?.ToString() switch
+        {
+            "Name" => "Name",
+            "Path" => "Path",
+            _ => "LastUsed"
+        };
+        ApplyRepoSort(sortProp, _lastRepoSortDirection);
+    }
+
+    private void RepoColumnHeader_Click(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not GridViewColumnHeader header || header.Role == GridViewColumnHeaderRole.Padding)
+            return;
+
+        // Map header content to property name
+        var headerText = header.Content?.ToString() ?? string.Empty;
+        var sortProperty = headerText switch
+        {
+            "Name" => "Name",
+            "Path" => "Path",
+            "Last Used" => "LastUsed",
+            _ => null
+        };
+
+        if (sortProperty == null)
+            return;
+
+        // Toggle direction if clicking the same column
+        var direction = ListSortDirection.Ascending;
+        if (header == _lastRepoSortHeader)
+            direction = _lastRepoSortDirection == ListSortDirection.Ascending
+                ? ListSortDirection.Descending
+                : ListSortDirection.Ascending;
+        else if (sortProperty == "LastUsed")
+            direction = ListSortDirection.Descending;
+
+        _lastRepoSortHeader = header;
+        _lastRepoSortDirection = direction;
+
+        ApplyRepoSort(sortProperty, direction);
+    }
+
+    private void ApplyRepoSort(string propertyName, ListSortDirection direction)
+    {
+        var view = CollectionViewSource.GetDefaultView(RepoList.ItemsSource);
+        if (view == null) return;
+
+        view.SortDescriptions.Clear();
+        view.SortDescriptions.Add(new SortDescription(propertyName, direction));
     }
 
     private void SessionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -699,8 +755,8 @@ public partial class NewSessionDialog : Window
             if (_registry != null)
             {
                 _registry.TryAdd(dialog.FolderName);
-                _allRepos = _registry.Repositories.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
-                RepoList.ItemsSource = _allRepos;
+                _allRepos = _registry.Repositories.ToList();
+                ApplyRepoFilter();
             }
 
             UpdateActionButton();
@@ -718,7 +774,7 @@ public partial class NewSessionDialog : Window
         if (_registry != null)
         {
             _registry.Remove(path);
-            _allRepos = _registry.Repositories.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            _allRepos = _registry.Repositories.ToList();
 
             // Reapply the current search filter instead of showing all repos
             ApplyRepoFilter();

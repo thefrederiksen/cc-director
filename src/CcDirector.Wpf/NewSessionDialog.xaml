@@ -42,41 +42,45 @@
                              TextChanged="RepoSearchBox_TextChanged"
                              ToolTip="Filter repositories by name or path" />
 
-                    <ListBox x:Name="RepoList" Grid.Row="2"
-                             Background="#1E1E1E" Foreground="#CCCCCC"
-                             BorderBrush="#3C3C3C" Margin="0,8,0,0"
-                             SelectionChanged="RepoList_SelectionChanged">
-                        <ListBox.ItemContainerStyle>
-                            <Style TargetType="ListBoxItem">
+                    <ListView x:Name="RepoList" Grid.Row="2"
+                              Background="#1E1E1E" Foreground="#CCCCCC"
+                              BorderBrush="#3C3C3C" Margin="0,8,0,0"
+                              SelectionChanged="RepoList_SelectionChanged"
+                              GridViewColumnHeader.Click="RepoColumnHeader_Click">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Foreground" Value="#CCCCCC" />
                             </Style>
-                        </ListBox.ItemContainerStyle>
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="4,2">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Text="{Binding Name}" FontWeight="Medium" />
-                                        <TextBlock Text="{Binding Path}" FontSize="10" Opacity="0.7" />
-                                    </StackPanel>
-                                    <Button Grid.Column="1" Content="X"
-                                            Click="BtnRemoveRepo_Click"
-                                            Tag="{Binding Path}"
-                                            Width="24" Height="24"
-                                            Background="Transparent"
-                                            Foreground="#CC4444"
-                                            BorderThickness="0"
-                                            Cursor="Hand"
-                                            FontWeight="Bold"
-                                            VerticalAlignment="Center"
-                                            ToolTip="Remove from list" />
-                                </Grid>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
+                        </ListView.ItemContainerStyle>
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Name" Width="220"
+                                                DisplayMemberBinding="{Binding Name}" />
+                                <GridViewColumn Header="Path" Width="420"
+                                                DisplayMemberBinding="{Binding Path}" />
+                                <GridViewColumn Header="Last Used" Width="90"
+                                                DisplayMemberBinding="{Binding LastUsedDisplay}" />
+                                <GridViewColumn Width="30">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="X"
+                                                    Click="BtnRemoveRepo_Click"
+                                                    Tag="{Binding Path}"
+                                                    Width="24" Height="24"
+                                                    Background="Transparent"
+                                                    Foreground="#CC4444"
+                                                    BorderThickness="0"
+                                                    Cursor="Hand"
+                                                    FontWeight="Bold"
+                                                    VerticalAlignment="Center"
+                                                    ToolTip="Remove from list" />
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
 
                     <Grid Grid.Row="3" Margin="0,8,0,0">
                         <Grid.ColumnDefinitions>
