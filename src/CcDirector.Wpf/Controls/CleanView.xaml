@@ -550,51 +550,122 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
-                <!-- Filter toggle button (left side, always visible) -->
-                <ToggleButton x:Name="FilterToggle"
-                              Grid.Column="0"
-                              Click="FilterToggle_Click"
-                              ToolTip="Show only your messages"
-                              VerticalAlignment="Center"
-                              Margin="0,0,12,0"
-                              Cursor="Hand">
-                    <ToggleButton.Style>
-                        <Style TargetType="ToggleButton">
+                <!-- Message filter dropdown (left side, always visible) -->
+                <ComboBox x:Name="FilterCombo"
+                          Grid.Column="0"
+                          SelectionChanged="FilterCombo_SelectionChanged"
+                          ToolTip="Filter which messages to show"
+                          VerticalAlignment="Center"
+                          Margin="0,0,12,0"
+                          Cursor="Hand"
+                          SelectedIndex="0"
+                          MinWidth="120"
+                          FontFamily="Segoe UI"
+                          FontSize="10"
+                          FontWeight="SemiBold">
+                    <ComboBox.Resources>
+                        <!-- Dark-themed ComboBoxItem style -->
+                        <Style TargetType="ComboBoxItem">
                             <Setter Property="Background" Value="#2D2D2D" />
-                            <Setter Property="Foreground" Value="#888888" />
-                            <Setter Property="BorderBrush" Value="#3C3C3C" />
-                            <Setter Property="BorderThickness" Value="1" />
-                            <Setter Property="Padding" Value="8,3" />
+                            <Setter Property="Foreground" Value="#CCCCCC" />
+                            <Setter Property="Padding" Value="8,4" />
+                            <Setter Property="BorderThickness" Value="0" />
                             <Setter Property="Template">
                                 <Setter.Value>
-                                    <ControlTemplate TargetType="ToggleButton">
-                                        <Border Background="{TemplateBinding Background}"
-                                                BorderBrush="{TemplateBinding BorderBrush}"
-                                                BorderThickness="{TemplateBinding BorderThickness}"
-                                                CornerRadius="4"
+                                    <ControlTemplate TargetType="ComboBoxItem">
+                                        <Border x:Name="Bd"
+                                                Background="{TemplateBinding Background}"
                                                 Padding="{TemplateBinding Padding}">
-                                            <TextBlock Text="My Messages"
-                                                       Foreground="{TemplateBinding Foreground}"
-                                                       FontFamily="Segoe UI"
-                                                       FontSize="10"
-                                                       FontWeight="SemiBold" />
+                                            <ContentPresenter />
                                         </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsHighlighted" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#094771" />
+                                            </Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#3C3C3C" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
                                     </ControlTemplate>
                                 </Setter.Value>
                             </Setter>
-                            <Style.Triggers>
-                                <Trigger Property="IsChecked" Value="True">
-                                    <Setter Property="Background" Value="#094771" />
-                                    <Setter Property="Foreground" Value="White" />
-                                    <Setter Property="BorderBrush" Value="#1177BB" />
-                                </Trigger>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="BorderBrush" Value="#555555" />
-                                </Trigger>
-                            </Style.Triggers>
                         </Style>
-                    </ToggleButton.Style>
-                </ToggleButton>
+                    </ComboBox.Resources>
+                    <ComboBox.Template>
+                        <ControlTemplate TargetType="ComboBox">
+                            <Grid>
+                                <!-- Main display area -->
+                                <ToggleButton x:Name="ToggleButton"
+                                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                              Focusable="False"
+                                              ClickMode="Press">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border x:Name="Border"
+                                                    Background="#2D2D2D"
+                                                    BorderBrush="#3C3C3C"
+                                                    BorderThickness="1"
+                                                    CornerRadius="4"
+                                                    Padding="8,3,24,3">
+                                                <ContentPresenter />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Border" Property="BorderBrush" Value="#555555" />
+                                                </Trigger>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Border" Property="BorderBrush" Value="#007ACC" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <!-- Selected item display -->
+                                <ContentPresenter x:Name="ContentSite"
+                                                  IsHitTestVisible="False"
+                                                  Content="{TemplateBinding SelectionBoxItem}"
+                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  Margin="8,3,24,3"
+                                                  VerticalAlignment="Center"
+                                                  TextBlock.Foreground="#CCCCCC" />
+                                <!-- Dropdown arrow -->
+                                <TextBlock Text="v"
+                                           IsHitTestVisible="False"
+                                           Foreground="#888888"
+                                           FontFamily="Cascadia Mono"
+                                           FontSize="9"
+                                           HorizontalAlignment="Right"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0" />
+                                <!-- Dropdown popup -->
+                                <Popup x:Name="Popup"
+                                       IsOpen="{TemplateBinding IsDropDownOpen}"
+                                       Placement="Top"
+                                       AllowsTransparency="True"
+                                       Focusable="False"
+                                       PopupAnimation="Slide">
+                                    <Border x:Name="DropDownBorder"
+                                            Background="#252526"
+                                            BorderBrush="#3C3C3C"
+                                            BorderThickness="1"
+                                            CornerRadius="4"
+                                            MinWidth="{TemplateBinding ActualWidth}"
+                                            MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                            Margin="0,0,0,2"
+                                            Padding="0,2">
+                                        <ScrollViewer SnapsToDevicePixels="True">
+                                            <StackPanel IsItemsHost="True"
+                                                        KeyboardNavigation.DirectionalNavigation="Contained" />
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                        </ControlTemplate>
+                    </ComboBox.Template>
+                    <ComboBoxItem Content="All Messages" Tag="All" />
+                    <ComboBoxItem Content="My Messages" Tag="UserOnly" />
+                    <ComboBoxItem Content="Conversation" Tag="Conversation" />
+                </ComboBox>
 
                 <!-- Status indicators (right side) -->
                 <Grid Grid.Column="1">

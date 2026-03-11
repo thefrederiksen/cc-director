@@ -27,7 +27,7 @@ public partial class CleanView : UserControl
     private readonly ObservableCollection<CleanWidgetViewModel> _widgets = new();
     private readonly object _widgetsLock = new();
     private string? _pendingInjection;
-    private bool _showUserOnly;
+    private string _filterMode = "All"; // "All", "UserOnly", "Conversation"
 
     /// <summary>
     /// Fired when the user clicks the rewind button on a user prompt card.
@@ -35,19 +35,21 @@ public partial class CleanView : UserControl
     /// </summary>
     public event Action<Session, int>? RewindRequested;
 
+    // Must be a field -- if local, GC kills the Filter event handler
+    private readonly CollectionViewSource _viewSource;
+    private readonly ICollectionView _widgetView;
+
     public CleanView()
     {
         InitializeComponent();
 
-        var viewSource = new CollectionViewSource { Source = _widgets };
-        viewSource.Filter += WidgetFilter;
-        _widgetView = viewSource.View;
+        _viewSource = new CollectionViewSource { Source = _widgets };
+        _viewSource.Filter += WidgetFilter;
+        _widgetView = _viewSource.View;
         WidgetItems.ItemsSource = _widgetView;
 
         BindingOperations.EnableCollectionSynchronization(_widgets, _widgetsLock);
     }
-
-    private ICollectionView _widgetView;
 
     /// <summary>Attach to a session and start monitoring its JSONL output.</summary>
     public void Attach(Session session)
@@ -137,8 +139,8 @@ public partial class CleanView : UserControl
         _lastLineCount = 0;
         _parsing = false;
         _pendingInjection = null;
-        _showUserOnly = false;
-        FilterToggle.IsChecked = false;
+        _filterMode = "All";
+        FilterCombo.SelectedIndex = 0;
         _widgets.Clear();
         ProgressArea.Visibility = Visibility.Collapsed;
         LoadingText.Visibility = Visibility.Collapsed;
@@ -395,18 +397,39 @@ public partial class CleanView : UserControl
 
     private void WidgetFilter(object sender, FilterEventArgs e)
     {
-        if (!_showUserOnly)
+        if (_filterMode == "All")
         {
             e.Accepted = true;
             return;
         }
-        e.Accepted = e.Item is CleanWidgetViewModel vm && vm.Kind == WidgetKind.UserMessage;
+
+        if (e.Item is not CleanWidgetViewModel vm)
+        {
+            e.Accepted = false;
+            return;
+        }
+
+        if (_filterMode == "UserOnly")
+        {
+            e.Accepted = vm.Kind == WidgetKind.UserMessage;
+            return;
+        }
+
+        // "Conversation" mode: user messages + Claude text responses only
+        e.Accepted = vm.Kind == WidgetKind.UserMessage || vm.Kind == WidgetKind.Text;
     }
 
-    private void FilterToggle_Click(object sender, RoutedEventArgs e)
+    private void FilterCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        _showUserOnly = FilterToggle.IsChecked == true;
-        FileLog.Write($"[CleanView] FilterToggle_Click: showUserOnly={_showUserOnly}");
+        if (FilterCombo.SelectedItem is not System.Windows.Controls.ComboBoxItem item)
+            return;
+
+        var newMode = item.Tag?.ToString() ?? "All";
+        if (newMode == _filterMode)
+            return;
+
+        _filterMode = newMode;
+        FileLog.Write($"[CleanView] FilterCombo_SelectionChanged: filterMode={_filterMode}");
         _widgetView.Refresh();
         ScrollToBottom();
     }
