@@ -20,7 +20,8 @@
 #>
 param(
     [switch]$SelfContained,
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$Slot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -108,7 +109,8 @@ $releasesDir = Join-Path $repoRoot "local_builds"
 if (-not (Test-Path $releasesDir)) {
     New-Item -ItemType Directory -Path $releasesDir | Out-Null
 }
-$destPath = Join-Path $releasesDir "cc-director-avalonia.exe"
+$exeName = if ($Slot) { "cc-director-avalonia$Slot.exe" } else { "cc-director-avalonia.exe" }
+$destPath = Join-Path $releasesDir $exeName
 Copy-Item $exePath $destPath -Force
 
 $exeSize = (Get-Item $destPath).Length / 1MB

@@ -354,6 +354,34 @@
                                 Padding="12,4"
                                 FontSize="12"
                                 Click="SourceControlTabButton_Click" />
+
+                        <!-- Separator between fixed tabs and document tabs -->
+                        <Border x:Name="DocTabSeparator"
+                                Width="1" Height="16"
+                                Background="#3C3C3C"
+                                Margin="4,0"
+                                IsVisible="False" />
+
+                        <!-- Dynamic document tab buttons inserted here -->
+                        <ItemsControl x:Name="DocumentTabBar"
+                                      IsVisible="False">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="2" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+
+                        <!-- Close All document tabs button -->
+                        <Button x:Name="CloseAllDocsButton"
+                                Content="x"
+                                Background="Transparent"
+                                Foreground="#666666"
+                                Padding="6,4"
+                                FontSize="10"
+                                ToolTip.Tip="Close all document tabs"
+                                IsVisible="False"
+                                Click="CloseAllDocsButton_Click" />
                     </StackPanel>
                 </Border>
 
@@ -384,6 +412,9 @@
                     <Panel x:Name="SourceControlPanel" IsVisible="False">
                         <controls:GitChangesView x:Name="GitChangesView" />
                     </Panel>
+
+                    <!-- Document viewer panel (dynamic content swapped per tab) -->
+                    <Panel x:Name="DocumentPanel" IsVisible="False" />
                 </Panel>
 
                 <!-- ==================== NOTIFICATION BAR ==================== -->
@@ -431,7 +462,6 @@
                                      Padding="8,6"
                                      FontFamily="Cascadia Mono,Consolas,monospace"
                                      FontSize="13"
-                                     KeyDown="PromptInput_KeyDown"
                                      DragDrop.AllowDrop="True" />
                             <StackPanel Grid.Column="1"
                                         Orientation="Vertical"
@@ -569,7 +599,8 @@
 
                 <TabControl x:Name="RightPanelTabs"
                             Background="Transparent"
-                            Padding="0">
+                            Padding="0"
+                            FontSize="11">
 
                     <!-- ===== Screenshots Tab ===== -->
                     <TabItem Header="Screenshots">

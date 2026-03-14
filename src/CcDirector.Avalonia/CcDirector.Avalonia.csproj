@@ -7,14 +7,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Version>0.3.0</Version>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <NoWarn>CS0618</NoWarn>
-    <!-- Avalonia clipboard API deprecation -->
+    <NoWarn>CS0618;CS0067;AVLN3001</NoWarn>
+    <!-- CS0618: Avalonia clipboard API deprecation -->
+    <!-- CS0067: Interface-required events not yet wired (WIP document viewer controls) -->
+    <!-- AVLN3001: Dialogs have no parameterless constructor (instantiated from code, not XAML loader) -->
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.*" />
     <PackageReference Include="Avalonia.Desktop" Version="11.*" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.*" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
   </ItemGroup>
   <ItemGroup>

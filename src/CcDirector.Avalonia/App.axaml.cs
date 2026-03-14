@@ -159,18 +159,25 @@ public partial class App : Application
         global::Avalonia.Threading.Dispatcher.UIThread.Post(() => splash.StatusText.Text = text);
     }
 
-    private void OnShutdown(Action<string> log)
+    internal void OnShutdown(Action<string> log)
     {
         try
         {
+            // All async work runs on the thread pool via Task.Run to avoid
+            // deadlocking with the UI thread's SynchronizationContext.
+            // Without this, .Wait() blocks the UI thread while the async
+            // continuations inside KillAllSessionsAsync/StopAsync need the
+            // UI thread to resume -- classic deadlock that kept the process
+            // alive for 15-20 seconds after the window closed.
+
             if (SessionManager != null)
             {
                 try
                 {
-                    var killTask = SessionManager.KillAllSessionsAsync();
-                    if (!killTask.Wait(TimeSpan.FromSeconds(10)))
+                    var killTask = Task.Run(() => SessionManager.KillAllSessionsAsync());
+                    if (!killTask.Wait(TimeSpan.FromSeconds(3)))
                     {
-                        log("KillAllSessionsAsync timed out after 10 seconds");
+                        log("KillAllSessionsAsync timed out after 3 seconds");
                         ForceKillRemainingProcesses();
                     }
                 }
@@ -185,9 +192,9 @@ public partial class App : Application
             {
                 try
                 {
-                    var engineStopTask = EngineHost.StopAsync();
-                    if (!engineStopTask.Wait(TimeSpan.FromSeconds(5)))
-                        log("Engine stop timed out after 5 seconds");
+                    var engineStopTask = Task.Run(() => EngineHost.StopAsync());
+                    if (!engineStopTask.Wait(TimeSpan.FromSeconds(2)))
+                        log("Engine stop timed out after 2 seconds");
                 }
                 catch (Exception ex)
                 {
@@ -200,6 +207,7 @@ public partial class App : Application
             BackupCleaner?.Dispose();
             NulFileWatcher?.Dispose();
             FileEventWatcher?.Dispose();
+            EventRouter?.Dispose();
             SessionManager?.Dispose();
 
             FileLog.Write("[CcDirector] Exiting");
@@ -207,7 +215,9 @@ public partial class App : Application
         }
         finally
         {
-            // Reserved for future cleanup
+            // Force-exit the process so the CLR doesn't linger waiting for
+            // finalizers, GC, or stale timer callbacks to wind down.
+            Environment.Exit(0);
         }
     }
 

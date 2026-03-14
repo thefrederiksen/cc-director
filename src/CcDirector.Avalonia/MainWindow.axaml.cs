@@ -8,11 +8,14 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Pipes;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Skills;
 using CcDirector.Core.Utilities;
+using FileViewerControls = CcDirector.Avalonia.Controls;
 
 namespace CcDirector.Avalonia;
 
@@ -108,6 +111,37 @@ public partial class MainWindow : Window
     private global::Avalonia.Threading.DispatcherTimer? _sessionGitTimer;
     private bool _sessionGitRefreshRunning;
 
+    // Interactive TUI mode
+    private bool _isInteractiveTuiMode;
+
+    /// <summary>
+    /// Claude Code slash commands that launch interactive TUI dialogs requiring direct keyboard input.
+    /// When sent from PromptInput, these are intercepted and handled via native dialogs or redirected.
+    /// When typed directly in the Terminal tab's ConPTY, they still work natively.
+    /// </summary>
+    private static readonly HashSet<string> InteractiveTuiCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "config", "settings",
+        "status",
+        "help",
+        "context",
+        "copy",
+        "diff",
+        "hooks",
+        "model",
+        "theme",
+        "permissions", "allowed-tools",
+        "resume", "continue",
+        "rewind", "checkpoint",
+        "export",
+        "output-style",
+        "memory",
+        "stats",
+        "plugin",
+        "mcp",
+        "agents",
+    };
+
     // Right panel state
     private bool _rightPanelExpanded = true;
     private readonly ObservableCollection<HookEventViewModel> _hookEvents = new();
@@ -125,6 +159,9 @@ public partial class MainWindow : Window
 
         Loaded += MainWindow_Loaded;
         Activated += MainWindow_Activated;
+
+        // Register KeyDown as tunnel so it fires before AcceptsReturn consumes Ctrl+Enter
+        PromptInput.AddHandler(KeyDownEvent, PromptInput_KeyDown, global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
         AddHandler(DragDrop.DropEvent, PromptInput_Drop);
         AddHandler(DragDrop.DragOverEvent, PromptInput_DragOver);
@@ -158,6 +195,9 @@ public partial class MainWindow : Window
         // Wire up hook event routing
         app.EventRouter.OnRawMessage += OnHookEventReceived;
 
+        // Subscribe to session registration for ClaudeSessionId persistence
+        _sessionManager.OnClaudeSessionRegistered += OnClaudeSessionRegistered;
+
         // Wire source control view file event
         GitChangesView.ViewFileRequested += OnGitViewFileRequested;
 
@@ -173,6 +213,7 @@ public partial class MainWindow : Window
         // Wire prompt input text changes for slash command autocomplete
         PromptInput.TextChanged += PromptInput_TextChanged;
         PromptInput.LostFocus += (_, _) => SlashCommandPopup.IsOpen = false;
+        PromptInput.GotFocus += PromptInput_GotFocus;
 
         // Wire right panel tab selection to lazy-load session browser
         RightPanelTabs.SelectionChanged += RightPanelTabs_SelectionChanged;
@@ -257,7 +298,10 @@ public partial class MainWindow : Window
 
                 var vm = CreateSession(entry.RepoPath, claudeArgs: entry.ClaudeArgs);
                 if (vm != null)
+                {
                     vm.Rename(entry.CustomName, entry.CustomColor);
+                    SaveSessionToHistory(vm);
+                }
 
                 // Delay between sessions to prevent Claude Code settings corruption
                 if (i < total - 1)
@@ -277,10 +321,10 @@ public partial class MainWindow : Window
 
     private SessionViewModel? CreateSession(string repoPath, string? resumeSessionId = null, string? claudeArgs = null)
     {
-        FileLog.Write($"[MainWindow] CreateSession: repoPath={repoPath}, args={claudeArgs ?? "default"}");
+        FileLog.Write($"[MainWindow] CreateSession: repoPath={repoPath}, resume={resumeSessionId ?? "null"}, args={claudeArgs ?? "default"}");
         try
         {
-            var session = _sessionManager.CreateSession(repoPath, claudeArgs);
+            var session = _sessionManager.CreateSession(repoPath, claudeArgs, SessionBackendType.ConPty, resumeSessionId);
             FileLog.Write($"[MainWindow] CreateSession: session created, id={session.Id}, pid={session.ProcessId}");
 
             var vm = new SessionViewModel(session);
@@ -300,9 +344,13 @@ public partial class MainWindow : Window
     {
         if (vm == _activeSession) return;
 
-        // Detach from previous session
+        // Save prompt text and selected tab for outgoing session
         if (_activeSession != null)
         {
+            _activeSession.Session.PendingPromptText = PromptInput.Text;
+            _activeSession.Session.SelectedTabName = _activeLeftTab;
+            FileLog.Write($"[MainWindow] SelectSession: saved prompt and tab={_activeLeftTab} for {_activeSession.Session.Id}");
+
             _activeSession.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
             _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
             TerminalHost.Detach();
@@ -336,8 +384,9 @@ public partial class MainWindow : Window
         TerminalHost.IsVisible = true;
         TerminalHost.Attach(vm.Session);
 
-        // Attach source control
+        // Attach source control (hide tab if no .git)
         GitChangesView.Attach(vm.Session.RepoPath);
+        UpdateSourceControlTabVisibility(vm.Session.RepoPath);
 
         // Attach clean view (Agent tab)
         CleanView.Attach(vm.Session);
@@ -345,12 +394,30 @@ public partial class MainWindow : Window
         // Show prompt bar
         PromptBarBorder.IsVisible = true;
 
+        // Restore prompt text for incoming session
+        PromptInput.Text = vm.Session.PendingPromptText ?? "";
+        PromptInput.CaretIndex = PromptInput.Text.Length;
+
+        // Restore last selected tab
+        var tabName = vm.Session.SelectedTabName;
+        if (!string.IsNullOrEmpty(tabName) && tabName != _activeLeftTab)
+            SwitchLeftTab(tabName);
+
+        // Switch document tabs to new session
+        SwitchDocumentTabsToSession(vm.Session.Id);
+
         // Refresh right panel for new session
         RefreshHookEventsPanel();
         RefreshQueuePanel();
 
         // Persist session state (debounced)
         PersistSessionState();
+
+        // Redirect focus to terminal or prompt
+        if (_activeLeftTab == "Terminal")
+            Dispatcher.UIThread.Post(() => TerminalHost.Focus());
+        else
+            Dispatcher.UIThread.Post(() => PromptInput.Focus());
 
         FileLog.Write($"[MainWindow] SelectSession: {vm.DisplayName}");
     }
@@ -464,6 +531,7 @@ public partial class MainWindow : Window
         {
             vm.Rename(dialog.SessionName, dialog.SelectedColor);
             PersistSessionState();
+            UpdateSessionHistory(vm);
 
             if (_activeSession == vm)
                 UpdateSessionHeader();
@@ -563,6 +631,8 @@ public partial class MainWindow : Window
 
         if (_activeSession == vm)
         {
+            vm.Session.OnClaudeMetadataChanged -= OnActiveSessionMetadataChanged;
+            vm.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
             TerminalHost.Detach();
             GitChangesView.Detach();
             CleanView.Detach();
@@ -654,6 +724,7 @@ public partial class MainWindow : Window
         if (_activeSession != null)
         {
             _activeSession.Session.PendingPromptText = PromptInput.Text;
+            _activeSession.Session.SelectedTabName = _activeLeftTab;
         }
     }
 
@@ -917,15 +988,73 @@ public partial class MainWindow : Window
     private async Task ShowNewSessionDialog()
     {
         var app = (App)global::Avalonia.Application.Current!;
-        var dialog = new NewSessionDialog(
-            app.RepositoryRegistry,
-            app.SessionHistoryStore);
+        var registry = app.RepositoryRegistry;
+
+        var dialog = new NewSessionDialog(registry, app.SessionHistoryStore);
         var result = await dialog.ShowDialog<bool?>(this);
 
-        if (result == true && dialog.SelectedPath != null)
+        if (result != true || string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
-            CreateSession(dialog.SelectedPath);
+            FileLog.Write("[MainWindow] ShowNewSessionDialog: cancelled");
+            return;
         }
+
+        var resumeSessionId = dialog.SelectedResumeSessionId;
+
+        // Build Claude arguments from dialog options
+        var claudeArgs = "";
+        if (dialog.EnableRemoteControl)
+            claudeArgs = "remote-control ";
+        if (dialog.BypassPermissions)
+            claudeArgs += "--dangerously-skip-permissions ";
+        claudeArgs = claudeArgs.Trim();
+
+        FileLog.Write($"[MainWindow] ShowNewSessionDialog: path={dialog.SelectedPath}, resume={resumeSessionId ?? "null"}, bypassPermissions={dialog.BypassPermissions}, remoteControl={dialog.EnableRemoteControl}");
+
+        var vm = CreateSession(dialog.SelectedPath, resumeSessionId, claudeArgs);
+        if (vm == null) return;
+
+        // Track last used time for repository sorting
+        registry?.MarkUsed(dialog.SelectedPath);
+
+        if (!string.IsNullOrEmpty(resumeSessionId))
+        {
+            FileLog.Write($"[MainWindow] ShowNewSessionDialog: resume path - looking up history for claude={resumeSessionId}");
+            var historyEntry = app.SessionHistoryStore.FindByClaudeSessionId(resumeSessionId);
+            if (historyEntry != null)
+            {
+                vm.Session.CustomName = historyEntry.CustomName;
+                vm.Session.CustomColor = historyEntry.CustomColor;
+                vm.Session.HistoryEntryId = historyEntry.Id;
+                vm.NotifyDisplayChanged();
+                historyEntry.LastUsedAt = DateTimeOffset.UtcNow;
+                app.SessionHistoryStore.Save(historyEntry);
+                FileLog.Write($"[MainWindow] ShowNewSessionDialog: resumed with history entry {historyEntry.Id}, name={historyEntry.CustomName}");
+            }
+            else
+            {
+                FileLog.Write("[MainWindow] ShowNewSessionDialog: no history entry found, showing rename dialog");
+                ShowRenameDialog(vm);
+                SaveSessionToHistory(vm);
+            }
+        }
+        else
+        {
+            // New session: show rename dialog, create history entry, capture startup text
+            FileLog.Write("[MainWindow] ShowNewSessionDialog: new session - showing rename dialog");
+            ShowRenameDialog(vm);
+            SaveSessionToHistory(vm);
+            _ = CaptureStartupTextAsync(vm.Session);
+        }
+
+        // If started from a handover, inject the handover prompt after session is ready
+        if (!string.IsNullOrEmpty(dialog.SelectedHandoverPath))
+        {
+            _ = InjectHandoverPromptAsync(vm.Session, dialog.SelectedHandoverPath);
+        }
+
+        PersistSessionState();
+        FileLog.Write("[MainWindow] ShowNewSessionDialog: complete");
     }
 
     private void BtnAppMenu_Click(object? sender, RoutedEventArgs e)
@@ -999,7 +1128,13 @@ public partial class MainWindow : Window
             var result = await dialog.ShowDialog<bool?>(this);
             if (result == true && dialog.LaunchSessionPath != null)
             {
-                CreateSession(dialog.LaunchSessionPath);
+                var vm = CreateSession(dialog.LaunchSessionPath);
+                if (vm != null)
+                {
+                    ShowRenameDialog(vm);
+                    SaveSessionToHistory(vm);
+                    SwitchLeftTab("Terminal");
+                }
             }
         };
 
@@ -1178,8 +1313,9 @@ public partial class MainWindow : Window
 
         var accentBrush = (IBrush)(this.FindResource("AccentBrush") ?? Brushes.DodgerBlue);
         var whiteBrush = Brushes.White;
+        bool isDocTab = tab.StartsWith("Doc:", StringComparison.Ordinal);
 
-        // Update button styles
+        // Update fixed tab button styles
         AgentTabButton.Background = tab == "Agent" ? accentBrush : TransparentBrush;
         AgentTabButton.Foreground = tab == "Agent" ? whiteBrush : InactiveTextBrush;
         TerminalTabButton.Background = tab == "Terminal" ? accentBrush : TransparentBrush;
@@ -1187,10 +1323,41 @@ public partial class MainWindow : Window
         SourceControlTabButton.Background = tab == "SourceControl" ? accentBrush : TransparentBrush;
         SourceControlTabButton.Foreground = tab == "SourceControl" ? whiteBrush : InactiveTextBrush;
 
+        // Update document tab button styles
+        foreach (var docTab in _documentTabs)
+        {
+            bool isActive = isDocTab && docTab.TabId == tab;
+            docTab.TabButton.Background = isActive ? accentBrush : TransparentBrush;
+            docTab.TabButton.Foreground = isActive ? whiteBrush : InactiveTextBrush;
+        }
+
         // Show/hide panels
         AgentPanel.IsVisible = tab == "Agent";
         TerminalPanel.IsVisible = tab == "Terminal";
         SourceControlPanel.IsVisible = tab == "SourceControl";
+        DocumentPanel.IsVisible = isDocTab;
+
+        // Swap document panel content
+        if (isDocTab)
+        {
+            DocumentPanel.Children.Clear();
+            var activeDocTab = _documentTabs.FirstOrDefault(d => d.TabId == tab);
+            if (activeDocTab != null)
+                DocumentPanel.Children.Add(activeDocTab.ViewerControl);
+        }
+    }
+
+    private void UpdateSourceControlTabVisibility(string repoPath)
+    {
+        var gitDir = Path.Combine(repoPath, ".git");
+        var hasGit = Directory.Exists(gitDir) || File.Exists(gitDir);
+        SourceControlTabButton.IsVisible = hasGit;
+
+        // If Source Control tab was selected but is now hidden, switch to Terminal
+        if (!hasGit && _activeLeftTab == "SourceControl")
+            SwitchLeftTab("Terminal");
+
+        FileLog.Write($"[MainWindow] UpdateSourceControlTabVisibility: hasGit={hasGit}");
     }
 
     private void BtnSend_Click(object? sender, RoutedEventArgs e)
@@ -1291,9 +1458,13 @@ public partial class MainWindow : Window
         var repoPath = _activeSession?.Session.RepoPath;
         var allCommands = _slashCommandProvider.GetCommands(repoPath);
 
+        // Exclude interactive TUI commands from PromptInput autocomplete -- they don't work here.
+        // Users who know these commands can use them in the Terminal tab directly.
+        var available = allCommands.Where(c => !InteractiveTuiCommands.Contains(c.Name)).ToList();
+
         _filteredSlashCommands = string.IsNullOrEmpty(filter)
-            ? allCommands
-            : allCommands.Where(c => c.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+            ? available
+            : available.Where(c => c.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 
         if (_filteredSlashCommands.Count == 0)
         {
@@ -1448,9 +1619,10 @@ public partial class MainWindow : Window
 
     private async void SendPrompt()
     {
-        if (_activeSession == null) return;
+        if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text)) return;
 
-        var text = PromptInput.Text?.Trim();
+        // Strip newlines -- Claude Code prompt expects single-line input
+        var text = PromptInput.Text.ReplaceLineEndings(" ").Trim();
         if (string.IsNullOrEmpty(text)) return;
 
         // Intercept slash commands and show native dialogs
@@ -1463,11 +1635,45 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] SendPrompt: {text.Length} chars to session {_activeSession.Session.Id}");
 
         PromptInput.Text = "";
-        ClearNotification();
 
+        // Clear saved prompt text so switching away and back shows empty box
+        _activeSession.Session.PendingPromptText = string.Empty;
+
+        // Snapshot the JSONL before sending so we can rewind to this point
+        _activeSession.Session.InitializeHistory();
+        _activeSession.Session.History?.TakeSnapshot();
+
+        // Inject user prompt into Clean view immediately for instant feedback
         CleanView.InjectUserPrompt(text);
+
+        // Notify user when large input is redirected to a temp file
+        if (CcDirector.Core.Input.LargeInputHandler.IsLargeInput(text))
+        {
+            ShowNotification($"Text over {CcDirector.Core.Input.LargeInputHandler.LargeInputThreshold:N0} chars -- saved to temp file and @filepath sent to Claude Code ({text.Length:N0} chars)");
+        }
+        else
+        {
+            ClearNotification();
+        }
+
+        // Check if this is an interactive TUI command
+        var isInteractiveCommand = text.StartsWith("/") && InteractiveTuiCommands.Contains(text.TrimStart('/'));
+
         await _activeSession.Session.SendTextAsync(text + "\n");
-        ScheduleEnterRetry(_activeSession.Session);
+
+        if (!isInteractiveCommand)
+        {
+            ScheduleEnterRetry(_activeSession.Session);
+        }
+
+        if (isInteractiveCommand)
+        {
+            EnterInteractiveTuiMode(_activeSession.Session);
+        }
+        else
+        {
+            PromptInput.Focus();
+        }
     }
 
     private void ScheduleEnterRetry(Session session)
@@ -1503,6 +1709,56 @@ public partial class MainWindow : Window
         {
             session.OnActivityStateChanged -= handler;
         }
+    }
+
+    // ==================== INTERACTIVE TUI MODE ====================
+
+    /// <summary>
+    /// Enters interactive TUI mode: focuses the terminal so keystrokes go directly
+    /// to the ConPTY process instead of PromptInput. Auto-exits when TUI closes.
+    /// </summary>
+    private void EnterInteractiveTuiMode(Session session)
+    {
+        FileLog.Write("[MainWindow] EnterInteractiveTuiMode: focusing terminal for interactive TUI");
+        _isInteractiveTuiMode = true;
+
+        // Cancel any pending Enter retry - interactive TUIs must not receive stray Enters
+        _enterRetryCts?.Cancel();
+
+        // Focus the terminal so keystrokes go to the ConPTY process
+        SwitchLeftTab("Terminal");
+        Dispatcher.UIThread.Post(() => TerminalHost.Focus());
+
+        ShowNotification("Interactive mode -- keys go to terminal. Click prompt input to exit.");
+
+        // Auto-exit when the session transitions back to idle (TUI closed)
+        void OnStateChanged(ActivityState oldState, ActivityState newState)
+        {
+            if (newState is ActivityState.Idle or ActivityState.WaitingForInput)
+            {
+                session.OnActivityStateChanged -= OnStateChanged;
+                Dispatcher.UIThread.Post(ExitInteractiveTuiMode);
+            }
+        }
+
+        session.OnActivityStateChanged += OnStateChanged;
+    }
+
+    private void ExitInteractiveTuiMode()
+    {
+        if (!_isInteractiveTuiMode) return;
+
+        FileLog.Write("[MainWindow] ExitInteractiveTuiMode: returning focus to PromptInput");
+        _isInteractiveTuiMode = false;
+        ClearNotification();
+        PromptInput.Focus();
+    }
+
+    private void PromptInput_GotFocus(object? sender, GotFocusEventArgs e)
+    {
+        // Exit interactive TUI mode if the user clicks back to the prompt input
+        if (_isInteractiveTuiMode)
+            ExitInteractiveTuiMode();
     }
 
     private void PromptInput_DragOver(object? sender, DragEventArgs e)
@@ -1666,6 +1922,21 @@ public partial class MainWindow : Window
                 // Auto-scroll to bottom
                 if (HookEventList.ItemCount > 0)
                     HookEventList.ScrollIntoView(vm);
+            }
+
+            // Refresh Claude metadata on Stop events (end of turn - metadata may have updated)
+            if (msg.HookEventName == "Stop" && !string.IsNullOrEmpty(msg.SessionId))
+            {
+                var session = _sessionManager.GetSessionByClaudeId(msg.SessionId);
+                if (session != null)
+                {
+                    var sessionVm = _sessions.FirstOrDefault(s => s.Session.Id == session.Id);
+                    if (sessionVm != null)
+                    {
+                        sessionVm.RefreshClaudeMetadata();
+                        session.VerifyClaudeSession();
+                    }
+                }
             }
         });
     }
@@ -1963,11 +2234,19 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] ScreenshotView_Click: {filePath}");
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            // Open images in document tab if a session is active
+            if (_activeSession != null && FileExtensions.IsViewable(filePath) && File.Exists(filePath))
             {
-                FileName = filePath,
-                UseShellExecute = true,
-            });
+                OpenDocumentFile(filePath);
+            }
+            else
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = filePath,
+                    UseShellExecute = true,
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -2014,11 +2293,19 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] OnGitViewFileRequested: {fullPath}");
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            // Open viewable files in document tabs; everything else externally
+            if (FileExtensions.IsViewable(fullPath) && File.Exists(fullPath))
             {
-                FileName = fullPath,
-                UseShellExecute = true,
-            });
+                OpenDocumentFile(fullPath);
+            }
+            else
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = fullPath,
+                    UseShellExecute = true,
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -2054,7 +2341,10 @@ public partial class MainWindow : Window
 
         var vm = CreateSession(repoPath, resumeSessionId: sessionId);
         if (vm != null)
+        {
+            SaveSessionToHistory(vm);
             ShowNotification($"Resumed session in {repoPath}");
+        }
     }
 
     // ==================== REWIND ====================
@@ -2188,7 +2478,11 @@ public partial class MainWindow : Window
             _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
         }
 
-        // Final persist (immediate, no debounce)
+        // Update LastUsedAt for all active sessions in history
+        UpdateAllSessionHistoryTimestamps();
+
+        // Cancel any pending debounced persist and flush immediately
+        _persistDebounceCts?.Cancel();
         SyncPromptTextToSessions();
         PersistSessionStateCore();
 
@@ -2206,15 +2500,172 @@ public partial class MainWindow : Window
         _screenshotDebounceTimer?.Stop();
         _screenshotWatcher?.Dispose();
 
-        // Unwire hook events
+        // Unwire hook events and session registration
         try
         {
             var app = (App)global::Avalonia.Application.Current!;
             app.EventRouter.OnRawMessage -= OnHookEventReceived;
+            _sessionManager.OnClaudeSessionRegistered -= OnClaudeSessionRegistered;
         }
         catch { /* App may be shutting down */ }
 
+        // Call shutdown directly instead of relying on ShutdownRequested event
+        // which may never fire depending on Avalonia lifetime state.
+        // OnShutdown kills sessions, disposes services, and calls Environment.Exit(0).
+        var appRef = (App)global::Avalonia.Application.Current!;
+        appRef.OnShutdown(msg => FileLog.Write($"[CcDirector] {msg}"));
+
+        // Environment.Exit(0) inside OnShutdown means we never reach here,
+        // but keep base.OnClosing as a safety net.
         base.OnClosing(e);
+    }
+
+    private void OnClaudeSessionRegistered(Session session, string claudeSessionId)
+    {
+        FileLog.Write($"[MainWindow] Claude session registered: {claudeSessionId} for {session.RepoPath}");
+        Dispatcher.UIThread.Post(() =>
+        {
+            PersistSessionState();
+
+            // Update session history entry with the new ClaudeSessionId
+            var sessionVm = _sessions.FirstOrDefault(s => s.Session.Id == session.Id);
+            if (sessionVm != null)
+                UpdateSessionHistory(sessionVm);
+
+            // Update header if this is the active session
+            if (_activeSession?.Session.Id == session.Id)
+                UpdateSessionHeader();
+        });
+    }
+
+    // ==================== SESSION HISTORY ====================
+
+    /// <summary>
+    /// Create a new history entry for a session that was just created and renamed.
+    /// </summary>
+    private void SaveSessionToHistory(SessionViewModel vm)
+    {
+        FileLog.Write($"[MainWindow] SaveSessionToHistory: session={vm.Session.Id}, name={vm.Session.CustomName}, repo={vm.Session.RepoPath}");
+        var app = (App)global::Avalonia.Application.Current!;
+        var entry = new SessionHistoryEntry
+        {
+            Id = vm.Session.HistoryEntryId ?? Guid.NewGuid(),
+            CustomName = vm.Session.CustomName,
+            CustomColor = vm.Session.CustomColor,
+            RepoPath = vm.Session.RepoPath,
+            ClaudeSessionId = vm.Session.ClaudeSessionId,
+            CreatedAt = vm.Session.CreatedAt,
+            LastUsedAt = DateTimeOffset.UtcNow,
+        };
+        vm.Session.HistoryEntryId = entry.Id;
+        app.SessionHistoryStore.Save(entry);
+        FileLog.Write($"[MainWindow] SaveSessionToHistory: saved historyEntryId={entry.Id}");
+    }
+
+    /// <summary>
+    /// Update an existing history entry with the session's current name, color, and ClaudeSessionId.
+    /// </summary>
+    private void UpdateSessionHistory(SessionViewModel vm)
+    {
+        if (vm.Session.HistoryEntryId == null)
+        {
+            SaveSessionToHistory(vm);
+            return;
+        }
+
+        var app = (App)global::Avalonia.Application.Current!;
+        var entry = app.SessionHistoryStore.Load(vm.Session.HistoryEntryId.Value);
+        if (entry == null)
+        {
+            SaveSessionToHistory(vm);
+            return;
+        }
+
+        entry.CustomName = vm.Session.CustomName;
+        entry.CustomColor = vm.Session.CustomColor;
+        entry.ClaudeSessionId = vm.Session.ClaudeSessionId;
+        entry.LastUsedAt = DateTimeOffset.UtcNow;
+        entry.FirstPromptSnippet = vm.Session.ClaudeMetadata?.FirstPrompt ?? entry.FirstPromptSnippet;
+        app.SessionHistoryStore.Save(entry);
+    }
+
+    /// <summary>
+    /// Update LastUsedAt for all active sessions in history. Called on app close.
+    /// </summary>
+    private void UpdateAllSessionHistoryTimestamps()
+    {
+        var app = (App)global::Avalonia.Application.Current!;
+        foreach (var vm in _sessions)
+        {
+            if (vm.Session.HistoryEntryId == null)
+                continue;
+
+            var entry = app.SessionHistoryStore.Load(vm.Session.HistoryEntryId.Value);
+            if (entry == null)
+                continue;
+
+            entry.LastUsedAt = DateTimeOffset.UtcNow;
+            entry.ClaudeSessionId = vm.Session.ClaudeSessionId ?? entry.ClaudeSessionId;
+            app.SessionHistoryStore.Save(entry);
+        }
+    }
+
+    // ==================== HANDOVER INJECTION ====================
+
+    /// <summary>
+    /// After a new session starts from a handover, wait for Claude Code to be ready
+    /// and then send the handover file as a prompt asking it to review and plan next steps.
+    /// </summary>
+    private async Task InjectHandoverPromptAsync(Session session, string handoverPath)
+    {
+        FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: waiting for session {session.Id}, handover={handoverPath}");
+
+        // Wait for Claude Code to finish starting up
+        await Task.Delay(TimeSpan.FromSeconds(5));
+
+        var prompt = $"@{handoverPath} This is a handover document from a previous session. "
+            + "Please read it carefully, then give me a high-level summary of what was done "
+            + "and what you think we should work on next. Show the scope of remaining work "
+            + "and suggest priorities.";
+
+        await session.SendTextAsync(prompt);
+        FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: sent handover prompt for session {session.Id}");
+    }
+
+    // ==================== STARTUP TEXT CAPTURE ====================
+
+    /// <summary>
+    /// Capture terminal startup text after a brief delay and persist it to the session.
+    /// Also writes a debug dump to %LOCALAPPDATA%\CcDirector\debug\.
+    /// </summary>
+    private async Task CaptureStartupTextAsync(Session session)
+    {
+        try
+        {
+            FileLog.Write($"[MainWindow] CaptureStartupTextAsync: waiting 3s for session {session.Id}");
+            await Task.Delay(TimeSpan.FromSeconds(3));
+
+            if (session.Buffer == null)
+            {
+                FileLog.Write($"[MainWindow] CaptureStartupTextAsync: no buffer for session {session.Id}");
+                return;
+            }
+
+            var startupInfo = TerminalOutputParser.Parse(session.Buffer);
+            session.RawStartupText = startupInfo.RawText;
+            FileLog.Write($"[MainWindow] CaptureStartupTextAsync: captured {startupInfo.RawText.Length} bytes, {startupInfo.Urls.Count} URLs for session {session.Id}");
+
+            var debugDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CcDirector", "debug");
+            Directory.CreateDirectory(debugDir);
+            var debugPath = Path.Combine(debugDir, $"startup-{session.Id}.txt");
+            TerminalOutputParser.WriteDump(debugPath, startupInfo, session.Id, session.RepoPath, session.ProcessId);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] CaptureStartupTextAsync FAILED: {ex.Message}");
+        }
     }
 
     // ==================== SESSION GIT STATUS POLLING ====================
@@ -2251,6 +2702,235 @@ public partial class MainWindow : Window
         finally
         {
             _sessionGitRefreshRunning = false;
+        }
+    }
+
+    // ==================== DOCUMENT TABS ====================
+
+    private record DocumentTabInfo(
+        Guid SessionId,
+        string FilePath,
+        string TabId,
+        Button TabButton,
+        UserControl ViewerControl,
+        FileViewerControls.IFileViewer Viewer);
+
+    private readonly List<DocumentTabInfo> _documentTabs = new();
+
+    /// <summary>
+    /// Opens a file in a document tab, or switches to it if already open.
+    /// </summary>
+    public void OpenDocumentFile(string filePath)
+    {
+        FileLog.Write($"[MainWindow] OpenDocumentFile: {filePath}");
+
+        if (_activeSession == null) return;
+
+        var sessionId = _activeSession.Session.Id;
+
+        // Check if already open for this session
+        var existing = _documentTabs.FirstOrDefault(d =>
+            d.SessionId == sessionId &&
+            string.Equals(d.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+
+        if (existing != null)
+        {
+            SwitchLeftTab(existing.TabId);
+            return;
+        }
+
+        // Create the appropriate viewer
+        var category = FileExtensions.GetViewerCategory(filePath);
+        var (viewer, control) = CreateViewer(category);
+
+        var tabId = $"Doc:{Guid.NewGuid():N}";
+
+        // Create tab button with close button
+        var tabPanel = new StackPanel { Orientation = global::Avalonia.Layout.Orientation.Horizontal, Spacing = 4 };
+        var nameText = new TextBlock
+        {
+            Text = Path.GetFileName(filePath),
+            FontSize = 12,
+            VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center,
+        };
+        var closeBtn = new Button
+        {
+            Content = "x",
+            FontSize = 9,
+            Padding = new global::Avalonia.Thickness(4, 0),
+            Background = Brushes.Transparent,
+            Foreground = new SolidColorBrush(Color.Parse("#666666")),
+            BorderThickness = new global::Avalonia.Thickness(0),
+            VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center,
+            Cursor = new global::Avalonia.Input.Cursor(global::Avalonia.Input.StandardCursorType.Hand),
+        };
+        tabPanel.Children.Add(nameText);
+        tabPanel.Children.Add(closeBtn);
+
+        var tabButton = new Button
+        {
+            Content = tabPanel,
+            Background = Brushes.Transparent,
+            Foreground = InactiveTextBrush,
+            Padding = new global::Avalonia.Thickness(12, 4),
+            BorderThickness = new global::Avalonia.Thickness(0),
+            Cursor = new global::Avalonia.Input.Cursor(global::Avalonia.Input.StandardCursorType.Hand),
+        };
+
+        var docTab = new DocumentTabInfo(sessionId, filePath, tabId, tabButton, control, viewer);
+
+        // Wire tab button click
+        var capturedTabId = tabId;
+        tabButton.Click += (_, _) => SwitchLeftTab(capturedTabId);
+
+        // Wire close button
+        closeBtn.Click += (_, _) =>
+        {
+            CloseDocumentTab(docTab);
+            // Prevent the tab button click from also firing
+        };
+
+        // Wire display name changes (dirty indicator)
+        viewer.DisplayNameChanged += () =>
+        {
+            global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                nameText.Text = viewer.GetDisplayName();
+            });
+        };
+
+        _documentTabs.Add(docTab);
+
+        // Add button to the tab bar
+        DocumentTabBar.Items.Add(tabButton);
+        DocTabSeparator.IsVisible = true;
+        DocumentTabBar.IsVisible = true;
+        CloseAllDocsButton.IsVisible = true;
+
+        // Switch to the new tab
+        SwitchLeftTab(tabId);
+
+        // Load file content asynchronously
+        LoadDocumentContentInBackground(viewer, filePath);
+    }
+
+    private static (FileViewerControls.IFileViewer viewer, UserControl control) CreateViewer(FileViewerCategory category)
+    {
+        switch (category)
+        {
+            case FileViewerCategory.Image:
+                var img = new FileViewerControls.ImageViewerControl();
+                return (img, img);
+            case FileViewerCategory.Code:
+                var code = new FileViewerControls.CodeViewerControl();
+                return (code, code);
+            case FileViewerCategory.Markdown:
+                var md = new FileViewerControls.MarkdownViewerControl();
+                return (md, md);
+            case FileViewerCategory.Pdf:
+                var pdf = new FileViewerControls.PdfViewerControl();
+                return (pdf, pdf);
+            case FileViewerCategory.Text:
+            default:
+                var text = new FileViewerControls.TextViewerControl();
+                return (text, text);
+        }
+    }
+
+    private async void LoadDocumentContentInBackground(FileViewerControls.IFileViewer viewer, string filePath)
+    {
+        try
+        {
+            await viewer.LoadFileAsync(filePath);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] LoadDocumentContentInBackground FAILED: {ex.Message}");
+            viewer.ShowLoadError(ex.Message);
+        }
+    }
+
+    private void CloseDocumentTab(DocumentTabInfo docTab)
+    {
+        FileLog.Write($"[MainWindow] CloseDocumentTab: {docTab.FilePath}");
+
+        // Remove from tracking
+        _documentTabs.Remove(docTab);
+
+        // Remove button from tab bar
+        DocumentTabBar.Items.Remove(docTab.TabButton);
+
+        // Remove from document panel if currently shown
+        if (DocumentPanel.Children.Contains(docTab.ViewerControl))
+            DocumentPanel.Children.Remove(docTab.ViewerControl);
+
+        // Update visibility of doc tab UI
+        var hasDocTabs = _documentTabs.Any(d => d.SessionId == (_activeSession?.Session.Id ?? Guid.Empty));
+        DocTabSeparator.IsVisible = hasDocTabs;
+        DocumentTabBar.IsVisible = _documentTabs.Count > 0;
+        CloseAllDocsButton.IsVisible = hasDocTabs;
+
+        // If the closed tab was active, switch to Terminal
+        if (_activeLeftTab == docTab.TabId)
+            SwitchLeftTab("Terminal");
+    }
+
+    private void CloseAllDocsButton_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] CloseAllDocsButton_Click");
+
+        if (_activeSession == null) return;
+
+        var sessionId = _activeSession.Session.Id;
+        var toClose = _documentTabs.Where(d => d.SessionId == sessionId).ToList();
+
+        foreach (var docTab in toClose)
+        {
+            _documentTabs.Remove(docTab);
+            DocumentTabBar.Items.Remove(docTab.TabButton);
+            if (DocumentPanel.Children.Contains(docTab.ViewerControl))
+                DocumentPanel.Children.Remove(docTab.ViewerControl);
+        }
+
+        DocTabSeparator.IsVisible = false;
+        DocumentTabBar.IsVisible = _documentTabs.Count > 0;
+        CloseAllDocsButton.IsVisible = false;
+
+        if (_activeLeftTab.StartsWith("Doc:", StringComparison.Ordinal))
+            SwitchLeftTab("Terminal");
+    }
+
+    /// <summary>
+    /// Shows/hides document tab buttons based on the active session.
+    /// Called when switching sessions.
+    /// </summary>
+    private void SwitchDocumentTabsToSession(Guid sessionId)
+    {
+        FileLog.Write($"[MainWindow] SwitchDocumentTabsToSession: {sessionId}");
+
+        // Rebuild the tab bar items for the new session
+        DocumentTabBar.Items.Clear();
+
+        var sessionDocTabs = _documentTabs.Where(d => d.SessionId == sessionId).ToList();
+
+        foreach (var docTab in sessionDocTabs)
+            DocumentTabBar.Items.Add(docTab.TabButton);
+
+        var hasTabs = sessionDocTabs.Count > 0;
+        DocTabSeparator.IsVisible = hasTabs;
+        DocumentTabBar.IsVisible = _documentTabs.Count > 0;
+        CloseAllDocsButton.IsVisible = hasTabs;
+
+        // If the active tab was a document from a different session, switch to Terminal
+        if (_activeLeftTab.StartsWith("Doc:", StringComparison.Ordinal))
+        {
+            var isStillValid = sessionDocTabs.Any(d => d.TabId == _activeLeftTab);
+            if (!isStillValid)
+            {
+                // Force tab switch by resetting _activeLeftTab
+                _activeLeftTab = "";
+                SwitchLeftTab("Terminal");
+            }
         }
     }
 }
