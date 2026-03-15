@@ -1413,19 +1413,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Ctrl+Enter = Send prompt (same as Enter, matches WPF behavior)
+        // Ctrl+Enter = Send prompt (Enter inserts newline via AcceptsReturn)
         if (e.Key == Key.Enter && e.KeyModifiers == KeyModifiers.Control)
         {
             e.Handled = true;
             SendPrompt();
             return;
-        }
-
-        // Enter sends, Shift+Enter inserts newline
-        if (e.Key == Key.Enter && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
-        {
-            e.Handled = true;
-            SendPrompt();
         }
     }
 

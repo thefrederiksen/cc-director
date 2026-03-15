@@ -44,12 +44,23 @@ public partial class LoadWorkspaceDialog : Window
         // Avalonia uses ShowDialog<T>(Window) for owner, this is a no-op placeholder
     }
 
+    private WorkspaceDefinition? _defaultWorkspace;
+
     private void LoadWorkspaces()
     {
         FileLog.Write("[LoadWorkspaceDialog] LoadWorkspaces");
 
         var definitions = _store.LoadAll();
-        _workspaces = definitions.Select(d => new WorkspaceListItem(d)).ToList();
+
+        // Separate _default from the rest
+        _defaultWorkspace = definitions.FirstOrDefault(d =>
+            string.Equals(d.Name, "_default", StringComparison.OrdinalIgnoreCase));
+        BtnLoadDefault.IsVisible = _defaultWorkspace != null;
+
+        _workspaces = definitions
+            .Where(d => !string.Equals(d.Name, "_default", StringComparison.OrdinalIgnoreCase))
+            .Select(d => new WorkspaceListItem(d))
+            .ToList();
 
         if (_workspaces.Count == 0)
         {
@@ -102,6 +113,16 @@ public partial class LoadWorkspaceDialog : Window
         PreviewList.ItemsSource = previewItems;
         TxtPreviewEmpty.IsVisible = false;
         PreviewList.IsVisible = true;
+    }
+
+    private void BtnLoadDefault_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_defaultWorkspace == null)
+            return;
+
+        FileLog.Write("[LoadWorkspaceDialog] BtnLoadDefault_Click: loading _default workspace");
+        SelectedWorkspace = _defaultWorkspace;
+        Close(true);
     }
 
     private void BtnLoad_Click(object? sender, RoutedEventArgs e)

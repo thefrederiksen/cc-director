@@ -1,0 +1,78 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.Controls.ImageViewerControl"
+             Background="#1E1E1E">
+
+    <Grid RowDefinitions="Auto,*">
+
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Background="#252526" Padding="8,4"
+                BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+            <Grid ColumnDefinitions="*,Auto">
+
+                <!-- File path + image info -->
+                <DockPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock x:Name="ImageInfoText" DockPanel.Dock="Right"
+                               Foreground="#666666" FontSize="11"
+                               Margin="12,0,8,0" />
+                    <TextBlock x:Name="FilePathText"
+                               Foreground="#888888" FontSize="11"
+                               TextTrimming="CharacterEllipsis" />
+                </DockPanel>
+
+                <!-- Zoom controls -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                    <Button Content="Fit" FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="FitButton_Click" />
+                    <Button Content="100%" FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="ActualSizeButton_Click" />
+                    <Button Content="-" FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="ZoomOutButton_Click" />
+                    <TextBlock x:Name="ZoomLevelText"
+                               Foreground="#AAAAAA" FontSize="11"
+                               VerticalAlignment="Center"
+                               MinWidth="36" TextAlignment="Center" />
+                    <Button Content="+" FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="ZoomInButton_Click" />
+                    <Button x:Name="OpenExternalButton" Content="Open"
+                            FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Margin="4,0,0,0"
+                            Click="OpenExternalButton_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Image area -->
+        <ScrollViewer x:Name="ImageScrollViewer" Grid.Row="1"
+                      HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Auto"
+                      Background="#1E1E1E">
+            <Panel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <!-- Checkerboard background for transparency -->
+                <Border x:Name="CheckerboardBorder" Background="#2A2A2A">
+                    <Image x:Name="ImageDisplay"
+                           Stretch="None"
+                           RenderOptions.BitmapInterpolationMode="HighQuality" />
+                </Border>
+            </Panel>
+        </ScrollViewer>
+
+        <!-- Loading overlay -->
+        <TextBlock x:Name="LoadingText" Grid.Row="1"
+                   Text="Loading..."
+                   Foreground="#888888" FontSize="14"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   IsVisible="False" />
+    </Grid>
+</UserControl>

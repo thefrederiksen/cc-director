@@ -1,7 +1,7 @@
 # CC Director - CenCon Documentation Index
 
 **Version:** 1.1.0
-**Last Updated:** 2026-03-09
+**Last Updated:** 2026-03-14
 **Schema:** CenCon Method v1.0
 
 ---
@@ -43,6 +43,18 @@ This document serves as the central reference combining product requirements, sy
 | Dialogs | Modal dialogs (NewSession, Rename, Relink, Close, Clone, GitHubRepoPicker) |
 | SettingsView | Read-only settings overlay showing all configuration values grouped by category |
 | Voice UI | Voice mode controls and audio playback/recording |
+
+### Avalonia UI Layer (CcDirector.Avalonia)
+
+| Component | Purpose |
+|-----------|---------|
+| MainWindow | Primary window with session sidebar, content tabs, and right panel |
+| CleanView | Card-based conversation view with rewind support |
+| GitChangesView | Source control panel showing git changes |
+| SessionBrowserView | Browse and resume previous Claude Code sessions |
+| UsageDashboardView | Usage and cost tracking dashboard |
+| File Viewers | Document tab system (Image, Code, Markdown, Text, PDF viewers) |
+| Dialogs | Modal dialogs (LoadWorkspace, Rename, Relink, WorkspaceProgress, Input) |
 
 ### Core Services Layer (CcDirector.Core)
 

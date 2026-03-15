@@ -80,37 +80,42 @@
                          Padding="4"
                          SelectionChanged="SessionList_SelectionChanged"
                          DragDrop.AllowDrop="True">
+                    <ListBox.Styles>
+                        <Style Selector="ListBoxItem">
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="Margin" Value="0" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        </Style>
+                        <Style Selector="Button.sessionMenuBtn:pointerover /template/ ContentPresenter">
+                            <Setter Property="Foreground" Value="#CCCCCC" />
+                            <Setter Property="Background" Value="Transparent" />
+                        </Style>
+                    </ListBox.Styles>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <Border Padding="8,6"
-                                    BorderBrush="{Binding ActivityBrush}"
-                                    BorderThickness="3,0,0,0"
-                                    CornerRadius="2"
-                                    Margin="0,1"
-                                    PointerPressed="SessionItem_PointerPressed">
-                                <DockPanel>
-                                    <!-- Three-dot menu button -->
-                                    <Button DockPanel.Dock="Right"
-                                            Content="..."
-                                            Click="SessionMenuButton_Click"
-                                            Focusable="False"
-                                            VerticalAlignment="Center"
-                                            Padding="6,2"
-                                            Margin="4,0,0,0"
-                                            MinWidth="24"
-                                            Background="Transparent"
-                                            Foreground="#888888"
-                                            BorderThickness="0"
-                                            Cursor="Hand"
-                                            FontWeight="Bold"
-                                            FontSize="12"
-                                            ToolTip.Tip="Session options"
-                                            Opacity="0.5" />
-                                    <StackPanel>
-                                        <TextBlock Text="{Binding DisplayName}"
-                                                   Foreground="{DynamicResource TextForeground}"
-                                                   FontSize="13"
-                                                   FontWeight="Medium" />
+                            <Grid ColumnDefinitions="4,*"
+                                  Margin="0,1"
+                                  PointerPressed="SessionItem_PointerPressed">
+                                <!-- Activity color strip - always visible -->
+                                <Rectangle Grid.Column="0"
+                                           Fill="{Binding ActivityBrush}"
+                                           RadiusX="2" RadiusY="2" />
+                                <Grid Grid.Column="1" ColumnDefinitions="*,Auto" Margin="8,6">
+                                    <!-- Session content -->
+                                    <StackPanel Grid.Column="0">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Border IsVisible="{Binding HasCustomColor}"
+                                                    Width="14" Height="14"
+                                                    CornerRadius="3"
+                                                    Background="{Binding CustomColorBrush}"
+                                                    Margin="0,0,6,0"
+                                                    VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       Foreground="{DynamicResource TextForeground}"
+                                                       FontSize="13"
+                                                       FontWeight="Medium"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
                                         <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                             <TextBlock Text="{Binding ActivityLabel}"
                                                        Foreground="#888888"
@@ -130,10 +135,35 @@
                                                     </TextBlock.Text>
                                                 </TextBlock>
                                             </Border>
+                                            <!-- Queue indicator dot -->
+                                            <Border IsVisible="{Binding HasQueuedItems}"
+                                                    Background="#EF4444"
+                                                    CornerRadius="5"
+                                                    Width="10" Height="10"
+                                                    Margin="6,0,0,0"
+                                                    VerticalAlignment="Center"
+                                                    ToolTip.Tip="Has queued prompts" />
                                         </StackPanel>
                                     </StackPanel>
-                                </DockPanel>
-                            </Border>
+                                    <!-- Three-dot menu button -->
+                                    <Button Grid.Column="1"
+                                            Content="..."
+                                            Click="SessionMenuButton_Click"
+                                            Focusable="False"
+                                            VerticalAlignment="Top"
+                                            Padding="6,2"
+                                            Margin="4,0,0,0"
+                                            MinWidth="24"
+                                            Background="Transparent"
+                                            Foreground="#AAAAAA"
+                                            BorderThickness="0"
+                                            Cursor="Hand"
+                                            FontWeight="Bold"
+                                            FontSize="12"
+                                            ToolTip.Tip="Session options"
+                                            Classes="sessionMenuBtn" />
+                                </Grid>
+                            </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
@@ -333,13 +363,6 @@
                     <StackPanel Orientation="Horizontal"
                                 VerticalAlignment="Center"
                                 Spacing="2">
-                        <Button x:Name="AgentTabButton"
-                                Content="Agent"
-                                Background="Transparent"
-                                Foreground="#888888"
-                                Padding="12,4"
-                                FontSize="12"
-                                Click="AgentTabButton_Click" />
                         <Button x:Name="TerminalTabButton"
                                 Content="Terminal"
                                 Background="{DynamicResource AccentBrush}"
@@ -354,6 +377,13 @@
                                 Padding="12,4"
                                 FontSize="12"
                                 Click="SourceControlTabButton_Click" />
+                        <Button x:Name="AgentTabButton"
+                                Content="Agent"
+                                Background="Transparent"
+                                Foreground="#888888"
+                                Padding="12,4"
+                                FontSize="12"
+                                Click="AgentTabButton_Click" />
 
                         <!-- Separator between fixed tabs and document tabs -->
                         <Border x:Name="DocTabSeparator"
@@ -601,6 +631,13 @@
                             Background="Transparent"
                             Padding="0"
                             FontSize="11">
+                    <TabControl.Styles>
+                        <Style Selector="TabItem">
+                            <Setter Property="FontSize" Value="12" />
+                            <Setter Property="Padding" Value="8,4" />
+                            <Setter Property="MinHeight" Value="28" />
+                        </Style>
+                    </TabControl.Styles>
 
                     <!-- ===== Screenshots Tab ===== -->
                     <TabItem Header="Screenshots">
@@ -777,18 +814,18 @@
                         </DockPanel>
                     </TabItem>
 
-                    <!-- ===== Sessions Tab ===== -->
-                    <TabItem Header="Sessions">
+                    <!-- ===== Sessions Tab (hidden for now) ===== -->
+                    <TabItem Header="Sessions" IsVisible="False">
                         <controls:SessionBrowserView x:Name="SessionBrowserView" />
                     </TabItem>
 
-                    <!-- ===== Usage Tab ===== -->
-                    <TabItem Header="Usage">
+                    <!-- ===== Usage Tab (hidden for now) ===== -->
+                    <TabItem Header="Usage" IsVisible="False">
                         <controls:UsageDashboardView x:Name="UsageDashboardView" />
                     </TabItem>
 
-                    <!-- ===== Hooks Tab ===== -->
-                    <TabItem Header="Hooks">
+                    <!-- ===== Hooks Tab (hidden for now) ===== -->
+                    <TabItem Header="Hooks" IsVisible="False">
                         <DockPanel>
                             <!-- Top bar -->
                             <Border DockPanel.Dock="Top" Padding="8,6"

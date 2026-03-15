@@ -1,0 +1,43 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.Controls.PdfViewerControl"
+             Background="#1E1E1E">
+
+    <Grid RowDefinitions="Auto,*">
+
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Background="#252526" Padding="8,4"
+                BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+            <Grid ColumnDefinitions="*,Auto">
+
+                <!-- File path display -->
+                <TextBlock x:Name="FilePathText" Grid.Column="0"
+                           Foreground="#888888" FontSize="11"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+
+                <!-- Open externally -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                    <Button x:Name="OpenExternalButton" Content="Open"
+                            FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="OpenExternalButton_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Placeholder message -->
+        <StackPanel Grid.Row="1"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Spacing="12">
+            <TextBlock Text="PDF Preview"
+                       Foreground="#888888" FontSize="16"
+                       HorizontalAlignment="Center" />
+            <TextBlock Text="Click 'Open' to view in your default PDF reader."
+                       Foreground="#666666" FontSize="13"
+                       HorizontalAlignment="Center" />
+        </StackPanel>
+    </Grid>
+</UserControl>

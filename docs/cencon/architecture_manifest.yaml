@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-03-11"
+last_updated: "2026-03-14"
 
 # C4 Level 1: System Context
 context:
@@ -100,6 +100,81 @@ containers:
       - name: Voice UI
         description: Voice mode controls and audio playback/recording
         directory: Voice/
+      - name: File Viewers
+        description: Document tab viewers for images, code, markdown, text, and PDF files
+        files:
+          - Controls/IFileViewer.cs
+          - Controls/ImageViewerControl.xaml
+          - Controls/CodeViewerControl.xaml
+          - Controls/MarkdownViewerControl.xaml
+          - Controls/TextViewerControl.xaml
+          - Controls/PdfViewerControl.xaml
+
+  - id: avalonia_ui
+    name: Avalonia UI Layer
+    technology: C# / Avalonia / AXAML
+    description: Cross-platform desktop application user interface
+    project: CcDirector.Avalonia
+    dependencies:
+      - CcDirector.Core
+      - CcDirector.Engine
+      - CcDirector.Terminal.Core
+      - CcDirector.Terminal.Avalonia
+    components:
+      - name: MainWindow
+        description: Primary window with session sidebar, content tabs, and right panel
+        file: MainWindow.axaml / MainWindow.axaml.cs
+      - name: CleanView
+        description: Card-based conversation view with rewind support
+        file: Controls/CleanView.axaml / Controls/CleanView.axaml.cs
+      - name: GitChangesView
+        description: Source control panel showing git changes
+        file: Controls/GitChangesView.axaml / Controls/GitChangesView.axaml.cs
+      - name: SessionBrowserView
+        description: Browse and resume previous Claude Code sessions
+        file: Controls/SessionBrowserView.axaml / Controls/SessionBrowserView.axaml.cs
+      - name: UsageDashboardView
+        description: Usage and cost tracking dashboard
+        file: Controls/UsageDashboardView.axaml / Controls/UsageDashboardView.axaml.cs
+      - name: File Viewers
+        description: Document tab system for viewing images, code, markdown, text, and PDF
+        files:
+          - Controls/IFileViewer.cs
+          - Controls/ImageViewerControl.axaml
+          - Controls/CodeViewerControl.axaml
+          - Controls/MarkdownViewerControl.axaml
+          - Controls/TextViewerControl.axaml
+          - Controls/PdfViewerControl.axaml
+      - name: Dialogs
+        description: Modal dialogs for session management
+        files:
+          - LoadWorkspaceDialog.axaml
+          - RenameSessionDialog.axaml
+          - RelinkSessionDialog.axaml
+          - WorkspaceProgressDialog.axaml
+          - Controls/InputDialog.axaml
+
+  - id: terminal_core
+    name: Terminal Core
+    technology: C# / .NET 10
+    description: Cross-platform terminal rendering with VT/ANSI parsing
+    project: CcDirector.Terminal.Core
+    components:
+      - name: TerminalEmulator
+        description: VT100/ANSI terminal emulator with screen buffer
+        file: TerminalEmulator.cs
+
+  - id: terminal_avalonia
+    name: Terminal Avalonia
+    technology: C# / Avalonia
+    description: Avalonia-native terminal control
+    project: CcDirector.Terminal.Avalonia
+    dependencies:
+      - CcDirector.Terminal.Core
+    components:
+      - name: TerminalControl
+        description: Avalonia UserControl for terminal rendering
+        file: TerminalControl.cs
 
   - id: core_services
     name: Core Services Layer

@@ -1,0 +1,67 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.Controls.TextViewerControl"
+             Background="#1E1E1E">
+
+    <Grid RowDefinitions="Auto,*">
+
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Background="#252526" Padding="8,4"
+                BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+            <Grid ColumnDefinitions="*,Auto">
+
+                <!-- File path display -->
+                <TextBlock x:Name="FilePathText" Grid.Column="0"
+                           Foreground="#888888" FontSize="11"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+
+                <!-- Controls -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                    <!-- Save button (visible when dirty) -->
+                    <Button x:Name="SaveButton" Content="Save"
+                            FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            IsVisible="False"
+                            Click="SaveButton_Click" />
+
+                    <!-- Word wrap toggle -->
+                    <Button x:Name="WrapToggleButton" Content="No Wrap"
+                            FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="WrapToggleButton_Click" />
+
+                    <!-- Open externally -->
+                    <Button x:Name="OpenExternalButton" Content="Open"
+                            FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="OpenExternalButton_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Text editor -->
+        <TextBox x:Name="EditorBox" Grid.Row="1"
+                 FontFamily="Cascadia Mono, Consolas, Courier New"
+                 FontSize="13"
+                 Background="#1E1E1E"
+                 Foreground="#D4D4D4"
+                 CaretBrush="#D4D4D4"
+                 BorderThickness="0"
+                 AcceptsReturn="True"
+                 AcceptsTab="True"
+                 TextWrapping="Wrap"
+                 Padding="24,16" />
+
+        <!-- Loading overlay -->
+        <TextBlock x:Name="LoadingText" Grid.Row="1"
+                   Text="Loading..."
+                   Foreground="#888888" FontSize="14"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   IsVisible="False" />
+    </Grid>
+</UserControl>

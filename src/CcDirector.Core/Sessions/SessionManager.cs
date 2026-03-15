@@ -187,10 +187,10 @@ public sealed class SessionManager : IDisposable
         await session.KillAsync(_options.GracefulShutdownTimeoutSeconds * 1000);
     }
 
-    /// <summary>Return PIDs of all tracked embedded sessions.</summary>
+    /// <summary>Return PIDs of all tracked sessions that have live processes.</summary>
     public HashSet<int> GetTrackedProcessIds()
         => _sessions.Values
-            .Where(s => s.BackendType == SessionBackendType.Embedded && s.ProcessId > 0)
+            .Where(s => s.ProcessId > 0)
             .Select(s => s.ProcessId)
             .ToHashSet();
 

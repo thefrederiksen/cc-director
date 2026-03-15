@@ -10,7 +10,7 @@ namespace CcDirector.Core.Pipes;
 /// Includes deduplication to handle the same event arriving via multiple transports
 /// (named pipe + file watcher).
 /// </summary>
-public sealed class EventRouter
+public sealed class EventRouter : IDisposable
 {
     private readonly SessionManager _sessionManager;
     private readonly Action<string>? _log;
@@ -95,6 +95,13 @@ public sealed class EventRouter
         // use a coarse timestamp (1-second resolution) to deduplicate rapid arrivals
         var coarseTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         return $"{prefix}:{coarseTime}";
+    }
+
+    public void Dispose()
+    {
+        _dedupeCleanupTimer?.Dispose();
+        _dedupeCleanupTimer = null;
+        _recentMessages.Clear();
     }
 
     private void CleanupDedupeCache(object? state)

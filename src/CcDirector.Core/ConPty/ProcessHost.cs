@@ -266,11 +266,8 @@ public sealed class ProcessHost : IDisposable
 
         if (completed != exitTask)
         {
-            // Process didn't exit in time - terminate
-            if (_processInfo.hProcess != IntPtr.Zero)
-            {
-                TerminateProcess(_processInfo.hProcess, 1);
-            }
+            // Process didn't exit in time - kill the entire process tree
+            KillProcessTree();
         }
     }
 
@@ -281,7 +278,21 @@ public sealed class ProcessHost : IDisposable
 
         _cts.Cancel();
 
-        // Wait for tasks to finish (with timeout)
+        // Kill the entire process tree (not just the root process) so child
+        // processes like Node.js don't keep ConPTY pipes open.
+        KillProcessTree();
+
+        // Dispose the pseudo console FIRST -- this closes ConPTY pipes and causes
+        // EOF on the output stream, which unblocks the drain loop immediately.
+        // Previously this was done AFTER the task wait, causing a guaranteed 3-second
+        // stall while the drain loop sat blocked on a synchronous Read().
+        _console.Dispose();
+
+        // Dispose streams to unblock any remaining I/O
+        _inputStream?.Dispose();
+        _outputStream?.Dispose();
+
+        // Now wait for tasks -- they should complete quickly since pipes are closed
         try
         {
             var tasks = new List<Task>();
@@ -292,10 +303,6 @@ public sealed class ProcessHost : IDisposable
         }
         catch (AggregateException) { }
 
-        // Dispose streams
-        _inputStream?.Dispose();
-        _outputStream?.Dispose();
-
         // Close process handle
         if (_processInfo.hProcess != IntPtr.Zero)
         {
@@ -303,9 +310,24 @@ public sealed class ProcessHost : IDisposable
             _processInfo.hProcess = IntPtr.Zero;
         }
 
-        // Dispose the pseudo console (closes ConPTY which causes EOF on pipes)
-        _console.Dispose();
-
         _cts.Dispose();
+    }
+
+    /// <summary>
+    /// Kill the entire process tree rooted at the spawned process.
+    /// TerminateProcess only kills the root -- child processes (Node.js, bash, etc.)
+    /// survive and keep ConPTY pipes open, blocking shutdown.
+    /// </summary>
+    private void KillProcessTree()
+    {
+        if (_processInfo.dwProcessId == 0) return;
+        try
+        {
+            var process = System.Diagnostics.Process.GetProcessById(_processInfo.dwProcessId);
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+        catch (ArgumentException) { } // Process already exited
+        catch (InvalidOperationException) { } // Process already exited
     }
 }

@@ -31,7 +31,7 @@ public class OriginalRenderer : ITerminalRenderer
         // Avalonia does not have WPF-specific text rendering options
         // (TextRenderingMode, TextFormattingMode, TextHintingMode, ClearTypeHint).
         // Only set layout rounding.
-        control.UseLayoutRounding = false;
+        control.UseLayoutRounding = true;
     }
 
     public void Render(DrawingContext dc, TerminalCell[,] cells, int cols, int rows,
@@ -40,7 +40,7 @@ public class OriginalRenderer : ITerminalRenderer
         var bgColor = GetBackgroundColor();
         var bg = GetBrush(bgColor);
         dc.DrawRectangle(bg, null, new Rect(0, 0,
-            Math.Round(cols * cellWidth), Math.Round(rows * cellHeight)));
+            cols * cellWidth, rows * cellHeight));
 
         // Link color - light blue like web links
         var linkColor = Color.FromRgb(0x6C, 0xB6, 0xFF);
@@ -49,9 +49,7 @@ public class OriginalRenderer : ITerminalRenderer
 
         for (int row = 0; row < rows; row++)
         {
-            double rowY = Math.Round(row * cellHeight);
-            double roundedCellHeight = Math.Round(cellHeight);
-
+            double rowY = row * cellHeight;
             // First pass: batch consecutive same-colored backgrounds into single rectangles
             Color runBgColor = default;
             int runBgStart = -1;
@@ -72,10 +70,10 @@ public class OriginalRenderer : ITerminalRenderer
                     if (runBgStart >= 0 && runBgColor != default)
                     {
                         var cellBg = GetBrush(runBgColor);
-                        double x = Math.Round(runBgStart * cellWidth);
-                        double w = Math.Round(col * cellWidth) - x;
+                        double x = runBgStart * cellWidth;
+                        double w = col * cellWidth - x;
                         dc.DrawRectangle(cellBg, null,
-                            new Rect(x, rowY, w, roundedCellHeight));
+                            new Rect(x, rowY, w, cellHeight));
                     }
                     runBgColor = cellBgColor;
                     runBgStart = col;
@@ -94,7 +92,7 @@ public class OriginalRenderer : ITerminalRenderer
                 bool isLink = IsInLinkRegion(col, row, cellWidth, cellHeight, ctx.LinkRegions);
 
                 var fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground.ToAvalonia());
-                double charX = Math.Round(col * cellWidth);
+                double charX = col * cellWidth;
                 double charY = rowY;
 
                 var brush = isLink ? linkBrush : GetBrush(fg);
@@ -113,10 +111,10 @@ public class OriginalRenderer : ITerminalRenderer
                 // Draw underline for links
                 if (isLink)
                 {
-                    double underlineY = charY + roundedCellHeight - 2;
+                    double underlineY = charY + cellHeight - 2;
                     dc.DrawLine(underlinePen,
                         new Point(charX, underlineY),
-                        new Point(charX + Math.Round(cellWidth), underlineY));
+                        new Point(charX + cellWidth, underlineY));
                 }
             }
         }
@@ -131,12 +129,12 @@ public class OriginalRenderer : ITerminalRenderer
                 int colStart = (row == ctx.SelectionStartRow) ? ctx.SelectionStartCol : 0;
                 int colEnd = (row == ctx.SelectionEndRow) ? ctx.SelectionEndCol : cols - 1;
 
-                double x = Math.Round(colStart * cellWidth);
-                double y = Math.Round(row * cellHeight);
-                double width = Math.Round((colEnd - colStart + 1) * cellWidth);
+                double x = colStart * cellWidth;
+                double y = row * cellHeight;
+                double width = (colEnd - colStart + 1) * cellWidth;
 
                 dc.DrawRectangle(highlightBrush, null,
-                    new Rect(x, y, width, Math.Round(cellHeight)));
+                    new Rect(x, y, width, cellHeight));
             }
         }
 
@@ -147,8 +145,8 @@ public class OriginalRenderer : ITerminalRenderer
             {
                 var cursorBrush = GetBrush(Color.FromArgb(180, 200, 200, 200));
                 dc.DrawRectangle(cursorBrush, null,
-                    new Rect(Math.Round(ctx.CursorCol * cellWidth), Math.Round(ctx.CursorRow * cellHeight),
-                        Math.Round(cellWidth), Math.Round(cellHeight)));
+                    new Rect(ctx.CursorCol * cellWidth, ctx.CursorRow * cellHeight,
+                        cellWidth, cellHeight));
             }
         }
     }

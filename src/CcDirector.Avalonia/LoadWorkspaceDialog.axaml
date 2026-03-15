@@ -21,20 +21,33 @@
         <Grid Grid.Column="0" Grid.Row="0" Margin="0,0,12,0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <TextBlock Grid.Row="0" Text="Saved workspaces:"
+            <!-- Load Default button -->
+            <Button x:Name="BtnLoadDefault" Grid.Row="0"
+                    Content="Load Default Workspace"
+                    Height="36" FontSize="13" FontWeight="SemiBold"
+                    HorizontalAlignment="Stretch"
+                    HorizontalContentAlignment="Center"
+                    Click="BtnLoadDefault_Click"
+                    Background="#007ACC" Foreground="White"
+                    BorderThickness="0" Cursor="Hand"
+                    Margin="0,0,0,10"
+                    IsVisible="False" />
+
+            <TextBlock Grid.Row="1" Text="Saved workspaces:"
                        Foreground="#CCCCCC" FontSize="13" Margin="0,0,0,6" />
 
             <!-- Empty state -->
-            <TextBlock x:Name="TxtEmpty" Grid.Row="1"
+            <TextBlock x:Name="TxtEmpty" Grid.Row="2"
                        Text="No saved workspaces"
                        Foreground="#555555" FontStyle="Italic"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        IsVisible="False" />
 
-            <ListBox x:Name="WorkspaceListBox" Grid.Row="1"
+            <ListBox x:Name="WorkspaceListBox" Grid.Row="2"
                      Background="#1E1E1E" BorderBrush="#3C3C3C"
                      SelectionChanged="WorkspaceListBox_SelectionChanged">
                 <ListBox.Styles>

@@ -38,7 +38,7 @@ public class ProRenderer : ITerminalRenderer
         var bgColor = GetBackgroundColor();
         var bg = GetBrush(bgColor);
         dc.DrawRectangle(bg, null, new Rect(0, 0,
-            Math.Round(cols * cellWidth), Math.Round(rows * cellHeight)));
+            cols * cellWidth, rows * cellHeight));
 
         var linkColor = Color.FromRgb(0x6C, 0xB6, 0xFF);
         var linkBrush = GetBrush(linkColor);
@@ -46,7 +46,7 @@ public class ProRenderer : ITerminalRenderer
 
         for (int row = 0; row < rows; row++)
         {
-            double rowY = Math.Round(row * cellHeight);
+            double rowY = row * cellHeight;
 
             // First pass: batch consecutive same-colored backgrounds
             Color runBgColor = default;
@@ -67,18 +67,15 @@ public class ProRenderer : ITerminalRenderer
                     if (runBgStart >= 0 && runBgColor != default)
                     {
                         var cellBg = GetBrush(runBgColor);
-                        double x = Math.Round(runBgStart * cellWidth);
-                        double w = Math.Round(col * cellWidth) - x;
+                        double x = runBgStart * cellWidth;
+                        double w = col * cellWidth - x;
                         dc.DrawRectangle(cellBg, null,
-                            new Rect(x, rowY, w, Math.Round(cellHeight)));
+                            new Rect(x, rowY, w, cellHeight));
                     }
                     runBgColor = cellBgColor;
                     runBgStart = col;
                 }
             }
-
-            double roundedCellWidth = Math.Round(cellWidth);
-            double roundedCellHeight = Math.Round(cellHeight);
 
             // Second pass: box-drawing characters (drawn as geometry, not text)
             for (int col = 0; col < cols; col++)
@@ -89,8 +86,8 @@ public class ProRenderer : ITerminalRenderer
 
                 bool isLink = OriginalRenderer.IsInLinkRegion(col, row, cellWidth, cellHeight, ctx.LinkRegions);
                 var fg = isLink ? linkColor : (cell.Foreground == default ? Colors.LightGray : cell.Foreground.ToAvalonia());
-                double colX = Math.Round(col * cellWidth);
-                BoxDrawingHelper.TryDrawBoxChar(dc, ch, fg, colX, rowY, roundedCellWidth, roundedCellHeight);
+                double colX = col * cellWidth;
+                BoxDrawingHelper.TryDrawBoxChar(dc, ch, fg, colX, rowY, cellWidth, cellHeight);
             }
 
             // Third pass: batch contiguous same-style runs and draw text
@@ -139,14 +136,14 @@ public class ProRenderer : ITerminalRenderer
                         ctx.FontSize,
                         brush);
 
-                    double runX = Math.Round(runStart * cellWidth);
+                    double runX = runStart * cellWidth;
                     dc.DrawText(ft, new Point(runX, rowY));
 
                     // Draw underlines for link runs
                     if (runIsLink)
                     {
-                        double ulY = rowY + Math.Round(cellHeight) - 2;
-                        double runEndX = Math.Round((runStart + runText.Length) * cellWidth);
+                        double ulY = rowY + cellHeight - 2;
+                        double runEndX = (runStart + runText.Length) * cellWidth;
                         dc.DrawLine(underlinePen,
                             new Point(runX, ulY),
                             new Point(runEndX, ulY));
@@ -190,8 +187,8 @@ public class ProRenderer : ITerminalRenderer
                 int colEnd = (row == ctx.SelectionEndRow) ? ctx.SelectionEndCol : cols - 1;
 
                 dc.DrawRectangle(highlightBrush, null,
-                    new Rect(Math.Round(colStart * cellWidth), Math.Round(row * cellHeight),
-                             Math.Round((colEnd - colStart + 1) * cellWidth), Math.Round(cellHeight)));
+                    new Rect(colStart * cellWidth, row * cellHeight,
+                             (colEnd - colStart + 1) * cellWidth, cellHeight));
             }
         }
 
@@ -202,8 +199,8 @@ public class ProRenderer : ITerminalRenderer
             {
                 var cursorBrush = GetBrush(Color.FromArgb(180, 200, 200, 200));
                 dc.DrawRectangle(cursorBrush, null,
-                    new Rect(Math.Round(ctx.CursorCol * cellWidth), Math.Round(ctx.CursorRow * cellHeight),
-                        Math.Round(cellWidth), Math.Round(cellHeight)));
+                    new Rect(ctx.CursorCol * cellWidth, ctx.CursorRow * cellHeight,
+                        cellWidth, cellHeight));
             }
         }
     }

@@ -37,6 +37,12 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnActivityStateChanged += OnActivityStateChanged;
         session.OnVerificationStatusChanged += OnVerificationStatusChanged;
         session.OnTerminalVerificationStatusChanged += OnTerminalVerificationStatusChanged;
+
+        if (session.PromptQueue != null)
+        {
+            _queueCount = session.PromptQueue.Count;
+            session.PromptQueue.OnQueueChanged += OnQueueChanged;
+        }
     }
 
     public string DisplayName => Session.CustomName
@@ -97,6 +103,21 @@ public class SessionViewModel : INotifyPropertyChanged
 
     public bool HasUncommittedChanges => _uncommittedCount > 0;
 
+    private int _queueCount;
+    public int QueueCount
+    {
+        get => _queueCount;
+        set
+        {
+            if (_queueCount == value) return;
+            _queueCount = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasQueuedItems));
+        }
+    }
+
+    public bool HasQueuedItems => _queueCount > 0;
+
     public void Rename(string? newName, string? color = null)
     {
         Session.CustomName = newName;
@@ -154,6 +175,14 @@ public class SessionViewModel : INotifyPropertyChanged
         _ => VerificationWaitingBrush
     };
 
+    private void OnQueueChanged()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            QueueCount = Session.PromptQueue?.Count ?? 0;
+        });
+    }
+
     private void OnActivityStateChanged(ActivityState oldState, ActivityState newState)
     {
         Dispatcher.UIThread.Post(() =>
@@ -186,6 +215,21 @@ public class SessionViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(HasVerificationWarning));
             OnPropertyChanged(nameof(VerificationStatusText));
         });
+    }
+
+    /// <summary>Refresh Claude metadata from sessions-index.json.</summary>
+    public void RefreshClaudeMetadata()
+    {
+        Session.RefreshClaudeMetadata();
+    }
+
+    /// <summary>Notify UI that display properties may have changed.</summary>
+    public void NotifyDisplayChanged()
+    {
+        OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(CustomColor));
+        OnPropertyChanged(nameof(HasCustomColor));
+        OnPropertyChanged(nameof(CustomColorBrush));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

@@ -774,8 +774,8 @@ public class TerminalControl : Control
             _fontSize,
             Brushes.White);
 
-        _cellWidth = formatted.Width;
-        _cellHeight = formatted.Height;
+        _cellWidth = Math.Ceiling(formatted.Width);
+        _cellHeight = Math.Ceiling(formatted.Height);
 
         // Fallback if metrics are zero (control not yet attached to visual tree)
         if (_cellWidth <= 0) _cellWidth = 8.4;
