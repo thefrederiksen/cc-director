@@ -898,7 +898,7 @@ public partial class MainWindow : Window
 
     // --- Session drag-and-drop reorder ---
 
-    private async void SessionItem_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
+    private async void ColorSquare_PointerPressed(object? sender, global::Avalonia.Input.PointerPressedEventArgs e)
     {
         if (sender is not Control control || control.DataContext is not SessionViewModel vm)
             return;
@@ -906,6 +906,7 @@ public partial class MainWindow : Window
         if (!e.GetCurrentPoint(control).Properties.IsLeftButtonPressed)
             return;
 
+        FileLog.Write($"[MainWindow] ColorSquare drag started: {vm.DisplayName}");
         var dataObject = new DataObject();
         dataObject.Set("SessionViewModel", vm.Session.Id.ToString());
         await DragDrop.DoDragDrop(e, dataObject, global::Avalonia.Input.DragDropEffects.Move);

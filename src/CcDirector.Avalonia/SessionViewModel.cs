@@ -57,10 +57,15 @@ public class SessionViewModel : INotifyPropertyChanged
             OnPropertyChanged();
             OnPropertyChanged(nameof(HasCustomColor));
             OnPropertyChanged(nameof(CustomColorBrush));
+            OnPropertyChanged(nameof(DragHandleBrush));
         }
     }
 
     public bool HasCustomColor => !string.IsNullOrWhiteSpace(CustomColor);
+
+    private static readonly ISolidColorBrush DefaultDragHandleBrush = new SolidColorBrush(Color.Parse("#3C3C3C"));
+
+    public ISolidColorBrush DragHandleBrush => HasCustomColor ? CustomColorBrush : DefaultDragHandleBrush;
 
     public ISolidColorBrush CustomColorBrush
     {
@@ -127,6 +132,7 @@ public class SessionViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CustomColor));
         OnPropertyChanged(nameof(HasCustomColor));
         OnPropertyChanged(nameof(CustomColorBrush));
+        OnPropertyChanged(nameof(DragHandleBrush));
     }
 
     public bool IsVerified => Session.VerificationStatus == SessionVerificationStatus.Verified;

@@ -4427,12 +4427,12 @@ public partial class MainWindow : Window
     private Point _dragStartPoint;
     private DropInsertionAdorner? _dropAdorner;
 
-    private void SessionList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    private void ColorSquare_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         _dragStartPoint = e.GetPosition(null);
     }
 
-    private void SessionList_PreviewMouseMove(object sender, MouseEventArgs e)
+    private void ColorSquare_PreviewMouseMove(object sender, MouseEventArgs e)
     {
         if (e.LeftButton != MouseButtonState.Pressed) return;
 
@@ -4441,12 +4441,12 @@ public partial class MainWindow : Window
             Math.Abs(diff.Y) < SystemParameters.MinimumVerticalDragDistance)
             return;
 
-        // Find the ListBoxItem under the mouse
-        if (GetSessionViewModelAtPoint(e.GetPosition(SessionList)) is not SessionViewModel draggedVm)
+        if (sender is not FrameworkElement element || element.DataContext is not SessionViewModel draggedVm)
             return;
 
+        FileLog.Write($"[MainWindow] ColorSquare drag started: {draggedVm.DisplayName}");
         var data = new DataObject("SessionViewModel", draggedVm);
-        DragDrop.DoDragDrop(SessionList, data, DragDropEffects.Move);
+        DragDrop.DoDragDrop(element, data, DragDropEffects.Move);
         RemoveDropAdorner();
     }
 
@@ -4643,6 +4643,7 @@ public class SessionViewModel : INotifyPropertyChanged
             OnPropertyChanged();
             OnPropertyChanged(nameof(CustomColorBrush));
             OnPropertyChanged(nameof(HasCustomColor));
+            OnPropertyChanged(nameof(DragHandleBrush));
         }
     }
 
@@ -4672,6 +4673,10 @@ public class SessionViewModel : INotifyPropertyChanged
         }
     }
 
+    private static readonly SolidColorBrush DefaultDragHandleBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x3C, 0x3C, 0x3C)));
+
+    public SolidColorBrush DragHandleBrush => HasCustomColor ? CustomColorBrush : DefaultDragHandleBrush;
+
     public void Rename(string? newName, string? color = null)
     {
         Session.CustomName = string.IsNullOrWhiteSpace(newName) ? null : newName.Trim();
@@ -4689,6 +4694,7 @@ public class SessionViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CustomColor));
         OnPropertyChanged(nameof(CustomColorBrush));
         OnPropertyChanged(nameof(HasCustomColor));
+        OnPropertyChanged(nameof(DragHandleBrush));
     }
 
     /// <summary>Prompt text the user was composing but hasn't sent yet. Saved/restored on session switch.</summary>

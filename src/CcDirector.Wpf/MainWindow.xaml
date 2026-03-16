@@ -435,8 +435,6 @@
                              KeyboardNavigation.TabNavigation="None"
                              PreviewKeyDown="SessionList_PreviewKeyDown"
                              AllowDrop="True"
-                             PreviewMouseMove="SessionList_PreviewMouseMove"
-                             PreviewMouseLeftButtonDown="SessionList_PreviewMouseLeftButtonDown"
                              DragOver="SessionList_DragOver"
                              Drop="SessionList_Drop"
                              DragLeave="SessionList_DragLeave"
@@ -630,21 +628,27 @@
                                             </StackPanel>
                                             </Grid>
 
-                                            <!-- Column 1: Custom color pill (only visible when color is set) -->
+                                            <!-- Column 1: Color square / drag handle (always visible) -->
                                             <Border Grid.Column="1"
                                                     Width="16"
                                                     CornerRadius="4"
                                                     Margin="6,2,0,2"
-                                                    Background="{Binding CustomColorBrush}"
+                                                    Background="{Binding DragHandleBrush}"
                                                     VerticalAlignment="Stretch"
-                                                    ToolTip="{Binding CustomColor}">
+                                                    Cursor="SizeAll"
+                                                    ToolTip="Drag to reorder"
+                                                    PreviewMouseLeftButtonDown="ColorSquare_PreviewMouseLeftButtonDown"
+                                                    PreviewMouseMove="ColorSquare_PreviewMouseMove">
                                                 <Border.Style>
                                                     <Style TargetType="Border">
-                                                        <Setter Property="Visibility" Value="Visible" />
                                                         <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding HasCustomColor}" Value="False">
-                                                                <Setter Property="Visibility" Value="Collapsed" />
-                                                            </DataTrigger>
+                                                            <MultiDataTrigger>
+                                                                <MultiDataTrigger.Conditions>
+                                                                    <Condition Binding="{Binding RelativeSource={RelativeSource Self}, Path=IsMouseOver}" Value="True" />
+                                                                    <Condition Binding="{Binding HasCustomColor}" Value="False" />
+                                                                </MultiDataTrigger.Conditions>
+                                                                <Setter Property="Background" Value="#505050" />
+                                                            </MultiDataTrigger>
                                                         </Style.Triggers>
                                                     </Style>
                                                 </Border.Style>

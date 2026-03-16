@@ -94,8 +94,7 @@
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid ColumnDefinitions="4,*"
-                                  Margin="0,1"
-                                  PointerPressed="SessionItem_PointerPressed">
+                                  Margin="0,1">
                                 <!-- Activity color strip - always visible -->
                                 <Rectangle Grid.Column="0"
                                            Fill="{Binding ActivityBrush}"
@@ -104,12 +103,13 @@
                                     <!-- Session content -->
                                     <StackPanel Grid.Column="0">
                                         <StackPanel Orientation="Horizontal">
-                                            <Border IsVisible="{Binding HasCustomColor}"
-                                                    Width="14" Height="14"
+                                            <Border Width="14" Height="14"
                                                     CornerRadius="3"
-                                                    Background="{Binding CustomColorBrush}"
+                                                    Background="{Binding DragHandleBrush}"
                                                     Margin="0,0,6,0"
-                                                    VerticalAlignment="Center" />
+                                                    VerticalAlignment="Center"
+                                                    Cursor="SizeAll"
+                                                    PointerPressed="ColorSquare_PointerPressed" />
                                             <TextBlock Text="{Binding DisplayName}"
                                                        Foreground="{DynamicResource TextForeground}"
                                                        FontSize="13"
