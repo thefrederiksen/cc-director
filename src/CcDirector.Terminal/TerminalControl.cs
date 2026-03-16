@@ -419,26 +419,30 @@ public class TerminalControl : FrameworkElement
     {
         base.OnRenderSizeChanged(sizeInfo);
 
+        // Re-measure font metrics if DPI was unavailable at construction time
+        // (PresentationSource is null in constructor, available once in visual tree).
+        // Also handles DPI changes when dragging between monitors.
+        var source = PresentationSource.FromVisual(this);
+        if (source?.CompositionTarget != null)
+        {
+            double currentDpi = source.CompositionTarget.TransformToDevice.M11;
+            if (Math.Abs(currentDpi - _dpiScale) > 0.001)
+            {
+                FileLog.Write($"[TerminalControl] DPI updated: {_dpiScale} -> {currentDpi}");
+                MeasureFontMetrics();
+            }
+        }
+
         int oldCols = _cols;
         int oldRows = _rows;
         RecalculateGridSize();
 
         if (_cols != oldCols || _rows != oldRows)
         {
-            var oldCells = _cells;
             _cells = new TerminalCell[_cols, _rows];
             InitializeCells();
-
-            if (!_pendingLayoutAttach)
-            {
-                // Normal resize: copy existing content
-                int copyC = Math.Min(oldCols, _cols);
-                int copyR = Math.Min(oldRows, _rows);
-                for (int r = 0; r < copyR; r++)
-                    for (int c = 0; c < copyC; c++)
-                        _cells[c, r] = oldCells[c, r];
-            }
-            // If _pendingLayoutAttach, DON'T copy old cells - they were for wrong dimensions
+            // Don't copy old cells - ConPTY's resize triggers a full redraw that populates correctly.
+            // Copying stale cells causes text doubling when the app's redraw is partial.
 
             _parser?.UpdateGrid(_cells, _cols, _rows);
             _session?.Resize((short)_cols, (short)_rows);

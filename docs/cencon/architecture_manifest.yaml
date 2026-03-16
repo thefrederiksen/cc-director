@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-03-14"
+last_updated: "2026-03-16"
 
 # C4 Level 1: System Context
 context:
@@ -160,9 +160,9 @@ containers:
     description: Cross-platform terminal rendering with VT/ANSI parsing
     project: CcDirector.Terminal.Core
     components:
-      - name: TerminalEmulator
-        description: VT100/ANSI terminal emulator with screen buffer
-        file: TerminalEmulator.cs
+      - name: AnsiParser
+        description: VT100/ANSI escape sequence parser with deferred line wrap, screen buffer, and scrollback
+        file: AnsiParser.cs
 
   - id: terminal_avalonia
     name: Terminal Avalonia

@@ -16,6 +16,7 @@ public class AnsiParser
     // Cursor position (0-based)
     private int _cursorCol;
     private int _cursorRow;
+    private bool _pendingWrap; // Deferred line wrap (VT100 spec: cursor stays at last col until next printable char)
 
     // Scroll region margins (0-based, inclusive)
     private int _scrollTop;
@@ -107,6 +108,7 @@ public class AnsiParser
         _scrollBottom = rows - 1;
         _cursorCol = Math.Min(_cursorCol, cols - 1);
         _cursorRow = Math.Min(_cursorRow, rows - 1);
+        _pendingWrap = false;
     }
 
     public (int Col, int Row) GetCursorPosition() => (_cursorCol, _cursorRow);
@@ -193,17 +195,21 @@ public class AnsiParser
             case 0x07: // BEL - ignore
                 break;
             case 0x08: // BS - backspace
+                _pendingWrap = false;
                 if (_cursorCol > 0) _cursorCol--;
                 break;
             case 0x09: // HT - tab
+                _pendingWrap = false;
                 _cursorCol = Math.Min(_cols - 1, (_cursorCol / 8 + 1) * 8);
                 break;
             case 0x0A: // LF - line feed
             case 0x0B: // VT
             case 0x0C: // FF
+                _pendingWrap = false;
                 LineFeed();
                 break;
             case 0x0D: // CR - carriage return
+                _pendingWrap = false;
                 _cursorCol = 0;
                 break;
             default:
@@ -247,6 +253,7 @@ public class AnsiParser
                 _state = ParserState.OscString;
                 break;
             case (byte)'M': // RI - reverse index (scroll down)
+                _pendingWrap = false;
                 if (_cursorRow == _scrollTop)
                     ScrollDown();
                 else if (_cursorRow > 0)
@@ -259,6 +266,7 @@ public class AnsiParser
                 _state = ParserState.Ground;
                 break;
             case (byte)'8': // DECRC - restore cursor
+                _pendingWrap = false;
                 _cursorCol = Math.Min(_savedCursorCol, _cols - 1);
                 _cursorRow = Math.Min(_savedCursorRow, _rows - 1);
                 _state = ParserState.Ground;
@@ -323,6 +331,7 @@ public class AnsiParser
 
     private void ExecuteCsi(char final)
     {
+        _pendingWrap = false;
         int p0 = _params.Count > 0 ? _params[0] : 0;
         int p1 = _params.Count > 1 ? _params[1] : 0;
 
@@ -449,6 +458,7 @@ public class AnsiParser
                 _cursorVisible = set;
                 break;
             case 1049: // Alternate screen buffer with save/restore cursor
+                _pendingWrap = false;
                 if (set)
                 {
                     // Save state and switch to alt screen
@@ -613,9 +623,9 @@ public class AnsiParser
 
     private void PutChar(char ch)
     {
-        if (_cursorCol >= _cols)
+        if (_pendingWrap)
         {
-            // Line wrap
+            _pendingWrap = false;
             _cursorCol = 0;
             LineFeed();
         }
@@ -629,7 +639,11 @@ public class AnsiParser
             Italic = _italic,
             Underline = _underline
         };
-        _cursorCol++;
+
+        if (_cursorCol < _cols - 1)
+            _cursorCol++;
+        else
+            _pendingWrap = true;
     }
 
     private void LineFeed()
