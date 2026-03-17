@@ -437,6 +437,12 @@ public class TerminalControl : Control
     /// </summary>
     private void HandleSizeChanged()
     {
+        // Don't resize when control is hidden (Bounds=0) - this would switch
+        // to default 120x30, resize ConPTY to wrong dimensions, and cause
+        // content misalignment when the control becomes visible again.
+        if (Bounds.Width <= 0 || Bounds.Height <= 0)
+            return;
+
         int oldCols = _cols;
         int oldRows = _rows;
         RecalculateGridSize();
