@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -142,6 +143,9 @@ public partial class MainWindow : Window
         "agents",
     };
 
+    // Terminal scrollbar state
+    private bool _updatingScrollBar;
+
     // Right panel state
     private bool _rightPanelExpanded = true;
     private readonly ObservableCollection<HookEventViewModel> _hookEvents = new();
@@ -167,6 +171,8 @@ public partial class MainWindow : Window
         AddHandler(DragDrop.DragOverEvent, PromptInput_DragOver);
 
         TerminalHost.ScrollChanged += OnTerminalScrollChanged;
+        TerminalHost.ViewFileRequested += OnTerminalViewFileRequested;
+        TerminalScrollBar.PropertyChanged += TerminalScrollBar_PropertyChanged;
 
         SessionList.AddHandler(DragDrop.DragOverEvent, SessionList_DragOver);
         SessionList.AddHandler(DragDrop.DropEvent, SessionList_Drop);
@@ -364,7 +370,7 @@ public partial class MainWindow : Window
         {
             SessionHeaderBanner.IsVisible = false;
             PlaceholderText.IsVisible = true;
-            TerminalHost.IsVisible = false;
+            TerminalGrid.IsVisible = false;
             PromptBarBorder.IsVisible = false;
             GitChangesView.Detach();
             CleanView.Detach();
@@ -381,8 +387,9 @@ public partial class MainWindow : Window
 
         // Attach terminal
         PlaceholderText.IsVisible = false;
-        TerminalHost.IsVisible = true;
+        TerminalGrid.IsVisible = true;
         TerminalHost.Attach(vm.Session);
+        UpdateScrollBar();
 
         // Attach source control (hide tab if no .git)
         GitChangesView.Attach(vm.Session.RepoPath);
@@ -463,7 +470,7 @@ public partial class MainWindow : Window
 
         SessionHeaderBanner.IsVisible = false;
         PlaceholderText.IsVisible = true;
-        TerminalHost.IsVisible = false;
+        TerminalGrid.IsVisible = false;
         PromptBarBorder.IsVisible = false;
 
         FileLog.Write($"[MainWindow] CloseAllSessionsAsync: removed {snapshots.Count} session(s)");
@@ -640,7 +647,7 @@ public partial class MainWindow : Window
 
             SessionHeaderBanner.IsVisible = false;
             PlaceholderText.IsVisible = true;
-            TerminalHost.IsVisible = false;
+            TerminalGrid.IsVisible = false;
             PromptBarBorder.IsVisible = false;
         }
 
@@ -885,7 +892,63 @@ public partial class MainWindow : Window
 
     private void OnTerminalScrollChanged(object? sender, EventArgs e)
     {
+        UpdateScrollBar();
         CheckTerminalVerification();
+    }
+
+    private void UpdateScrollBar()
+    {
+        int total = TerminalHost.ScrollbackCount;
+        int viewport = TerminalHost.ViewportRows;
+        bool shouldShow = total > 0;
+        bool wasVisible = TerminalScrollBar.IsVisible;
+
+        _updatingScrollBar = true;
+        TerminalScrollBar.Maximum = total;
+        TerminalScrollBar.ViewportSize = viewport;
+        TerminalScrollBar.LargeChange = viewport;
+        TerminalScrollBar.SmallChange = 3;
+        TerminalScrollBar.Value = total - TerminalHost.ScrollOffset;
+        TerminalScrollBar.IsVisible = shouldShow;
+        _updatingScrollBar = false;
+
+        if (shouldShow != wasVisible)
+            FileLog.Write($"[MainWindow] UpdateScrollBar: visible={shouldShow}, scrollback={total}, viewport={viewport}");
+    }
+
+    private void TerminalScrollBar_PropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property != ScrollBar.ValueProperty) return;
+        if (_updatingScrollBar) return;
+
+        _updatingScrollBar = true;
+        int offset = (int)(TerminalScrollBar.Maximum - TerminalScrollBar.Value);
+        TerminalHost.ScrollOffset = offset;
+        _updatingScrollBar = false;
+    }
+
+    private void OnTerminalViewFileRequested(string path)
+    {
+        FileLog.Write($"[MainWindow] OnTerminalViewFileRequested: {path}");
+        try
+        {
+            if (FileExtensions.IsViewable(path) && File.Exists(path))
+            {
+                OpenDocumentFile(path);
+            }
+            else
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = path,
+                    UseShellExecute = true,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OnTerminalViewFileRequested FAILED: {ex.Message}");
+        }
     }
 
     // ==================== EVENT HANDLERS ====================
