@@ -1,0 +1,48 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CcDirector.Avalonia.Controls.CommManager.SendProgressDialog"
+        Title="Sending Communications"
+        Width="480"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#252526">
+
+    <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+
+        <!-- Header -->
+        <TextBlock x:Name="HeaderText" Grid.Row="0"
+                   Text="Preparing to send..."
+                   Foreground="#CCCCCC" FontSize="14" FontWeight="SemiBold"
+                   Margin="0,0,0,12"/>
+
+        <!-- Current item description -->
+        <TextBlock x:Name="CurrentItemText" Grid.Row="1"
+                   Text=""
+                   Foreground="#AAAAAA" FontSize="12"
+                   TextTrimming="CharacterEllipsis"
+                   Margin="0,0,0,8"/>
+
+        <!-- Progress bar -->
+        <ProgressBar x:Name="ProgressBar" Grid.Row="2"
+                     Height="18" Minimum="0" Maximum="100" Value="0"
+                     Background="#3C3C3C" Foreground="#007ACC"
+                     Margin="0,0,0,12"/>
+
+        <!-- Stats row -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,16">
+            <TextBlock x:Name="SentText" Text="Sent: 0" Foreground="#22C55E" FontSize="12" Margin="0,0,16,0"/>
+            <TextBlock x:Name="FailedText" Text="Failed: 0" Foreground="#DC3545" FontSize="12" Margin="0,0,16,0"/>
+            <TextBlock x:Name="SkippedText" Text="Skipped: 0" Foreground="#888888" FontSize="12"/>
+        </StackPanel>
+
+        <!-- Close button (visible when done) -->
+        <Button x:Name="CloseButton" Grid.Row="4"
+                Content="Close" Width="80" Height="28"
+                Background="#3C3C3C" Foreground="#CCCCCC"
+                BorderThickness="0" Cursor="Hand"
+                HorizontalAlignment="Right"
+                IsVisible="False"
+                Click="CloseButton_Click"/>
+    </Grid>
+</Window>

@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:terminal="clr-namespace:CcDirector.Terminal.Avalonia;assembly=CcDirector.Terminal.Avalonia"
         xmlns:controls="clr-namespace:CcDirector.Avalonia.Controls"
+        xmlns:commMgr="clr-namespace:CcDirector.Avalonia.Controls.CommManager"
         x:Class="CcDirector.Avalonia.MainWindow"
         Title="CC Director"
         Width="1400" Height="900"
@@ -50,6 +51,37 @@
                         HorizontalContentAlignment="Center"
                         Click="BtnNewSession_Click"
                         ToolTip.Tip="Create a new session" />
+
+                <!-- Comms button above build info -->
+                <Grid DockPanel.Dock="Bottom" Margin="8,2,8,2">
+                    <Button x:Name="BtnComms"
+                            Content="Communications"
+                            Click="BtnComms_Click"
+                            Background="#2D7D46"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Height="30"
+                            FontSize="13"
+                            HorizontalContentAlignment="Center"
+                            ToolTip.Tip="Communication Manager" />
+                    <!-- Pending count badge overlaid on button -->
+                    <Border x:Name="CommsBadge"
+                            Background="#DC2626"
+                            CornerRadius="8"
+                            Padding="5,1"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Margin="0,0,8,0"
+                            IsHitTestVisible="False"
+                            IsVisible="False">
+                        <TextBlock x:Name="CommsBadgeText"
+                                   Text="0"
+                                   Foreground="White"
+                                   FontSize="10"
+                                   FontWeight="SemiBold" />
+                    </Border>
+                </Grid>
 
                 <!-- Build info + Claude config gear at bottom -->
                 <Border DockPanel.Dock="Bottom" Padding="8,4">
@@ -394,7 +426,6 @@
                                 Padding="12,4"
                                 FontSize="12"
                                 Click="AgentTabButton_Click" />
-
                         <!-- Separator between fixed tabs and document tabs -->
                         <Border x:Name="DocTabSeparator"
                                 Width="1" Height="16"
@@ -908,5 +939,41 @@
                 </TabControl>
             </Border>
         </Grid>
+
+        <!-- ==================== COMMS OVERLAY (covers main + right panel) ==================== -->
+        <Border x:Name="CommsOverlay"
+                Grid.Row="0" Grid.RowSpan="2" Grid.Column="2"
+                Background="{DynamicResource PanelBackground}"
+                ZIndex="10"
+                IsVisible="False">
+            <DockPanel>
+                <!-- Header bar -->
+                <Border DockPanel.Dock="Top"
+                        Background="{DynamicResource SidebarBackground}"
+                        BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                        Padding="12,8">
+                    <DockPanel>
+                        <Button x:Name="BtnCommsClose"
+                                DockPanel.Dock="Right"
+                                Content="[x] Close"
+                                Click="BtnCommsClose_Click"
+                                Background="Transparent"
+                                Foreground="#888888"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Padding="8,4"
+                                FontSize="12" />
+                        <TextBlock Text="Communication Manager"
+                                   Foreground="{DynamicResource TextForeground}"
+                                   FontSize="16" FontWeight="Bold"
+                                   VerticalAlignment="Center" />
+                    </DockPanel>
+                </Border>
+
+                <!-- CommManagerView fills the rest -->
+                <commMgr:CommManagerView x:Name="CommManagerView" />
+            </DockPanel>
+        </Border>
+
     </Grid>
 </Window>

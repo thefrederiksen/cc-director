@@ -80,3 +80,6 @@ playground/terminal-test/*.png
 
 # Playwright CLI session artifacts
 .playwright-cli/
+
+# Browser automation snapshots
+.cc-browser/

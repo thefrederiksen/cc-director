@@ -1,0 +1,659 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:cm="clr-namespace:CcDirector.Avalonia.Controls.CommManager"
+             x:Class="CcDirector.Avalonia.Controls.CommManager.CommManagerView"
+             Background="#1E1E1E">
+
+    <UserControl.Resources>
+        <!-- Platform Preview Selector -->
+        <cm:PlatformPreviewSelector x:Key="PlatformSelector">
+            <!-- LinkedIn Preview -->
+            <cm:PlatformPreviewSelector.LinkedInTemplate>
+                <DataTemplate>
+                    <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="8" Padding="16" MaxWidth="600">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,12" ColumnDefinitions="48,*">
+                                <Border Grid.Column="0" Width="48" Height="48" CornerRadius="24" Background="#0A66C2">
+                                    <TextBlock Text="UN" Foreground="White" FontWeight="Bold" FontSize="18"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="User Name" FontWeight="SemiBold" FontSize="14" Foreground="#000000"/>
+                                    <TextBlock Text="{Binding PersonaDisplay}" Foreground="#666666" FontSize="12"/>
+                                    <TextBlock Text="2h - Public" Foreground="#999999" FontSize="11"/>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="14" Foreground="#000000" Margin="0,0,0,12"/>
+                            <Border Height="1" Background="#E0E0E0" Margin="0,4,0,8"/>
+                            <Grid ColumnDefinitions="*,*,*,*">
+                                <TextBlock Grid.Column="0" Text="[+] Like" Foreground="#666666" FontSize="13" HorizontalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="[o] Comment" Foreground="#666666" FontSize="13" HorizontalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="[>] Repost" Foreground="#666666" FontSize="13" HorizontalAlignment="Center"/>
+                                <TextBlock Grid.Column="3" Text="[=>] Send" Foreground="#666666" FontSize="13" HorizontalAlignment="Center"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.LinkedInTemplate>
+
+            <!-- Twitter/X Preview -->
+            <cm:PlatformPreviewSelector.TwitterTemplate>
+                <DataTemplate>
+                    <Border Background="White" BorderBrush="#CFD9DE" BorderThickness="1" CornerRadius="16" Padding="16" MaxWidth="550">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,8" ColumnDefinitions="40,*">
+                                <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20" Background="#1DA1F2">
+                                    <TextBlock Text="UN" Foreground="White" FontWeight="Bold" FontSize="14"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="10,0,0,0" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="User Name" FontWeight="Bold" FontSize="15" Foreground="#000000"/>
+                                    <TextBlock Text=" @username - 2h" Foreground="#536471" FontSize="15"/>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="15" Foreground="#000000" Margin="0,0,0,12"/>
+                            <Grid Margin="0,8,0,0" ColumnDefinitions="*,*,*,*">
+                                <TextBlock Grid.Column="0" Text="[Reply] 3" Foreground="#536471" FontSize="13"/>
+                                <TextBlock Grid.Column="1" Text="[Repost] 8" Foreground="#536471" FontSize="13"/>
+                                <TextBlock Grid.Column="2" Text="[Heart] 42" Foreground="#536471" FontSize="13"/>
+                                <TextBlock Grid.Column="3" Text="[Views] 1.2K" Foreground="#536471" FontSize="13"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.TwitterTemplate>
+
+            <!-- Reddit Preview -->
+            <cm:PlatformPreviewSelector.RedditTemplate>
+                <DataTemplate>
+                    <Border Background="White" BorderBrush="#EDEFF1" BorderThickness="1" CornerRadius="4" Padding="8" MaxWidth="600">
+                        <Grid ColumnDefinitions="40,*">
+                            <StackPanel Grid.Column="0" HorizontalAlignment="Center">
+                                <TextBlock Text="[^]" Foreground="#878A8C" FontSize="20" HorizontalAlignment="Center"/>
+                                <TextBlock Text="24" Foreground="#1A1A1B" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center"/>
+                                <TextBlock Text="[v]" Foreground="#878A8C" FontSize="20" HorizontalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <Border Width="20" Height="20" CornerRadius="10" Background="#FF4500">
+                                        <TextBlock Text="r" Foreground="White" FontSize="12"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <TextBlock Text="{Binding RedditSpecific.Subreddit}" FontWeight="Bold" FontSize="12" Foreground="#1A1A1B" Margin="4,0,0,0"/>
+                                    <TextBlock Text=" - Posted by u/username - 3h" Foreground="#787C7E" FontSize="12"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding RedditSpecific.Title}" FontWeight="SemiBold" FontSize="16"
+                                           TextWrapping="Wrap" Margin="0,0,0,8" Foreground="#1A1A1B"
+                                           IsVisible="{Binding RedditSpecific.Title, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="14" Foreground="#1A1A1B"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                    <TextBlock Text="[Comments] 8 Comments   [Share]   [Save]" Foreground="#878A8C" FontSize="12"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.RedditTemplate>
+
+            <!-- Email Preview -->
+            <cm:PlatformPreviewSelector.EmailTemplate>
+                <DataTemplate>
+                    <Border Background="White" BorderBrush="#DADCE0" BorderThickness="1" CornerRadius="8" MaxWidth="650">
+                        <StackPanel>
+                            <Border Background="#F8F9FA" Padding="16" CornerRadius="8,8,0,0">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <TextBlock Text="From: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding SendFromDisplay}" Foreground="#202124"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <TextBlock Text="To: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Recipient.Name}" Foreground="#202124"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
+                                                IsVisible="{Binding HasEmailCc}">
+                                        <TextBlock Text="CC: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding EmailCcDisplay}" Foreground="#5F6368"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
+                                                IsVisible="{Binding HasEmailBcc}">
+                                        <TextBlock Text="BCC: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding EmailBccDisplay}" Foreground="#5F6368"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <TextBlock Text="Subject: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding EmailSpecific.Subject}" Foreground="#202124" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Send: " Foreground="#5F6368" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding SendTimingDisplay}" Foreground="#0A66C2" FontStyle="Italic"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                            <!-- Attachments -->
+                            <Border Background="#F1F3F4" Padding="12,8" Margin="16,8,16,0"
+                                    CornerRadius="4" IsVisible="{Binding HasAttachments}">
+                                <StackPanel>
+                                    <TextBlock Text="Attachments:" Foreground="#5F6368" FontSize="11"
+                                               FontWeight="SemiBold" Margin="0,0,0,4"/>
+                                    <ItemsControl ItemsSource="{Binding AttachmentDisplayItems}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding DisplayText}" Foreground="#1565C0" FontSize="12"
+                                                           Margin="0,2" Cursor="Hand"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                            <!-- Body -->
+                            <Border Padding="16">
+                                <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="14"
+                                           Foreground="#202124" FontFamily="Arial"/>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.EmailTemplate>
+
+            <!-- Article/Blog Preview -->
+            <cm:PlatformPreviewSelector.ArticleTemplate>
+                <DataTemplate>
+                    <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="4" MaxWidth="700">
+                        <StackPanel Margin="24">
+                            <TextBlock Text="{Binding ArticleSpecific.Title}" FontSize="28" FontWeight="Bold"
+                                       TextWrapping="Wrap" Margin="0,0,0,8" Foreground="#000000"/>
+                            <TextBlock Text="{Binding ArticleSpecific.Subtitle}" FontSize="16" Foreground="#666666"
+                                       TextWrapping="Wrap" Margin="0,0,0,16"
+                                       IsVisible="{Binding ArticleSpecific.Subtitle, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="16" Foreground="#333333"/>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.ArticleTemplate>
+
+            <!-- Facebook Preview -->
+            <cm:PlatformPreviewSelector.FacebookTemplate>
+                <DataTemplate>
+                    <Border Background="White" BorderBrush="#E4E6EB" BorderThickness="1" CornerRadius="8" Padding="16" MaxWidth="600">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,12" ColumnDefinitions="40,*">
+                                <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20" Background="#1877F2">
+                                    <TextBlock Text="UN" Foreground="White" FontWeight="Bold" FontSize="14"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding FacebookSpecific.PageName, FallbackValue='User Name'}"
+                                               FontWeight="SemiBold" FontSize="15" Foreground="#050505"/>
+                                    <TextBlock Foreground="#65676B" FontSize="12">
+                                        <TextBlock.Text>
+                                            <MultiBinding StringFormat="2h - {0}">
+                                                <Binding Path="FacebookSpecific.Audience" FallbackValue="Public"/>
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="15" Foreground="#050505" Margin="0,0,0,12"/>
+                            <Border Height="1" Background="#E4E6EB" Margin="0,4,0,8"/>
+                            <Grid ColumnDefinitions="*,*,*">
+                                <TextBlock Grid.Column="0" Text="[+] Like" Foreground="#65676B" FontSize="14" HorizontalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="[o] Comment" Foreground="#65676B" FontSize="14" HorizontalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="[>] Share" Foreground="#65676B" FontSize="14" HorizontalAlignment="Center"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.FacebookTemplate>
+
+            <!-- WhatsApp Preview -->
+            <cm:PlatformPreviewSelector.WhatsAppTemplate>
+                <DataTemplate>
+                    <Border Background="#ECE5DD" CornerRadius="8" Padding="16" MaxWidth="500">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,12" Background="#075E54" ColumnDefinitions="40,*">
+                                <Border Grid.Column="0" Width="36" Height="36" CornerRadius="18" Background="#25D366" Margin="4">
+                                    <TextBlock Text="UN" Foreground="White" FontWeight="Bold" FontSize="12"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="8,8,0,8" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding WhatsAppSpecific.ContactName, FallbackValue='Contact'}"
+                                               FontWeight="SemiBold" FontSize="15" Foreground="White"/>
+                                    <TextBlock Text="{Binding WhatsAppSpecific.PhoneNumber, FallbackValue=''}"
+                                               Foreground="#A0D8B4" FontSize="11"/>
+                                </StackPanel>
+                            </Grid>
+                            <Border Background="#DCF8C6" CornerRadius="8,8,0,8"
+                                    Padding="10,6" Margin="60,0,0,4"
+                                    HorizontalAlignment="Right">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="14" Foreground="#303030" MaxWidth="350"/>
+                                    <TextBlock Text="12:34 PM" Foreground="#999999" FontSize="10"
+                                               HorizontalAlignment="Right" Margin="0,4,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.WhatsAppTemplate>
+
+            <!-- YouTube Preview -->
+            <cm:PlatformPreviewSelector.YouTubeTemplate>
+                <DataTemplate>
+                    <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="8" MaxWidth="650">
+                        <StackPanel>
+                            <Border Background="#0F0F0F" CornerRadius="8,8,0,0" Height="200">
+                                <Border Background="#CC000000" Width="60" Height="42" CornerRadius="8"
+                                        HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock Text="[>]" Foreground="White" FontSize="20"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                            </Border>
+                            <StackPanel Margin="12,12,12,8">
+                                <TextBlock Text="{Binding YouTubeSpecific.Title, FallbackValue='Video Title'}"
+                                           FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" Foreground="#0F0F0F" Margin="0,0,0,4"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <Border Width="24" Height="24" CornerRadius="12" Background="#FF0000">
+                                        <TextBlock Text="YT" Foreground="White" FontSize="9" FontWeight="Bold"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <TextBlock Text="{Binding PersonaDisplay}" Foreground="#606060" FontSize="13"
+                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="13"
+                                           Foreground="#606060" MaxHeight="54"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.YouTubeTemplate>
+
+            <!-- Default/Fallback Preview -->
+            <cm:PlatformPreviewSelector.DefaultTemplate>
+                <DataTemplate>
+                    <Border Background="#F8F9FA" CornerRadius="4" Padding="16">
+                        <StackPanel>
+                            <Border Background="#0078D4" CornerRadius="4" Padding="8,4" HorizontalAlignment="Left" Margin="0,0,0,12">
+                                <TextBlock Text="{Binding Platform}" Foreground="White" FontWeight="SemiBold"/>
+                            </Border>
+                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="14" Foreground="#000000"/>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </cm:PlatformPreviewSelector.DefaultTemplate>
+        </cm:PlatformPreviewSelector>
+    </UserControl.Resources>
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto">
+
+        <!-- ROW 0: Tab Header -->
+        <Border Grid.Row="0" Background="#252526" Padding="8,6" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+            <DockPanel>
+                <!-- SEND ALL button (right side) -->
+                <Button x:Name="BtnSendAll" DockPanel.Dock="Right"
+                        Content="SEND ALL" Background="#28A745" Foreground="White"
+                        Padding="16,6" FontSize="12" FontWeight="Bold"
+                        Cursor="Hand" BorderThickness="0"
+                        IsVisible="{Binding HasApprovedItems}"
+                        Command="{Binding SendAllCommand}"/>
+
+                <!-- Refresh button -->
+                <Button x:Name="BtnRefresh" DockPanel.Dock="Right"
+                        Content="Refresh" Background="#3C3C3C" Foreground="#CCCCCC"
+                        Padding="12,6" FontSize="12" Cursor="Hand" BorderThickness="0"
+                        Command="{Binding RefreshCommand}" Margin="0,0,8,0"/>
+
+                <!-- Status tabs -->
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                    <Button x:Name="BtnTabPending" Content="Pending" Tag="Pending"
+                            Background="#007ACC" Foreground="White"
+                            Padding="12,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                            Click="StatusTab_Click"/>
+                    <Border x:Name="BadgePending" Background="#007ACC" CornerRadius="8"
+                            Padding="6,2" Margin="-4,0,4,0" VerticalAlignment="Center"
+                            IsVisible="False">
+                        <TextBlock x:Name="BadgePendingText" Text="0" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                    </Border>
+
+                    <Button x:Name="BtnTabApproved" Content="Approved" Tag="Approved"
+                            Background="Transparent" Foreground="#888888"
+                            Padding="12,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                            Click="StatusTab_Click"/>
+                    <Border x:Name="BadgeApproved" Background="#28A745" CornerRadius="8"
+                            Padding="6,2" Margin="-4,0,4,0" VerticalAlignment="Center"
+                            IsVisible="False">
+                        <TextBlock x:Name="BadgeApprovedText" Text="0" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                    </Border>
+
+                    <Button x:Name="BtnTabRejected" Content="Rejected" Tag="Rejected"
+                            Background="Transparent" Foreground="#888888"
+                            Padding="12,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                            Click="StatusTab_Click"/>
+                    <Border x:Name="BadgeRejected" Background="#DC3545" CornerRadius="8"
+                            Padding="6,2" Margin="-4,0,4,0" VerticalAlignment="Center"
+                            IsVisible="False">
+                        <TextBlock x:Name="BadgeRejectedText" Text="0" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                    </Border>
+
+                    <Button x:Name="BtnTabSent" Content="Sent" Tag="Sent"
+                            Background="Transparent" Foreground="#888888"
+                            Padding="12,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                            Click="StatusTab_Click"/>
+                    <Border x:Name="BadgeSent" Background="#17A2B8" CornerRadius="8"
+                            Padding="6,2" Margin="-4,0,4,0" VerticalAlignment="Center"
+                            IsVisible="False">
+                        <TextBlock x:Name="BadgeSentText" Text="0" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                    </Border>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- ROW 1: Platform Filter Bar -->
+        <Border Grid.Row="1" Background="#1E1E1E" Padding="8,4" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button Content="All" Tag="All" Click="PlatformFilter_Click"
+                        Background="#094771" Foreground="White" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterAll"/>
+                <Button Content="Email" Tag="Email" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterEmail"/>
+                <Button Content="LinkedIn" Tag="LinkedIn" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterLinkedIn"/>
+                <Button Content="Facebook" Tag="Facebook" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterFacebook"/>
+                <Button Content="YouTube" Tag="YouTube" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterYouTube"/>
+                <Button Content="WhatsApp" Tag="WhatsApp" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterWhatsApp"/>
+                <Button Content="Reddit" Tag="Reddit" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterReddit"/>
+                <Button Content="Twitter" Tag="Twitter" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterTwitter"/>
+                <Button Content="Blog" Tag="Blog" Click="PlatformFilter_Click"
+                        Background="#333333" Foreground="#CCCCCC" Padding="10,4" FontSize="11"
+                        CornerRadius="12" Cursor="Hand" BorderThickness="0" x:Name="FilterBlog"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ROW 2: Main Content (List + Detail) -->
+        <Grid Grid.Row="2" ColumnDefinitions="350,Auto,*">
+
+            <!-- LEFT: Item List -->
+            <ListBox Grid.Column="0" x:Name="ItemList"
+                     ItemsSource="{Binding FilteredItems}"
+                     SelectedItem="{Binding SelectedItem}"
+                     Background="#1E1E1E" Padding="4"
+                     BorderThickness="0">
+                <ListBox.Styles>
+                    <Style Selector="ListBoxItem">
+                        <Setter Property="Padding" Value="8,6"/>
+                        <Setter Property="Margin" Value="0,1"/>
+                        <Setter Property="CornerRadius" Value="4"/>
+                    </Style>
+                    <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+                        <Setter Property="Background" Value="#094771"/>
+                    </Style>
+                    <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+                        <Setter Property="Background" Value="#2A2D2E"/>
+                    </Style>
+                </ListBox.Styles>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid ColumnDefinitions="Auto,*,Auto" MinHeight="40">
+                            <!-- Platform badge -->
+                            <Border Grid.Column="0" Background="#333333" CornerRadius="4"
+                                    Padding="6,2" Margin="0,0,8,0" VerticalAlignment="Center"
+                                    Height="24" MinWidth="28" HorizontalAlignment="Center">
+                                <TextBlock Text="{Binding PlatformIcon}" Foreground="#CCCCCC"
+                                           FontSize="10" FontWeight="Bold"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+
+                            <!-- Title + meta -->
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding DisplayTitle}" Foreground="#CCCCCC"
+                                           FontSize="13" TextTrimming="CharacterEllipsis"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="{Binding RecipientDisplay}" Foreground="#E8A838"
+                                               FontSize="11" IsVisible="{Binding HasRecipient}"
+                                               Margin="0,0,8,0"/>
+                                    <TextBlock Text="{Binding TicketDisplay}" Foreground="#666666" FontSize="11"/>
+                                    <TextBlock Text=" | " Foreground="#444444" FontSize="11"/>
+                                    <TextBlock Text="{Binding TypeIcon}" Foreground="#666666" FontSize="11"/>
+                                </StackPanel>
+                            </StackPanel>
+
+                            <!-- Schedule info (approved tab only) -->
+                            <TextBlock Grid.Column="2" Text="{Binding ScheduleDisplayShort}"
+                                       Foreground="#888888" FontSize="10"
+                                       VerticalAlignment="Center" Margin="4,0,0,0"/>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" Width="4" Background="#3C3C3C" ResizeBehavior="PreviousAndNext"/>
+
+            <!-- RIGHT: Detail Pane -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="16" IsVisible="{Binding SelectedItem, Converter={x:Static ObjectConverters.IsNotNull}}">
+
+                    <!-- Detail Header -->
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
+                        <Border Background="#333333" CornerRadius="4" Padding="8,4">
+                            <TextBlock Text="{Binding SelectedItem.Platform}" Foreground="#CCCCCC" FontSize="12" FontWeight="Bold"/>
+                        </Border>
+                        <Border Background="#333333" CornerRadius="4" Padding="8,4">
+                            <TextBlock Text="{Binding SelectedItem.TypeIcon}" Foreground="#CCCCCC" FontSize="12"/>
+                        </Border>
+                        <Border Background="#333333" CornerRadius="4" Padding="8,4"
+                                IsVisible="{Binding SelectedItem.Persona, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                            <TextBlock Text="{Binding SelectedItem.Persona}" Foreground="#CCCCCC" FontSize="12"/>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- Title -->
+                    <TextBlock Text="{Binding SelectedItem.DisplayTitle}" Foreground="#CCCCCC"
+                               FontSize="18" FontWeight="Bold" TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+                    <!-- Created info -->
+                    <TextBlock Foreground="#888888" FontSize="11" Margin="0,0,0,8">
+                        <TextBlock.Text>
+                            <MultiBinding StringFormat="Created by {0} on {1:MMM d, yyyy 'at' h:mm tt}">
+                                <Binding Path="SelectedItem.CreatedBy"/>
+                                <Binding Path="SelectedItem.CreatedAt"/>
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
+
+                    <!-- Recipient info -->
+                    <Border Background="#2A2D2E" CornerRadius="4" Padding="12,8" Margin="0,0,0,8"
+                            IsVisible="{Binding SelectedItem.HasRecipient}">
+                        <StackPanel>
+                            <TextBlock Text="Recipient" Foreground="#888888" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                            <TextBlock Text="{Binding SelectedItem.RecipientDisplay}" Foreground="#E8A838" FontSize="13"/>
+                            <Button Content="Open Profile" Foreground="#007ACC" Background="Transparent"
+                                    BorderThickness="0" Padding="0" Margin="0,4,0,0" FontSize="11"
+                                    Cursor="Hand" Command="{Binding OpenRecipientUrlCommand}"
+                                    IsVisible="{Binding SelectedItem.HasRecipientProfile}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Schedule info -->
+                    <Border Background="#2A2D2E" CornerRadius="4" Padding="12,8" Margin="0,0,0,8"
+                            IsVisible="{Binding SelectedItem.IsScheduled}">
+                        <StackPanel>
+                            <TextBlock Text="Schedule" Foreground="#888888" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                            <TextBlock Text="{Binding SelectedItem.SendTimingDisplay}" Foreground="#28A745" FontSize="13"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Posted timestamp (Sent tab) -->
+                    <TextBlock Text="{Binding SelectedItem.PostedAtDisplay}" Foreground="#17A2B8" FontSize="12"
+                               Margin="0,0,0,8"
+                               IsVisible="{Binding SelectedItem.PostedAtDisplay, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+
+                    <!-- Rejected timestamp -->
+                    <TextBlock Text="{Binding SelectedItem.RejectedAtDisplay}" Foreground="#DC3545" FontSize="12"
+                               Margin="0,0,0,4"
+                               IsVisible="{Binding SelectedItem.RejectedAtDisplay, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+
+                    <!-- Rejection reason -->
+                    <Border Background="#3D1F1F" CornerRadius="4" Padding="12,8" Margin="0,0,0,8"
+                            IsVisible="{Binding SelectedItem.RejectionReason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                        <StackPanel>
+                            <TextBlock Text="Rejection Reason" Foreground="#DC3545" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                            <TextBlock Text="{Binding SelectedItem.RejectionReason}" Foreground="#CCCCCC" FontSize="13" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Media attachments -->
+                    <Border Background="#2A2D2E" CornerRadius="4" Padding="12,8" Margin="0,0,0,8"
+                            IsVisible="{Binding SelectedItem.HasMedia}">
+                        <StackPanel>
+                            <TextBlock Text="{Binding SelectedItem.MediaCountDisplay}" Foreground="#888888" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                            <ItemsControl ItemsSource="{Binding SelectedItem.Media}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2">
+                                            <TextBlock Text="{Binding DisplayName}" Foreground="#007ACC" FontSize="12"/>
+                                            <TextBlock Text="{Binding FileSizeDisplay}" Foreground="#666666" FontSize="11" Margin="8,0,0,0"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Context/Destination URLs -->
+                    <StackPanel Orientation="Horizontal" Spacing="16" Margin="0,0,0,8">
+                        <Button Content="Open Context" Foreground="#007ACC" Background="Transparent"
+                                BorderThickness="0" Padding="0" FontSize="12" Cursor="Hand"
+                                Command="{Binding OpenContextUrlCommand}"
+                                IsVisible="{Binding SelectedItem.ContextUrl, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                        <Button Content="Open Destination" Foreground="#007ACC" Background="Transparent"
+                                BorderThickness="0" Padding="0" FontSize="12" Cursor="Hand"
+                                Command="{Binding OpenDestinationUrlCommand}"
+                                IsVisible="{Binding SelectedItem.DestinationUrl, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                        <Button Content="Copy Destination URL" Foreground="#007ACC" Background="Transparent"
+                                BorderThickness="0" Padding="0" FontSize="12" Cursor="Hand"
+                                Command="{Binding CopyDestinationUrlCommand}"
+                                IsVisible="{Binding SelectedItem.DestinationUrl, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                    </StackPanel>
+
+                    <!-- Preview/Raw Toggle -->
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
+                        <Button Content="Preview" Background="#094771" Foreground="White"
+                                Padding="8,4" FontSize="11" Cursor="Hand" BorderThickness="0"
+                                Command="{Binding TogglePreviewModeCommand}"
+                                IsVisible="{Binding !IsPreviewMode}"/>
+                        <Button Content="Raw" Background="#3C3C3C" Foreground="#CCCCCC"
+                                Padding="8,4" FontSize="11" Cursor="Hand" BorderThickness="0"
+                                Command="{Binding TogglePreviewModeCommand}"
+                                IsVisible="{Binding IsPreviewMode}"/>
+                    </StackPanel>
+
+                    <!-- Preview Content -->
+                    <Border Margin="0,0,0,12" IsVisible="{Binding IsPreviewMode}">
+                        <ContentControl Content="{Binding SelectedItem}"
+                                        ContentTemplate="{StaticResource PlatformSelector}"/>
+                    </Border>
+
+                    <!-- Raw Content (read-only) -->
+                    <TextBox Text="{Binding SelectedItem.Content}" IsReadOnly="True"
+                             TextWrapping="Wrap" Background="#1E1E1E" Foreground="#CCCCCC"
+                             BorderBrush="#3C3C3C" BorderThickness="1" Padding="8"
+                             FontSize="13" FontFamily="Consolas" AcceptsReturn="True"
+                             Margin="0,0,0,12"
+                             IsVisible="{Binding !IsPreviewMode}"/>
+
+                    <!-- Edit Content -->
+                    <StackPanel IsVisible="{Binding IsEditing}" Margin="0,0,0,12">
+                        <TextBox Text="{Binding EditContent}" TextWrapping="Wrap"
+                                 Background="#1E1E1E" Foreground="#CCCCCC"
+                                 BorderBrush="#007ACC" BorderThickness="1" Padding="8"
+                                 FontSize="13" AcceptsReturn="True" MinHeight="200"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                            <Button Content="Save" Background="#28A745" Foreground="White"
+                                    Padding="16,6" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                    Command="{Binding SaveEditCommand}"/>
+                            <Button Content="Cancel" Background="#3C3C3C" Foreground="#CCCCCC"
+                                    Padding="16,6" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                    Command="{Binding CancelEditCommand}"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Action Buttons -->
+                    <Border Background="#252526" CornerRadius="4" Padding="12,8" Margin="0,4,0,0"
+                            IsVisible="{Binding !IsEditing}">
+                        <StackPanel>
+                            <!-- Pending tab actions -->
+                            <WrapPanel x:Name="PendingActions" IsVisible="True">
+                                <Button Content="Approve and Send" Background="#28A745" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding ApproveCommand}"/>
+                                <Button Content="Approve and Schedule" Background="#007ACC" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding ApproveWithScheduleCommand}"/>
+                                <Button Content="Edit" Background="#3C3C3C" Foreground="#CCCCCC"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding StartEditCommand}"/>
+                                <Button Content="Skip" Background="#3C3C3C" Foreground="#CCCCCC"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding SkipCommand}"/>
+                                <Button Content="Reject" Background="#DC3545" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding RejectCommand}"/>
+                                <Button Content="Delete" Background="#6C757D" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding DeleteCommand}"/>
+                            </WrapPanel>
+
+                            <!-- Approved tab actions -->
+                            <WrapPanel x:Name="ApprovedActions" IsVisible="False">
+                                <Button Content="Reschedule" Background="#007ACC" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding RescheduleCommand}"/>
+                                <Button Content="Move to Review" Background="#E8A838" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding MoveToReviewCommand}"/>
+                                <Button Content="Delete" Background="#6C757D" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding DeleteCommand}"/>
+                            </WrapPanel>
+
+                            <!-- Rejected tab actions -->
+                            <WrapPanel x:Name="RejectedActions" IsVisible="False">
+                                <Button Content="Move to Review" Background="#E8A838" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding MoveToReviewCommand}"/>
+                                <Button Content="Delete" Background="#6C757D" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding DeleteCommand}"/>
+                            </WrapPanel>
+
+                            <!-- Sent tab actions -->
+                            <WrapPanel x:Name="SentActions" IsVisible="False">
+                                <Button Content="Delete" Background="#6C757D" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding DeleteCommand}"/>
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- ROW 3: Status Bar -->
+        <Border Grid.Row="3" Background="#252526" Padding="8,4" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0">
+            <TextBlock Text="{Binding StatusMessage}" Foreground="#888888" FontSize="11"/>
+        </Border>
+    </Grid>
+</UserControl>

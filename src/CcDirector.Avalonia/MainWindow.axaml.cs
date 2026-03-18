@@ -176,6 +176,7 @@ public partial class MainWindow : Window
 
         SessionList.AddHandler(DragDrop.DragOverEvent, SessionList_DragOver);
         SessionList.AddHandler(DragDrop.DropEvent, SessionList_Drop);
+        SessionList.AddHandler(PointerPressedEvent, SessionList_PointerPressed, global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
     private void MainWindow_Activated(object? sender, EventArgs e)
@@ -348,6 +349,14 @@ public partial class MainWindow : Window
 
     private void SelectSession(SessionViewModel? vm)
     {
+        // Close comms overlay when switching to any session
+        if (CommsOverlay.IsVisible)
+        {
+            CommsOverlay.IsVisible = false;
+            if (_commsInitialized)
+                CommManagerView.StopPolling();
+        }
+
         if (vm == _activeSession) return;
 
         // Save prompt text and selected tab for outgoing session
@@ -953,6 +962,14 @@ public partial class MainWindow : Window
 
     // ==================== EVENT HANDLERS ====================
 
+    private void SessionList_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        // When comms overlay is open, any click on the session list should close it
+        // even if the same session is already selected (SelectionChanged won't fire)
+        if (CommsOverlay.IsVisible && _activeSession != null)
+            SelectSession(_activeSession);
+    }
+
     private void SessionList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (SessionList.SelectedItem is SessionViewModel vm)
@@ -1369,6 +1386,37 @@ public partial class MainWindow : Window
         SwitchLeftTab("SourceControl");
     }
 
+    private bool _commsInitialized;
+
+    private async void BtnComms_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnComms_Click: opening Comms overlay");
+        CommsOverlay.IsVisible = true;
+
+        if (!_commsInitialized)
+        {
+            _commsInitialized = true;
+            await CommManagerView.InitializeAsync();
+            CommManagerView.PendingCountChanged += count =>
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    CommsBadge.IsVisible = count > 0;
+                    CommsBadgeText.Text = count.ToString();
+                });
+            };
+        }
+        CommManagerView.StartPolling();
+    }
+
+    private void BtnCommsClose_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnCommsClose_Click: closing Comms overlay");
+        CommsOverlay.IsVisible = false;
+        if (_commsInitialized)
+            CommManagerView.StopPolling();
+    }
+
     private void SwitchLeftTab(string tab)
     {
         if (_activeLeftTab == tab) return;
@@ -1386,7 +1434,6 @@ public partial class MainWindow : Window
         TerminalTabButton.Foreground = tab == "Terminal" ? whiteBrush : InactiveTextBrush;
         SourceControlTabButton.Background = tab == "SourceControl" ? accentBrush : TransparentBrush;
         SourceControlTabButton.Foreground = tab == "SourceControl" ? whiteBrush : InactiveTextBrush;
-
         // Update document tab button styles
         foreach (var docTab in _documentTabs)
         {

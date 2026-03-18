@@ -1,7 +1,7 @@
 # CC Director - CenCon Documentation Index
 
 **Version:** 1.1.0
-**Last Updated:** 2026-03-16
+**Last Updated:** 2026-03-18
 **Schema:** CenCon Method v1.0
 
 ---
@@ -54,6 +54,7 @@ This document serves as the central reference combining product requirements, sy
 | SessionBrowserView | Browse and resume previous Claude Code sessions |
 | UsageDashboardView | Usage and cost tracking dashboard |
 | File Viewers | Document tab system (Image, Code, Markdown, Text, PDF viewers) |
+| CommManagerView | Communication Manager overlay with approval workflow |
 | Dialogs | Modal dialogs (LoadWorkspace, Rename, Relink, WorkspaceProgress, Input) |
 
 ### Core Services Layer (CcDirector.Core)
