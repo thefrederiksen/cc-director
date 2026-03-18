@@ -90,7 +90,7 @@ export function getConnection(name) {
   return connections.find(c => c.name === name) || null;
 }
 
-export function createConnection({ name, url, toolBinding, browser = 'chrome', description = '', skillName = null }) {
+export function createConnection({ name, url, toolBinding, browser = 'chrome', description = '', skillName = null, ignoreCertErrors = false }) {
   validateName(name);
 
   const connections = readRegistry();
@@ -108,6 +108,7 @@ export function createConnection({ name, url, toolBinding, browser = 'chrome', d
     url: url || null,
     toolBinding: toolBinding || null,
     browser,
+    ignoreCertErrors: !!ignoreCertErrors,
     skillName: skillName || null,
     createdAt: new Date().toISOString(),
     status: 'disconnected',
@@ -133,7 +134,7 @@ export function updateConnection(name, updates) {
     throw new Error(`Connection "${name}" not found`);
   }
 
-  const allowed = ['url', 'toolBinding', 'browser', 'status', 'description', 'skill', 'skillName'];
+  const allowed = ['url', 'toolBinding', 'browser', 'status', 'description', 'skill', 'skillName', 'ignoreCertErrors'];
   for (const key of Object.keys(updates)) {
     if (allowed.includes(key)) {
       connections[idx][key] = updates[key];

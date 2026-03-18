@@ -214,6 +214,7 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
     background,
     windowPosition,
     windowSize,
+    ignoreCertErrors,
   } = opts;
 
   // Find Chrome executable
@@ -253,6 +254,12 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
     '--disable-features=TranslateUI',
     '--disable-sync',
   ];
+
+  // SSL cert bypass (per-connection only, not global)
+  if (ignoreCertErrors) {
+    args.push('--ignore-certificate-errors');
+    console.log('[chrome-launch] WARNING: SSL certificate errors will be ignored for this connection');
+  }
 
   // Edge-specific flags
   if (browserKind === 'edge') {

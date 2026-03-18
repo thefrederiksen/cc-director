@@ -267,6 +267,7 @@ const routes = {
       toolBinding: body.tool || body.toolBinding,
       browser: body.browser,
       skillName: body.skillName || null,
+      ignoreCertErrors: body.ignoreCertErrors || false,
     });
     jsonSuccess(res, { connection: conn });
   },
@@ -285,6 +286,7 @@ const routes = {
       background: body.background || false,
       windowPosition: body.windowPosition,
       windowSize: body.windowSize,
+      ignoreCertErrors: conn.ignoreCertErrors || false,
     });
 
     setConnectionStatus(name, 'connecting');
