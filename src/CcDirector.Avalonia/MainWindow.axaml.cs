@@ -2931,6 +2931,9 @@ public partial class MainWindow : Window
             case FileViewerCategory.Markdown:
                 var md = new FileViewerControls.MarkdownViewerControl();
                 return (md, md);
+            case FileViewerCategory.Html:
+                var html = new FileViewerControls.HtmlViewerControl();
+                return (html, html);
             case FileViewerCategory.Pdf:
                 var pdf = new FileViewerControls.PdfViewerControl();
                 return (pdf, pdf);

@@ -3,6 +3,7 @@ using System.IO;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using CcDirector.Avalonia.Helpers;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia.Controls;
@@ -84,10 +85,7 @@ public partial class MarkdownViewerControl : UserControl, IFileViewer
         if (EditorBox.IsVisible)
             _rawContent = EditorBox.Text ?? "";
 
-        // Render markdown as plain text with minimal formatting
-        // (SelectableTextBlock does not support rich inline formatting,
-        // so we show the raw markdown in a readable font for preview)
-        PreviewText.Text = _rawContent;
+        PreviewContent.Content = MarkdownAvaloniaRenderer.Render(_rawContent);
         PreviewScroller.IsVisible = true;
         EditorBox.IsVisible = false;
         UpdateModeButton();

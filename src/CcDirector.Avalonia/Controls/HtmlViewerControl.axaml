@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="CcDirector.Avalonia.Controls.MarkdownViewerControl"
+             xmlns:avalonEdit="https://github.com/avaloniaui/avaloniaedit"
+             x:Class="CcDirector.Avalonia.Controls.HtmlViewerControl"
              Background="#1E1E1E">
 
     <Grid RowDefinitions="Auto,*">
@@ -26,12 +27,19 @@
                             IsVisible="False"
                             Click="SaveButton_Click" />
 
-                    <!-- Mode toggle button -->
-                    <Button x:Name="ModeToggleButton" Content="Source"
+                    <!-- Preview in browser -->
+                    <Button x:Name="PreviewButton" Content="Preview"
                             FontSize="11" Padding="8,2"
                             Background="#3C3C3C" Foreground="#CCCCCC"
                             BorderThickness="0" Cursor="Hand"
-                            Click="ModeToggleButton_Click" />
+                            Click="PreviewButton_Click" />
+
+                    <!-- Word wrap toggle -->
+                    <Button x:Name="WrapToggleButton" Content="Wrap"
+                            FontSize="11" Padding="8,2"
+                            Background="#3C3C3C" Foreground="#CCCCCC"
+                            BorderThickness="0" Cursor="Hand"
+                            Click="WrapToggleButton_Click" />
 
                     <!-- Open externally -->
                     <Button x:Name="OpenExternalButton" Content="Open"
@@ -43,27 +51,17 @@
             </Grid>
         </Border>
 
-        <!-- Preview mode: rendered markdown as styled text -->
-        <ScrollViewer x:Name="PreviewScroller" Grid.Row="1"
-                      HorizontalScrollBarVisibility="Disabled"
-                      VerticalScrollBarVisibility="Auto"
-                      Background="#1E1E1E">
-            <ContentControl x:Name="PreviewContent" />
-        </ScrollViewer>
-
-        <!-- Editor mode: raw text -->
-        <TextBox x:Name="EditorBox" Grid.Row="1"
-                 IsVisible="False"
-                 FontFamily="Cascadia Mono, Consolas, Courier New"
-                 FontSize="13"
-                 Background="#1E1E1E"
-                 Foreground="#D4D4D4"
-                 CaretBrush="#D4D4D4"
-                 BorderThickness="0"
-                 AcceptsReturn="True"
-                 AcceptsTab="True"
-                 TextWrapping="Wrap"
-                 Padding="24,16" />
+        <!-- AvaloniaEdit code editor for HTML source -->
+        <avalonEdit:TextEditor x:Name="Editor" Grid.Row="1"
+                               FontFamily="Cascadia Mono, Consolas, Courier New"
+                               FontSize="13"
+                               Background="#1E1E1E"
+                               Foreground="#D4D4D4"
+                               ShowLineNumbers="True"
+                               WordWrap="False"
+                               HorizontalScrollBarVisibility="Auto"
+                               VerticalScrollBarVisibility="Auto"
+                               Padding="8,8" />
 
         <!-- Loading overlay -->
         <TextBlock x:Name="LoadingText" Grid.Row="1"

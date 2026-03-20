@@ -10,7 +10,8 @@ public enum FileViewerCategory
     Image,
     Text,
     Code,
-    Pdf
+    Pdf,
+    Html
 }
 
 /// <summary>
@@ -34,7 +35,7 @@ public static class FileExtensions
     {
         ".cs", ".py", ".js", ".ts", ".tsx", ".jsx",
         ".json", ".xml", ".xaml", ".csproj", ".fsproj", ".vbproj", ".props", ".targets", ".sln",
-        ".html", ".css", ".svg",
+        ".css", ".svg",
         ".sql",
         ".ps1", ".bat", ".sh",
         ".yaml", ".yml", ".toml",
@@ -57,6 +58,11 @@ public static class FileExtensions
     private static readonly HashSet<string> TextFileNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Dockerfile"
+    };
+
+    private static readonly HashSet<string> HtmlExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".html", ".htm"
     };
 
     private static readonly HashSet<string> PdfExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -94,6 +100,12 @@ public static class FileExtensions
         return false;
     }
 
+    public static bool IsHtml(string path)
+    {
+        var ext = Path.GetExtension(path);
+        return HtmlExtensions.Contains(ext);
+    }
+
     public static bool IsPdf(string path)
     {
         var ext = Path.GetExtension(path);
@@ -102,13 +114,14 @@ public static class FileExtensions
 
     public static bool IsViewable(string path)
     {
-        return IsMarkdown(path) || IsImage(path) || IsCodeFile(path) || IsTextFile(path) || IsPdf(path);
+        return IsMarkdown(path) || IsImage(path) || IsCodeFile(path) || IsTextFile(path) || IsPdf(path) || IsHtml(path);
     }
 
     public static FileViewerCategory GetViewerCategory(string path)
     {
         if (IsMarkdown(path)) return FileViewerCategory.Markdown;
         if (IsImage(path)) return FileViewerCategory.Image;
+        if (IsHtml(path)) return FileViewerCategory.Html;
         if (IsCodeFile(path)) return FileViewerCategory.Code;
         if (IsTextFile(path)) return FileViewerCategory.Text;
         if (IsPdf(path)) return FileViewerCategory.Pdf;

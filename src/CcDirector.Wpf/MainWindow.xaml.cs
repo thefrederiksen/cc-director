@@ -1563,6 +1563,7 @@ public partial class MainWindow : Window
         {
             FileViewerCategory.Markdown => new MarkdownViewerControl(),
             FileViewerCategory.Image => new ImageViewerControl(),
+            FileViewerCategory.Html => new CodeViewerControl(),
             FileViewerCategory.Code => new CodeViewerControl(),
             FileViewerCategory.Text => new TextViewerControl(),
             FileViewerCategory.Pdf => new PdfViewerControl(),
