@@ -141,7 +141,13 @@ public sealed class ProcessHost : IDisposable
             var value = entry.Value as string;
             if (key is null || value is null)
                 continue;
+            // Strip all Claude Code environment variables to prevent
+            // nested detection and session ID conflicts
             if (key.Equals("CLAUDECODE", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (key.StartsWith("CLAUDE_CODE_", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (key.Equals("GIT_EDITOR", StringComparison.OrdinalIgnoreCase))
                 continue;
             vars[key] = value;
         }

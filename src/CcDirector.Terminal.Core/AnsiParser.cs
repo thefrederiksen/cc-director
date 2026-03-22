@@ -512,28 +512,14 @@ public class AnsiParser
                 case 1: _bold = true; break;
                 case 3: _italic = true; break;
                 case 4: _underline = true; break;
-                case 7: // Reverse video
-                    if (!_reverse)
-                    {
-                        _reverse = true;
-                        var oldFg = _fg == default ? TerminalColor.FromRgb(0x50, 0x50, 0x50) : _fg;
-                        var oldBg = _bg == default ? TerminalColor.FromRgb(0xE0, 0xE0, 0xE0) : _bg;
-                        _fg = oldBg;
-                        _bg = oldFg;
-                    }
+                case 7: // Reverse video -- flag only, resolved in PutChar
+                    _reverse = true;
                     break;
                 case 22: _bold = false; break;
                 case 23: _italic = false; break;
                 case 24: _underline = false; break;
                 case 27: // Reverse off
-                    if (_reverse)
-                    {
-                        _reverse = false;
-                        var oldFg = _fg;
-                        var oldBg = _bg;
-                        _fg = oldBg == TerminalColor.FromRgb(0x50, 0x50, 0x50) ? default : oldBg;
-                        _bg = oldFg == TerminalColor.FromRgb(0xE0, 0xE0, 0xE0) ? default : oldFg;
-                    }
+                    _reverse = false;
                     break;
                 case >= 30 and <= 37:
                     _fg = _bold ? AnsiColors[p - 30 + 8] : AnsiColors[p - 30];
@@ -630,11 +616,20 @@ public class AnsiParser
             LineFeed();
         }
 
+        var fg = _fg;
+        var bg = _bg;
+
+        if (_reverse)
+        {
+            fg = _bg == default ? TerminalColor.FromRgb(0, 0, 0) : _bg;
+            bg = _fg;
+        }
+
         _cells[_cursorCol, _cursorRow] = new TerminalCell
         {
             Character = ch,
-            Foreground = _fg,
-            Background = _bg,
+            Foreground = fg,
+            Background = bg,
             Bold = _bold,
             Italic = _italic,
             Underline = _underline
@@ -678,8 +673,9 @@ public class AnsiParser
             for (int c = 0; c < _cols; c++)
                 _cells[c, r] = _cells[c, r + 1];
 
-        // Clear bottom row of scroll region with BCE
-        ClearRow(_scrollBottom);
+        // Clear bottom row with default background (not BCE).
+        // BCE here leaks colored backgrounds into cells the CLI never intended to color.
+        ClearRowDefault(_scrollBottom);
     }
 
     private void ScrollDown()
@@ -689,8 +685,8 @@ public class AnsiParser
             for (int c = 0; c < _cols; c++)
                 _cells[c, r] = _cells[c, r - 1];
 
-        // Clear top row of scroll region with BCE
-        ClearRow(_scrollTop);
+        // Clear top row with default background (not BCE).
+        ClearRowDefault(_scrollTop);
     }
 
     private TerminalCell BceCell() => new() { Background = _bg };
@@ -746,6 +742,12 @@ public class AnsiParser
             _cells[c, row] = bce;
     }
 
+    private void ClearRowDefault(int row)
+    {
+        for (int c = 0; c < _cols; c++)
+            _cells[c, row] = new TerminalCell();
+    }
+
     private void InsertLines(int count)
     {
         int bottom = _scrollBottom;
@@ -754,7 +756,7 @@ public class AnsiParser
             for (int r = bottom; r > _cursorRow; r--)
                 for (int c = 0; c < _cols; c++)
                     _cells[c, r] = _cells[c, r - 1];
-            ClearRow(_cursorRow);
+            ClearRowDefault(_cursorRow);
         }
     }
 
@@ -766,7 +768,7 @@ public class AnsiParser
             for (int r = _cursorRow; r < bottom; r++)
                 for (int c = 0; c < _cols; c++)
                     _cells[c, r] = _cells[c, r + 1];
-            ClearRow(bottom);
+            ClearRowDefault(bottom);
         }
     }
 

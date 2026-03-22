@@ -355,6 +355,54 @@ public class TerminalControl : Control
         FileLog.Write($"[TerminalControl] ForceRefresh complete: cols={_cols}, rows={_rows}");
     }
 
+    /// <summary>
+    /// Dump raw terminal buffer bytes and a screenshot to disk for debugging.
+    /// Triggered by Ctrl+Shift+F12.
+    /// </summary>
+    private void DumpRawBuffer()
+    {
+        try
+        {
+            var dir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "cc-director", "terminal-captures");
+            System.IO.Directory.CreateDirectory(dir);
+
+            var ts = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+
+            // Dump raw bytes
+            if (_session?.Buffer != null)
+            {
+                var rawBytes = _session.Buffer.DumpAll();
+                var binPath = System.IO.Path.Combine(dir, $"capture-{ts}.bin");
+                System.IO.File.WriteAllBytes(binPath, rawBytes);
+                FileLog.Write($"[TerminalControl] Buffer dumped: {rawBytes.Length} bytes -> {binPath}");
+            }
+
+            // Save metadata
+            var metaPath = System.IO.Path.Combine(dir, $"capture-{ts}.json");
+            var meta = $"{{\"cols\": {_cols}, \"rows\": {_rows}, \"lines\": {ContentLineCount}, \"scrollback\": {_scrollback.Count}}}";
+            System.IO.File.WriteAllText(metaPath, meta);
+
+            // Screenshot
+            if (Bounds.Width > 0 && Bounds.Height > 0)
+            {
+                var pngPath = System.IO.Path.Combine(dir, $"capture-{ts}.png");
+                var pixelSize = new PixelSize((int)Bounds.Width, (int)Bounds.Height);
+                var rtb = new global::Avalonia.Media.Imaging.RenderTargetBitmap(pixelSize);
+                rtb.Render(this);
+                rtb.Save(pngPath);
+                FileLog.Write($"[TerminalControl] Screenshot: {pngPath}");
+            }
+
+            FileLog.Write($"[TerminalControl] Capture saved to {dir}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[TerminalControl] DumpRawBuffer FAILED: {ex.Message}");
+        }
+    }
+
     private void PollTimer_Tick(object? sender, EventArgs e)
     {
         try
@@ -717,6 +765,14 @@ public class TerminalControl : Control
                     ClearSelection();
                     InvalidateVisual();
                 }
+                e.Handled = true;
+                return;
+            }
+
+            // Ctrl+Shift+F12 = dump raw terminal buffer to file for debugging
+            if (ctrl && shift && e.Key == Key.F12)
+            {
+                DumpRawBuffer();
                 e.Handled = true;
                 return;
             }
