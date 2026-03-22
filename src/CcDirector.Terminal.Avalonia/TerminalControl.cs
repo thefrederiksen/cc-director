@@ -302,6 +302,11 @@ public class TerminalControl : Control
         _pollTimer.Tick += PollTimer_Tick;
         _pollTimer.Start();
 
+        // Send resize so Claude Code redraws for current terminal dimensions.
+        // Without this, if the window was resized while on another session,
+        // Claude Code keeps rendering at the old width.
+        _session.Resize((short)_cols, (short)_rows);
+
         InvalidateVisual();
         FileLog.Write($"[TerminalControl] Attach complete: cols={_cols}, rows={_rows}");
     }
