@@ -624,6 +624,9 @@
                                 <Button Content="Move to Review" Background="#E8A838" Foreground="White"
                                         Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
                                         Command="{Binding MoveToReviewCommand}"/>
+                                <Button Content="Move to Sent" Background="#28A745" Foreground="White"
+                                        Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
+                                        Command="{Binding MoveToSentCommand}"/>
                                 <Button Content="Delete" Background="#6C757D" Foreground="White"
                                         Padding="12,6" Margin="0,0,4,4" FontSize="12" Cursor="Hand" BorderThickness="0"
                                         Command="{Binding DeleteCommand}"/>

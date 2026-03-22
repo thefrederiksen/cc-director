@@ -625,6 +625,26 @@ public partial class CommManagerViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private async Task MoveToSentAsync()
+    {
+        if (SelectedItem == null) return;
+
+        var item = SelectedItem;
+        FileLog.Write($"[CommManagerViewModel] MoveToSentAsync: ticket={item.TicketNumber}");
+        StatusMessage = "Moving to sent...";
+
+        if (await _contentService.MarkAsPostedAsync(item))
+        {
+            StatusMessage = $"Moved to sent: {item.DisplayTitle}";
+            await RefreshAsync();
+        }
+        else
+        {
+            StatusMessage = "Failed to move item to sent";
+        }
+    }
+
+    [RelayCommand]
     private async Task PostToLinkedInAsync()
     {
         if (SelectedItem == null) return;

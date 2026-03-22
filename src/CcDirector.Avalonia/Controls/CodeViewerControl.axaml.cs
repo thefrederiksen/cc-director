@@ -17,6 +17,7 @@ public partial class CodeViewerControl : UserControl, IFileViewer
     private bool _isDirty;
     private bool _suppressTextChanged;
     private bool _wordWrap;
+    private bool _isHtmlFile;
 
     public string? FilePath => _filePath;
     public bool IsDirty => _isDirty;
@@ -43,8 +44,8 @@ public partial class CodeViewerControl : UserControl, IFileViewer
         { ".props", "XML" },
         { ".targets", "XML" },
         { ".svg", "XML" },
-        { ".html", "HTML" },
-        { ".htm", "HTML" },
+        { ".html", "XML" },
+        { ".htm", "XML" },
         { ".css", "CSS" },
         { ".sql", "TSQL" },
         { ".ps1", "PowerShell" },
@@ -71,10 +72,11 @@ public partial class CodeViewerControl : UserControl, IFileViewer
 
         _filePath = filePath;
         _isDirty = false;
+        _isHtmlFile = IsHtmlFile(filePath);
+        PreviewButton.IsVisible = _isHtmlFile;
         FilePathText.Text = filePath;
         ToolTip.SetTip(FilePathText, filePath);
         LoadingText.IsVisible = true;
-        Editor.IsVisible = false;
 
         var (content, truncated) = await Task.Run(() =>
         {
@@ -93,7 +95,7 @@ public partial class CodeViewerControl : UserControl, IFileViewer
         Editor.Text = content;
         _suppressTextChanged = false;
 
-        // Apply syntax highlighting based on file extension
+        // Apply syntax highlighting after setting text (AvaloniaEdit requires this order)
         ApplyHighlighting(filePath);
 
         if (truncated)
@@ -103,7 +105,6 @@ public partial class CodeViewerControl : UserControl, IFileViewer
         }
 
         LoadingText.IsVisible = false;
-        Editor.IsVisible = true;
         UpdateSaveButton();
 
         FileLog.Write($"[CodeViewer] LoadFileAsync complete: {filePath}, length={content.Length}, truncated={truncated}");
@@ -253,5 +254,32 @@ public partial class CodeViewerControl : UserControl, IFileViewer
         {
             FileLog.Write($"[CodeViewer] OpenExternalButton_Click FAILED: {ex.Message}");
         }
+    }
+
+    private async void PreviewButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(FilePath)) return;
+        try
+        {
+            if (_isDirty)
+            {
+                FileLog.Write($"[CodeViewer] Auto-saving before preview: {FilePath}");
+                await SaveAsync();
+            }
+
+            Process.Start(new ProcessStartInfo(FilePath) { UseShellExecute = true });
+            FileLog.Write($"[CodeViewer] Preview in browser: {FilePath}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[CodeViewer] PreviewButton_Click FAILED: {ex.Message}");
+        }
+    }
+
+    private static bool IsHtmlFile(string path)
+    {
+        var ext = Path.GetExtension(path);
+        return string.Equals(ext, ".html", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, ".htm", StringComparison.OrdinalIgnoreCase);
     }
 }

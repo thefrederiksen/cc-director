@@ -319,6 +319,42 @@ public class TerminalControl : Control
         _pathExistsCache.Clear();
     }
 
+    /// <summary>
+    /// Force a complete terminal refresh by re-parsing the session buffer from scratch
+    /// and sending a resize signal to trigger the CLI app to redraw.
+    /// Call this when the control becomes visible after being hidden (tab switch).
+    /// </summary>
+    public void ForceRefresh()
+    {
+        FileLog.Write($"[TerminalControl] ForceRefresh: sessionId={_session?.Id}");
+
+        if (_session?.Buffer == null || _parser == null)
+            return;
+
+        if (Bounds.Width <= 0 || Bounds.Height <= 0)
+            return;
+
+        // Re-parse the entire buffer from position 0 to rebuild a clean cell grid
+        InitializeCells();
+        _scrollback.Clear();
+        _scrollOffset = 0;
+        _parser.UpdateGrid(_cells, _cols, _rows);
+
+        var (data, newPos) = _session.Buffer.GetWrittenSince(0);
+        _bufferPosition = newPos;
+        if (data.Length > 0)
+            _parser.Parse(data);
+
+        // Send a resize with current dimensions to trigger SIGWINCH -> CLI full redraw
+        _session.Resize((short)_cols, (short)_rows);
+
+        _pathExistsCache.Clear();
+        InvalidateVisual();
+        ScrollChanged?.Invoke(this, EventArgs.Empty);
+
+        FileLog.Write($"[TerminalControl] ForceRefresh complete: cols={_cols}, rows={_rows}");
+    }
+
     private void PollTimer_Tick(object? sender, EventArgs e)
     {
         try

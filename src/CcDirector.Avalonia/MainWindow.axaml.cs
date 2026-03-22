@@ -1456,6 +1456,14 @@ public partial class MainWindow : Window
             if (activeDocTab != null)
                 DocumentPanel.Children.Add(activeDocTab.ViewerControl);
         }
+
+        // Force terminal refresh when switching back to Terminal tab.
+        // The terminal display corrupts while hidden (Bounds=0) and needs
+        // a full buffer re-parse + ConPTY resize to render correctly.
+        if (tab == "Terminal" && _activeSession != null)
+        {
+            Dispatcher.UIThread.Post(() => TerminalHost.ForceRefresh(), DispatcherPriority.Render);
+        }
     }
 
     private void UpdateSourceControlTabVisibility(string repoPath)
@@ -2931,9 +2939,6 @@ public partial class MainWindow : Window
             case FileViewerCategory.Markdown:
                 var md = new FileViewerControls.MarkdownViewerControl();
                 return (md, md);
-            case FileViewerCategory.Html:
-                var html = new FileViewerControls.HtmlViewerControl();
-                return (html, html);
             case FileViewerCategory.Pdf:
                 var pdf = new FileViewerControls.PdfViewerControl();
                 return (pdf, pdf);
