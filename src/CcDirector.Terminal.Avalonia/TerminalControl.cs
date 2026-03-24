@@ -284,15 +284,15 @@ public class TerminalControl : Control
             return;
         }
 
-        // Control already has real dimensions - parse buffer immediately (re-attach case)
+        // Skip to end of buffer -- don't re-parse historical content.
+        // Re-parsing from byte 0 replays intermediate ink render states that leave
+        // stray characters in cells that were never properly cleared.
+        // Instead, start from current position and let SIGWINCH trigger Claude Code
+        // to redraw from scratch with clean output.
         if (session.Buffer != null)
         {
-            var (initial, pos) = session.Buffer.GetWrittenSince(0);
+            var (_, pos) = session.Buffer.GetWrittenSince(0);
             _bufferPosition = pos;
-            if (initial.Length > 0)
-            {
-                _parser.Parse(initial);
-            }
         }
 
         _pollTimer = new DispatcherTimer(DispatcherPriority.Render)
@@ -339,16 +339,17 @@ public class TerminalControl : Control
         if (Bounds.Width <= 0 || Bounds.Height <= 0)
             return;
 
-        // Re-parse the entire buffer from position 0 to rebuild a clean cell grid
+        // Clear the grid and skip to end of buffer -- don't re-parse historical content.
+        // Re-parsing from byte 0 replays intermediate ink render states that leave
+        // stray characters in cells that were never properly cleared.
+        // Instead, start fresh and let SIGWINCH trigger Claude Code to redraw cleanly.
         InitializeCells();
         _scrollback.Clear();
         _scrollOffset = 0;
         _parser.UpdateGrid(_cells, _cols, _rows);
 
-        var (data, newPos) = _session.Buffer.GetWrittenSince(0);
+        var (_, newPos) = _session.Buffer.GetWrittenSince(0);
         _bufferPosition = newPos;
-        if (data.Length > 0)
-            _parser.Parse(data);
 
         // Send a resize with current dimensions to trigger SIGWINCH -> CLI full redraw
         _session.Resize((short)_cols, (short)_rows);

@@ -909,20 +909,13 @@ public partial class MainWindow : Window
     {
         int total = TerminalHost.ScrollbackCount;
         int viewport = TerminalHost.ViewportRows;
-        bool shouldShow = total > 0;
-        bool wasVisible = TerminalScrollBar.IsVisible;
-
         _updatingScrollBar = true;
         TerminalScrollBar.Maximum = total;
         TerminalScrollBar.ViewportSize = viewport;
         TerminalScrollBar.LargeChange = viewport;
         TerminalScrollBar.SmallChange = 3;
         TerminalScrollBar.Value = total - TerminalHost.ScrollOffset;
-        TerminalScrollBar.IsVisible = shouldShow;
         _updatingScrollBar = false;
-
-        if (shouldShow != wasVisible)
-            FileLog.Write($"[MainWindow] UpdateScrollBar: visible={shouldShow}, scrollback={total}, viewport={viewport}");
     }
 
     private void TerminalScrollBar_PropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)

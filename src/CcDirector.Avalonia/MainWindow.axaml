@@ -484,7 +484,6 @@
                                                       Grid.Column="0" />
                             <ScrollBar x:Name="TerminalScrollBar" Grid.Column="1"
                                        Orientation="Vertical"
-                                       IsVisible="False"
                                        Width="14"
                                        Background="#1E1E1E"
                                        Foreground="#5A5A5A" />
