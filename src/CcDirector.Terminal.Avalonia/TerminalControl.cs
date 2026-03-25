@@ -362,10 +362,12 @@ public class TerminalControl : Control
     }
 
     /// <summary>
-    /// Dump raw terminal buffer bytes and a screenshot to disk for debugging.
-    /// Triggered by Ctrl+Shift+F12.
+    /// Dump comprehensive terminal diagnostic data to disk for debugging.
+    /// Captures raw PTY bytes, parser state, cell grid, and screenshot.
+    /// Triggered by Ctrl+Shift+F12 or the Capture button.
     /// </summary>
-    private void DumpRawBuffer()
+    /// <returns>The capture directory path, or null on failure.</returns>
+    public string? DumpDiagnosticCapture()
     {
         try
         {
@@ -376,37 +378,236 @@ public class TerminalControl : Control
 
             var ts = DateTime.Now.ToString("yyyyMMdd-HHmmss");
 
-            // Dump raw bytes
-            if (_session?.Buffer != null)
-            {
-                var rawBytes = _session.Buffer.DumpAll();
-                var binPath = System.IO.Path.Combine(dir, $"capture-{ts}.bin");
-                System.IO.File.WriteAllBytes(binPath, rawBytes);
-                FileLog.Write($"[TerminalControl] Buffer dumped: {rawBytes.Length} bytes -> {binPath}");
-            }
+            int rawByteCount = DumpRawPtyBytes(dir, ts);
+            DumpMetadataJson(dir, ts, rawByteCount);
+            DumpCellGrid(dir, ts);
+            DumpScreenshot(dir, ts);
 
-            // Save metadata
-            var metaPath = System.IO.Path.Combine(dir, $"capture-{ts}.json");
-            var meta = $"{{\"cols\": {_cols}, \"rows\": {_rows}, \"lines\": {ContentLineCount}, \"scrollback\": {_scrollback.Count}}}";
-            System.IO.File.WriteAllText(metaPath, meta);
-
-            // Screenshot
-            if (Bounds.Width > 0 && Bounds.Height > 0)
-            {
-                var pngPath = System.IO.Path.Combine(dir, $"capture-{ts}.png");
-                var pixelSize = new PixelSize((int)Bounds.Width, (int)Bounds.Height);
-                var rtb = new global::Avalonia.Media.Imaging.RenderTargetBitmap(pixelSize);
-                rtb.Render(this);
-                rtb.Save(pngPath);
-                FileLog.Write($"[TerminalControl] Screenshot: {pngPath}");
-            }
-
-            FileLog.Write($"[TerminalControl] Capture saved to {dir}");
+            FileLog.Write($"[TerminalControl] Diagnostic capture saved to {dir} (ts={ts})");
+            return System.IO.Path.Combine(dir, $"capture-{ts}");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[TerminalControl] DumpRawBuffer FAILED: {ex.Message}");
+            FileLog.Write($"[TerminalControl] DumpDiagnosticCapture FAILED: {ex.Message}");
+            return null;
         }
+    }
+
+    private int DumpRawPtyBytes(string dir, string ts)
+    {
+        if (_session?.Buffer == null)
+            return 0;
+
+        var rawBytes = _session.Buffer.DumpAll();
+        var binPath = System.IO.Path.Combine(dir, $"capture-{ts}.bin");
+        System.IO.File.WriteAllBytes(binPath, rawBytes);
+        FileLog.Write($"[TerminalControl] Buffer dumped: {rawBytes.Length} bytes -> {binPath}");
+        return rawBytes.Length;
+    }
+
+    private void DumpMetadataJson(string dir, string ts, int rawByteCount)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("{");
+        sb.AppendLine($"  \"timestamp\": \"{DateTime.Now:O}\",");
+        sb.AppendLine($"  \"rawByteCount\": {rawByteCount},");
+
+        sb.AppendLine("  \"viewport\": {");
+        sb.AppendLine($"    \"cols\": {_cols},");
+        sb.AppendLine($"    \"rows\": {_rows},");
+        sb.AppendLine($"    \"cellWidth\": {_cellWidth.ToString(CultureInfo.InvariantCulture)},");
+        sb.AppendLine($"    \"cellHeight\": {_cellHeight.ToString(CultureInfo.InvariantCulture)},");
+        sb.AppendLine($"    \"fontSize\": {_fontSize.ToString(CultureInfo.InvariantCulture)},");
+        sb.AppendLine($"    \"dpiScale\": {_dpiScale.ToString(CultureInfo.InvariantCulture)},");
+        sb.AppendLine($"    \"boundsWidth\": {Bounds.Width.ToString(CultureInfo.InvariantCulture)},");
+        sb.AppendLine($"    \"boundsHeight\": {Bounds.Height.ToString(CultureInfo.InvariantCulture)}");
+        sb.AppendLine("  },");
+
+        sb.AppendLine("  \"scroll\": {");
+        sb.AppendLine($"    \"offset\": {_scrollOffset},");
+        sb.AppendLine($"    \"scrollbackCount\": {_scrollback.Count},");
+        sb.AppendLine($"    \"totalLineCount\": {TotalLineCount},");
+        sb.AppendLine($"    \"contentLineCount\": {ContentLineCount},");
+        sb.AppendLine($"    \"userScrolled\": {(_userScrolled ? "true" : "false")}");
+        sb.AppendLine("  },");
+
+        sb.AppendLine("  \"selection\": {");
+        sb.AppendLine($"    \"hasSelection\": {(_hasSelection ? "true" : "false")},");
+        sb.AppendLine($"    \"startCol\": {_selectionStart.col}, \"startRow\": {_selectionStart.row},");
+        sb.AppendLine($"    \"endCol\": {_selectionEnd.col}, \"endRow\": {_selectionEnd.row}");
+        sb.AppendLine("  },");
+
+        sb.AppendLine($"  \"renderer\": \"{_renderer.Name}\",");
+
+        if (_parser != null)
+        {
+            var ps = _parser.GetDiagnosticState();
+            sb.AppendLine("  \"parser\": {");
+            sb.AppendLine($"    \"cursorCol\": {ps.CursorCol},");
+            sb.AppendLine($"    \"cursorRow\": {ps.CursorRow},");
+            sb.AppendLine($"    \"cursorVisible\": {(ps.CursorVisible ? "true" : "false")},");
+            sb.AppendLine($"    \"pendingWrap\": {(ps.PendingWrap ? "true" : "false")},");
+            sb.AppendLine($"    \"scrollTop\": {ps.ScrollTop},");
+            sb.AppendLine($"    \"scrollBottom\": {ps.ScrollBottom},");
+            sb.AppendLine($"    \"fgColor\": \"{ps.FgColor}\",");
+            sb.AppendLine($"    \"bgColor\": \"{ps.BgColor}\",");
+            sb.AppendLine($"    \"bold\": {(ps.Bold ? "true" : "false")},");
+            sb.AppendLine($"    \"italic\": {(ps.Italic ? "true" : "false")},");
+            sb.AppendLine($"    \"underline\": {(ps.Underline ? "true" : "false")},");
+            sb.AppendLine($"    \"reverse\": {(ps.Reverse ? "true" : "false")},");
+            sb.AppendLine($"    \"parserState\": \"{ps.ParserState}\",");
+            if (ps.IntermediateChar != null)
+                sb.AppendLine($"    \"intermediateChar\": \"{ps.IntermediateChar}\",");
+            sb.AppendLine($"    \"csiParams\": [{string.Join(", ", ps.CsiParams)}],");
+            sb.AppendLine($"    \"hasCurrentParam\": {(ps.HasCurrentParam ? "true" : "false")},");
+            sb.AppendLine($"    \"currentParam\": {ps.CurrentParam},");
+            sb.AppendLine($"    \"utf8Needed\": {ps.Utf8Needed},");
+            sb.AppendLine($"    \"utf8Len\": {ps.Utf8Len},");
+            sb.AppendLine($"    \"hasSavedScreen\": {(ps.HasSavedScreen ? "true" : "false")},");
+            sb.AppendLine($"    \"savedCursorCol\": {ps.SavedCursorCol},");
+            sb.AppendLine($"    \"savedCursorRow\": {ps.SavedCursorRow},");
+            sb.AppendLine($"    \"totalBytesParsed\": {ps.TotalBytesParsed},");
+            sb.AppendLine($"    \"gridCols\": {ps.GridCols},");
+            sb.AppendLine($"    \"gridRows\": {ps.GridRows},");
+            sb.AppendLine($"    \"scrollbackCount\": {ps.ScrollbackCount}");
+            sb.AppendLine("  },");
+        }
+
+        sb.AppendLine("  \"session\": {");
+        sb.AppendLine($"    \"id\": \"{_session?.Id.ToString() ?? "null"}\",");
+        sb.AppendLine($"    \"status\": \"{_session?.Status.ToString() ?? "null"}\",");
+        sb.AppendLine($"    \"bufferPosition\": {_bufferPosition}");
+        sb.AppendLine("  }");
+        sb.AppendLine("}");
+
+        var metaPath = System.IO.Path.Combine(dir, $"capture-{ts}.json");
+        System.IO.File.WriteAllText(metaPath, sb.ToString());
+    }
+
+    private void DumpCellGrid(string dir, string ts)
+    {
+        var gridSb = new StringBuilder();
+        gridSb.AppendLine($"Terminal Cell Grid Capture - {DateTime.Now:O}");
+        gridSb.AppendLine($"Grid: {_cols}x{_rows}  Scrollback: {_scrollback.Count}  ScrollOffset: {_scrollOffset}");
+        gridSb.AppendLine(new string('=', 80));
+
+        // Dump scrollback lines near viewport if scrolled
+        int scrollbackStart = Math.Max(0, _scrollback.Count - _scrollOffset - 5);
+        int scrollbackEnd = Math.Min(_scrollback.Count, _scrollback.Count - _scrollOffset + _rows + 5);
+        if (scrollbackStart < scrollbackEnd && _scrollOffset > 0)
+        {
+            gridSb.AppendLine($"--- Scrollback lines [{scrollbackStart}..{scrollbackEnd - 1}] ---");
+            for (int i = scrollbackStart; i < scrollbackEnd; i++)
+            {
+                var line = _scrollback[i];
+                gridSb.Append($"SB[{i,4}] ");
+                for (int c = 0; c < Math.Min(line.Length, _cols); c++)
+                {
+                    var cell = line[c];
+                    char ch = cell.Character == '\0' ? ' ' : cell.Character;
+                    gridSb.Append(ch);
+                }
+                gridSb.AppendLine();
+            }
+            gridSb.AppendLine();
+        }
+
+        // Dump current screen buffer with color info
+        gridSb.AppendLine("--- Current Screen Buffer (with colors) ---");
+        gridSb.AppendLine("Format: [row] chars | fg colors | bg colors | attributes");
+        gridSb.AppendLine();
+        for (int row = 0; row < _rows; row++)
+        {
+            gridSb.Append($"R[{row,3}] ");
+            for (int col = 0; col < _cols; col++)
+            {
+                char ch = _cells[col, row].Character;
+                gridSb.Append(ch == '\0' ? ' ' : ch);
+            }
+            gridSb.AppendLine();
+
+            if (!RowHasNonDefaultStyling(row))
+                continue;
+
+            // Background colors (compact: only show unique spans)
+            gridSb.Append("  BG:  ");
+            TerminalColor lastBg = default;
+            int spanStart = 0;
+            for (int col = 0; col <= _cols; col++)
+            {
+                var bg = col < _cols ? _cells[col, row].Background : default;
+                if (col == _cols || (col > 0 && (bg.R != lastBg.R || bg.G != lastBg.G || bg.B != lastBg.B)))
+                {
+                    if (lastBg.R != 0 || lastBg.G != 0 || lastBg.B != 0)
+                        gridSb.Append($"[{spanStart}-{col - 1}:#{lastBg.R:X2}{lastBg.G:X2}{lastBg.B:X2}] ");
+                    spanStart = col;
+                }
+                lastBg = bg;
+            }
+            gridSb.AppendLine();
+
+            // Foreground colors (compact)
+            gridSb.Append("  FG:  ");
+            TerminalColor lastFg = default;
+            spanStart = 0;
+            for (int col = 0; col <= _cols; col++)
+            {
+                var fg = col < _cols ? _cells[col, row].Foreground : default;
+                if (col == _cols || (col > 0 && (fg.R != lastFg.R || fg.G != lastFg.G || fg.B != lastFg.B)))
+                {
+                    gridSb.Append($"[{spanStart}-{col - 1}:#{lastFg.R:X2}{lastFg.G:X2}{lastFg.B:X2}] ");
+                    spanStart = col;
+                }
+                lastFg = fg;
+            }
+            gridSb.AppendLine();
+
+            // Attributes (inline string building instead of List allocation)
+            bool anyAttrib = false;
+            for (int col = 0; col < _cols; col++)
+            {
+                var cell = _cells[col, row];
+                if (cell.Bold || cell.Italic || cell.Underline)
+                {
+                    if (!anyAttrib) { gridSb.Append("  ATTR:"); anyAttrib = true; }
+                    gridSb.Append($" [{col}:");
+                    if (cell.Bold) gridSb.Append('B');
+                    if (cell.Italic) gridSb.Append('I');
+                    if (cell.Underline) gridSb.Append('U');
+                    gridSb.Append(']');
+                }
+            }
+            if (anyAttrib) gridSb.AppendLine();
+        }
+
+        var gridPath = System.IO.Path.Combine(dir, $"capture-{ts}.txt");
+        System.IO.File.WriteAllText(gridPath, gridSb.ToString());
+    }
+
+    private bool RowHasNonDefaultStyling(int row)
+    {
+        for (int col = 0; col < _cols; col++)
+        {
+            var cell = _cells[col, row];
+            if (cell.Background.R != 0 || cell.Background.G != 0 || cell.Background.B != 0 ||
+                cell.Foreground.R != 204 || cell.Foreground.G != 204 || cell.Foreground.B != 204 ||
+                cell.Bold || cell.Italic || cell.Underline)
+                return true;
+        }
+        return false;
+    }
+
+    private void DumpScreenshot(string dir, string ts)
+    {
+        if (Bounds.Width <= 0 || Bounds.Height <= 0)
+            return;
+
+        var pngPath = System.IO.Path.Combine(dir, $"capture-{ts}.png");
+        var pixelSize = new PixelSize((int)Bounds.Width, (int)Bounds.Height);
+        var rtb = new global::Avalonia.Media.Imaging.RenderTargetBitmap(pixelSize);
+        rtb.Render(this);
+        rtb.Save(pngPath);
+        FileLog.Write($"[TerminalControl] Screenshot: {pngPath}");
     }
 
     private void PollTimer_Tick(object? sender, EventArgs e)
@@ -778,7 +979,7 @@ public class TerminalControl : Control
             // Ctrl+Shift+F12 = dump raw terminal buffer to file for debugging
             if (ctrl && shift && e.Key == Key.F12)
             {
-                DumpRawBuffer();
+                DumpDiagnosticCapture();
                 e.Handled = true;
                 return;
             }

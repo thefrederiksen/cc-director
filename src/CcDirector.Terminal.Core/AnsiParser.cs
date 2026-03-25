@@ -115,6 +115,69 @@ public class AnsiParser
 
     public bool IsCursorVisible => _cursorVisible;
 
+    /// <summary>
+    /// Get comprehensive diagnostic state for terminal capture/debugging.
+    /// </summary>
+    public DiagnosticState GetDiagnosticState() => new()
+    {
+        CursorCol = _cursorCol,
+        CursorRow = _cursorRow,
+        CursorVisible = _cursorVisible,
+        PendingWrap = _pendingWrap,
+        ScrollTop = _scrollTop,
+        ScrollBottom = _scrollBottom,
+        FgColor = $"#{_fg.R:X2}{_fg.G:X2}{_fg.B:X2}",
+        BgColor = $"#{_bg.R:X2}{_bg.G:X2}{_bg.B:X2}",
+        Bold = _bold,
+        Italic = _italic,
+        Underline = _underline,
+        Reverse = _reverse,
+        ParserState = _state.ToString(),
+        IntermediateChar = _intermediateChar == '\0' ? null : _intermediateChar.ToString(),
+        CsiParams = _params.ToArray(),
+        HasCurrentParam = _hasParam,
+        CurrentParam = _currentParam,
+        Utf8Needed = _utf8Needed,
+        Utf8Len = _utf8Len,
+        HasSavedScreen = _savedCells != null,
+        SavedCursorCol = _savedCursorCol,
+        SavedCursorRow = _savedCursorRow,
+        TotalBytesParsed = _totalBytesParsed,
+        GridCols = _cols,
+        GridRows = _rows,
+        ScrollbackCount = _scrollback.Count,
+    };
+
+    public class DiagnosticState
+    {
+        public int CursorCol { get; init; }
+        public int CursorRow { get; init; }
+        public bool CursorVisible { get; init; }
+        public bool PendingWrap { get; init; }
+        public int ScrollTop { get; init; }
+        public int ScrollBottom { get; init; }
+        public string FgColor { get; init; } = "";
+        public string BgColor { get; init; } = "";
+        public bool Bold { get; init; }
+        public bool Italic { get; init; }
+        public bool Underline { get; init; }
+        public bool Reverse { get; init; }
+        public string ParserState { get; init; } = "";
+        public string? IntermediateChar { get; init; }
+        public int[] CsiParams { get; init; } = [];
+        public bool HasCurrentParam { get; init; }
+        public int CurrentParam { get; init; }
+        public int Utf8Needed { get; init; }
+        public int Utf8Len { get; init; }
+        public bool HasSavedScreen { get; init; }
+        public int SavedCursorCol { get; init; }
+        public int SavedCursorRow { get; init; }
+        public long TotalBytesParsed { get; init; }
+        public int GridCols { get; init; }
+        public int GridRows { get; init; }
+        public int ScrollbackCount { get; init; }
+    }
+
     // Track parsing performance
     private int _slowParseCount;
     private DateTime _lastSlowParseLogTime = DateTime.MinValue;

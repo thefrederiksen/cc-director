@@ -381,6 +381,8 @@ public partial class MainWindow : Window
             PlaceholderText.IsVisible = true;
             TerminalGrid.IsVisible = false;
             PromptBarBorder.IsVisible = false;
+            TabBarRefreshButton.IsVisible = false;
+            TabBarCaptureButton.IsVisible = false;
             GitChangesView.Detach();
             CleanView.Detach();
             return;
@@ -407,8 +409,10 @@ public partial class MainWindow : Window
         // Attach clean view (Agent tab)
         CleanView.Attach(vm.Session);
 
-        // Show prompt bar
+        // Show prompt bar and refresh button
         PromptBarBorder.IsVisible = true;
+        TabBarRefreshButton.IsVisible = _activeLeftTab == "Terminal";
+        TabBarCaptureButton.IsVisible = _activeLeftTab == "Terminal";
 
         // Restore prompt text for incoming session
         PromptInput.Text = vm.Session.PendingPromptText ?? "";
@@ -892,11 +896,34 @@ public partial class MainWindow : Window
     private void BtnRefreshTerminal_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnRefreshTerminal_Click");
+        RefreshTerminal();
+    }
+
+    private void TabBarRefreshButton_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] TabBarRefreshButton_Click");
+        RefreshTerminal();
+    }
+
+    private void TabBarCaptureButton_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] TabBarCaptureButton_Click");
+        var capturePath = TerminalHost.DumpDiagnosticCapture();
+        if (capturePath != null)
+        {
+            var fileName = System.IO.Path.GetFileName(capturePath);
+            HeaderActivityLabel.Text = $"Captured -> {fileName}";
+            FileLog.Write($"[MainWindow] TabBarCaptureButton_Click: captured to {capturePath}");
+        }
+    }
+
+    private void RefreshTerminal()
+    {
         if (_activeSession == null) return;
 
         TerminalHost.Detach();
         TerminalHost.Attach(_activeSession.Session);
-        FileLog.Write("[MainWindow] BtnRefreshTerminal_Click: terminal reattached");
+        FileLog.Write("[MainWindow] RefreshTerminal: terminal reattached");
     }
 
     private void OnTerminalScrollChanged(object? sender, EventArgs e)
@@ -1440,6 +1467,10 @@ public partial class MainWindow : Window
         TerminalPanel.IsVisible = tab == "Terminal";
         SourceControlPanel.IsVisible = tab == "SourceControl";
         DocumentPanel.IsVisible = isDocTab;
+
+        // Show refresh button only when Terminal tab is active and a session exists
+        TabBarRefreshButton.IsVisible = tab == "Terminal" && _activeSession != null;
+        TabBarCaptureButton.IsVisible = tab == "Terminal" && _activeSession != null;
 
         // Swap document panel content
         if (isDocTab)
