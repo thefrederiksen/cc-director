@@ -921,9 +921,9 @@ public partial class MainWindow : Window
     {
         if (_activeSession == null) return;
 
-        TerminalHost.Detach();
-        TerminalHost.Attach(_activeSession.Session);
-        FileLog.Write("[MainWindow] RefreshTerminal: terminal reattached");
+        TerminalHost.ForceRefresh();
+        UpdateScrollBar();
+        FileLog.Write("[MainWindow] RefreshTerminal: terminal refreshed");
     }
 
     private void OnTerminalScrollChanged(object? sender, EventArgs e)

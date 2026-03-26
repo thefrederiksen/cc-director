@@ -308,6 +308,7 @@ public class TerminalControl : Control
         _session.Resize((short)_cols, (short)_rows);
 
         InvalidateVisual();
+        ScrollChanged?.Invoke(this, EventArgs.Empty);
         FileLog.Write($"[TerminalControl] Attach complete: cols={_cols}, rows={_rows}");
     }
 
@@ -774,6 +775,8 @@ public class TerminalControl : Control
             };
             _pollTimer.Tick += PollTimer_Tick;
             _pollTimer.Start();
+
+            ScrollChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
