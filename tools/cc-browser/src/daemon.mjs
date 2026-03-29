@@ -8,6 +8,8 @@ import { parse as parseUrl } from 'url';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import clipboardy from 'clipboardy';
+import keysender from 'keysender';
 
 import { Transport } from './transport.mjs';
 import {
@@ -217,6 +219,10 @@ function requireConnected(body) {
 // ---------------------------------------------------------------------------
 
 const transport = new Transport();
+
+// ---------------------------------------------------------------------------
+// Native Paste (OS-level clipboard + Ctrl+V via clipboardy + keysender)
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Route Handlers
@@ -609,9 +615,21 @@ const routes = {
 
   'POST /paste': async (req, res, body) => {
     const conn = requireConnected(body);
+    const text = body.text || body.value;
+
+    if (body.method === 'native') {
+      clipboardy.writeSync(text);
+      const hw = new keysender.Hardware();
+      hw.keyboard.toggleKey('ctrl', true);
+      hw.keyboard.sendKey('v');
+      hw.keyboard.toggleKey('ctrl', false);
+      jsonSuccess(res, { pasted: true, length: text.length, method: 'native' });
+      return;
+    }
+
     const result = await transport.sendCommand(conn, 'paste', {
       ref: body.ref, selector: body.selector,
-      pasteText: body.text || body.value,
+      pasteText: text,
       clear: body.clear,
       format: body.format,
       html: body.html,

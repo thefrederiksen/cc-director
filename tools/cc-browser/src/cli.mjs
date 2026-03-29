@@ -495,6 +495,7 @@ async function cmdBrowserAction(command, connectionName, rest) {
     case 'paste': {
       body.ref = flags.ref;
       body.selector = flags.selector;
+      body.method = flags.method;
       const rawPaste = flags.text || flags.value || flags._positional;
       body.value = rawPaste ? rawPaste.replace(/\\n/g, '\n') : rawPaste;
       body.clear = flags.clear !== 'false';
@@ -966,6 +967,7 @@ function printUsage() {
   console.log('  click --ref <ref> | --selector "css" | --text "..."');
   console.log('  type --ref <ref> | --selector "css" --text "..."');
   console.log('  fill --ref <ref> | --selector "css" --value "..."');
+  console.log('  paste --selector "css" "text" [--method native]  Paste text (native = OS clipboard + Ctrl+V)');
   console.log('  press --key Enter [--ref <ref> | --selector "css"]');
   console.log('  hover --ref <ref> | --selector "css"');
   console.log('  scroll [--direction down] [--amount 500]');
