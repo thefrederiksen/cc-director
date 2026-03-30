@@ -532,6 +532,15 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- Reason -->
+                    <Border Background="#1A2D1A" CornerRadius="4" Padding="12" Margin="0,0,0,8"
+                            IsVisible="{Binding SelectedItem.Reason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                        <StackPanel>
+                            <TextBlock Text="REASON" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,4"/>
+                            <TextBlock Text="{Binding SelectedItem.Reason}" Foreground="#AACCAA" TextWrapping="Wrap" FontSize="12"/>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Context/Destination URLs -->
                     <StackPanel Orientation="Horizontal" Spacing="16" Margin="0,0,0,8">
                         <Button Content="Open Context" Foreground="#007ACC" Background="Transparent"

@@ -443,6 +443,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
@@ -604,7 +605,7 @@
                         </Border>
 
                         <!-- Context Info -->
-                        <Border Background="#2D2A1A" CornerRadius="4" Padding="12" Margin="0,0,0,16"
+                        <Border Grid.Row="3" Background="#2D2A1A" CornerRadius="4" Padding="12" Margin="0,0,0,16"
                                 Visibility="{Binding SelectedItem.ContextTitle, Converter={StaticResource NullToVis}}">
                             <StackPanel>
                                 <TextBlock Text="RESPONDING TO" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,4"/>
@@ -614,7 +615,7 @@
                         </Border>
 
                         <!-- Content Area -->
-                        <StackPanel Grid.Row="3" Visibility="{Binding IsEditing, Converter={StaticResource InverseBoolToVis}}">
+                        <StackPanel Grid.Row="4" Visibility="{Binding IsEditing, Converter={StaticResource InverseBoolToVis}}">
                             <!-- Preview Toggle -->
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
                                 <TextBlock Text="View:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#888888"/>
@@ -694,7 +695,7 @@
                         </StackPanel>
 
                         <!-- Edit Mode -->
-                        <Border Grid.Row="3" Background="#2D2A1A" CornerRadius="4" Padding="16" Margin="0,0,0,16"
+                        <Border Grid.Row="4" Background="#2D2A1A" CornerRadius="4" Padding="16" Margin="0,0,0,16"
                                 Visibility="{Binding IsEditing, Converter={StaticResource BoolToVis}}">
                             <Grid>
                                 <Grid.RowDefinitions>
