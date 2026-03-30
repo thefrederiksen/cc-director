@@ -60,6 +60,9 @@ public class ContentItem
     [JsonPropertyName("tags")]
     public List<string>? Tags { get; set; }
 
+    [JsonPropertyName("reason")]
+    public string? Reason { get; set; }
+
     [JsonPropertyName("notes")]
     public string? Notes { get; set; }
 

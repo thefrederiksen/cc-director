@@ -166,6 +166,9 @@ public class ContentItem
     public string RejectedAtDisplay => RejectedAt.HasValue ? $"Rejected: {RejectedAt:MMM d, yyyy 'at' h:mm tt}" : "";
 
     [JsonIgnore]
+    public string ErrorAtDisplay => RejectedAt.HasValue ? $"Error: {RejectedAt:MMM d, yyyy 'at' h:mm tt}" : "";
+
+    [JsonIgnore]
     public bool HasMedia => Media != null && Media.Count > 0;
 
     [JsonIgnore]

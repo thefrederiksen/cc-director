@@ -118,6 +118,7 @@ def add(
     context_url: Optional[str] = typer.Option(None, "--context-url", "-c", help="What we're responding to (URL)"),
     context_title: Optional[str] = typer.Option(None, "--context-title", help="Title of content we're responding to"),
     tags: Optional[str] = typer.Option(None, "--tags", "-t", help="Comma-separated tags"),
+    reason: Optional[str] = typer.Option(None, "--reason", "-r", help="Why this content was written this way -- context for the reviewer"),
     notes: Optional[str] = typer.Option(None, "--notes", "-n", help="Notes for reviewer"),
     created_by: Optional[str] = typer.Option(None, "--created-by", help="Agent/tool name that created this"),
     # LinkedIn-specific
@@ -271,6 +272,7 @@ def add(
             context_url=context_url,
             context_title=context_title,
             tags=tag_list,
+            reason=reason,
             notes=notes,
             campaign_id=campaign_id,
             send_timing=timing,
@@ -465,7 +467,7 @@ def add_json(
 
 @app.command("list")
 def list_content(
-    status: Optional[str] = typer.Option(None, "-s", "--status", help="Filter by status: pending, approved, rejected, posted"),
+    status: Optional[str] = typer.Option(None, "-s", "--status", help="Filter by status: pending, approved, rejected, posted, error"),
     campaign_id: Optional[str] = typer.Option(None, "--campaign-id", help="Filter by campaign identifier"),
     limit: int = typer.Option(20, "-n", help="Max results"),
 ):
@@ -481,6 +483,7 @@ def list_content(
             "approved": Status.APPROVED,
             "rejected": Status.REJECTED,
             "posted": Status.POSTED,
+            "error": Status.ERROR,
         }
         status_filter = status_map.get(status.lower())
 
@@ -605,6 +608,8 @@ def show_content(
         table.add_row("Context URL", item["context_url"])
     if item.get("tags"):
         table.add_row("Tags", ", ".join(item["tags"]))
+    if item.get("reason"):
+        table.add_row("Reason", item["reason"])
     if item.get("notes"):
         table.add_row("Notes", item["notes"])
 
@@ -721,6 +726,41 @@ def mark_posted_cmd(
             console.print("[yellow]NOTE:[/yellow] Could not log to vault (no matching contact or cc-vault unavailable)")
     else:
         console.print(f"[red]ERROR:[/red] Failed to mark ticket #{ticket_number} as posted")
+        raise typer.Exit(1)
+
+
+@app.command("mark-error")
+def mark_error_cmd(
+    content_id: str = typer.Argument(..., help="Ticket number or content ID (can be partial)"),
+    reason: str = typer.Option(..., "--reason", "-r", help="Why the send failed"),
+    error_by: str = typer.Option("cc_director", "--by", help="Who detected the error"),
+):
+    """Mark a content item as error (send failed)."""
+    qm = get_queue_manager()
+
+    item = None
+    ticket_number = None
+    if content_id.isdigit():
+        ticket_number = int(content_id)
+        item = qm.get_content_by_ticket(ticket_number)
+    else:
+        item = qm.get_content_by_id(content_id)
+        if item:
+            ticket_number = item.get("ticket_number")
+
+    if not item:
+        console.print(f"[red]ERROR:[/red] Content not found: {content_id}")
+        raise typer.Exit(1)
+
+    if ticket_number is None:
+        console.print("[red]ERROR:[/red] Item has no ticket number")
+        raise typer.Exit(1)
+
+    success = qm.mark_error(ticket_number, error_reason=reason, error_by=error_by)
+    if success:
+        console.print(f"[green]OK:[/green] Marked ticket #{ticket_number} as error: {reason}")
+    else:
+        console.print(f"[red]ERROR:[/red] Failed to mark ticket #{ticket_number} as error")
         raise typer.Exit(1)
 
 

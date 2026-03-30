@@ -35,6 +35,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private ObservableCollection<ContentItem> _sentItems = new();
 
     [ObservableProperty]
+    private ObservableCollection<ContentItem> _errorItems = new();
+
+    [ObservableProperty]
     private ContentItem? _selectedItem;
 
     [ObservableProperty]
@@ -67,6 +70,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private int _sentCount;
+
+    [ObservableProperty]
+    private int _errorCount;
 
     [ObservableProperty]
     private bool _isPreviewMode = true;
@@ -206,16 +212,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var approved = await _contentService.LoadApprovedItemsAsync();
             var rejected = await _contentService.LoadRejectedItemsAsync();
             var sent = await _contentService.LoadPostedItemsAsync();
+            var error = await _contentService.LoadErrorItemsAsync();
 
             MergeCollection(PendingItems, pending);
             MergeCollection(ApprovedItems, approved);
             MergeCollection(RejectedItems, rejected);
             MergeCollection(SentItems, sent);
+            MergeCollection(ErrorItems, error);
 
             PendingCount = pending.Count;
             ApprovedCount = approved.Count;
             RejectedCount = rejected.Count;
             SentCount = sent.Count;
+            ErrorCount = error.Count;
 
             RebuildFilteredItems();
 
@@ -264,21 +273,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var approved = await _contentService.LoadApprovedItemsAsync();
             var rejected = await _contentService.LoadRejectedItemsAsync();
             var sent = await _contentService.LoadPostedItemsAsync();
+            var error = await _contentService.LoadErrorItemsAsync();
 
             // Track if we had no items before
             var hadNoItems = PendingItems.Count == 0 && ApprovedItems.Count == 0
-                          && RejectedItems.Count == 0 && SentItems.Count == 0;
+                          && RejectedItems.Count == 0 && SentItems.Count == 0
+                          && ErrorItems.Count == 0;
 
             // Update existing collections to preserve bindings
             UpdateCollection(PendingItems, pending);
             UpdateCollection(ApprovedItems, approved);
             UpdateCollection(RejectedItems, rejected);
             UpdateCollection(SentItems, sent);
+            UpdateCollection(ErrorItems, error);
 
             PendingCount = pending.Count;
             ApprovedCount = approved.Count;
             RejectedCount = rejected.Count;
             SentCount = sent.Count;
+            ErrorCount = error.Count;
 
             RebuildFilteredItems();
 
@@ -293,7 +306,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 AutoSelectFirstItem();
             }
 
-            StatusMessage = $"Loaded {pending.Count} pending, {approved.Count} approved, {rejected.Count} rejected, {sent.Count} sent";
+            StatusMessage = $"Loaded {pending.Count} pending, {approved.Count} approved, {rejected.Count} rejected, {sent.Count} sent, {error.Count} error";
         }
         catch (Exception ex)
         {
@@ -331,6 +344,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             "Approved" => ApprovedItems,
             "Rejected" => RejectedItems,
             "Sent" => SentItems,
+            "Error" => ErrorItems,
             _ => PendingItems
         };
 
@@ -609,6 +623,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private void Skip()
     {
         SelectNextItem();
+    }
+
+    [RelayCommand]
+    private async Task RetryErrorAsync()
+    {
+        if (SelectedItem == null) return;
+
+        var item = SelectedItem;
+        StatusMessage = "Retrying...";
+
+        if (await _contentService.RetryErrorItemAsync(item))
+        {
+            StatusMessage = $"Moved to approved: {item.DisplayTitle}";
+            await RefreshAsync();
+        }
+        else
+        {
+            StatusMessage = "Failed to retry item";
+        }
     }
 
     [RelayCommand]

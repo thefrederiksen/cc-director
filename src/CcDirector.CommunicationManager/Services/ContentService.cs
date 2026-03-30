@@ -46,6 +46,11 @@ public class ContentService : IDisposable
         return await _db.LoadItemsByStatusAsync("posted");
     }
 
+    public async Task<List<ContentItem>> LoadErrorItemsAsync()
+    {
+        return await _db.LoadItemsByStatusAsync("error");
+    }
+
     public async Task<bool> ApproveItemAsync(ContentItem item)
     {
         Debug.WriteLine($"[ContentService] ApproveItemAsync: ticket={item.TicketNumber}");
@@ -108,6 +113,21 @@ public class ContentService : IDisposable
         Debug.WriteLine($"[ContentService] SaveItemAsync: ticket={item.TicketNumber}");
         if (!item.TicketNumber.HasValue) return false;
         return await _db.UpdateContentAsync(item.TicketNumber.Value, item.Content);
+    }
+
+    public async Task<bool> RetryErrorItemAsync(ContentItem item)
+    {
+        Debug.WriteLine($"[ContentService] RetryErrorItemAsync: ticket={item.TicketNumber}");
+        if (!item.TicketNumber.HasValue) return false;
+
+        var additionalFields = new Dictionary<string, object?>
+        {
+            { "rejection_reason", null },
+            { "rejected_at", null },
+            { "rejected_by", null }
+        };
+
+        return await _db.UpdateStatusAsync(item.TicketNumber.Value, "approved", additionalFields);
     }
 
     public async Task<bool> MoveToReviewAsync(ContentItem item)

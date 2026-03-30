@@ -44,6 +44,7 @@ class Status(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     POSTED = "posted"
+    ERROR = "error"
 
 
 class SendTiming(str, Enum):
@@ -197,6 +198,7 @@ class ContentItem(BaseModel):
     destination_url: Optional[str] = None
     campaign_id: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
+    reason: Optional[str] = Field(default=None, description="Why this content was written this way -- context for the reviewer")
     notes: Optional[str] = None
     media: List[MediaItem] = Field(default_factory=list)
     recipient: Optional[RecipientInfo] = None
@@ -324,3 +326,4 @@ class QueueStats(BaseModel):
     approved: int = 0
     rejected: int = 0
     posted: int = 0
+    error: int = 0

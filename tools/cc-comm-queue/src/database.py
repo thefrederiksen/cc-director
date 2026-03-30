@@ -138,6 +138,7 @@ class Database:
             ("facebook_specific", "TEXT"),
             ("whatsapp_specific", "TEXT"),
             ("youtube_specific", "TEXT"),
+            ("reason", "TEXT"),
         ]
 
         for col_name, col_type in new_columns:
@@ -209,12 +210,12 @@ class Database:
                 rejected_at, rejected_by, rejection_reason, scheduled_for,
                 status, send_timing, send_from,
                 context_url, context_title, context_author, destination_url,
-                campaign_id, notes, tags,
+                campaign_id, reason, notes, tags,
                 linkedin_specific, twitter_specific, reddit_specific,
                 email_specific, article_specific,
                 facebook_specific, whatsapp_specific, youtube_specific,
                 recipient, thread_content
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -242,6 +243,7 @@ class Database:
                 item.context_author,
                 item.destination_url,
                 item.campaign_id,
+                item.reason,
                 item.notes,
                 tags_json,
                 linkedin_json,

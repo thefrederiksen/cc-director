@@ -233,6 +233,17 @@
                             </Border>
                         </StackPanel>
                     </RadioButton>
+                    <RadioButton x:Name="ErrorTab"
+                                 Style="{StaticResource TabButtonStyle}"
+                                 Checked="ErrorTab_Checked">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Error" Foreground="#CCCCCC"/>
+                            <Border Background="#E8A317" CornerRadius="10" Padding="6,2" Margin="8,0,0,0"
+                                    Visibility="{Binding ErrorCount, Converter={StaticResource NullToVis}}">
+                                <TextBlock Text="{Binding ErrorCount}" Foreground="White" FontSize="11"/>
+                            </Border>
+                        </StackPanel>
+                    </RadioButton>
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -522,13 +533,28 @@
                             <TextBlock Text="{Binding SelectedItem.RejectedAtDisplay}"
                                        Foreground="#DC3545" FontWeight="SemiBold" FontSize="13"
                                        Margin="0,0,0,8"
-                                       Visibility="{Binding SelectedItem.RejectedAt, Converter={StaticResource NullToVis}}"/>
+                                       Visibility="{Binding ElementName=RejectedTab, Path=IsChecked, Converter={StaticResource BoolToVis}}"/>
 
-                            <!-- Rejection Reason -->
+                            <!-- Error At (for Error tab) -->
+                            <TextBlock Text="{Binding SelectedItem.ErrorAtDisplay}"
+                                       Foreground="#E8A317" FontWeight="SemiBold" FontSize="13"
+                                       Margin="0,0,0,8"
+                                       Visibility="{Binding ElementName=ErrorTab, Path=IsChecked, Converter={StaticResource BoolToVis}}"/>
+
+                            <!-- Rejection Reason (for Rejected tab) -->
                             <Border Background="#3C1515" CornerRadius="4" Padding="8" Margin="0,0,0,8"
-                                    Visibility="{Binding SelectedItem.RejectionReason, Converter={StaticResource NullToVis}}">
-                                <StackPanel>
+                                    Visibility="{Binding ElementName=RejectedTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Visibility="{Binding SelectedItem.RejectionReason, Converter={StaticResource NullToVis}}">
                                     <TextBlock Text="Rejection Reason:" FontWeight="SemiBold" Foreground="#DC3545" FontSize="11"/>
+                                    <TextBlock Text="{Binding SelectedItem.RejectionReason}" Foreground="#CCCCCC" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Error Reason (for Error tab) -->
+                            <Border Background="#3C2A0A" CornerRadius="4" Padding="8" Margin="0,0,0,8"
+                                    Visibility="{Binding ElementName=ErrorTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Visibility="{Binding SelectedItem.RejectionReason, Converter={StaticResource NullToVis}}">
+                                    <TextBlock Text="Error Reason:" FontWeight="SemiBold" Foreground="#E8A317" FontSize="11"/>
                                     <TextBlock Text="{Binding SelectedItem.RejectionReason}" Foreground="#CCCCCC" TextWrapping="Wrap"/>
                                 </StackPanel>
                             </Border>
@@ -568,8 +594,17 @@
                                     Visibility="{Binding SelectedItem.DestinationUrl, Converter={StaticResource NullToVis}}"/>
                         </StackPanel>
 
+                        <!-- Reason -->
+                        <Border Grid.Row="2" Background="#1A2D1A" CornerRadius="4" Padding="12" Margin="0,0,0,8"
+                                Visibility="{Binding SelectedItem.Reason, Converter={StaticResource NullToVis}}">
+                            <StackPanel>
+                                <TextBlock Text="REASON" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,4"/>
+                                <TextBlock Text="{Binding SelectedItem.Reason}" Foreground="#AACCAA" TextWrapping="Wrap" FontSize="12"/>
+                            </StackPanel>
+                        </Border>
+
                         <!-- Context Info -->
-                        <Border Grid.Row="2" Background="#2D2A1A" CornerRadius="4" Padding="12" Margin="0,0,0,16"
+                        <Border Background="#2D2A1A" CornerRadius="4" Padding="12" Margin="0,0,0,16"
                                 Visibility="{Binding SelectedItem.ContextTitle, Converter={StaticResource NullToVis}}">
                             <StackPanel>
                                 <TextBlock Text="RESPONDING TO" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,4"/>
@@ -735,6 +770,15 @@
                         <!-- Sent Actions -->
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
                                     Visibility="{Binding ElementName=SentTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
+                            <Button Content="Delete" Style="{StaticResource SecondaryButtonStyle}"
+                                    Command="{Binding DeleteCommand}" Width="80" Foreground="#DC3545"/>
+                        </StackPanel>
+
+                        <!-- Error Actions -->
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
+                                    Visibility="{Binding ElementName=ErrorTab, Path=IsChecked, Converter={StaticResource BoolToVis}}">
+                            <Button Content="Retry" Style="{StaticResource ApproveButtonStyle}"
+                                    Command="{Binding RetryErrorCommand}" Width="100"/>
                             <Button Content="Delete" Style="{StaticResource SecondaryButtonStyle}"
                                     Command="{Binding DeleteCommand}" Width="80" Foreground="#DC3545"/>
                         </StackPanel>

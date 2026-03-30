@@ -242,13 +242,16 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
     throw new Error(`Extension not found at: ${extensionDir}`);
   }
 
-  // Build launch args - NO --enable-automation, NO --remote-debugging-port
+  // Build launch args - NO --enable-automation
   // NOTE: --load-extension is blocked on Chrome stable (Chrome 130+).
   // We use Brave (Chromium-based, open source) which supports --load-extension.
+  // --remote-debugging-port enables CDP for Input.insertText (reliable paste without OS focus)
+  const debugPort = 9222 + Math.floor(Math.random() * 100);
   const args = [
     `--user-data-dir=${profileDir}`,
     `--load-extension=${extensionDir}`,
     `--disable-extensions-except=${extensionDir}`,
+    `--remote-debugging-port=${debugPort}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-features=TranslateUI',
@@ -309,11 +312,12 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
 
   child.unref();
 
-  // Update config with actual Chrome PID
+  // Update config with actual Chrome PID and CDP port
   writeFileSync(configPath, JSON.stringify({
     connection: name,
     daemonPort: 9280,
     chromePid: child.pid,
+    cdpPort: debugPort,
   }, null, 2), 'utf8');
   console.log(`[chrome-launch] Config updated with PID: ${child.pid}`);
 

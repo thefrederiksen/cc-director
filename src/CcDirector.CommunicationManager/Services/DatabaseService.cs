@@ -124,7 +124,7 @@ public class DatabaseService : IDisposable
             existingColumns.Add(pragmaReader.GetString(1)); // column name is at index 1
         }
 
-        var newColumns = new[] { "facebook_specific", "whatsapp_specific", "youtube_specific" };
+        var newColumns = new[] { "facebook_specific", "whatsapp_specific", "youtube_specific", "reason" };
         foreach (var col in newColumns)
         {
             if (existingColumns.Contains(col))
@@ -315,7 +315,8 @@ public class DatabaseService : IDisposable
             { "pending_review", 0 },
             { "approved", 0 },
             { "rejected", 0 },
-            { "posted", 0 }
+            { "posted", 0 },
+            { "error", 0 }
         };
 
         await using var connection = new SqliteConnection(_connectionString);
@@ -358,6 +359,7 @@ public class DatabaseService : IDisposable
             ContextAuthor = GetNullableString(reader, "context_author"),
             DestinationUrl = GetNullableString(reader, "destination_url"),
             CampaignId = GetNullableString(reader, "campaign_id"),
+            Reason = GetNullableString(reader, "reason"),
             Notes = GetNullableString(reader, "notes"),
             RejectionReason = GetNullableString(reader, "rejection_reason"),
             RejectedBy = GetNullableString(reader, "rejected_by"),

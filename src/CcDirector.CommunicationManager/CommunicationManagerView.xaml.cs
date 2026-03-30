@@ -97,6 +97,14 @@ public partial class CommunicationManagerView : UserControl, IDisposable
         UpdateViewToggle("List");
     }
 
+    private void ErrorTab_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!_isInitialized) return;
+        _viewModel.OnTabChanged("Error");
+        ResetFilterChipVisuals();
+        UpdateViewToggle("List");
+    }
+
     private void FilterChip_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button button) return;

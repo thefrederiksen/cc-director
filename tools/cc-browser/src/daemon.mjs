@@ -5,7 +5,8 @@
 
 import { createServer } from 'http';
 import { parse as parseUrl } from 'url';
-import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import http from 'http';
 import { join } from 'path';
 import { homedir } from 'os';
 import clipboardy from 'clipboardy';
@@ -618,12 +619,60 @@ const routes = {
     const text = body.text || body.value;
 
     if (body.method === 'native') {
-      clipboardy.writeSync(text);
-      const hw = new keysender.Hardware();
-      hw.keyboard.toggleKey('ctrl', true);
-      hw.keyboard.sendKey('v');
-      hw.keyboard.toggleKey('ctrl', false);
-      jsonSuccess(res, { pasted: true, length: text.length, method: 'native' });
+      // Use Chrome DevTools Protocol (CDP) Input.insertText to paste text
+      // directly into the focused element. No OS window focus needed.
+      const connName = resolveConnection(body);
+      const profileDir = getProfileDir(connName);
+      const configPath = join(profileDir, 'cc-browser.json');
+      if (!existsSync(configPath)) {
+        throw new Error(`Browser config not found at ${configPath}`);
+      }
+      const config = JSON.parse(readFileSync(configPath, 'utf8'));
+      if (!config.cdpPort) {
+        throw new Error('CDP port not found in cc-browser.json -- reopen the browser connection');
+      }
+
+      // Get CDP WebSocket URL for the active tab
+      const targets = await new Promise((resolve, reject) => {
+        http.get(`http://127.0.0.1:${config.cdpPort}/json`, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => resolve(JSON.parse(data)));
+        }).on('error', (e) => reject(new Error(`CDP connect failed on port ${config.cdpPort}: ${e.message}`)));
+      });
+      const target = targets.find(t => t.type === 'page' && t.webSocketDebuggerUrl);
+      if (!target) {
+        throw new Error('No debuggable browser tab found via CDP');
+      }
+
+      // Connect to CDP WebSocket
+      const { WebSocket: WS } = await import('ws');
+      const cdpWs = new WS(target.webSocketDebuggerUrl);
+      await new Promise((resolve, reject) => {
+        cdpWs.on('open', resolve);
+        cdpWs.on('error', reject);
+      });
+
+      let cdpId = 1;
+      const cdpSend = (method, params = {}) => new Promise((resolve, reject) => {
+        const id = cdpId++;
+        const handler = (msg) => {
+          const resp = JSON.parse(msg.toString());
+          if (resp.id === id) {
+            cdpWs.off('message', handler);
+            if (resp.error) reject(new Error(resp.error.message));
+            else resolve(resp.result);
+          }
+        };
+        cdpWs.on('message', handler);
+        cdpWs.send(JSON.stringify({ id, method, params }));
+      });
+
+      // Insert text via CDP -- no OS focus needed
+      await cdpSend('Input.insertText', { text });
+
+      cdpWs.close();
+      jsonSuccess(res, { pasted: true, length: text.length, method: 'cdp' });
       return;
     }
 

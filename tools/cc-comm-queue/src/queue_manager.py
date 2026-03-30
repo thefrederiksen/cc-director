@@ -181,6 +181,26 @@ class QueueManager:
             posted_url=posted_url,
         )
 
+    def mark_error(self, ticket_number: int, error_reason: str, error_by: str = "cc_director") -> bool:
+        """Mark a content item as error.
+
+        Args:
+            ticket_number: The ticket number
+            error_reason: Why the send failed
+            error_by: Who/what detected the error
+
+        Returns:
+            True if successful
+        """
+        from datetime import datetime
+        return self.db.update_status(
+            ticket_number,
+            Status.ERROR,
+            rejection_reason=error_reason,
+            rejected_at=datetime.now().isoformat(),
+            rejected_by=error_by,
+        )
+
     def move_to_review(self, ticket_number: int) -> bool:
         """Move a content item back to pending review.
 
