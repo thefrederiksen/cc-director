@@ -228,15 +228,10 @@
   }
 
   function isVisible(el) {
-    if (!el.offsetParent && el.tagName !== 'BODY' && el.tagName !== 'HTML') {
-      // Could be position:fixed or hidden
-      const style = getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden') return false;
-      if (style.position !== 'fixed' && style.position !== 'sticky') return false;
-    }
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
     if (parseFloat(style.opacity) === 0) return false;
+    if (el.offsetWidth === 0 && el.offsetHeight === 0 && style.overflow === 'hidden') return false;
     return true;
   }
 
@@ -306,9 +301,15 @@
         }
       }
 
-      // Walk children
+      // Walk children (light DOM)
       for (const child of el.children) {
         walk(child, depth + (role ? 1 : 0));
+      }
+      // Walk into shadow DOM if present
+      if (el.shadowRoot) {
+        for (const child of el.shadowRoot.children) {
+          walk(child, depth + (role ? 1 : 0));
+        }
       }
 
       // Add text content nodes for leaf elements without roles
@@ -392,6 +393,46 @@
   }
 
   // =========================================================================
+  // Shadow DOM Utilities
+  // =========================================================================
+
+  function querySelectorDeep(selector, root = document) {
+    const result = root.querySelector(selector);
+    if (result) return result;
+
+    const allEls = root.querySelectorAll('*');
+    for (const el of allEls) {
+      if (el.shadowRoot) {
+        const found = querySelectorDeep(selector, el.shadowRoot);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function findTextDeep(textStr, exact, root = document.body) {
+    // Search light DOM
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const content = node.textContent.trim();
+      const match = exact ? content === textStr : content.includes(textStr);
+      if (match && node.parentElement) {
+        return node.parentElement;
+      }
+    }
+    // Search shadow DOMs
+    const allEls = root.querySelectorAll('*');
+    for (const el of allEls) {
+      if (el.shadowRoot) {
+        const found = findTextDeep(textStr, exact, el.shadowRoot);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  // =========================================================================
   // Element Resolution (ported from interactions.mjs resolveLocator)
   // =========================================================================
 
@@ -415,20 +456,13 @@
 
     if (hasText) {
       const textStr = String(text).trim();
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      let node;
-      while ((node = walker.nextNode())) {
-        const content = node.textContent.trim();
-        const match = exact ? content === textStr : content.includes(textStr);
-        if (match && node.parentElement) {
-          return { element: node.parentElement, description: `text="${textStr}"` };
-        }
-      }
-      throw new Error(`No element found with text "${textStr}"`);
+      const found = findTextDeep(textStr, exact);
+      if (!found) throw new Error(`No element found with text "${textStr}"`);
+      return { element: found, description: `text="${textStr}"` };
     }
 
     const selectorStr = String(selector).trim();
-    const el = document.querySelector(selectorStr);
+    const el = querySelectorDeep(selectorStr);
     if (!el) throw new Error(`No element found for selector "${selectorStr}"`);
     return { element: el, description: `selector="${selectorStr}"` };
   }
