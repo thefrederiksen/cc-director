@@ -702,7 +702,7 @@ def mark_posted_cmd(
     if content_id.isdigit():
         ticket_number = int(content_id)
         item = qm.get_content_by_ticket(ticket_number)
-    else:
+    if not item:
         item = qm.get_content_by_id(content_id)
         if item:
             ticket_number = item.get("ticket_number")
