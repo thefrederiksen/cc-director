@@ -175,6 +175,17 @@ public class ContentItem
     public bool HasMedia => Media != null && Media.Count > 0;
 
     [JsonIgnore]
+    public string PreviewContent => Content.Length > 500
+        ? Content[..500].TrimEnd() + "...see more"
+        : Content;
+
+    [JsonIgnore]
+    public string? FirstImageTempPath => Media?.FirstOrDefault(m => m.IsImage && m.HasTempFile)?.TempPath;
+
+    [JsonIgnore]
+    public bool HasPreviewImage => FirstImageTempPath != null;
+
+    [JsonIgnore]
     public bool IsLinkedIn => Platform?.Equals("linkedin", StringComparison.OrdinalIgnoreCase) == true;
 
     [JsonIgnore]

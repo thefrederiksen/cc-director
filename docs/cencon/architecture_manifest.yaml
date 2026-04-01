@@ -10,7 +10,7 @@ project:
   framework: ".NET 10"
   platform: "Windows 10/11 (WPF), Mac/Linux (experimental backend)"
 
-last_updated: "2026-03-25"
+last_updated: "2026-04-01"
 
 # C4 Level 1: System Context
 context:
@@ -146,12 +146,13 @@ containers:
           - Controls/TextViewerControl.axaml
           - Controls/PdfViewerControl.axaml
       - name: CommManagerView
-        description: Communication Manager overlay for outbound communication queue with approval workflow
+        description: Communication Manager overlay for outbound communication queue with approval workflow and media preview
         files:
           - Controls/CommManager/CommManagerView.axaml
           - Controls/CommManager/CommManagerView.axaml.cs
           - Controls/CommManager/CommManagerViewModel.cs
           - Controls/CommManager/PlatformPreviewSelector.cs
+          - Controls/CommManager/FilePathToImageConverter.cs
           - Controls/CommManager/ScheduleDialog.axaml
           - Controls/CommManager/SendProgressDialog.axaml
       - name: Dialogs

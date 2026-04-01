@@ -5,6 +5,7 @@
              Background="#1E1E1E">
 
     <UserControl.Resources>
+        <cm:FilePathToImageConverter x:Key="FilePathToImage"/>
         <!-- Platform Preview Selector -->
         <cm:PlatformPreviewSelector x:Key="PlatformSelector">
             <!-- LinkedIn Preview -->
@@ -23,7 +24,12 @@
                                     <TextBlock Text="2h - Public" Foreground="#999999" FontSize="11"/>
                                 </StackPanel>
                             </Grid>
-                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" FontSize="14" Foreground="#000000" Margin="0,0,0,12"/>
+                            <TextBlock Text="{Binding PreviewContent}" TextWrapping="Wrap" FontSize="14" Foreground="#000000" Margin="0,0,0,12"/>
+                            <Image Source="{Binding FirstImageTempPath, Converter={StaticResource FilePathToImage}}"
+                                   IsVisible="{Binding HasPreviewImage}"
+                                   MaxHeight="300" Stretch="Uniform"
+                                   HorizontalAlignment="Stretch"
+                                   Margin="0,0,0,12"/>
                             <Border Height="1" Background="#E0E0E0" Margin="0,4,0,8"/>
                             <Grid ColumnDefinitions="*,*,*,*">
                                 <TextBlock Grid.Column="0" Text="[+] Like" Foreground="#666666" FontSize="13" HorizontalAlignment="Center"/>

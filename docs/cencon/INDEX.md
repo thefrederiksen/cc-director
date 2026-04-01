@@ -1,7 +1,7 @@
 # CC Director - CenCon Documentation Index
 
 **Version:** 1.1.0
-**Last Updated:** 2026-03-18
+**Last Updated:** 2026-04-01
 **Schema:** CenCon Method v1.0
 
 ---

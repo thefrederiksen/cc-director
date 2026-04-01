@@ -68,6 +68,23 @@ public partial class CommManagerViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasApprovedItems));
     }
 
+    partial void OnSelectedItemChanging(ContentItem? value)
+    {
+        FileLog.Write($"[CommManager.VM] OnSelectedItemChanging: id={value?.Id ?? "null"}, hasMedia={value?.HasMedia}");
+
+        if (value?.Media == null) return;
+
+        // Media temp files are extracted during LoadMediaForItemAsync at load time.
+        // This is a safety net for items whose temp files were cleaned up between load and selection.
+        foreach (var media in value.Media.Where(m => m.IsImage && !m.HasTempFile))
+        {
+            FileLog.Write($"[CommManager.VM] Extracting missing temp file: mediaId={media.Id}, filename={media.Filename}");
+            var tempPath = _contentService.ExtractMediaToTemp(media.Id);
+            if (tempPath != null)
+                media.TempPath = tempPath;
+        }
+    }
+
     [ObservableProperty]
     private int _rejectedCount;
 
