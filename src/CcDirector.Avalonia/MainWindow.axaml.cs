@@ -349,12 +349,18 @@ public partial class MainWindow : Window
 
     private void SelectSession(SessionViewModel? vm)
     {
-        // Close comms overlay when switching to any session
+        // Close overlays when switching to any session
         if (CommsOverlay.IsVisible)
         {
             CommsOverlay.IsVisible = false;
             if (_commsInitialized)
                 CommManagerView.StopPolling();
+        }
+        if (ConnectionsOverlay.IsVisible)
+        {
+            ConnectionsOverlay.IsVisible = false;
+            if (_connectionsInitialized)
+                ConnectionsView.StopPolling();
         }
 
         if (vm == _activeSession) return;
@@ -984,9 +990,9 @@ public partial class MainWindow : Window
 
     private void SessionList_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        // When comms overlay is open, any click on the session list should close it
+        // When an overlay is open, any click on the session list should close it
         // even if the same session is already selected (SelectionChanged won't fire)
-        if (CommsOverlay.IsVisible && _activeSession != null)
+        if ((CommsOverlay.IsVisible || ConnectionsOverlay.IsVisible) && _activeSession != null)
             SelectSession(_activeSession);
     }
 
@@ -1411,6 +1417,15 @@ public partial class MainWindow : Window
     private async void BtnComms_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnComms_Click: opening Comms overlay");
+
+        // Close connections overlay if open
+        if (ConnectionsOverlay.IsVisible)
+        {
+            ConnectionsOverlay.IsVisible = false;
+            if (_connectionsInitialized)
+                ConnectionsView.StopPolling();
+        }
+
         CommsOverlay.IsVisible = true;
 
         if (!_commsInitialized)
@@ -1435,6 +1450,33 @@ public partial class MainWindow : Window
         CommsOverlay.IsVisible = false;
         if (_commsInitialized)
             CommManagerView.StopPolling();
+    }
+
+    private bool _connectionsInitialized;
+
+    private void BtnConnections_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnConnections_Click: opening Connections overlay");
+
+        // Close comms overlay if open
+        if (CommsOverlay.IsVisible)
+        {
+            CommsOverlay.IsVisible = false;
+            if (_commsInitialized)
+                CommManagerView.StopPolling();
+        }
+
+        ConnectionsOverlay.IsVisible = true;
+        _connectionsInitialized = true;
+        ConnectionsView.StartPolling();
+    }
+
+    private void BtnConnectionsClose_Click(object? sender, RoutedEventArgs e)
+    {
+        FileLog.Write("[MainWindow] BtnConnectionsClose_Click: closing Connections overlay");
+        ConnectionsOverlay.IsVisible = false;
+        if (_connectionsInitialized)
+            ConnectionsView.StopPolling();
     }
 
     private void SwitchLeftTab(string tab)

@@ -1,0 +1,119 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.Controls.ConnectionsView"
+             Background="#1E1E1E">
+
+    <DockPanel>
+        <!-- Header -->
+        <DockPanel DockPanel.Dock="Top" Margin="24,20,24,12">
+            <TextBlock Text="CONNECTIONS"
+                       Foreground="#CCCCCC"
+                       FontWeight="SemiBold" FontSize="16"
+                       VerticalAlignment="Center" />
+            <Button x:Name="BtnAddConnection" Content="+ Add"
+                    Click="BtnAddConnection_Click"
+                    HorizontalAlignment="Right"
+                    Padding="12,4"
+                    Background="#007ACC"
+                    Foreground="White"
+                    BorderThickness="0" Cursor="Hand"
+                    FontSize="12" />
+        </DockPanel>
+
+        <!-- Loading indicator -->
+        <TextBlock x:Name="LoadingText" Text="Loading..."
+                   Foreground="#888888" FontStyle="Italic" FontSize="12"
+                   HorizontalAlignment="Center" VerticalAlignment="Top"
+                   Margin="0,24,0,0"
+                   DockPanel.Dock="Top"
+                   IsVisible="False" />
+
+        <!-- Empty state -->
+        <TextBlock x:Name="EmptyText"
+                   Text="No connections configured."
+                   Foreground="#555555" FontSize="12"
+                   HorizontalAlignment="Center" VerticalAlignment="Top"
+                   Margin="0,24,0,0"
+                   DockPanel.Dock="Top"
+                   IsVisible="False" />
+
+        <!-- Connection cards -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Margin="16,0,16,16">
+            <ItemsControl x:Name="ConnectionList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Padding="12,10" BorderBrush="#333333" BorderThickness="0,0,0,1"
+                                Background="Transparent" Cursor="Arrow"
+                                Tag="{Binding Name}">
+
+                            <Grid RowDefinitions="Auto,Auto,Auto">
+
+                                <!-- Row 1: Status dot + Name + Status text + Action button -->
+                                <DockPanel Grid.Row="0">
+                                    <!-- Action button (right) -->
+                                    <Button DockPanel.Dock="Right"
+                                            Content="{Binding ActionLabel}"
+                                            Click="BtnConnectionAction_Click"
+                                            Tag="{Binding Name}"
+                                            IsEnabled="{Binding ActionEnabled}"
+                                            MinWidth="60" Height="26"
+                                            FontSize="11"
+                                            BorderThickness="0" Cursor="Hand"
+                                            VerticalAlignment="Center"
+                                            Margin="8,0,0,0"
+                                            Background="{Binding ActionBackground}"
+                                            Foreground="{Binding ActionForeground}" />
+
+                                    <!-- Delete button (right, before action) -->
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Delete"
+                                            Click="BtnDelete_Click"
+                                            Tag="{Binding Name}"
+                                            MinWidth="50" Height="26" FontSize="11"
+                                            BorderThickness="0" Cursor="Hand"
+                                            VerticalAlignment="Center" Margin="4,0,0,0"
+                                            Background="#3C3C3C" Foreground="#CC4444" />
+
+                                    <!-- Status text (right of name) -->
+                                    <TextBlock DockPanel.Dock="Right"
+                                               Text="{Binding StatusDisplay}"
+                                               Foreground="{Binding StatusTextBrush}"
+                                               FontSize="11"
+                                               VerticalAlignment="Center"
+                                               Margin="8,0,0,0" />
+
+                                    <!-- Status dot + Name (left) -->
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Border Width="8" Height="8" CornerRadius="4"
+                                                Background="{Binding StatusBrush}"
+                                                VerticalAlignment="Center"
+                                                Margin="0,0,8,0" />
+                                        <TextBlock Text="{Binding Name}"
+                                                   Foreground="#CCCCCC" FontSize="14"
+                                                   FontWeight="SemiBold" />
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <!-- Row 2: Description -->
+                                <TextBlock Grid.Row="1"
+                                           Text="{Binding Description}"
+                                           Foreground="#888888" FontSize="11"
+                                           FontStyle="Italic"
+                                           Margin="16,3,0,0"
+                                           IsVisible="{Binding HasDescription}" />
+
+                                <!-- Row 3: Meta info -->
+                                <TextBlock Grid.Row="2"
+                                           Text="{Binding MetaDisplay}"
+                                           Foreground="#666666" FontSize="10"
+                                           Margin="16,3,0,0" />
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

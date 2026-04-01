@@ -52,6 +52,21 @@
                         Click="BtnNewSession_Click"
                         ToolTip.Tip="Create a new session" />
 
+                <!-- Connections button above comms -->
+                <Grid DockPanel.Dock="Bottom" Margin="8,2,8,2">
+                    <Button x:Name="BtnConnections"
+                            Content="Connections"
+                            Click="BtnConnections_Click"
+                            Background="#2D5A7D"
+                            Foreground="White"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Height="30"
+                            FontSize="13"
+                            HorizontalContentAlignment="Center"
+                            ToolTip.Tip="Browser Connections" />
+                </Grid>
+
                 <!-- Comms button above build info -->
                 <Grid DockPanel.Dock="Bottom" Margin="8,2,8,2">
                     <Button x:Name="BtnComms"
@@ -1001,6 +1016,41 @@
 
                 <!-- CommManagerView fills the rest -->
                 <commMgr:CommManagerView x:Name="CommManagerView" />
+            </DockPanel>
+        </Border>
+
+        <!-- ==================== CONNECTIONS OVERLAY (covers main + right panel) ==================== -->
+        <Border x:Name="ConnectionsOverlay"
+                Grid.Row="0" Grid.RowSpan="2" Grid.Column="2"
+                Background="{DynamicResource PanelBackground}"
+                ZIndex="10"
+                IsVisible="False">
+            <DockPanel>
+                <!-- Header bar -->
+                <Border DockPanel.Dock="Top"
+                        Background="{DynamicResource SidebarBackground}"
+                        BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                        Padding="12,8">
+                    <DockPanel>
+                        <Button x:Name="BtnConnectionsClose"
+                                DockPanel.Dock="Right"
+                                Content="[x] Close"
+                                Click="BtnConnectionsClose_Click"
+                                Background="Transparent"
+                                Foreground="#888888"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Padding="8,4"
+                                FontSize="12" />
+                        <TextBlock Text="Browser Connections"
+                                   Foreground="{DynamicResource TextForeground}"
+                                   FontSize="16" FontWeight="Bold"
+                                   VerticalAlignment="Center" />
+                    </DockPanel>
+                </Border>
+
+                <!-- ConnectionsView fills the rest -->
+                <controls:ConnectionsView x:Name="ConnectionsView" />
             </DockPanel>
         </Border>
 
