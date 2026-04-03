@@ -943,11 +943,14 @@ public partial class MainWindow : Window
         int total = TerminalHost.ScrollbackCount;
         int viewport = TerminalHost.ViewportRows;
         _updatingScrollBar = true;
-        TerminalScrollBar.Maximum = total;
+        // Always keep Maximum >= 1 so Avalonia renders the thumb.
+        // When there is no scrollback the thumb fills the entire track,
+        // which is the correct visual for "you are seeing everything".
+        TerminalScrollBar.Maximum = Math.Max(total, 1);
         TerminalScrollBar.ViewportSize = viewport;
         TerminalScrollBar.LargeChange = viewport;
         TerminalScrollBar.SmallChange = 3;
-        TerminalScrollBar.Value = total - TerminalHost.ScrollOffset;
+        TerminalScrollBar.Value = Math.Max(total, 1) - TerminalHost.ScrollOffset;
         _updatingScrollBar = false;
     }
 
