@@ -62,6 +62,18 @@ public class TerminalControl : Control
         return _typefaceNormal;
     }
 
+    /// <summary>Snapshot of terminal visual state saved on detach, restored on re-attach to preserve scrollback.</summary>
+    private sealed class TerminalStateSnapshot
+    {
+        public required List<TerminalCell[]> Scrollback { get; init; }
+        public required TerminalCell[,] Cells { get; init; }
+        public required int Cols { get; init; }
+        public required int Rows { get; init; }
+        public required int ScrollOffset { get; init; }
+        public required bool UserScrolled { get; init; }
+        public required long BufferPosition { get; init; }
+    }
+
     // Link region for hover detection (uses Avalonia Rect)
     private readonly record struct LinkRegion(Rect Bounds, string Text, LinkDetector.LinkType Type);
     private readonly List<LinkRegion> _linkRegions = new();
@@ -263,9 +275,31 @@ public class TerminalControl : Control
         _pathExistsCache.Clear();
 
         RecalculateGridSize();
-        InitializeCells();
 
-        _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
+        // Try to restore saved terminal state (scrollback, cells, scroll position)
+        // so the user sees exactly what they had before switching away.
+        var snapshot = session.TerminalSnapshot as TerminalStateSnapshot;
+        bool restored = false;
+
+        if (snapshot != null && snapshot.Cols == _cols && snapshot.Rows == _rows)
+        {
+            _cells = snapshot.Cells;
+            _scrollback.AddRange(snapshot.Scrollback);
+            _scrollOffset = snapshot.ScrollOffset;
+            _userScrolled = snapshot.UserScrolled;
+            _bufferPosition = snapshot.BufferPosition;
+            _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
+            restored = true;
+            FileLog.Write($"[TerminalControl] Restored snapshot: {_scrollback.Count} scrollback lines, offset={_scrollOffset}");
+        }
+        else
+        {
+            InitializeCells();
+            _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
+        }
+
+        // Clear the snapshot now that we've consumed (or skipped) it
+        session.TerminalSnapshot = null;
 
         // If the control hasn't been laid out yet (Bounds are 0),
         // defer buffer parsing and poll timer until size change provides real dimensions.
@@ -274,7 +308,7 @@ public class TerminalControl : Control
         {
             _pendingLayoutAttach = true;
             // Advance buffer position past existing content so poll timer won't re-parse it
-            if (session.Buffer != null)
+            if (!restored && session.Buffer != null)
             {
                 var (_, pos) = session.Buffer.GetWrittenSince(0);
                 _bufferPosition = pos;
@@ -289,7 +323,7 @@ public class TerminalControl : Control
         // stray characters in cells that were never properly cleared.
         // Instead, start from current position and let SIGWINCH trigger Claude Code
         // to redraw from scratch with clean output.
-        if (session.Buffer != null)
+        if (!restored && session.Buffer != null)
         {
             var (_, pos) = session.Buffer.GetWrittenSince(0);
             _bufferPosition = pos;
@@ -309,12 +343,28 @@ public class TerminalControl : Control
 
         InvalidateVisual();
         ScrollChanged?.Invoke(this, EventArgs.Empty);
-        FileLog.Write($"[TerminalControl] Attach complete: cols={_cols}, rows={_rows}");
+        FileLog.Write($"[TerminalControl] Attach complete: cols={_cols}, rows={_rows}, restored={restored}, scrollback={_scrollback.Count}");
     }
 
     public void Detach()
     {
-        FileLog.Write($"[TerminalControl] Detach: sessionId={_session?.Id}");
+        FileLog.Write($"[TerminalControl] Detach: sessionId={_session?.Id}, scrollback={_scrollback.Count}, offset={_scrollOffset}");
+
+        // Save terminal state so scrollback survives session switching
+        if (_session != null && _scrollback.Count > 0)
+        {
+            _session.TerminalSnapshot = new TerminalStateSnapshot
+            {
+                Scrollback = new List<TerminalCell[]>(_scrollback),
+                Cells = (TerminalCell[,])_cells.Clone(),
+                Cols = _cols,
+                Rows = _rows,
+                ScrollOffset = _scrollOffset,
+                UserScrolled = _userScrolled,
+                BufferPosition = _bufferPosition
+            };
+            FileLog.Write($"[TerminalControl] Saved snapshot: {_scrollback.Count} scrollback lines, cols={_cols}, rows={_rows}");
+        }
 
         _pollTimer?.Stop();
         _pollTimer = null;
