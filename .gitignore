@@ -20,6 +20,7 @@ tmp_build_output/CcDirector.Core.dll
 tmp_build_output/CcDirector.Core.pdb
 .claude/sounds/.current_session
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 scripts/.claude/
 supabase-credentials.txt
 docs/MACHINE_AUDIT_*.md

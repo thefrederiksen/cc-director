@@ -164,6 +164,16 @@ public class TerminalControl : Control
     /// <summary>Number of visible rows in the viewport.</summary>
     public int ViewportRows => _rows;
 
+    /// <summary>
+    /// Atomic snapshot of the three quantities the scrollbar UI needs
+    /// (scrollback size, viewport height, current offset) read in a single
+    /// expression. Prevents the scrollbar from setting Maximum/ViewportSize/
+    /// Value from inconsistent intermediate states when scrollback is
+    /// growing concurrently with a redraw.
+    /// </summary>
+    public ScrollSnapshot GetScrollSnapshot()
+        => new(_scrollback.Count, _rows, _scrollOffset);
+
     /// <summary>Total number of lines (scrollback + current screen) - includes empty rows.</summary>
     public int TotalLineCount => _scrollback.Count + _rows;
 

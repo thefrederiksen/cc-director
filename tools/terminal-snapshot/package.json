@@ -1,0 +1,16 @@
+{
+  "name": "terminal-snapshot",
+  "version": "1.0.0",
+  "description": "Feeds captured ANSI byte streams through xterm.js headless to produce ground-truth grid snapshots for C# parser regression tests",
+  "private": true,
+  "type": "module",
+  "main": "snapshot.mjs",
+  "scripts": {
+    "snapshot": "node snapshot.mjs",
+    "snapshot-all": "node snapshot-all.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "^5.5.0",
+    "@xterm/addon-serialize": "^0.13.0"
+  }
+}

@@ -10,11 +10,11 @@ namespace CcDirector.Core.Tests;
 public static class TerminalTestHelper
 {
     public static (AnsiParser Parser, TerminalCell[,] Cells, List<TerminalCell[]> Scrollback) CreateParser(
-        int cols = 80, int rows = 24)
+        int cols = 80, int rows = 24, int maxScrollback = 1000)
     {
         var cells = new TerminalCell[cols, rows];
         var scrollback = new List<TerminalCell[]>();
-        var parser = new AnsiParser(cells, cols, rows, scrollback, 100);
+        var parser = new AnsiParser(cells, cols, rows, scrollback, maxScrollback);
         return (parser, cells, scrollback);
     }
 

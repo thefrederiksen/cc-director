@@ -940,17 +940,23 @@ public partial class MainWindow : Window
 
     private void UpdateScrollBar()
     {
-        int total = TerminalHost.ScrollbackCount;
-        int viewport = TerminalHost.ViewportRows;
+        // Read scrollback size, viewport height, and offset from a single
+        // atomic snapshot. Avoids the prior bug where three independent
+        // property reads could see different intermediate states of the
+        // scrollback list while the parser was growing it concurrently.
+        var snap = TerminalHost.GetScrollSnapshot();
+
+        // Avalonia's ScrollBar hides its thumb when Maximum == 0. When there
+        // is no scrollback yet we still want a visible thumb filling the
+        // entire track ("you're viewing everything"), so floor Maximum at 1.
+        int maximum = Math.Max(snap.ScrollbackCount, 1);
+
         _updatingScrollBar = true;
-        // Always keep Maximum >= 1 so Avalonia renders the thumb.
-        // When there is no scrollback the thumb fills the entire track,
-        // which is the correct visual for "you are seeing everything".
-        TerminalScrollBar.Maximum = Math.Max(total, 1);
-        TerminalScrollBar.ViewportSize = viewport;
-        TerminalScrollBar.LargeChange = viewport;
+        TerminalScrollBar.Maximum = maximum;
+        TerminalScrollBar.ViewportSize = snap.ViewportRows;
+        TerminalScrollBar.LargeChange = snap.ViewportRows;
         TerminalScrollBar.SmallChange = 3;
-        TerminalScrollBar.Value = Math.Max(total, 1) - TerminalHost.ScrollOffset;
+        TerminalScrollBar.Value = maximum - snap.ScrollOffset;
         _updatingScrollBar = false;
     }
 

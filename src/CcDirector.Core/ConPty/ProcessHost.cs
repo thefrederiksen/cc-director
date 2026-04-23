@@ -155,6 +155,12 @@ public sealed class ProcessHost : IDisposable
         // Enable 24-bit color output from CLI tools
         vars["COLORTERM"] = "truecolor";
 
+        // Identify as a modern xterm-compatible terminal so CLI tools (notably
+        // Claude Code) take their full-featured rendering path rather than a
+        // minimal fallback that emits token-boundary artifacts into the byte stream.
+        vars["TERM"] = "xterm-256color";
+        vars["TERM_PROGRAM"] = "cc-director";
+
         // Inject extra variables (e.g. CC_SESSION_ID)
         if (extraVars != null)
         {
