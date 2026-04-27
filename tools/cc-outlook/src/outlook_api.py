@@ -1129,10 +1129,8 @@ class OutlookClient:
 
         # Flag status
         flag = getattr(msg, 'flag', None)
-        if flag:
-            result['flag_status'] = flag.get('flagStatus', 'notFlagged')
-        else:
-            result['flag_status'] = 'notFlagged'
+        status = getattr(flag, 'status', None) if flag else None
+        result['flag_status'] = status.value if status is not None else 'notFlagged'
 
         if hasattr(msg, 'body_preview'):
             result['snippet'] = msg.body_preview
