@@ -36,9 +36,14 @@ internal static class AccountLogoutEndpoint
     /// credential service (a non-Windows host, where the operating-system credential store is not yet
     /// implemented); the endpoint then reports not-signed-in (there was nothing to clear).
     /// </param>
-    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account)
+    /// <param name="onBeforeLogout">
+    /// An optional best-effort hook run BEFORE the credential is cleared (issue #881: revoke the
+    /// auto-minted inference key while the account token is still available to authenticate the revoke).
+    /// It has its own boundary try/catch here, so a slow or failed revoke never blocks or fails logout.
+    /// </param>
+    public static void Map(IEndpointRouteBuilder app, DevThrottleAccountService? account, Func<CancellationToken, Task>? onBeforeLogout = null)
     {
-        app.MapPost("/account/logout", () =>
+        app.MapPost("/account/logout", async (HttpContext ctx) =>
         {
             // No credential service on this host (a non-Windows host where the operating-system
             // credential store is not yet implemented): there is no credential to clear, so the truthful
@@ -47,6 +52,14 @@ internal static class AccountLogoutEndpoint
             {
                 FileLog.Write("[AccountLogoutEndpoint] POST /account/logout: no credential service on this host -> already signedIn=false");
                 return Results.Json(new AccountStatusDto { SignedIn = false });
+            }
+
+            // Revoke the auto-minted inference key BEFORE clearing the credential (the revoke needs the
+            // still-present account token). Best-effort: a failure here must never block sign-out.
+            if (onBeforeLogout is not null)
+            {
+                try { await onBeforeLogout(ctx.RequestAborted); }
+                catch (Exception ex) { FileLog.Write($"[AccountLogoutEndpoint] onBeforeLogout failed (ignored, best-effort): {ex.Message}"); }
             }
 
             // Clear the cached credential locally (no network call). Logout is idempotent: clearing when

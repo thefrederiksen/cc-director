@@ -65,15 +65,27 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("{\"data\":{\"key\":\"dt_live_full_KEY\",\"record\":{\"id\":\"key-uuid-123\"}}}", "key-uuid-123")]
+    [InlineData("{\"data\":{\"key\":\"dt_live_full_KEY\",\"id\":\"data-id-9\"}}", "data-id-9")]
+    [InlineData("{\"id\":\"root-id-7\",\"key\":\"dt_live_full_KEY\"}", "root-id-7")]
+    [InlineData("{\"data\":{\"key\":\"dt_live_full_KEY\"}}", null)]
+    public void ExtractKeyId_FindsRecordId(string body, string? expected)
+        => Assert.Equal(expected, AccountInferenceKeyProvisioner.ExtractKeyId(body));
+
     [Fact]
-    public async Task MintAsync_201_ReturnsKey_AndBearsTheJwt()
+    public async Task MintAsync_201_ReturnsKeyAndId_AndBearsTheJwt()
     {
-        var handler = new StatusHandler(HttpStatusCode.Created, "{\"key\":\"dt_live_minted01\"}");
+        // The real live shape: full key at data.key, id at data.record.id.
+        var body = "{\"data\":{\"key\":\"dt_live_minted01\",\"record\":{\"id\":\"the-key-id\"}}}";
+        var handler = new StatusHandler(HttpStatusCode.Created, body);
         var minter = new AccountInferenceKeyProvisioner(new HttpClient(handler));
 
-        var key = await minter.MintAsync("the.jwt.token", "cc-director TESTBOX");
+        var minted = await minter.MintAsync("the.jwt.token", "cc-director TESTBOX");
 
-        Assert.Equal("dt_live_minted01", key);
+        Assert.NotNull(minted);
+        Assert.Equal("dt_live_minted01", minted!.Key);
+        Assert.Equal("the-key-id", minted.Id);
         Assert.Equal("Bearer the.jwt.token", handler.SeenAuth);
     }
 
@@ -87,7 +99,7 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
     [Fact]
     public async Task MintAsync_NoAccessToken_ReturnsNull_WithoutCalling()
     {
-        var minter = new AccountInferenceKeyProvisioner(new HttpClient(new StatusHandler(HttpStatusCode.Created, "{\"key\":\"dt_live_x\"}")));
+        var minter = new AccountInferenceKeyProvisioner(new HttpClient(new StatusHandler(HttpStatusCode.Created, "{\"data\":{\"key\":\"dt_live_x\"}}")));
         Assert.Null(await minter.MintAsync("", "label"));
     }
 
@@ -95,13 +107,21 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
 
     private sealed class FakeMinter : IInferenceKeyMinter
     {
-        private readonly string? _key;
+        private readonly MintedInferenceKey? _minted;
         public int Calls { get; private set; }
-        public FakeMinter(string? key) { _key = key; }
-        public Task<string?> MintAsync(string accessToken, string label, CancellationToken ct = default)
+        public int RevokeCalls { get; private set; }
+        public string? RevokedId { get; private set; }
+        public FakeMinter(string? key, string? id = "key-id") { _minted = key is null ? null : new MintedInferenceKey(key, id); }
+        public Task<MintedInferenceKey?> MintAsync(string accessToken, string label, CancellationToken ct = default)
         {
             Calls++;
-            return Task.FromResult(_key);
+            return Task.FromResult(_minted);
+        }
+        public Task<bool> RevokeAsync(string accessToken, string keyId, CancellationToken ct = default)
+        {
+            RevokeCalls++;
+            RevokedId = keyId;
+            return Task.FromResult(true);
         }
     }
 
@@ -134,17 +154,56 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureAsync_SignedIn_EmptyVault_MintsAndStores()
+    public async Task EnsureAsync_SignedIn_EmptyVault_MintsAndStoresKeyAndId()
     {
         var vault = new KeyVault(_vaultPath);
-        var minter = new FakeMinter("dt_live_freshly_minted");
+        var minter = new FakeMinter("dt_live_freshly_minted", id: "minted-key-id");
         var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
 
         var minted = await sut.EnsureAsync();
 
         Assert.True(minted);
         Assert.Equal(1, minter.Calls);
-        Assert.Equal("dt_live_freshly_minted", new KeyVault(_vaultPath).Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+        var reread = new KeyVault(_vaultPath);
+        Assert.Equal("dt_live_freshly_minted", reread.Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+        // The id is recorded so sign-out can revoke THIS auto-minted key.
+        Assert.Equal("minted-key-id", reread.Get(TranscriptionKeyAutoProvisioner.InferenceKeyIdVaultName));
+    }
+
+    // ----- Revoke-on-sign-out (issue #881) -----
+
+    [Fact]
+    public async Task RevokeMintedKeyAsync_AutoMintedKey_RevokesAndClearsBoth()
+    {
+        var vault = new KeyVault(_vaultPath);
+        var minter = new FakeMinter("dt_live_x", id: "the-id");
+        var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
+        await sut.EnsureAsync(); // mints + records the id
+
+        var revoked = await sut.RevokeMintedKeyAsync();
+
+        Assert.True(revoked);
+        Assert.Equal(1, minter.RevokeCalls);
+        Assert.Equal("the-id", minter.RevokedId);
+        var reread = new KeyVault(_vaultPath);
+        Assert.Null(reread.Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+        Assert.Null(reread.Get(TranscriptionKeyAutoProvisioner.InferenceKeyIdVaultName));
+    }
+
+    [Fact]
+    public async Task RevokeMintedKeyAsync_ManualKey_LeavesItUntouched()
+    {
+        // A manual key has no recorded id; sign-out must NOT revoke or clear it (it is the user's key).
+        var vault = new KeyVault(_vaultPath);
+        vault.Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_manual");
+        var minter = new FakeMinter("dt_live_unused");
+        var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
+
+        var revoked = await sut.RevokeMintedKeyAsync();
+
+        Assert.False(revoked);
+        Assert.Equal(0, minter.RevokeCalls);
+        Assert.Equal("dt_live_manual", new KeyVault(_vaultPath).Get(TranscriptionEndpointResolver.DevThrottleKeyName));
     }
 
     [Fact]

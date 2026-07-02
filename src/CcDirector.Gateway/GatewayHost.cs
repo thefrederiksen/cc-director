@@ -836,7 +836,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // post-logout boolean, never the access/refresh token (security rule DT-05). Inherits the
         // host-wide token middleware above. On a host with no credential service (Account null) there is
         // nothing to clear and it reports not-signed-in.
-        AccountLogoutEndpoint.Map(_app, Account);
+        // Issue #881: revoke the auto-minted inference key on sign-out (before the credential is cleared),
+        // so a signed-out install leaves no live key behind. A manually-pasted key has no recorded id and
+        // is left untouched. Best-effort - never blocks logout.
+        AccountLogoutEndpoint.Map(_app, Account,
+            onBeforeLogout: _transcriptionKeyProvisioner is null ? null : ct => _transcriptionKeyProvisioner.RevokeMintedKeyAsync(ct));
 
         // Account device list + revoke proxy (issue #854): GET /account/devices and
         // DELETE /account/devices/{id}. The Cockpit Account page needs the account-wide device list with
