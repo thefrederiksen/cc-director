@@ -1195,7 +1195,7 @@
                         <Grid ColumnDefinitions="*,Auto">
                             <TextBox x:Name="PromptInput"
                                      Grid.Column="0"
-                                     Watermark="Type a message..."
+                                     Watermark="Type a message here, then press Ctrl+Enter to send it into the terminal (Ctrl+Shift+Enter to queue it).&#10;&#10;This box lives outside the terminal, so you can write slowly or dictate - and it can be driven remotely from your phone or the web."
                                      AcceptsReturn="True"
                                      TextWrapping="Wrap"
                                      MinHeight="98"
