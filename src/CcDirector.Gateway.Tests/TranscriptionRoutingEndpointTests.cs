@@ -139,37 +139,30 @@ public sealed class TranscriptionRoutingEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Routing_LocalMode_Returns200_NoKeyGate()
+    public async Task Routing_DevThrottleMode_KeyNotSet_Returns404_WithMarkerHeader()
     {
-        // Issue #541: local is in-process and always available - it returns 200 { mode: "local" }
-        // with NO key seeded (it must NEVER hit the 404-no-key path), and exposes no baseUrl/key.
-        TranscriptionModeConfig.Set(TranscriptionMode.Local);
-
+        // Issue #887: DevThrottle is the default hosted mode and is key-gated like BYO. With no
+        // account key set it returns 404 with the marker header (never a baked-in URL), so the Director
+        // reports it unavailable and prompts to add credits.
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        // No key seeded.
         var resp = await _http.GetAsync("/transcription/routing");
-        resp.EnsureSuccessStatusCode();
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
         Assert.True(resp.Headers.Contains("X-Transcription-Routing"));
-
-        var body = await resp.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
-
-        Assert.Equal("local", root.GetProperty("mode").GetString());
-        // In-process: there is no remote endpoint and no credential in the local-mode response.
-        Assert.False(root.TryGetProperty("baseUrl", out _));
-        Assert.False(root.TryGetProperty("key", out _));
     }
 
     [Fact]
-    public async Task Routing_NoModeConfigured_NoKeys_ReturnsLocal200()
+    public async Task Routing_NoModeConfigured_NoKeys_DefaultsToDevThrottle_Returns404()
     {
-        // Issue #541 acceptance: a Gateway with NO transcription mode set and NO keys returns
-        // HTTP 200 { mode: "local" } - the zero-configuration default works out of the box.
+        // Issue #887 acceptance: a Gateway with NO transcription mode set defaults to DevThrottle
+        // (hosted). With no account key it returns 404 with the marker header - it needs the signed-in
+        // account's key rather than an out-of-the-box local model.
         // (The temp CC_DIRECTOR_ROOT this test owns has no transcription_mode written.)
         var resp = await _http.GetAsync("/transcription/routing");
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.Equal("local", doc.RootElement.GetProperty("mode").GetString());
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.True(resp.Headers.Contains("X-Transcription-Routing"));
     }
 
     private static int AllocateFreePort()

@@ -14,8 +14,8 @@ namespace CcDirector.Cockpit.Logging;
 ///
 /// Why a self-contained writer instead of reusing Core's FileLog: the Cockpit is deliberately a
 /// lean web app referencing only the Gateway contracts and Markdig. Core pulls in native
-/// dependencies (Whisper.net runtime, SQLite) that have no place in the web app's publish output,
-/// so the small, well-understood writer convention is replicated here rather than imported.
+/// dependencies (SQLite) that have no place in the web app's publish output, so the small,
+/// well-understood writer convention is replicated here rather than imported.
 ///
 /// Level filtering is left entirely to the framework's <see cref="ILoggerFactory"/> category
 /// rules (configured in appsettings.json, where <c>CcDirector.Cockpit: Debug</c> is in effect for

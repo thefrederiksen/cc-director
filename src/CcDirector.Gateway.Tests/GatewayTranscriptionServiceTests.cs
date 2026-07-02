@@ -45,7 +45,6 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
 
         var routing = Service().Resolve();
 
-        Assert.False(routing.IsLocal);
         Assert.Null(routing.Key);
         Assert.Equal(TranscriptionMode.Byo, routing.Mode);
     }
@@ -58,7 +57,6 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
 
         var routing = Service().Resolve();
 
-        Assert.False(routing.IsLocal);
         Assert.Equal("sk-byo-123", routing.Key);
         var resolved = routing.ToResolved();
         Assert.Equal(TranscriptionEndpointResolver.OpenAiBaseUrl, resolved.BaseUrl);
@@ -67,16 +65,32 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     }
 
     [Fact]
-    public void Resolve_LocalMode_IsLocalWithNoKey()
+    public void Resolve_DevThrottleMode_NoKey_ReportsNoKey()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Local);
+        // Issue #887: DevThrottle is the default hosted mode. With no key set, the routing carries no
+        // key (the caller reports it unavailable) and has no remote target to compose.
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
 
         var routing = Service().Resolve();
 
-        Assert.True(routing.IsLocal);
         Assert.Null(routing.Key);
-        // The local routing has no remote target to compose.
+        Assert.Equal(TranscriptionMode.DevThrottle, routing.Mode);
         Assert.Throws<InvalidOperationException>(() => routing.ToResolved());
+    }
+
+    [Fact]
+    public void Resolve_DevThrottleMode_WithKey_ComposesDevThrottleTarget()
+    {
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
+
+        var routing = Service().Resolve();
+
+        Assert.Equal("dt_live_abc", routing.Key);
+        var resolved = routing.ToResolved();
+        Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, resolved.BaseUrl);
+        Assert.Equal("dt_live_abc", resolved.ApiKey);
+        Assert.Equal(TranscriptionTransport.Batch, resolved.Transport);
     }
 
     [Fact]

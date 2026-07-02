@@ -29,20 +29,19 @@ public sealed class TranscriptionModeConfigTests : IDisposable
     }
 
     [Fact]
-    public void Get_NoConfig_DefaultsToLocal()   // issue #541: the default changed from Byo to Local
-        => Assert.Equal(TranscriptionMode.Local, TranscriptionModeConfig.Get());
+    public void Get_NoConfig_DefaultsToDevThrottle()   // issue #887: hosted is the default
+        => Assert.Equal(TranscriptionMode.DevThrottle, TranscriptionModeConfig.Get());
 
     [Fact]
-    public void Default_IsLocal()                 // issue #541: the constant itself is now Local
-        => Assert.Equal(TranscriptionMode.Local, TranscriptionModeConfig.Default);
+    public void Default_IsDevThrottle()                 // issue #887: the constant itself is now DevThrottle
+        => Assert.Equal(TranscriptionMode.DevThrottle, TranscriptionModeConfig.Default);
 
     [Fact]
-    public void SetThenGet_Local_PersistsAcrossReread()
+    public void Get_LegacyLocalValue_MigratesForwardToDevThrottle()   // issue #887 migration rule
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        TranscriptionModeConfig.Set(TranscriptionMode.Local);
-
-        Assert.Equal(TranscriptionMode.Local, TranscriptionModeConfig.Get());
+        // A config.json left over from a Local install must fall forward, never fail.
+        CcDirectorConfigService.MergePatch(new System.Text.Json.Nodes.JsonObject { ["transcription_mode"] = "local" });
+        Assert.Equal(TranscriptionMode.DevThrottle, TranscriptionModeConfig.Get());
     }
 
     [Fact]

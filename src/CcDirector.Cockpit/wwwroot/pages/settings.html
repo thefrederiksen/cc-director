@@ -60,8 +60,8 @@
   .chk input{accent-color:var(--blue);width:16px;height:16px}
   .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;background:#23314d;color:#9fb0d8;margin-left:8px;vertical-align:middle}
 
-  /* Transcription mode chooser (issue #497, three cards in #541) */
-  .mode-cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:6px 0 18px}
+  /* Transcription mode chooser (issue #497, two cards in #887) */
+  .mode-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:6px 0 18px}
   .mode-card{display:flex;gap:10px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);
         border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .15s,background .15s}
   .mode-card:hover{border-color:var(--blue)}
@@ -69,12 +69,8 @@
   .mode-card input[type=radio]{accent-color:var(--blue);width:16px;height:16px;margin-top:2px;flex:0 0 auto}
   .mode-card-title{font-size:14px;font-weight:600;color:var(--ink);margin-bottom:3px}
   .mode-card-desc{font-size:12.5px;color:var(--muted);line-height:1.4}
-  /* DevThrottle "coming soon" card (issue #541): greyed out, not selectable. */
-  .mode-card.disabled{opacity:.55;cursor:not-allowed;background:var(--panel2)}
-  .mode-card.disabled:hover{border-color:var(--line)}
-  .mode-card.disabled input[type=radio]{cursor:not-allowed}
-  .soon-badge{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
-        color:#9fb0d8;background:#23314d;border-radius:7px;padding:1px 7px;margin-left:8px;vertical-align:middle}
+  .default-badge{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+        color:#06210f;background:var(--green);border-radius:7px;padding:1px 7px;margin-left:8px;vertical-align:middle}
   .keypanel{border-top:1px solid var(--line);padding-top:16px;margin-top:4px}
   .keylabel{font-size:13px;color:var(--ink);margin-bottom:8px;font-weight:500}
   a.link{color:var(--blue);text-decoration:none}
@@ -144,37 +140,28 @@
       <h2>Transcription</h2>
       <p class="hint">Turn speech into text for your agents. Choose how you connect.</p>
 
-      <!-- Three-mode chooser: radio cards (issue #541). Local is first and the default; OpenAI is
-           opt-in; DevThrottle is "coming soon" - disabled and never selectable. -->
+      <!-- Two-mode chooser: radio cards (issue #887). DevThrottle is first, selected by default, and
+           uses your account; OpenAI (your own key) is the second option. -->
       <div class="mode-cards">
-        <label class="mode-card" id="card-local">
-          <input type="radio" name="txmode" value="local">
+        <label class="mode-card" id="card-devthrottle">
+          <input type="radio" name="txmode" value="devthrottle">
           <div class="mode-card-body">
-            <div class="mode-card-title">Local (Whisper.net)</div>
-            <div class="mode-card-desc">Runs on this machine - works offline, no API key required.</div>
+            <div class="mode-card-title">DevThrottle<span class="default-badge">Default</span></div>
+            <div class="mode-card-desc">Hosted transcription on your DevThrottle account. Nothing to set up - your first top-up activates it ($5 minimum = 25 hours).</div>
           </div>
         </label>
         <label class="mode-card" id="card-byo">
           <input type="radio" name="txmode" value="byo">
           <div class="mode-card-body">
-            <div class="mode-card-title">OpenAI</div>
-            <div class="mode-card-desc">Your OpenAI key. Stays on THIS machine - never sent to DevThrottle.</div>
-          </div>
-        </label>
-        <!-- DevThrottle: coming soon. Disabled and not selectable (issue #541). The radio is
-             disabled so it can never be checked, and the change handler refuses it as a guard. -->
-        <label class="mode-card disabled" id="card-devthrottle" title="Coming soon">
-          <input type="radio" name="txmode" value="devthrottle" disabled>
-          <div class="mode-card-body">
-            <div class="mode-card-title">DevThrottle<span class="soon-badge">Coming soon</span></div>
-            <div class="mode-card-desc">One managed key. Fast Groq Whisper, metered on your subscription.</div>
+            <div class="mode-card-title">OpenAI (your API key)</div>
+            <div class="mode-card-desc">Use your own OpenAI key. It stays on THIS machine and is never sent to DevThrottle.</div>
           </div>
         </label>
       </div>
 
       <!-- DevThrottle key panel -->
       <div class="keypanel" id="panel-devthrottle" style="display:none">
-        <div class="keylabel">DevThrottle API key</div>
+        <div class="keylabel">Connect this machine to your DevThrottle account</div>
         <div class="row">
           <input id="dtkeybox" type="password" placeholder="dt_live_..." autocomplete="off" spellcheck="false">
           <button class="save" id="dtsavebtn">Save</button>
@@ -184,11 +171,11 @@
           <label class="show"><input type="checkbox" id="dtshowbox"> Show what I type</label>
         </div>
         <p class="hint" style="margin-top:12px">
-          <a class="link" id="dtsignin" href="https://devthrottle.com" target="_blank" rel="noopener">Don't have a key? Sign in to get one &rarr;</a>
+          <a class="link" id="dtsignin" href="https://devthrottle.com" target="_blank" rel="noopener">Get your account key &rarr;</a>
           &nbsp;&nbsp;
-          <a class="link" id="dtmanage" href="https://devthrottle.com" target="_blank" rel="noopener">Manage or revoke keys at devthrottle.com &rarr;</a>
+          <a class="link" id="dtcredits" href="https://devthrottle.com" target="_blank" rel="noopener">Add credits &rarr;</a>
         </p>
-        <p class="hint">Keys are created and revoked on devthrottle.com. This page stores the one this machine uses.</p>
+        <p class="hint">Hosted transcription runs on your DevThrottle account. Your first top-up activates it - $5 minimum, about 25 hours of speech.</p>
         <div class="status" style="margin-top:6px">
           <span class="dot" id="dtdot"></span>
           <span id="dtstate">Loading...</span>
@@ -399,16 +386,16 @@
     });
   });
 
-  // ===== Transcription (issue #497, #541) =====
-  // Three capability modes, persisted server-side: the mode in config.json
-  // (GET/PUT /gateway/transcription-mode), the two remote keys in the Gateway vault
-  // (OPENAI_API_KEY for OpenAI, DEVTHROTTLE_API_KEY for DevThrottle). Local mode (issue #541)
-  // is the default and needs no key. DevThrottle is "coming soon" - its card is disabled and it
-  // can never be the active mode.
+  // ===== Transcription (issue #497, #887) =====
+  // Two capability modes, persisted server-side: the mode in config.json
+  // (GET/PUT /gateway/transcription-mode), the two keys in the Gateway vault
+  // (OPENAI_API_KEY for OpenAI, DEVTHROTTLE_API_KEY for DevThrottle). DevThrottle is the default
+  // (we dogfood our own hosted service, issue #887); OpenAI (bring your own key) is the second option.
   const BYO_KEY = 'OPENAI_API_KEY';
   const DT_KEY  = 'DEVTHROTTLE_API_KEY';
-  const SELECTABLE_MODES = ['local', 'byo'];   // DevThrottle is coming soon - not selectable.
-  let currentMode = 'local';
+  const SELECTABLE_MODES = ['devthrottle', 'byo'];
+  const DEFAULT_MODE = 'devthrottle';
+  let currentMode = DEFAULT_MODE;
 
   function txMsg(id, text, ok){
     const m = document.getElementById(id);
@@ -417,22 +404,19 @@
     m.className = 'msg ' + (ok ? 'ok' : 'err');
   }
 
-  // Reflect the selected mode in the cards + which key panel shows. DevThrottle is never selectable
-  // (coming soon, issue #541), so an unknown/devthrottle mode falls back to local for display.
+  // Reflect the selected mode in the cards + which key panel shows. An unknown mode (including the
+  // removed "local", issue #887) falls forward to the DevThrottle default for display.
   function applyModeUi(mode){
-    if (SELECTABLE_MODES.indexOf(mode) < 0) mode = 'local';
+    if (SELECTABLE_MODES.indexOf(mode) < 0) mode = DEFAULT_MODE;
     currentMode = mode;
     document.querySelectorAll('input[name="txmode"]').forEach(function(r){
-      // Never tick the disabled DevThrottle radio.
-      r.checked = (!r.disabled && r.value === mode);
+      r.checked = (r.value === mode);
     });
-    document.getElementById('card-local').classList.toggle('selected', mode === 'local');
+    document.getElementById('card-devthrottle').classList.toggle('selected', mode === 'devthrottle');
     document.getElementById('card-byo').classList.toggle('selected', mode === 'byo');
-    // The coming-soon DevThrottle card is never marked selected.
-    document.getElementById('card-devthrottle').classList.remove('selected');
-    // Local needs no key field; only the OpenAI panel ever shows. The DevThrottle panel never shows.
+    // Show the key panel for the selected mode only.
     document.getElementById('panel-byo').style.display = (mode === 'byo') ? '' : 'none';
-    document.getElementById('panel-devthrottle').style.display = 'none';
+    document.getElementById('panel-devthrottle').style.display = (mode === 'devthrottle') ? '' : 'none';
   }
 
   async function loadMode(){
@@ -440,16 +424,15 @@
       const r = await fetch('/gateway/transcription-mode');
       if (!r.ok) throw new Error(r.status);
       const d = await r.json();
-      // Only local and byo are selectable; anything else (incl. devthrottle) shows as local.
-      applyModeUi(SELECTABLE_MODES.indexOf(d.mode) >= 0 ? d.mode : 'local');
+      // Any non-selectable value (incl. a legacy "local") falls forward to the DevThrottle default.
+      applyModeUi(SELECTABLE_MODES.indexOf(d.mode) >= 0 ? d.mode : DEFAULT_MODE);
     } catch (e) {
-      applyModeUi('local');
+      applyModeUi(DEFAULT_MODE);
     }
   }
 
   async function changeMode(mode){
-    // Guard: DevThrottle (coming soon) can never be written as the active mode (issue #541).
-    if (SELECTABLE_MODES.indexOf(mode) < 0) { applyModeUi('local'); return; }
+    if (SELECTABLE_MODES.indexOf(mode) < 0) { applyModeUi(DEFAULT_MODE); return; }
     applyModeUi(mode);
     try {
       await fetch('/gateway/transcription-mode', {
@@ -469,13 +452,13 @@
 
     const byoSet = names.includes(BYO_KEY);
     document.getElementById('byodot').className = 'dot ' + (byoSet ? 'amber' : '');
-    document.getElementById('byostate').textContent = byoSet ? 'Local - your OpenAI key' : 'No OpenAI key stored yet';
+    document.getElementById('byostate').textContent = byoSet ? 'Your OpenAI key is stored on this machine' : 'No OpenAI key stored yet';
     document.getElementById('byokeybox').placeholder = byoSet ? 'Enter a new key to replace it' : 'sk-...';
     document.getElementById('byodelbtn').style.display = byoSet ? '' : 'none';
 
     const dtSet = names.includes(DT_KEY);
     document.getElementById('dtdot').className = 'dot ' + (dtSet ? 'green' : '');
-    document.getElementById('dtstate').textContent = dtSet ? 'Connected - whisper-large-v3 via DevThrottle' : 'No DevThrottle key stored yet';
+    document.getElementById('dtstate').textContent = dtSet ? 'Connected to your DevThrottle account' : 'Not connected yet - add your account key';
     document.getElementById('dtkeybox').placeholder = dtSet ? 'Enter a new key to replace it' : 'dt_live_...';
     document.getElementById('dtdelbtn').style.display = dtSet ? '' : 'none';
   }
@@ -714,7 +697,7 @@
   function markModeVerified(mode){
     if (mode === 'devthrottle'){
       document.getElementById('dtdot').className = 'dot green';
-      document.getElementById('dtstate').textContent = 'Verified - whisper-large-v3 via DevThrottle';
+      document.getElementById('dtstate').textContent = 'Verified - transcribing through your DevThrottle account';
     } else {
       document.getElementById('byodot').className = 'dot green';
       document.getElementById('byostate').textContent = 'Verified - your OpenAI key works';
