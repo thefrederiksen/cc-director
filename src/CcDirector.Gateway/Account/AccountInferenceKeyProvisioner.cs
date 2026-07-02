@@ -39,7 +39,7 @@ public sealed class AccountInferenceKeyProvisioner : IInferenceKeyMinter
         _baseUrl = string.IsNullOrWhiteSpace(baseUrl) ? TranscriptionEndpointResolver.DevThrottleBaseUrl : baseUrl!;
     }
 
-    public async Task<string?> MintAsync(string accessToken, string label, CancellationToken ct = default)
+    public async Task<MintedInferenceKey?> MintAsync(string accessToken, string label, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(accessToken))
         {
@@ -64,8 +64,14 @@ public sealed class AccountInferenceKeyProvisioner : IInferenceKeyMinter
             }
 
             var key = ExtractKey(text);
-            FileLog.Write($"[AccountInferenceKeyProvisioner] MintAsync POST /keys -> {(int)resp.StatusCode}, key minted={(key is not null)}");
-            return key;
+            if (key is null)
+            {
+                FileLog.Write($"[AccountInferenceKeyProvisioner] MintAsync POST /keys -> {(int)resp.StatusCode} but no key in the body");
+                return null;
+            }
+            var id = ExtractKeyId(text);
+            FileLog.Write($"[AccountInferenceKeyProvisioner] MintAsync POST /keys -> {(int)resp.StatusCode}, key minted, id present={(id is not null)}");
+            return new MintedInferenceKey(key, id);
         }
         catch (Exception ex)
         {
@@ -73,6 +79,32 @@ public sealed class AccountInferenceKeyProvisioner : IInferenceKeyMinter
             // add-credits / manual-key state and the user can still paste a key.
             FileLog.Write($"[AccountInferenceKeyProvisioner] MintAsync failed (ignored, best-effort): {ex.Message}");
             return null;
+        }
+    }
+
+    public async Task<bool> RevokeAsync(string accessToken, string keyId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken) || string.IsNullOrWhiteSpace(keyId))
+        {
+            FileLog.Write("[AccountInferenceKeyProvisioner] RevokeAsync: missing token or key id -> not revoking");
+            return false;
+        }
+
+        var url = _baseUrl.TrimEnd('/') + "/keys/" + Uri.EscapeDataString(keyId);
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Delete, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var resp = await _http.SendAsync(req, ct);
+            // A 404 means it is already gone - treat that as revoked (idempotent).
+            var ok = resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.NotFound;
+            FileLog.Write($"[AccountInferenceKeyProvisioner] RevokeAsync DELETE /keys/{{id}} -> {(int)resp.StatusCode}, revoked={ok}");
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[AccountInferenceKeyProvisioner] RevokeAsync failed (ignored, best-effort): {ex.Message}");
+            return false;
         }
     }
 
@@ -109,6 +141,35 @@ public sealed class AccountInferenceKeyProvisioner : IInferenceKeyMinter
 
         var m = DtKeyPattern.Match(body);
         return m.Success ? m.Value : null;
+    }
+
+    /// <summary>
+    /// Pulls the key's stable id from the mint response (needed to revoke it later). The live shape puts
+    /// it at <c>data.record.id</c>; falls back to <c>data.id</c> / root <c>id</c>. Returns null when absent.
+    /// </summary>
+    internal static string? ExtractKeyId(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            {
+                if (data.TryGetProperty("record", out var rec) && rec.ValueKind == JsonValueKind.Object
+                    && rec.TryGetProperty("id", out var recId) && recId.ValueKind == JsonValueKind.String)
+                    return recId.GetString();
+                if (data.TryGetProperty("id", out var dataId) && dataId.ValueKind == JsonValueKind.String)
+                    return dataId.GetString();
+            }
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("id", out var rootId) && rootId.ValueKind == JsonValueKind.String)
+                return rootId.GetString();
+        }
+        catch (JsonException)
+        {
+            // No parseable id: revoke-on-sign-out simply won't have one to use.
+        }
+        return null;
     }
 
     /// <summary>Reads the first full-key-shaped string from the common field names on one JSON object.</summary>
