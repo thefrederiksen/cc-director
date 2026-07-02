@@ -2,13 +2,13 @@ using Avalonia.Media;
 
 namespace CcDirector.TrayUi;
 
-/// <summary>How the status dot at the top of the flyout reads: green / amber / red.</summary>
+/// <summary>How the status pill at the top of the flyout reads: green / amber / red.</summary>
 public enum StatusLevel { Ok, Warn, Error }
 
 /// <summary>One label/value line in the flyout's status block (e.g. "Version" / "0.9.8").</summary>
 public sealed record StatusRow(string Label, string Value);
 
-/// <summary>A full-width action button in the flyout. The first <see cref="Primary"/> action is accented.</summary>
+/// <summary>A full-width action button in the flyout. <see cref="Primary"/> actions are accented.</summary>
 public sealed class FlyoutAction
 {
     public required string Text { get; init; }
@@ -43,8 +43,14 @@ public sealed class TrayFlyoutModel
     /// <summary>Optional secondary status line under the title.</summary>
     public string? StatusDetail { get; init; }
 
-    /// <summary>Drives the status dot colour.</summary>
+    /// <summary>Drives the status pill colour.</summary>
     public StatusLevel Status { get; init; } = StatusLevel.Ok;
+
+    /// <summary>
+    /// One word for the header status pill (e.g. "Running", "Starting", "Failed"). When null the
+    /// header shows a bare status dot instead of the pill.
+    /// </summary>
+    public string? StatusPillText { get; init; }
 
     /// <summary>Accent colour for the primary action button + header rule (per-app brand tint).</summary>
     public Color Accent { get; init; } = Color.Parse("#F2600C");
@@ -52,8 +58,25 @@ public sealed class TrayFlyoutModel
     /// <summary>Label/value status rows.</summary>
     public IReadOnlyList<StatusRow> Rows { get; init; } = Array.Empty<StatusRow>();
 
-    /// <summary>Action buttons, top to bottom.</summary>
+    /// <summary>
+    /// Optional secondary label/value rows rendered as a quieter "Details" section under the
+    /// actions (build info, install paths, component versions). Empty hides the section.
+    /// </summary>
+    public IReadOnlyList<StatusRow> DetailRows { get; init; } = Array.Empty<StatusRow>();
+
+    /// <summary>Caption of the <see cref="DetailRows"/> section.</summary>
+    public string DetailsTitle { get; init; } = "Details";
+
+    /// <summary>
+    /// Action buttons. <see cref="FlyoutAction.Primary"/> actions render as full-width accented
+    /// buttons at the top; the rest flow into a two-per-row grid of secondary buttons.
+    /// </summary>
     public IReadOnlyList<FlyoutAction> Actions { get; init; } = Array.Empty<FlyoutAction>();
+
+    /// <summary>
+    /// Quiet text links in the footer (e.g. Settings / Logs / Config), rendered left of Quit.
+    /// </summary>
+    public IReadOnlyList<FlyoutAction> FooterLinks { get; init; } = Array.Empty<FlyoutAction>();
 
     /// <summary>Optional toggle switch row (autostart).</summary>
     public ToggleSpec? Toggle { get; init; }

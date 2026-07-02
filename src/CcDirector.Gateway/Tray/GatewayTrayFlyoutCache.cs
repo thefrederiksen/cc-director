@@ -8,21 +8,27 @@ namespace CcDirector.Gateway.Tray;
 /// before the first heartbeat resolves" placeholder logic is unit-testable without an Avalonia UI
 /// thread (mirroring <see cref="CcDirector.Gateway.Account.GatewaySignInTraySurface"/>).
 ///
-/// Two cached values:
+/// Cached values:
 ///   - The Director count, shown in the flyout's "Directors" row. Null until the first heartbeat
 ///     resolves it, when the row shows <see cref="Placeholder"/> rather than blocking the open.
 ///   - The Tailscale front-door base URL, used by the Open Cockpit action. Null both before the
 ///     first heartbeat resolves it AND when Tailscale is genuinely unavailable; the caller treats
 ///     null as "no tailnet URL" and refuses rather than opening a wrong-everywhere loopback URL.
+///   - The Cockpit reachability line ("reachable on :7470"), refreshed by an HTTP probe of the
+///     local Cockpit that only ever runs on the heartbeat, never on the flyout open.
+///   - The one-line Brain summary ("not started (spawns on first use)"), refreshed by the brain
+///     health read (it touches transcript files on disk) on the heartbeat only.
 /// </summary>
 public sealed class GatewayTrayFlyoutCache
 {
-    /// <summary>The "Directors" row value shown until the first heartbeat resolves the count.</summary>
+    /// <summary>The row value shown until the first heartbeat resolves the real one.</summary>
     public const string Placeholder = "...";
 
     private readonly object _gate = new();
     private int? _directorCount;      // null until the first heartbeat resolves it
     private string? _frontDoorBaseUrl; // null until resolved OR when Tailscale is unavailable
+    private string? _cockpitStatus;    // null until the first probe resolves it
+    private string? _brainSummary;     // null until the first health read resolves it
 
     /// <summary>
     /// Store the latest Director count read by the background heartbeat (off the UI thread).
@@ -68,6 +74,50 @@ public sealed class GatewayTrayFlyoutCache
         {
             lock (_gate)
                 return _frontDoorBaseUrl;
+        }
+    }
+
+    /// <summary>
+    /// Store the latest Cockpit reachability read by the background heartbeat's local HTTP probe.
+    /// </summary>
+    public void SetCockpitStatus(bool reachable, int port)
+    {
+        lock (_gate)
+            _cockpitStatus = reachable ? $"reachable on :{port}" : $"not reachable on :{port}";
+    }
+
+    /// <summary>
+    /// The "Cockpit" row value for the flyout: the cached probe result, or <see cref="Placeholder"/>
+    /// until the first heartbeat resolves it. Reading this never sends an HTTP request.
+    /// </summary>
+    public string CockpitStatusDisplay
+    {
+        get
+        {
+            lock (_gate)
+                return _cockpitStatus ?? Placeholder;
+        }
+    }
+
+    /// <summary>
+    /// Store the latest one-line Brain summary read by the background heartbeat's health check.
+    /// </summary>
+    public void SetBrainSummary(string summary)
+    {
+        lock (_gate)
+            _brainSummary = summary;
+    }
+
+    /// <summary>
+    /// The "Brain" row value for the flyout: the cached health summary, or <see cref="Placeholder"/>
+    /// until the first heartbeat resolves it. Reading this never touches transcript files.
+    /// </summary>
+    public string BrainSummaryDisplay
+    {
+        get
+        {
+            lock (_gate)
+                return _brainSummary ?? Placeholder;
         }
     }
 }

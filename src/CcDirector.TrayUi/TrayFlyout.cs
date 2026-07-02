@@ -11,11 +11,12 @@ namespace CcDirector.TrayUi;
 
 /// <summary>
 /// A OneDrive-style tray flyout: a borderless, shadowed panel that slides up at the bottom-right of
-/// the screen (above the taskbar) when the user LEFT-CLICKS the tray icon. It replaces the legacy
-/// right-click context menu with live status + real action buttons + a toggle. Auto-closes when it
-/// loses focus (click away) or on Escape. Built entirely in code so it drops into each app's existing
-/// FluentTheme with no AXAML / resource wiring. Shared by the Launcher and Gateway trays so they look
-/// and behave identically.
+/// the screen (above the taskbar) when the user LEFT-CLICKS the tray icon. It is the app's ONE
+/// local surface: header with a live status pill, label/value status rows, a quieter details
+/// section, a full-width primary action, a grid of secondary actions, and a footer of quiet links
+/// plus Quit. Auto-closes when it loses focus (click away) or on Escape. Built entirely in code so
+/// it drops into each app's existing FluentTheme with no AXAML / resource wiring. Shared by the
+/// Launcher and Gateway trays so they look and behave identically.
 /// </summary>
 public sealed class TrayFlyout : Window
 {
@@ -25,8 +26,12 @@ public sealed class TrayFlyout : Window
     /// </summary>
     public bool AutoCloseOnDeactivate { get; set; } = true;
 
+    /// <summary>Panel width. Roomy enough for two-column secondary buttons and wrapped paths/URLs.</summary>
+    private const double PanelWidth = 420;
+
     // Palette (dark, matches the apps' existing dark surfaces).
     private static readonly Color Surface = Color.Parse("#1F2024");
+    private static readonly Color SurfaceInset = Color.Parse("#26282D");
     private static readonly Color Hairline = Color.Parse("#2E3138");
     private static readonly Color TextStrong = Color.Parse("#F0F1F3");
     private static readonly Color TextMid = Color.Parse("#CBD1DA");
@@ -48,7 +53,7 @@ public sealed class TrayFlyout : Window
         Background = Brushes.Transparent;
         TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
         SizeToContent = SizeToContent.Height;
-        Width = 336;
+        Width = PanelWidth;
         RequestedThemeVariant = ThemeVariant.Dark;
         Opacity = 0; // revealed in Opened, once positioned, to avoid a position flash
 
@@ -66,53 +71,52 @@ public sealed class TrayFlyout : Window
     {
         var stack = new StackPanel { Spacing = 0 };
 
-        // Header: icon + app name + status dot
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
-        if (m.Icon is not null)
-        {
-            var img = new Image { Source = m.Icon, Width = 22, Height = 22, Margin = new Thickness(0, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
-            Grid.SetColumn(img, 0);
-            header.Children.Add(img);
-        }
-        var name = new TextBlock { Text = m.AppName, FontSize = 14, FontWeight = FontWeight.SemiBold, Foreground = Brush(TextStrong), VerticalAlignment = VerticalAlignment.Center };
-        Grid.SetColumn(name, 1);
-        header.Children.Add(name);
-        var dot = new Ellipse { Width = 9, Height = 9, Fill = Brush(StatusColor(m.Status)), VerticalAlignment = VerticalAlignment.Center };
-        Grid.SetColumn(dot, 2);
-        header.Children.Add(dot);
-        stack.Children.Add(header);
+        stack.Children.Add(BuildHeader(m));
 
-        // Status title + optional detail
-        var statusBlock = new StackPanel { Spacing = 1, Margin = new Thickness(0, 12, 0, 0) };
-        statusBlock.Children.Add(new TextBlock { Text = m.StatusTitle, FontSize = 12.5, Foreground = Brush(TextMid), TextWrapping = TextWrapping.Wrap });
+        // Optional secondary status line under the header.
         if (!string.IsNullOrWhiteSpace(m.StatusDetail))
-            statusBlock.Children.Add(new TextBlock { Text = m.StatusDetail, FontSize = 11, Foreground = Brush(TextDim), TextWrapping = TextWrapping.Wrap });
-        stack.Children.Add(statusBlock);
+            stack.Children.Add(new TextBlock
+            {
+                Text = m.StatusDetail,
+                FontSize = 12,
+                Foreground = Brush(TextDim),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 10, 0, 0),
+            });
 
         // Status rows
         if (m.Rows.Count > 0)
-        {
-            var rows = new StackPanel { Spacing = 5, Margin = new Thickness(0, 12, 0, 0) };
-            foreach (var r in m.Rows)
-            {
-                var g = new Grid { ColumnDefinitions = new ColumnDefinitions("96,*") };
-                var l = new TextBlock { Text = r.Label, FontSize = 11.5, Foreground = Brush(TextDim) };
-                var v = new TextBlock { Text = r.Value, FontSize = 11.5, Foreground = Brush(TextMid), TextWrapping = TextWrapping.Wrap };
-                Grid.SetColumn(l, 0); Grid.SetColumn(v, 1);
-                g.Children.Add(l); g.Children.Add(v);
-                rows.Children.Add(g);
-            }
-            stack.Children.Add(rows);
-        }
+            stack.Children.Add(RowGrid(m.Rows, labelSize: 12.5, valueSize: 12.5, valueColor: TextMid,
+                margin: new Thickness(0, 14, 0, 0), rowSpacing: 7));
 
-        // Actions
+        // Actions: primaries full-width on top, then secondaries two per row.
         if (m.Actions.Count > 0)
         {
             stack.Children.Add(Separator());
-            var actions = new StackPanel { Spacing = 7 };
-            foreach (var a in m.Actions)
-                actions.Children.Add(ActionButton(a, m.Accent));
+            var actions = new StackPanel { Spacing = 8 };
+            foreach (var a in m.Actions.Where(a => a.Primary))
+                actions.Children.Add(PrimaryButton(a, m.Accent));
+            foreach (var pair in Pairs(m.Actions.Where(a => !a.Primary).ToList()))
+                actions.Children.Add(SecondaryRow(pair));
             stack.Children.Add(actions);
+        }
+
+        // Details: the quieter diagnostic block (build, paths, versions).
+        if (m.DetailRows.Count > 0)
+        {
+            stack.Children.Add(Separator());
+            var details = new StackPanel { Spacing = 8 };
+            details.Children.Add(new TextBlock
+            {
+                Text = m.DetailsTitle.ToUpperInvariant(),
+                FontSize = 10.5,
+                FontWeight = FontWeight.SemiBold,
+                LetterSpacing = 0.8,
+                Foreground = Brush(TextDim),
+            });
+            details.Children.Add(RowGrid(m.DetailRows, labelSize: 11.5, valueSize: 11.5, valueColor: TextDim,
+                margin: default, rowSpacing: 5));
+            stack.Children.Add(details);
         }
 
         // Toggle
@@ -129,14 +133,31 @@ public sealed class TrayFlyout : Window
             stack.Children.Add(g);
         }
 
-        // Quit (quiet footer)
-        if (m.OnQuit is { } quit)
+        // Footer: quiet links on the left, Quit on the right.
+        if (m.FooterLinks.Count > 0 || m.OnQuit is not null)
         {
             stack.Children.Add(Separator());
-            var q = new Button { Content = "Quit", HorizontalAlignment = HorizontalAlignment.Right };
-            q.Classes.Add("flyoutQuit");
-            q.Click += (_, _) => { Close(); quit(); };
-            stack.Children.Add(q);
+            var footer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            var links = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+            foreach (var link in m.FooterLinks)
+            {
+                var b = new Button { Content = link.Text };
+                b.Classes.Add("flyoutLink");
+                b.Click += (_, _) => { Close(); link.OnClick(); };
+                links.Children.Add(b);
+            }
+            Grid.SetColumn(links, 0);
+            footer.Children.Add(links);
+
+            if (m.OnQuit is { } quit)
+            {
+                var q = new Button { Content = "Quit" };
+                q.Classes.Add("flyoutQuit");
+                q.Click += (_, _) => { Close(); quit(); };
+                Grid.SetColumn(q, 1);
+                footer.Children.Add(q);
+            }
+            stack.Children.Add(footer);
         }
 
         return new Border
@@ -145,47 +166,165 @@ public sealed class TrayFlyout : Window
             CornerRadius = new CornerRadius(12),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(16),
+            Padding = new Thickness(20),
             Margin = new Thickness(14), // room for the shadow inside the transparent window
             BoxShadow = BoxShadows.Parse("0 10 30 0 #90000000"),
             Child = stack,
         };
     }
 
-    private Button ActionButton(FlyoutAction a, Color accent)
+    /// <summary>Header: icon + app name + status title, with the coloured status pill on the right.</summary>
+    private Control BuildHeader(TrayFlyoutModel m)
+    {
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+        if (m.Icon is not null)
+        {
+            var img = new Image { Source = m.Icon, Width = 30, Height = 30, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetColumn(img, 0);
+            header.Children.Add(img);
+        }
+
+        var titles = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        titles.Children.Add(new TextBlock { Text = m.AppName, FontSize = 15, FontWeight = FontWeight.SemiBold, Foreground = Brush(TextStrong) });
+        titles.Children.Add(new TextBlock { Text = m.StatusTitle, FontSize = 12, Foreground = Brush(TextDim), TextWrapping = TextWrapping.Wrap });
+        Grid.SetColumn(titles, 1);
+        header.Children.Add(titles);
+
+        var pill = StatusPill(m);
+        Grid.SetColumn(pill, 2);
+        header.Children.Add(pill);
+        return header;
+    }
+
+    /// <summary>The status chip: coloured dot + one word (or a bare dot when no pill text is set).</summary>
+    private Control StatusPill(TrayFlyoutModel m)
+    {
+        var color = StatusColor(m.Status);
+        var dot = new Ellipse { Width = 8, Height = 8, Fill = Brush(color), VerticalAlignment = VerticalAlignment.Center };
+        if (string.IsNullOrWhiteSpace(m.StatusPillText))
+            return dot;
+
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        content.Children.Add(dot);
+        content.Children.Add(new TextBlock
+        {
+            Text = m.StatusPillText,
+            FontSize = 11.5,
+            FontWeight = FontWeight.SemiBold,
+            Foreground = Brush(color),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return new Border
+        {
+            Background = Brush(SurfaceInset),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(9, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = content,
+        };
+    }
+
+    private static Control RowGrid(IReadOnlyList<StatusRow> rows, double labelSize, double valueSize,
+        Color valueColor, Thickness margin, double rowSpacing)
+    {
+        var panel = new StackPanel { Spacing = rowSpacing, Margin = margin };
+        foreach (var r in rows)
+        {
+            var g = new Grid { ColumnDefinitions = new ColumnDefinitions("110,*") };
+            var l = new TextBlock { Text = r.Label, FontSize = labelSize, Foreground = Brush(TextDim) };
+            var v = new TextBlock { Text = r.Value, FontSize = valueSize, Foreground = Brush(valueColor), TextWrapping = TextWrapping.Wrap };
+            Grid.SetColumn(l, 0); Grid.SetColumn(v, 1);
+            g.Children.Add(l); g.Children.Add(v);
+            panel.Children.Add(g);
+        }
+        return panel;
+    }
+
+    private Button PrimaryButton(FlyoutAction a, Color accent)
+    {
+        var b = new Button { Content = a.Text };
+        b.Classes.Add("flyoutPrimary");
+        b.Background = Brush(accent);
+        b.Click += (_, _) => { Close(); a.OnClick(); };
+        return b;
+    }
+
+    /// <summary>One row of secondary buttons: two side by side, or one full-width leftover.</summary>
+    private Control SecondaryRow(IReadOnlyList<FlyoutAction> pair)
+    {
+        if (pair.Count == 1)
+            return SecondaryButton(pair[0]);
+
+        var g = new Grid { ColumnDefinitions = new ColumnDefinitions("*,8,*") };
+        var left = SecondaryButton(pair[0]);
+        var right = SecondaryButton(pair[1]);
+        Grid.SetColumn(left, 0); Grid.SetColumn(right, 2);
+        g.Children.Add(left); g.Children.Add(right);
+        return g;
+    }
+
+    private Button SecondaryButton(FlyoutAction a)
     {
         var b = new Button { Content = a.Text };
         b.Classes.Add("flyoutBtn");
-        if (a.Primary)
-        {
-            b.Classes.Add("primary");
-            b.Background = Brush(accent);
-            b.Foreground = Brushes.White;
-        }
         b.Click += (_, _) => { Close(); a.OnClick(); };
         return b;
+    }
+
+    private static IEnumerable<IReadOnlyList<FlyoutAction>> Pairs(IReadOnlyList<FlyoutAction> actions)
+    {
+        for (int i = 0; i < actions.Count; i += 2)
+            yield return i + 1 < actions.Count
+                ? new[] { actions[i], actions[i + 1] }
+                : new[] { actions[i] };
     }
 
     private static Border Separator() => new()
     {
         Height = 1,
         Background = Brush(Hairline),
-        Margin = new Thickness(0, 12, 0, 12),
+        Margin = new Thickness(0, 14, 0, 14),
     };
 
     // ---- styling ----------------------------------------------------------
 
     private void AddStyles(Color accent)
     {
-        Styles.Add(BtnStyle(null, BtnBg, stretch: true));
-        Styles.Add(BtnStyle(":pointerover", BtnHover, stretch: true));
-        Styles.Add(BtnStyle(":pressed", BtnPressed, stretch: true));
+        // Secondary buttons: filled, centered, comfortable hit target.
+        Styles.Add(BtnStyle(null, BtnBg));
+        Styles.Add(BtnStyle(":pointerover", BtnHover));
+        Styles.Add(BtnStyle(":pressed", BtnPressed));
 
-        // Primary: keep its inline accent background; dim slightly on hover/press.
-        Styles.Add(OpacityStyle("primary", ":pointerover", 0.90));
-        Styles.Add(OpacityStyle("primary", ":pressed", 0.82));
+        // Primary: full-width accent button; dims slightly on hover/press (keeps its inline background).
+        var primary = new Style(x => x.OfType<Button>().Class("flyoutPrimary"));
+        primary.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, Brushes.White));
+        primary.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, new CornerRadius(8)));
+        primary.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(0)));
+        primary.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(14, 11)));
+        primary.Setters.Add(new Setter(TemplatedControl.FontSizeProperty, 13.0));
+        primary.Setters.Add(new Setter(TemplatedControl.FontWeightProperty, FontWeight.SemiBold));
+        primary.Setters.Add(new Setter(Layoutable.HorizontalAlignmentProperty, HorizontalAlignment.Stretch));
+        primary.Setters.Add(new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Center));
+        Styles.Add(primary);
+        Styles.Add(OpacityStyle("flyoutPrimary", ":pointerover", 0.90));
+        Styles.Add(OpacityStyle("flyoutPrimary", ":pressed", 0.82));
 
-        // Quit: borderless text button, reddens on hover.
+        // Footer links: borderless quiet text buttons that brighten on hover.
+        var link = new Style(x => x.OfType<Button>().Class("flyoutLink"));
+        link.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent));
+        link.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, Brush(TextDim)));
+        link.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(0)));
+        link.Setters.Add(new Setter(TemplatedControl.FontSizeProperty, 11.5));
+        link.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(8, 5)));
+        Styles.Add(link);
+        var linkHover = new Style(x => x.OfType<Button>().Class("flyoutLink").Class(":pointerover"));
+        linkHover.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent));
+        linkHover.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, Brush(TextStrong)));
+        Styles.Add(linkHover);
+
+        // Quit: same quiet link, but reddens on hover.
         var quit = new Style(x => x.OfType<Button>().Class("flyoutQuit"));
         quit.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent));
         quit.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, Brush(TextDim)));
@@ -199,22 +338,19 @@ public sealed class TrayFlyout : Window
         Styles.Add(quitHover);
     }
 
-    private static Style BtnStyle(string? pseudo, Color bg, bool stretch)
+    private static Style BtnStyle(string? pseudo, Color bg)
     {
         var style = pseudo is null
             ? new Style(x => x.OfType<Button>().Class("flyoutBtn"))
             : new Style(x => x.OfType<Button>().Class("flyoutBtn").Class(pseudo));
         style.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brush(bg)));
         style.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, Brush(TextStrong)));
-        style.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, new CornerRadius(7)));
+        style.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, new CornerRadius(8)));
         style.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(0)));
-        style.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(12, 9)));
+        style.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(12, 10)));
         style.Setters.Add(new Setter(TemplatedControl.FontSizeProperty, 12.5));
-        if (stretch)
-        {
-            style.Setters.Add(new Setter(Layoutable.HorizontalAlignmentProperty, HorizontalAlignment.Stretch));
-            style.Setters.Add(new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Left));
-        }
+        style.Setters.Add(new Setter(Layoutable.HorizontalAlignmentProperty, HorizontalAlignment.Stretch));
+        style.Setters.Add(new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Center));
         return style;
     }
 
@@ -245,7 +381,7 @@ public sealed class TrayFlyout : Window
         var scale = screen.Scaling;
         var wPx = (int)Math.Ceiling(ClientSize.Width * scale);
         var hPx = (int)Math.Ceiling(ClientSize.Height * scale);
-        var margin = (int)Math.Round(6 * scale);
+        var margin = (int)Math.Round(8 * scale);
         Position = new PixelPoint(
             wa.X + wa.Width - wPx - margin,
             wa.Y + wa.Height - hPx - margin);

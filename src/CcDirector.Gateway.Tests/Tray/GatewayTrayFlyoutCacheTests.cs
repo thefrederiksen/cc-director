@@ -104,6 +104,66 @@ public sealed class GatewayTrayFlyoutCacheTests
     }
 
     [Fact]
+    public void CockpitStatusDisplay_BeforeFirstHeartbeat_ReturnsPlaceholder()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act + Assert - never probed yet, so the flyout shows the benign placeholder
+        Assert.Equal(GatewayTrayFlyoutCache.Placeholder, cache.CockpitStatusDisplay);
+    }
+
+    [Fact]
+    public void CockpitStatusDisplay_AfterReachableProbe_SaysReachableWithPort()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act
+        cache.SetCockpitStatus(reachable: true, port: 7470);
+
+        // Assert
+        Assert.Equal("reachable on :7470", cache.CockpitStatusDisplay);
+    }
+
+    [Fact]
+    public void CockpitStatusDisplay_AfterUnreachableProbe_SaysNotReachableWithPort()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+        cache.SetCockpitStatus(reachable: true, port: 7470);
+
+        // Act - a later heartbeat finds the Cockpit down
+        cache.SetCockpitStatus(reachable: false, port: 7470);
+
+        // Assert
+        Assert.Equal("not reachable on :7470", cache.CockpitStatusDisplay);
+    }
+
+    [Fact]
+    public void BrainSummaryDisplay_BeforeFirstHeartbeat_ReturnsPlaceholder()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act + Assert
+        Assert.Equal(GatewayTrayFlyoutCache.Placeholder, cache.BrainSummaryDisplay);
+    }
+
+    [Fact]
+    public void BrainSummaryDisplay_AfterSet_ReturnsSummary()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act
+        cache.SetBrainSummary("not started (spawns on first use)");
+
+        // Assert
+        Assert.Equal("not started (spawns on first use)", cache.BrainSummaryDisplay);
+    }
+
+    [Fact]
     public async Task Reads_AreInstant_WhileASlowProbeRunsInTheBackground()
     {
         // Acceptance criterion 2 at the mechanism level: the flyout open path reads ONLY these cached

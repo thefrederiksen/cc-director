@@ -101,7 +101,12 @@ public sealed class LauncherTrayController : IDisposable
         var actions = new List<FlyoutAction>
         {
             new() { Text = "Restart Director", Primary = true, OnClick = () => _ = RestartDirectorAsync() },
-            new() { Text = "Open Logs Folder", OnClick = OpenLogsFolder },
+        };
+
+        // Diagnostics live as quiet footer links (matching the Gateway flyout).
+        var footerLinks = new List<FlyoutAction>
+        {
+            new() { Text = "Logs", OnClick = OpenLogsFolder },
         };
 
         ToggleSpec? toggle = OperatingSystem.IsWindows()
@@ -118,6 +123,7 @@ public sealed class LauncherTrayController : IDisposable
                 HostState.Starting => "Starting...",
                 _ => "Failed - see logs",
             },
+            StatusPillText = _state.ToString(),
             Status = _state switch
             {
                 HostState.Running => StatusLevel.Ok,
@@ -127,6 +133,7 @@ public sealed class LauncherTrayController : IDisposable
             Accent = Color.Parse("#F2600C"), // launcher orange
             Rows = rows,
             Actions = actions,
+            FooterLinks = footerLinks,
             Toggle = toggle,
             OnQuit = () => _ = QuitAsync(),
         };

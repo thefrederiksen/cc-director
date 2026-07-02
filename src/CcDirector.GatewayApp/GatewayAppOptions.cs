@@ -23,8 +23,12 @@ public static class GatewayAppOptions
     /// </summary>
     public static bool Managed { get; set; }
 
-    /// <summary>Open the Settings window immediately on startup (--settings). Debug/QA convenience.</summary>
-    public static bool OpenSettingsOnStart { get; set; }
+    /// <summary>
+    /// Open the tray status panel (the left-click flyout) immediately on startup (--settings).
+    /// Debug/QA convenience. There is no local settings window any more - the Gateway has no
+    /// settings of its own; the flyout's Settings link opens the Cockpit Settings page.
+    /// </summary>
+    public static bool OpenPanelOnStart { get; set; }
 
     /// <summary>The arguments equivalent to the current options, for the autostart Run key.</summary>
     public static string? AutostartArguments() => Managed ? "--managed" : null;
@@ -49,7 +53,7 @@ public static class GatewayAppOptions
             }
             else if (args[i] == "--settings")
             {
-                OpenSettingsOnStart = true;
+                OpenPanelOnStart = true;
             }
         }
     }
