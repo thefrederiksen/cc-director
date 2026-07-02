@@ -127,15 +127,60 @@
   <p class="sub">Gateway and fleet configuration.</p>
 
   <div class="tabs">
-    <button class="tab-btn active" data-tab="transcription">Transcription</button>
+    <button class="tab-btn active" data-tab="account">Account</button>
+    <button class="tab-btn" data-tab="transcription">Transcription</button>
     <button class="tab-btn" data-tab="gateway">Gateway</button>
     <button class="tab-btn" data-tab="wingman">Wingman</button>
     <button class="tab-btn" data-tab="instructions">Instructions</button>
     <button class="tab-btn" data-tab="phone">Phone</button>
   </div>
 
+  <!-- ===== Account tab (issue #886): the DevThrottle account is the FIRST/root setting - every AI
+       capability draws on it. Signed-in username/email front and centre, with sign in/out. ===== -->
+  <div class="tab-panel active" id="tab-account">
+    <div class="section">
+      <h2>DevThrottle account</h2>
+      <p class="hint">The DevThrottle account this Gateway is signed in as. Every hosted AI capability - transcription, text-to-speech, the assistant - runs on this account's credits, so it is the first thing to set up.</p>
+
+      <div id="acct-loading" class="hint">Loading...</div>
+
+      <!-- Signed in -->
+      <div id="acct-signedin" style="display:none">
+        <div class="kv">
+          <span class="k">Status</span><span class="v green" id="acct-status-in">Signed in</span>
+          <span class="k">Email</span><span class="v mono" id="acct-email">-</span>
+          <span class="k">Provider</span><span class="v" id="acct-provider">-</span>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <a class="link" id="acct-manage" href="https://devthrottle.com" target="_blank" rel="noopener">Manage account &rarr;</a>
+          &nbsp;&nbsp;
+          <a class="link" id="acct-credits" href="https://devthrottle.com" target="_blank" rel="noopener">Add credits &rarr;</a>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="danger" id="acct-logout">Sign out</button>
+          <span class="hint" style="margin:0">Clears this Gateway's credential and returns it to the sign-in prompt.</span>
+        </div>
+      </div>
+
+      <!-- Signed out -->
+      <div id="acct-signedout" style="display:none">
+        <div class="status" style="margin-bottom:12px">
+          <span class="dot"></span>
+          <span>Not signed in</span>
+        </div>
+        <p class="hint" style="margin-top:0">DevThrottle is free - we make money when you use our hosted AI services. The source is MIT: fork it if you would rather not have an account. Sign in to activate hosted transcription, text-to-speech, and the assistant on your account.</p>
+        <div class="row">
+          <button class="save" id="acct-signin">Sign in to DevThrottle</button>
+          <span class="hint" id="acct-signin-note" style="margin:0">Opens your browser to finish signing in with Google, GitHub, or email.</span>
+        </div>
+      </div>
+
+      <div class="msg" id="acct-msg"></div>
+    </div>
+  </div>
+
   <!-- ===== Transcription tab (issue #497) ===== -->
-  <div class="tab-panel active" id="tab-transcription">
+  <div class="tab-panel" id="tab-transcription">
     <div class="section">
       <h2>Transcription</h2>
       <p class="hint">Turn speech into text for your agents. Choose how you connect.</p>
@@ -385,6 +430,88 @@
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     });
   });
+
+  // ===== Account (issue #886) =====
+  // The DevThrottle account is the first/root setting. Read identity from the Gateway's own
+  // GET /account/status (no cloud call, no raw token exposed); sign in starts the Gateway browser
+  // loopback flow (POST /account/sign-in) and we poll status until it completes; sign out clears the
+  // Gateway credential (POST /account/logout).
+  let acctSignInPoll = null;
+
+  function acctMsg(text, ok){
+    const m = document.getElementById('acct-msg');
+    m.textContent = text || '';
+    m.className = 'msg ' + (ok ? 'ok' : 'err');
+  }
+
+  function renderAccount(status){
+    document.getElementById('acct-loading').style.display = 'none';
+    // A successful status render clears any prior transient error (e.g. a momentary load failure).
+    acctMsg('', true);
+    const inEl = document.getElementById('acct-signedin');
+    const outEl = document.getElementById('acct-signedout');
+    if (status && status.signedIn){
+      inEl.style.display = '';
+      outEl.style.display = 'none';
+      document.getElementById('acct-email').textContent = status.email || '(not available)';
+      document.getElementById('acct-provider').textContent = status.provider || '(not available)';
+    } else {
+      inEl.style.display = 'none';
+      outEl.style.display = '';
+    }
+  }
+
+  async function loadAccount(){
+    try {
+      const r = await fetch('/account/status');
+      if (!r.ok) throw new Error(r.status);
+      renderAccount(await r.json());
+    } catch (e) {
+      // A dead Gateway must not look like a signed-out account: show an explicit message.
+      document.getElementById('acct-loading').style.display = 'none';
+      document.getElementById('acct-signedout').style.display = '';
+      acctMsg('Could not load account status from the Gateway.', false);
+    }
+  }
+
+  async function acctSignIn(){
+    const btn = document.getElementById('acct-signin');
+    btn.disabled = true;
+    acctMsg('', true);
+    try {
+      const r = await fetch('/account/sign-in', { method: 'POST' });
+      const d = await r.json().catch(()=>({}));
+      if (d.alreadySignedIn){ await loadAccount(); btn.disabled = false; return; }
+      if (!r.ok && !d.started){ acctMsg(d.error || 'Sign-in could not be started.', false); btn.disabled = false; return; }
+      document.getElementById('acct-signin-note').textContent = 'Finish signing in in the browser window that opened...';
+      // Poll status until the Gateway reports signed in, or give up after five minutes.
+      let waited = 0;
+      clearInterval(acctSignInPoll);
+      acctSignInPoll = setInterval(async function(){
+        waited += 2;
+        try {
+          const s = await fetch('/account/status');
+          if (s.ok){ const js = await s.json(); if (js.signedIn){ clearInterval(acctSignInPoll); renderAccount(js); acctMsg('Signed in.', true); btn.disabled = false; return; } }
+        } catch (e) { /* keep polling */ }
+        if (waited >= 300){ clearInterval(acctSignInPoll); acctMsg('Sign-in did not complete. Finish it in your browser, then try again.', false); btn.disabled = false; }
+      }, 2000);
+    } catch (e){ acctMsg('Sign-in failed: ' + e, false); btn.disabled = false; }
+  }
+
+  async function acctLogout(){
+    const btn = document.getElementById('acct-logout');
+    btn.disabled = true;
+    try {
+      const r = await fetch('/account/logout', { method: 'POST' });
+      if (r.ok){ renderAccount(await r.json().catch(()=>({ signedIn: false }))); acctMsg('Signed out.', true); }
+      else { acctMsg('Sign out failed: ' + r.status, false); }
+    } catch (e){ acctMsg('Sign out failed: ' + e, false); }
+    btn.disabled = false;
+  }
+
+  document.getElementById('acct-signin').addEventListener('click', acctSignIn);
+  document.getElementById('acct-logout').addEventListener('click', acctLogout);
+  loadAccount();
 
   // ===== Transcription (issue #497, #887) =====
   // Two capability modes, persisted server-side: the mode in config.json
