@@ -852,6 +852,12 @@ public sealed class GatewayHost : IAsyncDisposable
         var accountDevicesClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         AccountDevicesEndpoint.Map(_app, Account, new Core.Account.DeviceRegistryClient(accountDevicesClient), Environment.MachineName);
 
+        // Account credit-balance proxy (issue #884): GET /account/credits. Same proxy shape as the device
+        // list - the Gateway reads the balance from the cloud with its own stored account token (JWT) and
+        // returns a token-free DTO, so the Settings account section shows the balance without the Cockpit
+        // ever holding the token. Signed-out -> explicit signedIn:false; unreachable cloud -> clear 502.
+        AccountCreditsEndpoint.Map(_app, Account, new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }));
+
         // Start the browser loopback sign-in from a web request (issue #853): POST /account/sign-in. The
         // Cockpit Account page's signed-out state needs a real "Sign in" action, but the loopback flow that
         // captures the credential lives here on the Gateway (issue #637, GatewaySignInService = SignIn). So

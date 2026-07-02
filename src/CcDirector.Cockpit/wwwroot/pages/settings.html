@@ -150,6 +150,10 @@
           <span class="k">Status</span><span class="v green" id="acct-status-in">Signed in</span>
           <span class="k">Email</span><span class="v mono" id="acct-email">-</span>
           <span class="k">Provider</span><span class="v" id="acct-provider">-</span>
+          <span class="k">Credits</span><span class="v" id="acct-balance">Loading...</span>
+        </div>
+        <div id="acct-lowbalance" class="msg" style="display:none;background:#2a2410;border:1px solid #5a4d1d;color:#d8cf9b;padding:10px 12px;border-radius:8px;margin-top:12px">
+          Your balance is low. <a class="link" href="https://devthrottle.com" target="_blank" rel="noopener">Add credits &rarr;</a> to keep hosted AI features working.
         </div>
         <div class="row" style="margin-top:14px">
           <a class="link" id="acct-manage" href="https://devthrottle.com" target="_blank" rel="noopener">Manage account &rarr;</a>
@@ -455,9 +459,42 @@
       outEl.style.display = 'none';
       document.getElementById('acct-email').textContent = status.email || '(not available)';
       document.getElementById('acct-provider').textContent = status.provider || '(not available)';
+      loadBalance();
     } else {
       inEl.style.display = 'none';
       outEl.style.display = '';
+    }
+  }
+
+  // ===== Credit balance (issue #884) =====
+  // Below this the account section shows a non-blocking "add credits" notice.
+  const LOW_BALANCE_MICROS = 1000000; // $1
+
+  // Format micro-dollars ($1 = 1_000_000) as a dollar string, widening the decimals so a tiny
+  // per-action cost never renders as $0.00.
+  function fmtUsd(micros, minDecimals){
+    const dollars = (micros || 0) / 1e6;
+    let dec = minDecimals || 2;
+    if (dollars > 0 && dollars < 0.01) dec = Math.max(dec, 4);
+    return '$' + dollars.toFixed(dec);
+  }
+
+  // Reads GET /account/credits (the Gateway proxies the cloud with its own token) and shows the
+  // balance + low-balance notice. Returns the parsed body (or null) so callers can also show a cost.
+  async function loadBalance(){
+    const el = document.getElementById('acct-balance');
+    try {
+      const r = await fetch('/account/credits');
+      if (!r.ok) throw new Error(r.status);
+      const d = await r.json();
+      if (!d.signedIn){ el.textContent = 'Sign in to see your balance'; return d; }
+      const micros = d.balanceMicros || 0;
+      el.textContent = fmtUsd(micros);
+      document.getElementById('acct-lowbalance').style.display = (micros < LOW_BALANCE_MICROS) ? '' : 'none';
+      return d;
+    } catch (e) {
+      el.textContent = 'Unavailable';
+      return null;
     }
   }
 
@@ -888,6 +925,15 @@
         document.getElementById('txtestresultwrap').style.display = 'block';
         markModeVerified(d.mode || currentMode);
         txMsg('txtestmsg', '', true);
+        // Issue #884: per-action cost. A hosted (DevThrottle) action draws on the account, so refresh
+        // the balance and show what it cost; a BYO/OpenAI action bills the user's own key (no DT cost).
+        if ((d.mode || currentMode) === 'devthrottle') {
+          const bal = await loadBalance();
+          if (bal && bal.signedIn && bal.lastDebitMicros)
+            txMsg('txtestmsg', 'Transcribed - cost ' + fmtUsd(bal.lastDebitMicros) + '. Balance ' + fmtUsd(bal.balanceMicros) + '.', true);
+        } else {
+          txMsg('txtestmsg', 'Transcribed with your OpenAI key (no DevThrottle charge).', true);
+        }
       } else if (r.status === 402) {
         // Out of credits (issue #885): show the add-credits path, never a raw error. The DevThrottle
         // account has no balance; a top-up on the website activates it and a retry works with no restart.

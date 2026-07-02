@@ -21,6 +21,8 @@ Proven end-to-end against the production cloud, exactly the chain the new code d
   it: manual override + reuse across restarts, no key sprawl). Wired into the Gateway's post-sign-in
   hook and a detached startup pass (covers an already-signed-in install).
 
-## Cleanup owed
+## Cleanup done
 Three throwaway keys were minted on the real account during this proof/debug (labels
-`cc-director-autowire-*`); last4 = `uA7v`, `B8Eg`, `wk7A`. Revoke them on the account keys page.
+`cc-director-autowire-*`); real last4 = `Om8M`, `B8Eg`, `wk7A` - all revoked via
+`DELETE /api/v1/keys/{id}` (200). (`uA7v` mentioned earlier was a truncation artifact of the
+regex bug, not a real key - the real key for that mint was `Om8M`.)
