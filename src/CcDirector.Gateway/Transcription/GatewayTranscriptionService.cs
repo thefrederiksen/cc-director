@@ -113,6 +113,14 @@ public sealed class GatewayTranscriptionService
         {
             throw;
         }
+        catch (InsufficientCreditsException ex)
+        {
+            // Out of credits (issue #885): a distinct, expected condition. Carry it as its own value so
+            // the endpoint maps it to 402 and the client preserves the recording and offers "Add
+            // credits" - never a raw error, never a lost clip.
+            FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OUT OF CREDITS: mode={mode}, code={ex.Code}");
+            return GatewayTranscriptionResult.OutOfCredits(mode, routing.Endpoint.Model, ex.Code, ex.Message);
+        }
         catch (Exception ex)
         {
             // A provider rejection (bad key, model not found, network) is an expected external
@@ -284,6 +292,9 @@ public enum TranscriptionOutcome
 
     /// <summary>The provider rejected the request or the key.</summary>
     ProviderError = 3,
+
+    /// <summary>The DevThrottle account is out of credits (HTTP 402) - issue #885.</summary>
+    OutOfCredits = 4,
 }
 
 /// <summary>
@@ -291,7 +302,7 @@ public enum TranscriptionOutcome
 /// succeeded, the mode and model that ran, and the error when it did not.
 /// </summary>
 public sealed record GatewayTranscriptionResult(
-    TranscriptionOutcome Outcome, string? Text, string Mode, string? Model, string? Error)
+    TranscriptionOutcome Outcome, string? Text, string Mode, string? Model, string? Error, string? Code = null)
 {
     public static GatewayTranscriptionResult Ok(string text, string mode, string? model)
         => new(TranscriptionOutcome.Ok, text, mode, model, null);
@@ -304,4 +315,9 @@ public sealed record GatewayTranscriptionResult(
 
     public static GatewayTranscriptionResult ProviderError(string mode, string? model, string error)
         => new(TranscriptionOutcome.ProviderError, null, mode, model, error);
+
+    /// <summary>Out of credits (issue #885): carries the hosted service's error code so the client can
+    /// show the add-credits state and keep the recording.</summary>
+    public static GatewayTranscriptionResult OutOfCredits(string mode, string? model, string code, string error)
+        => new(TranscriptionOutcome.OutOfCredits, null, mode, model, error, code);
 }

@@ -60,6 +60,19 @@ public sealed class BatchTranscriptionPipelineTests
         }
     }
 
+    /// <summary>Answers the transcription POST with a fixed status code and body (issue #885).</summary>
+    private sealed class StatusHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _status;
+        private readonly string _body;
+        public StatusHandler(HttpStatusCode status, string body) { _status = status; _body = body; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(new HttpResponseMessage(_status)
+            {
+                Content = new StringContent(_body, Encoding.UTF8, "application/json"),
+            });
+    }
+
     private static ResolvedTranscription Byo() => new()
     {
         BaseUrl = TranscriptionEndpointResolver.OpenAiBaseUrl,
@@ -108,6 +121,42 @@ public sealed class BatchTranscriptionPipelineTests
         Assert.Equal(result.RawTranscript, result.CorrectedTranscript);
         Assert.False(result.DictionaryApplied);
         Assert.Empty(result.ChangedWords);
+    }
+
+    // ----- Issue #885: HTTP 402 out-of-credits surfaces as a typed exception, not an opaque error -----
+
+    [Fact]
+    public async Task TranscribeRawAsync_402InsufficientCredits_ThrowsTypedExceptionWithCode()
+    {
+        var body = "{\"error\":{\"code\":\"insufficient_credits\",\"message\":\"Not enough credits\"}}";
+        using var pipeline = new BatchTranscriptionPipeline(new HttpClient(new StatusHandler(HttpStatusCode.PaymentRequired, body)));
+
+        var ex = await Assert.ThrowsAsync<InsufficientCreditsException>(() =>
+            pipeline.TranscribeRawAsync(new byte[] { 1, 2, 3 }, "utterance.webm", DevThrottle()));
+
+        Assert.Equal("insufficient_credits", ex.Code);
+    }
+
+    [Fact]
+    public async Task TranscribeRawAsync_402WithNonJsonBody_StillThrowsInsufficientCredits()
+    {
+        // Even a bare 402 with no parseable code means out of credits - never a generic provider error.
+        using var pipeline = new BatchTranscriptionPipeline(new HttpClient(new StatusHandler(HttpStatusCode.PaymentRequired, "Payment Required")));
+
+        var ex = await Assert.ThrowsAsync<InsufficientCreditsException>(() =>
+            pipeline.TranscribeRawAsync(new byte[] { 1, 2, 3 }, "utterance.webm", DevThrottle()));
+
+        Assert.Equal("insufficient_credits", ex.Code);
+    }
+
+    [Fact]
+    public async Task TranscribeRawAsync_500_StillThrowsGenericInvalidOperation_NotOutOfCredits()
+    {
+        // A non-402 provider failure must NOT be mistaken for out-of-credits.
+        using var pipeline = new BatchTranscriptionPipeline(new HttpClient(new StatusHandler(HttpStatusCode.InternalServerError, "boom")));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            pipeline.TranscribeRawAsync(new byte[] { 1, 2, 3 }, "utterance.webm", DevThrottle()));
     }
 
     // ----- Acceptance criterion: a dictionary hit is swapped and reported -----

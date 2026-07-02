@@ -761,6 +761,11 @@
         document.getElementById('txtestresultwrap').style.display = 'block';
         markModeVerified(d.mode || currentMode);
         txMsg('txtestmsg', '', true);
+      } else if (r.status === 402) {
+        // Out of credits (issue #885): show the add-credits path, never a raw error. The DevThrottle
+        // account has no balance; a top-up on the website activates it and a retry works with no restart.
+        txTestState('');
+        txMsg('txtestmsg', 'Your DevThrottle account is out of credits. Add credits at devthrottle.com, then try again - no restart needed. You can also switch to your own OpenAI key above.', false);
       } else {
         txTestState('');
         const hint = r.status === 409 ? ' Save a key for the selected mode first.' : '';

@@ -9,22 +9,21 @@ namespace CcDirector.Gateway.Api;
 
 /// <summary>
 /// The single Gateway endpoint that turns audio into text (issue #839). A caller sends the raw audio
-/// bytes and the content type; the Gateway resolves the configured mode and the key, runs the right
-/// provider (in-process Whisper for on-device mode, or the OpenAI-compatible batch endpoint for the
-/// remote modes), and returns the text. The caller never sees or handles the key - it only sends
-/// audio and receives text.
+/// bytes and the content type; the Gateway resolves the configured mode and the key, runs the
+/// OpenAI-compatible batch endpoint for the mode, and returns the text. The caller never sees or
+/// handles the key - it only sends audio and receives text.
 ///
 ///   POST /transcription            (raw audio body; Content-Type is the clip's MIME type)
 ///        ?correct=true             also run the validated dictionary correction (default: raw text)
 ///       -&gt; 200 { text, mode, model }   transcription succeeded
 ///       -&gt; 400 { error }                no audio in the request body
-///       -&gt; 409 { error, mode }          no key set for the current remote mode
+///       -&gt; 409 { error, mode }          no key set for the current mode
+///       -&gt; 402 { error, code, mode }    the DevThrottle account is out of credits (issue #885)
 ///       -&gt; 502 { error }                the provider rejected the request or the key
 ///
-/// On-device (local) mode and the remote modes (bring-your-own OpenAI, DevThrottle) all go through
-/// this one endpoint - the resolution and the provider choice live in
-/// <see cref="GatewayTranscriptionService"/>, the single owner. Inherits the host-wide token
-/// middleware like every other Gateway route.
+/// Both modes (bring-your-own OpenAI, DevThrottle) go through this one endpoint - the resolution and
+/// the provider choice live in <see cref="GatewayTranscriptionService"/>, the single owner. Inherits
+/// the host-wide token middleware like every other Gateway route.
 ///
 /// Whether the dictionary correction runs is the caller's choice via <c>?correct=true</c>: the
 /// Settings "Test it" button leaves it OFF so it proves the RAW transcription path (a term swap would
@@ -61,6 +60,9 @@ internal static class TranscriptionBatchEndpoint
                 TranscriptionOutcome.Ok => Results.Json(new { text = result.Text, mode = result.Mode, model = result.Model }),
                 TranscriptionOutcome.NoAudio => Results.BadRequest(new { error = result.Error }),
                 TranscriptionOutcome.NoKey => Results.Json(new { error = result.Error, mode = result.Mode }, statusCode: StatusCodes.Status409Conflict),
+                // Out of credits (issue #885): HTTP 402 with the machine-readable code so the client
+                // shows the add-credits state and keeps the recording, never a raw error.
+                TranscriptionOutcome.OutOfCredits => Results.Json(new { error = result.Error, code = result.Code, mode = result.Mode }, statusCode: StatusCodes.Status402PaymentRequired),
                 TranscriptionOutcome.ProviderError => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway),
                 _ => Results.Json(new { error = "unknown transcription outcome" }, statusCode: StatusCodes.Status500InternalServerError),
             };

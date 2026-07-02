@@ -162,6 +162,14 @@ public sealed class BatchTranscriptionPipeline : IDisposable
 
         using var resp = await _http.SendAsync(request, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
+
+        // Out of credits (issue #885): the hosted service returns HTTP 402 with
+        // code=insufficient_credits. This is an expected, distinct condition - surface it as a typed
+        // exception so the stack preserves the recording and offers "Add credits" rather than treating
+        // it as an opaque provider rejection.
+        if ((int)resp.StatusCode == 402)
+            throw new InsufficientCreditsException(ParseErrorCode(body), $"Transcription returned 402: {Truncate(body, 400)}");
+
         if (!resp.IsSuccessStatusCode)
             throw new InvalidOperationException($"Transcription returned {(int)resp.StatusCode}: {Truncate(body, 400)}");
 
@@ -211,6 +219,32 @@ public sealed class BatchTranscriptionPipeline : IDisposable
 
     private static string Truncate(string s, int max)
         => string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "...";
+
+    /// <summary>
+    /// Best-effort read of the machine-readable error code from an OpenAI-compatible error body
+    /// (<c>{ "error": { "code": "insufficient_credits" } }</c> or a flat <c>{ "code": ... }</c>).
+    /// Defaults to "insufficient_credits" when the body has no code, since the caller only reaches
+    /// here on a 402.
+    /// </summary>
+    private static string ParseErrorCode(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return "insufficient_credits";
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.Object
+                && err.TryGetProperty("code", out var nested) && nested.ValueKind == JsonValueKind.String)
+                return nested.GetString() ?? "insufficient_credits";
+            if (root.TryGetProperty("code", out var flat) && flat.ValueKind == JsonValueKind.String)
+                return flat.GetString() ?? "insufficient_credits";
+        }
+        catch (JsonException)
+        {
+            // A non-JSON 402 body still means out of credits; fall through to the default code.
+        }
+        return "insufficient_credits";
+    }
 
     public void Dispose()
     {
