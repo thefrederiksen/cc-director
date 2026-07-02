@@ -60,8 +60,8 @@
   .chk input{accent-color:var(--blue);width:16px;height:16px}
   .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;background:#23314d;color:#9fb0d8;margin-left:8px;vertical-align:middle}
 
-  /* Transcription mode chooser (issue #497, three cards in #541) */
-  .mode-cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:6px 0 18px}
+  /* Transcription mode chooser (issue #497, two cards in #887) */
+  .mode-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:6px 0 18px}
   .mode-card{display:flex;gap:10px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);
         border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .15s,background .15s}
   .mode-card:hover{border-color:var(--blue)}
@@ -69,12 +69,8 @@
   .mode-card input[type=radio]{accent-color:var(--blue);width:16px;height:16px;margin-top:2px;flex:0 0 auto}
   .mode-card-title{font-size:14px;font-weight:600;color:var(--ink);margin-bottom:3px}
   .mode-card-desc{font-size:12.5px;color:var(--muted);line-height:1.4}
-  /* DevThrottle "coming soon" card (issue #541): greyed out, not selectable. */
-  .mode-card.disabled{opacity:.55;cursor:not-allowed;background:var(--panel2)}
-  .mode-card.disabled:hover{border-color:var(--line)}
-  .mode-card.disabled input[type=radio]{cursor:not-allowed}
-  .soon-badge{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
-        color:#9fb0d8;background:#23314d;border-radius:7px;padding:1px 7px;margin-left:8px;vertical-align:middle}
+  .default-badge{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+        color:#06210f;background:var(--green);border-radius:7px;padding:1px 7px;margin-left:8px;vertical-align:middle}
   .keypanel{border-top:1px solid var(--line);padding-top:16px;margin-top:4px}
   .keylabel{font-size:13px;color:var(--ink);margin-bottom:8px;font-weight:500}
   a.link{color:var(--blue);text-decoration:none}
@@ -131,50 +127,86 @@
   <p class="sub">Gateway and fleet configuration.</p>
 
   <div class="tabs">
-    <button class="tab-btn active" data-tab="transcription">Transcription</button>
+    <button class="tab-btn active" data-tab="account">Account</button>
+    <button class="tab-btn" data-tab="transcription">Transcription</button>
     <button class="tab-btn" data-tab="gateway">Gateway</button>
     <button class="tab-btn" data-tab="wingman">Wingman</button>
     <button class="tab-btn" data-tab="instructions">Instructions</button>
     <button class="tab-btn" data-tab="phone">Phone</button>
   </div>
 
+  <!-- ===== Account tab (issue #886): the DevThrottle account is the FIRST/root setting - every AI
+       capability draws on it. Signed-in username/email front and centre, with sign in/out. ===== -->
+  <div class="tab-panel active" id="tab-account">
+    <div class="section">
+      <h2>DevThrottle account</h2>
+      <p class="hint">The DevThrottle account this Gateway is signed in as. Every hosted AI capability - transcription, text-to-speech, the assistant - runs on this account's credits, so it is the first thing to set up.</p>
+
+      <div id="acct-loading" class="hint">Loading...</div>
+
+      <!-- Signed in -->
+      <div id="acct-signedin" style="display:none">
+        <div class="kv">
+          <span class="k">Status</span><span class="v green" id="acct-status-in">Signed in</span>
+          <span class="k">Email</span><span class="v mono" id="acct-email">-</span>
+          <span class="k">Provider</span><span class="v" id="acct-provider">-</span>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <a class="link" id="acct-manage" href="https://devthrottle.com" target="_blank" rel="noopener">Manage account &rarr;</a>
+          &nbsp;&nbsp;
+          <a class="link" id="acct-credits" href="https://devthrottle.com" target="_blank" rel="noopener">Add credits &rarr;</a>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="danger" id="acct-logout">Sign out</button>
+          <span class="hint" style="margin:0">Clears this Gateway's credential and returns it to the sign-in prompt.</span>
+        </div>
+      </div>
+
+      <!-- Signed out -->
+      <div id="acct-signedout" style="display:none">
+        <div class="status" style="margin-bottom:12px">
+          <span class="dot"></span>
+          <span>Not signed in</span>
+        </div>
+        <p class="hint" style="margin-top:0">DevThrottle is free - we make money when you use our hosted AI services. The source is MIT: fork it if you would rather not have an account. Sign in to activate hosted transcription, text-to-speech, and the assistant on your account.</p>
+        <div class="row">
+          <button class="save" id="acct-signin">Sign in to DevThrottle</button>
+          <span class="hint" id="acct-signin-note" style="margin:0">Opens your browser to finish signing in with Google, GitHub, or email.</span>
+        </div>
+      </div>
+
+      <div class="msg" id="acct-msg"></div>
+    </div>
+  </div>
+
   <!-- ===== Transcription tab (issue #497) ===== -->
-  <div class="tab-panel active" id="tab-transcription">
+  <div class="tab-panel" id="tab-transcription">
     <div class="section">
       <h2>Transcription</h2>
       <p class="hint">Turn speech into text for your agents. Choose how you connect.</p>
 
-      <!-- Three-mode chooser: radio cards (issue #541). Local is first and the default; OpenAI is
-           opt-in; DevThrottle is "coming soon" - disabled and never selectable. -->
+      <!-- Two-mode chooser: radio cards (issue #887). DevThrottle is first, selected by default, and
+           uses your account; OpenAI (your own key) is the second option. -->
       <div class="mode-cards">
-        <label class="mode-card" id="card-local">
-          <input type="radio" name="txmode" value="local">
+        <label class="mode-card" id="card-devthrottle">
+          <input type="radio" name="txmode" value="devthrottle">
           <div class="mode-card-body">
-            <div class="mode-card-title">Local (Whisper.net)</div>
-            <div class="mode-card-desc">Runs on this machine - works offline, no API key required.</div>
+            <div class="mode-card-title">DevThrottle<span class="default-badge">Default</span></div>
+            <div class="mode-card-desc">Hosted transcription on your DevThrottle account. Nothing to set up - your first top-up activates it ($5 minimum = 25 hours).</div>
           </div>
         </label>
         <label class="mode-card" id="card-byo">
           <input type="radio" name="txmode" value="byo">
           <div class="mode-card-body">
-            <div class="mode-card-title">OpenAI</div>
-            <div class="mode-card-desc">Your OpenAI key. Stays on THIS machine - never sent to DevThrottle.</div>
-          </div>
-        </label>
-        <!-- DevThrottle: coming soon. Disabled and not selectable (issue #541). The radio is
-             disabled so it can never be checked, and the change handler refuses it as a guard. -->
-        <label class="mode-card disabled" id="card-devthrottle" title="Coming soon">
-          <input type="radio" name="txmode" value="devthrottle" disabled>
-          <div class="mode-card-body">
-            <div class="mode-card-title">DevThrottle<span class="soon-badge">Coming soon</span></div>
-            <div class="mode-card-desc">One managed key. Fast Groq Whisper, metered on your subscription.</div>
+            <div class="mode-card-title">OpenAI (your API key)</div>
+            <div class="mode-card-desc">Use your own OpenAI key. It stays on THIS machine and is never sent to DevThrottle.</div>
           </div>
         </label>
       </div>
 
       <!-- DevThrottle key panel -->
       <div class="keypanel" id="panel-devthrottle" style="display:none">
-        <div class="keylabel">DevThrottle API key</div>
+        <div class="keylabel">Connect this machine to your DevThrottle account</div>
         <div class="row">
           <input id="dtkeybox" type="password" placeholder="dt_live_..." autocomplete="off" spellcheck="false">
           <button class="save" id="dtsavebtn">Save</button>
@@ -184,11 +216,11 @@
           <label class="show"><input type="checkbox" id="dtshowbox"> Show what I type</label>
         </div>
         <p class="hint" style="margin-top:12px">
-          <a class="link" id="dtsignin" href="https://devthrottle.com" target="_blank" rel="noopener">Don't have a key? Sign in to get one &rarr;</a>
+          <a class="link" id="dtsignin" href="https://devthrottle.com" target="_blank" rel="noopener">Get your account key &rarr;</a>
           &nbsp;&nbsp;
-          <a class="link" id="dtmanage" href="https://devthrottle.com" target="_blank" rel="noopener">Manage or revoke keys at devthrottle.com &rarr;</a>
+          <a class="link" id="dtcredits" href="https://devthrottle.com" target="_blank" rel="noopener">Add credits &rarr;</a>
         </p>
-        <p class="hint">Keys are created and revoked on devthrottle.com. This page stores the one this machine uses.</p>
+        <p class="hint">Hosted transcription runs on your DevThrottle account. Your first top-up activates it - $5 minimum, about 25 hours of speech.</p>
         <div class="status" style="margin-top:6px">
           <span class="dot" id="dtdot"></span>
           <span id="dtstate">Loading...</span>
@@ -399,16 +431,98 @@
     });
   });
 
-  // ===== Transcription (issue #497, #541) =====
-  // Three capability modes, persisted server-side: the mode in config.json
-  // (GET/PUT /gateway/transcription-mode), the two remote keys in the Gateway vault
-  // (OPENAI_API_KEY for OpenAI, DEVTHROTTLE_API_KEY for DevThrottle). Local mode (issue #541)
-  // is the default and needs no key. DevThrottle is "coming soon" - its card is disabled and it
-  // can never be the active mode.
+  // ===== Account (issue #886) =====
+  // The DevThrottle account is the first/root setting. Read identity from the Gateway's own
+  // GET /account/status (no cloud call, no raw token exposed); sign in starts the Gateway browser
+  // loopback flow (POST /account/sign-in) and we poll status until it completes; sign out clears the
+  // Gateway credential (POST /account/logout).
+  let acctSignInPoll = null;
+
+  function acctMsg(text, ok){
+    const m = document.getElementById('acct-msg');
+    m.textContent = text || '';
+    m.className = 'msg ' + (ok ? 'ok' : 'err');
+  }
+
+  function renderAccount(status){
+    document.getElementById('acct-loading').style.display = 'none';
+    // A successful status render clears any prior transient error (e.g. a momentary load failure).
+    acctMsg('', true);
+    const inEl = document.getElementById('acct-signedin');
+    const outEl = document.getElementById('acct-signedout');
+    if (status && status.signedIn){
+      inEl.style.display = '';
+      outEl.style.display = 'none';
+      document.getElementById('acct-email').textContent = status.email || '(not available)';
+      document.getElementById('acct-provider').textContent = status.provider || '(not available)';
+    } else {
+      inEl.style.display = 'none';
+      outEl.style.display = '';
+    }
+  }
+
+  async function loadAccount(){
+    try {
+      const r = await fetch('/account/status');
+      if (!r.ok) throw new Error(r.status);
+      renderAccount(await r.json());
+    } catch (e) {
+      // A dead Gateway must not look like a signed-out account: show an explicit message.
+      document.getElementById('acct-loading').style.display = 'none';
+      document.getElementById('acct-signedout').style.display = '';
+      acctMsg('Could not load account status from the Gateway.', false);
+    }
+  }
+
+  async function acctSignIn(){
+    const btn = document.getElementById('acct-signin');
+    btn.disabled = true;
+    acctMsg('', true);
+    try {
+      const r = await fetch('/account/sign-in', { method: 'POST' });
+      const d = await r.json().catch(()=>({}));
+      if (d.alreadySignedIn){ await loadAccount(); btn.disabled = false; return; }
+      if (!r.ok && !d.started){ acctMsg(d.error || 'Sign-in could not be started.', false); btn.disabled = false; return; }
+      document.getElementById('acct-signin-note').textContent = 'Finish signing in in the browser window that opened...';
+      // Poll status until the Gateway reports signed in, or give up after five minutes.
+      let waited = 0;
+      clearInterval(acctSignInPoll);
+      acctSignInPoll = setInterval(async function(){
+        waited += 2;
+        try {
+          const s = await fetch('/account/status');
+          if (s.ok){ const js = await s.json(); if (js.signedIn){ clearInterval(acctSignInPoll); renderAccount(js); acctMsg('Signed in.', true); btn.disabled = false; return; } }
+        } catch (e) { /* keep polling */ }
+        if (waited >= 300){ clearInterval(acctSignInPoll); acctMsg('Sign-in did not complete. Finish it in your browser, then try again.', false); btn.disabled = false; }
+      }, 2000);
+    } catch (e){ acctMsg('Sign-in failed: ' + e, false); btn.disabled = false; }
+  }
+
+  async function acctLogout(){
+    const btn = document.getElementById('acct-logout');
+    btn.disabled = true;
+    try {
+      const r = await fetch('/account/logout', { method: 'POST' });
+      if (r.ok){ renderAccount(await r.json().catch(()=>({ signedIn: false }))); acctMsg('Signed out.', true); }
+      else { acctMsg('Sign out failed: ' + r.status, false); }
+    } catch (e){ acctMsg('Sign out failed: ' + e, false); }
+    btn.disabled = false;
+  }
+
+  document.getElementById('acct-signin').addEventListener('click', acctSignIn);
+  document.getElementById('acct-logout').addEventListener('click', acctLogout);
+  loadAccount();
+
+  // ===== Transcription (issue #497, #887) =====
+  // Two capability modes, persisted server-side: the mode in config.json
+  // (GET/PUT /gateway/transcription-mode), the two keys in the Gateway vault
+  // (OPENAI_API_KEY for OpenAI, DEVTHROTTLE_API_KEY for DevThrottle). DevThrottle is the default
+  // (we dogfood our own hosted service, issue #887); OpenAI (bring your own key) is the second option.
   const BYO_KEY = 'OPENAI_API_KEY';
   const DT_KEY  = 'DEVTHROTTLE_API_KEY';
-  const SELECTABLE_MODES = ['local', 'byo'];   // DevThrottle is coming soon - not selectable.
-  let currentMode = 'local';
+  const SELECTABLE_MODES = ['devthrottle', 'byo'];
+  const DEFAULT_MODE = 'devthrottle';
+  let currentMode = DEFAULT_MODE;
 
   function txMsg(id, text, ok){
     const m = document.getElementById(id);
@@ -417,22 +531,19 @@
     m.className = 'msg ' + (ok ? 'ok' : 'err');
   }
 
-  // Reflect the selected mode in the cards + which key panel shows. DevThrottle is never selectable
-  // (coming soon, issue #541), so an unknown/devthrottle mode falls back to local for display.
+  // Reflect the selected mode in the cards + which key panel shows. An unknown mode (including the
+  // removed "local", issue #887) falls forward to the DevThrottle default for display.
   function applyModeUi(mode){
-    if (SELECTABLE_MODES.indexOf(mode) < 0) mode = 'local';
+    if (SELECTABLE_MODES.indexOf(mode) < 0) mode = DEFAULT_MODE;
     currentMode = mode;
     document.querySelectorAll('input[name="txmode"]').forEach(function(r){
-      // Never tick the disabled DevThrottle radio.
-      r.checked = (!r.disabled && r.value === mode);
+      r.checked = (r.value === mode);
     });
-    document.getElementById('card-local').classList.toggle('selected', mode === 'local');
+    document.getElementById('card-devthrottle').classList.toggle('selected', mode === 'devthrottle');
     document.getElementById('card-byo').classList.toggle('selected', mode === 'byo');
-    // The coming-soon DevThrottle card is never marked selected.
-    document.getElementById('card-devthrottle').classList.remove('selected');
-    // Local needs no key field; only the OpenAI panel ever shows. The DevThrottle panel never shows.
+    // Show the key panel for the selected mode only.
     document.getElementById('panel-byo').style.display = (mode === 'byo') ? '' : 'none';
-    document.getElementById('panel-devthrottle').style.display = 'none';
+    document.getElementById('panel-devthrottle').style.display = (mode === 'devthrottle') ? '' : 'none';
   }
 
   async function loadMode(){
@@ -440,16 +551,15 @@
       const r = await fetch('/gateway/transcription-mode');
       if (!r.ok) throw new Error(r.status);
       const d = await r.json();
-      // Only local and byo are selectable; anything else (incl. devthrottle) shows as local.
-      applyModeUi(SELECTABLE_MODES.indexOf(d.mode) >= 0 ? d.mode : 'local');
+      // Any non-selectable value (incl. a legacy "local") falls forward to the DevThrottle default.
+      applyModeUi(SELECTABLE_MODES.indexOf(d.mode) >= 0 ? d.mode : DEFAULT_MODE);
     } catch (e) {
-      applyModeUi('local');
+      applyModeUi(DEFAULT_MODE);
     }
   }
 
   async function changeMode(mode){
-    // Guard: DevThrottle (coming soon) can never be written as the active mode (issue #541).
-    if (SELECTABLE_MODES.indexOf(mode) < 0) { applyModeUi('local'); return; }
+    if (SELECTABLE_MODES.indexOf(mode) < 0) { applyModeUi(DEFAULT_MODE); return; }
     applyModeUi(mode);
     try {
       await fetch('/gateway/transcription-mode', {
@@ -469,13 +579,13 @@
 
     const byoSet = names.includes(BYO_KEY);
     document.getElementById('byodot').className = 'dot ' + (byoSet ? 'amber' : '');
-    document.getElementById('byostate').textContent = byoSet ? 'Local - your OpenAI key' : 'No OpenAI key stored yet';
+    document.getElementById('byostate').textContent = byoSet ? 'Your OpenAI key is stored on this machine' : 'No OpenAI key stored yet';
     document.getElementById('byokeybox').placeholder = byoSet ? 'Enter a new key to replace it' : 'sk-...';
     document.getElementById('byodelbtn').style.display = byoSet ? '' : 'none';
 
     const dtSet = names.includes(DT_KEY);
     document.getElementById('dtdot').className = 'dot ' + (dtSet ? 'green' : '');
-    document.getElementById('dtstate').textContent = dtSet ? 'Connected - whisper-large-v3 via DevThrottle' : 'No DevThrottle key stored yet';
+    document.getElementById('dtstate').textContent = dtSet ? 'Connected to your DevThrottle account' : 'Not connected yet - add your account key';
     document.getElementById('dtkeybox').placeholder = dtSet ? 'Enter a new key to replace it' : 'dt_live_...';
     document.getElementById('dtdelbtn').style.display = dtSet ? '' : 'none';
   }
@@ -714,7 +824,7 @@
   function markModeVerified(mode){
     if (mode === 'devthrottle'){
       document.getElementById('dtdot').className = 'dot green';
-      document.getElementById('dtstate').textContent = 'Verified - whisper-large-v3 via DevThrottle';
+      document.getElementById('dtstate').textContent = 'Verified - transcribing through your DevThrottle account';
     } else {
       document.getElementById('byodot').className = 'dot green';
       document.getElementById('byostate').textContent = 'Verified - your OpenAI key works';
@@ -778,6 +888,11 @@
         document.getElementById('txtestresultwrap').style.display = 'block';
         markModeVerified(d.mode || currentMode);
         txMsg('txtestmsg', '', true);
+      } else if (r.status === 402) {
+        // Out of credits (issue #885): show the add-credits path, never a raw error. The DevThrottle
+        // account has no balance; a top-up on the website activates it and a retry works with no restart.
+        txTestState('');
+        txMsg('txtestmsg', 'Your DevThrottle account is out of credits. Add credits at devthrottle.com, then try again - no restart needed. You can also switch to your own OpenAI key above.', false);
       } else {
         txTestState('');
         const hint = r.status === 409 ? ' Save a key for the selected mode first.' : '';

@@ -148,6 +148,9 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly TailscaleServeProvisioner _serveProvisioner;
     private readonly GatewayTurnBriefStore _turnBriefStore;
     private readonly KeyVault _keyVault;
+    // Issue #881: mints/ensures the DevThrottle inference key after sign-in and at startup. Null on a
+    // host with no credential service (nothing to sign in to).
+    private readonly Account.TranscriptionKeyAutoProvisioner? _transcriptionKeyProvisioner;
     private readonly WorkListStore _workLists;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
@@ -376,9 +379,25 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #857: on a successful sign-in it fires the device-registration hook (best-effort,
         // detached) so signing in registers this Gateway as a device.
         if (Account is not null)
+        {
+            // Issue #881: after sign-in, mint a DevThrottle inference key for the account and store it in
+            // the vault so hosted transcription/TTS "just work" with zero configuration. The account JWT
+            // authenticates the mint; a manual or already-minted vault key short-circuits it (manual
+            // override + reuse across restarts, no key sprawl).
+            _transcriptionKeyProvisioner = new Account.TranscriptionKeyAutoProvisioner(
+                _keyVault,
+                accessTokenProvider: Account.GetAccessTokenForForwarding,
+                minter: new Account.AccountInferenceKeyProvisioner());
+
             SignIn = new Account.GatewaySignInService(
                 Account,
-                onSignedIn: _deviceRegistration is null ? null : _deviceRegistration.EnsureRegisteredAsync);
+                onSignedIn: async ct =>
+                {
+                    if (_deviceRegistration is not null)
+                        await _deviceRegistration.EnsureRegisteredAsync(ct);
+                    await _transcriptionKeyProvisioner.EnsureAsync(ct);
+                });
+        }
         else
             FileLog.Write("[GatewayHost] DevThrottle sign-in flow not built: no credential service on this host");
 
@@ -499,6 +518,17 @@ public sealed class GatewayHost : IAsyncDisposable
         // source of truth thereafter - rotating the key in the Cockpit overwrites this seed, and we
         // never clobber an existing vault value (SetIfAbsent).
         SeedKeyVaultFromEnvironment();
+
+        // Issue #881: an install that was already signed in before this shipped won't fire the
+        // post-sign-in hook again, so ensure the hosted transcription key here too - detached and
+        // best-effort, so a mint call never delays or blocks startup. No-op when a key is already
+        // stored or the host has no credential service.
+        if (_transcriptionKeyProvisioner is not null)
+            _ = Task.Run(async () =>
+            {
+                try { await _transcriptionKeyProvisioner.EnsureAsync(); }
+                catch (Exception ex) { FileLog.Write($"[GatewayHost] startup transcription-key ensure failed (ignored, best-effort): {ex.Message}"); }
+            });
 
         // Subscribe the Tailscale provisioner BEFORE Registry.Start() so the initial
         // file-discovery load fires OnDirectorAdded into it and every Director port

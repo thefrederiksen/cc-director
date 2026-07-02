@@ -139,15 +139,11 @@ public sealed class OpenAiKeyResolver
         if (gateway.IsEnabled)
             return await ResolveEndpointFromGatewayAsync(gateway, ct);
 
-        // Standalone: resolve the URL/model/key locally for the active mode, exactly as before.
+        // Standalone: resolve the URL/model/key locally for the active mode. Both modes are remote and
+        // key-bearing (issue #887 removed the in-process local option), so there is always a key name
+        // to resolve; a null key below means the user has not set a key for the mode yet.
         var mode = _modeProvider();
         var endpoint = TranscriptionEndpointResolver.Resolve(mode);
-
-        // Local mode (issue #541) has no remote endpoint and no key - this resolver only answers for
-        // the remote (key-bearing) modes. The local in-process path is served by the Gateway's
-        // /wingman/transcribe route, not this resolver, so there is nothing to resolve here.
-        if (endpoint.IsLocal || endpoint.KeyName is null || endpoint.BaseUrl is null)
-            return null;
 
         var key = await ResolveKeyAsync(endpoint.KeyName, ct);
         if (string.IsNullOrWhiteSpace(key))
@@ -170,9 +166,6 @@ public sealed class OpenAiKeyResolver
     public async Task<string?> ResolveAsync(CancellationToken ct = default)
     {
         var endpoint = TranscriptionEndpointResolver.Resolve(_modeProvider());
-        // Local mode (issue #541) is in-process and has no key to resolve.
-        if (endpoint.KeyName is null)
-            return null;
         return await ResolveKeyAsync(endpoint.KeyName, ct);
     }
 

@@ -4,8 +4,8 @@ using System.Text.Json.Nodes;
 namespace CcDirector.Core.Configuration;
 
 /// <summary>
-/// The machine's transcription connection mode (issue #497, #541), persisted in config.json as the
-/// top-level string "transcription_mode" ("local", "byo", or "devthrottle"), mirroring the existing
+/// The machine's transcription connection mode (issue #497, #887), persisted in config.json as the
+/// top-level string "transcription_mode" ("byo" or "devthrottle"), mirroring the existing
 /// "addressing_mode" top-level setting.
 ///
 /// Read locally by each process from its own config.json. A change is honored on the next
@@ -20,11 +20,12 @@ public static class TranscriptionModeConfig
     public const string ConfigKey = "transcription_mode";
 
     /// <summary>
-    /// The default mode when nothing is configured (issue #541): local Whisper.net in-process
-    /// transcription. It needs no API key and works offline, so a fresh install can transcribe
-    /// out of the box (was <see cref="TranscriptionMode.Byo"/> before #541).
+    /// The default mode when nothing is configured (issue #887): DevThrottle's hosted transcription on
+    /// the signed-in account. DevThrottle dogfoods its own service, so hosted is the default and a
+    /// fresh install uses it with no provider setup (was <see cref="TranscriptionMode.Local"/> before
+    /// #887 removed the local option).
     /// </summary>
-    public const TranscriptionMode Default = TranscriptionMode.Local;
+    public const TranscriptionMode Default = TranscriptionMode.DevThrottle;
 
     /// <summary>Resolve the mode: config.json "transcription_mode" when set, else <see cref="Default"/>.</summary>
     public static TranscriptionMode Get()
@@ -37,8 +38,8 @@ public static class TranscriptionModeConfig
             return TranscriptionModeExtensions.Parse(v.GetValue<string>());
 
         throw new InvalidOperationException(
-            "config.json key 'transcription_mode' must be a string (\"local\", \"byo\", or \"devthrottle\"). " +
-            "Fix the value or remove the key to use the default (local).");
+            "config.json key 'transcription_mode' must be a string (\"byo\" or \"devthrottle\"). " +
+            "Fix the value or remove the key to use the default (devthrottle).");
     }
 
     /// <summary>Persist the mode to config.json (merge-patch, leaving other keys untouched).</summary>

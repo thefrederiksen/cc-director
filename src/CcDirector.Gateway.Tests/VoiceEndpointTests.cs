@@ -114,7 +114,7 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
     [Fact]
     public async Task VoiceCommand_returns_no_key_when_unconfigured()
     {
-        // Upload a tiny dummy audio blob; the service should bail before reaching Whisper.
+        // Upload a tiny dummy audio blob; the service should bail before reaching the provider.
         using var form = new MultipartFormDataContent();
         var bytes = new byte[] { 0x1A, 0x45, 0xDF, 0xA3 }; // EBML magic; arbitrary
         var content = new ByteArrayContent(bytes);
@@ -127,7 +127,9 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
         var body = await resp.Content.ReadFromJsonAsync<VoiceCommandResponse>();
         Assert.NotNull(body);
         Assert.Equal("no_key", body!.Status);
-        Assert.Contains("OpenAI", body.ReplyText, StringComparison.OrdinalIgnoreCase);
+        // Issue #887: the default mode is now DevThrottle (hosted), so the unavailable message guides
+        // the user to their DevThrottle account rather than to an OpenAI key.
+        Assert.Contains("DevThrottle", body.ReplyText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

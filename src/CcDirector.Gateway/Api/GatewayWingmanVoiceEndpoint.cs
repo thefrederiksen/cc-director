@@ -146,12 +146,11 @@ internal static class GatewayWingmanVoiceEndpoint
             if (!uploads.Exists(uploadId))
                 return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
 
-            // Mode-aware (issue #541): in Local mode there is NO key check - transcription runs
-            // in-process. In a remote mode (byo/devthrottle) the configured key must be present. The
+            // The configured mode's key must be present (issue #887: both modes are key-bearing). The
             // single transcription owner resolves this; check it BEFORE assembling so a no-key request
             // does not pay the reassembly cost.
             var routing = transcription.Resolve();
-            if (!routing.IsLocal && routing.Key is null)
+            if (routing.Key is null)
                 return Results.Json(new { error = $"no key configured for transcription mode {routing.Mode.ToConfigString()}" }, statusCode: StatusCodes.Status503ServiceUnavailable);
 
             AssembleResult assembled;
@@ -329,11 +328,10 @@ internal static class GatewayWingmanVoiceEndpoint
             if (file is null || file.Length == 0)
                 return Results.Json(new { error = "no audio in the upload" }, statusCode: StatusCodes.Status400BadRequest);
 
-            // Mode-aware (issue #541): Local mode transcribes in-process with no key; remote modes
-            // (byo/devthrottle) require the configured key to be present in the vault. The single
-            // transcription owner resolves this and runs the right provider.
+            // Both modes (byo/devthrottle) require the configured key to be present in the vault
+            // (issue #887). The single transcription owner resolves this and runs the right provider.
             var routing = transcription.Resolve();
-            if (!routing.IsLocal && routing.Key is null)
+            if (routing.Key is null)
                 return Results.Json(new { error = $"no key configured for transcription mode {routing.Mode.ToConfigString()}" },
                     statusCode: StatusCodes.Status503ServiceUnavailable);
 

@@ -4,16 +4,15 @@ using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
 using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
-using CcDirector.Core.Voice.Services;
 
 namespace CcDirector.Gateway.Transcription;
 
 /// <summary>
 /// The single Gateway owner of speech-to-text (issue #839). Every module that needs audio turned
 /// into text goes through this one service: it resolves the configured transcription mode and the
-/// key, runs the right provider (in-process Whisper for on-device mode, or the OpenAI-compatible
-/// batch endpoint for the remote modes), and optionally applies the validated dictionary correction.
-/// No caller resolves the mode, reads the key, picks a provider, or talks to OpenAI on its own.
+/// key, runs the OpenAI-compatible batch endpoint for the mode (DevThrottle hosted or bring-your-own
+/// OpenAI), and optionally applies the validated dictionary correction. No caller resolves the mode,
+/// reads the key, picks a provider, or talks to OpenAI on its own.
 ///
 /// This collapses the three hand-kept-in-step resolvers that previously each did "figure out the
 /// mode, then read the key" - the phone Notes worker (<c>ResolveSelectedMethod</c>), the Settings
@@ -65,20 +64,13 @@ public sealed class GatewayTranscriptionService
     }
 
     /// <summary>
-    /// THE one place that turns the configured mode into a routing target plus the key. Local mode
-    /// carries no key (it transcribes in-process); a remote mode carries the vault key when present,
-    /// or null when no key is set for that mode (the caller then reports it unavailable - never a
-    /// baked-in URL, no-fallback rule).
+    /// THE one place that turns the configured mode into a routing target plus the key. The mode
+    /// carries the vault key when present, or null when no key is set for that mode (the caller then
+    /// reports it unavailable - never a baked-in URL, no-fallback rule).
     /// </summary>
     public GatewayTranscriptionRouting Resolve()
     {
         var endpoint = TranscriptionEndpointResolver.Resolve(_modeProvider());
-        if (endpoint.IsLocal)
-        {
-            FileLog.Write($"[GatewayTranscriptionService] Resolve: mode=local (in-process), model={endpoint.Model}");
-            return new GatewayTranscriptionRouting { Endpoint = endpoint, Key = null };
-        }
-
         var key = _vault.Get(endpoint.RequireKeyName());
         var hasKey = !string.IsNullOrWhiteSpace(key);
         FileLog.Write($"[GatewayTranscriptionService] Resolve: mode={endpoint.Mode.ToConfigString()}, model={endpoint.Model}, hasKey={hasKey}");
@@ -109,7 +101,7 @@ public sealed class GatewayTranscriptionService
         if (audio.Length == 0)
             return GatewayTranscriptionResult.NoAudio(mode, routing.Endpoint.Model);
 
-        if (!routing.IsLocal && routing.Key is null)
+        if (routing.Key is null)
             return GatewayTranscriptionResult.NoKey(mode, routing.Endpoint.Model);
 
         string raw;
@@ -120,6 +112,14 @@ public sealed class GatewayTranscriptionService
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (InsufficientCreditsException ex)
+        {
+            // Out of credits (issue #885): a distinct, expected condition. Carry it as its own value so
+            // the endpoint maps it to 402 and the client preserves the recording and offers "Add
+            // credits" - never a raw error, never a lost clip.
+            FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OUT OF CREDITS: mode={mode}, code={ex.Code}");
+            return GatewayTranscriptionResult.OutOfCredits(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (Exception ex)
         {
@@ -150,7 +150,7 @@ public sealed class GatewayTranscriptionService
         if (audio.Length == 0) return "";
 
         var routing = Resolve();
-        if (!routing.IsLocal && routing.Key is null)
+        if (routing.Key is null)
             throw new InvalidOperationException(
                 "No transcription method is available: no key is set for the selected transcription mode. "
                 + "Set the key in the Cockpit Settings > Transcription tab.");
@@ -160,8 +160,8 @@ public sealed class GatewayTranscriptionService
 
     /// <summary>
     /// Apply the validated dictionary correction to an assembled raw transcript and return the
-    /// outcome. Fails open (CodingStyle section 16 / issue #190): in local mode, with no key, on an
-    /// empty dictionary, or on any cleanup error, the raw transcript comes back byte-identical.
+    /// outcome. Fails open (CodingStyle section 16 / issue #190): with no key, on an empty dictionary,
+    /// or on any cleanup error, the raw transcript comes back byte-identical.
     /// </summary>
     public async Task<CleanupOutcome> CleanupAsync(string rawTranscript, CancellationToken ct = default)
     {
@@ -171,19 +171,13 @@ public sealed class GatewayTranscriptionService
     }
 
     /// <summary>
-    /// Run the transcription provider for the resolved routing: in-process Whisper for local mode, or
-    /// ONE batch POST to the resolved OpenAI-compatible endpoint for a remote mode. Throws on a
-    /// provider error (a missing transcript is a real failure the caller must surface).
+    /// Run the transcription provider for the resolved routing: ONE batch POST to the resolved
+    /// OpenAI-compatible endpoint for the mode. Throws on a provider error (a missing transcript is a
+    /// real failure the caller must surface).
     /// </summary>
     private async Task<string> TranscribeRawCoreAsync(
         GatewayTranscriptionRouting routing, byte[] audio, string fileName, string contentType, CancellationToken ct)
     {
-        if (routing.IsLocal)
-        {
-            FileLog.Write($"[GatewayTranscriptionService] transcribe local: bytes={audio.Length}");
-            return await WhisperLocalStreamingService.TranscribeWavAsync(audio, ct);
-        }
-
         var name = string.IsNullOrWhiteSpace(fileName) ? "audio." + ExtensionFor(contentType) : fileName;
         using var pipeline = new BatchTranscriptionPipeline(httpClient: _http, cleanupModel: _cleanupModel);
         FileLog.Write($"[GatewayTranscriptionService] transcribe remote: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Endpoint.Model}");
@@ -200,13 +194,12 @@ public sealed class GatewayTranscriptionService
         if (string.IsNullOrWhiteSpace(raw))
             return new CleanupOutcome(raw ?? "", Applied: false, Reason: "empty transcript");
 
-        // Local mode (and a missing key) has no chat-completions endpoint for the corrector to reach -
-        // ship the raw words. Offline Whisper cannot run a dictionary-correction model, so the raw
-        // words stand, exactly as they did before this step existed.
-        if (routing.IsLocal || routing.Key is null)
+        // A missing key has no chat-completions endpoint for the corrector to reach - ship the raw
+        // words, exactly as they stood before this step existed.
+        if (routing.Key is null)
         {
-            FileLog.Write("[GatewayTranscriptionService] cleanup: local/no-key - shipping raw");
-            return new CleanupOutcome(raw, Applied: false, Reason: "local/no-key: no corrector endpoint");
+            FileLog.Write("[GatewayTranscriptionService] cleanup: no-key - shipping raw");
+            return new CleanupOutcome(raw, Applied: false, Reason: "no-key: no corrector endpoint");
         }
 
         // CleanAsync short-circuits an empty dictionary to a verbatim passthrough; the early check just
@@ -252,32 +245,26 @@ public sealed class GatewayTranscriptionService
 
 /// <summary>
 /// The resolved transcription routing for the configured mode (issue #839): the pure
-/// <see cref="TranscriptionEndpoint"/> plus the key read from the vault (null in local mode, or when
-/// no key is set for a remote mode). Produced by the single resolver, <see cref="GatewayTranscriptionService.Resolve"/>.
+/// <see cref="TranscriptionEndpoint"/> plus the key read from the vault (null when no key is set for
+/// the mode). Produced by the single resolver, <see cref="GatewayTranscriptionService.Resolve"/>.
 /// </summary>
 public sealed record GatewayTranscriptionRouting
 {
     /// <summary>The pure routing target (base URL, key name, transport, model) for the mode.</summary>
     public required TranscriptionEndpoint Endpoint { get; init; }
 
-    /// <summary>The vault key for a remote mode, or null in local mode / when no key is set.</summary>
+    /// <summary>The vault key for the mode, or null when no key is set.</summary>
     public string? Key { get; init; }
-
-    /// <summary>True when transcription runs in-process (on-device Whisper) with no key.</summary>
-    public bool IsLocal => Endpoint.IsLocal;
 
     /// <summary>The configured transcription mode.</summary>
     public TranscriptionMode Mode => Endpoint.Mode;
 
     /// <summary>
-    /// Compose the <see cref="ResolvedTranscription"/> the remote batch pipeline consumes. Throws in
-    /// local mode (no remote endpoint) or when no key is set - call only after checking
-    /// <see cref="IsLocal"/> is false and <see cref="Key"/> is non-null.
+    /// Compose the <see cref="ResolvedTranscription"/> the remote batch pipeline consumes. Throws when
+    /// no key is set - call only after checking <see cref="Key"/> is non-null.
     /// </summary>
     public ResolvedTranscription ToResolved()
     {
-        if (IsLocal)
-            throw new InvalidOperationException("local mode has no remote routing target");
         if (string.IsNullOrWhiteSpace(Key))
             throw new InvalidOperationException($"no key set for transcription mode {Mode.ToConfigString()}");
         return new ResolvedTranscription
@@ -305,6 +292,9 @@ public enum TranscriptionOutcome
 
     /// <summary>The provider rejected the request or the key.</summary>
     ProviderError = 3,
+
+    /// <summary>The DevThrottle account is out of credits (HTTP 402) - issue #885.</summary>
+    OutOfCredits = 4,
 }
 
 /// <summary>
@@ -312,7 +302,7 @@ public enum TranscriptionOutcome
 /// succeeded, the mode and model that ran, and the error when it did not.
 /// </summary>
 public sealed record GatewayTranscriptionResult(
-    TranscriptionOutcome Outcome, string? Text, string Mode, string? Model, string? Error)
+    TranscriptionOutcome Outcome, string? Text, string Mode, string? Model, string? Error, string? Code = null)
 {
     public static GatewayTranscriptionResult Ok(string text, string mode, string? model)
         => new(TranscriptionOutcome.Ok, text, mode, model, null);
@@ -325,4 +315,9 @@ public sealed record GatewayTranscriptionResult(
 
     public static GatewayTranscriptionResult ProviderError(string mode, string? model, string error)
         => new(TranscriptionOutcome.ProviderError, null, mode, model, error);
+
+    /// <summary>Out of credits (issue #885): carries the hosted service's error code so the client can
+    /// show the add-credits state and keep the recording.</summary>
+    public static GatewayTranscriptionResult OutOfCredits(string mode, string? model, string code, string error)
+        => new(TranscriptionOutcome.OutOfCredits, null, mode, model, error, code);
 }

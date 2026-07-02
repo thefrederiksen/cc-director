@@ -43,21 +43,6 @@ internal static class TranscriptionRoutingEndpoint
             var routing = new Transcription.GatewayTranscriptionService(vault).Resolve();
             var endpoint = routing.Endpoint;
 
-            // Local mode (issue #541): in-process Whisper.net, no key and no remote endpoint. Local
-            // is ALWAYS available (the model is auto-downloaded on first use), so it NEVER hits the
-            // key gate below - it returns 200 { mode: "local" } with no baseUrl/key. The 404-no-key
-            // path is for the remote modes (byo, devthrottle) only.
-            if (routing.IsLocal)
-            {
-                FileLog.Write($"[TranscriptionRoutingEndpoint] GET /transcription/routing: mode=local (in-process), transport={endpoint.Transport.ToConfigString()}, model={endpoint.Model}");
-                return Results.Json(new
-                {
-                    mode = endpoint.Mode.ToConfigString(),
-                    transport = endpoint.Transport.ToConfigString(),
-                    model = endpoint.Model,
-                });
-            }
-
             if (routing.Key is null)
             {
                 // No silent default: the Gateway reachable but the key for this mode is not set yet.

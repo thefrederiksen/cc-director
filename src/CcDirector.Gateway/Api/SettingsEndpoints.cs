@@ -222,11 +222,13 @@ internal static class SettingsEndpoints
             }
         });
 
-        // Transcription mode (issue #497, #541): "local" (in-process Whisper.net, the default - no
-        // key), "byo" (the user's own OpenAI key -> api.openai.com), or "devthrottle" (a DevThrottle
-        // key -> devthrottle.com's managed proxy). Stored as the top-level config.json key
-        // transcription_mode, the same store addressing_mode uses. The two remote keys live in the
-        // existing vault (OPENAI_API_KEY, DEVTHROTTLE_API_KEY).
+        // Transcription mode (issue #497, #887): "devthrottle" (the signed-in account's hosted
+        // transcription -> devthrottle.com, the DEFAULT) or "byo" (the user's own OpenAI key ->
+        // api.openai.com). The old in-process "local" option was removed in #887 (we dogfood our own
+        // hosted service); a "local" value is accepted as a legacy alias and migrates forward to
+        // devthrottle. Stored as the top-level config.json key transcription_mode, the same store
+        // addressing_mode uses. The two keys live in the existing vault (OPENAI_API_KEY,
+        // DEVTHROTTLE_API_KEY).
         app.MapGet("/gateway/transcription-mode", () =>
             Results.Json(new { mode = Core.Configuration.TranscriptionModeConfig.Get().ToConfigString() }));
 
@@ -237,20 +239,14 @@ internal static class SettingsEndpoints
                 var body = await JsonSerializer.DeserializeAsync<TranscriptionModeBody>(
                     ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Mode))
-                    return Results.BadRequest(new { error = "body { \"mode\": \"local\"|\"byo\" } is required" });
+                    return Results.BadRequest(new { error = "body { \"mode\": \"devthrottle\"|\"byo\" } is required" });
 
                 if (!Core.Configuration.TranscriptionModeExtensions.IsValid(body.Mode))
-                    return Results.BadRequest(new { error = "mode must be \"local\" or \"byo\"" });
+                    return Results.BadRequest(new { error = "mode must be \"devthrottle\" or \"byo\"" });
 
+                // Parse migrates a legacy "local" forward to devthrottle (issue #887); both current
+                // modes are selectable - DevThrottle is the default we dogfood.
                 var mode = Core.Configuration.TranscriptionModeExtensions.Parse(body.Mode);
-
-                // DevThrottle-hosted transcription is "coming soon" (issue #541) and must NEVER be
-                // written as the active mode - enforced here server-side, not just hidden in the UI.
-                if (mode == Core.Configuration.TranscriptionMode.DevThrottle)
-                {
-                    FileLog.Write("[SettingsEndpoints] PUT /gateway/transcription-mode rejected devthrottle (coming soon)");
-                    return Results.BadRequest(new { error = "DevThrottle transcription is coming soon and cannot be selected yet" });
-                }
 
                 Core.Configuration.TranscriptionModeConfig.Set(mode);
                 FileLog.Write($"[SettingsEndpoints] transcription_mode set to {mode.ToConfigString()}");
