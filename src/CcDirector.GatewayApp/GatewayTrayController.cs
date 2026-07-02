@@ -216,6 +216,9 @@ public sealed class GatewayTrayController : IDisposable
             // Issue #856: adding a device leads with signing into the same DevThrottle account (a QR /
             // deep-link), with issue #469's local pairing code kept as the secondary fallback.
             new() { Text = "Add a device", OnClick = OpenPairing },
+            // The Gateway itself has no settings; this jumps straight to the Cockpit Settings page
+            // (docs/architecture/gateway/SETTINGS_OWNERSHIP.md). A real button, not a footer link.
+            new() { Text = "Settings", OnClick = OpenCockpitSettings },
             new() { Text = "Restart Gateway", OnClick = () => _ = RestartAsync() },
         };
         // Issue #637: the "Sign in to DevThrottle" action starts (or retries) the browser loopback
@@ -224,12 +227,9 @@ public sealed class GatewayTrayController : IDisposable
         if (CcDirector.Gateway.Account.GatewaySignInTraySurface.ShouldShowSignInAction(signIn))
             actions.Insert(1, new() { Text = CcDirector.Gateway.Account.GatewaySignInTraySurface.SignInActionText, Primary = true, OnClick = StartSignIn });
 
-        // The Gateway itself has no settings: it is the always-on middle service. "Settings" goes
-        // straight to the Cockpit Settings page (docs/architecture/gateway/SETTINGS_OWNERSHIP.md),
-        // with no intermediate window.
+        // Quiet diagnostics in the footer; Settings sits above as a real button.
         var footerLinks = new List<FlyoutAction>
         {
-            new() { Text = "Settings", OnClick = OpenCockpitSettings },
             new() { Text = "Logs", OnClick = OpenLogsFolder },
             new() { Text = "Config", OnClick = OpenConfigFolder },
         };
