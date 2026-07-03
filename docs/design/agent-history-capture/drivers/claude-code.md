@@ -133,10 +133,10 @@ Claude runs the hook command and pipes it a JSON object on **stdin**:
 ```json
 {
   "session_id": "bfaa74c9-3e87-4d16-8c23-3dbfc572e9c3",
-  "transcript_path": "C:/Users/soren/.claude/projects/.../bfaa74c9-....jsonl",
+  "transcript_path": "C:/Users/user/.claude/projects/.../bfaa74c9-....jsonl",
   "hook_event_name": "SessionStart",
   "source": "clear",
-  "cwd": "D:/ReposFred/devthrottle"
+  "cwd": "C:/repos/devthrottle"
 }
 ```
 

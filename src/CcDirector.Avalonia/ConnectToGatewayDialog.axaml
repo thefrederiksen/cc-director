@@ -56,7 +56,7 @@
 
             <TextBlock Classes="fieldLabel" Text="GATEWAY URL" />
             <TextBox x:Name="UrlBox" Classes="input"
-                     Watermark="e.g. https://soren-north.taildb08ed.ts.net" />
+                     Watermark="e.g. https://example-host.ts.net" />
 
             <TextBlock Classes="fieldLabel" Text="PAIRING CODE (from the gateway host)" />
             <TextBox x:Name="CodeBox" Classes="input" MaxLength="4" Width="160"

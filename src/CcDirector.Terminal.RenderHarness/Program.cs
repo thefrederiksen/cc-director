@@ -48,7 +48,7 @@ internal static class Program
         byte[] fixture = File.ReadAllBytes(fixturePath);
         Console.WriteLine($"[harness] fixture={fixturePath} ({fixture.Length} bytes) out={outDir}");
 
-        string repoPath = args.Length > 2 ? args[2] : "D:/ReposFred/devthrottle";
+        string repoPath = args.Length > 2 ? args[2] : "C:/repos/devthrottle";
         var terminal = new TerminalControl
         {
             // So relative path links like "docs/" resolve to a real on-disk dir and render as links.

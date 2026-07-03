@@ -8,8 +8,8 @@ using Xunit;
 namespace CcDirector.Core.Tests.Account;
 
 /// <summary>
-/// Proves the per-account telemetry HTTP client (issue #659) sends the backend contract
-/// (devthrottle_internal#59): <c>GET /api/v1/auth/me</c> with a Bearer token reads the
+/// Proves the per-account telemetry HTTP client (issue #659) sends the backend contract:
+/// <c>GET /api/v1/auth/me</c> with a Bearer token reads the
 /// <c>telemetry_enabled</c> field, and <c>PATCH /api/v1/account/telemetry</c> writes
 /// <c>{ "enabled": bool }</c> with the same Bearer token. Every test passes an explicit base URL so the
 /// client never reads the test machine's environment - the target is determined by the test.

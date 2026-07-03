@@ -127,9 +127,9 @@ class EmailSender:
         content = self._linkify_urls(content)
 
         # Get account config - try send_from first, then persona
-        account_key = item.get("send_from") or item.get("persona", "mindzie")
+        account_key = item.get("send_from") or item.get("persona", "brand")
         # Map persona names to account names
-        if account_key == "center_consulting":
+        if account_key == "consulting":
             account_key = "consulting"
         account = self.accounts.get(account_key)
         if not account:

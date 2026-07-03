@@ -161,22 +161,22 @@ public sealed class LauncherRegistryTests
     public void Upsert_WithNetworkAddress_StoredInDto()
     {
         var reg = new LauncherRegistry();
-        var req = MakeReq("MACHINE-NA", 7920, networkAddress: "sorenlaptop.taildb08ed.ts.net");
+        var req = MakeReq("MACHINE-NA", 7920, networkAddress: "example-pc.ts.net");
 
         reg.Upsert(req);
 
         var dto = reg.Get("MACHINE-NA");
         Assert.NotNull(dto);
-        Assert.Equal("sorenlaptop.taildb08ed.ts.net", dto!.NetworkAddress);
+        Assert.Equal("example-pc.ts.net", dto!.NetworkAddress);
     }
 
     [Fact]
     public void GetNetworkAddress_ReturnsStoredAddress()
     {
         var reg = new LauncherRegistry();
-        reg.Upsert(MakeReq("MACHINE-NB", 7921, networkAddress: "soren-north.tailnet.ts.net"));
+        reg.Upsert(MakeReq("MACHINE-NB", 7921, networkAddress: "example-host.tailnet.ts.net"));
 
-        Assert.Equal("soren-north.tailnet.ts.net", reg.GetNetworkAddress("MACHINE-NB"));
+        Assert.Equal("example-host.tailnet.ts.net", reg.GetNetworkAddress("MACHINE-NB"));
     }
 
     [Fact]

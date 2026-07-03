@@ -31,7 +31,7 @@ Version this was verified against: `grok 0.2.67 (03e13f9928) [stable]`.
 
 - Binary name: `grok` [VERIFIED from docs - overview]. On Windows it installs to
   `%USERPROFILE%\.grok\bin\grok.exe` [VERIFIED locally - `where grok` returned
-  `C:\Users\soren\.grok\bin\grok.exe`].
+  `C:\Users\user\.grok\bin\grok.exe`].
 - Install (Windows PowerShell): `irm https://x.ai/cli/install.ps1 | iex` [VERIFIED from docs].
   Install (macOS/Linux): `curl -fsSL https://x.ai/cli/install.sh | bash` [VERIFIED from docs].
 - Config / data home: `~/.grok/` (Windows `%USERPROFILE%\.grok`), overridable with the
@@ -460,12 +460,12 @@ Current gaps:
 ## Sources
 
 Shipped in-binary user-guide (authoritative for grok 0.2.67, read locally at
-`C:\Users\soren\.grok\docs\user-guide\`):
+`C:\Users\user\.grok\docs\user-guide\`):
 - 01-getting-started.md, 04-slash-commands.md, 05-configuration.md, 08-skills.md, 09-plugins.md,
   10-hooks.md, 12-project-rules.md, 14-headless-mode.md, 15-agent-mode.md, 17-sessions.md.
-- Local binary string scan of `C:\Users\soren\.grok\bin\grok.exe` (no `additionalContext` /
+- Local binary string scan of `C:\Users\user\.grok\bin\grok.exe` (no `additionalContext` /
   `hookSpecificOutput` / `AGENTS.override`).
-- Local `C:\Users\soren\.grok\config.toml` (marketplace source, permission_mode).
+- Local `C:\Users\user\.grok\config.toml` (marketplace source, permission_mode).
 
 Public xAI docs and announcement:
 - https://docs.x.ai/build/overview

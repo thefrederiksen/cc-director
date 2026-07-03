@@ -182,7 +182,7 @@ public static class SessionOrdering
     }
 
     /// <summary>The leaf segment of a repo identifier: the last non-empty part after splitting on
-    /// both path separators (so "owner/repo" -> "repo" and "D:\ReposFred\cc-director" -> "cc-director").
+    /// both path separators (so "owner/repo" -> "repo" and "C:\repos\cc-director" -> "cc-director").
     /// Returns the whole input when it has no separators.</summary>
     private static string LeafName(string value)
     {

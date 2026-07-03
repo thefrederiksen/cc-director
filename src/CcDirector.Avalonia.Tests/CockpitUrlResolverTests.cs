@@ -15,13 +15,13 @@ public class CockpitUrlResolverTests
     public void ResolveCockpitBase_UrlConfigured_ReturnsConfiguredUrl()
     {
         // Arrange
-        var cfg = new GatewayConfig { Url = "http://soren-north.taildb08ed.ts.net:7878" };
+        var cfg = new GatewayConfig { Url = "http://example-host.ts.net:7878" };
 
         // Act
         var baseUrl = CockpitUrlResolver.ResolveCockpitBase(cfg);
 
         // Assert
-        Assert.Equal("http://soren-north.taildb08ed.ts.net:7878", baseUrl);
+        Assert.Equal("http://example-host.ts.net:7878", baseUrl);
         Assert.False(CockpitUrlResolver.IsLocalhostDefault(baseUrl));
     }
 

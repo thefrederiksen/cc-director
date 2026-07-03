@@ -61,7 +61,7 @@ public sealed class FirstRunLoginCoordinator
     /// <see cref="LoopbackLoginListener"/>.
     /// </param>
     /// <param name="loginReporter">
-    /// Reports the always-on login event to the backend (issue #40 / devthrottle_internal #57), fired
+    /// Reports the always-on login event to the backend (issue #40), fired
     /// best-effort on success. Defaults to the real <see cref="DevThrottleLoginTelemetryReporter"/>
     /// stamped with this build's version.
     /// </param>

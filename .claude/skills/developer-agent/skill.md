@@ -130,7 +130,7 @@ If, while planning, you discover the spec is underspecified after all, go back t
 **Step 4.0 - Create your OWN isolated worktree FIRST (mandatory; do this before any edit, branch,
 or build).** You work ONLY inside a dedicated git worktree that you create for this issue. You NEVER
 edit files, create the branch, build, or run the test Director in the **shared primary checkout**
-(the directory the loop spawned you in, e.g. `D:\ReposFred\devthrottle`). That shared checkout may
+(the directory the loop spawned you in, e.g. `C:\repos\devthrottle`). That shared checkout may
 hold another live session's uncommitted WIP; touching it collides with that session and corrupts the
 isolation model (issue #299). This is the law that prevents the cross-session collision that produced
 an orphaned stash on a prior run.

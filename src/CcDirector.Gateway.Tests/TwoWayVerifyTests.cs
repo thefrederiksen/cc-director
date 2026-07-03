@@ -68,7 +68,7 @@ public sealed class TwoWayVerifyTests : IAsyncLifetime
     [Fact]
     public async Task Verify_EndpointNeverAnswers_VerdictFalse_NamesTheBrokenLeg()
     {
-        // The SORENLAPTOP shape: registration lands (leg 1 fine), but the advertised
+        // The EXAMPLE-PC shape: registration lands (leg 1 fine), but the advertised
         // endpoint has no listener. The verdict must be FALSE with a per-leg reason -
         // exactly what a heartbeat-keyed "connected" light would have gotten wrong.
         var deadEndpoint = $"http://127.0.0.1:{FreePort()}"; // allocated then released: nothing listens

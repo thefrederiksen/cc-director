@@ -112,7 +112,7 @@ The desktop case is a happy side-effect; the phone-in-a-car case is the design t
 
 ### 8. What the Manager actually talks to: ONE Claude Code session on this private repo
 
-A `cc-director` instance runs on a machine with this repo (`D:/ReposFred/private/`) as a known session. The Manager UI on that Director is configured to relay every chat message to that ONE session by default. No session picker, no routing logic in v1.
+A `cc-director` instance runs on a machine with this repo (`C:/repos/private/`) as a known session. The Manager UI on that Director is configured to relay every chat message to that ONE session by default. No session picker, no routing logic in v1.
 
 The Director's existing `POST /sessions/{sid}/prompt` endpoint already sends a text prompt to a session and returns the agent's reply. The Manager's `/chat` endpoint is a thin wrapper around that.
 
@@ -120,7 +120,7 @@ What about "list sessions" / "what's running"? In v1, **don't build it.** The us
 
 ---
 
-## What's already built in `D:/ReposFred/cc-director/` (use, do not duplicate)
+## What's already built in `C:/repos/cc-director/` (use, do not duplicate)
 
 Everything below is in cc-director and works today. Reuse, do not rebuild.
 
@@ -164,7 +164,7 @@ Build in this order. Each phase is independently testable and ships value.
 Deliverables:
 - A `/chat` endpoint on the Director that accepts `{ text: "..." }`, sends it to the configured session, waits for the agent's reply, returns `{ reply, displayText, summary }`.
 - A new chat UI as the default view at `/`. Vertical message list. Big text input at the bottom. Send button.
-- Configuration: which session is "the configured session" - probably the first session in `SessionManager.ListSessions()` whose repo path matches a value in `appsettings.json` (e.g. `Chat.SessionRepoPath = "D:/ReposFred/private"`).
+- Configuration: which session is "the configured session" - probably the first session in `SessionManager.ListSessions()` whose repo path matches a value in `appsettings.json` (e.g. `Chat.SessionRepoPath = "C:/repos/private"`).
 - Acceptance: send "hello" from a phone over Tailscale, get an agent reply, see it in the chat.
 
 ### Phase 2 - Voice input drops into the chat
@@ -240,7 +240,7 @@ The implementing agent should NOT try to package the Director as a VPS-deployabl
 
 These need a decision. The agent should pick a default and document it.
 
-1. **Where exactly is "the configured session" pinned?** Recommend: `appsettings.json` has `Chat.SessionRepoPath = "D:/ReposFred/private"`. On Director startup, look for an existing session in `SessionManager` whose `RepoPath` matches; if none, auto-create one with that repo path and ClaudeCode as the agent.
+1. **Where exactly is "the configured session" pinned?** Recommend: `appsettings.json` has `Chat.SessionRepoPath = "C:/repos/private"`. On Director startup, look for an existing session in `SessionManager` whose `RepoPath` matches; if none, auto-create one with that repo path and ClaudeCode as the agent.
 2. **What is the maximum recording duration?** Recommend: 60 s soft cap (warn the user via a colour change on the recording overlay), 120 s hard cap (auto-stop and send).
 3. **What's the chat history persistence?** Recommend: per-browser localStorage for v1. Server-side history is a v2 question. The agent has its own JSONL transcript independently.
 4. **What does the summariser do when the reply is already short (<=200 chars)?** Recommend: skip the Haiku call, just speak the raw reply. Cheaper, faster, no quality loss.
@@ -255,7 +255,7 @@ These need a decision. The agent should pick a default and document it.
 1. Read this doc top to bottom. Then read the cc-director `docs/architecture/gateway/` docs for context on where things live.
 2. Build Phase 1 first. Get a text-only chat round-trip working over Tailscale to a phone.
 3. Only after Phase 1 ships, move to Phase 2.
-4. Use the `voice-test-host` (`D:/ReposFred/cc-director/tools/voice-test-host/`) for local development - it spins up the same Control API without disturbing any real `cc-director.exe` on the machine.
+4. Use the `voice-test-host` (`C:/repos/cc-director/tools/voice-test-host/`) for local development - it spins up the same Control API without disturbing any real `cc-director.exe` on the machine.
 5. Don't touch any running `cc-director.exe` or `cc-director-gateway.exe` processes. Use the start/stop scripts in `cc-director/scripts/voice-test/` for the test host.
 6. When unsure, default to the simpler thing. The whole point of v1 is the driving scenario - skip anything that doesn't move that needle.
 

@@ -86,7 +86,7 @@ public sealed class GatewayConnectivitySelfTestTests
     [Fact]
     public async Task ServeMappingMissing_FailsRungTwo_WithExactServeCommand_AndProvisionerError()
     {
-        // The SORENLAPTOP root cause: tailnet up, nothing serves the port.
+        // The EXAMPLE-PC root cause: tailnet up, nothing serves the port.
         var rungs = await RunAll(Make(
             args => args == "status --json" ? (true, RunningStatusJson, "") : (true, ServeEmpty, ""),
             provisionerLastError: "tailscale serve --https=7885 failed: access denied"));
@@ -94,7 +94,7 @@ public sealed class GatewayConnectivitySelfTestTests
         Assert.Equal(RungStatus.Pass, rungs[0].Status);
         Assert.Equal(RungStatus.Fail, rungs[1].Status);
         Assert.Equal($"tailscale serve --bg --https={Port} http://localhost:{Port}", rungs[1].Fix);
-        Assert.Contains("SORENLAPTOP", rungs[1].Found);
+        Assert.Contains("EXAMPLE-PC", rungs[1].Found);
         Assert.Contains("access denied", rungs[1].Found); // provisioner's recorded reason rides along
         Assert.Equal(RungStatus.Skipped, rungs[2].Status);
         Assert.Equal(RungStatus.Skipped, rungs[3].Status);

@@ -6,7 +6,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LABEL="com.centerconsulting.cc-launcher"
+LABEL="com.devthrottle.cc-launcher"
 PLIST_SRC="$DIR/$LABEL.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SCRIPT="$DIR/launcher.py"

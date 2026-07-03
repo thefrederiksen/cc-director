@@ -7,8 +7,8 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Account;
 
 /// <summary>
-/// The per-account usage-telemetry consent flag as it lives on the DevThrottle backend (issue #659,
-/// backend contract devthrottle_internal#59). The Privacy step of the installer reads this flag to
+/// The per-account usage-telemetry consent flag as it lives on the DevThrottle backend (issue #659).
+/// The Privacy step of the installer reads this flag to
 /// pre-fill its single checkbox and writes it back when the person changes the choice, so the
 /// installer, the running app, and the website Account page all share one source of truth.
 /// </summary>

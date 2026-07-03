@@ -24,7 +24,7 @@ public sealed class DirectorVerifyResultDto
     /// True only when BOTH legs are proven: the verify request arrived (leg 1) AND the
     /// callback to the advertised endpoint answered with the matching Director id (leg 2).
     /// A Director whose heartbeats land but whose endpoint nobody serves gets FALSE here -
-    /// the exact SORENLAPTOP failure a naive "connected" light would have missed.
+    /// the exact EXAMPLE-PC failure a naive "connected" light would have missed.
     /// </summary>
     public bool Verified { get; set; }
 

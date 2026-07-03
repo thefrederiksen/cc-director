@@ -14,9 +14,9 @@ public class ClaudeProjectFolderEncodingTests
 {
     [Theory]
     [InlineData(@"D:\Repos\my_project", "D--Repos-my-project")]
-    [InlineData(@"D:\ReposFred\cc-director", "D--ReposFred-cc-director")]
+    [InlineData(@"C:\repos\cc-director", "D--ReposFred-cc-director")]
     // The live #184 case: a dot in a path segment becomes a dash (".temp" -> "-temp").
-    [InlineData(@"D:\ReposFred\cc-director\.temp\brain-sandbox", "D--ReposFred-cc-director--temp-brain-sandbox")]
+    [InlineData(@"C:\repos\cc-director\.temp\brain-sandbox", "D--ReposFred-cc-director--temp-brain-sandbox")]
     [InlineData(@"C:\Users\alice\AppData\Local\cc-director\brain", "C--Users-alice-AppData-Local-cc-director-brain")]
     // Spaces are non-alphanumeric too.
     [InlineData(@"D:\My Repos\app", "D--My-Repos-app")]
@@ -29,7 +29,7 @@ public class ClaudeProjectFolderEncodingTests
     public void GetProjectFolder_ForwardSlashes_NormalizedLikeBackslashes()
     {
         Assert.Equal(
-            ClaudeSessionReader.GetProjectFolder(@"D:\ReposFred\cc-director"),
-            ClaudeSessionReader.GetProjectFolder("D:/ReposFred/cc-director"));
+            ClaudeSessionReader.GetProjectFolder(@"C:\repos\cc-director"),
+            ClaudeSessionReader.GetProjectFolder("C:/repos/cc-director"));
     }
 }

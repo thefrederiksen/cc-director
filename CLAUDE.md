@@ -48,8 +48,8 @@ Processes launched by Task Scheduler run under `svchost.exe` (the Schedule servi
 ```powershell
 # Point the task at your current test build. The WorkingDirectory must be set, or
 # Avalonia's first-time resource resolution may fail with exit -1.
-$exe = "D:\ReposFred\cc-director\local_builds\cc-director5.exe"
-$wd  = "D:\ReposFred\cc-director\local_builds"
+$exe = "C:\repos\cc-director\local_builds\cc-director5.exe"
+$wd  = "C:\repos\cc-director\local_builds"
 $action = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $wd
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(5)  # far future, on-demand only
 Register-ScheduledTask -TaskName "cc-director-launch" -Action $action -Trigger $trigger -Force
@@ -199,26 +199,6 @@ FileLog.Write($"[ClassName] MethodName FAILED: {ex.Message}");
 **Reference:** [docs/cli-reference.md](docs/cli-reference.md)
 
 When using any cc-* tool, check `docs/cli-reference.md` for exact flags before calling. Key gotcha: use `--count` / `-n` for result limits, NOT `--limit`.
-
----
-
-## Posting to LinkedIn (text + image from cc-comm-queue)
-
-**Use the script. Do not improvise or build a new flow each time.**
-
-```bash
-# 1. Make sure cc-browser's "linkedin" connection is closed (Chrome locks the user-data-dir).
-# 2. Start cc-playwright on the linkedin connection (auto-allocates port, uses cc-browser's profile):
-cc-playwright --connection linkedin start --url https://www.linkedin.com/feed/
-# 3. Run the canonical script with the queue id prefix:
-python scripts/linkedin-post-from-queue.py <queue-id-prefix>
-# 4. Visually verify the screenshot the script prints, then mark posted:
-cc-comm-queue mark-posted <queue-id> --by cc_playwright
-```
-
-**Full writeup:** [tools/cc-playwright/LINKEDIN_POSTING.md](tools/cc-playwright/LINKEDIN_POSTING.md) — covers the shadow-DOM Quill editor, the OS-file-dialog trap (DO NOT click "Upload from computer"), the click-intercept overlay workaround, and the verification gates.
-
-**Connection README:** the LinkedIn user-data-dir at `%LOCALAPPDATA%\cc-director\connections\linkedin\README.md` repeats this so it lives next to the cookies it depends on.
 
 ---
 

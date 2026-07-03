@@ -271,13 +271,13 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
         // AC2: the registration must carry a network address and the list must expose it
         // so the Gateway relay can dial a remote launcher over the tailnet.
         var req = BuildRegistrationRequest("REMOTE-MACHINE", port: 7912);
-        req.NetworkAddress = "sorenlaptop.taildb08ed.ts.net";
+        req.NetworkAddress = "example-pc.ts.net";
 
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var list = await _http.GetFromJsonAsync<List<LauncherDto>>("launchers");
         var entry = Assert.Single(list!, l => l.MachineName.Equals("REMOTE-MACHINE", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal("sorenlaptop.taildb08ed.ts.net", entry.NetworkAddress);
+        Assert.Equal("example-pc.ts.net", entry.NetworkAddress);
     }
 
     [Fact]
@@ -294,7 +294,7 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
         // error message in the 502 body contains the tailnet hostname, proving the relay
         // built the URL with the network address rather than 127.0.0.1.
         var req = BuildRegistrationRequest("TAILNET-MACHINE", port: 7913);
-        req.NetworkAddress = "sorenlaptop.taildb08ed.ts.net";
+        req.NetworkAddress = "example-pc.ts.net";
         await _http.PostAsJsonAsync("launchers/register", req);
 
         var resp = await _http.PostAsync("machines/TAILNET-MACHINE/director/restart", null);
@@ -303,7 +303,7 @@ public sealed class LauncherRegistryEndpointTests : IAsyncLifetime
         var json = await resp.Content.ReadAsStringAsync();
         // The error body must name the tailnet hostname (not 127.0.0.1) so we can confirm
         // the relay used the stored network address.
-        Assert.Contains("sorenlaptop.taildb08ed.ts.net", json);
+        Assert.Contains("example-pc.ts.net", json);
     }
 
     // -------------------------------------------------------------------------

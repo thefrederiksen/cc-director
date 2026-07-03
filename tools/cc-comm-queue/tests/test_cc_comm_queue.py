@@ -60,13 +60,13 @@ def test_config_set_writes_shared_store(app_env):
     root, cli_module, runner = app_env
     from cc_storage import CcStorage
 
-    result = runner.invoke(cli_module.app, ["config", "set", "default_persona", "mindzie"])
+    result = runner.invoke(cli_module.app, ["config", "set", "default_persona", "brand"])
     assert result.exit_code == 0, result.output
 
     shared_path = CcStorage.config_json()
     assert shared_path.exists()
     data = json.loads(shared_path.read_text(encoding="utf-8"))
-    assert data["comm_manager"]["default_persona"] == "mindzie"
+    assert data["comm_manager"]["default_persona"] == "brand"
 
     # The legacy home path must NOT be the one written.
     legacy = Path.home() / ".cc-director" / "config.json"
@@ -74,7 +74,7 @@ def test_config_set_writes_shared_store(app_env):
 
     # config show reflects the new value.
     show = runner.invoke(cli_module.app, ["config", "show"])
-    assert "mindzie" in show.output
+    assert "brand" in show.output
 
 
 def test_config_set_preserves_unknown_keys(app_env):

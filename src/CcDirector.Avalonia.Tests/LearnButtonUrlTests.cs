@@ -17,26 +17,26 @@ public class LearnButtonUrlTests
     public void BuildLearnUrl_FrontDoorWithoutTrailingSlash_AppendsLearnRoute()
     {
         // Arrange
-        var frontDoor = "https://soren-north.taildb08ed.ts.net";
+        var frontDoor = "https://example-host.ts.net";
 
         // Act
         var learnUrl = MainWindow.BuildLearnUrl(frontDoor);
 
         // Assert
-        Assert.Equal("https://soren-north.taildb08ed.ts.net/learn", learnUrl);
+        Assert.Equal("https://example-host.ts.net/learn", learnUrl);
     }
 
     [Fact]
     public void BuildLearnUrl_FrontDoorWithTrailingSlash_DoesNotDoubleSlash()
     {
         // Arrange: the gateway's /cockpit response front door commonly ends with a slash.
-        var frontDoor = "https://soren-north.taildb08ed.ts.net/";
+        var frontDoor = "https://example-host.ts.net/";
 
         // Act
         var learnUrl = MainWindow.BuildLearnUrl(frontDoor);
 
         // Assert: a single clean separator, never "//learn".
-        Assert.Equal("https://soren-north.taildb08ed.ts.net/learn", learnUrl);
+        Assert.Equal("https://example-host.ts.net/learn", learnUrl);
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public class LearnButtonUrlTests
     public void BuildGatewayUnreachableMessage_ConfiguredRemoteGateway_UsesTailnetReachabilityHint()
     {
         // Arrange: a configured remote gateway URL (not the loopback default).
-        var baseUrl = "http://soren-north.taildb08ed.ts.net:7878";
+        var baseUrl = "http://example-host.ts.net:7878";
 
         // Act
         var message = MainWindow.BuildGatewayUnreachableMessage(baseUrl, "Timeout");

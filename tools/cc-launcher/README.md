@@ -45,7 +45,7 @@ The daemon's interpreter (`/usr/bin/python3`) must be granted, in
   appears the first time).
 - **Screen Recording** — for `/screenshot`.
 
-After granting, restart the agent: `launchctl kickstart -k gui/$(id -u)/com.centerconsulting.cc-launcher`.
+After granting, restart the agent: `launchctl kickstart -k gui/$(id -u)/com.devthrottle.cc-launcher`.
 
 ## Install
 
@@ -56,7 +56,7 @@ curl -s http://127.0.0.1:8765/status
 ```
 
 Idempotent: re-running re-renders the plist and reloads the launchd agent
-`com.centerconsulting.cc-launcher`.
+`com.devthrottle.cc-launcher`.
 
 ## Examples
 

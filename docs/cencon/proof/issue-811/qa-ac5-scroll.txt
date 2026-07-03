@@ -1,3 +1,0 @@
-scrollTop before (scrolled up) = 0
-scrollTop after new turn = 0
-no-yank PASS = True

@@ -22,9 +22,9 @@ All links are collected in the Sources section.
 - NO native Windows build. The official installer (`https://cursor.com/install`) is a bash
   script that accepts only `uname -s` of `Linux*` or `Darwin*`; `https://cursor.com/install.ps1`
   is not a real installer (returns the marketing homepage). On Windows it runs only under WSL or
-  Linux/macOS. [VERIFIED from our prior survey](D:\ReposFred\devthrottle\docs\design\agent-history-capture\drivers\cursor.md)
+  Linux/macOS. [VERIFIED from our prior survey](C:\repos\devthrottle\docs\design\agent-history-capture\drivers\cursor.md)
 - Install location (Unix): symlink at `~/.local/bin/cursor-agent`; versioned binary under
-  `~/.local/share/cursor-agent/versions/<version>/`. [VERIFIED from our prior survey](D:\ReposFred\devthrottle\docs\design\agent-history-capture\drivers\cursor.md)
+  `~/.local/share/cursor-agent/versions/<version>/`. [VERIFIED from our prior survey](C:\repos\devthrottle\docs\design\agent-history-capture\drivers\cursor.md)
 - Version probe: `cursor-agent --version` (also `-v`). [VERIFIED from docs](https://cursor.com/docs/cli/reference/parameters)
   Our plugin probes with `--version`, timeout 8 seconds. Observed version in WSL: `2026.06.24-00-45-58-9f61de7`.
 - Update in place: `cursor-agent update`. [VERIFIED from docs](https://cursor.com/docs/cli/reference/parameters)
@@ -242,7 +242,7 @@ some setups. [INFERRED/UNCERTAIN - forum-reported](https://forum.cursor.com/t/cu
   [VERIFIED from docs](https://cursor.com/docs/cli/reference/parameters)
 - On-disk transcript LOCATION and FORMAT are NOT verified. On our prior WSL survey the chat store was
   never created (the agent was "Not logged in"), and on Windows there is no native install to inspect.
-  [VERIFIED from our prior survey](D:\ReposFred\devthrottle\docs\design\agent-history-capture\drivers\cursor.md)
+  [VERIFIED from our prior survey](C:\repos\devthrottle\docs\design\agent-history-capture\drivers\cursor.md)
 - Hooks expose a `transcript_path` (and `CURSOR_TRANSCRIPT_PATH` env var) when transcript recording is
   enabled - a likely future pointer to the on-disk transcript, but its format is unverified.
   [VERIFIED from docs](https://cursor.com/docs/hooks)
@@ -353,4 +353,4 @@ on live stream-json only).
 - Forum (headless hooks caveat): https://forum.cursor.com/t/hooks-afteragentresponse-afteragentthought-not-firing-in-headless-cli/156220
 - Forum (-p hang report): https://forum.cursor.com/t/cursor-agent-p-print-headless-mode-hangs-indefinitely-and-never-returns/150246
 - Changelog (CLI Agent Modes and Cloud Handoff, Jan 16 2026): https://cursor.com/changelog/cli-jan-16-2026
-- Our prior survey: D:\ReposFred\devthrottle\docs\design\agent-history-capture\drivers\cursor.md
+- Our prior survey: C:\repos\devthrottle\docs\design\agent-history-capture\drivers\cursor.md

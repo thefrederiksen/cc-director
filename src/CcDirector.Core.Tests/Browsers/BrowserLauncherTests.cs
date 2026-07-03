@@ -11,8 +11,8 @@ public class BrowserLauncherTests
       "profile": {
         "info_cache": {
           "Default": { "name": "Person 1", "user_name": "", "gaia_name": "" },
-          "Profile 2": { "name": "centerconsulting.com", "user_name": "soren@centerconsulting.com", "gaia_name": "Soren C" },
-          "Profile 1": { "name": "duksrevo.com", "user_name": "soren@duksrevo.com", "gaia_name": "Soren D" }
+          "Profile 2": { "name": "Example Work", "user_name": "user1@example.com", "gaia_name": "Example User 1" },
+          "Profile 1": { "name": "Example Personal", "user_name": "user2@example.com", "gaia_name": "Example User 2" }
         }
       }
     }
@@ -24,8 +24,8 @@ public class BrowserLauncherTests
         var profiles = BrowserLauncher.ParseProfiles(SampleLocalState);
 
         var center = Assert.Single(profiles, p => p.FolderName == "Profile 2");
-        Assert.Equal("centerconsulting.com", center.DisplayName);
-        Assert.Equal("soren@centerconsulting.com", center.Account);
+        Assert.Equal("Example Work", center.DisplayName);
+        Assert.Equal("user1@example.com", center.Account);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public class BrowserLauncherTests
     {
         var profiles = BrowserLauncher.ParseProfiles(SampleLocalState);
 
-        // Account-bearing profiles (centerconsulting.com, duksrevo.com) come before the
+        // Account-bearing profiles (Example Work, Example Personal) come before the
         // accountless "Person 1", and within the account group they sort by display name.
         Assert.Equal(new[] { "Profile 2", "Profile 1", "Default" }, profiles.Select(p => p.FolderName).ToArray());
     }

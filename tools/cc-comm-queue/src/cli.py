@@ -169,7 +169,7 @@ def add(
     platform: str = typer.Argument(..., help="Platform: linkedin, twitter, reddit, youtube, email, blog, facebook, whatsapp, medium"),
     content_type: str = typer.Argument(..., help="Type: post, comment, reply, message, article, email"),
     content: str = typer.Argument(..., help="The actual content text"),
-    persona: str = typer.Option("personal", "--persona", "-p", help="Persona: mindzie, center_consulting, personal"),
+    persona: str = typer.Option("personal", "--persona", "-p", help="Persona: brand, consulting, personal"),
     destination: Optional[str] = typer.Option(None, "--destination", "-d", help="Where to post (URL)"),
     context_url: Optional[str] = typer.Option(None, "--context-url", "-c", help="What we're responding to (URL)"),
     context_title: Optional[str] = typer.Option(None, "--context-title", help="Title of content we're responding to"),
@@ -208,7 +208,7 @@ def add(
     # Dispatch fields
     send_timing: str = typer.Option("asap", "--send-timing", "-st", help="When to send: immediate, scheduled, asap, hold"),
     scheduled_for: Optional[str] = typer.Option(None, "--scheduled-for", help="ISO datetime for scheduled send"),
-    send_from: Optional[str] = typer.Option(None, "--send-from", "-sf", help="Account: mindzie, personal, consulting"),
+    send_from: Optional[str] = typer.Option(None, "--send-from", "-sf", help="Account: brand, personal, consulting"),
     # Media attachments
     media: Optional[List[str]] = typer.Option(None, "--media", "-m", help="Path to media file (can be repeated)"),
     # Recipient info (required for LinkedIn messages)
@@ -253,7 +253,7 @@ def add(
     except ValueError:
         if not json_output:
             console.print(f"[red]ERROR:[/red] Invalid persona: {persona}")
-            console.print("Valid personas: mindzie, center_consulting, personal")
+            console.print("Valid personas: brand, consulting, personal")
         else:
             print(json.dumps({"success": False, "error": f"Invalid persona: {persona}"}))
         raise typer.Exit(1)

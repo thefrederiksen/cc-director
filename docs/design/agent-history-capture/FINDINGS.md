@@ -2,7 +2,7 @@
 
 Status: research complete, implementation not started.
 Date measured: 2026-06-25.
-Machine where measured: SORENLAPTOP.
+Machine where measured: EXAMPLE-PC.
 Branch: feat/agent-history-capture.
 
 This document records what we learned while investigating why full screen agents
@@ -100,7 +100,7 @@ alt-screen in practice") is wrong as of these measurements.
 
 ## 4. Where each agent stores its own history
 
-Forensic survey of real on disk data on SORENLAPTOP. Verdicts: FULL means user
+Forensic survey of real on disk data on EXAMPLE-PC. Verdicts: FULL means user
 prompts, assistant responses, and tool calls can all be reconstructed accurately.
 
 | Agent | Store (Windows) | Format and fidelity | Verdict |

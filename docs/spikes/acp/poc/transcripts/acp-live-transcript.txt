@@ -1,5 +1,5 @@
 # ACP PoC transcript - 2026-06-22T05:12:06.9928620-04:00
-# copilot --acp driven over JSON-RPC/stdio. Sandbox cwd: C:\Users\soren\AppData\Local\Temp\acp-poc-sandbox-557bb7fb
+# copilot --acp driven over JSON-RPC/stdio. Sandbox cwd: C:\Users\user\AppData\Local\Temp\acp-poc-sandbox-557bb7fb
 # Lines tagged [SEND] are client->agent; [RECV] are agent->client. Verbatim JSON.
 
 [SEND] {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}

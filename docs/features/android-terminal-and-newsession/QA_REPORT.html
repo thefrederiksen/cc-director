@@ -173,7 +173,7 @@
   <figure>
     <img src="shots/08_creating.png" alt="Session created, opening terminal">
     <figcaption><b>Created and opening.</b> After Create, the app navigates to the new session
-      (<span class="mono">D:\ReposFred\_qa_newsession_test</span>) on the Terminal tab while the stream connects -
+      (<span class="mono">C:\repos\_qa_newsession_test</span>) on the Terminal tab while the stream connects -
       the responsive-UI path (no blocked thread). It then renders live (see the live-render shot above).</figcaption>
   </figure>
 </div>
@@ -201,14 +201,14 @@ file changed here.</p>
 <div class="card">
   <p class="kv"><b>Environment.</b> Android emulator <code>emulator-5554</code>; app pointed at a live Gateway via
     <code>adb reverse tcp:7878</code> (gateway) and <code>tcp:7889</code> (local Director). The gateway reported 3
-    real Directors (SOREN, SOREN_NORTH, SORENLAPTOP).</p>
+    real Directors (SOREN, SOREN_NORTH, EXAMPLE-PC).</p>
   <p class="kv"><b>Scope notes (honest).</b></p>
   <ul class="tight">
     <li>The <b>terminal stream</b> and the <b>end-to-end create</b> were exercised against the <b>local development
       Director</b> (SOREN_NORTH, <code>127.0.0.1:7889</code>), the only Director reachable from the emulator without
-      Tailscale. Remote Directors (SOREN, SORENLAPTOP) are tailnet HTTPS endpoints; on a real phone the device is on
+      Tailscale. Remote Directors (SOREN, EXAMPLE-PC) are tailnet HTTPS endpoints; on a real phone the device is on
       the tailnet and reaches them directly - that path is the same code, not separately re-run here.</li>
-    <li>The create test used a throwaway folder <code>D:\ReposFred\_qa_newsession_test</code>. <b>Cleanup done:</b>
+    <li>The create test used a throwaway folder <code>C:\repos\_qa_newsession_test</code>. <b>Cleanup done:</b>
       the session was killed + removed (<code>DELETE /sessions/{sid}</code> -> <code>{"killed":true,"removed":true}</code>),
       the folder de-registered from the Director's recent list, and the folder deleted - all verified gone.</li>
   </ul>

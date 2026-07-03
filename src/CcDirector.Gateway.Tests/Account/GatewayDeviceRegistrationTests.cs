@@ -23,7 +23,7 @@ namespace CcDirector.Gateway.Tests.Account;
 /// <item>(e) graceful degradation: a failing cloud does not crash or block the Gateway, and the next
 /// heartbeat retries.</item>
 /// </list>
-/// The real signed-in cloud round-trip is the QA gate; the stub stands in for devthrottle_internal#81/#83.
+/// The real signed-in cloud round-trip is the QA gate; the stub stands in for the cloud device registry.
 /// </summary>
 public sealed class GatewayDeviceRegistrationTests
 {
@@ -43,7 +43,7 @@ public sealed class GatewayDeviceRegistrationTests
     }
 
     /// <summary>
-    /// A stateful in-process stub of the cloud device registry (devthrottle_internal#81/#83). It is
+    /// A stateful in-process stub of the cloud device registry. It is
     /// idempotent per install id: re-registering the same install rotates the key and bumps last-seen on
     /// the SAME row (no duplicate), so <see cref="DeviceCount"/> counts distinct installs. Heartbeat bumps
     /// last-seen for a known install (200) or reports 404 for an unknown one. <see cref="FailRegisterTimes"/>
@@ -94,8 +94,7 @@ public sealed class GatewayDeviceRegistrationTests
                 var platform = (string?)body["platform"] ?? "windows";
                 var deviceType = (string?)body["device_type"] ?? "gateway";
                 var appVersion = (string?)body["app_version"] ?? "";
-                // Real cloud register shape (devthrottle_internal#81, website/api/v1/devices.js:
-                // `json({ data: { device_key: key.raw, record: toRecord(...) } })`): key and masked
+                // Real cloud register shape: key and masked
                 // record live under a "data" envelope. The stub matches the contract so this test guards
                 // the actual parse shape rather than a flat shape the parser happened to accept.
                 var record =
@@ -114,7 +113,7 @@ public sealed class GatewayDeviceRegistrationTests
                 if (!_byInstall.TryGetValue(installId, out var row))
                     return Json(HttpStatusCode.NotFound, "{\"error\":\"unknown install\"}");
                 row.LastSeen++;
-                // Real cloud heartbeat success shape (devthrottle_internal#83): { data: { recorded: true } }.
+                // Real cloud heartbeat success shape: { data: { recorded: true } }.
                 return Json(HttpStatusCode.OK, "{\"data\":{\"recorded\":true}}");
             }
 

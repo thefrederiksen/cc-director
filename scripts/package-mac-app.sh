@@ -24,7 +24,7 @@ set -euo pipefail
 
 APP_NAME="CC Director"
 BIN_NAME="cc-director"                 # CFBundle binary name (matches AssemblyName)
-BID="com.centerconsulting.ccdirector"
+BID="com.devthrottle.ccdirector"
 ZIP_NAME="cc-director-mac-arm64.zip"
 
 BINARY=""

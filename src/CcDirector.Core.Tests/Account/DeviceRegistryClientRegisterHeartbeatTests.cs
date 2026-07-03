@@ -8,8 +8,8 @@ using Xunit;
 namespace CcDirector.Core.Tests.Account;
 
 /// <summary>
-/// Proves the device-registry client's register + heartbeat egress (issue #857, cloud contract
-/// devthrottle_internal#81/#83): <c>POST /api/v1/devices/register</c> sends the documented body
+/// Proves the device-registry client's register + heartbeat egress (issue #857, cloud device-registry
+/// contract): <c>POST /api/v1/devices/register</c> sends the documented body
 /// (install_id, platform, optional name/device_type/app_version) with the Bearer token and parses the
 /// issued per-device key plus the masked record; <c>POST /api/v1/devices/heartbeat</c> sends the
 /// install id and reports advanced (200) vs unknown-install (404); and both validate their inputs.
@@ -28,10 +28,8 @@ public sealed class DeviceRegistryClientRegisterHeartbeatTests
     [Fact]
     public async Task RegisterAsync_PostsDocumentedBody_WithBearer_AndParsesKeyAndRecord()
     {
-        // The real cloud wraps the issued key and masked record under a "data" envelope
-        // (devthrottle_internal#81, website/api/v1/devices.js:
-        // `json({ data: { device_key: key.raw, record: toRecord(...) } })`). The stub MUST match that
-        // shape so this test guards the actual contract, not a flat shape the parser happened to accept.
+        // The real cloud wraps the issued key and masked record under a "data" envelope. The stub MUST
+        // match that shape so this test guards the actual contract, not a flat shape the parser happened to accept.
         var record =
             "{\"id\":\"dev-857\",\"name\":\"GW-HOST\",\"platform\":\"windows\",\"device_type\":\"gateway\"," +
             "\"app_version\":\"9.9.9\",\"key_prefix\":\"dtk_\",\"key_last4\":\"ab12\"," +
@@ -121,7 +119,7 @@ public sealed class DeviceRegistryClientRegisterHeartbeatTests
     [Fact]
     public async Task HeartbeatAsync_PostsInstallIdAndAppVersion_WithBearer_ReturnsTrueOn200()
     {
-        // Real cloud success shape (devthrottle_internal#83): { data: { recorded: true } }. The client
+        // Real cloud success shape: { data: { recorded: true } }. The client
         // reports advanced from the 200 status alone, so the body is informational, but the stub matches
         // the contract.
         var handler = new CapturingHandler(HttpStatusCode.OK, "{\"data\":{\"recorded\":true}}");

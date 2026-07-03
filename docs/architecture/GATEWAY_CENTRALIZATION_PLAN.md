@@ -160,7 +160,7 @@ The per-Director pieces we just built **move to the gateway** rather than being 
 
 - **Backend startup-event endpoint:** `/api/v1/telemetry/login` exists; is there (or can the backend
   add) a Director-startup event endpoint, or do we model startup as another `source`/event on the
-  existing endpoint? (Coordinate with `devthrottle_internal`.)
+  existing endpoint? (Coordinate with the cloud backend.)
 - **Token refresh endpoint:** still stubbed; Phase 2 needs the real refresh exchange, now owned by the
   gateway.
 - **Gateway sign-in UX:** the gateway is a tray app — confirm the sign-in surface (tray menu action +

@@ -83,7 +83,7 @@ public sealed class SessionInfo
 
     /// <summary>
     /// The repository folder name (the last path segment of <see cref="RepoPath"/>),
-    /// e.g. "cc-director" for "D:\ReposFred\cc-director". Empty when no repo path is
+    /// e.g. "cc-director" for "C:\repos\cc-director". Empty when no repo path is
     /// known. Used to spell out the repo aloud alongside the session name.
     /// </summary>
     public string RepoName => Path.GetFileName(RepoPath.TrimEnd('\\', '/'));

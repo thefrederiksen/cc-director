@@ -6,7 +6,7 @@ each remaining driver repeats its shape. One driver per iteration, in the order 
 
 ## Branch and worktree
 
-Work on branch `feat/agent-history-capture` in the worktree `D:\ReposFred\devthrottle-history-capture`.
+Work on branch `feat/agent-history-capture` in the worktree `C:\repos\devthrottle-history-capture`.
 Do NOT touch the main worktree. Build/test only `CcDirector.Core` and `CcDirector.Core.Tests`
 unless a step needs the desktop app.
 

@@ -66,12 +66,12 @@
 
 .EXAMPLE
     # Full session lifecycle (run from anywhere; paths are explicit):
-    powershell -NoProfile -File scripts\agent-session-isolation.ps1 allocate -Worktree D:\ReposFred\wt-issue-123
-    #   -> SLOT=6, MANIFEST=D:\ReposFred\wt-issue-123\local_builds\agent-session-slot6.json
-    powershell -NoProfile -File D:\ReposFred\wt-issue-123\scripts\local-build-avalonia.ps1 -Slot 6
-    powershell -NoProfile -File scripts\agent-session-isolation.ps1 launch -Manifest D:\ReposFred\wt-issue-123\local_builds\agent-session-slot6.json
+    powershell -NoProfile -File scripts\agent-session-isolation.ps1 allocate -Worktree C:\repos\wt-issue-123
+    #   -> SLOT=6, MANIFEST=C:\repos\wt-issue-123\local_builds\agent-session-slot6.json
+    powershell -NoProfile -File C:\repos\wt-issue-123\scripts\local-build-avalonia.ps1 -Slot 6
+    powershell -NoProfile -File scripts\agent-session-isolation.ps1 launch -Manifest C:\repos\wt-issue-123\local_builds\agent-session-slot6.json
     #   -> PID=12345, PORT=7881; probe http://127.0.0.1:7881/healthz
-    powershell -NoProfile -File scripts\agent-session-isolation.ps1 teardown -Manifest D:\ReposFred\wt-issue-123\local_builds\agent-session-slot6.json
+    powershell -NoProfile -File scripts\agent-session-isolation.ps1 teardown -Manifest C:\repos\wt-issue-123\local_builds\agent-session-slot6.json
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]

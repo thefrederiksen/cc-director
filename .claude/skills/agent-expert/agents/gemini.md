@@ -12,7 +12,7 @@ All links are collected in the Sources section.
 
 IMPORTANT recency note up front: the Gemini CLI moves fast and the locally installed
 binary on this machine is version 0.1.11 (probed live: `gemini --version` -> `0.1.11`,
-installed at `C:\Users\soren\AppData\Roaming\npm\gemini.cmd`). That 0.1.11 build PREDATES
+installed at `C:\Users\user\AppData\Roaming\npm\gemini.cmd`). That 0.1.11 build PREDATES
 the hooks system, `--output-format`, `--resume`, `--approval-mode`, and `--include-directories`.
 Most of this document describes the CURRENT documented CLI (geminicli.com/docs and the
 main branch of the source repo), which is well ahead of 0.1.11. Treat every "newer feature"
@@ -33,8 +33,8 @@ as not present until the installed binary is upgraded and re-probed. See section
   [INFERRED/UNCERTAIN - package exists in the monorepo; not independently re-verified here]
 
 Windows install location of the launchable shim (probed live on this machine):
-- `C:\Users\soren\AppData\Roaming\npm\gemini` (Unix-style shim) and
-  `C:\Users\soren\AppData\Roaming\npm\gemini.cmd` (the Windows launcher CC Director should spawn).
+- `C:\Users\user\AppData\Roaming\npm\gemini` (Unix-style shim) and
+  `C:\Users\user\AppData\Roaming\npm\gemini.cmd` (the Windows launcher CC Director should spawn).
   [VERIFIED live - `where gemini`]
 - Version-probe command: `gemini --version` (alias `-v`). Probed: `0.1.11`. [VERIFIED live]
 
@@ -410,4 +410,4 @@ Gaps in the current integration:
 - https://github.com/google-gemini/gemini-cli/issues/10702 (/memory refresh system-instruction bug)
 - https://github.com/google-gemini/gemini-cli/pull/12136 (fix: update system instruction on GEMINI.md load/refresh)
 - Live probe on this machine: `gemini --version` -> 0.1.11; `gemini --help`; `where gemini` ->
-  C:\Users\soren\AppData\Roaming\npm\gemini(.cmd)
+  C:\Users\user\AppData\Roaming\npm\gemini(.cmd)

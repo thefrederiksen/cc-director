@@ -34,7 +34,7 @@ public sealed class LadderRung
 
 /// <summary>
 /// The Gateway-connectivity troubleshooting ladder (issue #223): the exact diagnostic
-/// sequence a human had to run by hand during the SORENLAPTOP incident, encoded in the
+/// sequence a human had to run by hand during the EXAMPLE-PC incident, encoded in the
 /// CORRECT order - firewall LAST, because with Tailscale Serve active a TCP timeout means
 /// "no serve mapping", never "firewall" (Serve answers inside tailscaled before the
 /// Windows firewall is consulted). The ladder stops at the first failing rung: that rung
@@ -147,7 +147,7 @@ public sealed class GatewayConnectivitySelfTest
             else
             {
                 var why = ok
-                    ? $"The serve table has NO mapping for port {_port} - the Gateway's probes hit nothing and time out. This was the SORENLAPTOP root cause."
+                    ? $"The serve table has NO mapping for port {_port} - the Gateway's probes hit nothing and time out. This was the EXAMPLE-PC root cause."
                     : $"tailscale serve status failed: {message}";
                 if (_provisionerLastError is not null)
                     why += $" Self-provisioner last error: {_provisionerLastError}";
