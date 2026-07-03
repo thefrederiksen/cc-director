@@ -1,0 +1,8 @@
+[[allowlists]]
+description = "Vendored xterm bundles contain minified symbol names that match generic API-key heuristics."
+paths = [
+  '''src/CcDirector.Cockpit/wwwroot/lib/xterm.js''',
+  '''src/CcDirector.Cockpit/wwwroot/lib/xterm-addon-canvas.js''',
+  '''src/CcDirector.ControlApi/Web/xterm.js''',
+  '''src/CcDirector.ControlApi/Web/xterm-addon-canvas.js''',
+]

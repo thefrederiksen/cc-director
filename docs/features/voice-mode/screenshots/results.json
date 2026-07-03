@@ -7,35 +7,35 @@
       "scenario": "happy",
       "stages": [
         {
-          "key": "01_session_view_loaded",
+          "step": "01_session_view_loaded",
           "ok": true,
           "note": "Session view loaded in mobile viewport",
           "screenshot": "happy_01_loaded.png",
           "at": "2026-05-24T20:58:45.068944+00:00"
         },
         {
-          "key": "02_voice_tab",
+          "step": "02_voice_tab",
           "ok": true,
           "note": "Voice tab active. state='Ready. Tap the big button, speak, tap again to send.' main_btn_disabled=False",
           "screenshot": "happy_02_voice_tab.png",
           "at": "2026-05-24T20:58:46.452332+00:00"
         },
         {
-          "key": "03_recording",
+          "step": "03_recording",
           "ok": true,
           "note": "Recording overlay shown=True. state='Recording...'",
           "screenshot": "happy_03_recording.png",
           "at": "2026-05-24T20:58:47.811711+00:00"
         },
         {
-          "key": "04_sent",
+          "step": "04_sent",
           "ok": true,
           "note": "Tapped send; upload/transcribe started",
           "screenshot": "happy_04_sent.png",
           "at": "2026-05-24T20:59:05.967589+00:00"
         },
         {
-          "key": "05_transcribed",
+          "step": "05_transcribed",
           "ok": true,
           "note": "Transcript: 'What files did you change in this session? Give me a short summary'",
           "screenshot": "happy_05_transcribed.png",
@@ -43,7 +43,7 @@
           "transcript": "What files did you change in this session? Give me a short summary"
         },
         {
-          "key": "06_agent_reply",
+          "step": "06_agent_reply",
           "ok": true,
           "note": "Spoken reply after 32.1s: 'Nothing was changed this session. The only thing that showed up in git was the Claude Code config folder, which was already there. Fresh start, no work done yet.' | full reply available behind tap (4403 chars)",
           "screenshot": "happy_06_agent_reply.png",
@@ -54,7 +54,7 @@
           "reply_wait_s": 32.1
         },
         {
-          "key": "07_tts_spoken",
+          "step": "07_tts_spoken",
           "ok": true,
           "note": "/tts calls: 2 (events: ['(request)', 200])",
           "screenshot": "happy_07_after_speak.png",
@@ -935,21 +935,21 @@
       "scenario": "resilience",
       "stages": [
         {
-          "key": "01_session_view_loaded",
+          "step": "01_session_view_loaded",
           "ok": true,
           "note": "Session view loaded in mobile viewport",
           "screenshot": "resilience_01_loaded.png",
           "at": "2026-05-24T20:59:51.690833+00:00"
         },
         {
-          "key": "02_voice_tab",
+          "step": "02_voice_tab",
           "ok": true,
           "note": "Voice tab active. state='Ready. Tap the big button, speak, tap again to send.' main_btn_disabled=False",
           "screenshot": "resilience_02_voice_tab.png",
           "at": "2026-05-24T20:59:53.067086+00:00"
         },
         {
-          "key": "08_offline_holds",
+          "step": "08_offline_holds",
           "ok": true,
           "note": "Dropped network mid-recording after 14 chunks; UI held the audio (state: 'Uploading...') instead of failing.",
           "screenshot": "resilience_08_offline_holds.png",
@@ -957,7 +957,7 @@
           "chunks_up_before_drop": 14
         },
         {
-          "key": "09_resumed",
+          "step": "09_resumed",
           "ok": true,
           "note": "After reconnect the held chunks resumed: 55 chunks uploaded total (was 14 before the drop) and the utterance transcribed without re-recording.",
           "screenshot": "resilience_09_resumed.png",
@@ -1812,28 +1812,28 @@
       "scenario": "progress",
       "stages": [
         {
-          "key": "01_session_view_loaded",
+          "step": "01_session_view_loaded",
           "ok": true,
           "note": "Session view loaded in mobile viewport",
           "screenshot": "progress_01_loaded.png",
           "at": "2026-05-24T21:00:35.776914+00:00"
         },
         {
-          "key": "02_voice_tab",
+          "step": "02_voice_tab",
           "ok": true,
           "note": "Voice tab active. state='Ready. Tap the big button, speak, tap again to send.' main_btn_disabled=False",
           "screenshot": "progress_02_voice_tab.png",
           "at": "2026-05-24T21:00:37.147432+00:00"
         },
         {
-          "key": "10_long_turn_sent",
+          "step": "10_long_turn_sent",
           "ok": true,
           "note": "Sent a ~3 minute command via the composer to force a long turn.",
           "screenshot": "progress_10_long_turn_sent.png",
           "at": "2026-05-24T21:00:38.835578+00:00"
         },
         {
-          "key": "11_progress_note",
+          "step": "11_progress_note",
           "ok": true,
           "note": "Progress note generated and shown during the long turn: 'Still waiting on the agent - it appears to be actively thinking through a problem, working through its reasoning before taking its next step.'",
           "screenshot": "progress_11_progress_note.png",
@@ -1841,14 +1841,14 @@
           "progress_note": "Still waiting on the agent - it appears to be actively thinking through a problem, working through its reasoning before taking its next step."
         },
         {
-          "key": "12_progress_spoken",
+          "step": "12_progress_spoken",
           "ok": true,
           "note": "Progress note was sent to /tts to be read aloud.",
           "screenshot": "progress_12_progress_after.png",
           "at": "2026-05-24T21:02:51.750264+00:00"
         },
         {
-          "key": "13_answer_after_progress",
+          "step": "13_answer_after_progress",
           "ok": true,
           "note": "Final answer rendered after the progress note(s): 'Agent finished but produced no visible output.'",
           "screenshot": "progress_13_answer_after_progress.png",

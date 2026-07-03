@@ -10,6 +10,8 @@ namespace CcDirector.Avalonia.Controls.CommManager;
 /// </summary>
 public class PlatformPreviewSelector : IDataTemplate
 {
+    private const string LinkedInPlatform = "linkedin";
+
     public IDataTemplate? LinkedInTemplate { get; set; }
     public IDataTemplate? TwitterTemplate { get; set; }
     public IDataTemplate? RedditTemplate { get; set; }
@@ -34,7 +36,7 @@ public class PlatformPreviewSelector : IDataTemplate
         var platform = item.Platform?.ToLower() ?? "";
         var template = platform switch
         {
-            "linkedin" => LinkedInTemplate ?? DefaultTemplate,
+            LinkedInPlatform => LinkedInTemplate ?? DefaultTemplate,
             "twitter" => TwitterTemplate ?? DefaultTemplate,
             "reddit" => RedditTemplate ?? DefaultTemplate,
             "email" => EmailTemplate ?? DefaultTemplate,
