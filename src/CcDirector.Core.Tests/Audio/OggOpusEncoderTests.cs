@@ -1,5 +1,7 @@
 using System.Text;
 using CcDirector.Core.Audio;
+using Concentus;
+using Concentus.Oggfile;
 using Xunit;
 
 namespace CcDirector.Core.Tests.Audio;
@@ -60,6 +62,46 @@ public sealed class OggOpusEncoderTests
         Assert.True(ogg.Length < cap, $"Ogg Opus must be under the cap (was {ogg.Length})");
         // Voice Opus should be at least ten times smaller than WAV for this clip.
         Assert.True(ogg.Length * 10 < wav.Length, $"Opus not compressing as expected: ogg={ogg.Length}, wav={wav.Length}");
+    }
+
+    [Fact]
+    public void EncodePcm16_RoundTripsThroughAnOpusDecoder_ProvingTheOggIsValid()
+    {
+        var pcm = SinePcm16(2.0);
+        long inputSamples = pcm.Length / 2;
+
+        var ogg = OggOpusEncoder.EncodePcm16(pcm, SampleRate, Channels);
+
+        // Decode the produced .ogg back to PCM with an independent Opus decoder. That it decodes at
+        // all, to roughly the original duration, proves the encoder emits a genuinely valid Ogg Opus
+        // stream - stronger than a magic-byte check. (Opus adds a small pre-skip and pads the final
+        // frame with silence, so the decoded length is close to, not exactly, the input.)
+        var decoder = OpusCodecFactory.CreateDecoder(SampleRate, Channels);
+        using var ms = new MemoryStream(ogg);
+        var reader = new OpusOggReadStream(decoder, ms);
+        long decodedSamples = 0;
+        while (reader.HasNextPacket)
+        {
+            short[]? packet = reader.DecodeNextPacket();
+            if (packet != null) decodedSamples += packet.Length;
+        }
+
+        Assert.True(decodedSamples >= inputSamples * 0.9, $"decoded too short: {decodedSamples} vs input {inputSamples}");
+        Assert.True(decodedSamples <= inputSamples * 1.2, $"decoded too long: {decodedSamples} vs input {inputSamples}");
+    }
+
+    [Fact]
+    public void EncodePcm16_WhiteNoiseThreeMinutes_StillUnderTheCap()
+    {
+        // White noise is the incompressible worst case (a stricter proxy than a sine). Opus targets a
+        // bitrate rather than a compression ratio, so even here three minutes must stay under the cap.
+        var rng = new Random(20260702);
+        var pcm = new byte[SampleRate * 180 * 2];
+        rng.NextBytes(pcm);
+
+        var ogg = OggOpusEncoder.EncodePcm16(pcm, SampleRate, Channels);
+
+        Assert.True(ogg.Length < 4_500_000, $"white-noise Opus must be under the cap (was {ogg.Length})");
     }
 
     [Fact]
