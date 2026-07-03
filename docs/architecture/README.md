@@ -1,6 +1,6 @@
 # cc-director Architecture Documentation
 
-Authoritative architecture documentation for `cc-director`, organized by topic. Modelled on the mindzieWeb `Documentation/Architecture/` convention - one subdirectory per topic, each with its own `README.md`.
+Authoritative architecture documentation for `cc-director`, organized by topic. Modelled on the sampleWeb `Documentation/Architecture/` convention - one subdirectory per topic, each with its own `README.md`.
 
 ---
 

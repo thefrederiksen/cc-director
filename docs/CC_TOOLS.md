@@ -929,7 +929,7 @@ CLI tool for adding content to the Communication Manager approval queue.
 
 ```bash
 # Add content
-cc-comm-queue add linkedin post "Content..." --persona mindzie --tags "tag1,tag2"
+cc-comm-queue add linkedin post "Content..." --persona acmeflow --tags "tag1,tag2"
 cc-comm-queue add linkedin comment "Great insights!" --context-url "https://..."
 cc-comm-queue add email email "Hi Sarah..." --email-to "sarah@co.com" --email-subject "Subject"
 cc-comm-queue add reddit post "Content..." --reddit-subreddit "r/sub" --reddit-title "Title"
@@ -949,12 +949,12 @@ cc-comm-queue migrate
 # Configuration
 cc-comm-queue config show
 cc-comm-queue config set queue_path "D:/path/to/content"
-cc-comm-queue config set default_persona mindzie
+cc-comm-queue config set default_persona acmeflow
 ```
 
 **Platforms:** linkedin, twitter, reddit, youtube, email, blog
 
-**Personas:** mindzie, consulting, personal
+**Personas:** acmeflow, consulting, personal
 
 ---
 

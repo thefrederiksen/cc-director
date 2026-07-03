@@ -1,13 +1,13 @@
 # Voice mode: fidelity fix + per-turn comparison logging
 
 Status: planned (implementing)
-Owner: Soren
-GitHub issue: #141 (https://github.com/thefrederiksen/cc-director/issues/141)
+Owner: the maintainer
+GitHub issue: #141 (https://github.com/example-org/devthrottle/issues/141)
 Related: docs/problems/voice-dictionary-not-applied-on-mobile.md (word-level mishearing, separate bug)
 
 ## Background
 
-In voice mode ("wingman"), Soren saw the agent's full written reply in the raw
+In voice mode ("wingman"), the maintainer saw the agent's full written reply in the raw
 Claude session, then heard a spoken version that did NOT line up: it was too
 abbreviated and took too big liberties with the meaning. Separately, when this
 happens there is no trail to inspect, so we cannot prove where the divergence
@@ -166,7 +166,7 @@ Tests (`src/CcDirector.Core.Tests/Voice/VoiceTurnLogTests.cs`):
 
 - `dotnet build` the solution.
 - Run the Core unit tests for Voice/Chat/Summarizer.
-- Manual end-to-end (Soren, on device) once built: ask a direct factual question by
+- Manual end-to-end (the maintainer, on device) once built: ask a direct factual question by
   voice, confirm the spoken answer now contains the actual facts, and confirm a
   turn dir appears under `voice-turn-logs` with audio + inbound.json + outbound.json
   whose `wingmanSpoken` and `agentReply` can be compared.

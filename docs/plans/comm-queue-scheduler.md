@@ -2,7 +2,7 @@
 
 ## Status: PLANNED
 
-Owner: Soren. Designed 2026-05-22 after the LinkedIn connection-request runner (`scripts/linkedin-connect-from-queue.py`) shipped and we needed a way to fire it automatically without standing up a separate Windows service.
+Owner: the maintainer. Designed 2026-05-22 after the LinkedIn connection-request runner (`scripts/linkedin-connect-from-queue.py`) shipped and we needed a way to fire it automatically without standing up a separate Windows service.
 
 ## Problem
 

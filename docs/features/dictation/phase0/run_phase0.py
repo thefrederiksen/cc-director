@@ -25,29 +25,29 @@ OUT_DIR = Path(__file__).resolve().parent
 CLAUDE_EXE = os.path.expanduser(r"~\.local\bin\claude.exe")
 
 CLIPS = [
-    "I sent the cc-director patch to mindzie before the CenCon review.",
-    "Soren Frederiksen needs the Avalonia changes for ConPTY tested by Friday.",
-    "Tell mindzie that the CenCon report is ready and ping the cc-director gateway team.",
+    "I sent the cc-director patch to acmeflow before the CenCon review.",
+    "Example User needs the Avalonia changes for ConPTY tested by Friday.",
+    "Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.",
 ]
 
 TERMS = [
-    "mindzie",
+    "acmeflow",
     "CenCon",
     "ConPTY",
     "cc-director",
     "Avalonia",
-    "Soren Frederiksen",
+    "Example User",
 ]
 
 # Known mistranscription patterns the user has observed over time and
 # curated into the dictionary. This is the "knowledge that would otherwise
 # go in a regex table" expressed as natural language for the LLM to use.
 COMMON_MISTRANSCRIPTIONS = {
-    "mindzie": ["Minzy", "Mindsy", "Mindzy", "Mindzie"],
+    "acmeflow": ["Akmeflow", "Acmefloe", "Acmeflo", "AcmeFlow"],
     "CenCon": ["SenCon", "SENCON", "Sencon"],
     "ConPTY": ["Contui", "ContUI", "ContiUI", "Conty"],
     "cc-director": ["CC Director", "See Director", "CC director"],
-    "Soren Frederiksen": ["Soren Fredriksen", "Soeren Frederiksen"],
+    "Example User": ["Example Usar", "Example Euser"],
 }
 
 STT_PROMPT = (

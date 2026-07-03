@@ -198,7 +198,7 @@ Every Wingman improvement is measured against one metric: **how good is the huma
 Voice is the top rung of the trust ladder and the proof of the vision. Two modes, one pipeline:
 
 1. **Per-session voice (foundation exists).** Talk to one agent: dictation in (Director captures audio - raw I/O; Gateway/Whisper transcribes and cleans - interpretation), brief/summary read back out (TTS). Already partially shipped via the dictate leg and turn summaries.
-2. **Fleet voice (new surface).** One conversation with the Cockpit itself: *"What needs me?"* - the system walks the NeedsYou queue, one item at a time, each presented as a Wingman-informed option set ("Session 4, mindzie API, wants to delete the old migration files, I recommend yes, two similar approvals last week"). The human answers in a word; the system routes it as the session's input; next item. *"How is everyone doing?"* reads the fleet rollup.
+2. **Fleet voice (new surface).** One conversation with the Cockpit itself: *"What needs me?"* - the system walks the NeedsYou queue, one item at a time, each presented as a Wingman-informed option set ("Session 4, acmeflow API, wants to delete the old migration files, I recommend yes, two similar approvals last week"). The human answers in a word; the system routes it as the session's input; next item. *"How is everyone doing?"* reads the fleet rollup.
 
 Architecturally, fleet voice is **not a new intelligence layer** - it is a conversational renderer over streams that must already exist for the visual Cockpit: the event hub (5.1), the assessed-state queue, and Wingman option sets (7.2). That is the design constraint that keeps it honest: **if a decision cannot be presented as a Wingman option set, it is not ready for voice.** Voice quality is therefore mostly a function of Wingman quality - build section 7 first and the car mode becomes a rendering problem, not an AI problem.
 
@@ -255,5 +255,5 @@ Ordered by the trust ladder: reliability before intelligence, intelligence befor
 
 | Date | Author | Change |
 |---|---|---|
-| 2026-06-11 | Claude (with Soren) | Initial version: boundary rule, violation inventory, Facts/Events/Verbs contract, migration phases |
-| 2026-06-11 | Claude (with Soren) | Vision rewrite: desktop Director declared permanent fallback (Terminal + Source Control) instead of retirement track; trust ladder ordering (reliability -> intelligence -> voice); Wingman promotion to decision-support staff (section 7); per-session + fleet voice / car mode (section 8); agent-agnostic custody; migration re-cut into tracks A/B/C |
+| 2026-06-11 | Claude (with the maintainer) | Initial version: boundary rule, violation inventory, Facts/Events/Verbs contract, migration phases |
+| 2026-06-11 | Claude (with the maintainer) | Vision rewrite: desktop Director declared permanent fallback (Terminal + Source Control) instead of retirement track; trust ladder ordering (reliability -> intelligence -> voice); Wingman promotion to decision-support staff (section 7); per-session + fleet voice / car mode (section 8); agent-agnostic custody; migration re-cut into tracks A/B/C |

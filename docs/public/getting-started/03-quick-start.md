@@ -140,4 +140,4 @@ cc-hardware gpu --json
 ## Next Steps
 
 - [Tools Overview](../tools/overview.md) -- Full reference for all 25+ tools
-- Browse the [GitHub repository](https://github.com/thefrederiksen/devthrottle) for source code and examples
+- Browse the [GitHub repository](https://github.com/example-org/devthrottle) for source code and examples

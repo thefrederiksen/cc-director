@@ -195,7 +195,7 @@ Shows every session running anywhere in the fleet:
 
     ID      NAME           MACHINE     REPOSITORY     STATUS
     4c81    feature-work   machine-A   devthrottle    working
-    9b2f    docs           machine-B   mindzieWeb     idle
+    9b2f    docs           machine-B   sampleWeb     idle
     a1d7    qa             machine-B   cc-director    working
 
 Calls `GET $CC_DIRECTOR_API/fleet/sessions`, which the Director satisfies by

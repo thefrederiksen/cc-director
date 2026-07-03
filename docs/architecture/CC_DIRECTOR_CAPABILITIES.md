@@ -164,7 +164,7 @@ These are non-negotiable for "a real terminal." User-stated, must ship.
 
 ### Candidate parity backlog (NOT yet graded must-have vs. later)
 
-These are confirmed gaps vs. a real terminal / tmux. They are listed for grading, one at a time, in a later session. None is committed yet. Tracked in GitHub issue [#449](https://github.com/thefrederiksen/cc-director/issues/449) (parked - not a current priority).
+These are confirmed gaps vs. a real terminal / tmux. They are listed for grading, one at a time, in a later session. None is committed yet. Tracked in GitHub issue [#449](https://github.com/example-org/devthrottle/issues/449) (parked - not a current priority).
 
 | # | Gap | Impact | Notes |
 |---|---|---|---|
@@ -253,6 +253,6 @@ No third state to read, no dialog to dismiss. Two facts, one glance.
 
 | Date | Author | Change |
 |---|---|---|
-| 2026-06-15 | Claude (with Soren) | Initial version: Gateway-required (no fallback, red-corner-not-dialog) locked; terminal-as-real-terminal with grounded parity checklist; must-have = Ctrl+V paste + multi-session + parity; candidate backlog B1-B8 ungraded. |
-| 2026-06-15 | Claude (with Soren) | Restructured around the two core local features: (1) Easy install (Windows-first, wizard-guided, ends with a readiness verdict, safe self-update that never costs a session) and (2) Multi-agent terminal running/handling (many sessions, mix any CLI agents, Working/Waiting status as the differentiator, lifecycle/resume, persistence, real terminal, weekly agent-driver). tmux demoted to a footnote. Added section 6 (persistence + safe self-update). |
-| 2026-06-15 | Claude (with Soren) | Added section 2.3, the concrete must-have capability checklist (offline items 1-8: full terminal, multi-agent sessions, session control, session state, local screenshots, prompt queue, copy Director info, copy session info; Gateway-required item 9: transcription/dictation). Captured two previously-missing capabilities: local screenshots and copy Director/session info. |
+| 2026-06-15 | Claude (with the maintainer) | Initial version: Gateway-required (no fallback, red-corner-not-dialog) locked; terminal-as-real-terminal with grounded parity checklist; must-have = Ctrl+V paste + multi-session + parity; candidate backlog B1-B8 ungraded. |
+| 2026-06-15 | Claude (with the maintainer) | Restructured around the two core local features: (1) Easy install (Windows-first, wizard-guided, ends with a readiness verdict, safe self-update that never costs a session) and (2) Multi-agent terminal running/handling (many sessions, mix any CLI agents, Working/Waiting status as the differentiator, lifecycle/resume, persistence, real terminal, weekly agent-driver). tmux demoted to a footnote. Added section 6 (persistence + safe self-update). |
+| 2026-06-15 | Claude (with the maintainer) | Added section 2.3, the concrete must-have capability checklist (offline items 1-8: full terminal, multi-agent sessions, session control, session state, local screenshots, prompt queue, copy Director info, copy session info; Gateway-required item 9: transcription/dictation). Captured two previously-missing capabilities: local screenshots and copy Director/session info. |

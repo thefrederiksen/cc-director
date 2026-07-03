@@ -2,7 +2,7 @@
 
 **Status:** PLANNED
 **Date:** 2026-06-11
-**Audience:** The implementing Director session running on the gateway machine (primary executor of this plan), the remote test session on EXAMPLE-PC, the Product Agent (cuts issues from the phases), and Soren (approves phase transitions).
+**Audience:** The implementing Director session running on the gateway machine (primary executor of this plan), the remote test session on EXAMPLE-PC, the Product Agent (cuts issues from the phases), and the maintainer (approves phase transitions).
 
 ## Related documents
 
@@ -16,7 +16,7 @@
 
 ## 1. Mission and operating context
 
-This plan upgrades the Director framework, Gateway, and Cockpit into the hands/brain/face target: a fleet one human supervises from anywhere. It is written to be **executed by agents, supervised by Soren**, under the CenCon method.
+This plan upgrades the Director framework, Gateway, and Cockpit into the hands/brain/face target: a fleet one human supervises from anywhere. It is written to be **executed by agents, supervised by the maintainer**, under the CenCon method.
 
 ### 1.1 Execution topology
 
@@ -24,7 +24,7 @@ This plan upgrades the Director framework, Gateway, and Cockpit into the hands/b
 |---|---|---|
 | **Implementing session(s)** | Director on the **gateway machine** | Full autonomy to start/stop the **Gateway and Cockpit** on that machine; start/stop Director **sessions** on both machines; build/deploy to agent slots (5+) |
 | **Remote test session** | Director on **EXAMPLE-PC** | Receives feature-verification handoffs; the "remote machine" in every cross-machine test; may start/stop Director sessions locally |
-| **Soren** | Anywhere (Cockpit) | Approves phase exits; answers `flow:needs-human`; final merge oversight per CenCon |
+| **the maintainer** | Anywhere (Cockpit) | Approves phase exits; answers `flow:needs-human`; final merge oversight per CenCon |
 
 ### 1.2 Standing rules for the implementing agents
 
@@ -151,9 +151,9 @@ Build [#243 per the existing plan](../plans/cc-launcher.md) (tray app, clean-par
 **Goal:** the trust ladder's top rung.
 
 - **Per-session voice polish:** dictate + spoken brief reliable end-to-end against remote machines (builds directly on Phase 2's dictation work).
-- **Fleet voice:** one conversation walking the NeedsYou queue, each item rendered from its Phase-4 option set ("Session 4, mindzie API, wants to delete the old migrations, I recommend yes - two similar approvals last week"); answers route as session input; fleet status rollup on demand. Constraint enforced: **no option set, no voice feature.**
+- **Fleet voice:** one conversation walking the NeedsYou queue, each item rendered from its Phase-4 option set ("Session 4, acmeflow API, wants to delete the old migrations, I recommend yes - two similar approvals last week"); answers route as session input; fleet status rollup on demand. Constraint enforced: **no option set, no voice feature.**
 - **Eyes-free requirements:** speakable one-line forms on every NeedsYou, enumerable options, spoken confirmation of every action taken.
-- **Exit criterion:** Soren clears a real NeedsYou queue (5+ items across both machines) by voice alone from a phone, hands- and eyes-free.
+- **Exit criterion:** the maintainer clears a real NeedsYou queue (5+ items across both machines) by voice alone from a phone, hands- and eyes-free.
 
 ---
 
@@ -209,7 +209,7 @@ Factory (factory.ai, "Droid") is the closest comparable: $1.5B valuation (Series
 - Each lettered item in Phase 1 (1A-1D) is one epic; cut 2-5 `flow:ready-dev` issues per epic with the acceptance lines above as the proof targets.
 - Phases gate sequentially, but issues within a phase parallelize across implementation loops (issue-level claims, #298, prevent collisions).
 - Every issue names its **cross-machine proof**: which machine exercises it, which machine hosts it, what the screenshot/report must show.
-- Phase exits are explicitly approved by Soren before the next phase's issues go `flow:ready-dev`.
+- Phase exits are explicitly approved by the maintainer before the next phase's issues go `flow:ready-dev`.
 
 ---
 
@@ -217,4 +217,4 @@ Factory (factory.ai, "Droid") is the closest comparable: $1.5B valuation (Series
 
 | Date | Author | Change |
 |---|---|---|
-| 2026-06-11 | Claude (with Soren) | Initial plan: desktop-Director-first Phase 1 (identity, REST audit, CC Launcher cross-machine, fallback hardening), then Cockpit reliability, brain consolidation, smart interface, voice, enrollment; execution topology + autonomy grants for the gateway-machine handoff |
+| 2026-06-11 | Claude (with the maintainer) | Initial plan: desktop-Director-first Phase 1 (identity, REST audit, CC Launcher cross-machine, fallback hardening), then Cockpit reliability, brain consolidation, smart interface, voice, enrollment; execution topology + autonomy grants for the gateway-machine handoff |

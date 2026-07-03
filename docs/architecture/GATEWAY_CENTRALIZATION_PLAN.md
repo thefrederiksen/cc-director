@@ -2,7 +2,7 @@
 
 **Status:** Proposed (planning)
 **Date:** 2026-06-22
-**Owner:** Soren
+**Owner:** the maintainer
 
 ## Goal
 

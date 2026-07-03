@@ -12,7 +12,7 @@ Scope: Windows only. macOS stays manual-install and cannot host the Gateway.
 > `%LOCALAPPDATA%\cc-director\gateway`, started at logon - no elevation anywhere
 > in the lifecycle. See docs/plans/gateway-tray-app.md (v2).
 
-This document records the decisions Soren and I agreed and turns them into a
+This document records the decisions the maintainer and I agreed and turns them into a
 concrete, phased implementation plan grounded in the code that exists today.
 
 ---

@@ -2,7 +2,7 @@
 
 **Status:** ACTIVE
 **Date:** 2026-05-20
-**Author:** Soren
+**Author:** the maintainer
 **Captured by:** claude (cc-director assistant)
 
 ## 1. Overview

@@ -164,7 +164,7 @@ The browser-facing surface is in place:
   `src/CcDirector.Gateway.Tests/DictationEndpointTests.cs`. Two pure
   protocol checks plus one full end-to-end roundtrip: client opens a
   WebSocket, sends Phase 0 `clip2.mp3` in 4 KB chunks, asserts the
-  cleaned transcript contains `ConPTY`, `Soren Frederiksen`, and
+  cleaned transcript contains `ConPTY`, `Example User`, and
   `Avalonia`. End-to-end test self-skips when `OPENAI_API_KEY` is not
   set so CI without credentials still passes.
 
@@ -299,7 +299,7 @@ listed as "still ahead" have all shipped:
 All 73 tests pass. End-to-end paths exercised against real APIs (gated
 on `OPENAI_API_KEY` so CI without credentials still passes).
 
-## What you (Soren) need to do for Phase 2
+## What you (the maintainer) need to do for Phase 2
 
 Phase 2 is the desktop microphone integration. It requires live testing
 on your hardware, which is why the goal doc reserved it for you.

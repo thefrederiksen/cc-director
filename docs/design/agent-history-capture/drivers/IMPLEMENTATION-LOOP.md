@@ -70,7 +70,7 @@ parsing of the specific store differs. Read the matching plan doc first:
    (NOT from this process - nested ConPTY kills grandchild agents). Read the Control API port from
    `%LOCALAPPDATA%\cc-director\logs\director\director-*-<PID>.log` (`Kestrel listening on ...`).
 2. Create a throwaway repo with a unique MARKER file. To dodge a per-root TRUST prompt, do NOT
-   `git init` it if it sits under an already-trusted ancestor (e.g. `c:\users\soren`); otherwise
+   `git init` it if it sits under an already-trusted ancestor (e.g. `c:\users\devuser`); otherwise
    pre-trust it.
 3. `POST /sessions` with the agent kind and the repo. **Use forward-slash paths in the JSON body** -
    backslashes break minimal-API binding (empty 400).

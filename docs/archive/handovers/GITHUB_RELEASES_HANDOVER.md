@@ -14,7 +14,7 @@
 
 | File | Change |
 |------|--------|
-| `tools/cc-setup/github_api.py` | Changed `REPO_OWNER` from `cc-director` to `thefrederiksen`, `REPO_NAME` from `cc-tools` to `cc-director` |
+| `tools/cc-setup/github_api.py` | Changed `REPO_OWNER` from `cc-director` to `example-org`, `REPO_NAME` from `cc-tools` to `cc-director` |
 | `README.md` | Updated download section to point to GitHub Releases page with table showing installer, main app, and tools |
 | `tools/cc-photos/cc-photos.spec` | Fixed `cc-vault_path` variable name (dash is subtraction in Python, renamed to `cc_vault_path`) |
 | `tools/cc-docgen/pyproject.toml` | Fixed package name from `cc-docgen` to `cc_docgen` (dashes invalid in Python imports) |
@@ -48,8 +48,8 @@ git push origin v1.2.0
 
 - Tags containing `-` (like `v1.2.0-beta`) are marked as prereleases
 - Tags without `-` (like `v1.2.0`) are full releases
-- Watch progress at: https://github.com/thefrederiksen/cc-director/actions
-- Release appears at: https://github.com/thefrederiksen/cc-director/releases
+- Watch progress at: https://github.com/example-org/devthrottle/actions
+- Release appears at: https://github.com/example-org/devthrottle/releases
 
 ### What Gets Published
 
@@ -68,7 +68,7 @@ Three test runs were needed to get it working:
 2. `v1.1.0-test2` -- Failed: zip command used relative paths in Create Release job
 3. `v1.1.0-test3` -- **Success**: all 6 jobs passed, 26 assets published
 
-The successful prerelease is at: https://github.com/thefrederiksen/cc-director/releases/tag/v1.1.0-test3
+The successful prerelease is at: https://github.com/example-org/devthrottle/releases/tag/v1.1.0-test3
 
 ---
 
@@ -97,7 +97,7 @@ Check the Python tools build log for `v1.1.0-test3` to see which tools were skip
 
 ### 3. Update cc-setup to Download from Releases
 
-`tools/cc-setup/github_api.py` now points to `thefrederiksen/cc-director`. But cc-setup's installer logic may need updates to handle:
+`tools/cc-setup/github_api.py` now points to `example-org/devthrottle`. But cc-setup's installer logic may need updates to handle:
 
 - `.zip` files for .NET and Node.js tools (currently expects only `.exe` files)
 - Unzipping to `_cc-click/`, `_cc-browser/` directories

@@ -89,7 +89,7 @@
   </table>
 
   <div class="note">
-    Emulator caveat: the app targets a Tailscale-connected device, and the emulator is not a tailnet node. To load the roster I pointed it at the host Gateway over HTTP (<code>http://10.0.2.2:7878</code>) and temporarily enabled Android cleartext traffic for the test (reverted afterward - production uses HTTPS/tailnet). Per-session data over the tailnet endpoints is therefore empty on the emulator (e.g. "No clean output yet"), but every tab layout renders. The real end-to-end data path is proven on the desktop above (same backend) and on Soren's tailnet-connected phone.
+    Emulator caveat: the app targets a Tailscale-connected device, and the emulator is not a tailnet node. To load the roster I pointed it at the host Gateway over HTTP (<code>http://10.0.2.2:7878</code>) and temporarily enabled Android cleartext traffic for the test (reverted afterward - production uses HTTPS/tailnet). Per-session data over the tailnet endpoints is therefore empty on the emulator (e.g. "No clean output yet"), but every tab layout renders. The real end-to-end data path is proven on the desktop above (same backend) and on the maintainer's tailnet-connected phone.
   </div>
 
   <h2>Terminal tab</h2>

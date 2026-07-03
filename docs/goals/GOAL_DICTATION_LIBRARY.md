@@ -29,9 +29,9 @@ result.
 1. Generate three short test audio clips using OpenAI TTS (cc-director
    already has `TtsService` in `src/CcDirector.Core/Voice/`). Each clip
    should contain a different sentence that uses two or more of these
-   terms: `mindzie`, `CenCon`, `ConPTY`, `cc-director`, `Avalonia`,
-   `Soren Frederiksen`. Example sentence: "I sent the cc-director patch
-   to mindzie before the CenCon review."
+   terms: `acmeflow`, `CenCon`, `ConPTY`, `cc-director`, `Avalonia`,
+   `Example User`. Example sentence: "I sent the cc-director patch
+   to acmeflow before the CenCon review."
 
 2. Transcribe each clip through the OpenAI Realtime API (gpt-4o-transcribe)
    three ways:

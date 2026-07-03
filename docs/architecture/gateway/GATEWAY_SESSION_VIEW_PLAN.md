@@ -128,7 +128,7 @@ Make the Gateway's `/` show **every session across the fleet** in card or list v
 |  ------------------------------------------------------------------------------  |
 |  +-------------------+  +-------------------+  +-------------------+             |
 |  | (R) fix raw tab.. |  | (G) rename hotkey |  | (Y) (unnamed)     |             |
-|  | ClaudeCode * cc-..|  | Pi * private/ass..|  | Codex * mindzieETL|             |
+|  | ClaudeCode * cc-..|  | Pi * private/ass..|  | Codex * sampleETL|             |
 |  | Waiting for input |  | Idle              |  | Working           |             |
 |  | 2m                |  | 18m               |  | 4s                |             |
 |  | [ Open -> ]       |  | [ Open -> ]       |  | [ Open -> ]       |             |
@@ -237,4 +237,4 @@ Make the Gateway's `/` show **every session across the fleet** in card or list v
 
 | Date | Author | Change |
 |---|---|---|
-| 2026-05-21 | claude (cc-director assistant) | Initial PLANNED. Confirmed with Soren: info-rich cards 3/row, exited hidden by default with toggle, `LastActivityAt` added now. |
+| 2026-05-21 | claude (cc-director assistant) | Initial PLANNED. Confirmed with the maintainer: info-rich cards 3/row, exited hidden by default with toggle, `LastActivityAt` added now. |

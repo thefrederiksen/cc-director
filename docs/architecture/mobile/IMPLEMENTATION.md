@@ -2,7 +2,7 @@
 
 Status: ready to implement (2026-06-28)
 Architecture: see `mobile-app-architecture.html` in this folder (the diagrams and rationale).
-Tracker repo: `thefrederiksen/devthrottle` (the GitHub repo; the old name `thefrederiksen/cc-director`
+Tracker repo: `example-org/devthrottle` (the GitHub repo; the old name `example-org/devthrottle`
 still redirects to it, so CenCon skills that name `cc-director` resolve correctly).
 
 This document turns the architecture decision into a concrete, phased build plan. It is written so an
@@ -157,7 +157,7 @@ running Director, each acceptance criterion shown Expected vs Actual, plus the H
 ## 6. Deploy and QA report (autonomous run)
 
 After the implementation loop merges an issue to main on a clean QA pass, this machine
-(`SOREN_NORTH`) deploys and reports:
+(`MACHINE_A`) deploys and reports:
 - **Deploy:** rebuild and deploy the affected surface with the repo's own scripts -
   `scripts/redeploy-gateway.ps1` (Gateway serves the mobile app) and/or
   `scripts/deploy-cockpit.ps1`. Verify with `scripts/verify-gateway.ps1`. (A robocopy exit code 1 is
@@ -185,8 +185,8 @@ The vanilla app stays as the behavioral spec until its behavior is ported.
 
 ## 8. Caveats captured for the autonomous run
 
-- **Repo name:** issues live in `thefrederiksen/devthrottle`; the CenCon skills say
-  `thefrederiksen/cc-director`, which GitHub redirects to `devthrottle` (verified), so `gh` resolves
+- **Repo name:** issues live in `example-org/devthrottle`; the CenCon skills say
+  `example-org/devthrottle`, which GitHub redirects to `devthrottle` (verified), so `gh` resolves
   correctly either way.
 - **New toolchain:** this introduces Node/npm + a React/TS build to a C#-centric repo. The DEV phase
   installs Node on the build machine if absent and sets up the Vite project; the QA proof bar is

@@ -17,57 +17,57 @@ Pass criterion: every expected company term appears in the variant 3 transcript 
 
 ### Clip 1
 
-Expected sentence: `I sent the cc-director patch to mindzie before the CenCon review.`
+Expected sentence: `I sent the cc-director patch to acmeflow before the CenCon review.`
 
-Expected company terms: mindzie, CenCon, cc-director
+Expected company terms: acmeflow, CenCon, cc-director
 
-**no_prompt** [MISSING: mindzie, CenCon, cc-director]
+**no_prompt** [MISSING: acmeflow, CenCon, cc-director]
 
-> I sent the CC Director patch to Minzy before the SenCon review.
+> I sent the CC Director patch to Akmeflow before the SenCon review.
 
 **with_prompt** [OK]
 
-> I sent the cc-director patch to mindzie before the CenCon review.
+> I sent the cc-director patch to acmeflow before the CenCon review.
 
 **with_prompt_plus_cleanup** [OK]
 
-> I sent the cc-director patch to mindzie before the CenCon review.
+> I sent the cc-director patch to acmeflow before the CenCon review.
 
 ### Clip 2
 
-Expected sentence: `Soren Frederiksen needs the Avalonia changes for ConPTY tested by Friday.`
+Expected sentence: `Example User needs the Avalonia changes for ConPTY tested by Friday.`
 
-Expected company terms: ConPTY, Avalonia, Soren Frederiksen
+Expected company terms: ConPTY, Avalonia, Example User
 
-**no_prompt** [MISSING: ConPTY, Soren Frederiksen]
+**no_prompt** [MISSING: ConPTY, Example User]
 
-> Soren Fredriksen needs the Avalonia changes for ContUI tested by Friday.
+> Example Usar needs the Avalonia changes for ContUI tested by Friday.
 
 **with_prompt** [MISSING: ConPTY]
 
-> Soren Frederiksen needs the Avalonia changes for ConUI tested by Friday.
+> Example User needs the Avalonia changes for ConUI tested by Friday.
 
 **with_prompt_plus_cleanup** [OK]
 
-> Soren Frederiksen needs the Avalonia changes for ConPTY tested by Friday.
+> Example User needs the Avalonia changes for ConPTY tested by Friday.
 
 ### Clip 3
 
-Expected sentence: `Tell mindzie that the CenCon report is ready and ping the cc-director gateway team.`
+Expected sentence: `Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.`
 
-Expected company terms: mindzie, CenCon, cc-director
+Expected company terms: acmeflow, CenCon, cc-director
 
-**no_prompt** [MISSING: mindzie, CenCon, cc-director]
+**no_prompt** [MISSING: acmeflow, CenCon, cc-director]
 
 > Tell Minzi that the Sencon report is ready and ping the CC director gateway team.
 
 **with_prompt** [OK]
 
-> Tell mindzie that the CenCon report is ready and ping the cc-director gateway team.
+> Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.
 
 **with_prompt_plus_cleanup** [OK]
 
-> Tell mindzie that the CenCon report is ready and ping the cc-director gateway team.
+> Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.
 
 ## Interpretation
 

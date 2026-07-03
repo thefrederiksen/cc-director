@@ -187,16 +187,16 @@ Build and launch through the allocated slot. Do not use the user's long-lived sl
 
 ## Issue Breakdown
 
-1. [#748](https://github.com/thefrederiksen/devthrottle/issues/748) - Strengthen plugin contract to own settings, detection, launch, and history metadata.
-2. [#749](https://github.com/thefrederiksen/devthrottle/issues/749) - Move Settings dialog and settings Control API fully to plugin metadata.
-3. [#750](https://github.com/thefrederiksen/devthrottle/issues/750) - Move desktop and Control API launch creation fully to plugins.
-4. [#751](https://github.com/thefrederiksen/devthrottle/issues/751) - Convert Claude Code to a concrete plugin.
-5. [#752](https://github.com/thefrederiksen/devthrottle/issues/752) - Convert Cursor to a concrete plugin.
-6. [#753](https://github.com/thefrederiksen/devthrottle/issues/753) - Convert Copilot to a concrete plugin.
-7. [#754](https://github.com/thefrederiksen/devthrottle/issues/754) - Convert Pi to a concrete plugin.
-8. [#755](https://github.com/thefrederiksen/devthrottle/issues/755) - Convert Gemini to a concrete plugin.
-9. [#756](https://github.com/thefrederiksen/devthrottle/issues/756) - Convert OpenCode to a concrete plugin.
-10. [#757](https://github.com/thefrederiksen/devthrottle/issues/757) - Convert Grok to a concrete plugin.
-11. [#758](https://github.com/thefrederiksen/devthrottle/issues/758) - Add external DLL plugin loading.
-12. [#759](https://github.com/thefrederiksen/devthrottle/issues/759) - Remove legacy central catalog/driver switch code.
-13. [#760](https://github.com/thefrederiksen/devthrottle/issues/760) - Produce final all-agents plugin QA report with screenshots.
+1. [#748](https://github.com/example-org/devthrottle/issues/748) - Strengthen plugin contract to own settings, detection, launch, and history metadata.
+2. [#749](https://github.com/example-org/devthrottle/issues/749) - Move Settings dialog and settings Control API fully to plugin metadata.
+3. [#750](https://github.com/example-org/devthrottle/issues/750) - Move desktop and Control API launch creation fully to plugins.
+4. [#751](https://github.com/example-org/devthrottle/issues/751) - Convert Claude Code to a concrete plugin.
+5. [#752](https://github.com/example-org/devthrottle/issues/752) - Convert Cursor to a concrete plugin.
+6. [#753](https://github.com/example-org/devthrottle/issues/753) - Convert Copilot to a concrete plugin.
+7. [#754](https://github.com/example-org/devthrottle/issues/754) - Convert Pi to a concrete plugin.
+8. [#755](https://github.com/example-org/devthrottle/issues/755) - Convert Gemini to a concrete plugin.
+9. [#756](https://github.com/example-org/devthrottle/issues/756) - Convert OpenCode to a concrete plugin.
+10. [#757](https://github.com/example-org/devthrottle/issues/757) - Convert Grok to a concrete plugin.
+11. [#758](https://github.com/example-org/devthrottle/issues/758) - Add external DLL plugin loading.
+12. [#759](https://github.com/example-org/devthrottle/issues/759) - Remove legacy central catalog/driver switch code.
+13. [#760](https://github.com/example-org/devthrottle/issues/760) - Produce final all-agents plugin QA report with screenshots.

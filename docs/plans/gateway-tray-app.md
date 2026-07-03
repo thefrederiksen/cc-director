@@ -1,6 +1,6 @@
 # Gateway Tray App - v2: the tray app becomes THE Gateway (service retired)
 
-**Status:** v2 PLAN agreed 2026-06-05 (Soren + agent), not built.
+**Status:** v2 PLAN agreed 2026-06-05 (the maintainer + agent), not built.
 **History:** v1 (2026-05-24, below this was originally written) built the tray app
 as `CcDirector.GatewayApp` (#140). The first-install work (2026-06-01) then moved
 the shipped Gateway to a native LocalSystem Windows service (first-install.md
@@ -18,7 +18,7 @@ makes that true.
 
 The Gateway is becoming the smart layer of the fleet: it will host a warm headless
 claude session (the Agent Brain) that stamps a Turn Brief for every turn. That
-claude must authenticate with Soren's Max OAuth credentials, which live in
+claude must authenticate with the maintainer's Max OAuth credentials, which live in
 `%USERPROFILE%\.claude` - the USER's profile.
 
 The shipped Gateway runs as `cc-gateway-service`, a LocalSystem service
@@ -26,12 +26,12 @@ The shipped Gateway runs as `cc-gateway-service`, a LocalSystem service
 credentials and lives in session 0 - the exact unverified context issue #172
 deferred. Alternatives weighed 2026-06-05:
 
-- **Service under Soren's account:** requires the Windows password at install;
+- **Service under the maintainer's account:** requires the Windows password at install;
   a later password change makes the service silently fail at next start (logon
   failure) until re-entered. Rejected: silent time bomb.
 - **LocalSystem + redirecting claude's config dir to the user profile:**
   fallback-flavored hack (ownership, ACLs, divergent transcript paths). Rejected.
-- **Tray app in the user session, started at logon:** claude runs as Soren with
+- **Tray app in the user session, started at logon:** claude runs as the maintainer with
   zero ceremony. The fleet is already logon-bound (Directors are desktop apps),
   so the service's only advantage - running before logon - protects a state
   where everything the Gateway serves is dead anyway. **Chosen.**
@@ -63,7 +63,7 @@ What ships today instead: `CcDirector.Gateway` console exe registered via
    `GatewayHost`; run it; confirm Cockpit supervision (7470), /healthz, Director
    registration, comm queue, recordings behave identically to the service.
    (Note: full-solution builds are currently blocked by a running dev Gateway
-   holding bin\ file locks - Soren closes that process first.)
+   holding bin\ file locks - the maintainer closes that process first.)
 2. **New identity.** New Gateway application icon + matching tray icon
    (VisualStyle.md). The Gateway gets its own look, distinct from the Director.
 3. **Settings window.** Avalonia window from the tray menu ("Settings...").
@@ -78,7 +78,7 @@ What ships today instead: `CcDirector.Gateway` console exe registered via
 
 ## 4. Phase 2 - Installer / updater switch
 
-**No backward compatibility (Soren, 2026-06-05): the service Gateway has no real
+**No backward compatibility (the maintainer, 2026-06-05): the service Gateway has no real
 install base. The installer simply switches to the tray app; service code is
 DELETED, not migrated.** The only service instance anywhere is the dev one on
 machine-a - removed by hand once (`sc stop` + `sc delete cc-gateway-service`,

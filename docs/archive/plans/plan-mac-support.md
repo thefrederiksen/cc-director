@@ -396,7 +396,7 @@ Windows Subsystem for Linux lets you test Linux PTY code locally:
 wsl --install -d Ubuntu
 
 # Inside WSL
-cd /mnt/d/ReposFred/cc_director
+cd /mnt/d/ReposExample/cc_director
 dotnet build src/CcDirector.Core/
 dotnet test src/CcDirector.Core.Tests/ --filter "Category=UnixPty"
 ```

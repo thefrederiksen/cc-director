@@ -119,7 +119,7 @@ Each Director writes its own `{guid}.json` on startup:
   "startedAt": "2026-05-16T10:36:00Z",
   "controlEndpoint": "http://127.0.0.1:55321",
   "machineName": "MACHINE-A",
-  "user": "soren",
+  "user": "devuser",
   "schemaVersion": 1
 }
 ```

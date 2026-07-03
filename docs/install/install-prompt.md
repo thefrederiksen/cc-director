@@ -14,9 +14,9 @@ Install the latest release of DevThrottle on THIS machine. You are doing the ins
 no installer wizard, no admin/sudo. Detect the OS and follow the matching section. STOP with a
 clear message if any step fails; do not silently work around it or build from source.
 
-REPO: github.com/thefrederiksen/devthrottle
-Find the latest release - prefer `gh release view --repo thefrederiksen/devthrottle --json tagName,assets`,
-else the public API https://api.github.com/repos/thefrederiksen/devthrottle/releases/latest. It must
+REPO: github.com/example-org/devthrottle
+Find the latest release - prefer `gh release view --repo example-org/devthrottle --json tagName,assets`,
+else the public API https://api.github.com/repos/example-org/devthrottle/releases/latest. It must
 include `release-manifest.json` plus this OS's asset below. ALWAYS verify the downloaded asset's
 SHA-256 against the manifest's entry for that asset before installing; mismatch = STOP.
 

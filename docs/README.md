@@ -37,5 +37,5 @@ Public documentation for DevThrottle (the cc-director desktop app). It is served
 
 ## Where to Get Help
 
-- Report a bug or request a feature on the [GitHub issue tracker](https://github.com/thefrederiksen/devthrottle/issues).
-- Ask a question or share your setup in [Discussions](https://github.com/thefrederiksen/devthrottle/discussions).
+- Report a bug or request a feature on the [GitHub issue tracker](https://github.com/example-org/devthrottle/issues).
+- Ask a question or share your setup in [Discussions](https://github.com/example-org/devthrottle/discussions).

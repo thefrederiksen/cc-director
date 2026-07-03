@@ -92,7 +92,7 @@ http://localhost:5555/api/
 ```json
 POST /api/sessions
 {
-  "repoPath": "D:\\ReposFred\\my-project",
+  "repoPath": "D:\\ReposExample\\my-project",
   "name": "my-project"
 }
 
@@ -100,7 +100,7 @@ Response:
 {
   "id": "abc123",
   "name": "my-project",
-  "repoPath": "D:\\ReposFred\\my-project",
+  "repoPath": "D:\\ReposExample\\my-project",
   "status": "Starting"
 }
 ```

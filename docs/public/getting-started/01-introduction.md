@@ -75,7 +75,7 @@ Features graduate out of alpha once they have been verified to work reliably.
 
 ## Open Source
 
-DevThrottle is fully open source. You can browse the code, submit issues, and contribute at [github.com/thefrederiksen/devthrottle](https://github.com/thefrederiksen/devthrottle).
+DevThrottle is fully open source. You can browse the code, submit issues, and contribute at [github.com/example-org/devthrottle](https://github.com/example-org/devthrottle).
 
 ## Next Steps
 

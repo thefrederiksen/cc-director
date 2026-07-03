@@ -85,7 +85,7 @@ That is now resolved across the board:
 
 ## Remaining
 
-- On-device E2E on the phone (the usual Soren step): say "Hey wingman, read me the whole
+- On-device E2E on the phone (the usual the maintainer step): say "Hey wingman, read me the whole
   article" and confirm it reads the real text aloud; confirm an ordinary instruction
   still goes to the agent.
 - Phase 5 (an automatic spoken "done vs working" cue) was deferred: the wingman channel

@@ -102,7 +102,7 @@ This downloads all tools from GitHub releases, places them in `%LOCALAPPDATA%\cc
 
 ### macOS
 
-On macOS, use the **DevThrottle Setup** app instead: download `devthrottle-setup-mac-arm64.zip` from the [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest), unzip it, and right-click -> Open (it is ad-hoc-signed, so Gatekeeper asks once). The wizard installs the Director to `~/Applications`, installs every `cc-*` tool into one shared Python environment under `~/Library/Application Support/cc-director`, and symlinks the tools into `~/.local/bin` (added to your shell `PATH`). Apple Silicon only; Workstation-only (no Gateway on macOS).
+On macOS, use the **DevThrottle Setup** app instead: download `devthrottle-setup-mac-arm64.zip` from the [latest release](https://github.com/example-org/devthrottle/releases/latest), unzip it, and right-click -> Open (it is ad-hoc-signed, so Gatekeeper asks once). The wizard installs the Director to `~/Applications`, installs every `cc-*` tool into one shared Python environment under `~/Library/Application Support/cc-director`, and symlinks the tools into `~/.local/bin` (added to your shell `PATH`). Apple Silicon only; Workstation-only (no Gateway on macOS).
 
 ### Verify installation
 
@@ -119,7 +119,7 @@ cc-hardware
 Clone the repository and build:
 
 ```bash
-git clone https://github.com/thefrederiksen/devthrottle.git
+git clone https://github.com/example-org/devthrottle.git
 cd cc-director
 dotnet build src/CcDirector.Wpf/CcDirector.Wpf.csproj
 ```

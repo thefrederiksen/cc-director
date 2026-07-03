@@ -73,7 +73,7 @@ The model NEVER outputs the text. It returns a JSON edit document:
 ```json
 { "edits": [
   { "find": "See Director", "replace": "cc-director" },
-  { "find": "Minzy",        "replace": "mindzie" }
+  { "find": "Akmeflow",        "replace": "acmeflow" }
 ] }
 ```
 
@@ -133,10 +133,10 @@ of the following hold; everything else is rejected WITH A REASON and logged:
 
    This blocks meaning flips. Calibration from the production dictionary:
    every listed wrong-form pair passes (via the listed-form rule - some,
-   like "Mind Seeds" -> mindzie at 0.50 similarity, NEED that rule);
+   like "Acme Seeds" -> acmeflow at 0.50 similarity, NEED that rule);
    logged corruptions "Claude" -> cc-director (0.18) and
    "conformance" -> CenCon (0.36) are blocked; novel phonetic variants
-   ("Sensecon" -> CenCon 0.625, "mind zee" -> mindzie 0.75) pass.
+   ("Sensecon" -> CenCon 0.625, "mind zee" -> acmeflow 0.75) pass.
 6. Total accepted edits capped (16). No-op edits (find == replace) are
    dropped silently.
 

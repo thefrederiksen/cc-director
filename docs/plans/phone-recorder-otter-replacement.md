@@ -2,7 +2,7 @@
 
 ## Status: IMPLEMENTED (server + app), pending hardware verification
 
-Owner: Soren. Designed and implemented 2026-05-23.
+Owner: the maintainer. Designed and implemented 2026-05-23.
 
 Implementation report (screenshots + test instructions):
 `docs/features/phone-recorder/REPORT.html`. Server pipeline and Android app
@@ -54,7 +54,7 @@ that feeds existing code.
 | `DictationSession` facade | `src/CcDirector.Core/Dictation/DictationSession.cs` | Drive transcription of each uploaded chunk |
 | `OpenAiTranscriptionProvider` (batch) | `src/CcDirector.Core/Dictation/Providers/OpenAiTranscriptionProvider.cs` | Transcribe a finalized audio file via `/v1/audio/transcriptions`. This is the right provider for file ingest (NOT the realtime one). |
 | `CleanupOrchestrator` | `src/CcDirector.Core/Dictation/CleanupOrchestrator.cs` | gpt-4o-mini cleanup pass with vocabulary + known-mistranscription glossary |
-| `DictionaryLoader` + dictionary YAML | `src/CcDirector.Core/Dictation/` | Company-term vocabulary bias (ConPTY, Avalonia, mindzie, etc.) |
+| `DictionaryLoader` + dictionary YAML | `src/CcDirector.Core/Dictation/` | Company-term vocabulary bias (ConPTY, Avalonia, acmeflow, etc.) |
 | `AudioBuffer` (disk spill) | `src/CcDirector.Core/Dictation/AudioBuffer.cs` | Reference for the crash-safe / chunked philosophy; the phone mirrors this on-device |
 | Gateway endpoint pattern | `src/CcDirector.Gateway/Api/GatewayEndpoints.cs` | Where the new `/ingest/*` routes are mapped |
 | Gateway auth (token) + Tailscale Serve | `src/CcDirector.Gateway/Tailscale/`, `docs/plans/phase1-https-via-tailscale.md` | The HTTPS-only remote path the phone uploads over |
@@ -68,7 +68,7 @@ model choice, and the wire protocol of the existing `/dictate` WebSocket.
 
 ## Key decisions (already made, with rationale)
 
-These are decided. Implement them as written unless Soren overrides.
+These are decided. Implement them as written unless the maintainer overrides.
 
 ### 1. Native Android app, built with .NET MAUI
 
@@ -160,7 +160,7 @@ seconds of a call while typing a title is unacceptable for the use case.
 
 ### 7. Distribution: sideloaded signed APK
 
-The dev agent produces a signed APK that Soren copies to the phone and
+The dev agent produces a signed APK that the maintainer copies to the phone and
 installs (with "install unknown apps" enabled). No Play Store account, no
 review cycle. Updates = build and install a new APK. This is a personal
 single-user tool; the Play Store internal-track path was considered and
@@ -313,7 +313,7 @@ surfacing, optional auto-upload-on-wifi-only, manifest versioning.
 
 ## Decisions resolved (no open questions)
 
-Soren answered all five open questions on 2026-05-23. They are now folded
+the maintainer answered all five open questions on 2026-05-23. They are now folded
 into the Decisions section above and recorded here for traceability:
 
 1. **Vault destination:** dedicated transcripts collection/catalog, NOT

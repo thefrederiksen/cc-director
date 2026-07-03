@@ -19,7 +19,7 @@ prerequisites for you — it checks for them and tells you what is missing.
 
 ## Getting the installer
 
-1. Open the [latest release](https://github.com/thefrederiksen/devthrottle/releases/latest)
+1. Open the [latest release](https://github.com/example-org/devthrottle/releases/latest)
    on GitHub.
 2. Download two files: **`devthrottle-setup-win-x64.exe`** and **`release-manifest.json`**.
 3. **Verify the download** before running it. Compare the installer's SHA-256 hash to

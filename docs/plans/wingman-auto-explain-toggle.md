@@ -282,7 +282,7 @@ the FIFO experience is roughly 2--8s.
 
 - Does not add a new `ActivityState`. The byte-only state machine stays as is.
 - Does not change `QuietThreshold`. (Transcript said 5s; real value is 10s.
-  Tuning is a separate question if Soren wants it.)
+  Tuning is a separate question if the maintainer wants it.)
 - Does not change how the briefing prompt is built or what model it uses.
 - Does not introduce per-user overrides or scheduling -- one toggle per session.
 - Does not back-port Yellow to past sessions: starts fresh on the next turn.

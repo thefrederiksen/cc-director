@@ -258,7 +258,7 @@ of each concern.
 
 ---
 
-## 9. Open Questions for Soren
+## 9. Open Questions for the maintainer
 
 1. Decision 1: separate durable `VoiceMode` flag (Option 1, recommended) vs redefine
    `ViewMode` (Option 2)?

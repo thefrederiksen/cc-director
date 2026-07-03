@@ -71,7 +71,7 @@ Inventory of the Gateway's embedded Web/ pages and their fates:
 Desktop note: the Avalonia Director's embedded Gateway view loads
 `/legacy-manager` today. With it deleted, that WebView points at the front door
 (the Cockpit) instead - one-line change - or the tab is removed entirely.
-**(D-ONEURL-1, Soren's call when we get there.)**
+**(D-ONEURL-1, the maintainer's call when we get there.)**
 
 ## 4. Phase 3 - Verify
 
@@ -104,7 +104,7 @@ Desktop note: the Avalonia Director's embedded Gateway view loads
   loopback-only.
 - The Gateway serves no HTML UI; the Cockpit is the ONLY web UI. The Cards
   dashboard stays a web page, served by the Cockpit as a Blazor page
-  (clarified by Soren 2026-06-05 - NOT a native Avalonia view; the tray
+  (clarified by the maintainer 2026-06-05 - NOT a native Avalonia view; the tray
   window stays just Settings/status).
 - OPEN: D-ONEURL-1 (desktop Director's embedded gateway view: re-point at the
   Cockpit vs remove the tab).

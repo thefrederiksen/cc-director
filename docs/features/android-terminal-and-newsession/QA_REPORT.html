@@ -161,13 +161,13 @@
   </figure>
   <figure>
     <img src="shots/06_newsession_machines.png" alt="Machine and repo pickers">
-    <figcaption><b>Machine + repo pickers.</b> "3 machine(s)" listed; the most-recent (SOREN, v0.6.17) is
+    <figcaption><b>Machine + repo pickers.</b> "3 machine(s)" listed; the most-recent (MACHINE_B, v0.6.17) is
       auto-selected (orange) and its 2 recent repos (<span class="mono">trading-live</span>,
       <span class="mono">cc-director</span>) loaded automatically.</figcaption>
   </figure>
   <figure>
-    <img src="shots/07_newsession_sorennorth.png" alt="Switching machine reloads repos">
-    <figcaption><b>Per-machine repos.</b> Selecting a different machine (SOREN_NORTH, v0.6.9) reloads its list -
+    <img src="shots/07_newsession_devusernorth.png" alt="Switching machine reloads repos">
+    <figcaption><b>Per-machine repos.</b> Selecting a different machine (MACHINE_A, v0.6.9) reloads its list -
       now "72 recent repo(s)" - proving the repo list is fetched per Director, not shared.</figcaption>
   </figure>
   <figure>
@@ -201,12 +201,12 @@ file changed here.</p>
 <div class="card">
   <p class="kv"><b>Environment.</b> Android emulator <code>emulator-5554</code>; app pointed at a live Gateway via
     <code>adb reverse tcp:7878</code> (gateway) and <code>tcp:7889</code> (local Director). The gateway reported 3
-    real Directors (SOREN, SOREN_NORTH, EXAMPLE-PC).</p>
+    real Directors (MACHINE_B, MACHINE_A, EXAMPLE-PC).</p>
   <p class="kv"><b>Scope notes (honest).</b></p>
   <ul class="tight">
     <li>The <b>terminal stream</b> and the <b>end-to-end create</b> were exercised against the <b>local development
-      Director</b> (SOREN_NORTH, <code>127.0.0.1:7889</code>), the only Director reachable from the emulator without
-      Tailscale. Remote Directors (SOREN, EXAMPLE-PC) are tailnet HTTPS endpoints; on a real phone the device is on
+      Director</b> (MACHINE_A, <code>127.0.0.1:7889</code>), the only Director reachable from the emulator without
+      Tailscale. Remote Directors (MACHINE_B, EXAMPLE-PC) are tailnet HTTPS endpoints; on a real phone the device is on
       the tailnet and reaches them directly - that path is the same code, not separately re-run here.</li>
     <li>The create test used a throwaway folder <code>C:\repos\_qa_newsession_test</code>. <b>Cleanup done:</b>
       the session was killed + removed (<code>DELETE /sessions/{sid}</code> -> <code>{"killed":true,"removed":true}</code>),
@@ -226,8 +226,8 @@ new session from a recent repo works from machine pick through to the live termi
 
 <div class="foot">
   CC Director Client - Android QA. Issues
-  <a href="https://github.com/thefrederiksen/cc-director/issues/244">#244</a> and
-  <a href="https://github.com/thefrederiksen/cc-director/issues/245">#245</a>.
+  <a href="https://github.com/example-org/devthrottle/issues/244">#244</a> and
+  <a href="https://github.com/example-org/devthrottle/issues/245">#245</a>.
   Screenshots in <code>shots/</code>.
 </div>
 

@@ -39,7 +39,7 @@ Two ways to reach it:
    Wingman instead of the agent.
 2. A dedicated Ask-Wingman button for when you would rather not say the phrase.
 
-## 3. Decisions already locked (from review with Soren)
+## 3. Decisions already locked (from review with the maintainer)
 
 - **No Haiku anywhere in this feature.** The Wingman ask and any LLM call involved in
   routing to it run on the strong model (opus). Today `AskAboutSessionAsync` uses
@@ -168,7 +168,7 @@ independent and optional.
   deliberate default, not a silent fallback.
 - Remote access stays HTTPS-only via Tailscale; no new plain-HTTP surface.
 
-## 9. Open Questions for Soren
+## 9. Open Questions for the maintainer
 1. Retire the legacy terse free-text `BuildAskPrompt` path entirely (recommended: yes,
    so there is one ask behavior and zero haiku), or keep it as a separate fast path?
 2. Include Phase 5 (spoken "done vs working" cue) in this work, or track it separately?

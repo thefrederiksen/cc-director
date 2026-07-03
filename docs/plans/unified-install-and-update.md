@@ -2,7 +2,7 @@
 
 **Status:** DRAFT / SPEC (not yet implemented)
 **Date:** 2026-05-31
-**Author:** Soren
+**Author:** the maintainer
 **Related:** [docs/PHILOSOPHY.md](../PHILOSOPHY.md), GitHub tracking issue (see top of repo issues), [docs/install/install-prompt.md](../install/install-prompt.md)
 
 ## Goal

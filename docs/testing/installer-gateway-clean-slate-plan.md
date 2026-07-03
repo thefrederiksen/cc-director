@@ -105,4 +105,4 @@ source going forward.
 - Repo: C:\repos\cc-director
 - Mission: execute this plan; resolve the env-var-vs-vault seam; keep
   INSTALLATION.md authoritative; never kill the user's Director processes; HOLD on
-  the destructive steps (section 1+) until Soren explicitly says go.
+  the destructive steps (section 1+) until the maintainer explicitly says go.

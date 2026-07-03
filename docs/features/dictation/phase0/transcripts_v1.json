@@ -1,55 +1,55 @@
 [
   {
     "clip": 1,
-    "expected_sentence": "I sent the cc-director patch to mindzie before the CenCon review.",
+    "expected_sentence": "I sent the cc-director patch to acmeflow before the CenCon review.",
     "expected_terms": [
-      "mindzie",
+      "acmeflow",
       "CenCon",
       "cc-director"
     ],
     "variants": {
       "no_prompt": {
-        "transcript": "I sent the CC Director patch to Minzy before the SENCON review.",
+        "transcript": "I sent the CC Director patch to Akmeflow before the SENCON review.",
         "missing_terms": [
-          "mindzie",
+          "acmeflow",
           "CenCon",
           "cc-director"
         ]
       },
       "with_prompt": {
-        "transcript": "I sent the cc-director patch to mindzie before the CenCon review.",
+        "transcript": "I sent the cc-director patch to acmeflow before the CenCon review.",
         "missing_terms": []
       },
       "with_prompt_plus_cleanup": {
-        "transcript": "I sent the cc-director patch to mindzie before the CenCon review.",
+        "transcript": "I sent the cc-director patch to acmeflow before the CenCon review.",
         "missing_terms": []
       }
     }
   },
   {
     "clip": 2,
-    "expected_sentence": "Soren Frederiksen needs the Avalonia changes for ConPTY tested by Friday.",
+    "expected_sentence": "Example User needs the Avalonia changes for ConPTY tested by Friday.",
     "expected_terms": [
       "ConPTY",
       "Avalonia",
-      "Soren Frederiksen"
+      "Example User"
     ],
     "variants": {
       "no_prompt": {
-        "transcript": "Soren Fredriksen needs the Avalonia changes for ContUI tested by Friday.",
+        "transcript": "Example Usar needs the Avalonia changes for ContUI tested by Friday.",
         "missing_terms": [
           "ConPTY",
-          "Soren Frederiksen"
+          "Example User"
         ]
       },
       "with_prompt": {
-        "transcript": "Soren Frederiksen needs the Avalonia changes for Contui tested by Friday.",
+        "transcript": "Example User needs the Avalonia changes for Contui tested by Friday.",
         "missing_terms": [
           "ConPTY"
         ]
       },
       "with_prompt_plus_cleanup": {
-        "transcript": "Soren Frederiksen needs the Avalonia changes for Contui tested by Friday.",
+        "transcript": "Example User needs the Avalonia changes for Contui tested by Friday.",
         "missing_terms": [
           "ConPTY"
         ]
@@ -58,27 +58,27 @@
   },
   {
     "clip": 3,
-    "expected_sentence": "Tell mindzie that the CenCon report is ready and ping the cc-director gateway team.",
+    "expected_sentence": "Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.",
     "expected_terms": [
-      "mindzie",
+      "acmeflow",
       "CenCon",
       "cc-director"
     ],
     "variants": {
       "no_prompt": {
-        "transcript": "Tell Minzy that the SenCon report is ready and ping the CC Director Gateway team.",
+        "transcript": "Tell Akmeflow that the SenCon report is ready and ping the CC Director Gateway team.",
         "missing_terms": [
-          "mindzie",
+          "acmeflow",
           "CenCon",
           "cc-director"
         ]
       },
       "with_prompt": {
-        "transcript": "Tell mindzie that the CenCon report is ready and ping the cc-director gateway team.",
+        "transcript": "Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.",
         "missing_terms": []
       },
       "with_prompt_plus_cleanup": {
-        "transcript": "Tell mindzie that the CenCon report is ready and ping the cc-director gateway team.",
+        "transcript": "Tell acmeflow that the CenCon report is ready and ping the cc-director gateway team.",
         "missing_terms": []
       }
     }

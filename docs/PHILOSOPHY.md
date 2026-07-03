@@ -2,7 +2,7 @@
 
 **Status:** DRAFT
 **Date:** 2026-05-31
-**Author:** Soren
+**Author:** the maintainer
 **Audience:** Anyone evaluating, installing, or contributing to CC Director. Read this before the installation guide.
 
 ## TL;DR
@@ -63,5 +63,5 @@ Beyond that, the minimum is a known-good floor, not a cage: Claude Code is the d
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-05-31 | Soren | Initial draft (agent-installs-everything model) |
-| 2026-05-31 | Soren | Reframed: deterministic install/update is code, judgment is a prompt; install-once-update-forever; OpenAI is feature-gated, not a hard requirement |
+| 2026-05-31 | the maintainer | Initial draft (agent-installs-everything model) |
+| 2026-05-31 | the maintainer | Reframed: deterministic install/update is code, judgment is a prompt; install-once-update-forever; OpenAI is feature-gated, not a hard requirement |

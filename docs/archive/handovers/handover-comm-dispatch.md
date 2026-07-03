@@ -24,7 +24,7 @@ A big red **SEND ALL** button was added to the header bar of the Communication M
 The database schema and models fully support all channels:
 - `send_timing` field: immediate, scheduled, asap, hold
 - `scheduled_for` field: ISO datetime for scheduled sends
-- `send_from` field: account identifier (mindzie, personal, consulting)
+- `send_from` field: account identifier (acmeflow, personal, consulting)
 - Platform-specific JSON columns for each channel (email_specific, linkedin_specific, reddit_specific, etc.)
 
 ---

@@ -510,7 +510,7 @@ cc-vault stats
 CLI for adding content to the Communication Manager approval queue.
 
 ```bash
-cc-comm-queue add linkedin post "Content..." --persona mindzie
+cc-comm-queue add linkedin post "Content..." --persona acmeflow
 cc-comm-queue list --status pending
 cc-comm-queue status
 ```

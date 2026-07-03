@@ -1,19 +1,19 @@
 # Problem: Voice dictionary edits do not reach the mobile/phone recording path until the Gateway restarts
 
 Reported: 2026-05-25
-Reporter: Soren (via assistant session in C:\repos\private)
+Reporter: the maintainer (via assistant session in C:\repos\private)
 Component: CcDirector.Gateway recording/transcription pipeline + dictation dictionary
 Severity: medium (functional - corrections never take effect on the path the user actually uses)
 
 ## Symptom (what the user experienced)
 
-The mobile voice unit keeps mishearing the company name "mindzie" and the user
+The mobile voice unit keeps mishearing the company name "acmeflow" and the user
 has told it about the mistake more than once, yet it keeps happening. In a single
-assistant session the SAME word "mindzie" came through three different wrong ways:
+assistant session the SAME word "acmeflow" came through three different wrong ways:
 
-- "mindzie" -> "mindseeds"  (heard as: "what do you know about mindseeds")
-- "mindzie" -> "my repo"    (heard as: "tell me about my repo / the company")
-- "mindzie" -> "Minzy"      (a known variant already in the dictionary)
+- "acmeflow" -> "acme seeds"  (heard as: "what do you know about acme seeds")
+- "acmeflow" -> "my repo"    (heard as: "tell me about my repo / the company")
+- "acmeflow" -> "Akmeflow"      (a known variant already in the dictionary)
 
 The user's reasonable suspicion: "is the system actually using the dictionary?"
 
@@ -78,22 +78,22 @@ on disk but never loaded by the live recording path.
 
 ## Contributing factor (separate, smaller)
 
-Before this session the dictionary's `common_mistranscriptions` for `mindzie`
-held only: Minzy, Mindsy, Mindzy, Mindzie. Neither "Mindseeds" nor "my repo" was
+Before this session the dictionary's `common_mistranscriptions` for `acmeflow`
+held only: Akmeflow, Acmefloe, Acmeflo, AcmeFlow. Neither "Acme Seeds" nor "my repo" was
 listed, so even a freshly-loaded cleanup pass had to rely on the LLM generalizing
 "near misses." "my repo" is not a plausible phonetic near-miss the model would
 confidently rewrite, so it would pass through uncorrected.
 
-Note on "my repo": it should NOT be added as a literal mistranscription -> mindzie
+Note on "my repo": it should NOT be added as a literal mistranscription -> acmeflow
 mapping. "my repo" is a legitimate everyday phrase for the user (he works in many
 repos); a blanket mapping would wrongly rewrite real uses. The correct lever is
-the STT `vocabulary` bias (already contains "mindzie") plus restarting/reloading
+the STT `vocabulary` bias (already contains "acmeflow") plus restarting/reloading
 so it actually applies - not a risky find-replace rule.
 
 ## What was changed on disk during the session (does NOT fix the bug by itself)
 
-`%LOCALAPPDATA%\cc-director\dictation\dictionary.yaml` - added to the `mindzie`
-mistranscription list: `Mindseeds`, `mindseeds`, `Mind Seeds`. This is correct and
+`%LOCALAPPDATA%\cc-director\dictation\dictionary.yaml` - added to the `acmeflow`
+mistranscription list: `Acme Seeds`, `acme seeds`, `Acme Seeds`. This is correct and
 helps the desktop dictation path (which uses `watch: true`), but it will NOT take
 effect on the mobile recording path until the Gateway restarts, because of the
 root cause above.
@@ -102,7 +102,7 @@ root cause above.
 
 1. Start the Gateway.
 2. Edit `dictionary.yaml` (or use the Dictionary editor page / `POST
-   /ingest/dictionary/terms`) to add a new mistranscription, e.g. map "mindzie"
+   /ingest/dictionary/terms`) to add a new mistranscription, e.g. map "acmeflow"
    <- "my repo".
 3. `GET /ingest/dictionary` confirms the change is on disk.
 4. Upload a phone recording that says the affected word.

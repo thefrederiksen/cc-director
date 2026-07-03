@@ -3,7 +3,7 @@
 **Status:** Workstreams 1-5 + 7 IMPLEMENTED 2026-06-06 (uncommitted). Remaining: WS6
 (installer preflight + public docs), rollout to EXAMPLE-PC, live acceptance pass.
 **Issue:** #197 (EXAMPLE-PC permanently unreachable)
-**Decision:** Option A chosen by Soren 2026-06-06. Reverse-tunnel (Option B) explicitly rejected for now.
+**Decision:** Option A chosen by the maintainer 2026-06-06. Reverse-tunnel (Option B) explicitly rejected for now.
 
 Implemented surface:
 - `src/CcDirector.Core/Network/TailscaleCli.cs` (shared CLI runner + cross-process serve mutex)

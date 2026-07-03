@@ -1,6 +1,6 @@
 """
 Rebrand the public-facing install docs from CC Director -> DevThrottle, and fix
-stale repo URLs after the rename to thefrederiksen/devthrottle.
+stale repo URLs after the rename to example-org/devthrottle.
 
 Ordered + protected so stable identifiers are NOT changed:
   - KEEP installed mac bundle "CC Director.app" (its own identity, like cc-director.exe)
@@ -8,7 +8,7 @@ Ordered + protected so stable identifiers are NOT changed:
   - KEEP install paths %LOCALAPPDATA%\\cc-director, ~/Applications, cc-director.exe
   - CHANGE brand "CC Director" -> "DevThrottle"
   - CHANGE setup assets cc-director-setup-* -> devthrottle-setup-*
-  - CHANGE repo URLs (incl broken cc-director/cc-director org) -> thefrederiksen/devthrottle
+  - CHANGE repo URLs (incl broken cc-director/cc-director org) -> example-org/devthrottle
 ASCII-only output.
 """
 import os
@@ -33,9 +33,9 @@ RULES = [
     # 3. Restore the protected bundle name.
     (SENTINEL, "CC Director.app"),
     # 4. Fix the broken wrong-org clone URL first (it contains the substring below).
-    ("github.com/cc-director/cc-director", "github.com/thefrederiksen/devthrottle"),
+    ("github.com/cc-director/cc-director", "github.com/example-org/devthrottle"),
     # 5. Repo refs (covers github.com/.../releases, api.github.com/repos/..., gh --repo, bare refs).
-    ("thefrederiksen/cc-director", "thefrederiksen/devthrottle"),
+    ("example-org/devthrottle", "example-org/devthrottle"),
     # 6. Setup asset names (the user-facing downloads). Main-app assets are untouched.
     ("cc-director-setup-win-x64.exe", "devthrottle-setup-win-x64.exe"),
     ("cc-director-setup-cli-win-x64.exe", "devthrottle-setup-cli-win-x64.exe"),
@@ -54,6 +54,6 @@ for rel in FILES:
             f.write(text)
     # Report what remains that might be stale.
     remaining_brand = text.count("CC Director")
-    remaining_url = text.count("thefrederiksen/cc-director") + text.count("cc-director/cc-director")
+    remaining_url = text.count("example-org/devthrottle") + text.count("cc-director/cc-director")
     print(f"{rel}: changed={text != orig}  remaining 'CC Director'={remaining_brand}  stale-url={remaining_url}")
 print("DONE")

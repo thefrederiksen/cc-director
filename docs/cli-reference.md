@@ -104,7 +104,7 @@ ARGUMENTS:
   CONTENT       The actual content text
 
 OPTIONS:
-  --persona        -p   Persona: mindzie, center_consulting, personal [default: personal]
+  --persona        -p   Persona: acmeflow, center_consulting, personal [default: personal]
   --destination    -d   Where to post (URL)
   --context-url    -c   What we're responding to (URL)
   --context-title       Title of content we're responding to
@@ -113,7 +113,7 @@ OPTIONS:
   --created-by          Agent/tool name
   --send-timing    -st  immediate, scheduled, asap, hold [default: asap]
   --scheduled-for       ISO datetime for scheduled send
-  --send-from      -sf  Account: mindzie, personal, consulting
+  --send-from      -sf  Account: acmeflow, personal, consulting
   --media          -m   Path to media file (repeatable)
   --json                Output as JSON (for agents)
 

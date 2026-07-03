@@ -108,7 +108,7 @@ src/
       CommunicationDispatcher.cs  -- Polls communications table, dispatches approved items
       EmailSender.cs              -- Sends via cc-outlook / cc-gmail CLI
       LinkedInSender.cs           -- Sends via cc-browser connections + LinkedIn skill
-      SenderConfig.cs             -- Account routing (mindzie, personal, consulting)
+      SenderConfig.cs             -- Account routing (acmeflow, personal, consulting)
     Vault/
       VaultBridge.cs              -- Writes outcomes to vault.db via cc-vault.exe CLI
     Events/

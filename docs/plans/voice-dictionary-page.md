@@ -1,7 +1,7 @@
 # Plan: Voice Recorder page (two tabs) + Dictionary editor on the Gateway
 
 Status: proposed
-Owner: Soren
+Owner: the maintainer
 Date: 2026-05-24
 
 ## Goal
@@ -127,14 +127,14 @@ definition of the path (extract a small helper, e.g.
 +-----------------------------------------------------------------------+
 |  VOCABULARY                  terms biased into speech-to-text          |
 |  +-----------------------------------------------------------------+  |
-|  |  [ mindzie x ] [ CenCon x ] [ ConPTY x ] [ cc-director x ]      |  |
-|  |  [ Avalonia x ] [ Soren Frederiksen x ]                        |  |
+|  |  [ acmeflow x ] [ CenCon x ] [ ConPTY x ] [ cc-director x ]      |  |
+|  |  [ Avalonia x ] [ Example User x ]                        |  |
 |  |  [ + add term....................................... ]          |  |
 |  +-----------------------------------------------------------------+  |
 |                                                                       |
 |  COMMON MISTRANSCRIPTIONS    correct term  <-  wrong spellings seen    |
 |  +-----------------------------------------------------------------+  |
-|  |  mindzie       <-  [Minzy x][Mindsy x][Mindzy x][Mindzie x] [+] |  |
+|  |  acmeflow       <-  [Akmeflow x][Acmefloe x][Acmeflo x][AcmeFlow x] [+] |  |
 |  |  CenCon        <-  [SenCon x][SENCON x][Sencon x]           [+] |  |
 |  |  ConPTY        <-  [Contui x][ContUI x][Conty x]            [+] |  |
 |  |  [ + add a term to correct........................ ]           |  |

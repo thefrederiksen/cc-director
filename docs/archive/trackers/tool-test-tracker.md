@@ -109,7 +109,7 @@ Record detailed test results below as each tool is tested.
 - 1 deprecation warning: `fs.rmdir(path, { recursive: true })` -> should use `fs.rm()`
 
 **All 3 Workspaces:** PASS (edge-work, chrome-work, chrome-personal)
-- All 7 aliases resolve correctly (mindzie, edge-work, center, consulting, chrome-work, linkedin, personal)
+- All 7 aliases resolve correctly (acmeflow, edge-work, center, consulting, chrome-work, linkedin, personal)
 
 **Full Command Test Results (40 commands):**
 
@@ -120,7 +120,7 @@ Record detailed test results below as each tool is tested.
 | `browsers` | PASS | Detected Chrome + Edge |
 | `profiles` | PASS | Both --browser edge (2) and --browser chrome (6) |
 | `workspaces` | PASS | Lists 3 workspaces with aliases |
-| `favorites` | BUG | Does not resolve aliases -- builds wrong path (e.g. `edge-mindzie` instead of `edge-work`) |
+| `favorites` | BUG | Does not resolve aliases -- builds wrong path (e.g. `edge-acmeflow` instead of `edge-work`) |
 | `start` | PASS | Tested all 3 workspaces |
 | `stop` | PASS | Clean shutdown |
 | `navigate` | PASS | |
@@ -180,7 +180,7 @@ Record detailed test results below as each tool is tested.
 
 2. **`favorites` command doesn't resolve workspace aliases** (cli.mjs:981-990)
    - `getWorkspaceDir()` builds `{browser}-{workspace}` literally
-   - Passing `--workspace mindzie` creates path `edge-mindzie` instead of `edge-work`
+   - Passing `--workspace acmeflow` creates path `edge-acmeflow` instead of `edge-work`
    - Other commands resolve aliases via daemon lockfile; favorites reads filesystem directly
 
 **MISSING FROM MAIN HELP (hidden commands):**

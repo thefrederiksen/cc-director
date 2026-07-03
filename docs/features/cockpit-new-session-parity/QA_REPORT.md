@@ -148,7 +148,7 @@ Navigating into `D:\` lists its real sub-directories with an up-level entry.
 ### 4.5 Browse - navigating into a directory
 Navigated into `C:\repos`, showing the live directory contents.
 
-![Browse ReposFred](shots/06-browse-reposfred.png)
+![Browse ReposExample](shots/06-browse-reposexample.png)
 
 ### 4.6 Browsed path selected
 "Select this folder" fills the path with `C:\repos` - a directory NOT in the recents

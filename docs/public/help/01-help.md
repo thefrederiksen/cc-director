@@ -63,5 +63,5 @@ your need:
 ## Open source
 
 The full source, documentation, and issue tracker live on GitHub at
-[github.com/thefrederiksen/devthrottle](https://github.com/thefrederiksen/devthrottle).
+[github.com/example-org/devthrottle](https://github.com/example-org/devthrottle).
 You can browse the code, report issues, and contribute there.
