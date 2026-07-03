@@ -21,13 +21,6 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageReference Include="SQLitePCLRaw.core" Version="3.0.3" />
     <PackageReference Include="YamlDotNet" Version="16.2.1" />
-    <!-- Opus encoding for dictation uploads (issue #896): compress the whole-clip capture before the
-         single remote transcription POST so a long dictation stays under the hosted endpoint's fixed
-         4.5 MB request-body limit. Concentus is pure-managed (no native library, so it stays win-x64
-         and cross-platform safe with no extra DLL to ship); Concentus.OggFile wraps the encoder output
-         as an Ogg Opus (.ogg) file the transcription providers decode directly. -->
-    <PackageReference Include="Concentus" Version="2.2.2" />
-    <PackageReference Include="Concentus.OggFile" Version="1.0.7" />
     <!-- Windows Data Protection (DPAPI) for the DevThrottle account credential store - encrypts
          the account token pair at rest so the raw token is never written to disk in plain text. -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />

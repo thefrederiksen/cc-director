@@ -182,6 +182,7 @@ public partial class SpeakDialog : Window
         svc.OnAudioBands += OnAudioBands;
         svc.OnInputRms += OnInputRms;
         svc.OnCaptureStarted += OnServiceCaptureStarted;
+        svc.OnTranscriptionProgress += OnServiceTranscriptionProgress;
         await svc.StartAsync("default");
         _service = svc;
     }
@@ -361,6 +362,23 @@ public partial class SpeakDialog : Window
         {
             if (_stage == Stage.Recording)
                 _t0 = DateTime.UtcNow;
+        });
+    }
+
+    /// <summary>
+    /// Fired as the segment transcribes. A long segment is split into several bounded transcription
+    /// requests, so show which part is running instead of a silent "Transcribing..." wait. A short
+    /// segment reports a single part and keeps the plain message. May arrive off the UI thread.
+    /// </summary>
+    private void OnServiceTranscriptionProgress(int completed, int total)
+    {
+        if (total <= 1) return;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_stage != Stage.Transcribing) return;
+            LevelHint.Text = completed >= total
+                ? "Transcribing... finishing up"
+                : $"Transcribing... part {completed + 1} of {total}";
         });
     }
 

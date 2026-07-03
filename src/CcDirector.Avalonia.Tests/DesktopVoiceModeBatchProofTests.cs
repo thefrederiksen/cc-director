@@ -38,6 +38,9 @@ public sealed class DesktopVoiceModeBatchProofTests
         public List<string> Urls { get; } = new();
         public int TranscriptionPosts { get; private set; }
 
+        /// <summary>The whole request body size of every /audio/transcriptions POST, in order.</summary>
+        public List<long> TranscribeBodyBytes { get; } = new();
+
         /// <param name="transcript">The raw transcript the /audio/transcriptions endpoint returns.</param>
         /// <param name="editsJson">The edit document the /chat/completions dictionary corrector returns
         /// (default: no edits).</param>
@@ -47,7 +50,7 @@ public sealed class DesktopVoiceModeBatchProofTests
             _editsJson = editsJson;
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var url = request.RequestUri?.ToString() ?? "";
             Urls.Add($"{request.Method} {url}");
@@ -56,6 +59,8 @@ public sealed class DesktopVoiceModeBatchProofTests
             if (url.EndsWith("/audio/transcriptions", StringComparison.Ordinal))
             {
                 TranscriptionPosts++;
+                var bodyBytes = request.Content is null ? 0 : (await request.Content.ReadAsByteArrayAsync(ct)).LongLength;
+                TranscribeBodyBytes.Add(bodyBytes);
                 json = "{\"text\": " + System.Text.Json.JsonSerializer.Serialize(_transcript) + "}";
             }
             else if (url.EndsWith("/chat/completions", StringComparison.Ordinal))
@@ -64,13 +69,13 @@ public sealed class DesktopVoiceModeBatchProofTests
             }
             else
             {
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
             }
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json"),
-            });
+            };
         }
     }
 
@@ -203,6 +208,34 @@ public sealed class DesktopVoiceModeBatchProofTests
         Assert.Equal("Mindzie", result.ChangedWords[0].Replace);
         // Still exactly one batch transcription call.
         Assert.Equal(1, handler.TranscriptionPosts);
+    }
+
+    [Fact]
+    public async Task LongDesktopRecording_SplitsIntoSeveralBoundedRequests()
+    {
+        // The reported bug: a twenty-minute desktop dictation produced a single ~57 MB WAV and one
+        // upload, which the DevThrottle managed proxy (a serverless function) rejected with a 413
+        // FUNCTION_PAYLOAD_TOO_LARGE for a body over roughly 4.5 MB. This proves the desktop capture
+        // path - the exact 24 kHz mono 16-bit PCM wrapped by WavWriter.WrapPcm16, the code
+        // BatchDictationRecorder.TranscribeAsync runs - is now split into several bounded requests so
+        // no single upload can exceed the limit.
+        const long providerBodyLimitBytes = 4_500_000;
+
+        // Twenty minutes at the desktop capture format: 24000 samples/sec * 2 bytes * 1200 sec.
+        var pcm = new byte[24_000 * 2 * 1200];
+        var wav = WavWriter.WrapPcm16(pcm, 24_000, 1, 16);
+
+        var handler = new CountingHandler(transcript: "part text");
+        using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
+
+        await pipeline.TranscribeAsync(wav, "dictation.wav", DevThrottle(), DictationDictionary.Empty);
+
+        // The whole clip went out as several transcription requests, each whole body under the limit
+        // that caused the 413.
+        Assert.True(handler.TranscriptionPosts >= 10,
+            $"expected the long clip to split into many requests, got {handler.TranscriptionPosts}");
+        Assert.All(handler.TranscribeBodyBytes, n =>
+            Assert.True(n < providerBodyLimitBytes, $"a request body was {n} bytes, over the {providerBodyLimitBytes} provider limit"));
     }
 
     [Fact]

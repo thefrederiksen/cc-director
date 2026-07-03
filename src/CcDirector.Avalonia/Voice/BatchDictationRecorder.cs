@@ -94,6 +94,14 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     /// </summary>
     public event Action? OnCaptureStarted;
 
+    /// <summary>
+    /// Fires as transcription progresses with (completedParts, totalParts). A long recording is split
+    /// into several bounded transcription requests; this lets the dialog show "transcribing part N of
+    /// M" instead of a silent wait. A short clip reports a single part. May fire on a background
+    /// thread, so a UI handler must marshal to the UI thread.
+    /// </summary>
+    public event Action<int, int>? OnTranscriptionProgress;
+
     /// <param name="micDeviceNumber">
     /// WaveIn device number to capture from. Defaults to
     /// <see cref="MicDevices.DefaultDeviceNumber"/> (the Windows default mic).
@@ -252,21 +260,15 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         // local cache as a side effect, #253); falls back to the local cache offline.
         var dictionary = await _dictionaryResolver.ResolveAsync(ct);
 
-        // Compress the whole captured PCM to Opus (in an Ogg container) for the ONE batch upload, so a
-        // long dictation stays well under the transcription endpoint's request-body limit (issue #896:
-        // the hosted DevThrottle endpoint caps bodies at 4.5 MB, and the mic's uncompressed 24 kHz WAV
-        // at ~48 KB/s exceeded it past ~90 seconds - a hard platform 413). BOTH transcription modes are
-        // remote HTTP endpoints that decode Ogg Opus (the hosted Whisper backend and OpenAI both do),
-        // and the in-process local mode was removed in issue #887, so there is no uncompressed path to
-        // preserve. The dictionary corrector downstream is the only text transform.
-        var oggOpus = OggOpusEncoder.EncodePcm16(
-            pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels);
-        FileLog.Write($"[BatchDictationRecorder] upload packaged: file=dictation.ogg, "
-            + $"bytes={oggOpus.Length} (pcm={pcm.Length}), mode={routing.Mode.ToConfigString()}");
+        // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the
+        // shared batch pipeline. The dictionary corrector is the only text transform.
+        var wav = WavWriter.WrapPcm16(
+            pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
         using var pipeline = new BatchTranscriptionPipeline(cleanupModel: _options.DictationCleanupModel);
-        var batch = await pipeline.TranscribeAsync(oggOpus, "dictation.ogg", routing, dictionary, _profile, ct);
+        var progress = new Progress<TranscriptionProgress>(p => OnTranscriptionProgress?.Invoke(p.CompletedParts, p.TotalParts));
+        var batch = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, _profile, ct, progress);
         stopWatch.Stop();
 
         FileLog.Write($"[BatchDictationRecorder] transcribed: rawLen={batch.RawTranscript.Length}, "

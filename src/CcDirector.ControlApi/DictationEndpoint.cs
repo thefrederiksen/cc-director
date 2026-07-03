@@ -60,20 +60,11 @@ internal static class DictationEndpoint
 {
     // The browser captures at this fixed format (see dictation-overlay.js: the
     // AudioContext is opened at 24 kHz and the pcm16-writer worklet emits mono
-    // 16-bit PCM). The server Opus-encodes the accumulated PCM at this format
-    // before the single batch upload (see PackageUpload).
+    // 16-bit PCM). The server wraps the accumulated PCM in a WAV header using
+    // exactly this format before the single batch transcription.
     private const int CaptureSampleRate = 24000;
     private const int CaptureChannels = 1;
-
-    /// <summary>
-    /// Package the captured PCM16 for the single batch upload. Mirrors the desktop recorder (#897):
-    /// the whole clip is Opus-encoded in an Ogg container so a long dictation stays well under the
-    /// transcription endpoint's 4.5 MB request-body cap (issue #898) - the endpoints decode Ogg Opus
-    /// natively and the in-process local mode was removed in #887, so there is no uncompressed path to
-    /// preserve. Internal so the packaging (format + name) is unit-testable without the WebSocket loop.
-    /// </summary>
-    internal static (byte[] audio, string fileName) PackageUpload(byte[] pcm, int sampleRate, int channels)
-        => (OggOpusEncoder.EncodePcm16(pcm, sampleRate, channels), "dictation.ogg");
+    private const int CaptureBitsPerSample = 16;
 
     public static void Map(IEndpointRouteBuilder app, AgentOptions options, OpenAiKeyResolver keyResolver, DictionaryResolver dictionaryResolver)
     {
@@ -279,14 +270,9 @@ internal static class DictationEndpoint
             return;
         }
 
-        // Package the whole captured PCM for ONE batch upload through the shared pipeline (the same
-        // one the desktop uses). PackageUpload Opus-encodes it so a long dictation stays under the
-        // transcription endpoint's request-body cap - the web path was still shipping raw WAV and hit
-        // the same platform 413 past ~90 s that the desktop path fixed in #897 (issue #898). The
-        // dictionary corrector downstream is the only text transform.
-        var (upload, uploadName) = PackageUpload(pcmBytes, CaptureSampleRate, CaptureChannels);
-        FileLog.Write($"[DictationEndpoint] sid={sessionId} upload packaged: file={uploadName}, "
-            + $"bytes={upload.Length} (pcm={pcmBytes.Length})");
+        // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the shared batch
+        // pipeline (the same one the desktop uses). The dictionary corrector is the only text transform.
+        var wav = PcmWav.Wrap(pcmBytes, CaptureSampleRate, CaptureChannels, CaptureBitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
         BatchTranscriptionResult? transcript = null;
@@ -294,7 +280,22 @@ internal static class DictationEndpoint
         try
         {
             using var pipeline = new BatchTranscriptionPipeline(cleanupModel: options.DictationCleanupModel);
-            transcript = await pipeline.TranscribeAsync(upload, uploadName, routing, dictionary, profile, ct);
+
+            // Per-part progress for a long recording. The pipeline splits an oversized clip into several
+            // bounded requests and reports as each finishes; forward that to the browser as a "progress"
+            // frame so the overlay shows "part N of M" instead of a silent wait. The pipeline reports
+            // strictly between its awaited POSTs (never concurrently with the frames sent here), and
+            // Kestrel has no synchronization context, so a blocking send inside Report keeps the frames
+            // strictly ordered without racing the "transcribing"/"final" frames. Best-effort: a failed
+            // progress frame must never fail the transcription.
+            var progress = new SynchronousProgress<TranscriptionProgress>(p =>
+            {
+                if (p.TotalParts <= 1) return;
+                try { SendJsonAsync(ws, new { type = "progress", done = p.CompletedParts, total = p.TotalParts }, ct).GetAwaiter().GetResult(); }
+                catch (Exception ex) { FileLog.Write($"[DictationEndpoint] progress frame failed: {ex.Message}"); }
+            });
+
+            transcript = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, profile, ct, progress);
         }
         catch (Exception ex)
         {
@@ -481,5 +482,18 @@ internal static class DictationEndpoint
                 await ws.CloseAsync(status, description, CancellationToken.None);
         }
         catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// An <see cref="IProgress{T}"/> that invokes its handler synchronously on the reporting thread,
+    /// unlike <see cref="Progress{T}"/> which marshals to a captured synchronization context. This
+    /// keeps progress WebSocket frames strictly ordered with the pipeline's sequential per-part reports
+    /// (see the transcription progress wiring above).
+    /// </summary>
+    private sealed class SynchronousProgress<T> : IProgress<T>
+    {
+        private readonly Action<T> _handler;
+        public SynchronousProgress(Action<T> handler) => _handler = handler;
+        public void Report(T value) => _handler(value);
     }
 }

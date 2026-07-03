@@ -7,6 +7,7 @@
 // off (the /sessions endpoint is reachable either way once the bearer is attached).
 import type { components } from "./schema";
 import type { SessionHistoryDto } from "../history/types";
+import { planUploadChunks } from "./chunking";
 
 export type SessionDto = components["schemas"]["SessionDto"];
 
@@ -314,10 +315,17 @@ export interface UtteranceCaptureHealth {
   sourceBytes: number;
 }
 
+// The largest a single upload chunk may be. A long recording is uploaded as several chunks of at
+// most this size so no single request body exceeds the Gateway limit (Kestrel's default is roughly
+// thirty megabytes; a twenty-minute clip is larger). This is independent of how the server later
+// splits the reassembled clip into bounded transcription requests - it only bounds the upload hop.
+const MAX_UPLOAD_CHUNK_BYTES = 5_000_000;
+
 export async function transcribeUtterance(
   wav: Blob,
   health?: UtteranceCaptureHealth,
   signal?: AbortSignal,
+  onProgress?: (uploadedChunks: number, totalChunks: number) => void,
 ): Promise<string> {
   // 1. Register the upload (mints an id the chunk + complete calls address).
   const reg = await fetch(`/wingman/utterance/upload`, {
@@ -334,28 +342,36 @@ export async function transcribeUtterance(
     throw new GatewayError(reg.status, "transcription register returned no upload id");
   }
 
-  // 2. Upload the whole WAV as chunk 0 (one short utterance per segment). The SHA256 lets the
-  //    server reject corruption and treat an identical retry as a free no-op.
+  // 2. Upload the WAV in bounded chunks so a long recording never exceeds the Gateway request-body
+  //    limit. Each chunk carries its own SHA256, so the server rejects corruption and treats a
+  //    retried chunk as a free no-op; the server reassembles the chunks in order before transcribing.
   const bytes = new Uint8Array(await wav.arrayBuffer());
-  const sha = await sha256Hex(bytes);
   const id = encodeURIComponent(uploadId);
-  const put = await fetch(`/wingman/utterance/${id}/chunk/0`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
-    body: bytes,
-    signal,
-  });
-  if (!put.ok) {
-    throw new GatewayError(put.status, `PUT wingman/utterance chunk failed: ${put.status}`);
+  const ranges = planUploadChunks(bytes.length, MAX_UPLOAD_CHUNK_BYTES);
+  onProgress?.(0, ranges.length);
+  for (const range of ranges) {
+    const part = bytes.subarray(range.start, range.end);
+    const sha = await sha256Hex(part);
+    const put = await fetch(`/wingman/utterance/${id}/chunk/${range.index}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
+      body: part,
+      signal,
+    });
+    if (!put.ok) {
+      throw new GatewayError(put.status, `PUT wingman/utterance chunk ${range.index} failed: ${put.status}`);
+    }
+    onProgress?.(range.index + 1, ranges.length);
   }
 
-  // 3. Complete -> the server reassembles the one chunk, transcribes it, applies the dictionary
-  //    correction, and returns the cleaned transcript.
+  // 3. Complete with the real chunk count -> the server reassembles all chunks, transcribes the clip
+  //    (the pipeline itself splits the reassembled audio into bounded transcription requests), applies
+  //    the dictionary correction, and returns the cleaned transcript.
   const comp = await fetch(`/wingman/utterance/${id}/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({
-      totalChunks: 1,
+      totalChunks: ranges.length,
       mime: "audio/wav",
       ext: "wav",
       clientRecordedMs: health?.recordedMs,

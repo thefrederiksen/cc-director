@@ -466,6 +466,17 @@ window.dictationOverlay = (function () {
           // Whole-clip batch: the server emits NO 'partial' frames - text appears only in the
           // single 'final' after 'transcribing'. There is no live preview by design.
           case 'transcribing': setStage('transcribing'); break;
+          // A long recording is split into several bounded transcription requests server-side; the
+          // server sends one 'progress' frame per part so the wait shows "part N of M" instead of a
+          // silent spinner. Only sent when there is more than one part.
+          case 'progress': {
+            if (stage === 'transcribing' && m.total > 1) {
+              hintEl.textContent = m.done >= m.total
+                ? 'Transcribing... finishing up'
+                : `Transcribing... part ${(m.done | 0) + 1} of ${m.total}`;
+            }
+            break;
+          }
           case 'final': {
             const cleaned = (m.cleaned || m.raw || '');
             accumulatedText = joinText(accumulatedText, cleaned);

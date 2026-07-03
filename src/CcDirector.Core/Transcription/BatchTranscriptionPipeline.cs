@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using CcDirector.Core.Audio;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
@@ -37,9 +38,19 @@ public sealed class BatchTranscriptionPipeline : IDisposable
 {
     /// <summary>
     /// HTTP timeout for the batch transcription POST. Whole-clip uploads can be several seconds for
-    /// longer recordings; this matches <c>OpenAiTranscriptionProvider</c>'s batch timeout.
+    /// longer recordings; this matches <c>OpenAiTranscriptionProvider</c>'s batch timeout. The timeout
+    /// is per request, so a recording split into several parts gets the full budget for each part.
     /// </summary>
     public static readonly TimeSpan TranscribeTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// The largest a single transcription request body may be. A recording over this size is split into
+    /// several bounded parts, each transcribed with its own request, so no single upload can exceed the
+    /// provider's limit. The DevThrottle managed proxy runs on a serverless function that rejects a body
+    /// over roughly 4.5 megabytes with FUNCTION_PAYLOAD_TOO_LARGE / HTTP 413; this budget stays under
+    /// that with room to spare for the small multipart framing (the model and format form fields).
+    /// </summary>
+    public const int MaxTranscriptionUploadBytes = 4_000_000;
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -87,7 +98,8 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         ResolvedTranscription routing,
         DictationDictionary dictionary,
         string profileName = "default",
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IProgress<TranscriptionProgress>? progress = null)
     {
         if (audio is null) throw new ArgumentNullException(nameof(audio));
         if (routing is null) throw new ArgumentNullException(nameof(routing));
@@ -97,7 +109,7 @@ public sealed class BatchTranscriptionPipeline : IDisposable
 
         FileLog.Write($"[BatchTranscriptionPipeline] TranscribeAsync: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Model}");
 
-        var raw = await TranscribeBatchAsync(audio, fileName, routing, ct);
+        var raw = await TranscribeBatchAsync(audio, fileName, routing, ct, progress);
         FileLog.Write($"[BatchTranscriptionPipeline] raw transcript len={raw.Length}");
 
         var corrected = await ApplyDictionaryAsync(raw, routing, dictionary, profileName, ct);
@@ -125,7 +137,8 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     /// <param name="routing">The resolved method: base URL, key, and model from the Gateway routing resolver.</param>
     /// <param name="ct">Cancellation token.</param>
     public async Task<string> TranscribeRawAsync(
-        byte[] audio, string fileName, ResolvedTranscription routing, CancellationToken ct = default)
+        byte[] audio, string fileName, ResolvedTranscription routing, CancellationToken ct = default,
+        IProgress<TranscriptionProgress>? progress = null)
     {
         if (audio is null) throw new ArgumentNullException(nameof(audio));
         if (routing is null) throw new ArgumentNullException(nameof(routing));
@@ -133,15 +146,76 @@ public sealed class BatchTranscriptionPipeline : IDisposable
             throw new ArgumentException("audio blob is empty; the Audio Completeness Gate must run before transcription", nameof(audio));
 
         FileLog.Write($"[BatchTranscriptionPipeline] TranscribeRawAsync: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Model}");
-        return await TranscribeBatchAsync(audio, fileName, routing, ct);
+        return await TranscribeBatchAsync(audio, fileName, routing, ct, progress);
+    }
+
+    /// <summary>
+    /// Transcribe a whole audio blob to raw text, splitting it first when it is over the per-request
+    /// size limit so no single upload can exceed the provider's body limit. A clip within the budget is
+    /// one part = one POST, exactly as before. A long clip is cut into several bounded WAV parts (see
+    /// <see cref="WavSplitter"/>), each transcribed with its own POST, and the raw per-part texts are
+    /// joined in order. A caller that asked for the dictionary corrector still runs it ONCE on this
+    /// assembled text, so the result is provably the raw concatenation plus dictionary edits only - the
+    /// same assemble-then-clean contract the phone recorder uses across its segments.
+    ///
+    /// Only PCM WAV can be split. An over-budget blob that is NOT a splittable WAV fails loud rather
+    /// than posting an oversized body, because a silent 413 is exactly the failure this removes (the
+    /// no-fallback rule). Every capture surface sends PCM WAV, so the long-recording paths are covered.
+    /// </summary>
+    private async Task<string> TranscribeBatchAsync(
+        byte[] audio, string fileName, ResolvedTranscription routing, CancellationToken ct,
+        IProgress<TranscriptionProgress>? progress = null)
+    {
+        if (audio.Length <= MaxTranscriptionUploadBytes)
+        {
+            progress?.Report(new TranscriptionProgress(0, 1));
+            var only = await PostOneAsync(audio, fileName, routing, ct);
+            progress?.Report(new TranscriptionProgress(1, 1));
+            return only;
+        }
+
+        if (!WavSplitter.TrySplit(audio, MaxTranscriptionUploadBytes, out var parts) || parts is null)
+            throw new InvalidOperationException(
+                $"Audio is {audio.Length:N0} bytes, over the {MaxTranscriptionUploadBytes:N0}-byte per-request "
+                + "limit, and is not a PCM WAV that can be split into bounded parts. Capture as PCM WAV so long "
+                + "recordings can be chunked.");
+
+        FileLog.Write($"[BatchTranscriptionPipeline] split {audio.Length} bytes into {parts.Count} parts "
+                      + $"(budget={MaxTranscriptionUploadBytes}), transcribing each");
+
+        progress?.Report(new TranscriptionProgress(0, parts.Count));
+        var texts = new List<string>(parts.Count);
+        for (int i = 0; i < parts.Count; i++)
+        {
+            var partName = PartFileName(fileName, i);
+            var text = await PostOneAsync(parts[i], partName, routing, ct);
+            FileLog.Write($"[BatchTranscriptionPipeline] part {i + 1}/{parts.Count}: bytes={parts[i].Length}, chars={text.Length}");
+            if (text.Length > 0) texts.Add(text);
+            progress?.Report(new TranscriptionProgress(i + 1, parts.Count));
+        }
+
+        return string.Join(" ", texts);
+    }
+
+    /// <summary>
+    /// Name one part of a split upload, keeping the original extension so the server still decodes the
+    /// bytes correctly (e.g. <c>dictation.wav</c> -&gt; <c>dictation.0.wav</c>).
+    /// </summary>
+    private static string PartFileName(string fileName, int index)
+    {
+        if (string.IsNullOrEmpty(fileName)) return $"audio.{index}.wav";
+        var ext = Path.GetExtension(fileName);
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        return $"{stem}.{index}{ext}";
     }
 
     /// <summary>
     /// ONE whole-audio batch POST to the OpenAI-compatible <c>/audio/transcriptions</c> endpoint of
     /// the resolved base URL, presenting the resolved key and model. This is the single transcription
-    /// transport for the shared pipeline - there is no streaming/partial path here.
+    /// transport for the shared pipeline - there is no streaming/partial path here. Callers over the
+    /// per-request size limit are split into several of these by <see cref="TranscribeBatchAsync"/>.
     /// </summary>
-    private async Task<string> TranscribeBatchAsync(
+    private async Task<string> PostOneAsync(
         byte[] audio, string fileName, ResolvedTranscription routing, CancellationToken ct)
     {
         var endpoint = routing.BaseUrl.TrimEnd('/') + "/audio/transcriptions";
@@ -264,3 +338,11 @@ public sealed record BatchTranscriptionResult(
     bool DictionaryApplied,
     IReadOnlyList<TranscriptEdit> ChangedWords,
     string? Reason);
+
+/// <summary>
+/// Progress of a batch transcription while it runs: how many bounded parts have finished out of the
+/// total the clip was split into. A short clip reports one part; a long recording reports one update
+/// per part as each finishes, so a surface can show "transcribing part N of M" instead of a silent
+/// wait. <see cref="TotalParts"/> is known from the first report (parts are planned before any POST).
+/// </summary>
+public sealed record TranscriptionProgress(int CompletedParts, int TotalParts);

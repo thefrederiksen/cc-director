@@ -140,7 +140,11 @@ export function DictationDialog({ onInsert, onSend, onClose, showInsert = true }
       return null;
     }
     try {
-      const text = await transcribeUtterance(wav, health);
+      const text = await transcribeUtterance(wav, health, undefined, (uploaded, total) => {
+        // A short clip uploads in one chunk (no progress line needed); a long recording uploads in
+        // several, so show which piece is going up before the "Transcribing..." wait.
+        if (total > 1) setHint(`Uploading recording... ${uploaded} of ${total}`);
+      });
       return text;
     } catch (err) {
       setHint("Transcription failed: " + (err instanceof Error ? err.message : "unknown error"));
