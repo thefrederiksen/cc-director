@@ -31,6 +31,7 @@ public sealed class GatewayDeviceHeartbeatService : IDisposable
     private readonly GatewayDeviceRegistrationService _registration;
     private readonly DevThrottleAccountService _account;
     private readonly DeviceRegistryClient _client;
+    private readonly ChildDeviceMirrorService? _childMirror;
     private readonly string? _appVersion;
     private readonly TimeSpan _startDelay;
     private readonly TimeSpan _sweepInterval;
@@ -44,6 +45,12 @@ public sealed class GatewayDeviceHeartbeatService : IDisposable
     /// <param name="account">The Gateway-hosted credential service the egress token is read from. Required.</param>
     /// <param name="client">The cloud device-registry client (the injectable egress seam). Required.</param>
     /// <param name="appVersion">The reporting app version, or null when omitted.</param>
+    /// <param name="childMirror">
+    /// The Path B child-mirror coordinator, reconciled once per sweep AFTER the Gateway's own heartbeat
+    /// (mirror newly-enrolled children up, drop children revoked on the account page, refresh child last-seen).
+    /// Null on a host with no credential service, or when child mirroring is not wired - the sweep then only
+    /// heartbeats the Gateway itself.
+    /// </param>
     /// <param name="startDelay">Delay before the first sweep; defaults to <see cref="DefaultStartDelay"/>. Tests pass a short delay.</param>
     /// <param name="sweepInterval">Interval between sweeps; defaults to <see cref="DefaultSweepInterval"/>. Tests pass a short interval.</param>
     public GatewayDeviceHeartbeatService(
@@ -51,6 +58,7 @@ public sealed class GatewayDeviceHeartbeatService : IDisposable
         DevThrottleAccountService account,
         DeviceRegistryClient client,
         string? appVersion = null,
+        ChildDeviceMirrorService? childMirror = null,
         TimeSpan? startDelay = null,
         TimeSpan? sweepInterval = null)
     {
@@ -58,6 +66,7 @@ public sealed class GatewayDeviceHeartbeatService : IDisposable
         _account = account ?? throw new ArgumentNullException(nameof(account));
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _appVersion = appVersion;
+        _childMirror = childMirror;
         _startDelay = startDelay ?? DefaultStartDelay;
         _sweepInterval = sweepInterval ?? DefaultSweepInterval;
     }
@@ -96,12 +105,30 @@ public sealed class GatewayDeviceHeartbeatService : IDisposable
     }
 
     /// <summary>
-    /// Runs a single heartbeat tick (a boundary for the fire-and-forget sweep): retry registration if
-    /// needed, then advance last-seen. Every cloud failure is contained here and only logged (the Gateway
-    /// stays signed in and running; the next tick retries) - it never propagates into the timer thread.
-    /// Exposed internally so a test can drive one deterministic tick. Tokens and keys are never logged.
+    /// Runs a single sweep tick (a boundary for the fire-and-forget sweep): first the Gateway's own
+    /// registration + heartbeat, then - when a child mirror is wired - the Path B child reconcile (mirror
+    /// newly-enrolled children up, drop children revoked on the account page, refresh child last-seen). Both
+    /// halves own their boundary so one cloud failure never propagates into the timer thread and never stops
+    /// the other half; the Gateway stays signed in and running and the next tick retries. Exposed internally
+    /// so a test can drive one deterministic tick. Tokens and keys are never logged.
     /// </summary>
     internal async Task HeartbeatOnceAsync()
+    {
+        await HeartbeatGatewayOnceAsync().ConfigureAwait(false);
+
+        // Path B: reconcile this Gateway's locally-paired children against the cloud roster. Runs even when
+        // the Gateway's OWN heartbeat above was skipped (children depend on the account token, not on the
+        // Gateway's own device key). ReconcileAsync owns its boundary, so this never throws to the timer.
+        if (_childMirror is not null)
+            await _childMirror.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The Gateway's own registration + heartbeat half of a sweep tick: retry registration if needed, then
+    /// advance last-seen. Every cloud failure is contained here and only logged (the Gateway stays signed in
+    /// and running; the next tick retries) - it never propagates to the caller. Tokens and keys are never logged.
+    /// </summary>
+    private async Task HeartbeatGatewayOnceAsync()
     {
         try
         {

@@ -17,6 +17,23 @@ public sealed class DeviceRegistrationRequest
 
     /// <summary>The 4-digit pairing code read off the Gateway host's local window.</summary>
     public string PairingCode { get; set; } = "";
+
+    /// <summary>
+    /// The child's operating-system platform string (for example "windows", "android"), sent so the
+    /// Gateway can mirror the child up to the cloud account roster with the right platform (Path B,
+    /// device-gateway-topology.md Diagram 2b). Optional; empty when a child app predates this field
+    /// (the mirror then records "unknown"). The workstation/phone apps supplying it are the child-side
+    /// work.
+    /// </summary>
+    public string Platform { get; set; } = "";
+
+    /// <summary>
+    /// The child's device type - "workstation" or "phone" - sent so the Gateway mirrors the child up to
+    /// the cloud roster with the correct type. Optional; empty when a child app predates this field, in
+    /// which case the Gateway defaults it to "workstation". This is a display/roster attribute only, never
+    /// an admission credential (the child's local pairing key is).
+    /// </summary>
+    public string DeviceType { get; set; } = "";
 }
 
 /// <summary>

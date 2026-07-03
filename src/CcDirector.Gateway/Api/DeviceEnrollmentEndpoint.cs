@@ -1,4 +1,5 @@
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Account;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Pairing;
 using Microsoft.AspNetCore.Builder;
@@ -25,7 +26,7 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class DeviceEnrollmentEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, PairingCodeService pairing, DeviceRegistry devices)
+    public static void Map(IEndpointRouteBuilder app, PairingCodeService pairing, DeviceRegistry devices, ChildDeviceMirrorService? mirror = null)
     {
         if (pairing is null) throw new ArgumentNullException(nameof(pairing));
         if (devices is null) throw new ArgumentNullException(nameof(devices));
@@ -37,7 +38,7 @@ internal static class DeviceEnrollmentEndpoint
             if (string.IsNullOrWhiteSpace(req.PairingCode))
                 return Results.BadRequest(new { error = "pairingCode is required" });
 
-            FileLog.Write($"[DeviceEnrollment] POST /devices/register: deviceId={req.DeviceId}, machine={req.MachineName}");
+            FileLog.Write($"[DeviceEnrollment] POST /devices/register: deviceId={req.DeviceId}, machine={req.MachineName}, type={req.DeviceType}, platform={req.Platform}");
 
             // Verify-and-consume is atomic: a valid code is burned here so it can never be reused
             // (single-use), and a wrong/expired/already-used code is rejected with NO key issued.
@@ -49,8 +50,17 @@ internal static class DeviceEnrollmentEndpoint
                     statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            var response = devices.Register(req.DeviceId, req.MachineName);
+            var response = devices.Register(req.DeviceId, req.MachineName, req.Platform, req.DeviceType);
             FileLog.Write($"[DeviceEnrollment] POST /devices/register: issued per-device key for deviceId={req.DeviceId}, machine={req.MachineName}, deviceCount={response.DeviceCount}");
+
+            // Path B (Diagram 2b): mirror this child up to the cloud account roster, best-effort and
+            // fire-and-forget. It NEVER blocks or fails enrollment - the child already holds its local
+            // pairing key (returned above) and works regardless; MirrorChildUpAsync owns its own boundary
+            // and the periodic reconcile sweep recovers any mirror that fails here. Null when the host has
+            // no credential service (nothing to mirror to).
+            if (mirror is not null)
+                _ = mirror.MirrorChildUpAsync(req.DeviceId);
+
             return Results.Json(response, statusCode: StatusCodes.Status201Created);
         });
 

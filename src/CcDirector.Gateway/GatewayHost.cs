@@ -144,6 +144,15 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private Account.GatewayDeviceHeartbeatService? _deviceHeartbeat;
 
+    /// <summary>
+    /// Path B (device-gateway-topology.md Diagram 2b/2c): mirrors this Gateway's locally-paired children up
+    /// to the cloud account roster on enrollment and reconciles them each sweep (drop children revoked on the
+    /// account page, refresh child last-seen). Built over <see cref="Account"/>; null on a host with no
+    /// credential service. Has no timer of its own - the enrollment endpoint fires its mirror-up and the
+    /// device heartbeat sweep drives its reconcile. Tokens and per-device keys are never logged (DT-05).
+    /// </summary>
+    private Account.ChildDeviceMirrorService? _childMirror;
+
     private readonly DirectorEndpointClient _client;
     private readonly TailscaleServeProvisioner _serveProvisioner;
     private readonly GatewayTurnBriefStore _turnBriefStore;
@@ -361,11 +370,17 @@ public sealed class GatewayHost : IAsyncDisposable
                 machineName: Environment.MachineName,
                 platform: ResolvePlatform(),
                 appVersion: AppVersion.Semver);
+            _childMirror = new Account.ChildDeviceMirrorService(
+                Account,
+                deviceRegistryClient,
+                Devices,
+                appVersion: AppVersion.Semver);
             _deviceHeartbeat = new Account.GatewayDeviceHeartbeatService(
                 _deviceRegistration,
                 Account,
                 deviceRegistryClient,
-                appVersion: AppVersion.Semver);
+                appVersion: AppVersion.Semver,
+                childMirror: _childMirror);
         }
         else
         {
@@ -795,7 +810,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // POST /devices/register verifies+consumes the 4-digit code and issues a unique per-device
         // key; GET /devices is the host-readable registry listing. Mapped after the WS proxy so its
         // literal routes win over the catch-all session forwarder, same as the other literal routes.
-        Api.DeviceEnrollmentEndpoint.Map(_app, Pairing, Devices);
+        Api.DeviceEnrollmentEndpoint.Map(_app, Pairing, Devices, _childMirror);
 
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
         // session and have the persistent wingman brain translate the reply into speakable form,
