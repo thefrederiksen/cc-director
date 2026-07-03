@@ -183,20 +183,56 @@
     </div>
   </div>
 
-  <!-- ===== AI provider - moved to the dedicated Cockpit AI page ===== -->
-  <!-- The transcription mode + key panels and the wingman agent/model + brain panels that used to live
-       here were consolidated into ONE provider switch (DevThrottle vs OpenAI) on the Blazor AI page
-       (/ai). That one choice now drives transcription, the wingman model, and the text-to-speech voice
-       together, so those panels were removed from this static page to avoid two places to set the same
-       thing. Only the advanced wingman tuning (training capture + editable instructions) remains here. -->
-  <div class="tab-panel" id="tab-ai-moved" data-group="ai">
+  <!-- ===== AI - first panel of the AI tab. ONE provider switch (DevThrottle vs OpenAI) that drives
+       transcription, the wingman model, and the spoken voice together. Lives here on the one Settings
+       page, in the AI tab, alongside Training data and Instructions - not a separate page. -->
+  <div class="tab-panel" id="tab-ai" data-group="ai">
     <div class="section">
-      <h2>AI provider</h2>
-      <p class="hint">Choosing DevThrottle (hosted) or OpenAI - and picking the wingman model and the
-        text-to-speech voice - now lives on its own page.</p>
-      <div class="row" style="margin-top:6px">
-        <a class="link" href="/ai" data-enhance-nav="false">Open AI settings &rarr;</a>
+      <h2>AI</h2>
+      <p class="hint">One choice for all AI in DevThrottle. Pick who runs it &mdash; DevThrottle's hosted models (billed to your account) or your own OpenAI key &mdash; and it applies to transcription, the wingman, and the spoken voice together.</p>
+
+      <div class="mode-cards">
+        <label class="mode-card" id="ai-card-devthrottle">
+          <input type="radio" name="aiprovider" value="devthrottle">
+          <div class="mode-card-body">
+            <div class="mode-card-title">DevThrottle<span class="default-badge">Default</span></div>
+            <div class="mode-card-desc">Hosted models on your DevThrottle account - nothing to set up. Billed to your account credits.</div>
+          </div>
+        </label>
+        <label class="mode-card" id="ai-card-openai">
+          <input type="radio" name="aiprovider" value="openai">
+          <div class="mode-card-body">
+            <div class="mode-card-title">OpenAI</div>
+            <div class="mode-card-desc">Your own OpenAI API key. Stays on THIS machine and is never sent to DevThrottle.</div>
+          </div>
+        </label>
       </div>
+
+      <div class="kv" style="margin:2px 0 4px">
+        <span class="k">Transcription</span><span class="v mono" id="ai-txmodel">-</span>
+        <span class="k">Wingman model</span><span class="v mono" id="ai-wingmanmodel">-</span>
+      </div>
+
+      <div class="field" style="margin-top:14px">
+        <label for="ai-voice">Voice</label>
+        <select id="ai-voice"></select>
+      </div>
+      <p class="hint" style="margin:0 0 4px">The voice for spoken wingman replies.</p>
+
+      <!-- OpenAI key: shown only when the OpenAI provider is selected. -->
+      <div class="keypanel" id="ai-openai-key" style="display:none">
+        <div class="keylabel">OpenAI API key <span class="pill" id="ai-openai-keystate">not set</span></div>
+        <div class="row">
+          <input id="ai-openai-keybox" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+          <button class="save" id="ai-openai-savebtn">Save key</button>
+        </div>
+        <p class="hint" style="margin-top:8px">Stored locally on this machine only. DevThrottle never receives or stores your provider key.</p>
+      </div>
+
+      <!-- DevThrottle account note: shown only when the DevThrottle provider is selected. -->
+      <p class="hint" id="ai-dt-note">Hosted AI runs on your DevThrottle account. Your first top-up activates it - about 25 hours of speech per $5. <a class="link" href="/account" data-enhance-nav="false">Manage account &rarr;</a></p>
+
+      <div class="msg" id="ai-msg"></div>
     </div>
   </div>
 
@@ -450,9 +486,115 @@
   document.getElementById('acct-logout').addEventListener('click', acctLogout);
   loadAccount();
 
-  // ===== Transcription + keys moved to the AI page (/ai) =====
-  // The transcription mode chooser and the OpenAI/DevThrottle key panels are gone from this page; the
-  // one AI provider switch on /ai owns them now. fmtUptime stays - the Gateway snapshot below uses it.
+  // ===== AI provider (the AI tab) =====
+  // ONE switch (DevThrottle vs OpenAI) that drives transcription + the wingman model + the spoken
+  // voice together. Backed by the Gateway: GET/PUT /gateway/ai-provider, GET/PUT /gateway/tts-voice,
+  // and the vault key endpoints for the OpenAI key. This is the ONLY AI settings surface - it lives in
+  // this Settings page's AI tab, not a separate page.
+  const AI_VOICES_FALLBACK = ['nova', 'alloy', 'echo', 'fable', 'onyx', 'shimmer'];
+
+  function aiMsg(text, ok){
+    const m = document.getElementById('ai-msg');
+    m.textContent = text || '';
+    m.className = 'msg ' + (ok ? 'ok' : 'err');
+  }
+
+  // Reflect the provider snapshot: which card is selected, the resolved models, the voice dropdown,
+  // and which provider-specific panel (OpenAI key vs DevThrottle account note) shows.
+  function renderAiProvider(d){
+    const provider = (d && d.provider) === 'openai' ? 'openai' : 'devthrottle';
+    document.querySelectorAll('input[name="aiprovider"]').forEach(function(r){ r.checked = (r.value === provider); });
+    document.getElementById('ai-card-devthrottle').classList.toggle('selected', provider === 'devthrottle');
+    document.getElementById('ai-card-openai').classList.toggle('selected', provider === 'openai');
+    document.getElementById('ai-txmodel').textContent = (d && d.transcriptionModel) || '-';
+    document.getElementById('ai-wingmanmodel').textContent = (d && d.wingmanModel) || '-';
+
+    const sel = document.getElementById('ai-voice');
+    const voices = (d && d.voices && d.voices.length) ? d.voices : AI_VOICES_FALLBACK;
+    sel.innerHTML = '';
+    voices.forEach(function(v){
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      if (v === (d && d.ttsVoice)) o.selected = true;
+      sel.appendChild(o);
+    });
+
+    document.getElementById('ai-openai-key').style.display = (provider === 'openai') ? '' : 'none';
+    document.getElementById('ai-dt-note').style.display = (provider === 'devthrottle') ? '' : 'none';
+  }
+
+  async function loadAiProvider(){
+    try {
+      const r = await fetch('/gateway/ai-provider');
+      if (!r.ok) throw new Error(r.status);
+      renderAiProvider(await r.json());
+      await refreshOpenAiKeyState();
+    } catch (e) {
+      aiMsg('Failed to load AI settings (is the Gateway running?).', false);
+    }
+  }
+
+  // Show whether an OpenAI key is already stored (the badge + the input placeholder) - never the value.
+  async function refreshOpenAiKeyState(){
+    let stored = false;
+    try {
+      const r = await fetch('/vault/keys');
+      if (r.ok){ const d = await r.json(); stored = (d.names || []).includes('OPENAI_API_KEY'); }
+    } catch (e) { /* leave as "not set" */ }
+    document.getElementById('ai-openai-keystate').textContent = stored ? 'stored' : 'not set';
+    document.getElementById('ai-openai-keybox').placeholder = stored ? 'Enter a new key to replace it' : 'sk-...';
+  }
+
+  // Change the provider: the Gateway flips transcription mode + the provider-default wingman model
+  // together and echoes the new snapshot (applies on the next turn, no restart).
+  async function changeAiProvider(provider){
+    aiMsg('Saving...', true);
+    try {
+      const r = await fetch('/gateway/ai-provider', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      const d = await r.json().catch(function(){ return {}; });
+      if (r.ok){
+        renderAiProvider(d);
+        await refreshOpenAiKeyState();
+        aiMsg(provider === 'devthrottle'
+          ? 'Now using DevThrottle hosted AI (glm-5.2 wingman).'
+          : 'Now using OpenAI (gpt-5.5 wingman). Add your OpenAI key below if you have not.', true);
+      } else {
+        aiMsg('Save failed: ' + (d.error || r.status), false);
+      }
+    } catch (e){ aiMsg('Failed: ' + e, false); }
+  }
+
+  async function changeAiVoice(voice){
+    aiMsg('Saving...', true);
+    try {
+      const r = await fetch('/gateway/tts-voice', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice }),
+      });
+      const d = await r.json().catch(function(){ return {}; });
+      if (r.ok){ aiMsg('Voice set to ' + d.voice + '.', true); }
+      else { aiMsg('Save failed: ' + (d.error || r.status), false); }
+    } catch (e){ aiMsg('Failed: ' + e, false); }
+  }
+
+  async function saveAiOpenAiKey(){
+    const box = document.getElementById('ai-openai-keybox');
+    const value = box.value.trim();
+    if (!value){ aiMsg('Enter a key first.', false); return; }
+    if (!/^sk-/.test(value)){ aiMsg('That does not look like an OpenAI key (it should start with "sk-").', false); return; }
+    aiMsg('Saving key...', true);
+    try {
+      const r = await fetch('/vault/keys/OPENAI_API_KEY', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value }),
+      });
+      if (r.ok){ box.value = ''; await refreshOpenAiKeyState(); aiMsg('OpenAI key saved.', true); }
+      else { const e = await r.json().catch(function(){ return {}; }); aiMsg('Save failed: ' + (e.error || r.status), false); }
+    } catch (e){ aiMsg('Failed: ' + e, false); }
+  }
 
   function fmtUptime(sec){
     sec = Math.max(0, sec|0);
@@ -583,7 +725,12 @@
   // endpoints are removed Gateway-side. The panel is now a static notice pointing the user at the
   // gateway host app's per-device pairing-code flow; there is no network call to make here.
 
-  // Transcription mode + keys moved to the AI page (/ai) - no listeners to wire here.
+  // AI provider (the AI tab): the one switch + voice + OpenAI key.
+  document.querySelectorAll('input[name="aiprovider"]').forEach(function(r){
+    r.addEventListener('change', function(){ if (r.checked) changeAiProvider(r.value); });
+  });
+  document.getElementById('ai-voice').addEventListener('change', function(e){ changeAiVoice(e.target.value); });
+  document.getElementById('ai-openai-savebtn').addEventListener('click', saveAiOpenAiKey);
 
   // ===== Wingman instructions (issue #537): edit, version, manage the DevThrottle default =====
   const gid = function(id){ return document.getElementById(id); };
@@ -761,6 +908,7 @@
   document.getElementById('instr-diff-close').addEventListener('click', function(){ document.getElementById('instr-diff-section').style.display='none'; });
   document.getElementById('instr-test-run').addEventListener('click', runInstrTest);
 
+  loadAiProvider();
   loadSnapshot();
   loadTrainingCapture();
   loadInstructions();
