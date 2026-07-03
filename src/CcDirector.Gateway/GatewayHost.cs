@@ -537,8 +537,11 @@ public sealed class GatewayHost : IAsyncDisposable
         var mode = Core.Configuration.TranscriptionModeConfig.Get();
         var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
         var key = _keyVault.Get(ep.KeyName) ?? "";
+        // The model is the user's saved choice (AI tab "Wingman model" picker) when set to a real hosted
+        // model, else the provider default (glm-5.2 / gpt-5.5) - never a stale Claude alias.
+        var model = Core.Configuration.WingmanModelConfig.Resolve(mode);
         CcDirector.AgentBrain.IAgentBrain brain =
-            new Wingman.HostedInferenceBrain(ep.BaseUrl, key, ep.Model, log: FileLog.Write);
+            new Wingman.HostedInferenceBrain(ep.BaseUrl, key, model, log: FileLog.Write);
         return Task.FromResult(brain);
     }
 
@@ -831,6 +834,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // here (via the Cockpit Keys page); Directors pull them on demand. Inherits the
         // host-wide token middleware above.
         VaultEndpoints.Map(_app, _keyVault);
+
+        // The AI model catalog + test surface for the Settings AI tab (list the selected provider's
+        // models, test a chat model, save the chosen wingman/speech model). Uses the vault credential.
+        Api.AiModelsEndpoint.Map(_app, _keyVault);
 
         // Gateway Centralization Phase 1 (issue #628): the inbound login-telemetry RELAY. The Director
         // POSTs its login-telemetry event here (instead of the cloud) and the Gateway forwards it on,

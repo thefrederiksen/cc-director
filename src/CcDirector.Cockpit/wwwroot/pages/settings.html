@@ -208,16 +208,34 @@
         </label>
       </div>
 
-      <div class="kv" style="margin:2px 0 4px">
-        <span class="k">Transcription</span><span class="v mono" id="ai-txmodel">-</span>
-        <span class="k">Wingman model</span><span class="v mono" id="ai-wingmanmodel">-</span>
+      <!-- Wingman model: pick from the provider's live catalog, then Test it with one real round-trip. -->
+      <div class="field" style="margin-top:6px">
+        <label for="ai-model">Wingman model</label>
+        <select id="ai-model"></select>
+      </div>
+      <div class="row" style="margin:2px 0 8px 130px">
+        <button id="ai-model-testbtn">Test</button>
+        <span class="hint" id="ai-model-testmsg" style="margin:0">Run a quick call to check the model responds.</span>
       </div>
 
-      <div class="field" style="margin-top:14px">
+      <!-- Speech model + voice, with a Play sample so you can hear the voice before saving. -->
+      <div class="field">
+        <label for="ai-ttsmodel">Speech model</label>
+        <select id="ai-ttsmodel"></select>
+      </div>
+      <div class="field">
         <label for="ai-voice">Voice</label>
         <select id="ai-voice"></select>
       </div>
-      <p class="hint" style="margin:0 0 4px">The voice for spoken wingman replies.</p>
+      <div class="row" style="margin:2px 0 8px 130px">
+        <button id="ai-voice-samplebtn">Play sample</button>
+        <span class="hint" id="ai-voice-samplemsg" style="margin:0">Hear this voice before you save it.</span>
+      </div>
+      <audio id="ai-audio" style="display:none"></audio>
+
+      <div class="kv" style="margin:6px 0 4px">
+        <span class="k">Transcription</span><span class="v mono" id="ai-txmodel">-</span>
+      </div>
 
       <!-- OpenAI key: shown only when the OpenAI provider is selected. -->
       <div class="keypanel" id="ai-openai-key" style="display:none">
@@ -499,28 +517,77 @@
     m.className = 'msg ' + (ok ? 'ok' : 'err');
   }
 
-  // Reflect the provider snapshot: which card is selected, the resolved models, the voice dropdown,
-  // and which provider-specific panel (OpenAI key vs DevThrottle account note) shows.
+  const AI_SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
+  let aiSnapshot = {};        // last /gateway/ai-provider snapshot (current provider + saved models/voice)
+  let aiSpeechModels = [];    // speech models from the catalog (each carries its own voices)
+
+  // Reflect the provider snapshot: which card is selected, which provider-specific panel shows, and the
+  // read-only transcription line. The model + voice dropdowns are then filled from the live catalog.
   function renderAiProvider(d){
-    const provider = (d && d.provider) === 'openai' ? 'openai' : 'devthrottle';
+    aiSnapshot = d || {};
+    const provider = aiSnapshot.provider === 'openai' ? 'openai' : 'devthrottle';
     document.querySelectorAll('input[name="aiprovider"]').forEach(function(r){ r.checked = (r.value === provider); });
     document.getElementById('ai-card-devthrottle').classList.toggle('selected', provider === 'devthrottle');
     document.getElementById('ai-card-openai').classList.toggle('selected', provider === 'openai');
-    document.getElementById('ai-txmodel').textContent = (d && d.transcriptionModel) || '-';
-    document.getElementById('ai-wingmanmodel').textContent = (d && d.wingmanModel) || '-';
+    document.getElementById('ai-txmodel').textContent = aiSnapshot.transcriptionModel || '-';
+    document.getElementById('ai-openai-key').style.display = (provider === 'openai') ? '' : 'none';
+    document.getElementById('ai-dt-note').style.display = (provider === 'devthrottle') ? '' : 'none';
+  }
 
+  // Fill one <select> with model ids; ensure the currently-saved id is present + selected even if the
+  // catalog call failed or doesn't list it, so the box always shows what is actually in use.
+  function fillModelSelect(id, models, current){
+    const sel = document.getElementById(id);
+    sel.innerHTML = '';
+    const ids = models.map(function(m){ return m.id; });
+    if (current && ids.indexOf(current) < 0) ids.unshift(current);
+    ids.forEach(function(mid){
+      const m = models.find(function(x){ return x.id === mid; });
+      const o = document.createElement('option');
+      o.value = mid; o.textContent = mid;
+      if (m && m.description) o.title = m.description;
+      if (mid === current) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  // Fill the voice dropdown from the SELECTED speech model's voices (each speech model has its own set);
+  // fall back to the OpenAI voice set when the model exposes none. Pre-select the saved/keep voice.
+  function fillVoiceSelect(keepVoice){
     const sel = document.getElementById('ai-voice');
-    const voices = (d && d.voices && d.voices.length) ? d.voices : AI_VOICES_FALLBACK;
+    const chosenModel = document.getElementById('ai-ttsmodel').value;
+    const sm = aiSpeechModels.find(function(m){ return m.id === chosenModel; });
+    let voices = (sm && sm.voices && sm.voices.length) ? sm.voices : AI_VOICES_FALLBACK;
+    const want = (keepVoice && voices.indexOf(keepVoice) >= 0) ? keepVoice
+               : (sm && sm.defaultVoice && voices.indexOf(sm.defaultVoice) >= 0) ? sm.defaultVoice
+               : voices[0];
     sel.innerHTML = '';
     voices.forEach(function(v){
       const o = document.createElement('option');
       o.value = v; o.textContent = v;
-      if (v === (d && d.ttsVoice)) o.selected = true;
+      if (v === want) o.selected = true;
       sel.appendChild(o);
     });
+    return want;
+  }
 
-    document.getElementById('ai-openai-key').style.display = (provider === 'openai') ? '' : 'none';
-    document.getElementById('ai-dt-note').style.display = (provider === 'devthrottle') ? '' : 'none';
+  async function fetchModels(kind){
+    try {
+      const r = await fetch('/gateway/ai/models?kind=' + kind);
+      if (!r.ok) return [];
+      const d = await r.json();
+      return Array.isArray(d.models) ? d.models : [];
+    } catch (e){ return []; }
+  }
+
+  // Populate both model dropdowns + the voice dropdown from the provider's live catalog, pre-selecting
+  // the saved wingman model, speech model, and voice. Degrades gracefully if the catalog is unavailable.
+  async function loadAiModels(){
+    const chat = await fetchModels('chat');
+    fillModelSelect('ai-model', chat, aiSnapshot.wingmanModel || '');
+    aiSpeechModels = await fetchModels('speech');
+    fillModelSelect('ai-ttsmodel', aiSpeechModels, aiSnapshot.ttsModel || '');
+    fillVoiceSelect(aiSnapshot.ttsVoice || '');
   }
 
   async function loadAiProvider(){
@@ -529,6 +596,7 @@
       if (!r.ok) throw new Error(r.status);
       renderAiProvider(await r.json());
       await refreshOpenAiKeyState();
+      await loadAiModels();
     } catch (e) {
       aiMsg('Failed to load AI settings (is the Gateway running?).', false);
     }
@@ -546,7 +614,7 @@
   }
 
   // Change the provider: the Gateway flips transcription mode + the provider-default wingman model
-  // together and echoes the new snapshot (applies on the next turn, no restart).
+  // together and echoes the new snapshot. Reload the model catalog for the new provider.
   async function changeAiProvider(provider){
     aiMsg('Saving...', true);
     try {
@@ -558,12 +626,63 @@
       if (r.ok){
         renderAiProvider(d);
         await refreshOpenAiKeyState();
+        await loadAiModels();
         aiMsg(provider === 'devthrottle'
           ? 'Now using DevThrottle hosted AI (glm-5.2 wingman).'
           : 'Now using OpenAI (gpt-5.5 wingman). Add your OpenAI key below if you have not.', true);
       } else {
         aiMsg('Save failed: ' + (d.error || r.status), false);
       }
+    } catch (e){ aiMsg('Failed: ' + e, false); }
+  }
+
+  async function changeWingmanModel(model){
+    aiMsg('Saving...', true);
+    document.getElementById('ai-model-testmsg').textContent = '';
+    try {
+      const r = await fetch('/gateway/ai/wingman-model', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      const d = await r.json().catch(function(){ return {}; });
+      if (r.ok){ aiSnapshot.wingmanModel = d.model; aiMsg('Wingman model set to ' + d.model + '. Test it to confirm it works.', true); }
+      else { aiMsg('Save failed: ' + (d.error || r.status), false); }
+    } catch (e){ aiMsg('Failed: ' + e, false); }
+  }
+
+  async function testWingmanModel(){
+    const model = document.getElementById('ai-model').value;
+    const btn = document.getElementById('ai-model-testbtn');
+    const msg = document.getElementById('ai-model-testmsg');
+    if (!model){ msg.className = 'hint'; msg.textContent = 'Pick a model first.'; return; }
+    btn.disabled = true; msg.className = 'hint'; msg.textContent = 'Testing ' + model + '...';
+    try {
+      const r = await fetch('/gateway/ai/test-chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      const d = await r.json().catch(function(){ return {}; });
+      if (r.ok && d.ok){ msg.className = 'msg ok'; msg.textContent = 'OK - replied "' + (d.reply || '') + '" in ' + d.seconds + 's.'; }
+      else { msg.className = 'msg err'; msg.textContent = 'Failed: ' + (d.error || r.status); }
+    } catch (e){ msg.className = 'msg err'; msg.textContent = 'Failed: ' + e; }
+    btn.disabled = false;
+  }
+
+  async function changeTtsModel(model){
+    aiMsg('Saving...', true);
+    try {
+      const r = await fetch('/gateway/ai/tts-model', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      const d = await r.json().catch(function(){ return {}; });
+      if (r.ok){
+        aiSnapshot.ttsModel = d.model;
+        // The new speech model may expose a different voice set - repopulate + save the resulting voice.
+        const voice = fillVoiceSelect(aiSnapshot.ttsVoice || '');
+        if (voice && voice !== aiSnapshot.ttsVoice) await changeAiVoice(voice);
+        aiMsg('Speech model set to ' + d.model + '.', true);
+      } else { aiMsg('Save failed: ' + (d.error || r.status), false); }
     } catch (e){ aiMsg('Failed: ' + e, false); }
   }
 
@@ -575,9 +694,32 @@
         body: JSON.stringify({ voice }),
       });
       const d = await r.json().catch(function(){ return {}; });
-      if (r.ok){ aiMsg('Voice set to ' + d.voice + '.', true); }
+      if (r.ok){ aiSnapshot.ttsVoice = d.voice; aiMsg('Voice set to ' + d.voice + '.', true); }
       else { aiMsg('Save failed: ' + (d.error || r.status), false); }
     } catch (e){ aiMsg('Failed: ' + e, false); }
+  }
+
+  // Play a short sample in the CURRENTLY-selected speech model + voice, so you can hear it before saving.
+  async function playVoiceSample(){
+    const btn = document.getElementById('ai-voice-samplebtn');
+    const msg = document.getElementById('ai-voice-samplemsg');
+    const voice = document.getElementById('ai-voice').value;
+    const model = document.getElementById('ai-ttsmodel').value;
+    btn.disabled = true; msg.className = 'hint'; msg.textContent = 'Synthesizing...';
+    try {
+      const r = await fetch('/wingman/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: AI_SAMPLE_TEXT, voice: voice, model: model }),
+      });
+      if (!r.ok){ const e = await r.json().catch(function(){ return {}; }); msg.className = 'msg err'; msg.textContent = 'Failed: ' + (e.error || r.status); btn.disabled = false; return; }
+      const blob = await r.blob();
+      const audio = document.getElementById('ai-audio');
+      audio.src = URL.createObjectURL(blob);
+      msg.className = 'hint'; msg.textContent = 'Playing ' + voice + '...';
+      audio.onended = function(){ msg.textContent = 'Hear this voice before you save it.'; };
+      await audio.play();
+    } catch (e){ msg.className = 'msg err'; msg.textContent = 'Failed: ' + e; }
+    btn.disabled = false;
   }
 
   async function saveAiOpenAiKey(){
@@ -725,11 +867,16 @@
   // endpoints are removed Gateway-side. The panel is now a static notice pointing the user at the
   // gateway host app's per-device pairing-code flow; there is no network call to make here.
 
-  // AI provider (the AI tab): the one switch + voice + OpenAI key.
+  // AI tab: the provider switch, the wingman + speech model pickers (with Test), the voice (with Play
+  // sample), and the OpenAI key.
   document.querySelectorAll('input[name="aiprovider"]').forEach(function(r){
     r.addEventListener('change', function(){ if (r.checked) changeAiProvider(r.value); });
   });
+  document.getElementById('ai-model').addEventListener('change', function(e){ changeWingmanModel(e.target.value); });
+  document.getElementById('ai-model-testbtn').addEventListener('click', testWingmanModel);
+  document.getElementById('ai-ttsmodel').addEventListener('change', function(e){ changeTtsModel(e.target.value); });
   document.getElementById('ai-voice').addEventListener('change', function(e){ changeAiVoice(e.target.value); });
+  document.getElementById('ai-voice-samplebtn').addEventListener('click', playVoiceSample);
   document.getElementById('ai-openai-savebtn').addEventListener('click', saveAiOpenAiKey);
 
   // ===== Wingman instructions (issue #537): edit, version, manage the DevThrottle default =====

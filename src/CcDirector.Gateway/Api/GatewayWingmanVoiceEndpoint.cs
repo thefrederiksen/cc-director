@@ -210,12 +210,13 @@ internal static class GatewayWingmanVoiceEndpoint
 
             var input = req.Text.Length > TtsMaxChars ? req.Text[..TtsMaxChars] : req.Text;
             var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoiceConfig.Get() : req.Voice.Trim();
+            var model = string.IsNullOrWhiteSpace(req.Model) ? TtsModelConfig.Get() : req.Model.Trim();
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             try
             {
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-                using var payload = JsonContent.Create(new { model = tts.Model, voice, input, response_format = "mp3" });
+                using var payload = JsonContent.Create(new { model, voice, input, response_format = "mp3" });
                 using var resp = await http.PostAsync(url, payload, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
@@ -225,8 +226,11 @@ internal static class GatewayWingmanVoiceEndpoint
                         statusCode: StatusCodes.Status502BadGateway);
                 }
                 var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-                FileLog.Write($"[GatewayWingmanVoice] tts ok: provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, voice={voice}");
-                return Results.Bytes(bytes, "audio/mpeg");
+                // Pass the upstream content type through: OpenAI returns audio/mpeg, the DevThrottle proxy
+                // may return audio/wav for some models - the browser must be told which so it can play it.
+                var contentType = resp.Content.Headers.ContentType?.MediaType ?? "audio/mpeg";
+                FileLog.Write($"[GatewayWingmanVoice] tts ok: provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, model={model}, voice={voice}, type={contentType}");
+                return Results.Bytes(bytes, contentType);
             }
             catch (Exception ex)
             {
@@ -693,11 +697,14 @@ public sealed class WingmanMenuPressRequest
     public string? Submit { get; set; }
 }
 
-/// <summary>Body of the wingman text-to-speech route: the text to speak and an optional voice.</summary>
+/// <summary>Body of the wingman text-to-speech route: the text to speak, and an optional voice + model
+/// (used by the settings "play sample" so a voice/model can be previewed before it is saved). When Voice
+/// or Model is omitted the saved <see cref="Core.Configuration.TtsVoiceConfig"/> / <see cref="Core.Configuration.TtsModelConfig"/> values are used.</summary>
 public sealed class WingmanTtsRequest
 {
     public string Text { get; set; } = "";
     public string? Voice { get; set; }
+    public string? Model { get; set; }
 }
 
 /// <summary>Body of the resumable-utterance complete route: how many chunks to reassemble and the

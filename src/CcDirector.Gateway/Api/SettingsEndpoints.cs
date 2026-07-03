@@ -458,8 +458,11 @@ internal static class SettingsEndpoints
         return new
         {
             provider = ProviderString(mode),
-            wingmanModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode).Model,
+            // The saved wingman-model choice (falls forward to the provider default for a stale/unset
+            // value), so a model picked on the AI tab round-trips across a reload.
+            wingmanModel = Core.Configuration.WingmanModelConfig.Resolve(mode),
             transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
+            ttsModel = Core.Configuration.TtsModelConfig.Get(),
             ttsVoice = Core.Configuration.TtsVoiceConfig.Get(),
             voices = Core.Configuration.TtsVoiceConfig.AllowedVoices,
         };
