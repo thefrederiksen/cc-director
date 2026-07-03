@@ -81,8 +81,8 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
     public async Task Snapshot_defaults_wingman_and_tts_model()
     {
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
-        Assert.Equal("glm-5.2", (string?)snap!["wingmanModel"]);   // provider default when unset
-        Assert.Equal("tts-1", (string?)snap["ttsModel"]);
+        Assert.Equal("zai-org/GLM-5.2", (string?)snap!["wingmanModel"]);   // provider default when unset
+        Assert.Equal("hexgrad/Kokoro-82M", (string?)snap["ttsModel"]);
     }
 
     [Fact]

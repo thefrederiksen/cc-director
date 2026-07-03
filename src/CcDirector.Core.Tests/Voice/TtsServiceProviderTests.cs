@@ -66,7 +66,7 @@ public sealed class TtsServiceProviderTests : IDisposable
         Assert.Equal("dt_live_testkey", handler.Request.Headers.Authorization!.Parameter);
         using var doc = JsonDocument.Parse(handler.Body!);
         Assert.Equal("onyx", doc.RootElement.GetProperty("voice").GetString());
-        Assert.Equal("tts-1", doc.RootElement.GetProperty("model").GetString());
+        Assert.Equal("hexgrad/Kokoro-82M", doc.RootElement.GetProperty("model").GetString());   // DevThrottle default speech model
     }
 
     [Fact]

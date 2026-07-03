@@ -30,7 +30,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     [Fact]
     public void Resolve_Unset_UsesProviderDefault()
     {
-        Assert.Equal("glm-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
+        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
         Assert.Equal("gpt-5.5", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
     }
 
@@ -41,7 +41,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     public void Resolve_StaleClaudeAlias_FallsForwardToProviderDefault(string alias)
     {
         WingmanModelConfig.Set(alias);   // a legacy warm-brain value the hosted proxy cannot run
-        Assert.Equal("glm-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
+        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     [Fact]
     public void Set_PersistsToBrainModelKey()
     {
-        WingmanModelConfig.Set("glm-5.2");
-        Assert.Equal("glm-5.2", CcDirectorConfigService.ReadRaw()["brain_model"]!.GetValue<string>());
+        WingmanModelConfig.Set("zai-org/GLM-5.2");
+        Assert.Equal("zai-org/GLM-5.2", CcDirectorConfigService.ReadRaw()["brain_model"]!.GetValue<string>());
     }
 }

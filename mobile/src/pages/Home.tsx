@@ -4,6 +4,7 @@ import { listSessions, type SessionDto } from "../api/client";
 import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, repoLeaf } from "../sessions/ordering";
 import { useNow, waitingLabel } from "../sessions/waiting";
 import { getClipState, playClip, syncVoiceSessions, useVoiceClips } from "../voice/clips";
+import { NavDrawer } from "../components/NavDrawer";
 
 // Home / roster. A "needs you" group first (when any session wants attention), then the full
 // session list, both using the live Gateway /sessions data and the shared triage ordering.
@@ -53,6 +54,7 @@ export function Home() {
   return (
     <div className="screen">
       <header className="app-bar">
+        <NavDrawer />
         <h1>DevThrottle</h1>
         <span className="app-bar-sub">Mission Control</span>
       </header>

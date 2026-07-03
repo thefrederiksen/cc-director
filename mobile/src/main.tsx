@@ -6,6 +6,7 @@ import { NewSession } from "./pages/NewSession";
 import { Terminal } from "./pages/Terminal";
 import { Chat } from "./pages/Chat";
 import { VoiceMode } from "./pages/VoiceMode";
+import { AiSettings } from "./pages/AiSettings";
 import { ensureGatewayCookie } from "./api/client";
 import "./styles.css";
 
@@ -20,6 +21,7 @@ ensureGatewayCookie();
 const router = createBrowserRouter(
   [
     { path: "/", element: <Home /> },
+    { path: "/settings", element: <AiSettings /> },
     { path: "/new", element: <NewSession /> },
     { path: "/session/:sessionId", element: <Terminal /> },
     { path: "/session/:sessionId/chat", element: <Chat /> },

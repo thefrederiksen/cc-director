@@ -59,12 +59,12 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.NotNull(obj);
         Assert.Equal("devthrottle", (string?)obj!["provider"]);
-        Assert.Equal("glm-5.2", (string?)obj["wingmanModel"]);
+        Assert.Equal("zai-org/GLM-5.2", (string?)obj["wingmanModel"]);
         Assert.Equal("whisper-large-v3", (string?)obj["transcriptionModel"]);
-        Assert.Equal("nova", (string?)obj["ttsVoice"]);
+        Assert.Equal("af_bella", (string?)obj["ttsVoice"]);   // DevThrottle (Kokoro) default voice
         var voices = obj["voices"] as JsonArray;
         Assert.NotNull(voices);
-        Assert.Contains(voices!, v => (string?)v == "nova");
+        Assert.Contains(voices!, v => (string?)v == "nova");   // OpenAI voice fallback set
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
 
         var onDisk = CcDirectorConfigService.ReadRaw();
         Assert.Equal("devthrottle", (string?)onDisk["transcription_mode"]);
-        Assert.Equal("glm-5.2", (string?)onDisk["brain_model"]);
+        Assert.Equal("zai-org/GLM-5.2", (string?)onDisk["brain_model"]);
     }
 
     [Fact]
@@ -126,13 +126,13 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Get_tts_voice_defaults_to_nova_with_selectable_set()
+    public async Task Get_tts_voice_defaults_to_provider_default_with_fallback_set()
     {
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/tts-voice");
-        Assert.Equal("nova", (string?)obj!["voice"]);
+        Assert.Equal("af_bella", (string?)obj!["voice"]);   // DevThrottle (Kokoro) default
         var voices = obj["voices"] as JsonArray;
         Assert.NotNull(voices);
-        Assert.Contains(voices!, v => (string?)v == "shimmer");
+        Assert.Contains(voices!, v => (string?)v == "shimmer");   // OpenAI fallback set
     }
 
     [Fact]
@@ -148,11 +148,21 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Put_tts_voice_rejects_unknown_voice()
+    public async Task Put_tts_voice_accepts_any_voice_id()
     {
-        var resp = await _http.PutAsJsonAsync("gateway/tts-voice", new { voice = "robot" });
+        // Voices are dynamic + provider-specific (Kokoro's af_bella is not an OpenAI voice), so any
+        // non-empty id is accepted - there is no fixed allow-list.
+        var resp = await _http.PutAsJsonAsync("gateway/tts-voice", new { voice = "af_bella" });
+        resp.EnsureSuccessStatusCode();
+        Assert.Equal("af_bella", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["voice"]);
+        Assert.Equal("af_bella", (string?)CcDirectorConfigService.ReadRaw()["tts_voice"]);
+    }
+
+    [Fact]
+    public async Task Put_tts_voice_rejects_empty()
+    {
+        var resp = await _http.PutAsJsonAsync("gateway/tts-voice", new { voice = "   " });
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        Assert.Null(CcDirectorConfigService.ReadRaw()["tts_voice"]);
     }
 
     [Fact]

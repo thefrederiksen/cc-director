@@ -140,22 +140,46 @@ public static class TranscriptionEndpointResolver
     public const string DevThrottleModel = "whisper-large-v3";
 
     /// <summary>
-    /// The wingman (voice-summary) chat model per provider. The wingman is a stateless
-    /// OpenAI-compatible <c>/chat/completions</c> call to the selected provider's base URL (the same
-    /// base + key the transcription path uses): <c>glm-5.2</c> on the DevThrottle inference proxy,
-    /// <c>gpt-5.5</c> on OpenAI. Pinned here so the one routing spot owns the wingman model too.
+    /// The DEFAULT wingman (voice-summary) chat model per provider. The wingman is a stateless
+    /// OpenAI-compatible <c>/chat/completions</c> call to the selected provider's base URL. These are
+    /// ids the provider's catalog actually serves (verified live): the DevThrottle proxy uses full ids
+    /// like <c>zai-org/GLM-5.2</c> (the short alias <c>glm-5.2</c> is rejected), OpenAI uses
+    /// <c>gpt-5.5</c>. The user can pick any model from the live catalog; this is only the default.
     /// </summary>
-    public const string DevThrottleWingmanModel = "glm-5.2";
+    public const string DevThrottleWingmanModel = "zai-org/GLM-5.2";
 
-    /// <summary>The OpenAI wingman chat model (bring-your-own key). See <see cref="DevThrottleWingmanModel"/>.</summary>
+    /// <summary>The default OpenAI wingman chat model (bring-your-own key). See <see cref="DevThrottleWingmanModel"/>.</summary>
     public const string OpenAiWingmanModel = "gpt-5.5";
 
     /// <summary>
-    /// The text-to-speech model. Both providers are OpenAI-compatible for speech
-    /// (<c>POST /audio/speech</c>), so the same model name serves DevThrottle (via the proxy) and
-    /// OpenAI directly; the voice is a separate per-user choice (<see cref="TtsVoiceConfig"/>).
+    /// The DEFAULT text-to-speech model per provider. The catalogs differ (verified live): the
+    /// DevThrottle proxy serves open TTS models like <c>hexgrad/Kokoro-82M</c> (it does NOT serve
+    /// OpenAI's <c>tts-1</c>), OpenAI serves <c>tts-1</c>. The user can pick any speech model from the
+    /// live catalog; this is only the default.
     /// </summary>
-    public const string TtsModel = "tts-1";
+    public const string DevThrottleTtsModel = "hexgrad/Kokoro-82M";
+
+    /// <summary>The default OpenAI text-to-speech model. See <see cref="DevThrottleTtsModel"/>.</summary>
+    public const string OpenAiTtsModel = "tts-1";
+
+    /// <summary>The DEFAULT voice per provider. Kokoro's own default is <c>af_bella</c>; OpenAI's is
+    /// <c>nova</c>. Voices are provider-specific (a Kokoro voice is not an OpenAI voice), so switching
+    /// providers must reset the voice - the two sets do not overlap.</summary>
+    public const string DevThrottleTtsVoice = "af_bella";
+
+    /// <summary>The default OpenAI voice. See <see cref="DevThrottleTtsVoice"/>.</summary>
+    public const string OpenAiTtsVoice = "nova";
+
+    /// <summary>The default speech model for <paramref name="mode"/> (see <see cref="ResolveTts"/>.Model).</summary>
+    public static string DefaultTtsModel(TranscriptionMode mode) => ResolveTts(mode).Model;
+
+    /// <summary>The default voice for <paramref name="mode"/>.</summary>
+    public static string DefaultTtsVoice(TranscriptionMode mode) => mode switch
+    {
+        TranscriptionMode.Byo => OpenAiTtsVoice,
+        TranscriptionMode.DevThrottle => DevThrottleTtsVoice,
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transcription mode"),
+    };
 
     /// <summary>
     /// Resolve the wingman chat-completions target for <paramref name="mode"/> (base URL + key name +
@@ -175,8 +199,8 @@ public static class TranscriptionEndpointResolver
     /// </summary>
     public static ProviderEndpoint ResolveTts(TranscriptionMode mode) => mode switch
     {
-        TranscriptionMode.Byo => new ProviderEndpoint(OpenAiBaseUrl, OpenAiKeyName, TtsModel),
-        TranscriptionMode.DevThrottle => new ProviderEndpoint(DevThrottleBaseUrl, DevThrottleKeyName, TtsModel),
+        TranscriptionMode.Byo => new ProviderEndpoint(OpenAiBaseUrl, OpenAiKeyName, OpenAiTtsModel),
+        TranscriptionMode.DevThrottle => new ProviderEndpoint(DevThrottleBaseUrl, DevThrottleKeyName, DevThrottleTtsModel),
         _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transcription mode"),
     };
 

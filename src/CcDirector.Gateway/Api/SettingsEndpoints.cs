@@ -281,16 +281,22 @@ internal static class SettingsEndpoints
                 if (!TryParseProvider(body.Provider, out var mode))
                     return Results.BadRequest(new { error = "provider must be \"devthrottle\" or \"openai\"" });
 
-                // The wingman model is the provider default (glm-5.2 / gpt-5.5); persisted as brain_model
-                // so the wingman + Settings show the same value and it round-trips across a reload.
+                // Reset the wingman model, speech model, and voice to the NEW provider's defaults. This
+                // is required, not just tidy: the two providers' catalogs do not overlap (a Kokoro voice
+                // is not an OpenAI voice; zai-org/GLM-5.2 is not an OpenAI model), so a value saved for one
+                // provider would fail against the other. One switch moves all three cleanly.
                 var wingmanModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode).Model;
+                var ttsModel = Core.Configuration.TranscriptionEndpointResolver.DefaultTtsModel(mode);
+                var ttsVoice = Core.Configuration.TranscriptionEndpointResolver.DefaultTtsVoice(mode);
                 Core.Configuration.CcDirectorConfigService.MergePatch(
                     new System.Text.Json.Nodes.JsonObject
                     {
                         ["transcription_mode"] = mode.ToConfigString(),
                         ["brain_model"] = wingmanModel,
+                        ["tts_model"] = ttsModel,
+                        ["tts_voice"] = ttsVoice,
                     });
-                FileLog.Write($"[SettingsEndpoints] ai_provider set: mode={mode.ToConfigString()}, wingmanModel={wingmanModel}");
+                FileLog.Write($"[SettingsEndpoints] ai_provider set: mode={mode.ToConfigString()}, wingmanModel={wingmanModel}, ttsModel={ttsModel}, ttsVoice={ttsVoice}");
                 return Results.Json(AiProviderSnapshot());
             }
             catch (JsonException ex)
@@ -303,11 +309,15 @@ internal static class SettingsEndpoints
         // The text-to-speech voice for spoken wingman output (consolidated AI settings). One of the
         // OpenAI-compatible voices; applies to whichever provider is selected (both are OpenAI-compatible
         // for speech). Read at synthesis time, so a change is honored on the next spoken summary.
-        app.MapGet("/gateway/tts-voice", () => Results.Json(new
+        app.MapGet("/gateway/tts-voice", () =>
         {
-            voice = Core.Configuration.TtsVoiceConfig.Get(),
-            voices = Core.Configuration.TtsVoiceConfig.AllowedVoices,
-        }));
+            var mode = Core.Configuration.TranscriptionModeConfig.Get();
+            return Results.Json(new
+            {
+                voice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
+                voices = Core.Configuration.TtsVoiceConfig.OpenAiVoices,   // fallback set; DevThrottle voices come from /gateway/ai/models
+            });
+        });
 
         app.MapPut("/gateway/tts-voice", async (HttpContext ctx) =>
         {
@@ -316,12 +326,12 @@ internal static class SettingsEndpoints
                 var body = await JsonSerializer.DeserializeAsync<TtsVoiceBody>(
                     ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Voice))
-                    return Results.BadRequest(new { error = "body { \"voice\": \"nova\"|... } is required" });
-                if (!Core.Configuration.TtsVoiceConfig.IsValid(body.Voice))
-                    return Results.BadRequest(new { error = "voice must be one of: " + string.Join(", ", Core.Configuration.TtsVoiceConfig.AllowedVoices) });
+                    return Results.BadRequest(new { error = "body { \"voice\": \"<id>\" } is required" });
 
+                // Any non-empty voice id is accepted - the catalog is dynamic and provider-specific, so
+                // there is no fixed allow-list to check against.
                 Core.Configuration.TtsVoiceConfig.Set(body.Voice);
-                var voice = Core.Configuration.TtsVoiceConfig.Get();
+                var voice = body.Voice.Trim();
                 FileLog.Write($"[SettingsEndpoints] tts_voice set to {voice}");
                 return Results.Json(new { voice });
             }
@@ -462,9 +472,9 @@ internal static class SettingsEndpoints
             // value), so a model picked on the AI tab round-trips across a reload.
             wingmanModel = Core.Configuration.WingmanModelConfig.Resolve(mode),
             transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
-            ttsModel = Core.Configuration.TtsModelConfig.Get(),
-            ttsVoice = Core.Configuration.TtsVoiceConfig.Get(),
-            voices = Core.Configuration.TtsVoiceConfig.AllowedVoices,
+            ttsModel = Core.Configuration.TtsModelConfig.Resolve(mode),
+            ttsVoice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
+            voices = Core.Configuration.TtsVoiceConfig.OpenAiVoices,
         };
     }
 

@@ -112,8 +112,8 @@ public sealed class TtsService
             var mode = TranscriptionModeConfig.Get();
             var ep = TranscriptionEndpointResolver.ResolveTts(mode);
             var key = await _keyResolver.ResolveAsync(ct) ?? "";
-            var voice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : TtsVoiceConfig.Get();
-            var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : TtsModelConfig.Get();
+            var voice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : TtsVoiceConfig.Resolve(mode);
+            var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : TtsModelConfig.Resolve(mode);
             var missing = mode == TranscriptionMode.DevThrottle
                 ? "DevThrottle account key missing - sign in to DevThrottle"
                 : "OpenAI API key missing";

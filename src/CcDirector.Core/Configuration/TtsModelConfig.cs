@@ -5,46 +5,43 @@ namespace CcDirector.Core.Configuration;
 
 /// <summary>
 /// The text-to-speech MODEL used for spoken wingman output, persisted in config.json as the top-level
-/// string "tts_model", mirroring "tts_voice" / "transcription_mode". Unlike the voice (a fixed set), the
-/// model list is DYNAMIC - the AI provider hands it back from its <c>GET /models?type=speech</c> catalog
-/// (e.g. <c>tts-1</c>, <c>tts-1-hd</c>, <c>kokoro</c>) - so this stores whatever id the user picked from
-/// that live list. Read at synthesis time, so a change applies on the next spoken summary.
-///
-/// The default (<c>tts-1</c>) is served by both providers (OpenAI directly, and the DevThrottle proxy
-/// which is OpenAI-compatible), so a fresh install speaks without any setup. An empty value is treated
-/// as "use the default" rather than an error (there is no fixed allowed set to validate against).
+/// string "tts_model". The model list is DYNAMIC and provider-specific - the AI provider hands it back
+/// from its <c>GET /models?type=speech</c> catalog (OpenAI: tts-1/tts-1-hd; the DevThrottle proxy:
+/// hexgrad/Kokoro-82M, Chatterbox) - so this stores whatever id the user picked from that live list, and
+/// the DEFAULT is provider-aware (<see cref="Resolve"/>). Read at synthesis time, so a change applies on
+/// the next spoken summary.
 /// </summary>
 public static class TtsModelConfig
 {
     /// <summary>The config.json key this setting lives under.</summary>
     public const string ConfigKey = "tts_model";
 
-    /// <summary>The default speech model when nothing is configured. Served by both providers.</summary>
-    public const string Default = "tts-1";
-
-    /// <summary>Normalize a model id: trimmed; null/empty yields <see cref="Default"/>.</summary>
-    public static string Normalize(string? value)
-        => string.IsNullOrWhiteSpace(value) ? Default : value.Trim();
-
-    /// <summary>Resolve the model: config.json "tts_model" when set, else <see cref="Default"/>.</summary>
+    /// <summary>The raw saved model id, or empty string when unset. Use <see cref="Resolve"/> for the
+    /// provider-aware effective value.</summary>
     public static string Get()
     {
         var node = CcDirectorConfigService.ReadRaw()[ConfigKey];
         if (node is null)
-            return Default;
-
+            return "";
         if (node is JsonValue v && v.GetValueKind() == JsonValueKind.String)
-            return Normalize(v.GetValue<string>());
-
+            return v.GetValue<string>().Trim();
         throw new InvalidOperationException(
-            "config.json key 'tts_model' must be a string (a speech model id, e.g. \"tts-1\"). " +
-            "Fix the value or remove the key to use the default (tts-1).");
+            "config.json key 'tts_model' must be a string (a speech model id). Fix the value or remove the key.");
     }
 
-    /// <summary>Persist the model to config.json (merge-patch, leaving other keys untouched).</summary>
+    /// <summary>The effective speech model for <paramref name="mode"/>: the saved value when set, else the
+    /// provider default (Kokoro for DevThrottle, tts-1 for OpenAI).</summary>
+    public static string Resolve(TranscriptionMode mode)
+    {
+        var saved = Get();
+        return saved.Length > 0 ? saved : TranscriptionEndpointResolver.DefaultTtsModel(mode);
+    }
+
+    /// <summary>Persist the model (any non-empty id; the catalog is dynamic, so there is no allow-list).</summary>
     public static void Set(string model)
     {
-        CcDirectorConfigService.MergePatch(
-            new JsonObject { [ConfigKey] = Normalize(model) });
+        if (string.IsNullOrWhiteSpace(model))
+            throw new ArgumentException("model must be a non-empty id", nameof(model));
+        CcDirectorConfigService.MergePatch(new JsonObject { [ConfigKey] = model.Trim() });
     }
 }

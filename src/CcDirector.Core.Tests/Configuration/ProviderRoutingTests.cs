@@ -17,7 +17,7 @@ public sealed class ProviderRoutingTests
         var ep = TranscriptionEndpointResolver.ResolveWingman(TranscriptionMode.DevThrottle);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
-        Assert.Equal("glm-5.2", ep.Model);
+        Assert.Equal("zai-org/GLM-5.2", ep.Model);
     }
 
     [Fact]
@@ -35,7 +35,7 @@ public sealed class ProviderRoutingTests
         var ep = TranscriptionEndpointResolver.ResolveTts(TranscriptionMode.DevThrottle);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
-        Assert.Equal("tts-1", ep.Model);
+        Assert.Equal("hexgrad/Kokoro-82M", ep.Model);
     }
 
     [Fact]

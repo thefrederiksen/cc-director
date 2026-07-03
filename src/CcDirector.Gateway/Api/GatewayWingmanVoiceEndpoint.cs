@@ -209,8 +209,8 @@ internal static class GatewayWingmanVoiceEndpoint
                     statusCode: StatusCodes.Status503ServiceUnavailable);
 
             var input = req.Text.Length > TtsMaxChars ? req.Text[..TtsMaxChars] : req.Text;
-            var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoiceConfig.Get() : req.Voice.Trim();
-            var model = string.IsNullOrWhiteSpace(req.Model) ? TtsModelConfig.Get() : req.Model.Trim();
+            var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoiceConfig.Resolve(mode) : req.Voice.Trim();
+            var model = string.IsNullOrWhiteSpace(req.Model) ? TtsModelConfig.Resolve(mode) : req.Model.Trim();
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             try
             {

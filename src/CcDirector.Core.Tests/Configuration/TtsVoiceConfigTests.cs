@@ -5,10 +5,10 @@ using Xunit;
 namespace CcDirector.Core.Tests.Configuration;
 
 /// <summary>
-/// <see cref="TtsVoiceConfig"/> persists the text-to-speech voice to config.json so it survives a
-/// restart, and applies the no-fallback rule (a present-but-unknown voice throws). Each method runs
-/// against an isolated CC_DIRECTOR_ROOT; the CcStorageRoot collection serializes classes that mutate
-/// the process-wide root.
+/// <see cref="TtsVoiceConfig"/> persists the text-to-speech voice. Voices are dynamic and
+/// provider-specific (each speech model hands back its own set), so ANY non-empty id is accepted and the
+/// default is provider-aware. Runs against an isolated CC_DIRECTOR_ROOT; the CcStorageRoot collection
+/// serializes root-mutating tests.
 /// </summary>
 [Collection("CcStorageRoot")]
 public sealed class TtsVoiceConfigTests : IDisposable
@@ -30,63 +30,56 @@ public sealed class TtsVoiceConfigTests : IDisposable
     }
 
     [Fact]
-    public void Get_NoConfig_DefaultsToNova()
-        => Assert.Equal("nova", TtsVoiceConfig.Get());
+    public void Get_NoConfig_ReturnsEmpty()
+        => Assert.Equal("", TtsVoiceConfig.Get());
 
     [Fact]
-    public void Default_IsNova()
-        => Assert.Equal("nova", TtsVoiceConfig.Default);
+    public void Resolve_NoConfig_UsesProviderDefault()
+    {
+        Assert.Equal("af_bella", TtsVoiceConfig.Resolve(TranscriptionMode.DevThrottle));   // Kokoro default
+        Assert.Equal("nova", TtsVoiceConfig.Resolve(TranscriptionMode.Byo));               // OpenAI default
+    }
 
     [Theory]
+    [InlineData("af_bella")]
+    [InlineData("am_onyx")]
     [InlineData("nova")]
-    [InlineData("alloy")]
-    [InlineData("echo")]
-    [InlineData("fable")]
-    [InlineData("onyx")]
-    [InlineData("shimmer")]
-    public void SetThenGet_EachAllowedVoice_PersistsAcrossReread(string voice)
+    [InlineData("bf_emma")]
+    public void SetThenResolve_AnyVoiceIsAcceptedAndHonored(string voice)
     {
+        // Any non-empty id - no fixed allow-list (Kokoro voices are not OpenAI voices).
         TtsVoiceConfig.Set(voice);
-        // A fresh Get() re-reads config.json from disk - the same path a restarted process takes.
         Assert.Equal(voice, TtsVoiceConfig.Get());
+        Assert.Equal(voice, TtsVoiceConfig.Resolve(TranscriptionMode.DevThrottle));
         Assert.True(File.Exists(CcStorage.ConfigJson()));
     }
 
     [Fact]
-    public void Set_NormalizesCasingAndWhitespace()
+    public void Set_Trims()
     {
-        TtsVoiceConfig.Set("  NOVA ");
-        Assert.Equal("nova", TtsVoiceConfig.Get());
+        TtsVoiceConfig.Set("  am_adam ");
+        Assert.Equal("am_adam", TtsVoiceConfig.Get());
     }
 
     [Fact]
-    public void Set_UnknownVoice_Throws()   // no-fallback rule: a typo must not silently pick a voice
-        => Assert.Throws<ArgumentException>(() => TtsVoiceConfig.Set("robot"));
+    public void Set_Empty_Throws()
+        => Assert.Throws<ArgumentException>(() => TtsVoiceConfig.Set("   "));
 
     [Fact]
     public void Set_DoesNotDropSiblingConfigKeys()
     {
         CcDirectorConfigService.MergePatch(new System.Text.Json.Nodes.JsonObject { ["transcription_mode"] = "devthrottle" });
-        TtsVoiceConfig.Set("onyx");
+        TtsVoiceConfig.Set("af_nova");
 
         var raw = CcDirectorConfigService.ReadRaw();
-        Assert.Equal("onyx", raw["tts_voice"]!.GetValue<string>());
+        Assert.Equal("af_nova", raw["tts_voice"]!.GetValue<string>());
         Assert.Equal("devthrottle", raw["transcription_mode"]!.GetValue<string>());
     }
 
-    [Theory]
-    [InlineData("nova", true)]
-    [InlineData("SHIMMER", true)]
-    [InlineData("robot", false)]
-    [InlineData("", false)]
-    [InlineData(null, false)]
-    public void IsValid_MatchesAllowedSet(string? value, bool expected)
-        => Assert.Equal(expected, TtsVoiceConfig.IsValid(value));
-
     [Fact]
-    public void Parse_NullOrEmpty_ReturnsDefault()
+    public void OpenAiVoices_IsTheFallbackSet()
     {
-        Assert.Equal("nova", TtsVoiceConfig.Parse(null));
-        Assert.Equal("nova", TtsVoiceConfig.Parse("   "));
+        Assert.Contains("nova", TtsVoiceConfig.OpenAiVoices);
+        Assert.Contains("shimmer", TtsVoiceConfig.OpenAiVoices);
     }
 }

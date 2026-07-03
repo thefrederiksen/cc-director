@@ -172,7 +172,7 @@ internal static class AiModelsEndpoint
 
     private static List<ModelDto> OpenAiSpeechModels()
     {
-        var voices = TtsVoiceConfig.AllowedVoices.ToList();
+        var voices = TtsVoiceConfig.OpenAiVoices.ToList();
         return new List<ModelDto>
         {
             new("tts-1", "Fast", voices, "nova"),

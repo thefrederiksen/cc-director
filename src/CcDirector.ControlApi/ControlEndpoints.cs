@@ -1691,8 +1691,8 @@ internal static class ControlEndpoints
             return Results.Json(new
             {
                 available = await svc.IsAvailableAsync(),
-                voice = Core.Configuration.TtsVoiceConfig.Get(),
-                model = Core.Configuration.TranscriptionEndpointResolver.ResolveTts(mode).Model,
+                voice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
+                model = Core.Configuration.TtsModelConfig.Resolve(mode),
             });
         });
 

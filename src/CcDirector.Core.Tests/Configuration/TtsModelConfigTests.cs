@@ -29,24 +29,31 @@ public sealed class TtsModelConfigTests : IDisposable
     }
 
     [Fact]
-    public void Get_NoConfig_DefaultsToTts1()
-        => Assert.Equal("tts-1", TtsModelConfig.Get());
+    public void Get_NoConfig_ReturnsEmpty()
+        => Assert.Equal("", TtsModelConfig.Get());
 
     [Fact]
-    public void SetThenGet_PersistsAcrossReread()
+    public void Resolve_NoConfig_UsesProviderDefault()
     {
-        TtsModelConfig.Set("kokoro");
-        Assert.Equal("kokoro", TtsModelConfig.Get());
+        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve(TranscriptionMode.DevThrottle));
+        Assert.Equal("tts-1", TtsModelConfig.Resolve(TranscriptionMode.Byo));
+    }
+
+    [Fact]
+    public void SetThenResolve_PersistsAndHonored()
+    {
+        TtsModelConfig.Set("hexgrad/Kokoro-82M");
+        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Get());
+        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve(TranscriptionMode.DevThrottle));
         Assert.True(File.Exists(CcStorage.ConfigJson()));
     }
 
     [Fact]
-    public void Set_TrimsAndEmptyIsDefault()
+    public void Set_Trims_And_EmptyThrows()
     {
         TtsModelConfig.Set("  tts-1-hd  ");
         Assert.Equal("tts-1-hd", TtsModelConfig.Get());
-        TtsModelConfig.Set("   ");
-        Assert.Equal("tts-1", TtsModelConfig.Get());
+        Assert.Throws<ArgumentException>(() => TtsModelConfig.Set("   "));
     }
 
     [Fact]
