@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.Threading;
 
 namespace CcDirector.TrayUi;
 
@@ -40,6 +41,9 @@ public sealed class TrayFlyout : Window
     private static readonly Color BtnHover = Color.Parse("#34373D");
     private static readonly Color BtnPressed = Color.Parse("#3C4046");
 
+    /// <summary>When the flyout was last hidden (for the controller's toggle debounce).</summary>
+    public DateTime LastHiddenUtc { get; private set; } = DateTime.MinValue;
+
     public TrayFlyout(TrayFlyoutModel model)
     {
         ArgumentNullException.ThrowIfNull(model);
@@ -55,14 +59,59 @@ public sealed class TrayFlyout : Window
         SizeToContent = SizeToContent.Height;
         Width = PanelWidth;
         RequestedThemeVariant = ThemeVariant.Dark;
-        Opacity = 0; // revealed in Opened, once positioned, to avoid a position flash
+        Opacity = 0; // revealed once positioned, to avoid a position flash
 
         AddStyles(model.Accent);
         Content = BuildRoot(model);
 
-        KeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
-        Deactivated += (_, _) => { if (AutoCloseOnDeactivate) Close(); };   // click away => close, like OneDrive
-        Opened += (_, _) => { PositionBottomRight(); Opacity = 1; };
+        KeyDown += (_, e) => { if (e.Key == Key.Escape) HideFlyout(); };
+        Deactivated += (_, _) => { if (AutoCloseOnDeactivate && IsVisible) HideFlyout(); };   // click away => hide, like OneDrive
+        // Positioning + reveal happen ONLY in ShowFlyout: an Opened handler would also fire during
+        // the off-screen WarmUp show and flash the panel at startup.
+    }
+
+    /// <summary>
+    /// Replace the panel's content with a freshly built model. The window itself is REUSED across
+    /// opens (created once at startup, then hidden/shown) so a left-click never pays native window
+    /// creation, first layout, or first render again - only this cheap content rebuild.
+    /// </summary>
+    public void UpdateModel(TrayFlyoutModel model)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        Content = BuildRoot(model);
+    }
+
+    /// <summary>Show the reused window at the bottom-right, activated, revealing it only once positioned.</summary>
+    public void ShowFlyout()
+    {
+        Opacity = 0;
+        Show();
+        Activate();
+        // SizeToContent re-measures the new content during this Show; position once layout is done
+        // so ClientSize is the final height, then reveal (the window shows at Opacity 0 until then).
+        Dispatcher.UIThread.Post(() => { PositionBottomRight(); Opacity = 1; }, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Hide (not close): the window stays alive so the next open is instant.</summary>
+    public void HideFlyout()
+    {
+        LastHiddenUtc = DateTime.UtcNow;
+        Hide();
+    }
+
+    /// <summary>
+    /// Create the native window and run its first layout/render OFF-SCREEN at startup, so the very
+    /// first left-click pays none of it. No focus steal: not activated, fully transparent, hidden
+    /// again immediately.
+    /// </summary>
+    public void WarmUp()
+    {
+        ShowActivated = false;
+        Position = new PixelPoint(-32000, -32000);
+        Show();
+        Hide();
+        ShowActivated = true;
+        LastHiddenUtc = DateTime.MinValue; // a warm-up hide must never debounce a real first open
     }
 
     // ---- layout -----------------------------------------------------------
@@ -101,19 +150,25 @@ public sealed class TrayFlyout : Window
             stack.Children.Add(actions);
         }
 
+        // Titled sections (e.g. the Gateway's Fleet block): full-strength values, between the
+        // actions and the quieter details.
+        foreach (var section in m.Sections)
+        {
+            if (section.Rows.Count == 0) continue;
+            stack.Children.Add(Separator());
+            var block = new StackPanel { Spacing = 8 };
+            block.Children.Add(SectionCaption(section.Title));
+            block.Children.Add(RowGrid(section.Rows, labelSize: 12, valueSize: 12, valueColor: TextMid,
+                margin: default, rowSpacing: 6));
+            stack.Children.Add(block);
+        }
+
         // Details: the quieter diagnostic block (build, paths, versions).
         if (m.DetailRows.Count > 0)
         {
             stack.Children.Add(Separator());
             var details = new StackPanel { Spacing = 8 };
-            details.Children.Add(new TextBlock
-            {
-                Text = m.DetailsTitle.ToUpperInvariant(),
-                FontSize = 10.5,
-                FontWeight = FontWeight.SemiBold,
-                LetterSpacing = 0.8,
-                Foreground = Brush(TextDim),
-            });
+            details.Children.Add(SectionCaption(m.DetailsTitle));
             details.Children.Add(RowGrid(m.DetailRows, labelSize: 11.5, valueSize: 11.5, valueColor: TextDim,
                 margin: default, rowSpacing: 5));
             stack.Children.Add(details);
@@ -143,7 +198,7 @@ public sealed class TrayFlyout : Window
             {
                 var b = new Button { Content = link.Text };
                 b.Classes.Add("flyoutLink");
-                b.Click += (_, _) => { Close(); link.OnClick(); };
+                b.Click += (_, _) => { HideFlyout(); link.OnClick(); };
                 links.Children.Add(b);
             }
             Grid.SetColumn(links, 0);
@@ -153,7 +208,7 @@ public sealed class TrayFlyout : Window
             {
                 var q = new Button { Content = "Quit" };
                 q.Classes.Add("flyoutQuit");
-                q.Click += (_, _) => { Close(); quit(); };
+                q.Click += (_, _) => { HideFlyout(); quit(); };
                 Grid.SetColumn(q, 1);
                 footer.Children.Add(q);
             }
@@ -226,6 +281,15 @@ public sealed class TrayFlyout : Window
         };
     }
 
+    private static TextBlock SectionCaption(string title) => new()
+    {
+        Text = title.ToUpperInvariant(),
+        FontSize = 10.5,
+        FontWeight = FontWeight.SemiBold,
+        LetterSpacing = 0.8,
+        Foreground = Brush(TextDim),
+    };
+
     private static Control RowGrid(IReadOnlyList<StatusRow> rows, double labelSize, double valueSize,
         Color valueColor, Thickness margin, double rowSpacing)
     {
@@ -247,7 +311,7 @@ public sealed class TrayFlyout : Window
         var b = new Button { Content = a.Text };
         b.Classes.Add("flyoutPrimary");
         b.Background = Brush(accent);
-        b.Click += (_, _) => { Close(); a.OnClick(); };
+        b.Click += (_, _) => { HideFlyout(); a.OnClick(); };
         return b;
     }
 
@@ -269,7 +333,7 @@ public sealed class TrayFlyout : Window
     {
         var b = new Button { Content = a.Text };
         b.Classes.Add("flyoutBtn");
-        b.Click += (_, _) => { Close(); a.OnClick(); };
+        b.Click += (_, _) => { HideFlyout(); a.OnClick(); };
         return b;
     }
 

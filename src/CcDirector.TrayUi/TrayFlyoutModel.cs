@@ -16,6 +16,16 @@ public sealed class FlyoutAction
     public bool Primary { get; init; }
 }
 
+/// <summary>
+/// A titled block of label/value rows rendered between the actions and the details section
+/// (e.g. the Gateway's "Fleet" block with one row per Director).
+/// </summary>
+public sealed class FlyoutSection
+{
+    public required string Title { get; init; }
+    public required IReadOnlyList<StatusRow> Rows { get; init; }
+}
+
 /// <summary>The "Start with Windows / on login" switch row.</summary>
 public sealed class ToggleSpec
 {
@@ -57,6 +67,12 @@ public sealed class TrayFlyoutModel
 
     /// <summary>Label/value status rows.</summary>
     public IReadOnlyList<StatusRow> Rows { get; init; } = Array.Empty<StatusRow>();
+
+    /// <summary>
+    /// Optional titled row blocks rendered between the actions and the details section, in order
+    /// (e.g. a "Fleet" block listing every Director). Empty hides them.
+    /// </summary>
+    public IReadOnlyList<FlyoutSection> Sections { get; init; } = Array.Empty<FlyoutSection>();
 
     /// <summary>
     /// Optional secondary label/value rows rendered as a quieter "Details" section under the

@@ -124,7 +124,7 @@ public sealed class GatewayTrayController : IDisposable
         // Issue #855: keep the flyout's cached values warm on background heartbeats so the left-click
         // flyout paints instantly from cache, never blocking the open on a synchronous registry read,
         // a tailscale CLI probe, an HTTP probe, or a brain health read.
-        _ = RunHeartbeatAsync("director-count", DirectorCountHeartbeatInterval, RefreshDirectorCountCache, _lifetime.Token);
+        _ = RunHeartbeatAsync("registry", DirectorCountHeartbeatInterval, RefreshRegistryCache, _lifetime.Token);
         _ = RunHeartbeatAsync("front-door", FrontDoorHeartbeatInterval, RefreshFrontDoorCache, _lifetime.Token);
         _ = RunHeartbeatAsync("local-status", LocalStatusHeartbeatInterval, RefreshLocalStatusCacheAsync, _lifetime.Token);
 
@@ -149,6 +149,9 @@ public sealed class GatewayTrayController : IDisposable
         // page. Right-click is reduced to a single Quit escape hatch.
         _icon = new Bitmap(AssetLoader.Open(new Uri("avares://devthrottle-gateway/Assets/icon.png")));
         _flyout = new TrayFlyoutController(BuildFlyoutModel);
+        // Create + first-layout the panel window off-screen NOW, so the first left-click is
+        // instant instead of paying native window creation.
+        _flyout.WarmUp();
 
         var menu = new NativeMenu();
         var quit = new NativeMenuItem("Quit");
@@ -187,10 +190,19 @@ public sealed class GatewayTrayController : IDisposable
         var signIn = _host?.SignIn;
         var accountValue = CcDirector.Gateway.Account.GatewaySignInTraySurface.AccountRowValue(signIn);
 
+        // One row per fleet Director (machine + version + how recently it was seen). While the
+        // list has entries it REPLACES the bare "Directors: N" count row - the count is evident.
+        var fleet = _flyoutCache.FleetLines
+            .Select(l => new StatusRow(l.Label, l.Value))
+            .ToList();
+
         var rows = new List<StatusRow>();
         if (accountValue is not null)
             rows.Add(new(CcDirector.Gateway.Account.GatewaySignInTraySurface.AccountRowLabel, accountValue));
-        rows.Add(new("Directors", _flyoutCache.DirectorCountDisplay));
+        if (fleet.Count == 0)
+            rows.Add(new("Directors", _flyoutCache.DirectorCountDisplay));
+        rows.Add(new("Machines", _flyoutCache.MachinesDisplay));
+        rows.Add(new("Devices", _flyoutCache.DevicesDisplay));
         rows.Add(new("Cockpit", _flyoutCache.CockpitStatusDisplay));
         rows.Add(new("Brain", _flyoutCache.BrainSummaryDisplay));
         rows.Add(new("Uptime", uptime));
@@ -198,6 +210,10 @@ public sealed class GatewayTrayController : IDisposable
             // Trim the +githash, matching the launcher; the run mode belongs to the build, so it
             // rides along here instead of burning its own row.
             $"{AppVersion.Full.Split('+')[0]} ({(GatewayAppOptions.Managed ? "managed" : "dev")})"));
+
+        var sections = fleet.Count > 0
+            ? new[] { new FlyoutSection { Title = "Directors", Rows = fleet } }
+            : Array.Empty<FlyoutSection>();
 
         // The quieter diagnostics that used to hide in the (now removed) settings window: they live
         // right here on the flyout, so the tray left-click is the Gateway's ONE local surface.
@@ -253,6 +269,7 @@ public sealed class GatewayTrayController : IDisposable
             },
             Accent = Color.Parse("#007ACC"), // gateway blue (matches its existing UI)
             Rows = rows,
+            Sections = sections,
             DetailRows = details,
             Actions = actions,
             FooterLinks = footerLinks,
@@ -308,17 +325,32 @@ public sealed class GatewayTrayController : IDisposable
     }
 
     /// <summary>
-    /// Issue #855: refresh the cached Director count from the registry (off the UI thread). The read is
-    /// a cheap in-memory snapshot; it is cached so the flyout open path never calls it synchronously.
-    /// While the host is still starting there is no registry yet, so the cache keeps its placeholder.
+    /// Issue #855: refresh the cached registry snapshots (off the UI thread) - the Director count,
+    /// the per-Director Fleet lines, the paired-device count, and the online launcher (machine)
+    /// count. All are cheap in-memory reads; they are cached so the flyout open path never calls
+    /// them synchronously. While the host is still starting there is no registry yet, so the cache
+    /// keeps its placeholders.
     /// </summary>
-    private void RefreshDirectorCountCache()
+    private void RefreshRegistryCache()
     {
         var host = _host;
         if (host is null)
-            return; // host not up yet - leave the cached "..." placeholder until it is
+            return; // host not up yet - leave the cached "..." placeholders until it is
 
-        _flyoutCache.SetDirectorCount(host.Registry.ListDirectors().Count);
+        var directors = host.Registry.ListDirectors();
+        _flyoutCache.SetDirectorCount(directors.Count);
+
+        var now = DateTime.UtcNow;
+        _flyoutCache.SetFleet(directors
+            .OrderBy(d => d.MachineName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(d => d.Pid)
+            .Select(d => new FleetLine(
+                d.MachineName,
+                GatewayTrayFlyoutCache.DescribeDirector(d.Version, d.LastSeen, d.AdvertisedEndpointState, now)))
+            .ToList());
+
+        _flyoutCache.SetDeviceCount(host.Devices.Count);
+        _flyoutCache.SetMachineCount(host.Launchers.ListLaunchers().Count);
     }
 
     /// <summary>

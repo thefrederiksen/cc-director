@@ -164,6 +164,113 @@ public sealed class GatewayTrayFlyoutCacheTests
     }
 
     [Fact]
+    public void FleetLines_BeforeFirstHeartbeat_IsEmpty()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act + Assert - never resolved yet, so the flyout renders no Fleet section
+        Assert.Empty(cache.FleetLines);
+    }
+
+    [Fact]
+    public void FleetLines_AfterSetFleet_ReturnsLines()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act
+        cache.SetFleet(new[] { new FleetLine("SOREN_NORTH", "v0.9.32, seen just now") });
+
+        // Assert
+        var line = Assert.Single(cache.FleetLines);
+        Assert.Equal("SOREN_NORTH", line.Label);
+        Assert.Equal("v0.9.32, seen just now", line.Value);
+    }
+
+    [Fact]
+    public void DevicesDisplay_CoversPlaceholderZeroOneAndMany()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act + Assert - placeholder before the first heartbeat, then real counts
+        Assert.Equal(GatewayTrayFlyoutCache.Placeholder, cache.DevicesDisplay);
+        cache.SetDeviceCount(0);
+        Assert.Equal("none paired", cache.DevicesDisplay);
+        cache.SetDeviceCount(1);
+        Assert.Equal("1 paired", cache.DevicesDisplay);
+        cache.SetDeviceCount(3);
+        Assert.Equal("3 paired", cache.DevicesDisplay);
+    }
+
+    [Fact]
+    public void MachinesDisplay_CoversPlaceholderOneAndMany()
+    {
+        // Arrange
+        var cache = new GatewayTrayFlyoutCache();
+
+        // Act + Assert
+        Assert.Equal(GatewayTrayFlyoutCache.Placeholder, cache.MachinesDisplay);
+        cache.SetMachineCount(1);
+        Assert.Equal("1 online", cache.MachinesDisplay);
+        cache.SetMachineCount(2);
+        Assert.Equal("2 online", cache.MachinesDisplay);
+    }
+
+    [Fact]
+    public void DescribeDirector_WithVersionAndLastSeen_FormatsBoth()
+    {
+        // Arrange
+        var now = new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc);
+
+        // Act
+        var text = GatewayTrayFlyoutCache.DescribeDirector(
+            "0.9.32+abcdef", now.AddSeconds(-42), advertisedEndpointState: null, now);
+
+        // Assert - the +githash is trimmed, the age is short-form
+        Assert.Equal("v0.9.32, seen 42s ago", text);
+    }
+
+    [Fact]
+    public void DescribeDirector_UnreachableEndpoint_AppendsWarning()
+    {
+        // Arrange
+        var now = new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc);
+
+        // Act
+        var text = GatewayTrayFlyoutCache.DescribeDirector(
+            "0.9.32", now.AddMinutes(-3),
+            advertisedEndpointState: CcDirector.Gateway.Contracts.DirectorDto.EndpointStateUnreachableByName, now);
+
+        // Assert
+        Assert.Equal("v0.9.32, seen 3m ago, endpoint unreachable", text);
+    }
+
+    [Fact]
+    public void DescribeDirector_NoVersionNoLastSeen_SaysUnknownVersion()
+    {
+        // Arrange
+        var now = new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc);
+
+        // Act
+        var text = GatewayTrayFlyoutCache.DescribeDirector("", lastSeenUtc: null, advertisedEndpointState: null, now);
+
+        // Assert
+        Assert.Equal("unknown version", text);
+    }
+
+    [Fact]
+    public void AgeText_CoversAllBrackets()
+    {
+        // Act + Assert
+        Assert.Equal("just now", GatewayTrayFlyoutCache.AgeText(TimeSpan.FromSeconds(2)));
+        Assert.Equal("42s ago", GatewayTrayFlyoutCache.AgeText(TimeSpan.FromSeconds(42)));
+        Assert.Equal("5m ago", GatewayTrayFlyoutCache.AgeText(TimeSpan.FromMinutes(5)));
+        Assert.Equal("3h ago", GatewayTrayFlyoutCache.AgeText(TimeSpan.FromHours(3.4)));
+    }
+
+    [Fact]
     public async Task Reads_AreInstant_WhileASlowProbeRunsInTheBackground()
     {
         // Acceptance criterion 2 at the mechanism level: the flyout open path reads ONLY these cached

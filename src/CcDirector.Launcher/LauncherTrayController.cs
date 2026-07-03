@@ -7,6 +7,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Diagnostics;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
 using CcDirector.TrayUi;
@@ -35,6 +36,16 @@ public sealed class LauncherTrayController : IDisposable
     private HostState _state = HostState.Starting;
     private bool _disposed;
 
+    // The flyout's Details values plus the configured Gateway base URL: resolved once, off the UI
+    // thread, right after Start (small local file reads that do not change within one run - the
+    // Gateway registration also only reads its config at start), so the flyout open stays I/O-free
+    // (the same discipline as the Gateway tray, issue #855).
+    private const string Placeholder = "...";
+    private volatile string _buildDateText = Placeholder;
+    private volatile string _installRootText = Placeholder;
+    private volatile string _installedText = Placeholder;
+    private volatile string? _gatewayBaseUrl;
+
     public LauncherTrayController(IClassicDesktopStyleApplicationLifetime desktop, int port)
     {
         _desktop = desktop ?? throw new ArgumentNullException(nameof(desktop));
@@ -52,8 +63,38 @@ public sealed class LauncherTrayController : IDisposable
         SetState(HostState.Starting);
         _ = StartHostAsync();
 
+        // The flyout's Details values: read once, off the UI thread - they cannot change within
+        // one run, and the flyout open path must never touch the disk.
+        _ = Task.Run(ResolveAboutInfo);
+
         if (LauncherAppOptions.Managed)
             _ = RunUpdateLoopAsync(_lifetime.Token);
+    }
+
+    /// <summary>
+    /// Resolve the flyout's Details values (build date, install root, installed component
+    /// versions) and the configured Gateway base URL: small local file reads that never change
+    /// within one run of this process.
+    /// </summary>
+    private void ResolveAboutInfo()
+    {
+        try
+        {
+            _buildDateText = AboutInfo.BuildDate()?.ToString("yyyy-MM-dd HH:mm") ?? "(unknown)";
+            _installRootText = AboutInfo.InstallRoot;
+            var installed = AboutInfo.InstalledComponents();
+            _installedText = installed.Count == 0
+                ? "(no installed.json - dev build?)"
+                : string.Join(", ", installed.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase)
+                    .Select(kv => $"{kv.Key} {kv.Value}"));
+
+            var gateway = GatewayConfig.Load();
+            _gatewayBaseUrl = gateway.IsEnabled ? gateway.Url.TrimEnd('/') : null;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LauncherTrayController] ResolveAboutInfo FAILED: {ex.Message}");
+        }
     }
 
     private void BuildTrayIcon()
@@ -63,6 +104,9 @@ public sealed class LauncherTrayController : IDisposable
         // single Quit escape hatch - everything else lives in the flyout, not a legacy text menu.
         _icon = new Bitmap(AssetLoader.Open(new Uri("avares://cc-launcher/Assets/icon.png")));
         _flyout = new TrayFlyoutController(BuildFlyoutModel);
+        // Create + first-layout the panel window off-screen NOW, so the first left-click is
+        // instant instead of paying native window creation.
+        _flyout.WarmUp();
 
         var menu = new NativeMenu();
         var quit = new NativeMenuItem("Quit");
@@ -102,11 +146,28 @@ public sealed class LauncherTrayController : IDisposable
         {
             new() { Text = "Restart Director", Primary = true, OnClick = () => _ = RestartDirectorAsync() },
         };
+        // The Cockpit (and the one Settings page, which lives there) is served through the
+        // configured Gateway, so these jumps only exist when this machine has a Gateway
+        // configured - a dead button would be worse than no button.
+        if (_gatewayBaseUrl is { } gw)
+        {
+            actions.Add(new() { Text = "Open Cockpit", OnClick = () => OpenUrl(gw + "/", "Cockpit") });
+            actions.Add(new() { Text = "Settings", OnClick = () => OpenUrl(gw + "/settings", "CockpitSettings") });
+        }
 
-        // Diagnostics live as quiet footer links (matching the Gateway flyout).
+        // The quieter diagnostics (matching the Gateway flyout).
+        var details = new List<StatusRow>
+        {
+            new("Gateway", _gatewayBaseUrl ?? "not configured"),
+            new("Build date", _buildDateText),
+            new("Install root", _installRootText),
+            new("Installed", _installedText),
+        };
+
         var footerLinks = new List<FlyoutAction>
         {
             new() { Text = "Logs", OnClick = OpenLogsFolder },
+            new() { Text = "Config", OnClick = OpenConfigFolder },
         };
 
         ToggleSpec? toggle = OperatingSystem.IsWindows()
@@ -132,6 +193,7 @@ public sealed class LauncherTrayController : IDisposable
             },
             Accent = Color.Parse("#F2600C"), // launcher orange
             Rows = rows,
+            DetailRows = details,
             Actions = actions,
             FooterLinks = footerLinks,
             Toggle = toggle,
@@ -219,18 +281,49 @@ public sealed class LauncherTrayController : IDisposable
     }
 
     private void OpenLogsFolder()
+        => OpenFolder(Path.GetDirectoryName(FileLog.CurrentLogPath), "OpenLogsFolder");
+
+    private void OpenConfigFolder()
+        => OpenFolder(Path.GetDirectoryName(InstallLayout.Default().ConfigPath), "OpenConfigFolder");
+
+    private static void OpenFolder(string? dir, string label)
     {
-        try
+        if (string.IsNullOrEmpty(dir))
         {
-            var logDir = Path.GetDirectoryName(FileLog.CurrentLogPath)!;
-            Directory.CreateDirectory(logDir);
-            FileLog.Write($"[LauncherTrayController] OpenLogsFolder: {logDir}");
-            Process.Start(new ProcessStartInfo(logDir) { UseShellExecute = true });
+            FileLog.Write($"[LauncherTrayController] {label} REFUSED: no folder path resolved");
+            return;
         }
-        catch (Exception ex)
+        // Off the UI thread so the click returns immediately (shell launch latency).
+        _ = Task.Run(() =>
         {
-            FileLog.Write($"[LauncherTrayController] OpenLogsFolder FAILED: {ex.Message}");
-        }
+            try
+            {
+                Directory.CreateDirectory(dir);
+                FileLog.Write($"[LauncherTrayController] {label}: {dir}");
+                Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[LauncherTrayController] {label} FAILED: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>Open a URL in the default browser, off the UI thread so the click returns immediately.</summary>
+    private static void OpenUrl(string url, string label)
+    {
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                FileLog.Write($"[LauncherTrayController] Open{label}: {url}");
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[LauncherTrayController] Open{label} FAILED: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>Enable/disable the Start-with-Windows autostart from the flyout toggle.</summary>

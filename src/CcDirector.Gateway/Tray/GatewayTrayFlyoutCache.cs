@@ -1,6 +1,12 @@
 namespace CcDirector.Gateway.Tray;
 
 /// <summary>
+/// One line of the flyout's Fleet section: a Director's machine name and a short description
+/// ("v0.9.32, seen 2s ago"). A plain record (no UI types) so the Gateway library stays UI-free.
+/// </summary>
+public sealed record FleetLine(string Label, string Value);
+
+/// <summary>
 /// Thread-safe cache of the values the Gateway tray flyout needs, refreshed by the tray controller's
 /// background heartbeat so the flyout open path (CcDirector.GatewayApp.GatewayTrayController) never
 /// does a synchronous registry read or a <c>tailscale</c> CLI probe (issue #855). Kept here in the
@@ -29,6 +35,9 @@ public sealed class GatewayTrayFlyoutCache
     private string? _frontDoorBaseUrl; // null until resolved OR when Tailscale is unavailable
     private string? _cockpitStatus;    // null until the first probe resolves it
     private string? _brainSummary;     // null until the first health read resolves it
+    private IReadOnlyList<FleetLine>? _fleetLines; // null until the first heartbeat resolves it
+    private int? _deviceCount;         // null until the first heartbeat resolves it
+    private int? _machineCount;        // null until the first heartbeat resolves it
 
     /// <summary>
     /// Store the latest Director count read by the background heartbeat (off the UI thread).
@@ -119,5 +128,101 @@ public sealed class GatewayTrayFlyoutCache
             lock (_gate)
                 return _brainSummary ?? Placeholder;
         }
+    }
+
+    /// <summary>Store the latest per-Director fleet lines computed by the background heartbeat.</summary>
+    public void SetFleet(IReadOnlyList<FleetLine> lines)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        lock (_gate)
+            _fleetLines = lines;
+    }
+
+    /// <summary>
+    /// The Fleet section's lines (one per Director), or an empty list until the first heartbeat
+    /// resolves them. Reading this never touches the registry.
+    /// </summary>
+    public IReadOnlyList<FleetLine> FleetLines
+    {
+        get
+        {
+            lock (_gate)
+                return _fleetLines ?? Array.Empty<FleetLine>();
+        }
+    }
+
+    /// <summary>Store the latest paired-device count read by the background heartbeat.</summary>
+    public void SetDeviceCount(int count)
+    {
+        lock (_gate)
+            _deviceCount = count;
+    }
+
+    /// <summary>
+    /// The "Devices" row value: "2 paired", "none paired", or <see cref="Placeholder"/> until the
+    /// first heartbeat resolves it.
+    /// </summary>
+    public string DevicesDisplay
+    {
+        get
+        {
+            lock (_gate)
+                return _deviceCount switch
+                {
+                    null => Placeholder,
+                    0 => "none paired",
+                    1 => "1 paired",
+                    var n => $"{n} paired",
+                };
+        }
+    }
+
+    /// <summary>Store the latest online launcher (machine) count read by the background heartbeat.</summary>
+    public void SetMachineCount(int count)
+    {
+        lock (_gate)
+            _machineCount = count;
+    }
+
+    /// <summary>
+    /// The "Machines" row value: how many cc-launcher machines are online right now (the launcher
+    /// registry sweeps stale entries), or <see cref="Placeholder"/> until the first heartbeat.
+    /// </summary>
+    public string MachinesDisplay
+    {
+        get
+        {
+            lock (_gate)
+                return _machineCount switch
+                {
+                    null => Placeholder,
+                    1 => "1 online",
+                    var n => $"{n} online",
+                };
+        }
+    }
+
+    /// <summary>
+    /// Describe one Director for its Fleet line: trimmed version plus how recently the Gateway saw
+    /// it ("v0.9.32, seen 2s ago"), with an explicit warning suffix when its advertised endpoint
+    /// stopped answering. Pure (caller passes now) so it is unit-testable.
+    /// </summary>
+    public static string DescribeDirector(string version, DateTime? lastSeenUtc, string? advertisedEndpointState, DateTime nowUtc)
+    {
+        var ver = string.IsNullOrWhiteSpace(version) ? "unknown version" : "v" + version.Split('+')[0];
+        var seen = lastSeenUtc is { } t ? $", seen {AgeText(nowUtc - t)}" : "";
+        var warn = advertisedEndpointState == CcDirector.Gateway.Contracts.DirectorDto.EndpointStateUnreachableByName
+            ? ", endpoint unreachable"
+            : "";
+        return ver + seen + warn;
+    }
+
+    /// <summary>"just now", "42s ago", "5m ago", "3h ago" - short enough for one flyout line.</summary>
+    public static string AgeText(TimeSpan age)
+    {
+        if (age < TimeSpan.FromSeconds(5)) return "just now";
+        if (age < TimeSpan.FromMinutes(1)) return $"{(int)age.TotalSeconds}s ago";
+        if (age < TimeSpan.FromHours(1)) return $"{(int)age.TotalMinutes}m ago";
+        return $"{(int)age.TotalHours}h ago";
     }
 }
