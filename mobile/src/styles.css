@@ -1070,6 +1070,14 @@ body {
   margin-left: 2px;
 }
 
+/* Stop square, shown on a roster card whose clip is playing (tap to stop). */
+.row-stop {
+  width: 11px;
+  height: 11px;
+  background: #ffffff;
+  border-radius: 2px;
+}
+
 .row-spin {
   flex: 0 0 auto;
   align-self: center;

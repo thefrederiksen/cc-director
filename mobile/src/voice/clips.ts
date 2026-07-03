@@ -148,15 +148,57 @@ export async function syncVoiceSessions(sessions: SessionDto[]): Promise<void> {
   );
 }
 
-// Play a session's locally-stored clip immediately (the roster triangle tap). Returns false when no
-// phone-ready clip is held, so the caller never implies playback that did not happen.
+// The ONE clip audio object playing right now, across the whole app (roster taps + the voice screen's
+// own element go through here). Held so it can always be stopped - the old code did `new Audio()` per
+// tap and kept no reference, so a clip could not be stopped and taps overlapped (it "kept talking").
+let _currentAudio: HTMLAudioElement | null = null;
+let _currentSid: string | null = null; // the session whose clip is playing (for the roster stop toggle)
+
+// Stop whatever clip is playing right now, everywhere. Safe to call when nothing is playing. Used by
+// the roster (tap a playing card to stop) and the voice screen (its stop button + leaving the screen).
+export function stopPlayback(): void {
+  const audio = _currentAudio;
+  const wasPlaying = _currentAudio !== null;
+  _currentAudio = null;
+  _currentSid = null;
+  if (audio !== null) {
+    try {
+      audio.pause();
+    } catch {
+      /* element already gone */
+    }
+  }
+  if (wasPlaying) notify(); // re-render the roster so a stopped card drops back to the play triangle
+}
+
+/** The session id of the clip playing right now, or null - so the roster shows a stop, not play, on it. */
+export function playingSid(): string | null {
+  return _currentAudio !== null && !_currentAudio.paused ? _currentSid : null;
+}
+
+// Play a session's locally-stored clip immediately (the roster triangle tap). Stops any clip already
+// playing first, so playback never overlaps and is always stoppable. Returns false when no phone-ready
+// clip is held, so the caller never implies playback that did not happen.
 export function playClip(sid: string): boolean {
   const s = _state.get(sid);
   if (!s || s.phase !== "ready" || s.url === null) return false;
+  stopPlayback();
   const audio = new Audio(s.url);
+  _currentAudio = audio;
+  _currentSid = sid;
+  const clear = () => {
+    if (_currentAudio === audio) {
+      _currentAudio = null;
+      _currentSid = null;
+      notify(); // roster flips this card back to the play triangle
+    }
+  };
+  audio.addEventListener("ended", clear);
+  audio.addEventListener("pause", clear);
   void audio.play().catch(() => {
     // A user tap already provided the gesture; ignore the rare autoplay-policy rejection.
   });
+  notify(); // roster shows this card as playing (stop control)
   return true;
 }
 

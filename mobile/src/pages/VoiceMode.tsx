@@ -17,7 +17,7 @@ import {
 import { DictationDialog } from "../dictation/DictationDialog";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
-import { ensureClip, getClipState, useVoiceClips } from "../voice/clips";
+import { ensureClip, getClipState, stopPlayback, useVoiceClips } from "../voice/clips";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
 // alongside Terminal (#817) and Chat (#811). A read-only Wingman narrates every completed turn as
@@ -94,6 +94,9 @@ export function VoiceMode() {
   // never keeps talking after you have moved on - the bug this fixes. Runs once, on unmount.
   useEffect(() => {
     return () => {
+      // Stop BOTH audio sinks on leave: this screen's own element and any roster clip playing through
+      // the shared clip player - so nothing keeps talking after you navigate away.
+      stopPlayback();
       const el = liveAudioRef.current;
       if (el !== null) {
         try {
@@ -174,6 +177,7 @@ export function VoiceMode() {
     autoPlayedRef.current = generatedAt;
     const el = audioRef.current;
     if (el) {
+      stopPlayback(); // never overlap a roster clip with this screen's playback
       el.currentTime = 0;
       void el.play().catch(() => {
         /* autoplay policy may require a gesture; the play-triangle covers it */
@@ -215,6 +219,7 @@ export function VoiceMode() {
     } catch {
       /* nothing playing */
     }
+    stopPlayback(); // stop any roster clip too
     setLocalEnabled(false);
     setVoice(null);
     setMenu(null);
@@ -238,8 +243,10 @@ export function VoiceMode() {
     if (!el) return;
     if (!el.paused) {
       el.pause();
+      stopPlayback(); // also stop any roster clip playing through the shared player
       return;
     }
+    stopPlayback(); // never let two clips play at once
     if (el.ended || (el.duration > 0 && el.currentTime >= el.duration)) el.currentTime = 0;
     void el.play().catch(() => {
       /* ignore - a tap already gestured */

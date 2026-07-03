@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { listSessions, type SessionDto } from "../api/client";
 import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, repoLeaf } from "../sessions/ordering";
 import { useNow, waitingLabel } from "../sessions/waiting";
-import { getClipState, playClip, syncVoiceSessions, useVoiceClips } from "../voice/clips";
+import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "../voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
 import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "../push/register";
 
@@ -197,18 +197,20 @@ function VoiceIndicator({ session }: { session: SessionDto }) {
   const clip = getClipState(sid);
 
   if (clip.phase === "ready") {
+    const isPlaying = playingSid() === sid;
     return (
       <button
         type="button"
         className="row-tri-btn"
-        aria-label="Play voice message"
+        aria-label={isPlaying ? "Stop voice message" : "Play voice message"}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          playClip(sid);
+          if (isPlaying) stopPlayback();
+          else playClip(sid);
         }}
       >
-        <span className="row-tri" aria-hidden="true" />
+        <span className={isPlaying ? "row-stop" : "row-tri"} aria-hidden="true" />
       </button>
     );
   }
