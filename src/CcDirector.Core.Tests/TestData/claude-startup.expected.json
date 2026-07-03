@@ -1,7 +1,7 @@
 {
   "meta": {
     "source": "claude-startup.bin",
-    "bytes": 1601,
+    "bytes": 1604,
     "engine": "@xterm/headless",
     "cols": 120,
     "rows": 30,
@@ -4167,7 +4167,7 @@
           "bg": null
         },
         {
-          "ch": "F",
+          "ch": "E",
           "w": 1,
           "fg": {
             "mode": "rgb",
@@ -4178,7 +4178,51 @@
           "bg": null
         },
         {
-          "ch": "r",
+          "ch": "x",
+          "w": 1,
+          "fg": {
+            "mode": "rgb",
+            "r": 153,
+            "g": 153,
+            "b": 153
+          },
+          "bg": null
+        },
+        {
+          "ch": "a",
+          "w": 1,
+          "fg": {
+            "mode": "rgb",
+            "r": 153,
+            "g": 153,
+            "b": 153
+          },
+          "bg": null
+        },
+        {
+          "ch": "m",
+          "w": 1,
+          "fg": {
+            "mode": "rgb",
+            "r": 153,
+            "g": 153,
+            "b": 153
+          },
+          "bg": null
+        },
+        {
+          "ch": "p",
+          "w": 1,
+          "fg": {
+            "mode": "rgb",
+            "r": 153,
+            "g": 153,
+            "b": 153
+          },
+          "bg": null
+        },
+        {
+          "ch": "l",
           "w": 1,
           "fg": {
             "mode": "rgb",
@@ -4190,17 +4234,6 @@
         },
         {
           "ch": "e",
-          "w": 1,
-          "fg": {
-            "mode": "rgb",
-            "r": 153,
-            "g": 153,
-            "b": 153
-          },
-          "bg": null
-        },
-        {
-          "ch": "d",
           "w": 1,
           "fg": {
             "mode": "rgb",
@@ -4340,24 +4373,6 @@
             "g": 153,
             "b": 153
           },
-          "bg": null
-        },
-        {
-          "ch": " ",
-          "w": 1,
-          "fg": null,
-          "bg": null
-        },
-        {
-          "ch": " ",
-          "w": 1,
-          "fg": null,
-          "bg": null
-        },
-        {
-          "ch": " ",
-          "w": 1,
-          "fg": null,
           "bg": null
         },
         {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using CcDirector.Setup.Engine;
 using CcDirectorSetup.Models;
 
 namespace CcDirectorSetup.Services;
@@ -9,8 +10,8 @@ public static class PrerequisiteChecker
     private static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
     private static readonly bool IsMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
 
-    private const string DocsBase =
-        "https://github.com/thefrederiksen/cc-director/blob/main/docs/public/getting-started/02-installation.md";
+    private static string DocsBase =>
+        GitHubRepositoryDefaults.GitHubUrl("blob/main/docs/public/getting-started/02-installation.md");
 
     public static List<PrerequisiteInfo> CreateChecklist()
     {

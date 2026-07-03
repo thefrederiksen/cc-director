@@ -18,10 +18,10 @@ namespace CcDirector.Core.Feedback;
 public sealed class FeedbackService
 {
     /// <summary>Owner of the product repository feedback issues are filed against.</summary>
-    public const string Owner = "thefrederiksen";
+    public static string Owner => GitHubRepositoryDefaults.Owner;
 
     /// <summary>Name of the product repository feedback issues are filed against.</summary>
-    public const string Repository = "devthrottle";
+    public static string Repository => GitHubRepositoryDefaults.Repository;
 
     /// <summary>
     /// Dedicated branch screenshots are committed to, so feedback images never land

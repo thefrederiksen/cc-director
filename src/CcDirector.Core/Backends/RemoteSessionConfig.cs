@@ -28,7 +28,7 @@ public enum RemoteTriggerMode
 /// </summary>
 public sealed class RemoteSessionConfig
 {
-    /// <summary>Repository owner / organization, e.g. "thefrederiksen".</summary>
+    /// <summary>Repository owner / organization, e.g. "example-org".</summary>
     public required string Owner { get; init; }
 
     /// <summary>Repository name, e.g. "cc-director".</summary>

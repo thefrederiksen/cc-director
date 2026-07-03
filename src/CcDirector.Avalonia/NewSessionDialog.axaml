@@ -573,7 +573,7 @@
                                        Foreground="#CCCCCC" VerticalAlignment="Center" />
                             <TextBox x:Name="GhOwnerBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8"
                                      Background="#1E1E1E" Foreground="#CCCCCC" BorderBrush="#3C3C3C" Padding="8"
-                                     Watermark="thefrederiksen" TextChanged="GhField_Changed" />
+                                     Watermark="example-org" TextChanged="GhField_Changed" />
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="Repository"
                                        Foreground="#CCCCCC" VerticalAlignment="Center" />

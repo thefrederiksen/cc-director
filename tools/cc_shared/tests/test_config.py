@@ -334,7 +334,7 @@ class TestCommManagerConfig:
     def test_round_trip(self):
         """CommManagerConfig round-trips through dict."""
         original = CommManagerConfig(
-            queue_path="/custom", default_persona="mindzie", default_created_by="bot"
+            queue_path="/custom", default_persona="acmeflow", default_created_by="bot"
         )
         restored = CommManagerConfig.from_dict(original.to_dict())
         assert original.queue_path == restored.queue_path
@@ -344,7 +344,7 @@ class TestCommManagerConfig:
     def test_round_trip_with_accounts(self):
         """CommManagerConfig with send_from_accounts round-trips through dict."""
         accounts = {
-            "mindzie": SendFromAccount("cto@company.com", "cc-outlook", None),
+            "acmeflow": SendFromAccount("cto@company.com", "cc-outlook", None),
             "personal": SendFromAccount("me@home.com", "cc-gmail", "personal"),
         }
         original = CommManagerConfig(
@@ -353,22 +353,22 @@ class TestCommManagerConfig:
         )
         d = original.to_dict()
         assert "send_from_accounts" in d
-        assert d["send_from_accounts"]["mindzie"]["email"] == "cto@company.com"
+        assert d["send_from_accounts"]["acmeflow"]["email"] == "cto@company.com"
 
         restored = CommManagerConfig.from_dict(d)
         assert len(restored.send_from_accounts) == 2
-        assert restored.send_from_accounts["mindzie"].email == "cto@company.com"
+        assert restored.send_from_accounts["acmeflow"].email == "cto@company.com"
         assert restored.send_from_accounts["personal"].tool_account == "personal"
 
     def test_get_valid_account_names(self):
         """get_valid_account_names returns account keys."""
         accounts = {
-            "mindzie": SendFromAccount("a@b.com", "cc-outlook", None),
+            "acmeflow": SendFromAccount("a@b.com", "cc-outlook", None),
             "personal": SendFromAccount("c@d.com", "cc-gmail", "personal"),
         }
         cfg = CommManagerConfig(send_from_accounts=accounts)
         names = cfg.get_valid_account_names()
-        assert "mindzie" in names
+        assert "acmeflow" in names
         assert "personal" in names
 
     def test_get_account_email(self):

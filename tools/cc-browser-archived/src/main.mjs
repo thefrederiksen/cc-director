@@ -961,7 +961,7 @@ DAEMON:
   cc-browser status              Check daemon and browser status
 
 BROWSER LIFECYCLE:
-  cc-browser start --workspace mindzie
+  cc-browser start --workspace acmeflow
   cc-browser start --browser chrome --workspace personal
   cc-browser start --incognito             Start in incognito mode (no saved data)
   cc-browser workspaces                    List configured workspaces
@@ -985,8 +985,8 @@ OPTIONS:
   --workspace <name>  Named workspace
 
 EXAMPLES:
-  cc-browser daemon --workspace mindzie
-  cc-browser start --workspace mindzie
+  cc-browser daemon --workspace acmeflow
+  cc-browser start --workspace acmeflow
   cc-browser navigate --url "https://example.com"
 `);
   },

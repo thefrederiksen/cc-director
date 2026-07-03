@@ -218,7 +218,7 @@ const commandHelp = {
 
   Examples:
     cc-browser daemon
-    cc-browser daemon --workspace mindzie
+    cc-browser daemon --workspace acmeflow
     cc-browser daemon --browser chrome --workspace work`,
 
   status: `Usage: cc-browser status [options]
@@ -269,7 +269,7 @@ const commandHelp = {
   Note: --incognito cannot be used with --workspace.
 
   Examples:
-    cc-browser start --workspace mindzie
+    cc-browser start --workspace acmeflow
     cc-browser start --browser chrome --workspace personal
     cc-browser start --incognito
     cc-browser start --profileDir "Default"
@@ -690,7 +690,7 @@ const commandHelp = {
 
   Examples:
     cc-browser record start
-    cc-browser record stop --name "mindzie login flow"
+    cc-browser record stop --name "acmeflow login flow"
     cc-browser record stop --output my-flow.json`,
 
   recordings: `Usage: cc-browser recordings
@@ -709,7 +709,7 @@ const commandHelp = {
     --timeout <ms>      Per-step timeout in ms (default: 8000)
 
   Examples:
-    cc-browser replay --name "mindzie login flow"
+    cc-browser replay --name "acmeflow login flow"
     cc-browser replay --file my-flow.json --mode fast`,
 };
 
@@ -755,7 +755,7 @@ BROWSER LIFECYCLE:
   cc-browser favorites --workspace work     Get favorites from workspace.json
   cc-browser start                          Start with default isolated workspace
   cc-browser start --browser edge           Start Edge (default workspace)
-  cc-browser start --workspace mindzie      Start using workspace alias
+  cc-browser start --workspace acmeflow      Start using workspace alias
   cc-browser start --browser chrome --workspace personal  Start Chrome with workspace
   cc-browser start --profileDir "Profile 1" Use existing system Chrome profile
   cc-browser start --incognito              Start in incognito mode (no saved data)
@@ -865,7 +865,7 @@ EXAMPLES:
   cc-browser workspaces                    # List cc-browser workspaces
 
   # Named workspaces (recommended - persistent logins, isolated sessions)
-  cc-browser start --workspace mindzie              # Use alias
+  cc-browser start --workspace acmeflow              # Use alias
   cc-browser start --browser edge --workspace work  # Edge for work
   cc-browser start --browser chrome --workspace personal  # Chrome personal
 
@@ -879,7 +879,7 @@ EXAMPLES:
   cc-browser start --browser edge --profileDir "Default"
 
   # Basic workflow
-  cc-browser start --workspace mindzie
+  cc-browser start --workspace acmeflow
   cc-browser navigate --url "https://example.com"
   cc-browser snapshot --interactive
   cc-browser click --ref e3
@@ -896,12 +896,12 @@ MULTI-WORKSPACE (SIMULTANEOUS BROWSERS):
   - chrome-personal: daemon=9282, cdp=9224
 
   # Start daemons for each workspace (in separate terminals):
-  cc-browser daemon --workspace mindzie                     # Port 9280
+  cc-browser daemon --workspace acmeflow                     # Port 9280
   cc-browser daemon --browser chrome --workspace work       # Port 9281
   cc-browser daemon --browser chrome --workspace personal   # Port 9282
 
   # Commands auto-detect daemon port from workspace.json:
-  cc-browser start --workspace mindzie
+  cc-browser start --workspace acmeflow
   cc-browser start --browser chrome --workspace work
   cc-browser start --browser chrome --workspace personal
 `);

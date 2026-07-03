@@ -38,7 +38,7 @@ function formatTimestamp(date) {
 
 /**
  * Save a recording to the vault.
- * @param {string} name - Human-readable name (e.g. "mindzie login flow")
+ * @param {string} name - Human-readable name (e.g. "acmeflow login flow")
  * @param {object} recording - { name, recordedAt, steps }
  * @returns {string} Full path to the saved recording.json
  */

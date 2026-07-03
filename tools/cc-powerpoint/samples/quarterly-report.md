@@ -33,7 +33,7 @@
 # Key Deliverables
 
 - Launched cc-tools CLI suite (8 tools shipped)
-- Completed mindzie Studio v3.0 migration
+- Completed acmeflow Studio v3.0 migration
 - Onboarded 12 new enterprise clients
   - 4 in healthcare
   - 5 in financial services

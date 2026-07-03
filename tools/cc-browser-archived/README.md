@@ -59,7 +59,7 @@ node src/cli.mjs stop                            # Close browser
 | `favorites --workspace work` | Get favorites from workspace.json |
 | `start [--headless]` | Launch with isolated workspace |
 | `start --browser edge` | Launch Edge instead of Chrome |
-| `start --workspace mindzie` | Launch using workspace alias |
+| `start --workspace acmeflow` | Launch using workspace alias |
 | `start --browser chrome --workspace personal` | Launch Chrome with named workspace |
 | `start --profileDir "Profile 1"` | Use existing Chrome profile (requires Chrome closed) |
 | `stop` | Close browser |
@@ -183,7 +183,7 @@ Workspaces provide isolated browser sessions with persistent logins. Each worksp
   "cdpPort": 9222,
   "daemonPort": 9280,
   "purpose": "Work accounts",
-  "aliases": ["mindzie", "work"],
+  "aliases": ["acmeflow", "work"],
   "favorites": ["https://example.com"],
   "accounts": []
 }
@@ -195,12 +195,12 @@ Run multiple browser workspaces simultaneously, each on its own ports:
 
 ```bash
 # Start daemons (each in separate terminal)
-cc-browser daemon --workspace mindzie                     # Port 9280
+cc-browser daemon --workspace acmeflow                     # Port 9280
 cc-browser daemon --browser chrome --workspace work       # Port 9281
 cc-browser daemon --browser chrome --workspace personal   # Port 9282
 
 # Commands auto-detect daemon port from workspace.json
-cc-browser start --workspace mindzie
+cc-browser start --workspace acmeflow
 cc-browser start --browser chrome --workspace work
 cc-browser start --browser chrome --workspace personal
 ```

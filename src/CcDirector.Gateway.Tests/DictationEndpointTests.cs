@@ -224,7 +224,7 @@ public sealed class DictationEndpointTests : IAsyncLifetime
         var cleaned = final!.Value.GetProperty("cleaned").GetString() ?? "";
         var lower = cleaned.ToLowerInvariant();
         Assert.True(
-            lower.Contains("conpty") || lower.Contains("avalonia") || lower.Contains("frederiksen"),
+            lower.Contains("conpty") || lower.Contains("avalonia") || lower.Contains("example"),
             "cleaned transcript missing all expected terms: " + cleaned);
     }
 

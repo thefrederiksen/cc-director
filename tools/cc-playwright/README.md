@@ -104,7 +104,7 @@ You can run both simultaneously - they use different Brave instances. Named cc-p
 
 ## Verified working
 
-- Luma signin (OTP flow with cc-outlook reading the code from a mindzie inbox)
+- Luma signin (OTP flow with cc-outlook reading the code from a acmeflow inbox)
 - Luma event registration with multi-field approval gates, custom dropdowns, multi-select pickers, and Stripe payment intent capture
 - Eventbrite multi-day ticket selection + post-checkout attendee form
 - Pardot embedded marketing-form iframes

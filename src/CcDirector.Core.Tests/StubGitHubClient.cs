@@ -40,7 +40,7 @@ internal sealed class StubGitHubClient : IGitHubClient
 
     public List<(string Branch, string Path, int Bytes, string Message)> Uploads { get; } = new();
     public string UploadDownloadUrl { get; set; } =
-        "https://raw.githubusercontent.com/thefrederiksen/devthrottle/feedback-assets/feedback/screenshots/test.png";
+        "https://raw.githubusercontent.com/devthrottle/devthrottle/feedback-assets/feedback/screenshots/test.png";
 
     public Task<string> UploadFileAsync(string owner, string repo, string branch, string path, byte[] content, string commitMessage, CancellationToken ct)
     {

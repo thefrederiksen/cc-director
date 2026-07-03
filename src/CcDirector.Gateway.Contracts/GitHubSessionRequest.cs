@@ -6,7 +6,7 @@ namespace CcDirector.Gateway.Contracts;
 /// </summary>
 public sealed class GitHubSessionRequest
 {
-    /// <summary>Repository owner / organization, e.g. "thefrederiksen".</summary>
+    /// <summary>Repository owner / organization, e.g. "example-org".</summary>
     public string Owner { get; set; } = "";
 
     /// <summary>Repository name, e.g. "cc-director".</summary>

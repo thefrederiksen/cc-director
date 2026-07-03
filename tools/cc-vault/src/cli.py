@@ -2434,7 +2434,7 @@ def contacts_log_interaction(
     direction: str = typer.Option("outbound", "--direction", help="Direction: inbound, outbound"),
     subject: Optional[str] = typer.Option(None, "--subject", "-s", help="Subject/title"),
     summary: Optional[str] = typer.Option(None, "--summary", help="Brief summary"),
-    account: Optional[str] = typer.Option(None, "--account", "-a", help="Account used (e.g. mindzie-outlook)"),
+    account: Optional[str] = typer.Option(None, "--account", "-a", help="Account used (e.g. acmeflow-outlook)"),
     source_url: Optional[str] = typer.Option(None, "--source-url", help="URL to original communication"),
     message_id: Optional[str] = typer.Option(None, "--message-id", help="Email Message-ID for dedup"),
     sentiment: Optional[str] = typer.Option(None, "--sentiment", help="Tone: positive, neutral, negative"),

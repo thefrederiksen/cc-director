@@ -14,7 +14,7 @@ namespace CcDirector.Gateway.Tests.Account;
 /// Proves Path B - the Gateway mirrors its locally-paired children (issue #469) up to the cloud account
 /// roster (Diagram 2b) and enforces account-page revokes back down (Diagram 2c) - end to end against an
 /// in-process STUB cloud (a real <see cref="DeviceRegistryClient"/> over a stateful handler, no network).
-/// Covers every acceptance criterion on thefrederiksen/devthrottle#875:
+/// Covers every acceptance criterion on example-org/devthrottle#875:
 /// <list type="bullet">
 /// <item>mirror-up sends install_id = the child's device id, device_type "workstation", name = machine;</item>
 /// <item>restart idempotency: an already-mirrored child is not re-registered;</item>

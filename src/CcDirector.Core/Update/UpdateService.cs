@@ -19,8 +19,8 @@ public sealed record UpdateOptions
     /// <summary>The path a new build must overwrite (exe on Windows, .app on macOS).</summary>
     public required string InstallTarget { get; init; }
 
-    public string Owner { get; init; } = "thefrederiksen";
-    public string Repo { get; init; } = "devthrottle";
+    public string Owner { get; init; } = GitHubRepositoryDefaults.Owner;
+    public string Repo { get; init; } = GitHubRepositoryDefaults.Repository;
 }
 
 /// <summary>An update that has been downloaded, verified, and is ready to apply.</summary>

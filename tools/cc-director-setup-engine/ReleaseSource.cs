@@ -17,8 +17,6 @@ public sealed record ResolvedRelease(ReleaseManifest Manifest, IReadOnlyDictiona
 /// </summary>
 public sealed class ReleaseSource
 {
-    private const string Owner = "thefrederiksen";
-    private const string Repo = "devthrottle";
     private const string ManifestAssetName = "release-manifest.json";
 
     /// <summary>Total attempts at the release fetch (1 initial + retries) before giving up on a rate limit.</summary>
@@ -90,7 +88,7 @@ public sealed class ReleaseSource
     /// <exception cref="GitHubRateLimitException">The fetch was rate-limited and retries were exhausted.</exception>
     public async Task<ResolvedRelease> FetchLatestAsync(CancellationToken ct)
     {
-        var url = $"https://api.github.com/repos/{Owner}/{Repo}/releases/latest";
+        var url = $"https://api.github.com/repos/{GitHubRepositoryDefaults.Slug}/releases/latest";
         var cached = _cache.Read();
         DateTimeOffset? lastResetHint = null;
 

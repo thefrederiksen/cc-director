@@ -179,7 +179,7 @@ A new tab appears in the center content TabControl alongside Terminal, Source Co
 |                  | | |    Tool: cc-reddit                       |
 |                  | | |    Status: Disconnected                  |
 |                  | | |                                          |
-|                  | | |  dev-studio        dev.mindziestudio.com  |
+|                  | | |  dev-studio        dev.acmeflowstudio.com  |
 |                  | | |    Tool: (none)                     [Open]|
 |                  | | |    Status: Connected                     |
 |                  | | |                                          |

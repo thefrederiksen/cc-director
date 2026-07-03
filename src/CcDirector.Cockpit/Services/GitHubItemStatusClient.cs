@@ -21,10 +21,9 @@ namespace CcDirector.Cockpit.Services;
 /// </summary>
 public sealed class GitHubItemStatusClient
 {
-    // The canonical repo github work-items live in (same constant the rest of the app uses for
-    // cc-director issues, e.g. StateVoteService). v1 lists only carry cc-director github items.
-    private const string Owner = "thefrederiksen";
-    private const string Repo = "devthrottle";
+    // The canonical repo github work-items live in. Override these for private forks.
+    private static string Owner => ReadRepositorySetting("DEVTHROTTLE_GITHUB_OWNER", "devthrottle");
+    private static string Repo => ReadRepositorySetting("DEVTHROTTLE_GITHUB_REPO", "devthrottle");
     private const string TokenKey = "GITHUB_TOKEN";
 
     private readonly HttpClient _http;
@@ -161,6 +160,12 @@ public sealed class GitHubItemStatusClient
 
         error = $"{TokenKey} not found in {path}.";
         return null;
+    }
+
+    private static string ReadRepositorySetting(string variable, string fallback)
+    {
+        var value = Environment.GetEnvironmentVariable(variable);
+        return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     }
 
     private static string Truncate(string s, int max)

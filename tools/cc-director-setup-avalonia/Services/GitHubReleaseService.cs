@@ -1,14 +1,12 @@
 using System.Net.Http;
 using System.Text.Json;
+using CcDirector.Setup.Engine;
 
 namespace CcDirectorSetup.Services;
 
 public class GitHubReleaseService
 {
     private const string ApiBase = "https://api.github.com";
-    private const string RawBase = "https://raw.githubusercontent.com";
-    private const string RepoOwner = "thefrederiksen";
-    private const string RepoName = "devthrottle";
 
     private static readonly HttpClient Http = new()
     {
@@ -25,7 +23,7 @@ public class GitHubReleaseService
     {
         SetupLog.Write("[GitHubReleaseService] GetLatestReleaseAsync: fetching");
 
-        var url = $"{ApiBase}/repos/{RepoOwner}/{RepoName}/releases/latest";
+        var url = $"{ApiBase}/repos/{GitHubRepositoryDefaults.Slug}/releases/latest";
         var response = await Http.GetAsync(url);
 
         if (!response.IsSuccessStatusCode)
@@ -91,7 +89,7 @@ public class GitHubReleaseService
     {
         SetupLog.Write($"[GitHubReleaseService] DownloadSkillFileAsync: {repoPath}");
 
-        var url = $"{RawBase}/{RepoOwner}/{RepoName}/main/{repoPath}";
+        var url = GitHubRepositoryDefaults.RawUrl(repoPath);
 
         try
         {

@@ -90,7 +90,7 @@ public sealed class OpenAiRealtimeProviderIntegrationTests
         Assert.True(
             lowered.Contains("conpty", StringComparison.OrdinalIgnoreCase)
             || lowered.Contains("avalonia", StringComparison.OrdinalIgnoreCase)
-            || lowered.Contains("frederiksen", StringComparison.OrdinalIgnoreCase),
+            || lowered.Contains("example", StringComparison.OrdinalIgnoreCase),
             $"transcript did not contain expected company terms: {transcript}");
     }
 

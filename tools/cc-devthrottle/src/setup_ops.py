@@ -19,8 +19,8 @@ from rich.console import Console
 console = Console()
 
 GITHUB_API_BASE = "https://api.github.com"
-REPO_OWNER = "thefrederiksen"
-REPO_NAME = "devthrottle"
+REPO_OWNER = os.environ.get("DEVTHROTTLE_GITHUB_OWNER", "devthrottle")
+REPO_NAME = os.environ.get("DEVTHROTTLE_GITHUB_REPO", "devthrottle")
 
 SETUP_CLI_ASSET_NAMES = [
     "devthrottle-setup-cli-win-x64.exe",

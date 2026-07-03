@@ -14,9 +14,9 @@ public class ClaudeProjectFolderEncodingTests
 {
     [Theory]
     [InlineData(@"D:\Repos\my_project", "D--Repos-my-project")]
-    [InlineData(@"C:\repos\cc-director", "D--ReposFred-cc-director")]
+    [InlineData(@"C:\repos\cc-director", "C--repos-cc-director")]
     // The live #184 case: a dot in a path segment becomes a dash (".temp" -> "-temp").
-    [InlineData(@"C:\repos\cc-director\.temp\brain-sandbox", "D--ReposFred-cc-director--temp-brain-sandbox")]
+    [InlineData(@"C:\repos\cc-director\.temp\brain-sandbox", "C--repos-cc-director--temp-brain-sandbox")]
     [InlineData(@"C:\Users\alice\AppData\Local\cc-director\brain", "C--Users-alice-AppData-Local-cc-director-brain")]
     // Spaces are non-alphanumeric too.
     [InlineData(@"D:\My Repos\app", "D--My-Repos-app")]

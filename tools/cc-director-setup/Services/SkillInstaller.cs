@@ -1,4 +1,5 @@
 using System.Net.Http;
+using CcDirector.Setup.Engine;
 using CcDirectorSetup.Models;
 
 namespace CcDirectorSetup.Services;
@@ -11,10 +12,6 @@ namespace CcDirectorSetup.Services;
 /// </summary>
 public sealed class SkillInstaller
 {
-    private const string RawBase = "https://raw.githubusercontent.com";
-    private const string RepoOwner = "thefrederiksen";
-    private const string RepoName = "devthrottle";
-
     /// <summary>The skills the installer offers (SKILL.md is fetched per name).</summary>
     public static readonly string[] SkillNames =
     [
@@ -80,7 +77,7 @@ public sealed class SkillInstaller
 
     private static async Task<bool> DownloadSkillFileAsync(string destPath, string repoPath)
     {
-        var url = $"{RawBase}/{RepoOwner}/{RepoName}/main/{repoPath}";
+        var url = GitHubRepositoryDefaults.RawUrl(repoPath);
         try
         {
             var content = await Http.GetStringAsync(url);
