@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
@@ -378,7 +378,7 @@ internal static class RecordingEndpoints
 
         GET    {base}/ingest/dictionary
                The glossary as JSON:
-                 { "vocabulary": ["mindzie", ...],
+                 { "vocabulary": ["acmeflow", ...],
                    "commonMistranscriptions": { "ConPTY": ["Conty", ...] },
                    "profiles": { "default": { "cleanupEnabled": true, "stylePrompt": null } } }
 

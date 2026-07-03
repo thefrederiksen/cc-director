@@ -65,7 +65,7 @@ with no percent.
   stdout is ignored, and a binary scan found no `additionalContext`/`hookSpecificOutput`. Grok is
   Family D. Treat all "by analogy to Claude" claims as suspect until checked against the binary.
 
-## Live-verification status on this dev machine (SOREN_NORTH)
+## Live-verification status on this dev machine (MACHINE_A)
 
 What was actually checked against an installed binary versus researched from docs only:
 

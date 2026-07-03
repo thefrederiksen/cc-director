@@ -540,8 +540,8 @@ public sealed class RecordingIngestServiceTests : IDisposable
         // At least one of the known Phase 0 company terms must survive cleanup.
         var hit = md.Contains("ConPTY", StringComparison.OrdinalIgnoreCase)
                || md.Contains("Avalonia", StringComparison.OrdinalIgnoreCase)
-               || md.Contains("Soren", StringComparison.OrdinalIgnoreCase)
-               || md.Contains("mindzie", StringComparison.OrdinalIgnoreCase);
+               || md.Contains("the operator", StringComparison.OrdinalIgnoreCase)
+               || md.Contains("acmeflow", StringComparison.OrdinalIgnoreCase);
         Assert.True(hit, "expected a known company term in the transcript markdown");
     }
 
@@ -823,7 +823,7 @@ public sealed class RecordingIngestServiceTests : IDisposable
     {
         var path = Path.Combine(_tmp, "dict.yaml");
         File.WriteAllText(path,
-            "vocabulary:\n  - mindzie\n  - ConPTY\n  - Avalonia\n  - Soren Frederiksen\n");
+            "vocabulary:\n  - acmeflow\n  - ConPTY\n  - Avalonia\n  - Example User\n");
         return path;
     }
 

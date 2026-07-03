@@ -27,7 +27,7 @@ public sealed class DictionaryResolverTests : IDisposable
 
     private const string GatewayJson = """
         {
-          "vocabulary": ["mindzie", "CenCon", "ConPTY"],
+          "vocabulary": ["acmeflow", "CenCon", "ConPTY"],
           "commonMistranscriptions": { "ConPTY": ["Contui", "ContUI"] },
           "profiles": { "default": { "cleanupEnabled": true }, "code": { "cleanupEnabled": false } }
         }
@@ -40,7 +40,7 @@ public sealed class DictionaryResolverTests : IDisposable
     {
         var dict = DictionaryResolver.ParseDictionaryJson(GatewayJson);
 
-        Assert.Equal(new[] { "mindzie", "CenCon", "ConPTY" }, dict.Vocabulary);
+        Assert.Equal(new[] { "acmeflow", "CenCon", "ConPTY" }, dict.Vocabulary);
         Assert.Equal(new[] { "Contui", "ContUI" }, dict.CommonMistranscriptions["ConPTY"]);
         Assert.True(dict.Profiles["default"].CleanupEnabled);
         Assert.False(dict.Profiles["code"].CleanupEnabled);
@@ -77,14 +77,14 @@ public sealed class DictionaryResolverTests : IDisposable
         var dict = await resolver.ResolveAsync();
 
         // The fetched glossary is returned ...
-        Assert.Contains("mindzie", dict.Vocabulary);
+        Assert.Contains("acmeflow", dict.Vocabulary);
         Assert.Equal("http://gw.example:7878/ingest/dictionary", handler.LastUri);
         Assert.Equal("Bearer t", handler.LastAuth);
 
         // ... AND written to the local cache so an offline session has it later.
         Assert.True(File.Exists(_cachePath));
         var cached = DictionaryLoader.LoadFromDisk(_cachePath);
-        Assert.Contains("mindzie", cached.Vocabulary);
+        Assert.Contains("acmeflow", cached.Vocabulary);
         Assert.Equal(new[] { "Contui", "ContUI" }, cached.CommonMistranscriptions["ConPTY"]);
     }
 
@@ -101,7 +101,7 @@ public sealed class DictionaryResolverTests : IDisposable
             new HttpClient(handler));
 
         var dict = await resolver.ResolveAsync();
-        Assert.Contains("mindzie", dict.Vocabulary);
+        Assert.Contains("acmeflow", dict.Vocabulary);
         Assert.DoesNotContain("StaleTerm", dict.Vocabulary);
 
         // The stale cache was replaced on disk too.
@@ -179,7 +179,7 @@ public sealed class DictionaryResolverTests : IDisposable
         // config.json gains a gateway block - same resolver instance picks it up live.
         mode = new GatewayConfig { Url = "http://gw.example:7878" };
         Assert.True(resolver.UsesGateway);
-        Assert.Contains("mindzie", (await resolver.ResolveAsync()).Vocabulary);
+        Assert.Contains("acmeflow", (await resolver.ResolveAsync()).Vocabulary);
     }
 
     // ===== helpers ==========================================================

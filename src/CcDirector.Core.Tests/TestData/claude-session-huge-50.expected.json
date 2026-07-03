@@ -1,7 +1,7 @@
 {
   "meta": {
     "source": "claude-session-huge-50.bin",
-    "bytes": 2097294,
+    "bytes": 2097295,
     "engine": "@xterm/headless",
     "cols": 147,
     "rows": 50,
@@ -31262,43 +31262,49 @@
           "bg": null
         },
         {
-          "ch": "M",
+          "ch": "A",
           "w": 1,
           "fg": null,
           "bg": null
         },
         {
-          "ch": "i",
+          "ch": "c",
           "w": 1,
           "fg": null,
           "bg": null
         },
         {
-          "ch": "n",
-          "w": 1,
-          "fg": null,
-          "bg": null
-        },
-        {
-          "ch": "d",
-          "w": 1,
-          "fg": null,
-          "bg": null
-        },
-        {
-          "ch": "z",
-          "w": 1,
-          "fg": null,
-          "bg": null
-        },
-        {
-          "ch": "i",
+          "ch": "m",
           "w": 1,
           "fg": null,
           "bg": null
         },
         {
           "ch": "e",
+          "w": 1,
+          "fg": null,
+          "bg": null
+        },
+        {
+          "ch": "F",
+          "w": 1,
+          "fg": null,
+          "bg": null
+        },
+        {
+          "ch": "l",
+          "w": 1,
+          "fg": null,
+          "bg": null
+        },
+        {
+          "ch": "o",
+          "w": 1,
+          "fg": null,
+          "bg": null
+        },
+        {
+          "ch": "w",
           "w": 1,
           "fg": null,
           "bg": null
@@ -31383,12 +31389,6 @@
         },
         {
           "ch": ")",
-          "w": 1,
-          "fg": null,
-          "bg": null
-        },
-        {
-          "ch": " ",
           "w": 1,
           "fg": null,
           "bg": null

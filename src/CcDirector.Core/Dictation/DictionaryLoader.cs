@@ -13,13 +13,13 @@ namespace CcDirector.Core.Dictation;
 /// File layout (YAML):
 ///
 ///   vocabulary:
-///     - mindzie
+///     - acmeflow
 ///     - CenCon
 ///     - ConPTY
 ///
 ///   common_mistranscriptions:
 ///     ConPTY: [Contui, ContUI]
-///     mindzie: [Minzy, Mindsy]
+///     acmeflow: [Akmeflow, Acmefloe]
 ///
 ///   profiles:
 ///     default:

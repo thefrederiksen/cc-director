@@ -17,7 +17,7 @@ public sealed class SessionRailIdleDirectorTests : TestContext
     private const string GuidBusy = "a3a971fa-1111-2222-3333-444455556666";
     private const string GuidIdle = "b7c44ee0-aaaa-bbbb-cccc-ddddeeeeffff";
 
-    private static DirectorDto Director(string id, string controlEndpoint, string machine = "SOREN_NORTH") => new()
+    private static DirectorDto Director(string id, string controlEndpoint, string machine = "MACHINE_A") => new()
     {
         DirectorId = id,
         MachineName = machine,
@@ -26,7 +26,7 @@ public sealed class SessionRailIdleDirectorTests : TestContext
         ControlEndpoint = controlEndpoint,
     };
 
-    private static SessionDto Session(string id, string name, string directorId, string machine = "SOREN_NORTH") => new()
+    private static SessionDto Session(string id, string name, string directorId, string machine = "MACHINE_A") => new()
     {
         SessionId = id,
         DirectorId = directorId,
@@ -89,7 +89,7 @@ public sealed class SessionRailIdleDirectorTests : TestContext
             .Add(c => c.Sessions, new List<SessionDto>())
             .Add(c => c.Errors, new List<MachineErrorDto>
             {
-                new() { DirectorId = GuidIdle, MachineName = "SOREN_NORTH", Error = "timeout" },
+                new() { DirectorId = GuidIdle, MachineName = "MACHINE_A", Error = "timeout" },
             }));
 
         Assert.Empty(cut.FindAll(".dir-head"));

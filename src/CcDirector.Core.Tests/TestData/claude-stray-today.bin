@@ -43,7 +43,7 @@ thinking[m[38;2;158;158;158m[39;54Halmost done thinking[m[38;2;215;119;87m
   ⎿  (timeout 2m)[K[m
 [K[38;2;78;186;101m
 ● [m[1mBash[22m(az boards work-item update --id 7274 --state "QA" --discussion "Fix committed to master in bb9a297a2a. Login.razor.cs LoginUser() now checks
-       MindzieDatabase.Use…)[K[38;2;153;153;153m
+       AcmeFlowDatabase.Use…)[K[38;2;153;153;153m
   ⎿  [m#7274 -> QA[K
 [K[38;2;255;255;255m
 ● [m[1mBug 7274 done:[22m commit [38;2;177;185;249mbb9a297a2a[m, pushed, moved to QA.[K

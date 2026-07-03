@@ -1,7 +1,7 @@
 {
   "meta": {
     "source": "claude-stray-today.bin",
-    "bytes": 2097294,
+    "bytes": 2097295,
     "engine": "@xterm/headless",
     "cols": 147,
     "rows": 47,

@@ -26,12 +26,12 @@ public sealed class DictionaryLoaderTests
     {
         var yaml = """
             vocabulary:
-              - mindzie
+              - acmeflow
               - "  CenCon  "
               - ConPTY
             """;
         var dict = DictionaryLoader.Parse(yaml);
-        Assert.Equal(new[] { "mindzie", "CenCon", "ConPTY" }, dict.Vocabulary);
+        Assert.Equal(new[] { "acmeflow", "CenCon", "ConPTY" }, dict.Vocabulary);
     }
 
     [Fact]
@@ -40,11 +40,11 @@ public sealed class DictionaryLoaderTests
         var yaml = """
             common_mistranscriptions:
               ConPTY: [Contui, ContUI]
-              mindzie: [Minzy, Mindsy]
+              acmeflow: [Akmeflow, Acmefloe]
             """;
         var dict = DictionaryLoader.Parse(yaml);
         Assert.True(dict.CommonMistranscriptions.ContainsKey("ConPTY"));
-        Assert.True(dict.CommonMistranscriptions.ContainsKey("mindzie"));
+        Assert.True(dict.CommonMistranscriptions.ContainsKey("acmeflow"));
         Assert.False(dict.CommonMistranscriptions.ContainsKey("conpty"));
         Assert.Equal(2, dict.CommonMistranscriptions["ConPTY"].Count);
     }
@@ -106,13 +106,13 @@ public sealed class DictionaryLoaderTests
     {
         var yaml = """
             vocabulary:
-              - mindzie
+              - acmeflow
               - ""
               - "   "
             """;
         var dict = DictionaryLoader.Parse(yaml);
         Assert.Single(dict.Vocabulary);
-        Assert.Equal("mindzie", dict.Vocabulary[0]);
+        Assert.Equal("acmeflow", dict.Vocabulary[0]);
     }
 
     [Fact]
@@ -121,11 +121,11 @@ public sealed class DictionaryLoaderTests
         var yaml = """
             common_mistranscriptions:
               ConPTY: []
-              mindzie: [Minzy]
+              acmeflow: [Akmeflow]
             """;
         var dict = DictionaryLoader.Parse(yaml);
         Assert.False(dict.CommonMistranscriptions.ContainsKey("ConPTY"));
-        Assert.True(dict.CommonMistranscriptions.ContainsKey("mindzie"));
+        Assert.True(dict.CommonMistranscriptions.ContainsKey("acmeflow"));
     }
 
     [Fact]
@@ -138,11 +138,11 @@ public sealed class DictionaryLoaderTests
     public void BuildSttPrompt_PacksTermsCommaSeparated()
     {
         var dict = new DictationDictionary(
-            new[] { "mindzie", "CenCon", "ConPTY" },
+            new[] { "acmeflow", "CenCon", "ConPTY" },
             new Dictionary<string, IReadOnlyList<string>>(),
             new Dictionary<string, DictationProfile>());
         var prompt = DictionaryLoader.BuildSttPrompt(dict);
-        Assert.Contains("mindzie", prompt);
+        Assert.Contains("acmeflow", prompt);
         Assert.Contains("CenCon", prompt);
         Assert.Contains("ConPTY", prompt);
         Assert.Contains("Glossary", prompt);
@@ -152,11 +152,11 @@ public sealed class DictionaryLoaderTests
     public void Serialize_RoundTrips_Vocabulary_Patterns_AndProfiles()
     {
         var original = new DictationDictionary(
-            new[] { "mindzie", "CenCon", "ConPTY" },
+            new[] { "acmeflow", "CenCon", "ConPTY" },
             new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
             {
                 ["ConPTY"] = new[] { "Contui", "ContUI" },
-                ["mindzie"] = new[] { "Minzy" },
+                ["acmeflow"] = new[] { "Akmeflow" },
             },
             new Dictionary<string, DictationProfile>(StringComparer.OrdinalIgnoreCase)
             {
@@ -169,7 +169,7 @@ public sealed class DictionaryLoaderTests
 
         Assert.Equal(original.Vocabulary, reparsed.Vocabulary);
         Assert.Equal(new[] { "Contui", "ContUI" }, reparsed.CommonMistranscriptions["ConPTY"]);
-        Assert.Equal(new[] { "Minzy" }, reparsed.CommonMistranscriptions["mindzie"]);
+        Assert.Equal(new[] { "Akmeflow" }, reparsed.CommonMistranscriptions["acmeflow"]);
         Assert.False(reparsed.Profiles["code"].CleanupEnabled);
         Assert.True(reparsed.Profiles["email"].CleanupEnabled);
         Assert.True(reparsed.Profiles["default"].CleanupEnabled);

@@ -32,16 +32,16 @@ public sealed class RestoreContextBuilderTests
     public void Build_carries_identity_pending_state_and_marching_orders()
     {
         var text = RestoreContextBuilder.Build(
-            name: "mindzieWeb - BPMN wizards",
+            name: "sampleWeb - BPMN wizards",
             sessionId: "40a3b8f2-0000-0000-0000-000000000000",
-            repoPath: "/repos/mindzieWeb",
+            repoPath: "/repos/sampleWeb",
             claudeSessionId: "claude-xyz",
             diedAtUtc: new DateTimeOffset(2026, 6, 6, 11, 34, 0, TimeSpan.Zero),
             briefs: new[] { Brief(7, "older turn"), Brief(8, "BPMN wizards QA walkthrough") });
 
         Assert.Contains("RESTORED", text);
-        Assert.Contains("mindzieWeb - BPMN wizards", text);
-        Assert.Contains("/repos/mindzieWeb", text);
+        Assert.Contains("sampleWeb - BPMN wizards", text);
+        Assert.Contains("/repos/sampleWeb", text);
         Assert.Contains("claude-xyz.jsonl", text);                  // where the prior transcript lives
         Assert.Contains("BPMN wizards QA walkthrough", text);       // latest brief = state at death
         Assert.Contains("approve the commit", text);                // the pending ask

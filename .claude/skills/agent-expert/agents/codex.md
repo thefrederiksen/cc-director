@@ -542,7 +542,7 @@ be reused almost verbatim; only the hook REGISTRATION location and the stdin fie
 
 ## 11. Caveats and verification needed
 
-### LIVE FINDING 2026-06-26 (codex 0.141.0 on SOREN_NORTH) - Family A CONFIRMED WORKING
+### LIVE FINDING 2026-06-26 (codex 0.141.0 on MACHINE_A) - Family A CONFIRMED WORKING
 
 Verified the SessionStart fleet-preamble hook end to end against the installed binary. Family A is
 viable for Codex; the earlier "interactive TUI does not fire" observation was a symptom of a

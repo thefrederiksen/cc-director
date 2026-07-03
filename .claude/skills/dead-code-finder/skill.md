@@ -193,4 +193,4 @@ dotnet test src/CcDirector.Core.Tests
 
 **Skill Version:** 1.0
 **Last Updated:** 2026-02-14
-**Adapted from:** mindzieWeb dead-code-finder skill
+**Adapted from:** sampleWeb dead-code-finder skill

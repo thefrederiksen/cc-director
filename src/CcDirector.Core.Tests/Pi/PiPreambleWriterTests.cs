@@ -12,7 +12,7 @@ public class PiPreambleWriterTests
         try
         {
             var sid = "abc12345-1111-2222-3333-444455556666";
-            var path = PiPreambleWriter.WriteForSession(sid, "myrepo", "SOREN_NORTH", @"D:\repo\myrepo", dir);
+            var path = PiPreambleWriter.WriteForSession(sid, "myrepo", "MACHINE_A", @"D:\repo\myrepo", dir);
 
             Assert.True(File.Exists(path));
             Assert.Equal(Path.Combine(dir, sid + ".txt"), path);
@@ -41,7 +41,7 @@ public class PiPreambleWriterTests
         var dir = Path.Combine(Path.GetTempPath(), "pi-preamble-test-" + Guid.NewGuid().ToString("N"));
         try
         {
-            var path = PiPreambleWriter.WriteForSession("603b2066-aaaa-bbbb-cccc-ddddeeeeffff", null, "SOREN_NORTH", @"D:\repo", dir);
+            var path = PiPreambleWriter.WriteForSession("603b2066-aaaa-bbbb-cccc-ddddeeeeffff", null, "MACHINE_A", @"D:\repo", dir);
             var text = File.ReadAllText(path);
             Assert.Contains("(unnamed)", text);
             Assert.Contains("603b2066", text);

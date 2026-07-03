@@ -17,7 +17,7 @@ public sealed class SessionRailRepoViewTests : TestContext
     private const string Guid7884 = "a3a971fa-1111-2222-3333-444455556666";
     private const string Guid7886 = "b7c44ee0-aaaa-bbbb-cccc-ddddeeeeffff";
 
-    private static DirectorDto Director(string id, string controlEndpoint, string machine = "SOREN_NORTH") => new()
+    private static DirectorDto Director(string id, string controlEndpoint, string machine = "MACHINE_A") => new()
     {
         DirectorId = id,
         MachineName = machine,
@@ -27,7 +27,7 @@ public sealed class SessionRailRepoViewTests : TestContext
     };
 
     private static SessionDto Session(string id, string name, string repoPath, string color = "blue",
-        int sortOrder = 0, string remoteRepo = "", string directorId = Guid7884, string machine = "SOREN_NORTH") => new()
+        int sortOrder = 0, string remoteRepo = "", string directorId = Guid7884, string machine = "MACHINE_A") => new()
     {
         SessionId = id,
         DirectorId = directorId,
@@ -106,14 +106,14 @@ public sealed class SessionRailRepoViewTests : TestContext
             .Add(c => c.Sessions, new List<SessionDto>
             {
                 Session("onA", "agent-a", @"C:\repos\cc-director",
-                    remoteRepo: "thefrederiksen/cc-director.git", directorId: Guid7884, machine: "MACHINE_A"),
+                    remoteRepo: "example-org/devthrottle.git", directorId: Guid7884, machine: "MACHINE_A"),
                 Session("onB", "agent-b", @"C:\src\cc-director",
-                    remoteRepo: "thefrederiksen/cc-director", directorId: Guid7886, machine: "MACHINE_B"),
+                    remoteRepo: "example-org/devthrottle", directorId: Guid7886, machine: "MACHINE_B"),
             }));
 
         // Exactly one header, both sessions under it.
         var headers = cut.FindAll(".repo-name").Select(h => h.TextContent.Trim()).ToList();
-        Assert.Equal(new[] { "cc-director" }, headers);
+        Assert.Equal(new[] { "devthrottle" }, headers);
 
         var group = cut.Find(".repo-grp");
         Assert.Equal(2, group.QuerySelectorAll(".sess").Length);
@@ -166,11 +166,11 @@ public sealed class SessionRailRepoViewTests : TestContext
         {
             Session("a1", "apple-impl", @"D:\repos\apple", color: "blue", sortOrder: 0, directorId: Guid7884, machine: "MACHINE_A"),
             Session("c1", "cc-director-A", @"C:\repos\cc-director", color: "blue", sortOrder: 1,
-                remoteRepo: "thefrederiksen/cc-director.git", directorId: Guid7884, machine: "MACHINE_A"),
+                remoteRepo: "example-org/devthrottle.git", directorId: Guid7884, machine: "MACHINE_A"),
             // The "flip" row: blue by default, red when CC219_PROOF_FLIP=1 - proves the color change
             // does not move it out of its SortOrder=2 slot (renders BELOW cc-director-A either way).
             Session("c2", "cc-director-B", @"C:\src\cc-director", color: redOrBlue ? "red" : "blue", sortOrder: 2,
-                remoteRepo: "thefrederiksen/cc-director", directorId: Guid7886, machine: "MACHINE_B"),
+                remoteRepo: "example-org/devthrottle", directorId: Guid7886, machine: "MACHINE_B"),
             Session("n1", "scratch-session", repoPath: "", color: "blue", directorId: Guid7884, machine: "MACHINE_A"),
         };
 

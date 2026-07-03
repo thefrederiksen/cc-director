@@ -180,11 +180,11 @@ public sealed class GatewayTrayFlyoutCacheTests
         var cache = new GatewayTrayFlyoutCache();
 
         // Act
-        cache.SetFleet(new[] { new FleetLine("SOREN_NORTH", "v0.9.32, seen just now") });
+        cache.SetFleet(new[] { new FleetLine("MACHINE_A", "v0.9.32, seen just now") });
 
         // Assert
         var line = Assert.Single(cache.FleetLines);
-        Assert.Equal("SOREN_NORTH", line.Label);
+        Assert.Equal("MACHINE_A", line.Label);
         Assert.Equal("v0.9.32, seen just now", line.Value);
     }
 

@@ -19,7 +19,7 @@ public sealed class SessionRailNeedsYouWaitTests : TestContext
     private static DirectorDto Director() => new()
     {
         DirectorId = Guid7884,
-        MachineName = "SOREN_NORTH",
+        MachineName = "MACHINE_A",
         Version = "0.6.23",
         StartedAt = DateTime.UtcNow.AddMinutes(-12),
         ControlEndpoint = "http://127.0.0.1:7884",
@@ -29,7 +29,7 @@ public sealed class SessionRailNeedsYouWaitTests : TestContext
     {
         SessionId = id,
         DirectorId = Guid7884,
-        MachineName = "SOREN_NORTH",
+        MachineName = "MACHINE_A",
         Name = name,
         RepoPath = @"D:\repos\demo",
         StatusColor = "red",
@@ -40,7 +40,7 @@ public sealed class SessionRailNeedsYouWaitTests : TestContext
     {
         SessionId = id,
         DirectorId = Guid7884,
-        MachineName = "SOREN_NORTH",
+        MachineName = "MACHINE_A",
         Name = name,
         RepoPath = @"D:\repos\demo",
         StatusColor = "blue",

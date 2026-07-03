@@ -38,7 +38,7 @@ namespace CcDirector.Gateway.Api;
 /// reach launchers on other machines over Tailscale:
 ///   - Same-machine launcher (networkAddress empty): dials http://127.0.0.1:<port>/
 ///   - Remote launcher (networkAddress set):         dials http://<networkAddress>:<port>/
-/// This enables the Gateway on SOREN_NORTH to relay lifecycle verbs to the launcher on
+/// This enables the Gateway on MACHINE_A to relay lifecycle verbs to the launcher on
 /// EXAMPLE-PC when EXAMPLE-PC's launcher registered with its tailnet hostname.
 /// </summary>
 internal static class MachineEndpoints

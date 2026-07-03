@@ -259,5 +259,5 @@ var data = session.Buffer.DumpAll();
 
 **Skill Version:** 1.0
 **Last Updated:** 2026-02-14
-**Adapted from:** mindzieWeb warning-fixer skill
+**Adapted from:** sampleWeb warning-fixer skill
 **Key Principle:** Fix warnings properly, never hide them with `!`

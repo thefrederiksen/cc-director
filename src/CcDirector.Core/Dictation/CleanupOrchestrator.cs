@@ -253,10 +253,10 @@ public sealed class CleanupOrchestrator : IDisposable
     {
         // Two mishearings in one sentence -> two edits. Demonstrates that
         // every misheard term gets its own edit, not just the first.
-        ("yeah just push it to See Director when you get a sec and tell Soren Fredriksen about the Minzy dashboard",
+        ("yeah just push it to See Director when you get a sec and tell Example Usar about the Akmeflow dashboard",
          "{\"edits\": [{\"find\": \"See Director\", \"replace\": \"cc-director\"}, "
-         + "{\"find\": \"Soren Fredriksen\", \"replace\": \"Soren Frederiksen\"}, "
-         + "{\"find\": \"Minzy\", \"replace\": \"mindzie\"}]}"),
+         + "{\"find\": \"Example Usar\", \"replace\": \"Example User\"}, "
+         + "{\"find\": \"Akmeflow\", \"replace\": \"acmeflow\"}]}"),
         ("Can you explain what this function does and then refactor it for me?",
          "{\"edits\": []}"),
         ("my buddy Mindy is coming over later so i might log off early",

@@ -43,12 +43,12 @@ public class BrowserLauncherTests
     {
         const string json = """
         { "profile": { "info_cache": {
-            "Profile 1": { "name": "Cody", "user_name": "", "gaia_name": "Cody Frederiksen" }
+            "Profile 1": { "name": "Cody", "user_name": "", "gaia_name": "Sample Profile" }
         } } }
         """;
 
         var profile = Assert.Single(BrowserLauncher.ParseProfiles(json));
-        Assert.Equal("Cody Frederiksen", profile.Account);
+        Assert.Equal("Sample Profile", profile.Account);
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public class BrowserLauncherTests
 
         // Account-bearing profiles (Example Work, Example Personal) come before the
         // accountless "Person 1", and within the account group they sort by display name.
-        Assert.Equal(new[] { "Profile 2", "Profile 1", "Default" }, profiles.Select(p => p.FolderName).ToArray());
+        Assert.Equal(new[] { "Profile 1", "Profile 2", "Default" }, profiles.Select(p => p.FolderName).ToArray());
     }
 
     [Fact]

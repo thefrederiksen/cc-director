@@ -175,14 +175,14 @@ public sealed class DesktopVoiceModeBatchProofTests
     [Fact]
     public async Task WholeClip_DictionaryTerm_ChangesOnlyThatTerm()
     {
-        // Arrange - a dictionary that knows "Mindsy" is a mistranscription of the canonical term
-        // "Mindzie", and a raw transcript that contains the wrong form once.
-        const string raw = "open the Mindsy session and send the prompt";
+        // Arrange - a dictionary that knows "Acmefloe" is a mistranscription of the canonical term
+        // "AcmeFlow", and a raw transcript that contains the wrong form once.
+        const string raw = "open the Acmefloe session and send the prompt";
         var dictionary = new DictationDictionary(
-            Vocabulary: new[] { "Mindzie" },
+            Vocabulary: new[] { "AcmeFlow" },
             CommonMistranscriptions: new Dictionary<string, IReadOnlyList<string>>
             {
-                ["Mindzie"] = new[] { "Mindsy" },
+                ["AcmeFlow"] = new[] { "Acmefloe" },
             },
             Profiles: new Dictionary<string, DictationProfile>
             {
@@ -192,7 +192,7 @@ public sealed class DesktopVoiceModeBatchProofTests
         // The dictionary corrector proposes swapping the listed wrong form for the canonical term.
         var handler = new CountingHandler(
             transcript: raw,
-            editsJson: "{\\\"edits\\\": [{\\\"find\\\": \\\"Mindsy\\\", \\\"replace\\\": \\\"Mindzie\\\"}]}");
+            editsJson: "{\\\"edits\\\": [{\\\"find\\\": \\\"Acmefloe\\\", \\\"replace\\\": \\\"AcmeFlow\\\"}]}");
         using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
 
         // Act
@@ -201,11 +201,11 @@ public sealed class DesktopVoiceModeBatchProofTests
 
         // Assert - the ONLY change is the dictionary term; everything around it is identical.
         Assert.Equal(raw, result.RawTranscript);
-        Assert.Equal("open the Mindzie session and send the prompt", result.CorrectedTranscript);
+        Assert.Equal("open the AcmeFlow session and send the prompt", result.CorrectedTranscript);
         Assert.True(result.DictionaryApplied);
         Assert.Single(result.ChangedWords);
-        Assert.Equal("Mindsy", result.ChangedWords[0].Find);
-        Assert.Equal("Mindzie", result.ChangedWords[0].Replace);
+        Assert.Equal("Acmefloe", result.ChangedWords[0].Find);
+        Assert.Equal("AcmeFlow", result.ChangedWords[0].Replace);
         // Still exactly one batch transcription call.
         Assert.Equal(1, handler.TranscriptionPosts);
     }

@@ -36,19 +36,19 @@ public sealed class CleanupOrchestratorLiveTests
     {
         var yaml = """
             vocabulary:
-              - mindzie
+              - acmeflow
               - CenCon
               - ConPTY
               - cc-director
               - Avalonia
-              - Soren Frederiksen
+              - Example User
 
             common_mistranscriptions:
-              mindzie: [Minzy, Mindsy, Mindzy, Mindzie, Mindseeds, mindseeds, "Mind Seeds"]
+              acmeflow: [Akmeflow, Acmefloe, Acmeflo, AcmeFlow, Acme Seeds, acme seeds, "Acme Seeds"]
               CenCon: [SenCon, SENCON, Sencon]
               ConPTY: [Contui, ContUI, ContiUI, Conty]
               cc-director: ["CC Director", "See Director", "CC director"]
-              Soren Frederiksen: ["Soren Fredriksen", "Soeren Frederiksen"]
+              Example User: ["Example Usar", "Example Euser"]
 
             profiles:
               default:
@@ -98,10 +98,10 @@ public sealed class CleanupOrchestratorLiveTests
     public async Task Mistranscription_OnlyTheTermIsCorrected_RestVerbatim()
     {
         if (!HasKey()) return;
-        // "See Director" -> cc-director, "Minzy" -> mindzie. Everything else,
+        // "See Director" -> cc-director, "Akmeflow" -> acmeflow. Everything else,
         // including the "um" and "you know", must be identical.
-        const string raw = "um i pushed the change to See Director and the Minzy dashboard you know looks fine";
-        const string expected = "um i pushed the change to cc-director and the mindzie dashboard you know looks fine";
+        const string raw = "um i pushed the change to See Director and the Akmeflow dashboard you know looks fine";
+        const string expected = "um i pushed the change to cc-director and the acmeflow dashboard you know looks fine";
         var cleaned = await CleanAsync(raw);
         Assert.Equal(expected, cleaned);
     }
@@ -120,11 +120,11 @@ public sealed class CleanupOrchestratorLiveTests
     public async Task Mistranscription_ProperName_Corrected_NothingElseTouched()
     {
         if (!HasKey()) return;
-        const string raw = "i talked to Soren Fredriksen about the Avalanche ui thing yesterday";
+        const string raw = "i talked to Example Usar about the Avalanche ui thing yesterday";
         // Only the name is in the dictionary. "Avalanche" is NOT "Avalonia"
         // (the speaker may really have said Avalanche), so it must be left
         // alone - no guessing.
-        const string expected = "i talked to Soren Frederiksen about the Avalanche ui thing yesterday";
+        const string expected = "i talked to Example User about the Avalanche ui thing yesterday";
         var cleaned = await CleanAsync(raw);
         Assert.Equal(expected, cleaned);
     }

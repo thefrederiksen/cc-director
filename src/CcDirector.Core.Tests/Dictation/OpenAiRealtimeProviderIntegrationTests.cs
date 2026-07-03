@@ -70,7 +70,7 @@ public sealed class OpenAiRealtimeProviderIntegrationTests
 
         await provider.StartAsync(
             "Glossary of names and terms used by the speaker: "
-            + "mindzie, CenCon, ConPTY, cc-director, Avalonia, Soren Frederiksen.",
+            + "acmeflow, CenCon, ConPTY, cc-director, Avalonia, Example User.",
             cts.Token);
 
         for (int offset = 0; offset < pcm.Length; offset += 4096)

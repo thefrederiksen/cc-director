@@ -54,19 +54,19 @@ public sealed class DictationEndpointTests : IAsyncLifetime
 
     private const string TestDictionaryYaml = """
         vocabulary:
-          - mindzie
+          - acmeflow
           - CenCon
           - ConPTY
           - cc-director
           - Avalonia
-          - Soren Frederiksen
+          - Example User
 
         common_mistranscriptions:
-          mindzie: [Minzy, Mindsy, Mindzy, Mindzie]
+          acmeflow: [Akmeflow, Acmefloe, Acmeflo, AcmeFlow]
           CenCon: [SenCon, SENCON, Sencon]
           ConPTY: [Contui, ContUI, ContiUI, Conty]
           cc-director: ["CC Director", "See Director", "CC director"]
-          Soren Frederiksen: ["Soren Fredriksen", "Soeren Frederiksen"]
+          Example User: ["Example Usar", "Example Euser"]
 
         profiles:
           default:

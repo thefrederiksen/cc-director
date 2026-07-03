@@ -16,7 +16,7 @@ public sealed class OpenAiRealtimeProtocolTests
     {
         var json = OpenAiRealtimeProtocol.BuildSessionUpdate(
             "gpt-4o-transcribe",
-            "Glossary: mindzie, CenCon.");
+            "Glossary: acmeflow, CenCon.");
 
         using var doc = JsonDocument.Parse(json);
         Assert.Equal("session.update", doc.RootElement.GetProperty("type").GetString());
@@ -28,7 +28,7 @@ public sealed class OpenAiRealtimeProtocolTests
         Assert.Equal(24000, format.GetProperty("rate").GetInt32());
         var stt = input.GetProperty("transcription");
         Assert.Equal("gpt-4o-transcribe", stt.GetProperty("model").GetString());
-        Assert.Equal("Glossary: mindzie, CenCon.", stt.GetProperty("prompt").GetString());
+        Assert.Equal("Glossary: acmeflow, CenCon.", stt.GetProperty("prompt").GetString());
         // turn_detection must be explicitly null so the server does not
         // gate the audio buffer behind VAD; walkie-talkie use commits
         // manually via input_audio_buffer.commit.

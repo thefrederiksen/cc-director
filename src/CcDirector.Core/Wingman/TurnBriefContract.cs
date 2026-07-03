@@ -108,7 +108,7 @@ public static class TurnBriefContract
         sb.AppendLine("  shas on the card. Product names (Director, Gateway, Cockpit, wingman) are known");
         sb.AppendLine("  vocabulary. An option may not reference a group/scope the card never defines.");
         sb.AppendLine("- NAME THE PROJECT: the reader runs many sessions across repos - the first time");
-        sb.AppendLine("  issue numbers or files appear, anchor them ('cc-director #218', 'mindzieWeb");
+        sb.AppendLine("  issue numbers or files appear, anchor them ('cc-director #218', 'sampleWeb");
         sb.AppendLine("  #7624') unless the statement already names the product.");
         sb.AppendLine("- THE STATEMENT IS AN ASK, NOT A HOW-TO: at most ONE imperative in the statement.");
         sb.AppendLine("  When the agent gave multi-step instructions, name the outcome and where the steps");

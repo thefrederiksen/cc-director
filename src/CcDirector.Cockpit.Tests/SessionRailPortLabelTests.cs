@@ -29,7 +29,7 @@ public sealed class SessionRailPortLabelTests : TestContext
     private static DirectorDto Director(string id, string controlEndpoint, string? tailnet = null) => new()
     {
         DirectorId = id,
-        MachineName = "SOREN_NORTH",
+        MachineName = "MACHINE_A",
         Version = "0.6.23",
         StartedAt = DateTime.UtcNow.AddMinutes(-12),
         ControlEndpoint = controlEndpoint,
@@ -40,7 +40,7 @@ public sealed class SessionRailPortLabelTests : TestContext
     {
         SessionId = id,
         DirectorId = directorId,
-        MachineName = "SOREN_NORTH",
+        MachineName = "MACHINE_A",
         Name = name,
         RepoPath = @"D:\repos\demo",
         StatusColor = "green",
@@ -108,7 +108,7 @@ public sealed class SessionRailPortLabelTests : TestContext
             .Add(c => c.Sessions, new List<SessionDto>())
             .Add(c => c.Errors, new List<MachineErrorDto>
             {
-                new() { DirectorId = Guid7884, MachineName = "SOREN_NORTH", Error = "timeout" },
+                new() { DirectorId = Guid7884, MachineName = "MACHINE_A", Error = "timeout" },
             }));
 
         var row = cut.Find(".dir-error");
@@ -127,7 +127,7 @@ public sealed class SessionRailPortLabelTests : TestContext
             .Add(c => c.Sessions, new List<SessionDto>())
             .Add(c => c.Errors, new List<MachineErrorDto>
             {
-                new() { DirectorId = Guid7884, MachineName = "SOREN_NORTH", Error = "gone" },
+                new() { DirectorId = Guid7884, MachineName = "MACHINE_A", Error = "gone" },
             }));
 
         var row = cut.Find(".dir-error");
@@ -176,7 +176,7 @@ public sealed class SessionRailPortLabelTests : TestContext
         };
         var errors = new List<MachineErrorDto>
         {
-            new() { DirectorId = "deadbeef-9999-0000-1111-222233334444", MachineName = "SOREN_NORTH", Error = "no heartbeat for 90s" },
+            new() { DirectorId = "deadbeef-9999-0000-1111-222233334444", MachineName = "MACHINE_A", Error = "no heartbeat for 90s" },
         };
 
         var mode = Environment.GetEnvironmentVariable("CC237_PROOF_MODE") ?? "tree";

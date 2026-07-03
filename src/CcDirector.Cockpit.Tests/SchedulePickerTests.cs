@@ -45,8 +45,8 @@ public sealed class SchedulePickerTests : TestContext
                 {
                     sessions = new[]
                     {
-                        new SessionDto { SessionId = "s1", DirectorId = North7882, MachineName = "SOREN_NORTH", Name = "implement #482 - cron store", ActivityState = "Working", SortOrder = 0 },
-                        new SessionDto { SessionId = "s2", DirectorId = North7882, MachineName = "SOREN_NORTH", Name = "qa #488 - schedule page", ActivityState = "WaitingForInput", NeedsYouSince = DateTime.UtcNow, SortOrder = 1 },
+                        new SessionDto { SessionId = "s1", DirectorId = North7882, MachineName = "MACHINE_A", Name = "implement #482 - cron store", ActivityState = "Working", SortOrder = 0 },
+                        new SessionDto { SessionId = "s2", DirectorId = North7882, MachineName = "MACHINE_A", Name = "qa #488 - schedule page", ActivityState = "WaitingForInput", NeedsYouSince = DateTime.UtcNow, SortOrder = 1 },
                     },
                     machineErrors = Array.Empty<MachineErrorDto>(),
                 },
@@ -64,13 +64,13 @@ public sealed class SchedulePickerTests : TestContext
         };
     }
 
-    // Two machines: SOREN_NORTH (two Directors) and SOREN (one Director). The picker collapses each
+    // Two machines: MACHINE_A (two Directors) and MACHINE_B (one Director). The picker collapses each
     // machine to a single card regardless of how many Directors it has.
     private static List<DirectorDto> Directors() => new()
     {
-        new() { DirectorId = North7882, MachineName = "SOREN_NORTH", ControlEndpoint = "http://127.0.0.1:7882", Version = "0.9.10", StartedAt = DateTime.UtcNow.AddHours(-3) },
-        new() { DirectorId = North7885, MachineName = "SOREN_NORTH", ControlEndpoint = "http://127.0.0.1:7885", Version = "0.9.10", StartedAt = DateTime.UtcNow.AddMinutes(-20) },
-        new() { DirectorId = "soren-7879-id", MachineName = "SOREN", ControlEndpoint = "http://127.0.0.1:7879", Version = "0.9.10", StartedAt = DateTime.UtcNow.AddDays(-1) },
+        new() { DirectorId = North7882, MachineName = "MACHINE_A", ControlEndpoint = "http://127.0.0.1:7882", Version = "0.9.10", StartedAt = DateTime.UtcNow.AddHours(-3) },
+        new() { DirectorId = North7885, MachineName = "MACHINE_A", ControlEndpoint = "http://127.0.0.1:7885", Version = "0.9.10", StartedAt = DateTime.UtcNow.AddMinutes(-20) },
+        new() { DirectorId = "machine-b-7879-id", MachineName = "MACHINE_B", ControlEndpoint = "http://127.0.0.1:7879", Version = "0.9.10", StartedAt = DateTime.UtcNow.AddDays(-1) },
     };
 
     // Opens the New cron job modal (compact machine field, no inline list).
@@ -135,11 +135,11 @@ public sealed class SchedulePickerTests : TestContext
 
         // AC1: the picker dialog is a card list (one .dcard per MACHINE), not a <select>.
         Assert.NotNull(cut.Find(".dpicker-modal .dpick"));
-        // AC2: the two SOREN_NORTH Directors collapse to ONE machine card -> 2 machines, 2 cards.
+        // AC2: the two MACHINE_A Directors collapse to ONE machine card -> 2 machines, 2 cards.
         Assert.Equal(2, cut.FindAll(".dcard").Count);
         var names = cut.FindAll(".dcard .dname").Select(e => e.TextContent.Trim()).ToList();
-        Assert.Contains("SOREN_NORTH", names);
-        Assert.Contains("SOREN", names);
+        Assert.Contains("MACHINE_A", names);
+        Assert.Contains("MACHINE_B", names);
     }
 
     [Fact]
@@ -148,14 +148,14 @@ public sealed class SchedulePickerTests : TestContext
         var (cut, _) = RenderAndOpenCreate();
         OpenPicker(cut);
 
-        // AC3: the SOREN_NORTH card previews its sessions and flags NEEDS YOU.
-        var card = cut.FindAll(".dcard").First(c => c.QuerySelector(".dname")!.TextContent.Trim() == "SOREN_NORTH");
+        // AC3: the MACHINE_A card previews its sessions and flags NEEDS YOU.
+        var card = cut.FindAll(".dcard").First(c => c.QuerySelector(".dname")!.TextContent.Trim() == "MACHINE_A");
         Assert.Contains("implement #482", card.TextContent);
         Assert.Contains("qa #488", card.TextContent);
         Assert.NotNull(card.QuerySelector(".dneeds"));        // NEEDS YOU flag present
         Assert.Contains("2 directors running", card.TextContent);
-        // SOREN has a Director but no sessions -> the idle preview.
-        var idle = cut.FindAll(".dcard").First(c => c.QuerySelector(".dname")!.TextContent.Trim() == "SOREN");
+        // MACHINE_B has a Director but no sessions -> the idle preview.
+        var idle = cut.FindAll(".dcard").First(c => c.QuerySelector(".dname")!.TextContent.Trim() == "MACHINE_B");
         Assert.Contains("0 sessions", idle.TextContent);
     }
 
@@ -165,12 +165,12 @@ public sealed class SchedulePickerTests : TestContext
         var (cut, handler) = RenderAndOpenCreate();
         OpenPicker(cut);
 
-        // Pick the SOREN_NORTH card -> the dialog closes and the compact field shows the chosen machine.
-        cut.FindAll("button.dcard").First(c => c.QuerySelector(".dname")!.TextContent.Trim() == "SOREN_NORTH").Click();
+        // Pick the MACHINE_A card -> the dialog closes and the compact field shows the chosen machine.
+        cut.FindAll("button.dcard").First(c => c.QuerySelector(".dname")!.TextContent.Trim() == "MACHINE_A").Click();
         cut.WaitForAssertion(() =>
         {
             Assert.Empty(cut.FindAll(".dpicker-modal"));          // picker dialog closed
-            Assert.Contains("SOREN_NORTH", cut.Find(".dpick-chosen").TextContent);
+            Assert.Contains("MACHINE_A", cut.Find(".dpick-chosen").TextContent);
         });
 
         // Fill the minimum and create.
@@ -184,7 +184,7 @@ public sealed class SchedulePickerTests : TestContext
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             Assert.NotNull(sent);
             // AC4: the persisted target is the SELECTED machine name (not a Director id or port).
-            Assert.Equal("SOREN_NORTH", sent.Target.Machine);
+            Assert.Equal("MACHINE_A", sent.Target.Machine);
         });
     }
 }

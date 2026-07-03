@@ -46,7 +46,7 @@ public class HtmlFormatterTests
     [Fact]
     public void ConvertPlainTextToHtml_MixedBreaks_CorrectConversion()
     {
-        var input = "Dear John,\n\nThank you for your message.\nI appreciate it.\n\nBest regards,\nSoren";
+        var input = "Dear John,\n\nThank you for your message.\nI appreciate it.\n\nBest regards,\nthe operator";
         var result = HtmlFormatter.ConvertPlainTextToHtml(input);
 
         // Should have 3 paragraphs
@@ -54,7 +54,7 @@ public class HtmlFormatterTests
         Assert.Contains("<p>Thank you for your message.<br>", result);
         Assert.Contains("I appreciate it.</p>", result);
         Assert.Contains("<p>Best regards,<br>", result);
-        Assert.Contains("Soren</p>", result);
+        Assert.Contains("the operator</p>", result);
     }
 
     [Fact]

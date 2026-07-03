@@ -112,7 +112,7 @@ public sealed class DictationSessionTests
         try
         {
             // A non-empty dictionary would normally trigger a cleanup pass; with null cleanup it must not.
-            File.WriteAllText(path, "vocabulary: [mindzie, CenCon]\n");
+            File.WriteAllText(path, "vocabulary: [acmeflow, CenCon]\n");
             using var dict = new DictionaryLoader(path, watch: false);
             var provider = new FakeProvider { CannedTranscript = "ship this raw whisper text" };
 
@@ -134,7 +134,7 @@ public sealed class DictationSessionTests
         var path = Path.GetTempFileName();
         try
         {
-            File.WriteAllText(path, "vocabulary: [mindzie, CenCon]\n");
+            File.WriteAllText(path, "vocabulary: [acmeflow, CenCon]\n");
             using var dict = new DictionaryLoader(path, watch: false);
             var provider = new FakeProvider();
             using var cleanup = NewFailingCleanup();
@@ -144,7 +144,7 @@ public sealed class DictationSessionTests
             await session.StopAsync();
 
             Assert.NotNull(provider.LastSttPrompt);
-            Assert.Contains("mindzie", provider.LastSttPrompt!);
+            Assert.Contains("acmeflow", provider.LastSttPrompt!);
             Assert.Contains("CenCon", provider.LastSttPrompt!);
         }
         finally { File.Delete(path); }

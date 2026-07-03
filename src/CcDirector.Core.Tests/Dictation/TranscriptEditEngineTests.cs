@@ -16,14 +16,14 @@ public sealed class TranscriptEditEngineTests
     // Mirrors the production dictionary.yaml so validation is proven against
     // the real term set.
     private static DictationDictionary ProductionDictionary() => new(
-        Vocabulary: new[] { "mindzie", "Tailscale", "CenCon", "ConPTY", "cc-director", "Avalonia", "Soren Frederiksen" },
+        Vocabulary: new[] { "acmeflow", "Tailscale", "CenCon", "ConPTY", "cc-director", "Avalonia", "Example User" },
         CommonMistranscriptions: new Dictionary<string, IReadOnlyList<string>>
         {
-            ["mindzie"] = new[] { "Minzy", "Mindsy", "Mindzy", "Mindzie", "Mindseeds", "mindseeds", "Mind Seeds" },
+            ["acmeflow"] = new[] { "Akmeflow", "Acmefloe", "Acmeflo", "AcmeFlow", "Acme Seeds", "acme seeds", "Acme Seeds" },
             ["CenCon"] = new[] { "SenCon", "SENCON", "Sencon" },
             ["ConPTY"] = new[] { "Contui", "ContUI", "ContiUI", "Conty" },
             ["cc-director"] = new[] { "CC Director", "See Director", "CC director" },
-            ["Soren Frederiksen"] = new[] { "Soren Fredriksen", "Soeren Frederiksen" },
+            ["Example User"] = new[] { "Example Usar", "Example Euser" },
             ["Tailscale"] = new[] { "Teraskale", "Terascale", "Tail Scale", "Tailskale" },
         },
         Profiles: new Dictionary<string, DictationProfile>
@@ -148,7 +148,7 @@ public sealed class TranscriptEditEngineTests
         // A correct term must never be rewritten into a different term.
         var raw = "we use Tailscale for networking";
         var validation = TranscriptEditEngine.Validate(
-            new[] { new TranscriptEdit("Tailscale", "mindzie") }, raw, ProductionDictionary());
+            new[] { new TranscriptEdit("Tailscale", "acmeflow") }, raw, ProductionDictionary());
         Assert.Empty(validation.Accepted);
         Assert.Contains("already a canonical term", Assert.Single(validation.Rejected).Reason);
     }
@@ -181,9 +181,9 @@ public sealed class TranscriptEditEngineTests
     [Fact]
     public void Validate_CapitalizationFix_Accepted()
     {
-        var raw = "the MINDZIE dashboard looks fine";
+        var raw = "the ACMEFLOW dashboard looks fine";
         var validation = TranscriptEditEngine.Validate(
-            new[] { new TranscriptEdit("MINDZIE", "mindzie") }, raw, ProductionDictionary());
+            new[] { new TranscriptEdit("ACMEFLOW", "acmeflow") }, raw, ProductionDictionary());
         Assert.Single(validation.Accepted);
     }
 
@@ -192,9 +192,9 @@ public sealed class TranscriptEditEngineTests
     {
         // The whole reason the LLM is in the loop: a NEW mishearing not in the
         // dictionary must still be correctable when it is phonetically close.
-        var raw = "deploy it with mind zee tonight";
+        var raw = "deploy it with acme flow tonight";
         var validation = TranscriptEditEngine.Validate(
-            new[] { new TranscriptEdit("mind zee", "mindzie") }, raw, ProductionDictionary());
+            new[] { new TranscriptEdit("acme flow", "acmeflow") }, raw, ProductionDictionary());
         Assert.Single(validation.Accepted);
     }
 
@@ -283,7 +283,7 @@ public sealed class TranscriptEditEngineTests
     [InlineData("conformance", "CenCon", false)]      // logged meaning flip
     [InlineData("PTY", "ConPTY", false)]              // distinct real term
     [InlineData("Sensecon", "CenCon", true)]          // unlisted phonetic variant
-    [InlineData("mind zee", "mindzie", true)]         // unlisted phonetic variant
+    [InlineData("acme flow", "acmeflow", true)]         // unlisted phonetic variant
     [InlineData("sea sea director", "cc-director", true)] // shares the word "director"
     public void IsPlausibleMishearing_GateBehavesAsCalibrated(string find, string replace, bool expected)
     {

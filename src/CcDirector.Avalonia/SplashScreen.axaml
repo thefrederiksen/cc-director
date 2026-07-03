@@ -58,7 +58,7 @@
 
             <!-- Footer: creator + loading -->
             <DockPanel Grid.Row="3">
-                <TextBlock Text="Soren Frederiksen"
+                <TextBlock Text="DevThrottle"
                            FontFamily="Segoe UI"
                            FontSize="11"
                            Foreground="#555555"

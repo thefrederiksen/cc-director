@@ -124,4 +124,4 @@ ALWAYS do these:
 
 **Skill Version:** 1.0
 **Last Updated:** 2026-02-14
-**Adapted from:** mindzieWeb commit skill
+**Adapted from:** sampleWeb commit skill

@@ -37,7 +37,7 @@ public sealed class DictationPipelineLiveTests
     [Theory]
     // clip text and its distinctive OPENING token (would vanish if the start were dropped):
     [InlineData("clip1.mp3", "sent")]  // "I sent the cc-director patch ..."
-    [InlineData("clip3.mp3", "tell")]  // "Tell mindzie that the CenCon report ..."
+    [InlineData("clip3.mp3", "tell")]  // "Tell acmeflow that the CenCon report ..."
     public async Task RealAudio_OpeningWordSurvives_ThroughCaptureFirstPipeline(string clip, string openingToken)
     {
         if (!HasApiKey()) { _out.WriteLine("SKIP: OPENAI_API_KEY not set"); return; }

@@ -42,13 +42,13 @@ public sealed class RegistryDirectorTargetResolverTests
     {
         var directors = new List<DirectorDto>
         {
-            Director("d-7882", "SOREN_NORTH", "http://127.0.0.1:7882/"),
-            Director("d-7879", "SOREN", "http://127.0.0.1:7879"),
+            Director("d-7882", "MACHINE_A", "http://127.0.0.1:7882/"),
+            Director("d-7879", "MACHINE_B", "http://127.0.0.1:7879"),
         };
         var launcher = new FakeLauncher(_ => throw new InvalidOperationException("must not launch when one is running"));
         var resolver = new RegistryDirectorTargetResolver(() => directors, launcher, FastTimeout, FastPoll);
 
-        var result = await resolver.ResolveAsync("SOREN_NORTH", CancellationToken.None);
+        var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
         Assert.Null(result.Error);
         Assert.Equal("http://127.0.0.1:7882", result.Endpoint);   // trailing slash trimmed
@@ -59,8 +59,8 @@ public sealed class RegistryDirectorTargetResolverTests
     [Fact]
     public async Task Resolve_NoDirector_LauncherStartsOne_RegistersAfterLaunch_Resolves()
     {
-        var directors = new List<DirectorDto> { Director("d-7879", "SOREN", "http://127.0.0.1:7879") };
-        // The launcher "starts" a Director on SOREN_NORTH: it registers in the list and the next poll finds it.
+        var directors = new List<DirectorDto> { Director("d-7879", "MACHINE_B", "http://127.0.0.1:7879") };
+        // The launcher "starts" a Director on MACHINE_A: it registers in the list and the next poll finds it.
         var launcher = new FakeLauncher(machine =>
         {
             directors.Add(Director("d-new", machine, "http://127.0.0.1:7900"));
@@ -68,13 +68,13 @@ public sealed class RegistryDirectorTargetResolverTests
         });
         var resolver = new RegistryDirectorTargetResolver(() => directors, launcher, FastTimeout, FastPoll);
 
-        var result = await resolver.ResolveAsync("SOREN_NORTH", CancellationToken.None);
+        var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
         Assert.Null(result.Error);
         Assert.Equal("http://127.0.0.1:7900", result.Endpoint);
         Assert.Equal("d-new", result.DirectorId);
         Assert.Equal(1, launcher.StartCount);
-        Assert.Equal("SOREN_NORTH", launcher.LastMachine);
+        Assert.Equal("MACHINE_A", launcher.LastMachine);
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public sealed class RegistryDirectorTargetResolverTests
         var launcher = new FakeLauncher(_ => false);              // launcher fails to start one
         var resolver = new RegistryDirectorTargetResolver(() => directors, launcher, FastTimeout, FastPoll);
 
-        var result = await resolver.ResolveAsync("SOREN_NORTH", CancellationToken.None);
+        var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
         Assert.Null(result.Endpoint);
         Assert.Null(result.DirectorId);
@@ -100,7 +100,7 @@ public sealed class RegistryDirectorTargetResolverTests
         var resolver = new RegistryDirectorTargetResolver(
             () => directors, launcher, TimeSpan.FromMilliseconds(120), FastPoll);
 
-        var result = await resolver.ResolveAsync("SOREN_NORTH", CancellationToken.None);
+        var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
         Assert.Null(result.Endpoint);
         Assert.NotNull(result.Error);
@@ -127,7 +127,7 @@ public sealed class RegistryDirectorTargetResolverTests
         {
             new()
             {
-                DirectorId = "d-dead", MachineName = "SOREN_NORTH", ControlEndpoint = "http://127.0.0.1:7882",
+                DirectorId = "d-dead", MachineName = "MACHINE_A", ControlEndpoint = "http://127.0.0.1:7882",
                 Version = "0.9.10", AdvertisedEndpointState = DirectorDto.EndpointStateUnreachableByName,
             },
         };
@@ -138,7 +138,7 @@ public sealed class RegistryDirectorTargetResolverTests
         });
         var resolver = new RegistryDirectorTargetResolver(() => directors, launcher, FastTimeout, FastPoll);
 
-        var result = await resolver.ResolveAsync("SOREN_NORTH", CancellationToken.None);
+        var result = await resolver.ResolveAsync("MACHINE_A", CancellationToken.None);
 
         // The unreachable Director is skipped, so the launcher is asked to start a fresh one.
         Assert.Equal(1, launcher.StartCount);

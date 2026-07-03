@@ -75,7 +75,7 @@ literal cold-reader bar from contract v3 being tested for real.
 
 ## Phase B - GOAL CHECK + EVIDENCE CHECK (reviewer sees everything)
 
-**B0 - THE GOAL CHECK (the reviewer's anchor, per Soren's spec):** before judging the
+**B0 - THE GOAL CHECK (the reviewer's anchor, per the operator's spec):** before judging the
 turn, establish what this session was ORIGINALLY asked to achieve and how it is going
 about it. Read the session's FULL brief history (`<sid>.jsonl` - every chapter headline,
 intent evolution, prior needsYou lines), the package's firstUserPrompt (beware: restored
@@ -105,7 +105,7 @@ Then read the TurnPackage and judge the brief against the ground truth:
 
 ## Phase C - VERDICT, SCORES, AND THE AFTER
 
-Score 1-5 on each dimension (5 = no finding). The governing bar, in Soren's words: the
+Score 1-5 on each dimension (5 = no finding). The governing bar, in the operator's words: the
 card must give, in the SIMPLEST form possible, ALL the information necessary to make
 the decision. Never reward brevity that drops decision-relevant context - tightness and
 completeness are separate dimensions and both must hold.
@@ -177,13 +177,13 @@ Never overwrite a verdict; re-reviews append a new line. This file IS the input 
    TurnBriefContract prompt-rule changes that would have fixed them. Presentation
    findings cluster into BriefPane change proposals instead (those need before/after
    HTML mockups per the house rule).
-3. **STOP. Show Soren the proposed changes with the failing cases as receipts. Never
+3. **STOP. Show the operator the proposed changes with the failing cases as receipts. Never
    edit TurnBriefContract.cs or BriefPane without explicit approval.**
 4. After an approved change deploys (Gateway restart picks up the contract), the next
    round reviews FRESH briefs only - tag verdicts with the contract version (grep the
    version marker in TurnBriefContract.cs) so rounds are comparable.
-5. Loop until a full round passes. Then, and only then, bring cases back to Soren for
-   human review - the reviewer is the coarse filter, Soren is the gold standard.
+5. Loop until a full round passes. Then, and only then, bring cases back to the operator for
+   human review - the reviewer is the coarse filter, the operator is the gold standard.
 
 ## Standing rules
 
@@ -213,7 +213,7 @@ Never overwrite a verdict; re-reviews append a new line. This file IS the input 
 
 **Skill Version:** 1.1
 **Last Updated:** 2026-06-06
-**Changes in 1.1 (Soren's spec, dictated):** the reviewer anchors on the session's
+**Changes in 1.1 (the operator's spec, dictated):** the reviewer anchors on the session's
 ORIGINAL GOAL - new B0 goal check (full brief history + true first ask, not seed
 boilerplate); two new scored dimensions: goalAlignment and jargon (persona = veteran
 developer NOT versed in this stack); rubric bar reworded to "simplest form of ALL
