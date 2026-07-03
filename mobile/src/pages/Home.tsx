@@ -5,6 +5,7 @@ import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrd
 import { useNow, waitingLabel } from "../sessions/waiting";
 import { getClipState, playClip, syncVoiceSessions, useVoiceClips } from "../voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
+import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "../push/register";
 
 // Home / roster. A "needs you" group first (when any session wants attention), then the full
 // session list, both using the live Gateway /sessions data and the shared triage ordering.
@@ -26,6 +27,9 @@ export function Home() {
       setSessions(data);
       setError(null);
       loadedOnce.current = true;
+      // Keep the app-icon "needs you" dot in sync while the app is open: set the badge to the live
+      // count, or clear the badge and the service worker's dot notification when nothing is waiting.
+      void reconcileBadge(inBucket(data, "needsYou").length);
       // Pull each gateway-ready voice session's clip down to the phone so the triangle can appear
       // (phone-ready, the issue #850 rule). Fire-and-forget; it updates the clip store as bytes land.
       void syncVoiceSessions(data);
@@ -65,6 +69,8 @@ export function Home() {
         </div>
       )}
 
+      <EnableAlerts />
+
       {/* "+ New session" entry (issue #812): opens the add-session flow (machine -> repo -> create),
           a faithful translation of the Android NewSessionPanel. */}
       <Link className="new-session-entry" to="/new">
@@ -99,6 +105,46 @@ export function Home() {
           </ul>
         </section>
       )}
+    </div>
+  );
+}
+
+// A one-time prompt to turn on the app-icon "needs you" dot. Shown only when the browser can do Web
+// Push and the user has not decided yet; tapping requests permission (the gesture iOS/Android require)
+// and subscribes. Hidden once granted, and replaced by a short hint if the user blocked notifications.
+function EnableAlerts() {
+  const [state, setState] = useState<NotificationPermission | "unsupported">(() => notificationPermission());
+  const [busy, setBusy] = useState(false);
+
+  if (!pushSupported() || state === "granted") return null;
+
+  if (state === "denied") {
+    return (
+      <div className="banner banner-info" role="status">
+        Notifications are blocked. Enable them for DevThrottle in your browser settings to see the
+        app-icon dot when a session needs you.
+      </div>
+    );
+  }
+
+  const onEnable = async () => {
+    setBusy(true);
+    try {
+      await enablePush();
+    } catch (err) {
+      console.warn("[push] enable failed:", err);
+    } finally {
+      setState(notificationPermission());
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="banner banner-info banner-action" role="status">
+      <span>Get an app-icon dot when a session needs you.</span>
+      <button type="button" className="banner-btn" onClick={() => void onEnable()} disabled={busy}>
+        {busy ? "Enabling..." : "Enable notifications"}
+      </button>
     </div>
   );
 }

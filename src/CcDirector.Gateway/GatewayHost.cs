@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text.Json;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Drivers;
@@ -187,6 +188,14 @@ public sealed class GatewayHost : IAsyncDisposable
     // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
     // endpoint, started flushing in StartAsync, and disposed in StopAsync.
     private readonly Api.TelemetryRetryQueue _telemetryQueue;
+    // Web Push (mobile app-icon "needs you" dot): the VAPID key pair, the set of subscribed devices,
+    // the loopback HTTP client the notifier reads /sessions with, and the background notifier itself.
+    // The stores are constructed in the ctor (load-on-construct); the notifier is built and started in
+    // StartAsync (once the loopback endpoint is live) and disposed in StopAsync.
+    private readonly Push.WebPushVapidStore _vapidStore;
+    private readonly Push.PushSubscriptionStore _pushSubscriptions;
+    private readonly HttpClient _pushLoopbackHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private Push.WebPushNeedsYouNotifier? _pushNotifier;
     private WebApplication? _app;
     private bool _stopped;
 
@@ -352,6 +361,12 @@ public sealed class GatewayHost : IAsyncDisposable
         _cronEngine = new Running.CronEngine(
             _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_client, cronTargetResolver),
             cronWorkListRunner, cronNotifier, new Running.SystemClock());
+
+        // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
+        // pair and the set of subscribed devices. The notifier that fans out to these is built and
+        // started in StartAsync, once this Gateway's own /sessions endpoint is reachable on loopback.
+        _vapidStore = new Push.WebPushVapidStore();
+        _pushSubscriptions = new Push.PushSubscriptionStore();
 
         // Gateway device registration (issue #857): on sign-in (and as a first-launch/retry safety net on
         // the heartbeat) register THIS Gateway as a device with the cloud account and store the issued
@@ -979,6 +994,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // mobile app static serving at /m (built shell + token-injected index.html). Mapped before
         // the fallback proxy so these explicit routes win over the Cockpit catch-all.
         _app.MapOpenApi();
+
+        // Web Push (mobile app-icon "needs you" dot): the phone fetches the VAPID public key and
+        // registers/removes its push subscription here. Inherits the host-wide token middleware
+        // (the mobile app attaches the per-machine Bearer). A new subscription nudges the notifier
+        // so the fresh device gets the current dot promptly. Mapped before the mobile shell and the
+        // Cockpit catch-all so these explicit routes win.
+        Api.WebPushEndpoints.Map(_app, _vapidStore.PublicKey, _pushSubscriptions,
+            onSubscribed: () => _pushNotifier?.ResetDedupe());
+
         Mobile.MobileApp.Map(_app, Token);
 
         // One URL: everything no explicit endpoint above claimed falls through to the
@@ -1012,6 +1036,33 @@ public sealed class GatewayHost : IAsyncDisposable
         // registers here and then advances last-seen on every tick. Never blocks startup; a cloud failure
         // only logs and retries next tick. Null on a host with no credential service.
         _deviceHeartbeat?.Start();
+
+        // Web Push (mobile app-icon "needs you" dot): start the background notifier now that this
+        // Gateway's own /sessions endpoint is live on loopback. The notifier reads that endpoint (so its
+        // "needs you" verdict is byte-identical to the roster's) and pushes the count to subscribed
+        // phones. It self-gates on having at least one subscription, so it is free until a phone opts in.
+        var pushSender = new Push.VapidWebPushSender(
+            _vapidStore.PublicKey, _vapidStore.PrivateKey, "mailto:support@devthrottle.com");
+        _pushNotifier = new Push.WebPushNeedsYouNotifier(_pushSubscriptions, GetNeedsYouCountAsync, pushSender);
+        _pushNotifier.Start();
+    }
+
+    /// <summary>
+    /// Read THIS Gateway's own aggregated roster over loopback and count the sessions that "need you".
+    /// Going through the real <c>/sessions</c> endpoint (rather than re-implementing the fan-out) keeps
+    /// the notifier's verdict identical to what every client sees - same aggregation, same effective-red
+    /// fold. The per-machine Bearer is attached so it works whether or not global Gateway auth is on.
+    /// </summary>
+    private async Task<int> GetNeedsYouCountAsync(CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{Port}/sessions");
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {Token}");
+        using var response = await _pushLoopbackHttp.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var sessions = JsonSerializer.Deserialize<List<Contracts.SessionDto>>(
+            json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+        return Push.WebPushNeedsYouNotifier.CountNeedsYou(sessions);
     }
 
     /// <summary>
@@ -1049,6 +1100,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #857: stop the background device heartbeat timer.
         try { _deviceHeartbeat?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] device heartbeat dispose error: {ex.Message}"); }
         _deviceHeartbeat = null;
+
+        // Web Push: stop the background needs-you notifier (also disposes its VAPID push sender) and the
+        // loopback HTTP client it read /sessions with. Subscriptions are already on disk (written through
+        // on every change), so stopping loses nothing.
+        try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
+        _pushNotifier = null;
+        try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }
 
         // Issue #629: stop the telemetry retry-queue flusher. The queue file is written through on
         // every mutation, so any undelivered events are already on disk and reload on the next start -

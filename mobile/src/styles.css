@@ -84,6 +84,36 @@ body {
   color: #ffb4b4;
 }
 
+.banner-info {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: var(--text);
+}
+
+.banner-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.banner-btn {
+  flex: none;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.banner-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .status-line {
   color: var(--text-dim);
   font-size: 14px;

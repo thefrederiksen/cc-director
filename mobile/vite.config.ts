@@ -39,6 +39,15 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Web Push (app-icon "needs you" dot): import the hand-written push handler into the
+        // generated service worker. It only adds push/notificationclick/message listeners and does
+        // not touch Workbox's precache/offline behavior. The file ships verbatim from public/ and is
+        // served by the Gateway at /m/push-sw.js (importScripts URLs are relative to the SW scope).
+        // The ?v= is a cache-buster AND an update trigger: bump it whenever push-sw.js changes so the
+        // generated sw.js content changes too, which is what makes the browser re-install the service
+        // worker and re-import the new push handler (an unchanged sw.js is never re-fetched). The
+        // Gateway serves push-sw.js ignoring the query, with no-cache.
+        importScripts: ["push-sw.js?v=2"],
         // App shell precache. index.html is served by the Gateway (token injection) and is
         // navigation-fallback cached so a cold offline open still renders the shell.
         navigateFallback: "/m/index.html",
