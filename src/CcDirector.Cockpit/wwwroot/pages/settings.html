@@ -126,18 +126,18 @@
   </div>
   <p class="sub">Gateway and fleet configuration.</p>
 
+  <!-- Three tabs. A tab can own SEVERAL panels: panels carry data-group and the switcher toggles
+       every panel whose group matches the clicked tab, so related settings live together without
+       moving their markup. AI = transcription + wingman + instructions; This machine = gateway + phone. -->
   <div class="tabs">
     <button class="tab-btn active" data-tab="account">Account</button>
-    <button class="tab-btn" data-tab="transcription">Transcription</button>
-    <button class="tab-btn" data-tab="gateway">Gateway</button>
-    <button class="tab-btn" data-tab="wingman">Wingman</button>
-    <button class="tab-btn" data-tab="instructions">Instructions</button>
-    <button class="tab-btn" data-tab="phone">Phone</button>
+    <button class="tab-btn" data-tab="ai">AI</button>
+    <button class="tab-btn" data-tab="machine">This machine</button>
   </div>
 
   <!-- ===== Account tab (issue #886): the DevThrottle account is the FIRST/root setting - every AI
        capability draws on it. Signed-in username/email front and centre, with sign in/out. ===== -->
-  <div class="tab-panel active" id="tab-account">
+  <div class="tab-panel active" id="tab-account" data-group="account">
     <div class="section">
       <h2>DevThrottle account</h2>
       <p class="hint">The DevThrottle account this Gateway is signed in as. Every hosted AI capability - transcription, text-to-speech, the assistant - runs on this account's credits, so it is the first thing to set up.</p>
@@ -183,8 +183,8 @@
     </div>
   </div>
 
-  <!-- ===== Transcription tab (issue #497) ===== -->
-  <div class="tab-panel" id="tab-transcription">
+  <!-- ===== Transcription (issue #497) - first panel of the AI tab ===== -->
+  <div class="tab-panel" id="tab-transcription" data-group="ai">
     <div class="section">
       <h2>Transcription</h2>
       <p class="hint">Turn speech into text for your agents. Choose how you connect.</p>
@@ -269,8 +269,8 @@
     </div>
   </div>
 
-  <!-- ===== Gateway tab ===== -->
-  <div class="tab-panel" id="tab-gateway">
+  <!-- ===== Gateway process - first panel of the This machine tab ===== -->
+  <div class="tab-panel" id="tab-gateway" data-group="machine">
     <div class="section">
       <h2>Gateway</h2>
       <p class="hint">The Gateway process serving this page and supervising the fleet.</p>
@@ -306,8 +306,8 @@
     </div>
   </div>
 
-  <!-- ===== Phone tab ===== -->
-  <div class="tab-panel" id="tab-phone">
+  <!-- ===== Phone - shown with the This machine tab ===== -->
+  <div class="tab-panel" id="tab-phone" data-group="machine">
     <div class="section">
       <h2>Connect a phone</h2>
       <p class="hint">The old QR pairing &mdash; which embedded the shared access token in the code &mdash; has been retired (issue #469): a leaked QR exposed the whole fleet's secret. Device enrollment now uses a short-lived pairing code shown only on the gateway host's own screen, which issues a unique, individually-revocable per-device key. Use "Register a new device" on the gateway host app.</p>
@@ -318,8 +318,8 @@
     </div>
   </div>
 
-  <!-- ===== Wingman tab (issue #393) ===== -->
-  <div class="tab-panel" id="tab-wingman">
+  <!-- ===== Wingman (issue #393) - shown with the AI tab ===== -->
+  <div class="tab-panel" id="tab-wingman" data-group="ai">
     <!-- Wingman config: enable + which tool + which model -->
     <div class="section">
       <h2>Wingman <span class="pill">voice agent</span></h2>
@@ -368,8 +368,8 @@
     </div>
   </div>
 
-  <!-- ===== Wingman Instructions tab (issue #537) ===== -->
-  <div class="tab-panel" id="tab-instructions">
+  <!-- ===== Wingman Instructions (issue #537) - shown with the AI tab ===== -->
+  <div class="tab-panel" id="tab-instructions" data-group="ai">
     <!-- "DevThrottle updated the recommended instructions" banner (only when customized + a new default shipped) -->
     <div class="update-banner" id="instr-update" style="display:none">
       <div class="ub-text">
@@ -413,7 +413,7 @@
     <!-- A/B test the editor's instructions against real captured sessions (issue #537) -->
     <div class="section">
       <h2>Test against saved sessions</h2>
-      <p class="hint">Re-run the instructions in the editor above over real captured sessions and compare the new spoken summary with what the wingman said before &mdash; so you can improve the prompt against real cases before saving. Requires training capture (Wingman tab); each session you pick is one wingman call, so keep it to a few.</p>
+      <p class="hint">Re-run the instructions in the editor above over real captured sessions and compare the new spoken summary with what the wingman said before &mdash; so you can improve the prompt against real cases before saving. Requires training capture (the Training data section above); each session you pick is one wingman call, so keep it to a few.</p>
       <div id="instr-records" class="ver-list"><span class="hint">Loading saved sessions...</span></div>
       <div class="row" style="margin-top:12px">
         <button class="save" id="instr-test-run">Run test with the editor's instructions</button>
@@ -425,13 +425,15 @@
 </div>
 
 <script>
-  // Tab switching
+  // Tab switching. A tab owns every panel whose data-group matches it, so one tab can show
+  // several panels (AI = transcription + wingman + instructions; This machine = gateway + phone).
   document.querySelectorAll('.tab-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
       document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
-      document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
       btn.classList.add('active');
-      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      document.querySelectorAll('.tab-panel').forEach(function(p) {
+        p.classList.toggle('active', p.dataset.group === btn.dataset.tab);
+      });
     });
   });
 
@@ -1094,7 +1096,7 @@
       if(!d.records || !d.records.length){
         box.innerHTML = d.captureEnabled
           ? '<span class="hint">No saved sessions captured yet - use the wingman for a few turns.</span>'
-          : '<span class="hint">No saved sessions. Turn on <strong>Capture wingman training data</strong> (Wingman tab), use the wingman for a few turns, then come back.</span>';
+          : '<span class="hint">No saved sessions. Turn on <strong>Capture wingman training data</strong> (the Training data section above), use the wingman for a few turns, then come back.</span>';
         return;
       }
       box.innerHTML='';
