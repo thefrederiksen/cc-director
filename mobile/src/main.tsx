@@ -29,8 +29,9 @@ const router = createBrowserRouter(
     { path: "/", element: <Home /> },
     { path: "/settings", element: <AiSettings /> },
     { path: "/new", element: <NewSession /> },
-    { path: "/session/:sessionId", element: <Terminal /> },
+    { path: "/session/:sessionId", element: <Chat /> },
     { path: "/session/:sessionId/chat", element: <Chat /> },
+    { path: "/session/:sessionId/terminal", element: <Terminal /> },
     { path: "/session/:sessionId/voice", element: <VoiceMode /> },
   ],
   { basename: "/m" }
