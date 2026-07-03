@@ -11,10 +11,10 @@ namespace CcDirector.Gateway.Account;
 /// issue #876): it exchanges the cached refresh token for a fresh access-plus-refresh pair against
 /// the DevThrottle backend, so the fleet stays authorized without a re-sign-in.
 ///
-/// The exchange targets the backend's refresh endpoint - embedded at build time with an
-/// environment-variable override (<see cref="DevThrottleAuthBackend"/>), the signing-key precedent -
-/// and carries the backend's public anonymous key in the <c>apikey</c> header (required; verified
-/// against the live endpoint, which answers 401 "No API key found" without it). The wire contract is
+/// The exchange targets the backend's refresh endpoint, with an environment-variable override
+/// (<see cref="DevThrottleAuthBackend"/>), and carries the configured anonymous key in the
+/// <c>apikey</c> header (required; verified against the live endpoint, which answers 401 "No API key
+/// found" without it). The wire contract is
 /// a POST whose JSON body is <c>{ "refresh_token": "..." }</c>, answered with
 /// <c>{ "access_token": "...", "refresh_token": "..." }</c>.
 ///
@@ -52,7 +52,7 @@ public sealed class GatewayHttpTokenRefresher : ITokenRefresher
     /// A resolver returning null reports refresh unavailable.
     /// </param>
     /// <param name="resolveApiKey">
-    /// Resolves the public anonymous key sent as the <c>apikey</c> header. Defaults to
+    /// Resolves the configured anonymous key sent as the <c>apikey</c> header. Defaults to
     /// <see cref="DevThrottleAuthBackend.ResolveAnonymousKey"/>; tests inject a fixed resolver. A
     /// resolver returning null sends no header (the stub endpoints in tests do not require one).
     /// </param>

@@ -194,11 +194,11 @@ public sealed class GatewayTokenRefreshTests : IDisposable
         Assert.False(result.RefreshTokenRejected);
     }
 
-    // Issue #876: with the override environment variables unset, the refresher resolves the EMBEDDED
-    // production backend - no machine configuration required. This is the defect the issue fixes (the
-    // pre-#876 refresher was gated on an environment variable no install ever set).
+    // Issue #876: with the override environment variables unset, the refresher resolves the embedded
+    // production endpoint, but the anonymous API key must come from configuration so the public repo
+    // does not contain key material.
     [Fact]
-    public void DefaultResolution_NoEnvironmentOverrides_UsesEmbeddedProductionBackend()
+    public void DefaultResolution_NoEnvironmentOverrides_UsesEmbeddedEndpointButNoApiKey()
     {
         var previousUrl = Environment.GetEnvironmentVariable(DevThrottleAuthBackend.RefreshUrlEnvVar);
         var previousKey = Environment.GetEnvironmentVariable(DevThrottleAuthBackend.AnonymousKeyEnvVar);
@@ -207,7 +207,7 @@ public sealed class GatewayTokenRefreshTests : IDisposable
         try
         {
             Assert.Equal(DevThrottleAuthBackend.ProductionRefreshUrl, DevThrottleAuthBackend.ResolveRefreshUrl());
-            Assert.Equal(DevThrottleAuthBackend.ProductionAnonymousKey, DevThrottleAuthBackend.ResolveAnonymousKey());
+            Assert.Null(DevThrottleAuthBackend.ResolveAnonymousKey());
             Assert.Contains("grant_type=refresh_token", DevThrottleAuthBackend.ProductionRefreshUrl);
         }
         finally
