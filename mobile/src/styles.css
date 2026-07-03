@@ -933,6 +933,14 @@ body {
   margin-left: 3px;
 }
 
+/* CSS-only pause bars, shown while the narration is speaking so the button reads as "stop". */
+.voice-pause {
+  width: 12px;
+  height: 14px;
+  border-left: 4px solid #ffffff;
+  border-right: 4px solid #ffffff;
+}
+
 .voice-progress {
   position: relative;
   flex: 1 1 auto;

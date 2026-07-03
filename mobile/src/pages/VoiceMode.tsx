@@ -78,9 +78,32 @@ export function VoiceMode() {
 
   // ----- playback element + progress (display only) -----
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // A ref that keeps the LAST audio element even after unmount (React nulls audioRef on unmount), so
+  // the cleanup effect below can still stop playback when you navigate away from this screen.
+  const liveAudioRef = useRef<HTMLAudioElement | null>(null);
+  const setAudioEl = useCallback((el: HTMLAudioElement | null) => {
+    audioRef.current = el;
+    if (el !== null) liveAudioRef.current = el;
+  }, []);
   const autoPlayedRef = useRef<string>(""); // the generatedAt we have already auto-played
   const [pos, setPos] = useState(0);
   const [dur, setDur] = useState(0);
+  const [playing, setPlaying] = useState(false);
+
+  // Stop the narration when you LEAVE the voice screen (roster, another view tab, the drawer) so it
+  // never keeps talking after you have moved on - the bug this fixes. Runs once, on unmount.
+  useEffect(() => {
+    return () => {
+      const el = liveAudioRef.current;
+      if (el !== null) {
+        try {
+          el.pause();
+        } catch {
+          /* element already torn down */
+        }
+      }
+    };
+  }, []);
 
   // ----- the single poll that drives every state (session flags + voice + menu) -----
   const poll = useCallback(
@@ -183,9 +206,15 @@ export function VoiceMode() {
 
   const onSwitchOff = useCallback(async () => {
     if (sid.length === 0) return;
-    // Revert the screen to off immediately (responsive UI), then tell the owning Director to leave
-    // voice (ViewMode=Text) - the same call the native app's ClearVoiceMode makes. The optimistic
-    // session edit flips voiceOn false now; the next poll confirms it.
+    // Stop any narration that is playing right now, then revert the screen to off immediately
+    // (responsive UI) and tell the owning Director to leave voice (ViewMode=Text) - the same call the
+    // native app's ClearVoiceMode makes. The optimistic session edit flips voiceOn false now; the next
+    // poll confirms it.
+    try {
+      audioRef.current?.pause();
+    } catch {
+      /* nothing playing */
+    }
     setLocalEnabled(false);
     setVoice(null);
     setMenu(null);
@@ -202,10 +231,16 @@ export function VoiceMode() {
     }
   }, [sid]);
 
-  const onReplay = useCallback(() => {
+  // Play/pause toggle - the clear "stop the speech" control the person asked for. Tapping while it is
+  // speaking pauses it immediately; tapping when paused resumes (or replays from the start once ended).
+  const onTogglePlay = useCallback(() => {
     const el = audioRef.current;
     if (!el) return;
-    el.currentTime = 0;
+    if (!el.paused) {
+      el.pause();
+      return;
+    }
+    if (el.ended || (el.duration > 0 && el.currentTime >= el.duration)) el.currentTime = 0;
     void el.play().catch(() => {
       /* ignore - a tap already gestured */
     });
@@ -287,12 +322,17 @@ export function VoiceMode() {
       {/* The clip element is always mounted (hidden) so auto-play works in any state; the visible
           play controls live in the speaking state below. */}
       <audio
-        ref={audioRef}
+        ref={setAudioEl}
         src={clip.url ?? undefined}
         preload="auto"
         onLoadedMetadata={(e) => setDur(e.currentTarget.duration)}
         onTimeUpdate={(e) => setPos(e.currentTarget.currentTime)}
-        onEnded={(e) => setPos(e.currentTarget.duration)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={(e) => {
+          setPos(e.currentTarget.duration);
+          setPlaying(false);
+        }}
         style={{ display: "none" }}
       />
 
@@ -343,11 +383,18 @@ export function VoiceMode() {
             </div>
             <div className="voice-narr">
               <div className="voice-narr-title">{narrative}</div>
-              <div className="voice-narr-body">Tap to replay, or just answer below.</div>
+              <div className="voice-narr-body">
+                {playing ? "Tap to stop the voice, or answer below." : "Tap to replay, or just answer below."}
+              </div>
             </div>
             <div className="voice-player">
-              <button type="button" className="voice-tri-btn" onClick={onReplay} aria-label="Replay">
-                <span className="voice-tri" aria-hidden="true" />
+              <button
+                type="button"
+                className="voice-tri-btn"
+                onClick={onTogglePlay}
+                aria-label={playing ? "Stop the voice" : "Play"}
+              >
+                <span className={playing ? "voice-pause" : "voice-tri"} aria-hidden="true" />
               </button>
               <div className="voice-progress" aria-hidden="true">
                 <div className="voice-progress-fill" style={{ width: `${progress * 100}%` }} />
