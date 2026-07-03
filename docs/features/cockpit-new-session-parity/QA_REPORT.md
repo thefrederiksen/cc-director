@@ -98,7 +98,7 @@ Passed!  - Failed: 0, Passed: 13, Skipped: 0, Total: 13 - CcDirector.Gateway.Tes
 | `GET /claude-sessions` | 200 (878893 bytes) |
 | `GET /handovers` | 200 (22748 bytes) |
 | `GET /fs/list` (drives) | 200 (136 bytes) |
-| `GET /fs/list?path=D:\ReposFred` | 200 (4733 bytes) |
+| `GET /fs/list?path=C:\repos` | 200 (4733 bytes) |
 | `GET /fs/list?path=D:\nope-xyz` | 400 (bad path) |
 | `DELETE /repos` (no path) | 400 |
 | `DELETE /repos?path=<bogus>` | 200 `{removed:false}` (non-destructive) |
@@ -114,7 +114,7 @@ The exact path the Cockpit uses: `/directors/{id}/...` for Director `ce7e7143`.
 | `GET /directors/{id}/claude-sessions` | 200 (878893 bytes) |
 | `GET /directors/{id}/handovers` | 200 (22748 bytes) |
 | `GET /directors/{id}/fs/list` (drives) | 200 (136 bytes) |
-| `GET /directors/{id}/fs/list?path=D:\ReposFred` | 200 (4733 bytes) |
+| `GET /directors/{id}/fs/list?path=C:\repos` | 200 (4733 bytes) |
 | `DELETE /directors/{id}/repos?path=<bogus>` | 200 `{removed:false}` |
 
 All proxy routes return identical payloads to the direct calls, confirming the full
@@ -146,12 +146,12 @@ Navigating into `D:\` lists its real sub-directories with an up-level entry.
 ![Browse D drive](shots/05-browse-d-drive.png)
 
 ### 4.5 Browse - navigating into a directory
-Navigated into `D:\ReposFred`, showing the live directory contents.
+Navigated into `C:\repos`, showing the live directory contents.
 
 ![Browse ReposFred](shots/06-browse-reposfred.png)
 
 ### 4.6 Browsed path selected
-"Select this folder" fills the path with `D:\ReposFred` - a directory NOT in the recents
+"Select this folder" fills the path with `C:\repos` - a directory NOT in the recents
 list, proving arbitrary-directory selection.
 
 ![Browsed path filled](shots/07-browsed-path-filled.png)
@@ -172,7 +172,7 @@ Owner/repo/branch, new-issue vs existing-thread, and the first-task prompt.
 ![GitHub tab](shots/10-github-tab.png)
 
 ### 4.10 End-to-end create
-Creating a session in `D:\ReposFred\cc-director` with Bypass permission prompts checked.
+Creating a session in `C:\repos\cc-director` with Bypass permission prompts checked.
 The new session is created and selected; the terminal shows **"bypass permissions on"**,
 confirming the checkbox flowed through as `--dangerously-skip-permissions`.
 

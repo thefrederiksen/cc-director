@@ -5,9 +5,9 @@
 # It NEVER reaches the Install step, so nothing is installed. It then closes the installer it launched.
 $ErrorActionPreference = "Stop"
 
-$exe    = "D:\ReposFred\devthrottle\tools\cc-director-setup\bin\Release\net10.0-windows\win-x64\publish\cc-director-setup.exe"
+$exe    = "C:\repos\devthrottle\tools\cc-director-setup\bin\Release\net10.0-windows\win-x64\publish\cc-director-setup.exe"
 $shotDir = Join-Path $env:TEMP "devthrottle-setup-wstest"
-$capture = "D:\ReposFred\devthrottle\scripts\capture-window.ps1"
+$capture = "C:\repos\devthrottle\scripts\capture-window.ps1"
 New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
 
 Add-Type -AssemblyName UIAutomationClient

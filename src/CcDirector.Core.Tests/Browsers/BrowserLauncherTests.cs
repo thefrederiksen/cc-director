@@ -56,7 +56,7 @@ public class BrowserLauncherTests
     {
         var profiles = BrowserLauncher.ParseProfiles(SampleLocalState);
 
-        // Account-bearing profiles (centerconsulting.com, duksrevo.com) come before the
+        // Account-bearing profiles (Example Work, Example Personal) come before the
         // accountless "Person 1", and within the account group they sort by display name.
         Assert.Equal(new[] { "Profile 2", "Profile 1", "Default" }, profiles.Select(p => p.FolderName).ToArray());
     }

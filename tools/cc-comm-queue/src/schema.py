@@ -33,8 +33,8 @@ class ContentType(str, Enum):
 
 class Persona(str, Enum):
     """Persona options."""
-    MINDZIE = "mindzie"
-    CENTER_CONSULTING = "center_consulting"
+    BRAND = "brand"
+    CONSULTING = "consulting"
     PERSONAL = "personal"
 
 
@@ -62,8 +62,8 @@ class Visibility(str, Enum):
 
 
 PERSONA_DISPLAY_MAP = {
-    Persona.MINDZIE: "CTO of mindzie",
-    Persona.CENTER_CONSULTING: "President of Consulting",
+    Persona.BRAND: "Company brand",
+    Persona.CONSULTING: "Consulting brand",
     Persona.PERSONAL: "Personal",
 }
 
@@ -90,8 +90,8 @@ SEND_FROM_ACCOUNTS = _get_send_from_accounts()
 
 # Default account for each persona
 PERSONA_DEFAULT_ACCOUNT = {
-    Persona.MINDZIE: "mindzie",
-    Persona.CENTER_CONSULTING: "consulting",
+    Persona.BRAND: "brand",
+    Persona.CONSULTING: "consulting",
     Persona.PERSONAL: "personal",
 }
 

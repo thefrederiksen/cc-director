@@ -126,9 +126,9 @@ public class SessionNameTests
     [Fact]
     public void FolderName_TrimsTrailingSeparators()
     {
-        Assert.Equal("devthrottle", SessionName.FolderName(@"D:\ReposFred\devthrottle"));
-        Assert.Equal("devthrottle", SessionName.FolderName(@"D:\ReposFred\devthrottle\"));
-        Assert.Equal("devthrottle", SessionName.FolderName("D:/ReposFred/devthrottle/"));
+        Assert.Equal("devthrottle", SessionName.FolderName(@"C:\repos\devthrottle"));
+        Assert.Equal("devthrottle", SessionName.FolderName(@"C:\repos\devthrottle\"));
+        Assert.Equal("devthrottle", SessionName.FolderName("C:/repos/devthrottle/"));
     }
 
     [Fact]

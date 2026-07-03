@@ -17,7 +17,7 @@ cd tools/cc-comm-queue
 ```bash
 # LinkedIn post
 cc-comm-queue add linkedin post "Process mining trends for 2024..." \
-    --persona mindzie \
+    --persona brand \
     --tags "process mining,trends"
 
 # LinkedIn comment
@@ -27,7 +27,7 @@ cc-comm-queue add linkedin comment "Great insights!" \
 
 # Email
 cc-comm-queue add email email "Hi Sarah, following up..." \
-    --persona mindzie \
+    --persona brand \
     --email-to "sarah@techcorp.com" \
     --email-subject "Following up from Summit"
 
@@ -71,7 +71,7 @@ cc-comm-queue config show
 cc-comm-queue config set queue_path "D:/path/to/content"
 
 # Set default persona
-cc-comm-queue config set default_persona mindzie
+cc-comm-queue config set default_persona brand
 ```
 
 ## JSON Output (for Agents)
@@ -94,6 +94,6 @@ cc-comm-queue add linkedin post "Hello" --json
 
 ## Personas
 
-- `mindzie` - CTO of mindzie
+- `brand` - Company brand
 - `consulting` - Consulting services persona
 - `personal` - Personal

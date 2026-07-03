@@ -8,7 +8,7 @@ namespace CcDirector.Core.Grok;
 /// it by scanning <c>~/.grok/sessions</c>.
 ///
 /// Grok groups sessions under a directory whose name is the percent-encoded absolute working
-/// directory, for example <c>D:\ReposFred\devthrottle</c> becomes
+/// directory, for example <c>C:\repos\devthrottle</c> becomes
 /// <c>D%3A%5CReposFred%5Cdevthrottle</c>. Inside that per-cwd directory each Grok session has its
 /// own <c>&lt;session-id&gt;</c> subdirectory holding <c>chat_history.jsonl</c> (the conversation),
 /// plus <c>events.jsonl</c>, <c>summary.json</c>, and so on (ignored here).

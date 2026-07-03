@@ -6,7 +6,7 @@
 **Phase 4 (power tools): Fan-out + read-only git status PASS;** per-file source-control and workspaces/history are blocked on missing Director endpoints - see the Phase 4 section and finding 6.
 **Date:** 2026-05-31
 **Cockpit under test:** source build of `src/CcDirector.Cockpit` (run with `ASPNETCORE_ENVIRONMENT=Development`), served at `http://localhost:7471`, pointed at the live Gateway `http://127.0.0.1:7878`.
-**Driven against:** a real Director on the final build (Slot 1, `cc-director1.exe`, control API `7884`, director id `c99a103c`), advertising the real tailnet endpoint `https://machine-a.tail0123.ts.net:7884`. Interactive checks ran against a dedicated throwaway QA session (`721e6993`, repo `D:\ReposFred\cc-director-qa-scratch`) so no live working session was disturbed.
+**Driven against:** a real Director on the final build (Slot 1, `cc-director1.exe`, control API `7884`, director id `c99a103c`), advertising the real tailnet endpoint `https://machine-a.tail0123.ts.net:7884`. Interactive checks ran against a dedicated throwaway QA session (`721e6993`, repo `C:\repos\cc-director-qa-scratch`) so no live working session was disturbed.
 **Browser:** a separate, isolated cc-playwright Brave instance (connection `cockpit-qa`) so the user's own browser was never touched.
 
 ---

@@ -164,7 +164,7 @@
         command surface for DevThrottle automation before reviewing the remaining tools.
       </p>
       <p class="meta">
-        Source snapshot: 2026-06-27, repo <code>D:\ReposFred\devthrottle</code>. Independent Claude Code
+        Source snapshot: 2026-06-27, repo <code>C:\repos\devthrottle</code>. Independent Claude Code
         reviewer started as session <code>3429220a</code>; expected output:
         <code>docs/reviews/cc-devthrottle-claude-review.html</code>.
       </p>
@@ -221,7 +221,7 @@
             <td class="evidence">
               Verification command: <code>Get-Command cc-devthrottle</code> returned not found, while
               <code>cc-spawn</code>, <code>cc-send</code>, <code>cc-ask</code>, and <code>cc-sessions</code> resolve from
-              <code>C:\Users\soren\AppData\Local\cc-director\bin</code>.
+              <code>C:\Users\user\AppData\Local\cc-director\bin</code>.
             </td>
             <td>Agents are told to use the unified command, but the current deployed environment still exposes the older split aliases. That reproduces the original confusion.</td>
             <td>Fix the installed bundle/shims or deployment refresh so <code>cc-devthrottle</code> is present before removing aliases. Add an installer smoke check that fails if <code>cc-devthrottle --version</code> is absent.</td>

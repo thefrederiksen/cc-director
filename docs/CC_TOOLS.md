@@ -1012,12 +1012,12 @@ cc-devthrottle schedule runs <id>                  # run history for a job (infr
 # Create a one-off (runs once at a local time in a time zone)
 cc-devthrottle schedule create --name "Help once" \
   --at "2026-06-28T18:00:00" --tz America/New_York \
-  --machine <machine> --repo "D:\ReposFred\devthrottle" --seed "/help"
+  --machine <machine> --repo "C:\repos\devthrottle" --seed "/help"
 
 # Create a recurring job (5-field cron expression)
 cc-devthrottle schedule create --name "Nightly drain" \
   --cron "0 0 * * *" --tz America/Chicago \
-  --machine <machine> --repo "D:\ReposFred\devthrottle" --worklist "Tonight"
+  --machine <machine> --repo "C:\repos\devthrottle" --worklist "Tonight"
 
 # Opt in to a run-complete notification (issue #622). --notify-on is one of
 # none (default), always, or failure; an optional --notify-webhook also POSTs the
@@ -1025,7 +1025,7 @@ cc-devthrottle schedule create --name "Nightly drain" \
 # needs-you / session-done channel (desktop + phone).
 cc-devthrottle schedule create --name "Nightly drain" \
   --cron "0 0 * * *" --tz America/Chicago \
-  --machine <machine> --repo "D:\ReposFred\devthrottle" --worklist "Tonight" \
+  --machine <machine> --repo "C:\repos\devthrottle" --worklist "Tonight" \
   --notify-on always --notify-webhook "https://example.com/hook"
 
 # Fire / enable / disable / delete

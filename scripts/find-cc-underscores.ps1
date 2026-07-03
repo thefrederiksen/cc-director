@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Finds all cc_ references in C:\ReposFred (file names, directory names, and file contents)
+    Finds all cc_ references in C:\repos (file names, directory names, and file contents)
 .DESCRIPTION
     Outputs results to a CSV file with columns: Type, Path, Line, Match
 #>
 
 param(
-    [string]$SearchPath = "C:\ReposFred",
+    [string]$SearchPath = "C:\repos",
     [string]$OutputFile = "cc_underscore_findings.csv"
 )
 

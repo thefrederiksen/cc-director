@@ -100,7 +100,7 @@ public class AgentOptions
     /// <summary>
     /// Absolute path to the repository the Director chat will relay every chat
     /// message to. Set via appsettings.json "Chat.SessionRepoPath" - e.g.
-    /// "D:/ReposFred/private" - so the Director's /chat endpoint knows which
+    /// "C:/repos/private" - so the Director's /chat endpoint knows which
     /// session represents "the agent" for one-session deployments.
     /// Null means the Director chat will require an explicit SessionId per request.
     /// </summary>

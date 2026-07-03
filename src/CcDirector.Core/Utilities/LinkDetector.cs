@@ -376,7 +376,7 @@ public static class LinkDetector
 
     /// <summary>
     /// Extend an absolute path match through spaces. The base regex stops at any whitespace,
-    /// but real paths may contain spaces (e.g., "D:\Center Consulting\Click Funnels\file.md").
+    /// but real paths may contain spaces (e.g., "C:\My Documents\Project Files\file.md").
     /// Walks forward through whitespace-separated segments, picking the longest range where
     /// the candidate path exists on disk. If no callback is provided or no longer prefix
     /// exists, returns initialEnd unchanged (preserving baseline regex behavior).

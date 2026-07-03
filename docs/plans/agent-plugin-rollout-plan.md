@@ -178,9 +178,9 @@ Every migration issue must include:
 Use a new worktree and isolated slot:
 
 ```powershell
-git worktree add D:\ReposFred\devthrottle-agent-plugins main
-cd D:\ReposFred\devthrottle-agent-plugins
-powershell -NoProfile -File scripts\agent-session-isolation.ps1 allocate -Worktree D:\ReposFred\devthrottle-agent-plugins
+git worktree add C:\repos\devthrottle-agent-plugins main
+cd C:\repos\devthrottle-agent-plugins
+powershell -NoProfile -File scripts\agent-session-isolation.ps1 allocate -Worktree C:\repos\devthrottle-agent-plugins
 ```
 
 Build and launch through the allocated slot. Do not use the user's long-lived slots 1-4 for automated QA.

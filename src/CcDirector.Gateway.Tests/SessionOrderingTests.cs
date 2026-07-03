@@ -279,7 +279,7 @@ public sealed class SessionOrderingTests
     [Fact]
     public void RepoName_FallsBackToRepoPathLeaf_WhenNoRemote()
     {
-        Assert.Equal("cc-director", SessionOrdering.RepoName(R("x", repoPath: @"D:\ReposFred\cc-director")));
+        Assert.Equal("cc-director", SessionOrdering.RepoName(R("x", repoPath: @"C:\repos\cc-director")));
         Assert.Equal("cc-director", SessionOrdering.RepoName(R("x", repoPath: "/home/user/src/cc-director/")));
     }
 

@@ -89,7 +89,7 @@ def init() -> None:
         config.api_key = typer.prompt("PostHog Personal API Key")
 
     # Add project
-    name = typer.prompt("Project name (e.g. 'centerconsulting')")
+    name = typer.prompt("Project name (e.g. 'myproject')")
     project_id = typer.prompt("PostHog Project ID", type=int)
     host = typer.prompt("PostHog host", default="https://us.posthog.com")
     funnel_input = typer.prompt(

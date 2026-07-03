@@ -69,7 +69,7 @@ cc-devthrottle message ask docs "What is the current title of the API page?" --t
 Delegate to a fresh session:
 
 ```bash
-cc-devthrottle session spawn D:\ReposFred\devthrottle --name "qa" --prompt "Run the focused QA checks."
+cc-devthrottle session spawn C:\repos\devthrottle --name "qa" --prompt "Run the focused QA checks."
 ```
 
 ## Notes
