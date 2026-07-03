@@ -60,11 +60,20 @@ internal static class DictationEndpoint
 {
     // The browser captures at this fixed format (see dictation-overlay.js: the
     // AudioContext is opened at 24 kHz and the pcm16-writer worklet emits mono
-    // 16-bit PCM). The server wraps the accumulated PCM in a WAV header using
-    // exactly this format before the single batch transcription.
+    // 16-bit PCM). The server Opus-encodes the accumulated PCM at this format
+    // before the single batch upload (see PackageUpload).
     private const int CaptureSampleRate = 24000;
     private const int CaptureChannels = 1;
-    private const int CaptureBitsPerSample = 16;
+
+    /// <summary>
+    /// Package the captured PCM16 for the single batch upload. Mirrors the desktop recorder (#897):
+    /// the whole clip is Opus-encoded in an Ogg container so a long dictation stays well under the
+    /// transcription endpoint's 4.5 MB request-body cap (issue #898) - the endpoints decode Ogg Opus
+    /// natively and the in-process local mode was removed in #887, so there is no uncompressed path to
+    /// preserve. Internal so the packaging (format + name) is unit-testable without the WebSocket loop.
+    /// </summary>
+    internal static (byte[] audio, string fileName) PackageUpload(byte[] pcm, int sampleRate, int channels)
+        => (OggOpusEncoder.EncodePcm16(pcm, sampleRate, channels), "dictation.ogg");
 
     public static void Map(IEndpointRouteBuilder app, AgentOptions options, OpenAiKeyResolver keyResolver, DictionaryResolver dictionaryResolver)
     {
@@ -270,9 +279,14 @@ internal static class DictationEndpoint
             return;
         }
 
-        // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the shared batch
-        // pipeline (the same one the desktop uses). The dictionary corrector is the only text transform.
-        var wav = PcmWav.Wrap(pcmBytes, CaptureSampleRate, CaptureChannels, CaptureBitsPerSample);
+        // Package the whole captured PCM for ONE batch upload through the shared pipeline (the same
+        // one the desktop uses). PackageUpload Opus-encodes it so a long dictation stays under the
+        // transcription endpoint's request-body cap - the web path was still shipping raw WAV and hit
+        // the same platform 413 past ~90 s that the desktop path fixed in #897 (issue #898). The
+        // dictionary corrector downstream is the only text transform.
+        var (upload, uploadName) = PackageUpload(pcmBytes, CaptureSampleRate, CaptureChannels);
+        FileLog.Write($"[DictationEndpoint] sid={sessionId} upload packaged: file={uploadName}, "
+            + $"bytes={upload.Length} (pcm={pcmBytes.Length})");
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
         BatchTranscriptionResult? transcript = null;
@@ -280,7 +294,7 @@ internal static class DictationEndpoint
         try
         {
             using var pipeline = new BatchTranscriptionPipeline(cleanupModel: options.DictationCleanupModel);
-            transcript = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, profile, ct);
+            transcript = await pipeline.TranscribeAsync(upload, uploadName, routing, dictionary, profile, ct);
         }
         catch (Exception ex)
         {
