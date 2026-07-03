@@ -47,11 +47,11 @@ internal static class GatewayWingmanVoiceEndpoint
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
 
-    /// <summary>OpenAI text-to-speech defaults: tts-1 is fast and the "nova" voice is far more
-    /// natural than the browser's built-in speech synthesis (issue #531 follow-up).</summary>
-    private const string TtsModel = "tts-1";
-    private const string TtsVoice = "nova";
-    private const int TtsMaxChars = 4000; // OpenAI per-call cap is 4096; spoken summaries are short.
+    /// <summary>Per-call input cap: the OpenAI-compatible speech endpoint accepts up to 4096 chars and
+    /// spoken summaries are short. The model + voice are no longer hardcoded here - they are resolved
+    /// per provider (<see cref="TranscriptionEndpointResolver.ResolveTts"/>) and per user
+    /// (<see cref="TtsVoiceConfig"/>).</summary>
+    private const int TtsMaxChars = 4000;
 
     public static void Map(
         IEndpointRouteBuilder app,
@@ -187,36 +187,45 @@ internal static class GatewayWingmanVoiceEndpoint
             return Results.Json(new { transcript = result.Text });
         });
 
-        // OpenAI text-to-speech for the mobile Voice screen: turn the wingman's spoken summary into
+        // Text-to-speech for the mobile Voice screen + Cockpit: turn the wingman's spoken summary into
         // natural-sounding audio (the browser's own voice is robotic). Returns audio/mpeg bytes the
-        // page plays in an <audio> element. The key comes from the gateway key vault.
+        // page plays in an <audio> element. Provider-aware (the consolidated AI-provider setting):
+        // DevThrottle routes to the hosted proxy's OpenAI-compatible /audio/speech, OpenAI
+        // (bring-your-own key) to OpenAI directly. The voice is the user's choice (TtsVoiceConfig,
+        // default nova); a request Voice overrides it. The credential comes from the gateway key vault
+        // by the selected provider's key name.
         app.MapPost("/wingman/tts", async (WingmanTtsRequest? req, CancellationToken ct) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
-            var key = vault.Get("OPENAI_API_KEY");
+            var mode = TranscriptionModeConfig.Get();
+            var tts = TranscriptionEndpointResolver.ResolveTts(mode);
+            var key = vault.Get(tts.KeyName);
             if (string.IsNullOrWhiteSpace(key))
-                return Results.Json(new { error = "no OpenAI key configured in the gateway vault" },
+                return Results.Json(new { error = mode == TranscriptionMode.DevThrottle
+                        ? "no DevThrottle account key configured in the gateway vault - sign in to DevThrottle"
+                        : "no OpenAI key configured in the gateway vault" },
                     statusCode: StatusCodes.Status503ServiceUnavailable);
 
             var input = req.Text.Length > TtsMaxChars ? req.Text[..TtsMaxChars] : req.Text;
-            var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoice : req.Voice.Trim();
+            var voice = string.IsNullOrWhiteSpace(req.Voice) ? TtsVoiceConfig.Get() : req.Voice.Trim();
+            var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             try
             {
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-                using var payload = JsonContent.Create(new { model = TtsModel, voice, input, response_format = "mp3" });
-                using var resp = await http.PostAsync("https://api.openai.com/v1/audio/speech", payload, ct);
+                using var payload = JsonContent.Create(new { model = tts.Model, voice, input, response_format = "mp3" });
+                using var resp = await http.PostAsync(url, payload, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
                     var body = await resp.Content.ReadAsStringAsync(ct);
-                    FileLog.Write($"[GatewayWingmanVoice] tts OpenAI {(int)resp.StatusCode}: {body[..Math.Min(200, body.Length)]}");
-                    return Results.Json(new { error = $"OpenAI text-to-speech returned {(int)resp.StatusCode}" },
+                    FileLog.Write($"[GatewayWingmanVoice] tts {mode.ToConfigString()} {(int)resp.StatusCode}: {body[..Math.Min(200, body.Length)]}");
+                    return Results.Json(new { error = $"text-to-speech returned {(int)resp.StatusCode}" },
                         statusCode: StatusCodes.Status502BadGateway);
                 }
                 var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-                FileLog.Write($"[GatewayWingmanVoice] tts ok: chars={input.Length}, bytes={bytes.Length}, voice={voice}");
+                FileLog.Write($"[GatewayWingmanVoice] tts ok: provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, voice={voice}");
                 return Results.Bytes(bytes, "audio/mpeg");
             }
             catch (Exception ex)

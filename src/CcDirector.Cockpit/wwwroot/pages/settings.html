@@ -183,88 +183,19 @@
     </div>
   </div>
 
-  <!-- ===== Transcription (issue #497) - first panel of the AI tab ===== -->
-  <div class="tab-panel" id="tab-transcription" data-group="ai">
+  <!-- ===== AI provider - moved to the dedicated Cockpit AI page ===== -->
+  <!-- The transcription mode + key panels and the wingman agent/model + brain panels that used to live
+       here were consolidated into ONE provider switch (DevThrottle vs OpenAI) on the Blazor AI page
+       (/ai). That one choice now drives transcription, the wingman model, and the text-to-speech voice
+       together, so those panels were removed from this static page to avoid two places to set the same
+       thing. Only the advanced wingman tuning (training capture + editable instructions) remains here. -->
+  <div class="tab-panel" id="tab-ai-moved" data-group="ai">
     <div class="section">
-      <h2>Transcription</h2>
-      <p class="hint">Turn speech into text for your agents. Choose how you connect.</p>
-
-      <!-- Two-mode chooser: radio cards (issue #887). DevThrottle is first, selected by default, and
-           uses your account; OpenAI (your own key) is the second option. -->
-      <div class="mode-cards">
-        <label class="mode-card" id="card-devthrottle">
-          <input type="radio" name="txmode" value="devthrottle">
-          <div class="mode-card-body">
-            <div class="mode-card-title">DevThrottle<span class="default-badge">Default</span></div>
-            <div class="mode-card-desc">Hosted transcription on your DevThrottle account. Nothing to set up - your first top-up activates it ($5 minimum = 25 hours).</div>
-          </div>
-        </label>
-        <label class="mode-card" id="card-byo">
-          <input type="radio" name="txmode" value="byo">
-          <div class="mode-card-body">
-            <div class="mode-card-title">OpenAI (your API key)</div>
-            <div class="mode-card-desc">Use your own OpenAI key. It stays on THIS machine and is never sent to DevThrottle.</div>
-          </div>
-        </label>
-      </div>
-
-      <!-- DevThrottle key panel -->
-      <div class="keypanel" id="panel-devthrottle" style="display:none">
-        <div class="keylabel">Connect this machine to your DevThrottle account</div>
-        <div class="row">
-          <input id="dtkeybox" type="password" placeholder="dt_live_..." autocomplete="off" spellcheck="false">
-          <button class="save" id="dtsavebtn">Save</button>
-          <button class="danger" id="dtdelbtn" style="display:none">Clear</button>
-        </div>
-        <div style="margin-top:10px">
-          <label class="show"><input type="checkbox" id="dtshowbox"> Show what I type</label>
-        </div>
-        <p class="hint" style="margin-top:12px">
-          <a class="link" id="dtsignin" href="https://devthrottle.com" target="_blank" rel="noopener">Get your account key &rarr;</a>
-          &nbsp;&nbsp;
-          <a class="link" id="dtcredits" href="https://devthrottle.com" target="_blank" rel="noopener">Add credits &rarr;</a>
-        </p>
-        <p class="hint">Hosted transcription runs on your DevThrottle account. Your first top-up activates it - $5 minimum, about 25 hours of speech.</p>
-        <div class="status" style="margin-top:6px">
-          <span class="dot" id="dtdot"></span>
-          <span id="dtstate">Loading...</span>
-        </div>
-        <div class="msg" id="dtmsg"></div>
-      </div>
-
-      <!-- Bring-your-own (OpenAI) key panel -->
-      <div class="keypanel" id="panel-byo" style="display:none">
-        <div class="keylabel">OpenAI API key</div>
-        <div class="row">
-          <input id="byokeybox" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
-          <button class="save" id="byosavebtn">Save</button>
-          <button class="danger" id="byodelbtn" style="display:none">Clear</button>
-        </div>
-        <div style="margin-top:10px">
-          <label class="show"><input type="checkbox" id="byoshowbox"> Show what I type</label>
-        </div>
-        <p class="hint" style="margin-top:12px">Stored locally on this machine only. DevThrottle never receives or stores your provider key.</p>
-        <div class="status" style="margin-top:6px">
-          <span class="dot" id="byodot"></span>
-          <span id="byostate">Loading...</span>
-        </div>
-        <div class="msg" id="byomsg"></div>
-      </div>
-
-      <!-- One-click smoke test: record a short clip and prove speech -> text works with the
-           current mode + key. The status dots above only prove a key is stored, not that it works. -->
-      <div class="keypanel" id="panel-tx-test">
-        <div class="keylabel">Test it</div>
-        <p class="hint" style="margin-top:0">Record a few seconds and the Gateway transcribes it with your current settings. This is the only thing that proves the stored key actually works.</p>
-        <div class="row">
-          <button id="txtestbtn">Start recording</button>
-          <span class="hint" id="txteststate" style="margin:0"></span>
-        </div>
-        <div id="txtestresultwrap" style="display:none;margin-top:12px">
-          <div class="keylabel" style="margin-bottom:6px">Heard:</div>
-          <div id="txtestresult" style="background:#0B1020;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px;min-height:20px;white-space:pre-wrap"></div>
-        </div>
-        <div class="msg" id="txtestmsg"></div>
+      <h2>AI provider</h2>
+      <p class="hint">Choosing DevThrottle (hosted) or OpenAI - and picking the wingman model and the
+        text-to-speech voice - now lives on its own page.</p>
+      <div class="row" style="margin-top:6px">
+        <a class="link" href="/ai" data-enhance-nav="false">Open AI settings &rarr;</a>
       </div>
     </div>
   </div>
@@ -318,52 +249,19 @@
     </div>
   </div>
 
-  <!-- ===== Wingman (issue #393) - shown with the AI tab ===== -->
+  <!-- ===== Wingman training data (issue #531 follow-up) - shown with the AI tab ===== -->
+  <!-- The wingman agent/model picker and the Brain runtime panel moved to the AI page (/ai): the
+       wingman model is now the provider default (glm-5.2 on DevThrottle, gpt-5.5 on OpenAI), chosen by
+       the one AI provider switch, and it runs as a stateless hosted call - not a warm local claude.exe -
+       so there is no per-agent picker or brain process to show here. Training capture stays: it is
+       advanced tuning that pairs with the editable instructions below. -->
   <div class="tab-panel" id="tab-wingman" data-group="ai">
-    <!-- Wingman config: enable + which tool + which model -->
-    <div class="section">
-      <h2>Wingman <span class="pill">voice agent</span></h2>
-      <p class="hint">Choose which agent and model run as the wingman &mdash; the agent that translates a session into a faithful, speakable summary when you use voice mode. Chosen from the agents registered on this machine. These are Gateway settings &mdash; they apply fleet-wide, with no per-Director change. Changes take effect after a Gateway restart.</p>
-      <div class="field">
-        <label for="brainagent">Agent</label>
-        <select id="brainagent" disabled></select>
-      </div>
-      <div class="field">
-        <label for="brainmodelsel">Model</label>
-        <input type="text" id="brainmodelsel" placeholder="opus" spellcheck="false" autocomplete="off" disabled>
-      </div>
-      <div class="row" style="margin-top:4px">
-        <button class="save" id="brainsavebtn" disabled>Save</button>
-        <span class="hint" id="wingmanmsg" style="margin:0"></span>
-      </div>
-    </div>
-
-    <!-- Wingman training data capture (issue #531 follow-up) -->
     <div class="section">
       <h2>Training data <span class="pill">improve the wingman</span></h2>
       <p class="hint">When on, every wingman voice summary saves up to 20,000 characters of the session terminal plus the wingman's spoken response to <span class="mono">wingman-training/</span> on the Gateway machine &mdash; a labeled dataset for testing and improving the wingman. Takes effect immediately, no restart.</p>
       <label class="chk"><input type="checkbox" id="wingman-training" disabled> Capture wingman training data</label>
       <div class="row" style="margin-top:8px">
         <span class="hint" id="trainingmsg" style="margin:0"></span>
-      </div>
-    </div>
-
-    <!-- Brain runtime: the hosted process that does the work, plus the recovery verb -->
-    <div class="section">
-      <h2>Brain <span class="pill">hosted agent</span></h2>
-      <p class="hint">The hosted agent process the wingman runs on. It starts on first use; restart replaces a wedged or dead brain or applies a saved agent/model change without a full Gateway restart.</p>
-      <div class="status">
-        <span class="dot" id="braindot"></span>
-        <span id="brainstate">Loading...</span>
-      </div>
-      <div class="kv">
-        <span class="k">Agent</span><span class="v" id="braintoolnow">-</span>
-        <span class="k">Model</span><span class="v" id="brainmodel">-</span>
-        <span class="k">Session</span><span class="v mono" id="brainsession">-</span>
-      </div>
-      <div class="row" style="margin-top:14px">
-        <button id="restartbtn">Restart Brain</button>
-        <span class="hint" id="brainmsg" style="margin:0"></span>
       </div>
     </div>
   </div>
@@ -552,113 +450,9 @@
   document.getElementById('acct-logout').addEventListener('click', acctLogout);
   loadAccount();
 
-  // ===== Transcription (issue #497, #887) =====
-  // Two capability modes, persisted server-side: the mode in config.json
-  // (GET/PUT /gateway/transcription-mode), the two keys in the Gateway vault
-  // (OPENAI_API_KEY for OpenAI, DEVTHROTTLE_API_KEY for DevThrottle). DevThrottle is the default
-  // (we dogfood our own hosted service, issue #887); OpenAI (bring your own key) is the second option.
-  const BYO_KEY = 'OPENAI_API_KEY';
-  const DT_KEY  = 'DEVTHROTTLE_API_KEY';
-  const SELECTABLE_MODES = ['devthrottle', 'byo'];
-  const DEFAULT_MODE = 'devthrottle';
-  let currentMode = DEFAULT_MODE;
-
-  function txMsg(id, text, ok){
-    const m = document.getElementById(id);
-    if (!m) return;
-    m.textContent = text || '';
-    m.className = 'msg ' + (ok ? 'ok' : 'err');
-  }
-
-  // Reflect the selected mode in the cards + which key panel shows. An unknown mode (including the
-  // removed "local", issue #887) falls forward to the DevThrottle default for display.
-  function applyModeUi(mode){
-    if (SELECTABLE_MODES.indexOf(mode) < 0) mode = DEFAULT_MODE;
-    currentMode = mode;
-    document.querySelectorAll('input[name="txmode"]').forEach(function(r){
-      r.checked = (r.value === mode);
-    });
-    document.getElementById('card-devthrottle').classList.toggle('selected', mode === 'devthrottle');
-    document.getElementById('card-byo').classList.toggle('selected', mode === 'byo');
-    // Show the key panel for the selected mode only.
-    document.getElementById('panel-byo').style.display = (mode === 'byo') ? '' : 'none';
-    document.getElementById('panel-devthrottle').style.display = (mode === 'devthrottle') ? '' : 'none';
-  }
-
-  async function loadMode(){
-    try {
-      const r = await fetch('/gateway/transcription-mode');
-      if (!r.ok) throw new Error(r.status);
-      const d = await r.json();
-      // Any non-selectable value (incl. a legacy "local") falls forward to the DevThrottle default.
-      applyModeUi(SELECTABLE_MODES.indexOf(d.mode) >= 0 ? d.mode : DEFAULT_MODE);
-    } catch (e) {
-      applyModeUi(DEFAULT_MODE);
-    }
-  }
-
-  async function changeMode(mode){
-    if (SELECTABLE_MODES.indexOf(mode) < 0) { applyModeUi(DEFAULT_MODE); return; }
-    applyModeUi(mode);
-    try {
-      await fetch('/gateway/transcription-mode', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
-      });
-    } catch (e) { /* the radio stays where the user put it; next load re-syncs */ }
-  }
-
-  // Which vault names are set (drives both status dots).
-  async function loadKeyStatus(){
-    let names = [];
-    try {
-      const r = await fetch('/vault/keys');
-      if (r.ok){ const d = await r.json(); names = d.names || []; }
-    } catch (e) { /* dots fall back to "unknown" below */ }
-
-    const byoSet = names.includes(BYO_KEY);
-    document.getElementById('byodot').className = 'dot ' + (byoSet ? 'amber' : '');
-    document.getElementById('byostate').textContent = byoSet ? 'Your OpenAI key is stored on this machine' : 'No OpenAI key stored yet';
-    document.getElementById('byokeybox').placeholder = byoSet ? 'Enter a new key to replace it' : 'sk-...';
-    document.getElementById('byodelbtn').style.display = byoSet ? '' : 'none';
-
-    const dtSet = names.includes(DT_KEY);
-    document.getElementById('dtdot').className = 'dot ' + (dtSet ? 'green' : '');
-    document.getElementById('dtstate').textContent = dtSet ? 'Connected to your DevThrottle account' : 'Not connected yet - add your account key';
-    document.getElementById('dtkeybox').placeholder = dtSet ? 'Enter a new key to replace it' : 'dt_live_...';
-    document.getElementById('dtdelbtn').style.display = dtSet ? '' : 'none';
-  }
-
-  // Save one key after a format check (so an invalid dt_/sk- is caught before it is stored).
-  async function saveKey(name, boxId, btnId, msgId, validate, badFormatMsg){
-    const box = document.getElementById(boxId);
-    const btn = document.getElementById(btnId);
-    const value = box.value.trim();
-    if (!value){ txMsg(msgId, 'Enter a key first.', false); return; }
-    if (!validate(value)){ txMsg(msgId, badFormatMsg, false); return; }
-    btn.disabled = true; txMsg(msgId, 'Saving...', true);
-    try {
-      const r = await fetch('/vault/keys/' + name, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value }),
-      });
-      if (r.ok){ box.value=''; await loadKeyStatus(); txMsg(msgId, 'Saved. Picked up on the next transcription.', true); }
-      else { const e = await r.json().catch(()=>({})); txMsg(msgId, 'Save failed: ' + (e.error || r.status), false); }
-    } catch (e){ txMsg(msgId, 'Save failed: ' + e, false); }
-    btn.disabled = false;
-  }
-
-  async function clearKey(name, msgId){
-    txMsg(msgId, 'Clearing...', true);
-    try {
-      const r = await fetch('/vault/keys/' + name, { method: 'DELETE' });
-      if (r.ok){ await loadKeyStatus(); txMsg(msgId, 'Key cleared.', true); }
-      else { txMsg(msgId, 'Clear failed: ' + r.status, false); }
-    } catch (e){ txMsg(msgId, 'Clear failed: ' + e, false); }
-  }
-
-  function isOpenAiKey(k){ return /^sk-/.test(k); }
-  function isDevThrottleKey(k){ return /^dt_(live|test)_/.test(k); }
+  // ===== Transcription + keys moved to the AI page (/ai) =====
+  // The transcription mode chooser and the OpenAI/DevThrottle key panels are gone from this page; the
+  // one AI provider switch on /ai owns them now. fmtUptime stays - the Gateway snapshot below uses it.
 
   function fmtUptime(sec){
     sec = Math.max(0, sec|0);
@@ -666,39 +460,9 @@
     return h >= 1 ? `${h}h ${String(m).padStart(2,'0')}m` : `${m}m ${String(s).padStart(2,'0')}s`;
   }
 
-  function renderBrain(b){
-    const alive = b.alive, started = b.started;
-    const dot = document.getElementById('braindot');
-    dot.className = 'dot ' + (alive ? 'green' : (started ? 'red' : 'amber'));
-    document.getElementById('brainstate').textContent = b.detail || '-';
-    document.getElementById('braintoolnow').textContent = b.tool || '-';
-    document.getElementById('brainmodel').textContent = b.model || '-';
-    document.getElementById('brainsession').textContent =
-      b.sessionId ? `${b.sessionId} (pid ${b.pid})` : '-';
-
-    // Populate the agent selector from the agents registered on this machine (issue #510) and
-    // pre-select the saved agent by its id, so the choice round-trips across a page reload. The
-    // model input is pre-filled with the configured model. Issue #549: the always-on "Enable the
-    // Wingman" toggle is gone (the wingman now runs only in voice mode); the agent/model/Save
-    // controls become editable as soon as the Gateway snapshot has answered.
-    const sel = document.getElementById('brainagent');
-    const agents = Array.isArray(b.agents) ? b.agents : [];
-    sel.innerHTML = '';
-    agents.forEach(function(a){
-      const opt = document.createElement('option');
-      opt.value = a.id;
-      opt.textContent = a.displayName ? `${a.displayName} (${a.type})` : a.type;
-      if (a.id === b.agentId) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    document.getElementById('brainmodelsel').value = b.model || '';
-    document.getElementById('brainagent').disabled = false;
-    document.getElementById('brainmodelsel').disabled = false;
-    document.getElementById('brainsavebtn').disabled = false;
-  }
-
   function renderSnapshot(d){
-    renderBrain(d.brain || {});
+    // The wingman brain panel moved to the AI page (/ai); this snapshot now renders only the
+    // Gateway process + addressing + autostart, so it no longer reflects a brain block.
     document.getElementById('gwstate').textContent = d.state || '-';
     document.getElementById('gwstate').className = 'v green';
     document.getElementById('gwport').textContent = d.port;
@@ -731,7 +495,8 @@
       const sel = document.getElementById('addrmode');
       if (d.addressingMode){ sel.value = d.addressingMode; sel.disabled = false; }
     } catch (e) {
-      document.getElementById('brainstate').textContent = 'Failed to load (is the Gateway running?)';
+      document.getElementById('gwstate').textContent = 'Failed to load (is the Gateway running?)';
+      document.getElementById('gwstate').className = 'v red';
     }
   }
 
@@ -758,19 +523,6 @@
     e.target.disabled = false;
   }
 
-  async function restartBrain(){
-    const btn = document.getElementById('restartbtn');
-    const msg = document.getElementById('brainmsg');
-    btn.disabled = true; msg.textContent = 'restarting (spawning claude.exe)...';
-    try {
-      const r = await fetch('/gateway/brain/restart', { method: 'POST' });
-      const d = await r.json().catch(()=>({}));
-      if (r.ok && d.ok){ renderBrain(d.brain || {}); msg.textContent = `brain ready (pid ${d.brain?.pid})`; }
-      else { msg.textContent = 'restart FAILED: ' + (d.error || r.status); }
-    } catch (e){ msg.textContent = 'restart FAILED: ' + e; }
-    btn.disabled = false;
-  }
-
   async function toggleAutostart(e){
     const enabled = e.target.checked;
     const msg = document.getElementById('autostartmsg');
@@ -784,30 +536,6 @@
       if (r.ok && d.supported){ e.target.checked = !!d.enabled; msg.textContent = d.enabled ? 'Will start at login.' : 'Will not start at login.'; }
       else { msg.className = 'msg err'; msg.textContent = 'Could not change autostart.'; await loadSnapshot(); }
     } catch (err){ msg.className = 'msg err'; msg.textContent = 'Failed: ' + err; await loadSnapshot(); }
-  }
-
-  async function saveBrainConfig(){
-    const btn = document.getElementById('brainsavebtn');
-    const msg = document.getElementById('wingmanmsg');
-    const agentId = document.getElementById('brainagent').value;
-    const agentLabel = document.getElementById('brainagent').selectedOptions[0]?.textContent || agentId;
-    const model = document.getElementById('brainmodelsel').value.trim();
-    if (!agentId){ msg.className = 'msg err'; msg.textContent = 'Choose an agent first.'; return; }
-    if (!model){ msg.className = 'msg err'; msg.textContent = 'Enter a model (e.g. opus).'; return; }
-    btn.disabled = true; msg.className = 'msg ok'; msg.textContent = 'Saving...';
-    try {
-      const r = await fetch('/gateway/brain/config', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentId, model }),
-      });
-      const d = await r.json().catch(()=>({}));
-      if (r.ok){
-        msg.textContent = `Saved ${agentLabel} + ${d.model}. Restart the Brain (or the Gateway) to apply.`;
-      } else {
-        msg.className = 'msg err'; msg.textContent = 'Save failed: ' + (d.error || r.status);
-      }
-    } catch (err){ msg.className = 'msg err'; msg.textContent = 'Failed: ' + err; }
-    btn.disabled = false;
   }
 
   async function loadTrainingCapture(){
@@ -846,138 +574,17 @@
     } catch (err){ msg.className = 'msg err'; msg.textContent = 'Failed: ' + err; e.target.checked = !enabled; }
   }
 
-  // ===== Transcription smoke test: record a clip, prove speech -> text =====
-  // One toggle button. First click records via MediaRecorder; second click stops, uploads the
-  // clip to the Gateway, and shows the text it heard - using the current mode + key.
-  let txMediaRecorder = null;
-  let txChunks = [];
-  let txStream = null;
-
-  function txTestState(text){
-    document.getElementById('txteststate').textContent = text || '';
-  }
-
-  // A successful test is the only thing that proves the stored key works, so flip that mode's status
-  // dot green and say so. In-session only: loadKeyStatus() (and a page reload) re-derives the dot
-  // from "is a key stored", which is honest - the next visit hasn't re-verified anything yet.
-  function markModeVerified(mode){
-    if (mode === 'devthrottle'){
-      document.getElementById('dtdot').className = 'dot green';
-      document.getElementById('dtstate').textContent = 'Verified - transcribing through your DevThrottle account';
-    } else {
-      document.getElementById('byodot').className = 'dot green';
-      document.getElementById('byostate').textContent = 'Verified - your OpenAI key works';
-    }
-  }
-
-  async function txTestClick(){
-    const btn = document.getElementById('txtestbtn');
-    // If we are mid-recording, this click stops + transcribes (onstop fires transcribeTxTest).
-    if (txMediaRecorder && txMediaRecorder.state === 'recording'){
-      txMediaRecorder.stop();
-      return;
-    }
-    // Fresh recording.
-    txMsg('txtestmsg', '', true);
-    document.getElementById('txtestresultwrap').style.display = 'none';
-    try {
-      txStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (e) {
-      txMsg('txtestmsg', 'Could not open the microphone: ' + e.message + '. Grant microphone permission and try again.', false);
-      return;
-    }
-    txChunks = [];
-    txMediaRecorder = new MediaRecorder(txStream);
-    txMediaRecorder.ondataavailable = function(ev){ if (ev.data && ev.data.size) txChunks.push(ev.data); };
-    txMediaRecorder.onstop = transcribeTxTest;
-    txMediaRecorder.start();
-    btn.textContent = 'Stop and transcribe';
-    txTestState('Recording... speak now, then click Stop.');
-  }
-
-  async function transcribeTxTest(){
-    const btn = document.getElementById('txtestbtn');
-    // Release the microphone regardless of what happens next.
-    if (txStream){ txStream.getTracks().forEach(function(t){ t.stop(); }); txStream = null; }
-    btn.textContent = 'Start recording';
-
-    const mime = (txMediaRecorder && txMediaRecorder.mimeType) ? txMediaRecorder.mimeType : 'audio/webm';
-    const blob = new Blob(txChunks, { type: mime });
-    txChunks = [];
-    if (!blob.size){
-      txTestState('');
-      txMsg('txtestmsg', 'No audio was captured. Click Start, speak, then Stop.', false);
-      return;
-    }
-
-    btn.disabled = true;
-    txTestState('Transcribing...');
-    try {
-      // The single Gateway speech-to-text endpoint (issue #839). No ?correct flag: the test proves
-      // the RAW transcription path works (a dictionary term swap would mask a transcription problem).
-      const r = await fetch('/transcription', {
-        method: 'POST',
-        headers: { 'Content-Type': blob.type || 'audio/webm' },
-        body: blob,
-      });
-      const d = await r.json().catch(()=>({}));
-      if (r.ok){
-        txTestState(d.model ? ('Done - transcribed with ' + d.model + '.') : 'Done.');
-        document.getElementById('txtestresult').textContent = d.text || '(silence - nothing was transcribed)';
-        document.getElementById('txtestresultwrap').style.display = 'block';
-        markModeVerified(d.mode || currentMode);
-        txMsg('txtestmsg', '', true);
-        // Issue #884: per-action cost. A hosted (DevThrottle) action draws on the account, so refresh
-        // the balance and show what it cost; a BYO/OpenAI action bills the user's own key (no DT cost).
-        if ((d.mode || currentMode) === 'devthrottle') {
-          const bal = await loadBalance();
-          if (bal && bal.signedIn && bal.lastDebitMicros)
-            txMsg('txtestmsg', 'Transcribed - cost ' + fmtUsd(bal.lastDebitMicros) + '. Balance ' + fmtUsd(bal.balanceMicros) + '.', true);
-        } else {
-          txMsg('txtestmsg', 'Transcribed with your OpenAI key (no DevThrottle charge).', true);
-        }
-      } else if (r.status === 402) {
-        // Out of credits (issue #885): show the add-credits path, never a raw error. The DevThrottle
-        // account has no balance; a top-up on the website activates it and a retry works with no restart.
-        txTestState('');
-        txMsg('txtestmsg', 'Your DevThrottle account is out of credits. Add credits at devthrottle.com, then try again - no restart needed. You can also switch to your own OpenAI key above.', false);
-      } else {
-        txTestState('');
-        const hint = r.status === 409 ? ' Save a key for the selected mode first.' : '';
-        txMsg('txtestmsg', 'Test failed: ' + (d.error || r.status) + hint, false);
-      }
-    } catch (e){
-      txTestState('');
-      txMsg('txtestmsg', 'Test failed: ' + e, false);
-    }
-    btn.disabled = false;
-  }
+  // ===== Transcription smoke test moved to the AI page (/ai) =====
+  // The record-and-transcribe smoke test lived with the transcription mode chooser; both moved to the
+  // consolidated AI page. Nothing here drives transcription any more.
 
   // ===== Phone pairing =====
   // Issue #469 retired the secret-embedding QR pairing (/pair/payload, /pair/qr.png) - those
   // endpoints are removed Gateway-side. The panel is now a static notice pointing the user at the
   // gateway host app's per-device pairing-code flow; there is no network call to make here.
 
-  // Transcription mode + keys (issue #497)
-  document.querySelectorAll('input[name="txmode"]').forEach(function(r){
-    r.addEventListener('change', function(){ if (r.checked) changeMode(r.value); });
-  });
-  document.getElementById('byosavebtn').addEventListener('click', function(){
-    saveKey(BYO_KEY, 'byokeybox', 'byosavebtn', 'byomsg', isOpenAiKey,
-      'That does not look like an OpenAI key (it should start with "sk-").');
-  });
-  document.getElementById('byodelbtn').addEventListener('click', function(){ clearKey(BYO_KEY, 'byomsg'); });
-  document.getElementById('byoshowbox').addEventListener('change', function(e){
-    document.getElementById('byokeybox').type = e.target.checked ? 'text' : 'password';
-  });
-  document.getElementById('dtsavebtn').addEventListener('click', function(){
-    saveKey(DT_KEY, 'dtkeybox', 'dtsavebtn', 'dtmsg', isDevThrottleKey,
-      'That does not look like a DevThrottle key (it should start with "dt_live_" or "dt_test_").');
-  });
-  document.getElementById('dtdelbtn').addEventListener('click', function(){ clearKey(DT_KEY, 'dtmsg'); });
-  document.getElementById('dtshowbox').addEventListener('change', function(e){
-    document.getElementById('dtkeybox').type = e.target.checked ? 'text' : 'password';
-  });
+  // Transcription mode + keys moved to the AI page (/ai) - no listeners to wire here.
+
   // ===== Wingman instructions (issue #537): edit, version, manage the DevThrottle default =====
   const gid = function(id){ return document.getElementById(id); };
   let instrUpdate = null;   // last /update payload (for the "view changes" diff)
@@ -1143,12 +750,9 @@
     btn.disabled=false;
   }
 
-  document.getElementById('txtestbtn').addEventListener('click', txTestClick);
-  document.getElementById('restartbtn').addEventListener('click', restartBrain);
   document.getElementById('autostart').addEventListener('change', toggleAutostart);
   document.getElementById('addrmode').addEventListener('change', changeAddressingMode);
   document.getElementById('wingman-training').addEventListener('change', toggleTrainingCapture);
-  document.getElementById('brainsavebtn').addEventListener('click', saveBrainConfig);
   // Issue #469: the phone-pairing copy buttons were removed with the secret-embedding QR panel.
   document.getElementById('instr-save').addEventListener('click', saveInstructions);
   document.getElementById('instr-revertdefault').addEventListener('click', switchToDefaultInstr);
@@ -1157,8 +761,6 @@
   document.getElementById('instr-diff-close').addEventListener('click', function(){ document.getElementById('instr-diff-section').style.display='none'; });
   document.getElementById('instr-test-run').addEventListener('click', runInstrTest);
 
-  loadMode();
-  loadKeyStatus();
   loadSnapshot();
   loadTrainingCapture();
   loadInstructions();

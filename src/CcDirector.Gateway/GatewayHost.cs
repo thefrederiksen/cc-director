@@ -508,6 +508,25 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <summary>Gateway-side turn-brief storage (issue #185): append-only, fleet-wide.</summary>
     public GatewayTurnBriefStore TurnBriefs => _turnBriefStore;
 
+    /// <summary>
+    /// Build the wingman's brain for the CURRENTLY selected AI provider (the consolidated AI-provider
+    /// setting). The wingman is a stateless hosted chat-completions call - <c>glm-5.2</c> on the
+    /// DevThrottle inference proxy or <c>gpt-5.5</c> on OpenAI - not the warm <c>claude.exe</c> brain,
+    /// because that agent speaks the Anthropic protocol and cannot run those OpenAI-compatible models.
+    /// The provider and credential are read at CALL time, so a settings change is honored on the next
+    /// turn without a Gateway restart. The credential comes from the Gateway vault; when it is missing
+    /// (not signed in / no OpenAI key) the ask throws a clear, actionable error rather than a fallback.
+    /// </summary>
+    private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(CancellationToken ct)
+    {
+        var mode = Core.Configuration.TranscriptionModeConfig.Get();
+        var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
+        var key = _keyVault.Get(ep.KeyName) ?? "";
+        CcDirector.AgentBrain.IAgentBrain brain =
+            new Wingman.HostedInferenceBrain(ep.BaseUrl, key, ep.Model, log: FileLog.Write);
+        return Task.FromResult(brain);
+    }
+
     public async Task StartAsync()
     {
         FileLog.Write($"[GatewayHost] StartAsync: port={Port}");
@@ -560,7 +579,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // #186 by Director doorbell pings and heartbeat snapshots (wired into the endpoints below);
         // the only pull left is the one-time startup catch-up sweep.
         FileLog.Write("[GatewayHost] StartAsync: starting the turn-end watcher (voice auto-refresh only; turn-brief pipeline retired in #549)");
-        _voiceService ??= new Wingman.WingmanVoiceService(ct => Brain.GetAsync(ct), _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
         _turnEndWatcher = new TurnEndWatcher(
             Registry, _client,
             onTurnEnd: signal =>
@@ -781,11 +800,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
         // session and have the persistent wingman brain translate the reply into speakable form,
         // plus the direct-to-wingman path. Backed by the same warm Brain the brief agent uses.
-        _voiceService ??= new Wingman.WingmanVoiceService(ct => Brain.GetAsync(ct), _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
-        GatewayWingmanVoiceEndpoint.Map(_app, Registry, _client, ct => Brain.GetAsync(ct), _keyVault, _voiceService, instructionsProvider: () => _instructionsStore.ActiveContent);
+        _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
+        GatewayWingmanVoiceEndpoint.Map(_app, Registry, _client, WingmanBrainAsync, _keyVault, _voiceService, instructionsProvider: () => _instructionsStore.ActiveContent);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
-        // over saved training sessions (reads the shared training store; uses the warm brain).
-        WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, ct => Brain.GetAsync(ct));
+        // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
+        WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);
         // The gateway OWNS keeping voice sessions' summaries pre-built (issue #531): a gentle
         // background sweep regenerates voice for any idle voice session that is missing it, so the
         // list shows it ready BEFORE you enter - including after a gateway restart (the voice-session

@@ -26,6 +26,10 @@ namespace CcDirector.Gateway.Api;
 ///   PUT  /gateway/autostart       body { "enabled": bool } -> { supported, enabled }
 ///   GET  /gateway/transcription-mode -> { mode } ("byo" | "devthrottle") (issue #497)
 ///   PUT  /gateway/transcription-mode body { "mode": "byo"|"devthrottle" } -> { mode }
+///   GET  /gateway/ai-provider     -> { provider, wingmanModel, transcriptionModel, ttsVoice, voices[] }
+///   PUT  /gateway/ai-provider     body { "provider": "devthrottle"|"openai" } (sets mode + wingman model)
+///   GET  /gateway/tts-voice       -> { voice, voices[] }
+///   PUT  /gateway/tts-voice       body { "voice": "nova"|... } -> { voice }
 ///   GET  /gateway/telemetry-consent  -> { enabled } (fleet-wide richer-usage consent, default ON, issue #649)
 ///   PUT  /gateway/telemetry-consent  body { "enabled": bool } -> { enabled }
 /// </summary>
@@ -259,6 +263,75 @@ internal static class SettingsEndpoints
             }
         });
 
+        // The consolidated AI provider (the one switch that drives transcription + wingman + TTS).
+        // A projection of transcription_mode: "devthrottle" (hosted, ours) or "openai" (bring-your-own
+        // OpenAI key). GET returns the derived wingman + transcription models, the TTS voice, and the
+        // selectable voices. PUT sets transcription_mode AND the provider-default wingman model
+        // (brain_model) atomically, so one choice moves all three capabilities to the same provider.
+        app.MapGet("/gateway/ai-provider", () => Results.Json(AiProviderSnapshot()));
+
+        app.MapPut("/gateway/ai-provider", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<AiProviderBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Provider))
+                    return Results.BadRequest(new { error = "body { \"provider\": \"devthrottle\"|\"openai\" } is required" });
+                if (!TryParseProvider(body.Provider, out var mode))
+                    return Results.BadRequest(new { error = "provider must be \"devthrottle\" or \"openai\"" });
+
+                // The wingman model is the provider default (glm-5.2 / gpt-5.5); persisted as brain_model
+                // so the wingman + Settings show the same value and it round-trips across a reload.
+                var wingmanModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode).Model;
+                Core.Configuration.CcDirectorConfigService.MergePatch(
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["transcription_mode"] = mode.ToConfigString(),
+                        ["brain_model"] = wingmanModel,
+                    });
+                FileLog.Write($"[SettingsEndpoints] ai_provider set: mode={mode.ToConfigString()}, wingmanModel={wingmanModel}");
+                return Results.Json(AiProviderSnapshot());
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/ai-provider bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The text-to-speech voice for spoken wingman output (consolidated AI settings). One of the
+        // OpenAI-compatible voices; applies to whichever provider is selected (both are OpenAI-compatible
+        // for speech). Read at synthesis time, so a change is honored on the next spoken summary.
+        app.MapGet("/gateway/tts-voice", () => Results.Json(new
+        {
+            voice = Core.Configuration.TtsVoiceConfig.Get(),
+            voices = Core.Configuration.TtsVoiceConfig.AllowedVoices,
+        }));
+
+        app.MapPut("/gateway/tts-voice", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<TtsVoiceBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Voice))
+                    return Results.BadRequest(new { error = "body { \"voice\": \"nova\"|... } is required" });
+                if (!Core.Configuration.TtsVoiceConfig.IsValid(body.Voice))
+                    return Results.BadRequest(new { error = "voice must be one of: " + string.Join(", ", Core.Configuration.TtsVoiceConfig.AllowedVoices) });
+
+                Core.Configuration.TtsVoiceConfig.Set(body.Voice);
+                var voice = Core.Configuration.TtsVoiceConfig.Get();
+                FileLog.Write($"[SettingsEndpoints] tts_voice set to {voice}");
+                return Results.Json(new { voice });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/tts-voice bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
         // Toggle the per-user autostart Run-key. The write itself is GatewayApp-owned (it needs the
         // tray exe path + args), supplied via SettingsHooks; a host with no hook answers unsupported.
         app.MapPut("/gateway/autostart", async (HttpContext ctx) =>
@@ -373,6 +446,42 @@ internal static class SettingsEndpoints
         }
     }
 
+    /// <summary>
+    /// The consolidated AI-provider snapshot the Cockpit AI page renders: the selected provider plus
+    /// the models/voice it resolves to. "provider" is the projection of transcription_mode
+    /// ("devthrottle" or "openai"); the wingman + transcription models are the provider-correct
+    /// values from the one routing spot; the voice + selectable set come from <see cref="Core.Configuration.TtsVoiceConfig"/>.
+    /// </summary>
+    private static object AiProviderSnapshot()
+    {
+        var mode = Core.Configuration.TranscriptionModeConfig.Get();
+        return new
+        {
+            provider = ProviderString(mode),
+            wingmanModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode).Model,
+            transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
+            ttsVoice = Core.Configuration.TtsVoiceConfig.Get(),
+            voices = Core.Configuration.TtsVoiceConfig.AllowedVoices,
+        };
+    }
+
+    /// <summary>The UI provider string for a mode: DevThrottle -> "devthrottle", Byo -> "openai".</summary>
+    private static string ProviderString(Core.Configuration.TranscriptionMode mode) =>
+        mode == Core.Configuration.TranscriptionMode.DevThrottle ? "devthrottle" : "openai";
+
+    /// <summary>Parse the UI provider string to a transcription mode. False (no-fallback) on anything else.</summary>
+    private static bool TryParseProvider(string? value, out Core.Configuration.TranscriptionMode mode)
+    {
+        switch (value?.Trim().ToLowerInvariant())
+        {
+            case "devthrottle": mode = Core.Configuration.TranscriptionMode.DevThrottle; return true;
+            case "openai": mode = Core.Configuration.TranscriptionMode.Byo; return true;
+            default: mode = Core.Configuration.TranscriptionMode.DevThrottle; return false;
+        }
+    }
+
+    private sealed record AiProviderBody(string? Provider);
+    private sealed record TtsVoiceBody(string? Voice);
     private sealed record AddressingModeBody(string? Mode);
     private sealed record TranscriptionModeBody(string? Mode);
     private sealed record AutostartBody(bool Enabled);

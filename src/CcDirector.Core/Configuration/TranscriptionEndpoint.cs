@@ -139,6 +139,47 @@ public static class TranscriptionEndpointResolver
     /// </summary>
     public const string DevThrottleModel = "whisper-large-v3";
 
+    /// <summary>
+    /// The wingman (voice-summary) chat model per provider. The wingman is a stateless
+    /// OpenAI-compatible <c>/chat/completions</c> call to the selected provider's base URL (the same
+    /// base + key the transcription path uses): <c>glm-5.2</c> on the DevThrottle inference proxy,
+    /// <c>gpt-5.5</c> on OpenAI. Pinned here so the one routing spot owns the wingman model too.
+    /// </summary>
+    public const string DevThrottleWingmanModel = "glm-5.2";
+
+    /// <summary>The OpenAI wingman chat model (bring-your-own key). See <see cref="DevThrottleWingmanModel"/>.</summary>
+    public const string OpenAiWingmanModel = "gpt-5.5";
+
+    /// <summary>
+    /// The text-to-speech model. Both providers are OpenAI-compatible for speech
+    /// (<c>POST /audio/speech</c>), so the same model name serves DevThrottle (via the proxy) and
+    /// OpenAI directly; the voice is a separate per-user choice (<see cref="TtsVoiceConfig"/>).
+    /// </summary>
+    public const string TtsModel = "tts-1";
+
+    /// <summary>
+    /// Resolve the wingman chat-completions target for <paramref name="mode"/> (base URL + key name +
+    /// model). Same base + key as transcription; the caller appends <c>/chat/completions</c>.
+    /// </summary>
+    public static ProviderEndpoint ResolveWingman(TranscriptionMode mode) => mode switch
+    {
+        TranscriptionMode.Byo => new ProviderEndpoint(OpenAiBaseUrl, OpenAiKeyName, OpenAiWingmanModel),
+        TranscriptionMode.DevThrottle => new ProviderEndpoint(DevThrottleBaseUrl, DevThrottleKeyName, DevThrottleWingmanModel),
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transcription mode"),
+    };
+
+    /// <summary>
+    /// Resolve the text-to-speech target for <paramref name="mode"/> (base URL + key name + model).
+    /// Same base + key as transcription; the caller appends <c>/audio/speech</c>. The voice is a
+    /// separate choice (<see cref="TtsVoiceConfig"/>), not part of the routing target.
+    /// </summary>
+    public static ProviderEndpoint ResolveTts(TranscriptionMode mode) => mode switch
+    {
+        TranscriptionMode.Byo => new ProviderEndpoint(OpenAiBaseUrl, OpenAiKeyName, TtsModel),
+        TranscriptionMode.DevThrottle => new ProviderEndpoint(DevThrottleBaseUrl, DevThrottleKeyName, TtsModel),
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transcription mode"),
+    };
+
     /// <summary>Resolve the routing target for <paramref name="mode"/> (URL + key + transport + model).</summary>
     public static TranscriptionEndpoint Resolve(TranscriptionMode mode) => mode switch
     {
@@ -183,3 +224,11 @@ public static class TranscriptionEndpointResolver
         return key.Trim().StartsWith("sk-", StringComparison.Ordinal);
     }
 }
+
+/// <summary>
+/// An OpenAI-compatible provider target: the <c>/v1</c> base URL, the vault key name that holds the
+/// credential, and the model. Used for the wingman chat-completions call and the text-to-speech call
+/// (<see cref="TranscriptionEndpointResolver.ResolveWingman"/> / <see cref="TranscriptionEndpointResolver.ResolveTts"/>).
+/// The caller appends the operation path (<c>/chat/completions</c> or <c>/audio/speech</c>).
+/// </summary>
+public sealed record ProviderEndpoint(string BaseUrl, string KeyName, string Model);

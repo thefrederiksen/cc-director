@@ -1,0 +1,235 @@
+@page "/ai"
+@using CcDirector.Gateway.Contracts
+@inject CcDirector.Cockpit.Services.GatewayClient Gateway
+
+@* The consolidated AI settings: ONE provider switch (DevThrottle vs OpenAI) that drives all three AI
+   capabilities together - transcription (speech-to-text), the wingman model (the voice-summary agent),
+   and the text-to-speech voice. This replaces the separate Transcription + Wingman panels on the old
+   static settings page. Pure client of the Gateway: GET/PUT /gateway/ai-provider, GET/PUT
+   /gateway/tts-voice, and the vault key endpoints for the OpenAI key. Styled to match the Cockpit dark
+   palette used by Account.razor / Telemetry.razor. *@
+
+<PageTitle>AI - DevThrottle</PageTitle>
+
+<div style="padding:24px; color:#ccc; font-family:'Segoe UI',sans-serif; max-width:780px;">
+    <h1 style="color:#fff; font-size:22px; font-weight:600; margin:0 0 4px;">AI</h1>
+    <div style="color:#888; font-size:12px; margin-bottom:16px;">
+        One choice for all AI in DevThrottle. Pick who runs it - DevThrottle's hosted models (billed to
+        your account) or your own OpenAI key - and it applies to transcription, the wingman, and the
+        spoken voice together.
+    </div>
+
+    @if (_error is not null)
+    {
+        <div style="background:#3a1d1d; border:1px solid #cc4444; color:#ffaaaa; padding:12px; border-radius:6px;">
+            Could not load the AI settings from the Gateway: @_error
+        </div>
+    }
+    else if (_ai is null)
+    {
+        <p style="color:#888;">Loading...</p>
+    }
+    else
+    {
+        <div style="background:#252526; border-radius:8px; padding:18px;">
+            <div style="color:#fff; font-size:15px; font-weight:600; margin-bottom:12px;">Provider</div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                @ProviderCard("devthrottle", "DevThrottle", "Hosted models on your DevThrottle account - nothing to set up. Billed to your account credits.", "Default")
+                @ProviderCard("openai", "OpenAI", "Your own OpenAI API key. Stays on this machine and is never sent to DevThrottle.", null)
+            </div>
+
+            @* What the selected provider resolves to. *@
+            <div style="margin-top:18px; border-top:1px solid #3C3C3C; padding-top:16px;">
+                @Row("Transcription", _ai.TranscriptionModel)
+                @Row("Wingman model", _ai.WingmanModel)
+            </div>
+
+            @* Text-to-speech voice - applies to whichever provider is selected. *@
+            <div style="margin-top:16px; display:flex; align-items:center;">
+                <div style="width:140px; color:#aaa; font-size:13px;">Voice</div>
+                <select value="@_ai.TtsVoice" @onchange="OnVoiceChanged" disabled="@_busy"
+                        style="background:#1e1e1e; color:#ddd; border:1px solid #3C3C3C; border-radius:4px; padding:6px 10px; font-size:13px; min-width:180px;">
+                    @foreach (var v in _ai.Voices)
+                    {
+                        <option value="@v">@v</option>
+                    }
+                </select>
+                <span style="color:#888; font-size:12px; margin-left:12px;">The voice for spoken wingman replies.</span>
+            </div>
+
+            @* OpenAI key entry - only relevant when OpenAI is the provider. *@
+            @if (_ai.Provider == "openai")
+            {
+                <div style="margin-top:16px; border-top:1px solid #3C3C3C; padding-top:16px;">
+                    <div style="color:#ccc; font-size:13px; font-weight:500; margin-bottom:8px;">
+                        OpenAI API key
+                        @if (_openAiKeyStored)
+                        {
+                            <span style="margin-left:8px; background:#1B3A2A; color:#22C55E; font-size:10px; font-weight:600; padding:2px 7px; border-radius:8px;">stored</span>
+                        }
+                        else
+                        {
+                            <span style="margin-left:8px; background:#3a2a1b; color:#e8b339; font-size:10px; font-weight:600; padding:2px 7px; border-radius:8px;">not set</span>
+                        }
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <input type="password" @bind="_openAiKeyInput" placeholder="@(_openAiKeyStored ? "Enter a new key to replace it" : "sk-...")" autocomplete="off"
+                               style="flex:1; background:#1e1e1e; color:#ddd; border:1px solid #3C3C3C; border-radius:4px; padding:7px 10px; font-size:13px; font-family:'Cascadia Mono',Consolas,monospace;" />
+                        <button @onclick="SaveOpenAiKeyAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_openAiKeyInput))"
+                                style="height:32px; padding:0 16px; background:#1f7a47; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:13px;">
+                            Save key
+                        </button>
+                    </div>
+                    <div style="color:#888; font-size:12px; margin-top:8px;">Stored locally on this machine only. DevThrottle never receives your provider key.</div>
+                </div>
+            }
+            else
+            {
+                <div style="margin-top:16px; border-top:1px solid #3C3C3C; padding-top:16px; color:#888; font-size:12px;">
+                    Hosted AI runs on your DevThrottle account. Your first top-up activates it - about 25 hours of speech per $5.
+                    <a href="/account" style="color:#5B8DEF; text-decoration:none;">Manage account &rarr;</a>
+                </div>
+            }
+        </div>
+
+        @if (_saved)
+        {
+            <div style="margin-top:16px; background:#1B3A2A; border:1px solid #22C55E; color:#9be3b4; padding:10px 12px; border-radius:6px; font-size:13px;">
+                @_savedNote
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private AiProviderDto? _ai;
+    private string? _error;
+    private bool _busy;
+    private bool _saved;
+    private string _savedNote = "";
+    private bool _openAiKeyStored;
+    private string _openAiKeyInput = "";
+
+    private const string OpenAiKeyName = "OPENAI_API_KEY";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _error = null;
+            _ai = await Gateway.GetAiProviderAsync();
+            var names = await Gateway.GetVaultKeyNamesAsync();
+            _openAiKeyStored = names.Contains(OpenAiKeyName);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task SelectProviderAsync(string provider)
+    {
+        if (_busy || _ai is null || _ai.Provider == provider)
+            return;
+
+        _busy = true;
+        _saved = false;
+        try
+        {
+            _ai = await Gateway.SetAiProviderAsync(provider);
+            _savedNote = provider == "devthrottle"
+                ? "Now using DevThrottle hosted AI (glm-5.2 wingman)."
+                : "Now using OpenAI (gpt-5.5 wingman). Add your OpenAI key below if you have not.";
+            _saved = true;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task OnVoiceChanged(ChangeEventArgs e)
+    {
+        var voice = e.Value?.ToString();
+        if (_busy || _ai is null || string.IsNullOrWhiteSpace(voice) || voice == _ai.TtsVoice)
+            return;
+
+        _busy = true;
+        _saved = false;
+        try
+        {
+            var dto = await Gateway.SetTtsVoiceAsync(voice);
+            _ai.TtsVoice = dto.Voice;
+            _savedNote = $"Voice set to {dto.Voice}.";
+            _saved = true;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveOpenAiKeyAsync()
+    {
+        if (_busy || string.IsNullOrWhiteSpace(_openAiKeyInput))
+            return;
+
+        _busy = true;
+        _saved = false;
+        try
+        {
+            await Gateway.SetVaultKeyAsync(OpenAiKeyName, _openAiKeyInput.Trim());
+            _openAiKeyInput = "";
+            _openAiKeyStored = true;
+            _savedNote = "OpenAI key saved.";
+            _saved = true;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private RenderFragment ProviderCard(string id, string title, string desc, string? badge) => __builder =>
+    {
+        var selected = _ai is not null && _ai.Provider == id;
+        <div @onclick="() => SelectProviderAsync(id)"
+             style="cursor:@(_busy ? "default" : "pointer"); background:@(selected ? "#1c2740" : "#2d2d30"); border:1px solid @(selected ? "#5B8DEF" : "#3C3C3C"); border-radius:10px; padding:14px 16px;">
+            <div style="display:flex; align-items:center; margin-bottom:4px;">
+                <span style="display:inline-block; width:14px; height:14px; border-radius:50%; border:2px solid @(selected ? "#5B8DEF" : "#666"); margin-right:8px; box-shadow:@(selected ? "inset 0 0 0 3px #5B8DEF" : "none");"></span>
+                <span style="color:#fff; font-size:14px; font-weight:600;">@title</span>
+                @if (badge is not null)
+                {
+                    <span style="margin-left:8px; background:#1B3A2A; color:#22C55E; font-size:10px; font-weight:700; text-transform:uppercase; padding:1px 7px; border-radius:7px;">@badge</span>
+                }
+            </div>
+            <div style="color:#999; font-size:12px; line-height:1.4;">@desc</div>
+        </div>
+    };
+
+    private RenderFragment Row(string label, string value) => __builder =>
+    {
+        <div style="display:flex; margin-bottom:6px;">
+            <div style="width:140px; color:#aaa; font-size:13px;">@label</div>
+            <div style="flex:1; color:#ccc; font-size:13px; font-family:'Cascadia Mono',Consolas,monospace;">@value</div>
+        </div>
+    };
+}
