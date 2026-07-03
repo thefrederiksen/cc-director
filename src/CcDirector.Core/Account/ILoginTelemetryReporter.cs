@@ -1,8 +1,8 @@
 namespace CcDirector.Core.Account;
 
 /// <summary>
-/// Reports a successful login to the DevThrottle backend's always-on login telemetry endpoint
-/// (devthrottle_internal issue #57). This is the authentication floor (issue #40): having an account
+/// Reports a successful login to the DevThrottle backend's always-on login telemetry endpoint.
+/// This is the authentication floor (issue #40): having an account
 /// inherently means a login is recorded, so it carries NO consent gate and is distinct from the
 /// richer, user-controllable usage telemetry (<see cref="UsageTelemetry"/>, governed by
 /// <see cref="TelemetrySettings"/>).

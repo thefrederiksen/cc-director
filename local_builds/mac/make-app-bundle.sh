@@ -73,12 +73,12 @@ case "$TARGET" in
     main)
         APP_NAME="CC Director"
         BIN="cc-director-mac-main"
-        BID="com.centerconsulting.ccdirector"
+        BID="com.devthrottle.ccdirector"
         REBUILD="scripts/mac-rebuild.sh main" ;;
     1|2|3|4)
         APP_NAME="CC Director $TARGET"
         BIN="cc-director-mac$TARGET"
-        BID="com.centerconsulting.ccdirector.slot$TARGET"
+        BID="com.devthrottle.ccdirector.slot$TARGET"
         REBUILD="scripts/mac-rebuild.sh $TARGET" ;;
     *)
         echo "ERROR: invalid --target '$TARGET' (use: main|1|2|3|4)" >&2; exit 1 ;;

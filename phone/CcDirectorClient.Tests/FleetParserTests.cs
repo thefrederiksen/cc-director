@@ -17,7 +17,7 @@ public class FleetParserTests
     public void ParseDirectors_MapsAllFields()
     {
         var json = """
-        [{"directorId":"d1","machineName":"soren-north","tailnetEndpoint":"https://north.ts.net:7883/",
+        [{"directorId":"d1","machineName":"example-host","tailnetEndpoint":"https://north.ts.net:7883/",
           "lastSeen":"2026-06-08T10:00:00Z","version":"0.6.17"}]
         """;
 
@@ -25,7 +25,7 @@ public class FleetParserTests
 
         var d = Assert.Single(list);
         Assert.Equal("d1", d.DirectorId);
-        Assert.Equal("soren-north", d.MachineName);
+        Assert.Equal("example-host", d.MachineName);
         Assert.Equal("https://north.ts.net:7883", d.TailnetEndpoint);   // trailing slash trimmed
         Assert.Equal("0.6.17", d.Version);
         Assert.NotNull(d.LastSeen);

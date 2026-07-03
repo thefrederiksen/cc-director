@@ -1,8 +1,8 @@
 # Director Self-Serve: every Director owns its own Tailscale Serve front door
 
 **Status:** Workstreams 1-5 + 7 IMPLEMENTED 2026-06-06 (uncommitted). Remaining: WS6
-(installer preflight + public docs), rollout to SORENLAPTOP, live acceptance pass.
-**Issue:** #197 (SORENLAPTOP permanently unreachable)
+(installer preflight + public docs), rollout to EXAMPLE-PC, live acceptance pass.
+**Issue:** #197 (EXAMPLE-PC permanently unreachable)
 **Decision:** Option A chosen by Soren 2026-06-06. Reverse-tunnel (Option B) explicitly rejected for now.
 
 Implemented surface:
@@ -23,7 +23,7 @@ Implemented surface:
 There are two channels between a Director and the Gateway:
 
 1. **Outbound announcements** (Director -> Gateway): register, heartbeat every 15 s,
-   doorbell. These always work - it is why SORENLAPTOP shows up in the Cockpit at all.
+   doorbell. These always work - it is why EXAMPLE-PC shows up in the Cockpit at all.
 2. **Inbound work** (Gateway/Cockpit -> Director): list sessions, read buffers, submit
    prompts, screenshots, kill/rename, and the Cockpit's DIRECT terminal WebSocket
    (wss://<magicdns>:<port>/sessions/{sid}/stream). The Director is dumb metal exposing
@@ -148,7 +148,7 @@ front door, not loopback).
   tailscale.exe | logged out | serve error text | verify timeout>).
 - **Gateway/Cockpit side:** replace the generic "unreachable (timeout; cooling down)"
   with actionable truth. Distinguish two cases in the machineErrors envelope:
-  - never answered since registration -> "SORENLAPTOP registered but its endpoint never
+  - never answered since registration -> "EXAMPLE-PC registered but its endpoint never
     answered - check Tailscale Serve / Director log on that machine"
   - was reachable, went dark -> current timeout wording is fine.
   The registry already has FirstUnreachableAt and RecordReachable; add a
@@ -183,7 +183,7 @@ Rollout:
 1. Land behind normal release (no flag needed - on machines where the Gateway already
    maps local Directors the command is idempotent and now mutex-serialized).
 2. Release vNext; laptop updates via auto-update (or fresh install - we have access).
-3. Verify acceptance on SORENLAPTOP; then remove the manual serve mapping if one was
+3. Verify acceptance on EXAMPLE-PC; then remove the manual serve mapping if one was
    added as an interim workaround, and watch one full day of Gateway logs for flap
    loops (there should be none).
 4. Follow-up issue: retire Gateway per-Director mapping once fleet is current.

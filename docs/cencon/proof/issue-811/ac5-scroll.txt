@@ -1,3 +1,0 @@
-scrollTop before append (scrolled up) = 0
-scrollTop after a new turn arrived    = 0
-no-yank PASS = True

@@ -597,7 +597,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Paint the indicator from the monitor's state. GREEN only on a passed two-way
-    /// handshake; the SORENLAPTOP failure mode (heartbeats fine, callback dead) shows
+    /// handshake; the EXAMPLE-PC failure mode (heartbeats fine, callback dead) shows
     /// RED here while heartbeats still succeed - that is the whole point of #224.
     /// </summary>
     private void UpdateGatewayIndicator()

@@ -41,7 +41,7 @@ public enum GatewayConnectionStatus
 ///
 /// Green is EARNED: only a completed nonce handshake (both legs proven, nonce correlated
 /// on this side too) sets <see cref="GatewayConnectionStatus.Verified"/>. Heartbeats
-/// succeeding is NOT "connected" - that exact lie hid the SORENLAPTOP outage for days
+/// succeeding is NOT "connected" - that exact lie hid the EXAMPLE-PC outage for days
 /// while the Gateway could not call back.
 /// </summary>
 public sealed class GatewayConnectionMonitor

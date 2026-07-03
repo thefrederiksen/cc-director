@@ -14,15 +14,15 @@ public sealed class CockpitWsUrlsTests
     [Fact]
     public void Stream_https_origin_becomes_wss_same_origin_sid_path()
     {
-        var url = CockpitWsUrls.Stream("https://gw.taildb08ed.ts.net/", "abc123");
-        Assert.Equal("wss://gw.taildb08ed.ts.net/sessions/abc123/stream", url);
+        var url = CockpitWsUrls.Stream("https://gw.tailnet-example.ts.net/", "abc123");
+        Assert.Equal("wss://gw.tailnet-example.ts.net/sessions/abc123/stream", url);
     }
 
     [Fact]
     public void Dictate_https_origin_becomes_wss_same_origin_sid_path()
     {
-        var url = CockpitWsUrls.Dictate("https://gw.taildb08ed.ts.net/", "abc123");
-        Assert.Equal("wss://gw.taildb08ed.ts.net/sessions/abc123/dictate", url);
+        var url = CockpitWsUrls.Dictate("https://gw.tailnet-example.ts.net/", "abc123");
+        Assert.Equal("wss://gw.tailnet-example.ts.net/sessions/abc123/dictate", url);
     }
 
     [Fact]

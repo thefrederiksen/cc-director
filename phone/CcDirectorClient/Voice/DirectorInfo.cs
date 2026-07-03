@@ -12,7 +12,7 @@ public sealed class DirectorInfo
     /// <summary>The Director's stable id (used in the /directors/{id}/... routes).</summary>
     public string DirectorId { get; set; } = "";
 
-    /// <summary>Machine name for display (e.g. "soren-north").</summary>
+    /// <summary>Machine name for display (e.g. "example-host").</summary>
     public string MachineName { get; set; } = "";
 
     /// <summary>

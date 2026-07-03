@@ -24,7 +24,7 @@ public sealed class LauncherRegistrationRequest
     ///
     /// Leave empty or null when registering from the same machine as the Gateway (loopback
     /// is used in that case).  For a remote machine this is typically the Tailscale hostname
-    /// (e.g. <c>sorenlaptop.taildb08ed.ts.net</c>) or a stable LAN IP.
+    /// (e.g. <c>example-pc.ts.net</c>) or a stable LAN IP.
     /// </summary>
     public string NetworkAddress { get; set; } = "";
 

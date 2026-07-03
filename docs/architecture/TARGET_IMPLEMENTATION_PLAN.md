@@ -2,7 +2,7 @@
 
 **Status:** PLANNED
 **Date:** 2026-06-11
-**Audience:** The implementing Director session running on the gateway machine (primary executor of this plan), the remote test session on SORENLAPTOP, the Product Agent (cuts issues from the phases), and Soren (approves phase transitions).
+**Audience:** The implementing Director session running on the gateway machine (primary executor of this plan), the remote test session on EXAMPLE-PC, the Product Agent (cuts issues from the phases), and Soren (approves phase transitions).
 
 ## Related documents
 
@@ -23,7 +23,7 @@ This plan upgrades the Director framework, Gateway, and Cockpit into the hands/b
 | Role | Where | Autonomy granted |
 |---|---|---|
 | **Implementing session(s)** | Director on the **gateway machine** | Full autonomy to start/stop the **Gateway and Cockpit** on that machine; start/stop Director **sessions** on both machines; build/deploy to agent slots (5+) |
-| **Remote test session** | Director on **SORENLAPTOP** | Receives feature-verification handoffs; the "remote machine" in every cross-machine test; may start/stop Director sessions locally |
+| **Remote test session** | Director on **EXAMPLE-PC** | Receives feature-verification handoffs; the "remote machine" in every cross-machine test; may start/stop Director sessions locally |
 | **Soren** | Anywhere (Cockpit) | Approves phase exits; answers `flow:needs-human`; final merge oversight per CenCon |
 
 ### 1.2 Standing rules for the implementing agents
@@ -40,7 +40,7 @@ This plan upgrades the Director framework, Gateway, and Cockpit into the hands/b
 implementing session (gateway box)
   -> builds + deploys Director/Gateway/Cockpit changes locally
   -> restarts the affected component (CC Launcher / scheduled task)
-  -> hands a verification brief to the SORENLAPTOP test session:
+  -> hands a verification brief to the EXAMPLE-PC test session:
        "feature X shipped; from your machine, do Y via the Cockpit; report Z"
   -> test session exercises the feature as the REMOTE machine
   -> result (screenshot + report) committed as CenCon proof
@@ -52,7 +52,7 @@ The handoff itself uses the existing handover/queue endpoints - eating our own d
 
 ## 2. Evidence baseline (why Phase 1 is the Director)
 
-Observed live on SORENLAPTOP's Director (Control API :7880, v0.6.22, 2026-06-11):
+Observed live on EXAMPLE-PC's Director (Control API :7880, v0.6.22, 2026-06-11):
 
 - **Session DTOs ship empty identity fields:** `machineName: ""`, `user: ""`, `tailnetEndpoint: ""`, `viewUrl: ""` on every session. The fleet's atoms don't know where they live - every cross-machine feature above them inherits the gap. This is the user-reported "right Tailscale names" problem, confirmed.
 - **The Cockpit's remote terminal is not truly working** from non-Gateway machines (TerminalPane one-shot, no reconnect; dictation failures opaque #226; Cockpit logs discarded #199; optimistic UI gaps #280).
@@ -72,7 +72,7 @@ Conclusion: the hands must be completed first. Everything smart sits on Director
 - Every Director resolves and advertises its **real MagicDNS tailnet endpoint** (`http://<machine>.<tailnet>.ts.net:<port>`) at registration and heartbeat - never loopback, never empty. Detection order: Tailscale local API -> `tailscale status --json` -> explicit config override; **fail loudly** (status surfaced in UI + logs) when none resolves. No silent fallback to loopback for the advertised address (loopback stays correct for local binding).
 - **Session DTOs always carry** `machineName`, `user`, `tailnetEndpoint`, `viewUrl` - populated at the Director, not patched in by the Gateway. The empty-fields evidence in section 2 becomes a regression test.
 - Two-way verification (#223/#224) runs against the advertised endpoint, so a Director that advertises an unreachable name is flagged within one heartbeat cycle.
-- **Acceptance:** from the gateway box, `GET /sessions` (Gateway-aggregated) shows every SORENLAPTOP session with correct machine name and a tailnet endpoint that answers `/healthz` from the *other* machine.
+- **Acceptance:** from the gateway box, `GET /sessions` (Gateway-aggregated) shows every EXAMPLE-PC session with correct machine name and a tailnet endpoint that answers `/healthz` from the *other* machine.
 
 ### 1B. REST completeness (the Facts / Events / Verbs audit)
 
@@ -89,7 +89,7 @@ Build [#243 per the existing plan](../plans/cc-launcher.md) (tray app, clean-par
 - Launcher registers with the Gateway (machine name, port, token handshake via the existing registration pattern).
 - Gateway relays lifecycle verbs: `POST /machines/{machine}/director/restart|start|stop`, `POST /machines/{machine}/launch` - token-gated, audit-logged, tailnet-only.
 - Director update rollout becomes: deploy new build -> ask the remote Launcher to restart the Director -> verify version via `/healthz`. No human at the remote keyboard.
-- **Acceptance:** the implementing session on the gateway box restarts SORENLAPTOP's slot-5 test Director via the Gateway relay and observes the new version, end-to-end, with zero manual steps. (Production Directors and slots 1-4 remain protected by rule 0 - the relay refuses non-agent slots unless explicitly confirmed by the human.)
+- **Acceptance:** the implementing session on the gateway box restarts EXAMPLE-PC's slot-5 test Director via the Gateway relay and observes the new version, end-to-end, with zero manual steps. (Production Directors and slots 1-4 remain protected by rule 0 - the relay refuses non-agent slots unless explicitly confirmed by the human.)
 
 ### 1D. Desktop fallback hardening (Terminal + Source Control)
 
@@ -117,7 +117,7 @@ Build [#243 per the existing plan](../plans/cc-launcher.md) (tray app, clean-par
 - **Cockpit file logging (#199):** persisted INFO sink so remote failures are diagnosable after the fact.
 - **Optimistic UI (#280 family: #227/#228/#229/#230):** every Cockpit action acknowledges <100ms.
 - **Single state owner** (target doc 4.2): Director demotes its silence timer to a raw event; Gateway `AssessedState` becomes the only badge, rendered identically in Cockpit and desktop. Kills the #186 dual-owner tension.
-- **Exit criterion:** a scripted cross-machine soak - from the gateway box's Cockpit, drive a SORENLAPTOP session for 30+ minutes through network blips (Tailscale restart mid-session) with the terminal recovering unaided every time; verified by the SORENLAPTOP test session in the reverse direction too.
+- **Exit criterion:** a scripted cross-machine soak - from the gateway box's Cockpit, drive a EXAMPLE-PC session for 30+ minutes through network blips (Tailscale restart mid-session) with the terminal recovering unaided every time; verified by the EXAMPLE-PC test session in the reverse direction too.
 
 ---
 

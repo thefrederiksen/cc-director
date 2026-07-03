@@ -15,8 +15,8 @@ public sealed class CockpitShotUrlsTests
     [Fact]
     public void Screenshot_HttpsOrigin_StaysHttpsSameOriginSidPath()
     {
-        var url = CockpitShotUrls.Screenshot("https://gw.taildb08ed.ts.net/", "abc123", "shot.png");
-        Assert.Equal("https://gw.taildb08ed.ts.net/sessions/abc123/screenshots/file?name=shot.png", url);
+        var url = CockpitShotUrls.Screenshot("https://gw.tailnet-example.ts.net/", "abc123", "shot.png");
+        Assert.Equal("https://gw.tailnet-example.ts.net/sessions/abc123/screenshots/file?name=shot.png", url);
     }
 
     [Fact]

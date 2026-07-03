@@ -14,7 +14,7 @@ namespace CcDirector.Gateway.Api;
 /// directly - the token lives on the Gateway. So the Gateway proxies: it reads its own stored account
 /// token (<see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/>, the SAME egress credential
 /// it already uses to forward telemetry/login to the cloud), calls the cloud device registry
-/// (<see cref="DeviceRegistryClient"/>, cloud contract devthrottle_internal#81/#82), and returns a local,
+/// (<see cref="DeviceRegistryClient"/>, the cloud device registry), and returns a local,
 /// token-free DTO.
 ///
 /// This is distinct from the LOCAL pairing registry <c>GET /devices</c> (issue #469): that lists the

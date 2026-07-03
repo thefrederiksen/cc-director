@@ -144,7 +144,7 @@ public sealed class SessionRailPortLabelTests : TestContext
             .Add(c => c.ViewMode, "tree")
             .Add(c => c.Directors, new List<DirectorDto>
             {
-                Director(Guid7884, "", "https://soren-north.taildb08ed.ts.net:7890"),
+                Director(Guid7884, "", "https://example-host.ts.net:7890"),
             })
             .Add(c => c.Sessions, new List<SessionDto> { Session("s1", Guid7884, "alpha") }));
 

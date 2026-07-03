@@ -148,7 +148,7 @@ jobs:
           --app-name "DevThrottle Setup"
           --bin-name cc-director-setup
           --zip-name cc-director-setup-mac-arm64.zip
-          --bid com.centerconsulting.ccdirectorsetup
+          --bid com.devthrottle.ccdirectorsetup
 
       - name: Upload macOS setup wizard artifact
         uses: actions/upload-artifact@v6

@@ -4,7 +4,7 @@ namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
 /// One device in the Cockpit-facing account device list (issue #854). The Gateway maps each masked cloud
-/// record (cloud contract devthrottle_internal#81/#82) to this shape and serves it from
+/// record to this shape and serves it from
 /// <c>GET /account/devices</c>, so the Cockpit Account page can list the account's devices with a
 /// last-seen time and a per-device revoke - without ever holding the account token or calling the cloud.
 ///

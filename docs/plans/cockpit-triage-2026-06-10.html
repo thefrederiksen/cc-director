@@ -107,7 +107,7 @@
     <b>Update — 2026-06-10 (later that day):</b> the backbone
     <a href="https://github.com/thefrederiksen/cc-director/issues/268">#268</a> has since landed and
     merged (PRs #283 + #289) and is <span class="pill done">flow:done</span>. The per-session WS legs
-    now route through the Gateway, <b>verified cross-machine</b> (SORENLAPTOP → SOREN_NORTH: live
+    now route through the Gateway, <b>verified cross-machine</b> (EXAMPLE-PC → SOREN_NORTH: live
     dictation + terminal, and the offline-owner 503 / unknown-session 404 path). Voice + terminal
     <i>transport</i> from a non-Gateway machine is fixed. The remaining #279 children below are the
     follow-on UX / resilience items, and the dependency gate they were waiting on is now satisfied.
@@ -141,7 +141,7 @@
             (<code>/sessions/{sid}/stream</code>, <code>/sessions/{sid}/dictate</code>) resolve the
             owning Director from the registry and reverse-proxy the upgrade via the existing YARP
             forwarder; the Cockpit builds both WS URLs same-origin to the Gateway. Fixed voice + terminal
-            cross-machine in one stroke. Verified SORENLAPTOP → SOREN_NORTH.</td>
+            cross-machine in one stroke. Verified EXAMPLE-PC → SOREN_NORTH.</td>
           <td class="dep">merged — PR #283 / #289</td>
         </tr>
         <tr>

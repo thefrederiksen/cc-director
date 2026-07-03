@@ -27,8 +27,8 @@ namespace CcDirector.Gateway.Tests.Account;
 /// <item>(d) signed-out returns the explicit <c>signedIn:false</c> envelope, never an empty 200 list;</item>
 /// <item>(e) cloud-unreachable returns a clear error (502), not a fabricated list.</item>
 /// </list>
-/// The real signed-in cloud end-to-end is the QA gate; here the stub stands in for the cloud contract
-/// devthrottle_internal#81/#82.
+/// The real signed-in cloud end-to-end is the QA gate; here the stub stands in for the cloud device
+/// registry contract.
 /// </summary>
 public sealed class AccountDevicesEndpointTests
 {
@@ -70,8 +70,7 @@ public sealed class AccountDevicesEndpointTests
 
             if (request.Method == HttpMethod.Get && path == DeviceRegistryClient.DevicesPath)
             {
-                // Real cloud list shape (devthrottle_internal#82, website/api/v1/devices.js:
-                // `json({ data: (data || []).map(toRecord) })`): the masked records live under a
+                // Real cloud list shape: the masked records live under a
                 // top-level "data" envelope, not a bare array. The stub matches the contract so this test
                 // guards the actual parse shape.
                 var sb = new StringBuilder("{\"data\":[");
@@ -93,7 +92,7 @@ public sealed class AccountDevicesEndpointTests
                 var removed = _devices.RemoveAll(d => d.Id == id);
                 if (removed == 0)
                     return Task.FromResult(Json(HttpStatusCode.NotFound, "{\"error\":\"not found\"}"));
-                // Real cloud revoke shape (devthrottle_internal#82): { data: { id, revoked: true } }.
+                // Real cloud revoke shape: { data: { id, revoked: true } }.
                 return Task.FromResult(Json(HttpStatusCode.OK, $"{{\"data\":{{\"id\":\"{id}\",\"revoked\":true}}}}"));
             }
 

@@ -8,8 +8,8 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Account;
 
 /// <summary>
-/// One MASKED device record as it lives on the DevThrottle account device registry (cloud contract
-/// devthrottle_internal#81/#82). Every field here is safe to surface to a caller: the registry never
+/// One MASKED device record as it lives on the DevThrottle account device registry.
+/// Every field here is safe to surface to a caller: the registry never
 /// returns the device's key hash or any raw key, only the prefix/last4 of the key for display. This
 /// record carries NO account access or refresh token (security rule DT-05) - it describes a device,
 /// not a credential.
@@ -35,8 +35,8 @@ public sealed record CloudDeviceRecord(
     string? LastSeenAt);
 
 /// <summary>
-/// The request body for registering THIS device with the DevThrottle account (cloud contract
-/// devthrottle_internal#81): <c>POST /api/v1/devices/register</c>. The cloud is idempotent per
+/// The request body for registering THIS device with the DevThrottle account:
+/// <c>POST /api/v1/devices/register</c>. The cloud is idempotent per
 /// (member, <see cref="InstallId"/>) - re-registering the same install rotates the device key and
 /// updates the record rather than creating a second row - so the caller MUST always send the same
 /// stable install id to avoid duplicate device records (issue #857).
@@ -65,8 +65,8 @@ public sealed record CloudDeviceRegistrationResult(
     CloudDeviceRecord Device);
 
 /// <summary>
-/// A small HTTP client for the DevThrottle account device registry (cloud contract
-/// devthrottle_internal#81/#82). It lists the signed-in account's active devices with
+/// A small HTTP client for the DevThrottle account device registry.
+/// It lists the signed-in account's active devices with
 /// <c>GET /api/v1/devices</c> and revokes one with <c>DELETE /api/v1/devices/{id}</c>, both authenticated
 /// with the Bearer access token the Gateway already holds for cloud egress (the same credential
 /// <see cref="DevThrottleAccountService.GetAccessTokenForForwarding"/> returns for telemetry forwarding).
@@ -81,7 +81,7 @@ public sealed record CloudDeviceRegistrationResult(
 /// returned <see cref="CloudDeviceRecord"/> values are masked by the cloud and carry no token either.
 ///
 /// It also registers THIS device with <c>POST /api/v1/devices/register</c> and advances its last-seen
-/// with <c>POST /api/v1/devices/heartbeat</c> (cloud contract devthrottle_internal#81/#83), the egress
+/// with <c>POST /api/v1/devices/heartbeat</c> (cloud device-registry contract), the egress
 /// behind the Gateway's "sign in = register this device" flow (issue #857).
 ///
 /// The <see cref="HttpClient"/> is injectable so tests drive these calls against an in-process stub
@@ -155,8 +155,7 @@ public sealed class DeviceRegistryClient
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        // The cloud wraps the list under a top-level "data" envelope (devthrottle_internal#82,
-        // website/api/v1/devices.js: `json({ data: (data || []).map(toRecord) })`), so the array is
+        // The cloud wraps the list under a top-level "data" envelope, so the array is
         // read from data, never the root.
         var data = DataArray(json, "devices");
 
@@ -253,10 +252,8 @@ public sealed class DeviceRegistryClient
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        // The cloud wraps the issued key and the masked record under a top-level "data" envelope
-        // (devthrottle_internal#81, website/api/v1/devices.js:
-        // `json({ data: { device_key: key.raw, record: toRecord(...) } })`), so both are read from
-        // data, never the root.
+        // The cloud wraps the issued key and the masked record under a top-level "data" envelope,
+        // so both are read from data, never the root.
         var data = DataObject(json, "device register");
 
         var deviceKey = StringField(data, "device_key")
@@ -312,7 +309,7 @@ public sealed class DeviceRegistryClient
 
     /// <summary>
     /// Unwraps the cloud's <c>{ "data": { ... } }</c> envelope and returns the inner object. Every device
-    /// endpoint in the cloud contract (devthrottle_internal#81/#82/#83, website/api/v1/devices.js) wraps
+    /// endpoint in the cloud contract wraps
     /// its success payload under a single top-level "data" key, so callers parse from this inner object,
     /// never the raw root. Throws when the body is not a JSON object or carries no "data" object (so a
     /// malformed or contract-violating response surfaces as a clear failure, never a silent misparse).
@@ -327,7 +324,7 @@ public sealed class DeviceRegistryClient
 
     /// <summary>
     /// Unwraps the cloud's <c>{ "data": [ ... ] }</c> envelope and returns the inner array. The list
-    /// endpoint (devthrottle_internal#82) returns its records under the same top-level "data" key as the
+    /// endpoint returns its records under the same top-level "data" key as the
     /// object-returning endpoints. Throws when the body is not a JSON object or carries no "data" array.
     /// </summary>
     private static JsonArray DataArray(string json, string what)

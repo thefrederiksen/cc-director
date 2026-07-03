@@ -16,25 +16,25 @@ public class AccountIndicatorUrlTests
     public void BuildAccountUrl_FrontDoorWithoutTrailingSlash_AppendsAccountRoute()
     {
         // Arrange
-        var frontDoor = "https://soren-north.taildb08ed.ts.net";
+        var frontDoor = "https://example-host.ts.net";
 
         // Act
         var accountUrl = MainWindow.BuildAccountUrl(frontDoor);
 
         // Assert
-        Assert.Equal("https://soren-north.taildb08ed.ts.net/account", accountUrl);
+        Assert.Equal("https://example-host.ts.net/account", accountUrl);
     }
 
     [Fact]
     public void BuildAccountUrl_FrontDoorWithTrailingSlash_DoesNotDoubleSlash()
     {
         // Arrange: the gateway's /cockpit response front door commonly ends with a slash.
-        var frontDoor = "https://soren-north.taildb08ed.ts.net/";
+        var frontDoor = "https://example-host.ts.net/";
 
         // Act
         var accountUrl = MainWindow.BuildAccountUrl(frontDoor);
 
         // Assert: a single clean separator, never "//account".
-        Assert.Equal("https://soren-north.taildb08ed.ts.net/account", accountUrl);
+        Assert.Equal("https://example-host.ts.net/account", accountUrl);
     }
 }
