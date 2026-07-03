@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using CcDirector.Core.Audio;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
@@ -146,6 +147,14 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     {
         var endpoint = routing.BaseUrl.TrimEnd('/') + "/audio/transcriptions";
 
+        // Issue #898: a whole-turn dictation WAV (raw PCM16) crosses the hosted proxy's 4.5 MB
+        // request-body cap at ~90 seconds and the upload is rejected before the proxy runs. When the
+        // upload is a large WAV, transcode it to OGG-Opus (~10x smaller, speech-transparent, decoded
+        // natively by both OpenAI and the DevThrottle proxy) so long clips fit. Short clips and
+        // already-compressed uploads are sent byte-for-byte as before. This runs only on the remote
+        // POST path; on-device Whisper takes a different route and keeps its raw WAV.
+        (audio, fileName) = CompressLargeWavToOpus(audio, fileName);
+
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", routing.ApiKey);
 
@@ -191,6 +200,35 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         using var cleanup = new CleanupOrchestrator(
             apiKey: routing.ApiKey, model: _cleanupModel, httpClient: _http, baseUrl: routing.BaseUrl);
         return await cleanup.CleanAsync(raw, dictionary, profileName, ct);
+    }
+
+    /// <summary>
+    /// The WAV size at or above which the upload is transcoded to OGG-Opus (issue #898). Uncompressed
+    /// PCM16 at 24 kHz mono is 48 KB/s, so this ~4 MB threshold (~83 s of audio) trips well before the
+    /// platform's 4.5 MB request-body cap, leaving margin for multipart overhead while keeping every
+    /// shorter clip byte-for-byte unchanged.
+    /// </summary>
+    private const int WavCompressionThresholdBytes = 4_000_000;
+
+    /// <summary>
+    /// If the upload is a linear-PCM16 WAV at or above <see cref="WavCompressionThresholdBytes"/>,
+    /// transcode it to OGG-Opus and return the compressed bytes with a <c>.ogg</c> filename; otherwise
+    /// return the input unchanged. Only PCM16 WAV is transcoded - anything else (an already-compressed
+    /// container, or non-PCM WAV) legitimately needs no compression and is passed through. A genuine
+    /// encode failure is NOT swallowed: it throws, because sending the oversize WAV would only be
+    /// rejected downstream with a misleading error (no-fallback rule - surface the real cause).
+    /// </summary>
+    private static (byte[] audio, string fileName) CompressLargeWavToOpus(byte[] audio, string fileName)
+    {
+        if (audio.Length < WavCompressionThresholdBytes) return (audio, fileName);
+        if (!PcmWav.TryReadPcm16(audio, out var pcm, out var sampleRate, out var channels))
+            return (audio, fileName);
+
+        var ogg = OggOpusEncoder.EncodePcm16(pcm, sampleRate, channels);
+        var name = Path.ChangeExtension(string.IsNullOrEmpty(fileName) ? "dictation" : fileName, ".ogg");
+        FileLog.Write($"[BatchTranscriptionPipeline] compressed WAV {audio.Length} -> OGG-Opus {ogg.Length} bytes "
+            + $"({sampleRate}Hz {channels}ch) to fit the upload cap");
+        return (ogg, name);
     }
 
     private static string GuessAudioContentType(string fileName)

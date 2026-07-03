@@ -46,4 +46,64 @@ public static class PcmWav
         bw.Flush();
         return ms.ToArray();
     }
+
+    /// <summary>
+    /// Read a RIFF/WAV blob back into its raw PCM16 samples plus format, for callers that need to
+    /// re-encode the audio (issue #898: transcode a large dictation WAV to OGG-Opus before the
+    /// remote upload). Returns false for anything that is not linear PCM16 (audioFormat 1, 16
+    /// bits/sample) - e.g. an already-compressed container - so the caller can pass those through
+    /// untouched. Walks the chunk list rather than assuming a fixed 44-byte layout, so a WAV with
+    /// extra chunks (LIST/fact) still reads correctly.
+    /// </summary>
+    /// <param name="wav">The complete RIFF/WAV bytes.</param>
+    /// <param name="pcm">On success, the raw little-endian PCM16 sample bytes (the data chunk).</param>
+    /// <param name="sampleRate">On success, samples per second from the fmt chunk.</param>
+    /// <param name="channels">On success, the channel count from the fmt chunk.</param>
+    public static bool TryReadPcm16(byte[] wav, out byte[] pcm, out int sampleRate, out int channels)
+    {
+        pcm = Array.Empty<byte>();
+        sampleRate = 0;
+        channels = 0;
+        if (wav is null || wav.Length < 44) return false;
+        if (!Matches(wav, 0, "RIFF") || !Matches(wav, 8, "WAVE")) return false;
+
+        int bitsPerSample = 0;
+        bool haveFmt = false;
+        int pos = 12; // first chunk starts after "RIFF"<size>"WAVE"
+        while (pos + 8 <= wav.Length)
+        {
+            string id = Encoding.ASCII.GetString(wav, pos, 4);
+            long size = BitConverter.ToUInt32(wav, pos + 4);
+            int body = pos + 8;
+            if (body + size > wav.Length) size = wav.Length - body; // tolerate a truncated final chunk
+
+            if (id == "fmt " && size >= 16)
+            {
+                int audioFormat = BitConverter.ToUInt16(wav, body);
+                channels = BitConverter.ToUInt16(wav, body + 2);
+                sampleRate = (int)BitConverter.ToUInt32(wav, body + 4);
+                bitsPerSample = BitConverter.ToUInt16(wav, body + 14);
+                if (audioFormat != 1 || bitsPerSample != 16) return false; // not linear PCM16
+                haveFmt = true;
+            }
+            else if (id == "data")
+            {
+                if (!haveFmt) return false; // data before fmt: malformed
+                pcm = new byte[size];
+                Buffer.BlockCopy(wav, body, pcm, 0, (int)size);
+                return channels is 1 or 2 && sampleRate > 0;
+            }
+
+            // Chunks are word-aligned: an odd size is followed by one pad byte.
+            pos = body + (int)size + ((size & 1) == 1 ? 1 : 0);
+        }
+        return false;
+    }
+
+    private static bool Matches(byte[] buf, int offset, string ascii)
+    {
+        for (int i = 0; i < ascii.Length; i++)
+            if (buf[offset + i] != (byte)ascii[i]) return false;
+        return true;
+    }
 }
