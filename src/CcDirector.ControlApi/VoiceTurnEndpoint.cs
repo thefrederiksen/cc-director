@@ -272,9 +272,9 @@ internal static class VoiceTurnEndpoint
                     summary = "Done.";
 
                 // --- step 6: synthesize to audio ---
-                var ttsSvc = new TtsService(options);
+                var ttsSvc = new TtsService(options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
                 byte[] audioBytes;
-                if (!ttsSvc.IsAvailable)
+                if (!await ttsSvc.IsAvailableAsync(ctx.RequestAborted))
                 {
                     FileLog.Write($"[VoiceTurnEndpoint] sid={guid}: TTS unavailable, returning empty audio");
                     audioBytes = Array.Empty<byte>();

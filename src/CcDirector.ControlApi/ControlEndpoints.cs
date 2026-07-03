@@ -1664,7 +1664,9 @@ internal static class ControlEndpoints
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.BadRequest(new TtsErrorResponse { Status = "empty_text", Error = "text is required" });
 
-            var svc = new TtsService(sessionManager.Options);
+            // Provider-aware (the consolidated AI provider switch): the resolver picks the DevThrottle
+            // account key or the OpenAI key for the selected provider, and the base URL + voice follow.
+            var svc = new TtsService(sessionManager.Options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
             var result = await svc.GenerateAsync(req.Text, req.Voice, req.Model, ctx.RequestAborted);
             if (!result.Success || result.AudioBytes is null)
             {
@@ -1682,14 +1684,15 @@ internal static class ControlEndpoints
             return Results.File(result.AudioBytes, contentType: result.ContentType ?? "audio/mpeg");
         });
 
-        app.MapGet("/tts/status", () =>
+        app.MapGet("/tts/status", async () =>
         {
-            var svc = new TtsService(sessionManager.Options);
+            var svc = new TtsService(sessionManager.Options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
+            var mode = Core.Configuration.TranscriptionModeConfig.Get();
             return Results.Json(new
             {
-                available = svc.IsAvailable,
-                voice = sessionManager.Options.TtsVoice,
-                model = sessionManager.Options.TtsModel,
+                available = await svc.IsAvailableAsync(),
+                voice = Core.Configuration.TtsVoiceConfig.Get(),
+                model = Core.Configuration.TranscriptionEndpointResolver.ResolveTts(mode).Model,
             });
         });
 

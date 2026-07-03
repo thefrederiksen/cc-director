@@ -56,11 +56,19 @@ public sealed class TtsService
 
     private readonly AgentOptions _options;
     private readonly HttpMessageHandler? _handler;
+    private readonly OpenAiKeyResolver? _keyResolver;
 
-    public TtsService(AgentOptions options)
+    /// <param name="options">Chunking + the legacy OpenAI key/voice/model defaults.</param>
+    /// <param name="keyResolver">When supplied (the consolidated AI-provider path), the base URL, key,
+    /// voice, and model are resolved for the SELECTED provider - the DevThrottle proxy or OpenAI - the
+    /// same routing the transcription path uses, plus the chosen voice (<see cref="TtsVoiceConfig"/>).
+    /// When null the legacy OpenAI-only path is used (unchanged), so existing standalone callers and the
+    /// resilience tests are unaffected.</param>
+    public TtsService(AgentOptions options, OpenAiKeyResolver? keyResolver = null)
     {
         _options = options;
         _handler = null;
+        _keyResolver = keyResolver;
     }
 
     /// <summary>
@@ -69,14 +77,55 @@ public sealed class TtsService
     /// and retry behaviour are unit-testable without hitting the network.  The
     /// handler is owned by the caller and is NOT disposed by this service.
     /// </summary>
-    public TtsService(AgentOptions options, HttpMessageHandler handler)
+    public TtsService(AgentOptions options, HttpMessageHandler handler, OpenAiKeyResolver? keyResolver = null)
     {
         _options = options;
         _handler = handler;
+        _keyResolver = keyResolver;
     }
 
-    /// <summary>True when an OpenAI key is configured.</summary>
+    /// <summary>True when an OpenAI key is configured (legacy OpenAI-only check). Prefer
+    /// <see cref="IsAvailableAsync"/>, which is provider-aware (a DevThrottle account key counts too).</summary>
     public bool IsAvailable => !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
+
+    /// <summary>
+    /// True when a credential is configured for the SELECTED provider (the consolidated AI-provider
+    /// path). Uses the injected key resolver when present - so a DevThrottle account key counts, not only
+    /// an OpenAI key - and falls back to the legacy OpenAI check when no resolver was supplied.
+    /// </summary>
+    public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
+    {
+        if (_keyResolver is not null)
+            return !string.IsNullOrWhiteSpace(await _keyResolver.ResolveAsync(ct));
+        return !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
+    }
+
+    /// <summary>The resolved text-to-speech target for one call: where to POST, the credential, the
+    /// voice, and the model - resolved per provider when a key resolver is present, else the legacy
+    /// OpenAI defaults.</summary>
+    private sealed record TtsTarget(string Endpoint, string Key, string Voice, string Model, string KeyMissingMessage);
+
+    private async Task<TtsTarget> ResolveTargetAsync(string? voiceOverride, string? modelOverride, CancellationToken ct)
+    {
+        if (_keyResolver is not null)
+        {
+            var mode = TranscriptionModeConfig.Get();
+            var ep = TranscriptionEndpointResolver.ResolveTts(mode);
+            var key = await _keyResolver.ResolveAsync(ct) ?? "";
+            var voice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : TtsVoiceConfig.Get();
+            var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : ep.Model;
+            var missing = mode == TranscriptionMode.DevThrottle
+                ? "DevThrottle account key missing - sign in to DevThrottle"
+                : "OpenAI API key missing";
+            return new TtsTarget(ep.BaseUrl.TrimEnd('/') + "/audio/speech", key, voice, model, missing);
+        }
+
+        // Legacy OpenAI-only path (no resolver): unchanged behaviour for standalone OpenAI callers/tests.
+        var legacyKey = _options.ResolveOpenAiKey() ?? "";
+        var legacyVoice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : _options.TtsVoice;
+        var legacyModel = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : _options.TtsModel;
+        return new TtsTarget(Endpoint, legacyKey, legacyVoice, legacyModel, "OpenAI API key missing");
+    }
 
     /// <summary>
     /// Generate audio for the given text.  Returns the raw audio bytes
@@ -86,18 +135,20 @@ public sealed class TtsService
     /// </summary>
     public async Task<TtsResult> GenerateAsync(string text, string? voiceOverride, string? modelOverride, CancellationToken ct = default)
     {
-        var key = _options.ResolveOpenAiKey();
-        if (string.IsNullOrWhiteSpace(key))
-            return TtsResult.Error("no_key", "OpenAI API key missing");
-
         if (string.IsNullOrWhiteSpace(text))
             return TtsResult.Error("empty_text", "text is required");
 
-        var voice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride.Trim() : _options.TtsVoice;
-        var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride.Trim() : _options.TtsModel;
+        var target = await ResolveTargetAsync(voiceOverride, modelOverride, ct);
+        if (string.IsNullOrWhiteSpace(target.Key))
+            return TtsResult.Error("no_key", target.KeyMissingMessage);
+
+        var key = target.Key;
+        var voice = target.Voice;
+        var model = target.Model;
+        var endpoint = target.Endpoint;
 
         var chunks = SplitIntoChunks(text, MaxChunkChars);
-        FileLog.Write($"[TtsService] GenerateAsync: model={model}, voice={voice}, totalChars={text.Length}, chunks={chunks.Count}");
+        FileLog.Write($"[TtsService] GenerateAsync: endpoint={endpoint}, model={model}, voice={voice}, totalChars={text.Length}, chunks={chunks.Count}");
 
         var stopwatch = Stopwatch.StartNew();
 
@@ -120,7 +171,7 @@ public sealed class TtsService
                 // Single-chunk fast path: no parallelism overhead.
                 if (chunks.Count == 1)
                 {
-                    var single = await CallWithRetryAsync(client, model, voice, chunks[0], 0, budgetCts.Token);
+                    var single = await CallWithRetryAsync(client, endpoint, model, voice, chunks[0], 0, budgetCts.Token);
                     if (!single.Success)
                         FileLog.Write($"[TtsService] GenerateAsync FAILED after {stopwatch.ElapsedMilliseconds}ms: chunk 0/1 reason={single.ErrorMessage}");
                     return single;
@@ -133,7 +184,7 @@ public sealed class TtsService
                 // than no audio because the listener would not know where it
                 // cut off.
                 var tasks = chunks
-                    .Select((c, i) => CallWithRetryAsync(client, model, voice, c, i, budgetCts.Token))
+                    .Select((c, i) => CallWithRetryAsync(client, endpoint, model, voice, c, i, budgetCts.Token))
                     .ToList();
                 var results = await Task.WhenAll(tasks);
 
@@ -205,14 +256,14 @@ public sealed class TtsService
     /// transient failure (timeout, 5xx, or empty body).  Issue #389: turn 1 in
     /// the bug report would very likely have succeeded on a second attempt.
     /// </summary>
-    private async Task<TtsResult> CallWithRetryAsync(HttpClient client, string model, string voice, string input, int chunkIndex, CancellationToken budgetToken)
+    private async Task<TtsResult> CallWithRetryAsync(HttpClient client, string endpoint, string model, string voice, string input, int chunkIndex, CancellationToken budgetToken)
     {
-        var first = await CallOnceAsync(client, model, voice, input, chunkIndex, attempt: 1, budgetToken);
+        var first = await CallOnceAsync(client, endpoint, model, voice, input, chunkIndex, attempt: 1, budgetToken);
         if (first.Success || !first.Transient)
             return first;
 
         FileLog.Write($"[TtsService] chunk {chunkIndex} attempt 1 transient failure ({first.ErrorMessage}); retrying once");
-        var second = await CallOnceAsync(client, model, voice, input, chunkIndex, attempt: 2, budgetToken);
+        var second = await CallOnceAsync(client, endpoint, model, voice, input, chunkIndex, attempt: 2, budgetToken);
         return second;
     }
 
@@ -222,7 +273,7 @@ public sealed class TtsService
     /// empty body) the result is flagged <see cref="TtsResult.Transient"/> so the
     /// caller can retry once.  A 4xx is permanent (not retried).
     /// </summary>
-    private async Task<TtsResult> CallOnceAsync(HttpClient client, string model, string voice, string input, int chunkIndex, int attempt, CancellationToken budgetToken)
+    private async Task<TtsResult> CallOnceAsync(HttpClient client, string endpoint, string model, string voice, string input, int chunkIndex, int attempt, CancellationToken budgetToken)
     {
         // Per-request deadline, linked to the overall budget so whichever fires
         // first wins.  CancelAfter is the per-chunk timeout (issue #389).
@@ -239,7 +290,7 @@ public sealed class TtsService
 
         try
         {
-            using var resp = await client.PostAsync(Endpoint, payload, requestCts.Token);
+            using var resp = await client.PostAsync(endpoint, payload, requestCts.Token);
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(requestCts.Token);

@@ -26,13 +26,19 @@ public sealed class DesktopTtsPlayer : IDisposable
     private readonly object _gate = new();
     private WaveOutEvent? _output;
 
+    // Resolves the text-to-speech credential for the SELECTED AI provider (DevThrottle account key or
+    // OpenAI key), the same resolver dictation uses - Gateway vault when attached, local vault when
+    // standalone. Passed to TtsService so desktop speech honours the one AI provider switch + voice.
+    private readonly OpenAiKeyResolver _keyResolver = new();
+
     public DesktopTtsPlayer(AgentOptions options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
-    /// <summary>True when an OpenAI key is configured (TTS can run).</summary>
-    public bool IsAvailable => new TtsService(_options).IsAvailable;
+    /// <summary>True when a text-to-speech credential is configured for the selected provider.</summary>
+    public Task<bool> IsAvailableAsync(CancellationToken ct = default) =>
+        new TtsService(_options, _keyResolver).IsAvailableAsync(ct);
 
     /// <summary>
     /// Generate audio for <paramref name="text"/> and play it to completion.
@@ -47,7 +53,7 @@ public sealed class DesktopTtsPlayer : IDisposable
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
 
-        var svc = new TtsService(_options);
+        var svc = new TtsService(_options, _keyResolver);
         var result = await svc.GenerateAsync(text, voiceOverride: null, modelOverride: null, ct);
         if (!result.Success || result.AudioBytes is null)
         {
