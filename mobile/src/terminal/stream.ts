@@ -27,6 +27,12 @@ import { ensureGatewayCookie } from "../api/client";
 const BASE_FONT = 13; // 1:1 (actual-size) font, in px - matches RawTerminalPage.cs
 const MIN_FONT = 6;
 const MAX_FONT = 48;
+// The smallest font auto fit-width is allowed to choose. A desktop-width PTY (e.g. 120 columns) can
+// only be made to fit a phone by shrinking the font to a few pixels - unreadable, and it STILL
+// overflows. So fit-width shrinks only down to this readable floor; past it the columns overflow and
+// the horizontal pan takes over (show as much width as stays readable, pan for the rest). This floor
+// applies ONLY to automatic fit; an explicit pinch / A- zoom can still go down to MIN_FONT.
+const FIT_MIN_FONT = 11;
 const RECONNECT_DELAY_MS = 1200; // ~1200ms reconnect, matching the Android app
 const STICKY_SLACK_PX = 48; // auto-scroll only when within this many px of the bottom
 
@@ -176,7 +182,7 @@ export class TerminalMirror {
     if (avail <= 0) return BASE_FONT;
     const needed = this.lastCols * this.baseCharW;
     if (needed <= avail) return BASE_FONT; // already fits at full size
-    return Math.max(MIN_FONT, Math.floor(BASE_FONT * avail / needed));
+    return Math.max(FIT_MIN_FONT, Math.floor(BASE_FONT * avail / needed));
   }
 
   private applyFont(): void {
@@ -192,13 +198,13 @@ export class TerminalMirror {
   private fit(): void {
     const term = this.term;
     if (!term || this.lastCols <= 0) return;
-    const ch = this.cellH();
-    if (ch <= 0) return; // not rendered yet; a later fit will size it
-    const st = getComputedStyle(this.hostEl);
-    const pad = (parseFloat(st.paddingTop) || 0) + (parseFloat(st.paddingBottom) || 0);
-    const avail = this.wrapEl.clientHeight - pad;
-    const fitted = Math.max(1, Math.floor(avail / ch));
-    const rows = Math.max(fitted, this.lastRows || 1); // NEVER fewer rows than the PTY
+    if (this.cellH() <= 0) return; // not rendered yet; a later fit will size it
+    // Mirror the PTY's grid EXACTLY: same columns, same rows. We must never use fewer rows than the
+    // PTY (absolute cursor moves like ESC[35;1H would land off-grid and the TUI would collapse), but
+    // we must never use MORE either - padding the grid up to the phone's height only appends empty
+    // rows below the real content, which on a tall desktop PTY shown on a short phone is a large dead
+    // scroll band. The .term-stage background fills any space left below the exact-size grid.
+    const rows = Math.max(1, this.lastRows);
     if (term.cols !== this.lastCols || term.rows !== rows) {
       try { term.resize(this.lastCols, rows); } catch { /* transient */ }
     }

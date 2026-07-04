@@ -150,3 +150,9 @@ playground/alpha-test-root/
 # connected MCP tooling (acmeflow-dev-proto / acmeflow-localhost-proto / pencil). Generated
 # local artifacts, never part of the codebase.
 mcps/
+
+# Mobile terminal render debugging scratch (not shipped): the standalone repro harness and
+# the captured real pseudo-terminal stream fixtures it feeds. Regenerable from a live session;
+# the binary fixtures do not belong in git history.
+mobile/repro-terminal.*
+mobile/public/fixtures/
