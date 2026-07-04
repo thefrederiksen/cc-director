@@ -1754,6 +1754,7 @@ public partial class MainWindow : Window
             _activeSession.Session.OnActivityStateChanged -= OnActiveSessionActivityChanged;
             _activeSession.Session.OnPendingPromptTextChanged -= OnActiveSessionPendingPromptTextChanged;
             _activeSession.Session.OnCachedExplainChanged -= OnActiveSessionCachedExplainChanged;
+            _activeSession.Session.OnIsTranscribingChanged -= OnActiveSessionTranscribingChanged;
             TerminalHost.Detach();
             GitChangesView.Detach();
             CleanView.Detach();
@@ -1794,6 +1795,9 @@ public partial class MainWindow : Window
         // Re-render the Wingman tab whenever ProactiveExplainService stores a fresh
         // briefing on this session. The tab is a passive viewer of CachedExplainText.
         vm.Session.OnCachedExplainChanged += OnActiveSessionCachedExplainChanged;
+        // Lock the compose surface while this session is transcribing a dictated utterance in the
+        // background, so a second Speak/Send/Queue cannot fire into a session mid-transcribe.
+        vm.Session.OnIsTranscribingChanged += OnActiveSessionTranscribingChanged;
 
         // Update header
         SetSessionHeaderVisible(true);
@@ -1860,6 +1864,10 @@ public partial class MainWindow : Window
         // Refresh right panel for new session
         RefreshQueuePanel();
 
+        // Apply the incoming session's transcribing lock (usually unlocked; locked if you switch to a
+        // session that is still transcribing a dictated utterance in the background).
+        ApplyComposeLock(vm.Session.IsTranscribing);
+
         // Persist session state (debounced)
         PersistSessionState();
 
@@ -1875,6 +1883,39 @@ public partial class MainWindow : Window
     private void OnActiveSessionMetadataChanged(ClaudeSessionMetadata? metadata)
     {
         Dispatcher.UIThread.Post(UpdateSessionHeader);
+    }
+
+    /// <summary>True while the on-screen session is transcribing a dictated utterance in the
+    /// background (the Speak-Send fire-and-forget window). The compose actions and their keyboard
+    /// shortcuts no-op during this brief window so a second action cannot race the dictated prompt.</summary>
+    private bool IsActiveSessionTranscribing() => _activeSession?.Session.IsTranscribing == true;
+
+    /// <summary>Fires (possibly off the UI thread) when the active session's transcribing flag flips.
+    /// Marshals to the UI thread and locks or unlocks the compose surface.</summary>
+    private void OnActiveSessionTranscribingChanged(bool isTranscribing)
+    {
+        Dispatcher.UIThread.Post(() => ApplyComposeLock(isTranscribing));
+    }
+
+    /// <summary>
+    /// Lock (or unlock) the prompt-bar compose surface for the active session. While a dictated
+    /// utterance transcribes and submits in the background, the input box, Send, Speak, Queue,
+    /// Explain and Handover are disabled, and the action bar's Clear context / History are disabled
+    /// via <see cref="Controls.SessionActionBar.SetTranscribingLock"/> - Stop and Interrupt stay live.
+    /// The keyboard shortcuts (Ctrl+H / Ctrl+Enter / Ctrl+Shift+Enter) are guarded separately by
+    /// <see cref="IsActiveSessionTranscribing"/> so they no-op too. Unlocks automatically when the
+    /// background send clears the flag.
+    /// </summary>
+    private void ApplyComposeLock(bool locked)
+    {
+        PromptInput.IsEnabled = !locked;
+        BtnSend.IsEnabled = !locked;
+        BtnSpeak.IsEnabled = !locked;
+        BtnQueuePrompt.IsEnabled = !locked;
+        BtnExplain.IsEnabled = !locked;
+        BtnHandover.IsEnabled = !locked;
+        ActionBar.SetTranscribingLock(locked);
+        FileLog.Write($"[MainWindow] ApplyComposeLock: locked={locked}");
     }
 
     private void OnActiveSessionActivityChanged(ActivityState oldState, ActivityState newState)
@@ -2843,6 +2884,14 @@ public partial class MainWindow : Window
                 FileLog.Write("[MainWindow] Ctrl+H ignored: prompt bar not visible");
                 return;
             }
+            // Locked while the session transcribes a dictated utterance in the background: swallow the
+            // keystroke so Ctrl+H cannot open a second Speak dialog mid-transcribe.
+            if (IsActiveSessionTranscribing())
+            {
+                FileLog.Write("[MainWindow] Ctrl+H ignored: session transcribing");
+                e.Handled = true;
+                return;
+            }
             FileLog.Write("[MainWindow] Ctrl+H -> BtnSpeak_Click");
             e.Handled = true;
             BtnSpeak_Click(this, new RoutedEventArgs());
@@ -2885,6 +2934,13 @@ public partial class MainWindow : Window
 
     private async void BtnSpeak_Click(object? sender, RoutedEventArgs e)
     {
+        // Locked out while the active session is still transcribing a previous dictation in the
+        // background: no second Speak into a session mid-transcribe (guards the click AND Ctrl+H).
+        if (IsActiveSessionTranscribing())
+        {
+            FileLog.Write("[MainWindow] BtnSpeak_Click ignored: session transcribing");
+            return;
+        }
         // In-process dictation. Opens SpeakDialog which captures audio via
         // NAudio (BatchDictationRecorder), runs it through the shared
         // BatchTranscriptionPipeline (one batch transcription, then the validated
@@ -4942,6 +4998,13 @@ public partial class MainWindow : Window
     private async void SendPrompt()
     {
         if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text)) return;
+        // Locked out while the session transcribes a dictated utterance in the background, so a
+        // typed Send cannot race the incoming dictated prompt (guards the button AND Ctrl+Enter).
+        if (IsActiveSessionTranscribing())
+        {
+            FileLog.Write("[MainWindow] SendPrompt ignored: session transcribing");
+            return;
+        }
 
         // Strip newlines -- Claude Code prompt expects single-line input
         var text = PromptInput.Text.ReplaceLineEndings(" ").Trim();
@@ -5188,6 +5251,13 @@ public partial class MainWindow : Window
     {
         if (_activeSession == null || string.IsNullOrWhiteSpace(PromptInput.Text))
             return;
+        // Locked out while the session transcribes a dictated utterance in the background (guards the
+        // Queue button AND Ctrl+Shift+Enter).
+        if (IsActiveSessionTranscribing())
+        {
+            FileLog.Write("[MainWindow] QueueCurrentPrompt ignored: session transcribing");
+            return;
+        }
 
         var text = PromptInput.Text.Trim();
         FileLog.Write($"[MainWindow] QueueCurrentPrompt: session={_activeSession.Session.Id}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\"");

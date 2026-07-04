@@ -56,6 +56,9 @@ public partial class SessionActionBar : UserControl
         BtnInterrupt.IsVisible = caps.HasFlag(DriverCapabilities.Interrupt);
         BtnClearContext.IsVisible = caps.HasFlag(DriverCapabilities.ClearContext);
         BtnHistory.IsVisible = caps.HasFlag(DriverCapabilities.History);
+        // A session switch clears any transcribing lock left over from the outgoing session; the
+        // caller re-applies the incoming session's state right after Configure.
+        SetTranscribingLock(false);
         ActionStatus.Text = "";
 
         // Context gauge: capability-gated, polled while this session is the active one.
@@ -68,6 +71,18 @@ public partial class SessionActionBar : UserControl
             RefreshContextGauge();      // immediate first read so the gauge is not blank for ~4s
             _contextTimer.Start();
         }
+    }
+
+    /// <summary>
+    /// Lock the non-safety actions while the active session is transcribing a dictated utterance in
+    /// the background (the Speak-Send fire-and-forget window). Clear context and History are disabled
+    /// so the operator cannot mutate a session that is about to receive its dictated prompt. Stop and
+    /// Interrupt stay live on purpose - the brakes are never taken away, even mid-transcription.
+    /// </summary>
+    public void SetTranscribingLock(bool locked)
+    {
+        BtnClearContext.IsEnabled = !locked;
+        BtnHistory.IsEnabled = !locked;
     }
 
     /// <summary>Timer-callback boundary (and the immediate kick from <see cref="Configure"/>):
