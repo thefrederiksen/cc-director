@@ -2977,27 +2977,44 @@ public partial class MainWindow : Window
             var target = _activeSession?.Session;
             var dlg = new global::CcDirector.Avalonia.Voice.SpeakDialog(options)
             {
-                // Fire-and-forget Send (spec section 10) needs a target session to submit into and to
-                // mark orange; only enable it when we have one.
+                // Immediate (fire-and-forget) Send needs a target session to submit into; enable it
+                // whenever we have one so pressing Send releases the screen at once.
                 EnableBackgroundSend = target is not null,
             };
             await dlg.ShowDialog(this);
 
-            // Fire-and-forget Send: the dialog handed us the still-capturing recorder and closed. The
-            // screen is already released; transcribe + submit in the background while the session
-            // shows orange "Transcribing...". Not awaited - that is the whole point.
+            // Immediate Send: the dialog handed us the still-capturing recorder and closed at once. The
+            // screen is already released; transcribe + submit in the background while the session shows
+            // orange "Transcribing...". Send behaves exactly like the Insert button followed by Enter:
+            // the dictation is dropped at the caret we snapshotted, inside any typed text (via the same
+            // DictationText.InsertAt the Insert button uses), then submitted. The dialog was modal, so
+            // the box could not change since we snapshotted it; clear it now so the user does not see -
+            // or re-send - already-committed text. On a transcription FAILURE the typed text is put back
+            // (RestoreDictatedComposerText) so it is never lost.
             if (dlg.IsBackgroundSend && dlg.BackgroundRecorder is not null && target is not null)
             {
                 var recorder = dlg.BackgroundRecorder;
-                var prefix = dlg.BackgroundPrefix;
-                FileLog.Write($"[MainWindow] BtnSpeak_Click: background dictation send to session {target.Id}");
+                var composerText = existingTextBefore;
+                var caret = caretBefore;
+                PromptInput.Text = "";
+                FileLog.Write($"[MainWindow] BtnSpeak_Click: background dictation send to session {target.Id}, composer chars={composerText.Length}, caret={caret}");
                 _ = global::CcDirector.Avalonia.Voice.BackgroundDictationSend.RunAsync(
-                    recorder, prefix, target,
-                    text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
-                        () => SubmitDictatedTextAsync(target, text)));
+                    recorder, dlg.BackgroundPrefix, target,
+                    dictation => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
+                        () => SubmitDictatedTextAsync(
+                            target,
+                            global::CcDirector.Avalonia.Voice.DictationText.InsertAt(composerText, caret, dictation))),
+                    onFailed: () => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        RestoreDictatedComposerText(target, composerText);
+                        return Task.CompletedTask;
+                    }));
                 return;
             }
 
+            // Insert, or a blocking Send when there was no target session: the dialog already
+            // transcribed and returned the text. Insert it at the caret we snapshotted (joining with
+            // anything already typed) and submit only if the user chose Send.
             var transcript = dlg.ResultText;
             if (string.IsNullOrWhiteSpace(transcript))
             {
@@ -3029,13 +3046,12 @@ public partial class MainWindow : Window
     {
         var existing = PromptInput.Text ?? "";
         if (caret < 0 || caret > existing.Length) caret = existing.Length;
-        var prefix = existing[..caret];
-        var suffix = existing[caret..];
-        var needsSpaceBefore = prefix.Length > 0 && !char.IsWhiteSpace(prefix[^1]);
-        var needsSpaceAfter = suffix.Length > 0 && !char.IsWhiteSpace(suffix[0]);
-        var insert = (needsSpaceBefore ? " " : "") + text + (needsSpaceAfter ? " " : "");
-        PromptInput.Text = prefix + insert + suffix;
-        PromptInput.CaretIndex = prefix.Length + insert.Length;
+        var suffixLen = existing.Length - caret;
+        var composed = global::CcDirector.Avalonia.Voice.DictationText.InsertAt(existing, caret, text);
+        PromptInput.Text = composed;
+        // Caret lands right after the inserted content: the untouched suffix is still at the tail, so
+        // the insertion ends at composed.Length - suffixLen.
+        PromptInput.CaretIndex = composed.Length - suffixLen;
         PromptInput.Focus();
     }
 
@@ -3066,6 +3082,23 @@ public partial class MainWindow : Window
 
         await target.SendTextAsync(text);
         ScheduleEnterRetry(target);
+    }
+
+    /// <summary>
+    /// Restore typed compose text after a fire-and-forget dictation Send failed to transcribe (the
+    /// send it was folded into never happened, and the box was cleared when the dialog closed). If the
+    /// target session is still on screen, put the words back at the front of the box; otherwise stash
+    /// them in that session's saved compose text so they reappear when the user returns. Never silent:
+    /// a notification tells the user the dictation failed but their typed text was kept.
+    /// </summary>
+    private void RestoreDictatedComposerText(Session target, string composerText)
+    {
+        if (string.IsNullOrEmpty(composerText)) return;
+        if (_activeSession?.Session == target)
+            InsertIntoPromptInputAt(composerText, 0);
+        else
+            target.PendingPromptText = global::CcDirector.Avalonia.Voice.DictationText.Join(composerText, target.PendingPromptText ?? "");
+        ShowNotification("Dictation failed to transcribe - your typed text was kept.");
     }
 
     private void BtnOpenInBrowser_Click(object? sender, RoutedEventArgs e)

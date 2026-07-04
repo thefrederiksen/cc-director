@@ -148,7 +148,7 @@ window.dictationOverlay = (function () {
     return overlay;
   }
 
-  // Resolve the three outcome callbacks from the options object. A Blazor host passes a
+  // Resolve the outcome callbacks from the options object. A Blazor host passes a
   // DotNetObjectReference (dotNetRef) and we invoke its OnDictate* methods; a plain-JS host
   // passes onInsert/onSend/onCancel directly. onSend falls back to onInsert when omitted.
   //

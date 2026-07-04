@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { sendEscape, sendInterrupt, sendPrompt } from "../api/client";
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
 import { DictationDialog } from "../dictation/DictationDialog";
+import { insertAt, joinText } from "../dictation/transcript";
 import {
   KEY_ARROW_DOWN,
   KEY_ARROW_LEFT,
@@ -39,6 +40,13 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
   const [input, setInput] = useState("");
   const [dictating, setDictating] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // The caret position in the composer, snapshotted when Speak is pressed (the dialog is modal, so the
+  // box cannot change while it is open). Dictation is inserted here, exactly like the desktop Insert
+  // button, instead of being appended at the end.
+  const caretRef = useRef(0);
+  // Where to move the caret after an Insert drops text mid-box; applied post-render below. Null except
+  // in the render right after an Insert.
+  const pendingCaretRef = useRef<number | null>(null);
 
   // Auto-grow the textarea to fit its content (up to a cap, after which it scrolls). Re-run on every
   // input change so it grows as you type AND shrinks back when the box is cleared (Send) or replaced
@@ -49,6 +57,16 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_HEIGHT_PX)}px`;
+  }, [input]);
+
+  // After an Insert drops dictation mid-box, put the caret right after the inserted words so the user
+  // can keep editing there. Does not force focus (that would pop the mobile keyboard unbidden).
+  useLayoutEffect(() => {
+    const pos = pendingCaretRef.current;
+    if (pos === null) return;
+    pendingCaretRef.current = null;
+    const el = inputRef.current;
+    if (el) el.selectionStart = el.selectionEnd = pos;
   }, [input]);
 
   const sendKey = useCallback(
@@ -97,13 +115,20 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
     }
   }, [sessionId, onFlash, onError]);
 
-  // Speak opens the dictation dialog. Insert drops the transcript into the input (no submit, joined
-  // onto any existing text); Send submits it via the same POST /prompt path the Send button uses.
+  // Speak opens the dictation dialog. Insert drops the transcript into the input at the caret (no
+  // submit); Send inserts it at the caret and submits via the same POST /prompt path the Send button
+  // uses. Both use the caret snapshotted when Speak was pressed, exactly like the desktop Insert.
   const onDictateInsert = useCallback(
     (text: string) => {
       setDictating(false);
       if (text.trim().length === 0) return;
-      setInput((cur) => (cur.trim().length === 0 ? text : `${cur.trimEnd()} ${text}`));
+      const caret = caretRef.current;
+      setInput((cur) => {
+        const composed = insertAt(cur, caret, text);
+        const clamped = caret < 0 || caret > cur.length ? cur.length : caret;
+        pendingCaretRef.current = composed.length - (cur.length - clamped);
+        return composed;
+      });
       onFlash("Inserted");
     },
     [onFlash],
@@ -112,29 +137,54 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
   const onDictateSend = useCallback(
     async (text: string) => {
       setDictating(false);
-      if (!sessionId || text.trim().length === 0) return;
+      if (!sessionId) return;
+      // Send behaves like Insert-then-Enter: the dictation is inserted at the caret inside any typed
+      // text (like the Insert button), then submitted. Clear the box, exactly like the normal Send
+      // path, so the user does not re-send what just went out.
+      const combined = insertAt(input, caretRef.current, text).trim();
+      if (combined.length === 0) return;
+      setInput("");
       try {
-        await sendPrompt(sessionId, text, true);
+        await sendPrompt(sessionId, combined, true);
         onFlash("Sent");
       } catch (err) {
+        setInput(combined); // restore so a failed send never loses the typed + dictated text
         onError(err instanceof Error ? err.message : "Send failed");
       }
     },
-    [sessionId, onFlash, onError],
+    [sessionId, input, onFlash, onError],
   );
 
-  // Fire-and-forget Send from the Speak dialog: the dialog already captured the audio buffer and
-  // closed itself, releasing the screen. We now transcode + upload + transcribe + submit in the
+  // Immediate (fire-and-forget) Send from the Speak dialog: the dialog already captured the audio
+  // buffer and closed itself, releasing the screen. We transcode + upload + transcribe + submit in the
   // background while the roster shows the session orange ("Transcribing..."), so the user can move on
   // immediately. The flash is a brief acknowledgement; the persistent signal is the orange roster row.
   const onDictateSendAudio = useCallback(
     (captured: CapturedUtterance) => {
       setDictating(false);
       if (!sessionId) return;
+      // Send behaves like Insert-then-Enter: the dictation is inserted at the caret inside the typed
+      // text via the compose hook (like the Insert button). Clear the box now (at dialog-close time) -
+      // the background transcribe-and-submit sends the combined text. On a transcription failure the
+      // typed text is put back so Send never loses it.
+      const composerText = input;
+      const caret = caretRef.current;
+      setInput("");
       onFlash("Transcribing...");
-      void backgroundTranscribeAndSend(sessionId, captured, { onError });
+      void backgroundTranscribeAndSend(sessionId, captured, {
+        onError,
+        // Insert the dictated words at the snapshotted caret inside the typed text, then submit.
+        compose: (dictation) => insertAt(composerText, caret, dictation),
+        // On a genuine transcription failure the audio is unrecoverable, but the typed text is not:
+        // put it back (ahead of anything typed since) so Send never silently loses it. If the user has
+        // navigated away this component is unmounted and setInput is a harmless no-op; the onError
+        // notification is then the signal.
+        onFailed: () => {
+          if (composerText.trim().length > 0) setInput((cur) => joinText(composerText, cur));
+        },
+      });
     },
-    [sessionId, onFlash, onError],
+    [sessionId, input, onFlash, onError],
   );
 
   return (
@@ -162,7 +212,11 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
         <button
           type="button"
           className="term-btn term-speak"
-          onClick={() => setDictating(true)}
+          onClick={() => {
+            // Snapshot the caret so the dictation lands where the cursor was, not at the end.
+            caretRef.current = inputRef.current?.selectionStart ?? input.length;
+            setDictating(true);
+          }}
           disabled={dictating}
         >
           Speak

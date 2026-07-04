@@ -24,4 +24,25 @@ public static class DictationText
         if (leftEndsWithSpace || rightStartsWithSpace) return left + right;
         return left + " " + right;
     }
+
+    /// <summary>
+    /// Insert <paramref name="insert"/> into <paramref name="existing"/> at index
+    /// <paramref name="caret"/>, adding exactly one separating space on a side only when the adjacent
+    /// character is not already whitespace - so the inserted words never smush against the surrounding
+    /// text. An out-of-range caret is clamped to the end; an empty insert returns
+    /// <paramref name="existing"/> unchanged. This is the pure, box-free core shared by the desktop
+    /// Insert button and the fire-and-forget Send, so both drop dictation at the caret identically.
+    /// </summary>
+    public static string InsertAt(string existing, int caret, string insert)
+    {
+        existing ??= "";
+        if (string.IsNullOrEmpty(insert)) return existing;
+        if (caret < 0 || caret > existing.Length) caret = existing.Length;
+        var prefix = existing[..caret];
+        var suffix = existing[caret..];
+        var needsSpaceBefore = prefix.Length > 0 && !char.IsWhiteSpace(prefix[^1]);
+        var needsSpaceAfter = suffix.Length > 0 && !char.IsWhiteSpace(suffix[0]);
+        var mid = (needsSpaceBefore ? " " : "") + insert + (needsSpaceAfter ? " " : "");
+        return prefix + mid + suffix;
+    }
 }

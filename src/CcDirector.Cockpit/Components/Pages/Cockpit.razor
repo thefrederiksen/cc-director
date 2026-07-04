@@ -357,9 +357,9 @@
                                           placeholder="Type a message... (Ctrl+Enter to send, Ctrl+Shift+Enter to queue)"></textarea>
                                 <InputFile OnChange="OnDropImages" multiple accept="image/*" class="composer-drop-input" />
                                 <div class="composer-btns">
-                                    <button class="btn send" @onclick="SendNow" disabled="@(_acting || string.IsNullOrWhiteSpace(_compose))">Send</button>
+                                    <button class="btn send" @onclick="SendNow" disabled="@(_acting || _sendLockedForDictation || string.IsNullOrWhiteSpace(_compose))">Send</button>
                                     <button class="btn speak @(_dictating ? "on" : "")" @onclick="OpenDictate" title="Dictate" disabled="@_dictating">Speak</button>
-                                    <button class="btn queue" @onclick="QueueIt" disabled="@(_acting || string.IsNullOrWhiteSpace(_compose))">Queue</button>
+                                    <button class="btn queue" @onclick="QueueIt" disabled="@(_acting || _sendLockedForDictation || string.IsNullOrWhiteSpace(_compose))">Queue</button>
                                 </div>
                             </div>
                             @if (!string.IsNullOrEmpty(_shotStatus))
@@ -1201,6 +1201,9 @@
     {
         var sel = Selected;
         if (sel is null || string.IsNullOrWhiteSpace(_compose)) return;
+        // Locked while a dictated turn is transcribing in the background for this session, so a typed
+        // Send (button or Ctrl+Enter) cannot race the incoming dictated prompt and double-send.
+        if (_sendLockedForDictation) return;
         Log.LogInformation("Cockpit action=send sid={Sid} chars={Chars}", sel.SessionId, _compose.Length);
         await Act(async () =>
         {
@@ -1451,8 +1454,19 @@
     // fire-and-forget background send marks/clears the RIGHT session's orange "Transcribing" state
     // even if the user selects a different session while the transcription runs in the background.
     private string? _dictatingSessionId;
+    // The composer caret position snapshotted when Speak opened, so Insert/Send drop the dictation
+    // where the cursor was rather than at the end (the overlay is modal, so it cannot move meanwhile).
+    private int _dictateCaret;
     private DotNetObjectReference<Cockpit>? _dictateRef;
     private IJSObjectReference? _composerDropModule;
+
+    // True between a fire-and-forget Send closing the Speak dialog and the background transcribe-and-
+    // submit landing (spec section 10). The composer keeps the typed text through this window, and
+    // OnDictateSend appends the dictation to it when the transcript lands (Send = Insert-then-Enter),
+    // so Send and Queue are locked meanwhile to stop a manual Send racing the incoming dictated turn
+    // and firing the typed text twice. Scoped to the dictating session so other sessions stay usable.
+    private bool _backgroundDictating;
+    private bool _sendLockedForDictation => _backgroundDictating && Selected?.SessionId == _dictatingSessionId;
 
     // ---- Voice tab (issue #531) ----
     // When true, the dictation result routes to the wingman voice-turn flow instead of the
@@ -1541,6 +1555,14 @@
             _dictating = true;
             _dictatingSessionId = Selected.SessionId;
             _actError = null;
+            // Snapshot where the cursor is in the composer so the dictation lands there, not at the end
+            // (like the desktop Insert button). Best-effort - default to the end if we cannot read it.
+            _dictateCaret = _compose?.Length ?? 0;
+            if (_composerDropModule is not null)
+            {
+                try { _dictateCaret = await _composerDropModule.InvokeAsync<int>("caretOf", _composerEl); }
+                catch (Exception ex) { Log.LogDebug(ex, "caretOf failed; defaulting to end of composer"); }
+            }
             _dictateRef ??= DotNetObjectReference.Create(this);
             // Issue #268: dictate over a same-origin WS to the GATEWAY (never the Director's own
             // address); the Gateway resolves the owning Director and reverse-proxies /dictate.
@@ -1561,8 +1583,8 @@
         }
     }
 
-    // Insert: the dialog finished and the user chose Insert - append the cleaned text to the
-    // composer for review (no auto-submit), mirroring the desktop dialog's Insert button.
+    // Insert: the dialog finished and the user chose Insert - drop the cleaned text into the composer
+    // at the caret we snapshotted when Speak opened (no auto-submit), mirroring the desktop Insert.
     [JSInvokable]
     public async Task OnDictateInsert(string text)
     {
@@ -1577,12 +1599,20 @@
             return;
         }
         if (!string.IsNullOrWhiteSpace(text))
-            _compose = string.IsNullOrEmpty(_compose) ? text : _compose + " " + text;
+        {
+            var existing = _compose ?? "";
+            var suffixLen = existing.Length - Math.Clamp(_dictateCaret, 0, existing.Length);
+            _compose = InsertAt(existing, _dictateCaret, text);
+            await InvokeAsync(StateHasChanged);
+            // Put the caret right after the inserted words so the user can keep editing there.
+            await SetComposerCaretAsync(_compose.Length - suffixLen);
+            return;
+        }
         await InvokeAsync(StateHasChanged);
     }
 
-    // Send: the dialog finished and the user chose Send - append the cleaned text and submit
-    // immediately via the normal composer send path.
+    // Send: the dialog finished and the user chose Send - insert the cleaned text at the snapshotted
+    // caret and submit immediately via the normal composer send path.
     [JSInvokable]
     public async Task OnDictateSend(string text)
     {
@@ -1597,9 +1627,32 @@
             return;
         }
         if (!string.IsNullOrWhiteSpace(text))
-            _compose = string.IsNullOrEmpty(_compose) ? text : _compose + " " + text;
+            _compose = InsertAt(_compose ?? "", _dictateCaret, text);
         await InvokeAsync(StateHasChanged);
         await SendNow();
+    }
+
+    // Insert `insert` into `existing` at `caret`, adding one separating space on a side only when the
+    // adjacent character is not already whitespace. Clamps an out-of-range caret to the end; an empty
+    // insert returns `existing` unchanged. Mirrors the desktop DictationText.InsertAt so the Cockpit
+    // drops dictation at the caret identically to the desktop Insert button.
+    private static string InsertAt(string existing, int caret, string insert)
+    {
+        existing ??= "";
+        if (string.IsNullOrEmpty(insert)) return existing;
+        if (caret < 0 || caret > existing.Length) caret = existing.Length;
+        var prefix = existing[..caret];
+        var suffix = existing[caret..];
+        var needsSpaceBefore = prefix.Length > 0 && !char.IsWhiteSpace(prefix[^1]);
+        var needsSpaceAfter = suffix.Length > 0 && !char.IsWhiteSpace(suffix[0]);
+        return prefix + (needsSpaceBefore ? " " : "") + insert + (needsSpaceAfter ? " " : "") + suffix;
+    }
+
+    private async Task SetComposerCaretAsync(int pos)
+    {
+        if (_composerDropModule is null) return;
+        try { await _composerDropModule.InvokeVoidAsync("setCaret", _composerEl, pos); }
+        catch (Exception ex) { Log.LogDebug(ex, "setCaret failed"); }
     }
 
     // Cancel / closed with no text.
@@ -1614,13 +1667,16 @@
 
     // Fire-and-forget Send (spec section 10): the overlay closed the instant Send was pressed and
     // the transcribe-and-submit is now running in the background. Release the dialog guard so the
-    // user can act immediately, and mark the session orange ("Transcribing...") on the roster so
-    // nobody else starts using it. The matching OnDictateSend still fires later with the text.
+    // user can act immediately, mark the session orange ("Transcribing...") on the roster, and lock
+    // the composer Send/Queue so the typed text sitting there cannot be sent twice while the dictated
+    // transcript is on its way. The matching OnDictateSend fires later and appends the transcript to
+    // that typed text. Skip the composer lock for the Voice tab, which does not touch the composer.
     [JSInvokable]
     public async Task OnDictateTranscribingStart()
     {
         _dictating = false;
         var sid = _dictatingSessionId;
+        if (!_voiceDictation) _backgroundDictating = true;
         ActionInfo("speak-transcribing", "state=start");
         await InvokeAsync(StateHasChanged);
         if (!string.IsNullOrEmpty(sid))
@@ -1630,21 +1686,27 @@
         }
     }
 
-    // The background transcription finished (or failed) - clear the orange "Transcribing" mark.
+    // The background transcription finished (or failed) - clear the orange "Transcribing" mark and
+    // release the composer lock. This fires AFTER the matching OnDictateSend on the success path, so
+    // the dictated turn is already submitted by now; on the empty/failed path the composer still holds
+    // the typed text, which the user can now Send themselves.
     [JSInvokable]
     public async Task OnDictateTranscribingEnd()
     {
         var sid = _dictatingSessionId;
         ActionInfo("speak-transcribing", "state=end");
+        _backgroundDictating = false;
         if (!string.IsNullOrEmpty(sid))
         {
             try { await Director.SetTranscribingAsync(sid, false); }
             catch (Exception ex) { Log.LogDebug(ex, "SetTranscribing(false) failed for {Sid}", sid); }
         }
+        await InvokeAsync(StateHasChanged);
     }
 
-    // The background send failed after the overlay closed - surface the cause (the orange mark is
-    // already cleared by OnDictateTranscribingEnd, which fires first).
+    // The background send failed after the overlay closed - surface the cause. The composer still
+    // holds the user's typed text (it was never cleared), so nothing is lost; the orange mark is
+    // already cleared by OnDictateTranscribingEnd, which fires first.
     [JSInvokable]
     public Task OnDictateError(string message)
     {
