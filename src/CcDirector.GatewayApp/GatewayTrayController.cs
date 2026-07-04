@@ -52,6 +52,11 @@ public sealed class GatewayTrayController : IDisposable
     // unlock, so a wedged quit can never strand an update on the old build.
     private static readonly TimeSpan ShutdownWatchdogGrace = TimeSpan.FromSeconds(10);
 
+    // Issue #927: how long the distinct post-restart tooltip ("restarted OK - v... at ...") dwells
+    // before the tray reverts to its normal running tooltip. The persistent "Last restart" flyout row
+    // stays regardless, so this is only how long the tooltip itself stays distinct.
+    private static readonly TimeSpan RestartConfirmationDwell = TimeSpan.FromSeconds(8);
+
     private readonly IClassicDesktopStyleApplicationLifetime _desktop;
     private readonly int _port;
     private readonly CancellationTokenSource _lifetime = new();
@@ -80,6 +85,12 @@ public sealed class GatewayTrayController : IDisposable
     private HostState _state = HostState.Stopped;
     private bool _busy;
     private bool _disposed;
+    // Issue #927: the outcome of the most recent "Restart Gateway" click (success with the running
+    // version, or a failure reason), shown as a persistent "Last restart" row on the flyout so the
+    // user can always confirm a restart took effect - the PID never changes, so without this the
+    // in-process restart is invisible. Null until the first restart of this run. UI-thread only (both
+    // written from the restart continuation and read by BuildFlyoutModel run on the UI thread).
+    private string? _lastRestartStatus;
     // Issue #637: cancels an in-flight browser loopback sign-in when the app quits, so a pending
     // hand-off never outlives the process. A fresh source is created for each sign-in run.
     private CancellationTokenSource? _signInCts;
@@ -197,6 +208,11 @@ public sealed class GatewayTrayController : IDisposable
             .ToList();
 
         var rows = new List<StatusRow>();
+        // Issue #927: keep the last "Restart Gateway" outcome visible at the top of the flyout. The
+        // tray tooltip confirmation is transient (it reverts to the normal running tooltip); this row
+        // is the durable record, so opening the flyout always shows whether the last restart worked.
+        if (_lastRestartStatus is { } restart)
+            rows.Add(new("Last restart", restart));
         if (accountValue is not null)
             rows.Add(new(CcDirector.Gateway.Account.GatewaySignInTraySurface.AccountRowLabel, accountValue));
         if (fleet.Count == 0)
@@ -750,11 +766,81 @@ public sealed class GatewayTrayController : IDisposable
                 await StopHostAsync();
                 await StartHostAsync();
             });
+
+            // Issue #927: surface the outcome so the user can tell the restart worked. The restart
+            // itself is UNCHANGED above; StartHostAsync sets HostState.Running on success or
+            // HostState.Failed (via DiagnoseStartFailureAsync) on failure, so the resulting state IS
+            // the outcome signal. This runs on the UI thread (the continuation of the awaited
+            // Task.Run), the same thread BuildFlyoutModel reads _lastRestartStatus on.
+            ShowRestartOutcome();
+        }
+        catch (Exception ex)
+        {
+            // Boundary catch (this method is the tray-click handler body): a restart that throws must
+            // never be a silent no-op - surface a distinct failure so the user knows it did not take.
+            FileLog.Write($"[GatewayTrayController] RestartAsync FAILED: {ex.Message}");
+            ApplyRestartFailure(ex.Message);
         }
         finally
         {
             _busy = false;
         }
+    }
+
+    /// <summary>
+    /// Issue #927: after the (unchanged) restart stop/start chain, show a distinct, visible
+    /// confirmation of the outcome. On success the tray tooltip briefly shows "restarted OK" with the
+    /// running version and the flyout keeps a persistent "Last restart" row; the tooltip then reverts
+    /// to the normal running tooltip. On failure a distinct failure tooltip + row is shown instead.
+    /// All UI updates go through <see cref="ApplyStatus"/> (which marshals to the UI thread) so nothing
+    /// blocks it.
+    /// </summary>
+    private void ShowRestartOutcome()
+    {
+        if (_state == HostState.Running && _host is not null)
+        {
+            var version = AppVersion.Semver;
+            var now = DateTime.Now;
+            _lastRestartStatus = GatewayRestartFeedback.SuccessStatus(version, now);
+            FileLog.Write($"[GatewayTrayController] RestartAsync SUCCESS: v{version} on :{_port}");
+            ApplyStatus(_lastRestartStatus, GatewayRestartFeedback.SuccessTooltip(version, now));
+            _ = RevertTooltipAfterConfirmationAsync();
+            return;
+        }
+
+        // Restart did not reach Running: StartHostAsync failed and DiagnoseStartFailureAsync already
+        // resolved the reason into _statusText (e.g. "Port 7900 in use by another app").
+        ApplyRestartFailure(_statusText);
+    }
+
+    /// <summary>Issue #927: show the distinct restart-FAILURE confirmation (tooltip + persistent flyout row).</summary>
+    private void ApplyRestartFailure(string reason)
+    {
+        _lastRestartStatus = GatewayRestartFeedback.FailureStatus(reason);
+        FileLog.Write($"[GatewayTrayController] RestartAsync FAILURE surfaced: {reason}");
+        ApplyStatus(_lastRestartStatus, GatewayRestartFeedback.FailureTooltip(reason));
+    }
+
+    /// <summary>
+    /// Issue #927: after the success confirmation has dwelled, revert the tray tooltip to its normal
+    /// running tooltip (the flyout's "Last restart" row stays as the durable record). Fire-and-forget
+    /// so the restart click returns immediately; a state change in the meantime (a second restart, a
+    /// quit) is respected because the revert re-derives the tooltip from the current state.
+    /// </summary>
+    private async Task RevertTooltipAfterConfirmationAsync()
+    {
+        try
+        {
+            await Task.Delay(RestartConfirmationDwell, _lifetime.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // app shutting down - nothing to revert
+        }
+        // Only revert if the host is still the one we confirmed running; if it failed or restarted
+        // again since, that newer state owns the tooltip.
+        if (_state == HostState.Running)
+            SetState(HostState.Running);
     }
 
     private async Task QuitAsync()
