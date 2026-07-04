@@ -35,6 +35,24 @@ public sealed class GatewayHost : IAsyncDisposable
     public bool AuthEnabled { get; }
 
     /// <summary>
+    /// Environment opt-in that turns the host-wide auth gate ON for a Gateway that would otherwise
+    /// default to off (issue #908). Set <c>CC_GATEWAY_AUTH=1</c> so reaching the Gateway on the tailnet
+    /// is no longer sufficient - a request must present the shared token or a per-device key. This
+    /// mirrors the <c>CC_GATEWAY_NO_TAILSCALE</c> env-toggle precedent and keeps the shipped default
+    /// unchanged (off) so no install starts requiring credentials without an explicit opt-in.
+    /// </summary>
+    public const string AuthEnabledEnvVar = "CC_GATEWAY_AUTH";
+
+    /// <summary>
+    /// Resolves whether the host-wide auth gate runs: the explicit constructor flag OR the
+    /// <see cref="AuthEnabledEnvVar"/> environment opt-in. Pure and side-effect free so it is unit-tested
+    /// directly.
+    /// </summary>
+    internal static bool ResolveAuthEnabled(bool explicitlyEnabled) =>
+        explicitlyEnabled
+        || string.Equals(Environment.GetEnvironmentVariable(AuthEnabledEnvVar), "1", StringComparison.Ordinal);
+
+    /// <summary>
     /// Issue #469: mints and verifies the short-lived 4-digit pairing code that authorizes a new
     /// device to enroll. The GatewayApp host window drives this in-process (it mints the code,
     /// shows it locally, and polls the device registry for the join); the /devices/register
@@ -257,7 +275,9 @@ public sealed class GatewayHost : IAsyncDisposable
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
         Devices = new Pairing.DeviceRegistry(devicesPath);
-        AuthEnabled = authEnabled;
+        AuthEnabled = ResolveAuthEnabled(authEnabled);
+        if (AuthEnabled && !authEnabled)
+            FileLog.Write($"[GatewayHost] {AuthEnabledEnvVar}=1 -> host-wide auth gate ENABLED (a per-device key or the shared token is now required, even on the tailnet)");
         _client = new DirectorEndpointClient(Token);
         _cockpitProxyPort = cockpitProxyPort ?? Cockpit.CockpitSupervisor.ResolvePort();
         _serveProvisioner = new TailscaleServeProvisioner(Registry, Port, Cockpit.CockpitSupervisor.ResolvePort());
@@ -1011,6 +1031,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // Cockpit catch-all so these explicit routes win.
         Api.WebPushEndpoints.Map(_app, _vapidStore.PublicKey, _pushSubscriptions,
             onSubscribed: () => _pushNotifier?.ResetDedupe());
+
+        // Mobile device enrollment (issue #908): POST /m/enroll. A phone that signed in on
+        // devthrottle.com and received its per-device key hands that key here; the Gateway confirms
+        // (account-scoped, by key hash) that the key belongs to its OWN signed-in account and issues the
+        // phone a LOCAL device key it validates offline - so the master token is no longer injected into
+        // the mobile shell. Under /m/ so it is reachable before the phone holds any credential; it carries
+        // its own authorization (the account-scoped device key), exactly like /devices/register. Mapped
+        // before the mobile shell so the explicit POST route wins over the shell's GET catch-all.
+        var mobileEnrollmentClient = new Core.Account.DeviceRegistryClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
+        Api.MobileEnrollmentEndpoint.Map(_app, new Account.MobileDeviceEnrollmentService(Account, mobileEnrollmentClient, Devices));
 
         Mobile.MobileApp.Map(_app, Token);
 

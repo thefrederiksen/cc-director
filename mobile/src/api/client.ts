@@ -8,6 +8,7 @@
 import type { components } from "./schema";
 import type { SessionHistoryDto } from "../history/types";
 import { planUploadChunks } from "./chunking";
+import { getDeviceKey, clearDeviceKey } from "../auth/deviceKey";
 
 export type SessionDto = components["schemas"]["SessionDto"];
 
@@ -43,32 +44,46 @@ export interface RepoInfo {
   lastUsed: string;
 }
 
-// The injected token. A value still starting with "__" means the page was served without
-// injection (e.g. opened directly from the raw build) - treat that as absent.
+// The app's credential is the per-device key it obtained at enrollment (issue #908), read from the
+// device-key store - NOT a token injected into the page (the shell no longer carries one). Empty until
+// the phone has enrolled, in which case the caller (the auth gate) routes to the Sign in screen.
 function gatewayToken(): string {
-  const raw =
-    (typeof window !== "undefined" && (window as unknown as { __GW_TOKEN__?: string }).__GW_TOKEN__) || "";
-  return raw.indexOf("__") === 0 ? "" : raw;
+  return getDeviceKey();
 }
 
 // Exported so the dictation transcription calls (which post raw audio bytes and read a transcript)
-// attach the same Bearer the rest of the client uses - the app works with Gateway auth on or off.
+// attach the same Bearer the rest of the client uses. Empty headers before enrollment; the app gates
+// on the device key so no data call runs without one.
 export function authHeaders(): HeadersInit {
   const token = gatewayToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-// Mirror the per-machine Gateway token into the cc-gateway-token cookie (issue #817). A browser
-// WebSocket cannot set an Authorization header, so the live terminal stream
-// (GET /sessions/{sid}/stream) authenticates via this cookie, which the same-origin handshake
-// carries and the Gateway's AuthMiddleware accepts (HasValidToken checks Bearer OR this cookie).
-// The token is already in the page (window.__GW_TOKEN__), so the cookie exposes nothing new; it is
-// scoped to this origin. A no-op when the page was served without an injected token (auth is then
-// off and the stream needs no credential anyway).
+// Mirror the per-device key into the cc-gateway-token cookie (issue #817/#908). A browser WebSocket
+// cannot set an Authorization header, so the live terminal stream (GET /sessions/{sid}/stream)
+// authenticates via this cookie, which the same-origin handshake carries and the Gateway's
+// AuthMiddleware accepts (HasValidToken checks the cookie against the shared token OR an active
+// per-device key). The key is already in this origin's storage, so the cookie exposes nothing new; it
+// is scoped to this origin. A no-op before enrollment (no key yet - the stream is never opened then).
 export function ensureGatewayCookie(): void {
   const token = gatewayToken();
   if (!token) return;
   document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax`;
+}
+
+// The path the app navigates to when its credential is missing or rejected. Absolute under the /m
+// basename so it works from any in-app route.
+const SIGN_IN_PATH = "/m/signin";
+
+// Called when the Gateway answers 401 to a credentialed call: the device key was revoked (from the
+// website's "Your devices") or is otherwise no longer valid. Forget it and send the user back to Sign
+// in, so a revoke on the account promptly ends the phone's access (the revoke round-trip, issue #908).
+// A hard navigation (not the router) guarantees the whole app re-gates from a clean state.
+function onUnauthorized(): void {
+  clearDeviceKey();
+  if (typeof window !== "undefined" && window.location.pathname !== SIGN_IN_PATH) {
+    window.location.assign(SIGN_IN_PATH);
+  }
 }
 
 export class GatewayError extends Error {
@@ -89,6 +104,12 @@ export async function listSessions(signal?: AbortSignal): Promise<SessionDto[]> 
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
   });
+  if (res.status === 401) {
+    // The device key was revoked (or is otherwise invalid): forget it and re-gate to Sign in. The
+    // roster is the first credentialed call the app makes, so this is where a revoke surfaces.
+    onUnauthorized();
+    throw new GatewayError(res.status, "This device is no longer authorized. Please sign in again.");
+  }
   if (!res.ok) {
     throw new GatewayError(res.status, `GET /sessions failed: ${res.status}`);
   }
