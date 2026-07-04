@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using CcDirector.Cockpit.Components;
 using CcDirector.Cockpit.Logging;
 using CcDirector.Cockpit.Services;
@@ -21,9 +22,28 @@ builder.Services.AddRazorComponents()
 var gatewayUrl = builder.Configuration["Cockpit:GatewayUrl"] ?? "http://127.0.0.1:7878";
 if (!gatewayUrl.EndsWith('/')) gatewayUrl += "/";
 
-builder.Services.AddHttpClient<GatewayClient>(c =>
+// Issue #920: with the Gateway auth gate enforced by default (issue #917), the Cockpit's OWN
+// server-side calls to the Gateway (the roster GET /sessions, the per-session verbs) must present a
+// credential or they 401 and no session data renders. The Cockpit is a trusted co-located component:
+// it reads the per-machine gateway token from disk - the SAME token the /voice page already injects,
+// written by the Gateway to {root}\config\director\gateway-token.txt - and sends it as the Bearer on
+// every Gateway call. This does not weaken the gate (it authenticates a legitimate caller with the
+// machine token, exactly as a Director does); when the token file is absent no header is added and,
+// when the gate is off, an unused Bearer is simply ignored. The browser leg (the Blazor circuit and
+// /_framework assets) is authenticated separately by the cc-gateway-token cookie the visitor obtains
+// at /login.
+var gatewayToken = ReadGatewayToken();
+
+void AttachGatewayBearer(HttpClient c)
 {
     c.BaseAddress = new Uri(gatewayUrl);
+    if (!string.IsNullOrEmpty(gatewayToken))
+        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gatewayToken);
+}
+
+builder.Services.AddHttpClient<GatewayClient>(c =>
+{
+    AttachGatewayBearer(c);
     // Generous: the Gateway's own fan-out can take a few seconds when a Director is slow.
     c.Timeout = TimeSpan.FromSeconds(30);
 });
@@ -44,7 +64,10 @@ builder.Services.AddHttpClient<GitHubItemStatusClient>(c =>
 // base per call, which overrides this BaseAddress.
 builder.Services.AddHttpClient<DirectorClient>(c =>
 {
-    c.BaseAddress = new Uri(gatewayUrl);
+    // Issue #920: same machine-token Bearer as GatewayClient - the per-session verbs also go to the
+    // enforced Gateway (which resolves the owning Director and reverse-proxies), so they need the
+    // credential too. A per-call absolute Director base still overrides this BaseAddress unchanged.
+    AttachGatewayBearer(c);
     // Generous: most calls return in milliseconds, but recap generation is an opus call that can
     // take ~90s. A high ceiling lets that one call through without affecting the fast ones (it
     // only bounds how long a hung call waits).
