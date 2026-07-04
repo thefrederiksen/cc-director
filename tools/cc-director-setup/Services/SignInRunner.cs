@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CcDirector.Core.Account;
+using CcDirector.Core.Storage;
 
 namespace CcDirectorSetup.Services;
 
@@ -45,13 +46,17 @@ public enum SignInOutcome
 /// <c>tools/devthrottle-dev-signin</c> (pointed at by <c>DEVTHROTTLE_SIGNIN_URL</c>); the listener and
 /// this runner do not know or care whether the real backend or the stand-in completes the hand-back.
 ///
-/// On a successful hand-back the captured token pair is persisted into the SAME operating-system
-/// credential store the Director reads (issue #658): the pair is handed to the existing
-/// <see cref="DevThrottleAccountService"/>, which encrypts it at rest through
-/// <see cref="WindowsProtectedTokenStore"/> to
-/// <c>%LOCALAPPDATA%\cc-director\config\director\devthrottle-credential.bin</c>. Because the installer
-/// runs as the same Windows user who will run the Director, the Director's first-run account gate then
-/// sees "already signed in" and goes straight to the main window. Persistence happens ONLY on a
+/// On a successful hand-back the captured token pair is persisted into the same operating-system
+/// credential store the GATEWAY reads (issues #658 and #906): the pair is handed to a
+/// <see cref="DevThrottleAccountService"/> over a <see cref="WindowsProtectedTokenStore"/> rooted at
+/// the Gateway credential path, which encrypts it at rest to
+/// <c>%LOCALAPPDATA%\cc-director\config\gateway\devthrottle-credential.bin</c>. The DevThrottle account
+/// moved onto the Gateway (Gateway Centralization, issues #636 / #642 / #651): the Gateway now holds the
+/// machine-wide credential and the Director deletes any credential of its own on startup, so the
+/// installer must write to the Gateway store or the Gateway would prompt a SECOND browser sign-in on its
+/// first launch. Because the installer runs as the same Windows user who will run the Gateway, the
+/// Gateway can decrypt what is written here (Windows Data Protection is per-user) and its first-launch
+/// sign-in check sees "already signed in", so it does not re-prompt. Persistence happens ONLY on a
 /// successful sign-in - on cancel, timeout, or failure nothing is written, so a credential is never
 /// stored for an incomplete sign-in.
 ///
@@ -85,10 +90,10 @@ public sealed class SignInRunner
     /// <see cref="Process.Start(ProcessStartInfo)"/>.
     /// </param>
     /// <param name="persistCredential">
-    /// Persists the captured token pair into the Director's operating-system credential store. Defaults
-    /// to the real <see cref="DevThrottleAccountService"/> writing the encrypted blob the Director reads
-    /// (issue #658). Tests inject a recording seam so persistence is provable without Windows Data
-    /// Protection.
+    /// Persists the captured token pair into the Gateway's operating-system credential store. Defaults
+    /// to a real <see cref="DevThrottleAccountService"/> writing the encrypted blob the Gateway reads
+    /// (issues #658 and #906). Tests inject a recording seam so persistence is provable without Windows
+    /// Data Protection.
     /// </param>
     /// <param name="timeout">
     /// How long to wait for the hand-back before timing out. Defaults to <see cref="DefaultTimeout"/>.
@@ -109,7 +114,7 @@ public sealed class SignInRunner
     {
         _listenerFactory = listenerFactory ?? (() => new LoopbackLoginListener());
         _openBrowser = openBrowser ?? OpenSystemBrowser;
-        _persistCredential = persistCredential ?? PersistToDirectorCredentialStore;
+        _persistCredential = persistCredential ?? PersistToGatewayCredentialStore;
         _timeout = timeout ?? DefaultTimeout;
         _publishAccessToken = publishAccessToken;
     }
@@ -150,9 +155,9 @@ public sealed class SignInRunner
         DevThrottleTokens capturedTokens;
         try
         {
-            // The token pair captured here is handed to the Director credential store below (issue
-            // #658). The value is never logged and never returned (acceptance criterion: no token in
-            // the installer log).
+            // The token pair captured here is handed to the Gateway credential store below (issues
+            // #658 and #906). The value is never logged and never returned (acceptance criterion: no
+            // token in the installer log).
             capturedTokens = await listener.WaitForCredentialAsync(linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -177,9 +182,10 @@ public sealed class SignInRunner
 
         SetupLog.Write("[SignInRunner] RunAsync: credential captured from the browser hand-back");
 
-        // Hand the captured sign-in to the app (issue #658): persist the token pair into the same
-        // operating-system credential store the Director reads, so its first-run account gate sees
-        // "already signed in". This runs only on a successful capture - the cancel/timeout/failure
+        // Hand the captured sign-in to the app (issues #658 and #906): persist the token pair into the
+        // same operating-system credential store the Gateway reads, so the Gateway's first-launch
+        // sign-in check sees "already signed in" and does not re-prompt. This runs only on a
+        // successful capture - the cancel/timeout/failure
         // paths above all returned before reaching here, so no credential is ever written for an
         // incomplete sign-in. A persistence failure is surfaced as a failure (no fallback): if the
         // credential cannot be stored, the install has not achieved "open already signed in", so we
@@ -195,7 +201,7 @@ public sealed class SignInRunner
                 "Signed in, but the sign-in could not be saved for the app. Please try again.");
         }
 
-        SetupLog.Write("[SignInRunner] RunAsync: captured credential persisted to the Director credential store");
+        SetupLog.Write("[SignInRunner] RunAsync: captured credential persisted to the Gateway credential store");
 
         // Publish the captured access token in process memory only (issue #659) so the Privacy step can
         // use it as the Bearer for the per-account telemetry calls. The token is never logged and never
@@ -216,16 +222,25 @@ public sealed class SignInRunner
     }
 
     /// <summary>
-    /// Persists the captured token pair into the Director's operating-system credential store via the
-    /// existing <see cref="DevThrottleAccountService"/>, which encrypts the pair at rest through
-    /// <see cref="WindowsProtectedTokenStore"/> at the Director's credential path. The installer runs
-    /// as the same Windows user who will run the Director, so the Director can decrypt what is written
-    /// here (Windows Data Protection is per-user). The token value is never logged.
+    /// Persists the captured token pair into the GATEWAY's operating-system credential store (issue
+    /// #906). The DevThrottle account moved onto the Gateway (Gateway Centralization, issues
+    /// #636 / #642 / #651): the Gateway now holds the machine-wide credential and reads it from
+    /// <see cref="CcStorage.GatewayDevThrottleCredentialBlob"/> (config/gateway), while the Director
+    /// deletes any credential of its own on startup. Writing to the Director store here would be thrown
+    /// away and the Gateway would prompt a SECOND browser sign-in on first launch. This writes through
+    /// the same <see cref="WindowsProtectedTokenStore"/> the Gateway reads, at the Gateway credential
+    /// path, so the Gateway can decrypt it on first launch and reports signed-in without re-prompting.
+    /// The installer runs as the same Windows user who will run the Gateway, so the Gateway can decrypt
+    /// what is written here (Windows Data Protection is per-user). The credential store creates its
+    /// directory on write, so the config/gateway directory need not exist yet. The "logged-in"
+    /// authentication event is recorded in the Gateway's own authentication-event log
+    /// (<see cref="CcStorage.GatewayDevThrottleAuthEventsLog"/>). The token value is never logged.
     /// </summary>
-    private static void PersistToDirectorCredentialStore(DevThrottleTokens tokens)
+    private static void PersistToGatewayCredentialStore(DevThrottleTokens tokens)
     {
-        SetupLog.Write("[SignInRunner] PersistToDirectorCredentialStore: storing captured credential for the Director");
-        var service = DevThrottleAccountFactory.CreateForWindows();
+        SetupLog.Write("[SignInRunner] PersistToGatewayCredentialStore: storing captured credential for the Gateway");
+        var store = new WindowsProtectedTokenStore(CcStorage.GatewayDevThrottleCredentialBlob());
+        var service = DevThrottleAccountFactory.Build(store, CcStorage.GatewayDevThrottleAuthEventsLog());
         service.StoreTokens(tokens);
     }
 }

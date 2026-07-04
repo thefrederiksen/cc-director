@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Account;
@@ -44,17 +45,33 @@ public static class DevThrottleAccountFactory
 
     /// <summary>
     /// Creates the credential service over an explicit store. Used by tests and by non-Windows
-    /// startup paths that supply their own <see cref="IProtectedTokenStore"/> implementation.
+    /// startup paths that supply their own <see cref="IProtectedTokenStore"/> implementation. The
+    /// authentication-event log is written to the Director path
+    /// (<see cref="CcStorage.DevThrottleAuthEventsLog"/>).
     /// </summary>
     public static DevThrottleAccountService Build(IProtectedTokenStore store)
     {
+        return Build(store, CcStorage.DevThrottleAuthEventsLog());
+    }
+
+    /// <summary>
+    /// Creates the credential service over an explicit store AND an explicit authentication-event log
+    /// path. Used when the credential must be written to a store outside the Director's own location
+    /// (for example the Gateway credential store the installer targets, issue #906) so the "logged-in"
+    /// event lands in that store's own authentication-event log rather than the Director's. The tokens
+    /// themselves are never written to the log.
+    /// </summary>
+    public static DevThrottleAccountService Build(IProtectedTokenStore store, string authEventsLogPath)
+    {
         if (store is null)
             throw new ArgumentNullException(nameof(store));
+        if (string.IsNullOrWhiteSpace(authEventsLogPath))
+            throw new ArgumentException("Authentication-event log path is required", nameof(authEventsLogPath));
 
         var validator = new JwtAccessTokenValidator(
             ResolveSigningSecret(),
             publicKeySetJson: DevThrottleSigningKeys.ResolvePublicKeySet());
-        var eventLog = new AuthEventLog();
+        var eventLog = new AuthEventLog(authEventsLogPath);
         var refresher = new BackendUnavailableTokenRefresher();
 
         FileLog.Write("[DevThrottleAccountFactory] Build: credential service constructed");
