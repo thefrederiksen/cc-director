@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
@@ -28,7 +29,14 @@ public sealed class GatewayConfig
     /// <summary>Gateway base URL, e.g. <c>http://gateway.tailnet.example:7878</c>.</summary>
     public string Url { get; init; } = "";
 
-    /// <summary>Shared bearer token. Empty means no auth header is sent.</summary>
+    /// <summary>
+    /// Bearer token the Director/launcher present to the Gateway. Normally the enrolled per-device key
+    /// or shared fleet token from config.json's <c>gateway.token</c>. When that is empty AND the
+    /// configured Gateway is THIS machine's own Gateway, <see cref="Load"/> resolves it to the local
+    /// shared machine token from <c>gateway-token.txt</c> (see <see cref="IsLocalGatewayHost"/>), so a
+    /// Gateway-role install - which never runs the pairing step that would write a token - still
+    /// authenticates its own Director. Empty means no auth header is sent.
+    /// </summary>
     public string Token { get; init; } = "";
 
     /// <summary>
@@ -72,14 +80,34 @@ public sealed class GatewayConfig
             if (!doc.RootElement.TryGetProperty("gateway", out var gw))
                 return new GatewayConfig { AddressingMode = mode };
 
-            var url = gw.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
-            var token = gw.TryGetProperty("token", out var t) ? t.GetString() ?? "" : "";
+            var url = (gw.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "").Trim();
+            var token = (gw.TryGetProperty("token", out var t) ? t.GetString() ?? "" : "").Trim();
             var tailnet = gw.TryGetProperty("tailnetEndpoint", out var te) ? te.GetString() : null;
+
+            // Same-machine credential resolution. A Gateway-role install never runs the pairing step
+            // (that step, and only that step, writes gateway.token - it is a Workstation-only step), so
+            // the Gateway host's own Director/launcher have no configured token and, once host-wide auth
+            // is enforced, get 401 on every Gateway call. When the configured Gateway is THIS machine's
+            // own Gateway, present the local shared machine token from gateway-token.txt - the exact file
+            // GatewayAuth writes on the Gateway host, and the same file DirectorAuth already reads for the
+            // inbound Control API. It is scoped to a LOCAL Gateway URL so a remote Workstation never sends
+            // this machine's token to a different Gateway. This is a credential RESOLUTION, not a fallback
+            // that hides an error: it is the correct token for the local Gateway, sourced from the one
+            // file that holds it.
+            if (string.IsNullOrEmpty(token) && url.Length > 0 && IsLocalGatewayHost(url))
+            {
+                var localToken = TryReadLocalMachineToken();
+                if (!string.IsNullOrEmpty(localToken))
+                {
+                    token = localToken;
+                    FileLog.Write("[GatewayConfig] gateway.token empty and gateway.url targets this machine's own Gateway; using the local shared machine token from gateway-token.txt");
+                }
+            }
 
             return new GatewayConfig
             {
-                Url = url.Trim(),
-                Token = token.Trim(),
+                Url = url,
+                Token = token,
                 TailnetEndpoint = string.IsNullOrWhiteSpace(tailnet) ? null : tailnet.Trim(),
                 AddressingMode = mode,
             };
@@ -88,6 +116,57 @@ public sealed class GatewayConfig
         {
             FileLog.Write($"[GatewayConfig] Load FAILED, treating as disabled: {ex.Message}");
             return new GatewayConfig();
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="url"/> addresses THIS machine's own Gateway: loopback, "localhost",
+    /// this machine's name, or its Tailscale MagicDNS name. Tailscale lowercases the hostname and turns
+    /// '_' into '-' (SOREN_NORTH -> soren-north), so the first DNS label is compared against the
+    /// normalized machine name. Used to scope the empty-token same-machine credential resolution to a
+    /// local Gateway so a remote Workstation never presents this machine's token to a different Gateway.
+    /// Pure and side-effect free so it is unit-tested directly.
+    /// </summary>
+    internal static bool IsLocalGatewayHost(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return false;
+
+        var host = uri.Host;
+        if (IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip))
+            return true;
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Tailscale MagicDNS: <normalized-hostname>.<tailnet>.ts.net - match the first label.
+        var firstLabel = host.Split('.', 2)[0];
+        var normalizedMachine = Environment.MachineName.ToLowerInvariant().Replace('_', '-');
+        return firstLabel.Equals(normalizedMachine, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Read the local shared machine token that <c>GatewayAuth</c> generates on the Gateway host
+    /// (<c>%LOCALAPPDATA%\cc-director\config\director\gateway-token.txt</c> - the same file
+    /// <c>GatewayAuth.TokenFile</c> / <c>DirectorAuth.TokenFile</c> / <see cref="GatewayCredentialStore.CredentialFile"/>
+    /// name). The path is computed fresh (not a cached static) so it honors the current config root.
+    /// Null when the file is absent or empty.
+    /// </summary>
+    private static string? TryReadLocalMachineToken()
+    {
+        try
+        {
+            var path = Path.Combine(CcStorage.Config(), "director", "gateway-token.txt");
+            if (!File.Exists(path))
+                return null;
+            var text = File.ReadAllText(path).Trim();
+            return string.IsNullOrEmpty(text) ? null : text;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConfig] TryReadLocalMachineToken failed: {ex.Message}");
+            return null;
         }
     }
 }
