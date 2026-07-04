@@ -1,3 +1,4 @@
+using CcDirector.Gateway.Cockpit;
 using CcDirector.Gateway.Pairing;
 using Microsoft.AspNetCore.Http;
 
@@ -6,15 +7,26 @@ namespace CcDirector.Gateway.Util;
 /// <summary>
 /// Bearer-or-cookie auth for the Gateway.
 ///
-/// Public, no auth:    /healthz, /cockpit, /login, /logout, /favicon.ico, /devices/register, and the
-///                     mobile app shell /m + everything under /m/ (which includes the mobile enroll
-///                     path POST /m/enroll - it carries its own account-scoped authorization).
+/// Public, no auth:    /healthz, /login, /logout, /favicon.ico, /devices/register, the mobile app
+///                     shell /m + everything under /m/ (which includes the mobile enroll path
+///                     POST /m/enroll - it carries its own account-scoped authorization), and the
+///                     JSON /cockpit endpoint (a program GET, NOT a browser navigation - see below).
 /// Authenticated:      every other route (Bearer header OR cc-gateway-token cookie OR, per
 ///                     issue #469, a per-device key issued at enrollment).
 ///
 /// This public set is deliberately the ONLY way in without a credential once the host-wide gate is on
 /// by default (issue #917): the enroll/pairing entry points carry their own authorization and the login
 /// surface must be reachable to obtain one, while every data endpoint stays credential-gated.
+///
+/// Issue #920 - the /cockpit split: /cockpit is a dual-use path. The JSON API form (a program GET with
+/// no "Accept: text/html", e.g. the desktop app's Open Cockpit / Learn buttons resolving the front-door
+/// URL) stays public so a same-machine caller with no credential still works. But a BROWSER navigation
+/// to /cockpit ("Accept: text/html") is the Blazor SHELL, whose /_blazor circuit and /_framework assets
+/// are credential-gated: serving that shell to an unauthenticated browser produced a dead Cockpit whose
+/// circuit 401s. So a browser navigation to /cockpit is NOT public - it falls through to the gate and,
+/// having no cookie, is redirected to /login first; after sign-in the shell loads WITH the
+/// cc-gateway-token cookie and its assets authenticate (200). The gate on /_blazor and session data is
+/// unchanged (never weakened).
 ///
 /// Browser requests (Accept: text/html) get a 302 redirect to /login.
 /// Non-browser requests get a 401 with JSON body.
@@ -40,7 +52,17 @@ internal static class AuthMiddleware
     {
         var path = ctx.Request.Path.Value ?? "";
 
-        if (PublicPaths.Contains(path)) { await next(); return; }
+        // Issue #920: a BROWSER navigation to /cockpit (the Blazor shell) is never public - only the
+        // JSON /cockpit API form is. The shell's /_blazor circuit and /_framework assets are gated, so
+        // an unauthenticated browser must be driven to /login (and get the cookie) BEFORE it loads the
+        // shell, rather than being handed a dead shell whose circuit 401s. IsBrowserPageRequest is the
+        // one definition of "person navigating to a dual-use page" (GET + Accept: text/html), reused
+        // here so the classification cannot drift from the CockpitProxy that forwards these navigations.
+        var isCockpitBrowserShell =
+            string.Equals(path, "/cockpit", StringComparison.OrdinalIgnoreCase)
+            && CockpitProxy.IsBrowserPageRequest(ctx.Request.Method, ctx.Request.Path, ctx.Request.Headers.Accept);
+
+        if (!isCockpitBrowserShell && PublicPaths.Contains(path)) { await next(); return; }
 
         // Issue #806 / #908: the mobile app shell (/m and its built assets) carries no secret. It must
         // load without the global gate so the Sign in screen can render before the phone has any
