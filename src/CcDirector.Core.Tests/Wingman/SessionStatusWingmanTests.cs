@@ -237,6 +237,81 @@ public sealed class SessionStatusWingmanTests
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
+    // ---------- Orange overlay: a dictated utterance is being transcribed (spec section 10) ----------
+
+    [Fact]
+    public void Orange_while_transcribing_over_a_red_turn_end_then_back()
+    {
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        var wingman = new SessionStatusWingman(manager);
+        try
+        {
+            wingman.Start();
+            var (session, _) = CreateBufferSession(manager);
+            session.IsBrandNew = false;
+
+            session.ApplyTerminalActivityState(ActivityState.Working);
+            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+            Assert.Equal(StatusColor.Red, session.StatusColor);
+
+            session.IsTranscribing = true;
+            Assert.Equal(StatusColor.Orange, session.StatusColor);
+            Assert.Equal("Transcribing...", session.LastStatusReason);
+
+            session.IsTranscribing = false;
+            Assert.Equal(StatusColor.Red, session.StatusColor);
+        }
+        finally { wingman.Dispose(); manager.Dispose(); }
+    }
+
+    [Fact]
+    public void Orange_while_transcribing_applies_even_while_working()
+    {
+        // Unlike the wingman Yellow overlay (turn-end gated), the orange "Transcribing" overlay has
+        // NO turn-end gate: a message is being dictated into the session regardless of what it is
+        // doing, so it shows orange even while the agent is working (blue).
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        var wingman = new SessionStatusWingman(manager);
+        try
+        {
+            wingman.Start();
+            var (session, _) = CreateBufferSession(manager);
+
+            session.ApplyTerminalActivityState(ActivityState.Working);
+            Assert.Equal(StatusColor.Blue, session.StatusColor);
+
+            session.IsTranscribing = true;
+            Assert.Equal(StatusColor.Orange, session.StatusColor);
+        }
+        finally { wingman.Dispose(); manager.Dispose(); }
+    }
+
+    [Fact]
+    public void Orange_while_transcribing_applies_even_when_wingman_disabled()
+    {
+        // The orange overlay is a plain-terminal busy signal, not a wingman feature, so it must show
+        // even on a WingmanEnabled=false session (unlike the Yellow overlay, which is suppressed).
+        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
+        var wingman = new SessionStatusWingman(manager);
+        try
+        {
+            wingman.Start();
+            var (session, _) = CreateBufferSession(manager);
+            session.WingmanEnabled = false;
+            session.IsBrandNew = false;
+
+            // Run a turn and park at its end so the Working->WaitingForInput transition recomputes
+            // the colour to red "needs you" (a bare WaitingForInput apply is not a state change).
+            session.ApplyTerminalActivityState(ActivityState.Working);
+            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+            Assert.Equal(StatusColor.Red, session.StatusColor);
+
+            session.IsTranscribing = true;
+            Assert.Equal(StatusColor.Orange, session.StatusColor);
+        }
+        finally { wingman.Dispose(); manager.Dispose(); }
+    }
+
     // ---------- Yellow overlay (turn-brief pipeline, issue #192) ----------
     // The TurnBriefOrchestrator drives BriefingState around its read of a finished
     // turn. While Briefing the badge must be Yellow, not red "needs you" - until the

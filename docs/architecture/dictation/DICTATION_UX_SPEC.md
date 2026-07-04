@@ -43,16 +43,23 @@ user may also edit by hand while paused.
             +-----------------------------------------------+
             v                                               |
   (open) -> RECORDING --Pause--> TRANSCRIBING --> PAUSED ---+ (Resume)
-               |                      ^             |
-            Insert/Send               |          Insert/Send
-               |                      |             |
-               +---> TRANSCRIBING ----+             v
-                          |                      (commit)
-                          v
-                       (commit)
+               |    \                 ^             |
+             Insert  \ Send        Insert         Insert/Send
+               |      \ (close now)   |             |
+               +---> TRANSCRIBING     |             v
+               |          |           |          (commit)
+               |          v           |
+               |       (commit)       |
+               +---> (close now) -----+---> [background transcribe + submit;
+                                             session shows "Transcribing" - section 10]
 
   any stage --(unrecoverable error)--> FAILED
 ```
+
+Note the fork at RECORDING: **Insert** goes through the in-dialog TRANSCRIBING
+state (it must produce text to hand back), while **Send** closes the dialog
+immediately and the transcription happens in the background (section 10). PAUSED
+already holds transcribed text, so both Insert and Send commit from it instantly.
 
 | State | Meaning | Mic | Transcript box |
 | --- | --- | --- | --- |
@@ -88,9 +95,16 @@ RIGHT group:
 
 - **Insert** (green). Commits the transcript and closes WITHOUT auto-submitting,
   so the caller drops the text at the caret for the user to review/edit in place.
-  From RECORDING it first transcribes the current segment and appends it.
-- **Send** (blue, primary). Same as Insert but the caller auto-submits the
-  prompt. From RECORDING it first transcribes the current segment and appends it.
+  From RECORDING it first transcribes the current segment and appends it - Insert
+  MUST wait, because the point of Insert is to hand back editable text the user
+  then reads, so there is nothing to hand back until the transcript exists.
+- **Send** (blue, primary). Auto-submits the prompt into the session. From
+  RECORDING, Send is **fire-and-forget** (see section 10): the moment it is pressed
+  the dialog captures the recorded audio buffer and CLOSES IMMEDIATELY, and the
+  transcribe-and-submit runs in the background. Send does NOT wait for the
+  transcript, because the transcript cannot be seen on this dialog anyway (Send
+  submits it straight into the session), so holding the screen is pure dead time.
+  From PAUSED the text is already transcribed, so Send submits it instantly.
 
 Commit from PAUSED uses the text currently IN THE BOX (the user's edits win),
 not the raw accumulator.
@@ -175,3 +189,48 @@ Anything else that differs between surfaces is a bug against this spec.
   no dictionary term comes back byte-identical to the raw transcription.
 - Every surface writes the same `DictationSessionRecord` JSONL audit line with
   its own `Source` tag.
+
+---
+
+## 10. Fire-and-forget Send and the "Transcribing" session state
+
+Send from RECORDING must never make the user wait. The instant Send is pressed:
+
+1. The dialog stops the microphone and grabs the recorded audio buffer (plus any
+   already-transcribed PAUSED prefix text). The buffer is independent of the
+   recorder, so it survives the dialog closing.
+2. The dialog CLOSES immediately - the screen is released.
+3. A background task, decoupled from the dialog's lifecycle, does the rest:
+   mark the session **Transcribing**, transcode/upload/transcribe the buffer,
+   join it onto the prefix, submit the result into the session, then clear the
+   **Transcribing** mark. The mark is cleared whether the submit succeeded or
+   failed (so a failure never leaves the session stuck), and each surface applies
+   a generous stale-mark backstop so a crashed or offline client cannot pin a
+   session **Transcribing** forever.
+
+### The Transcribing session state (roster signal)
+
+While that background work runs, the session is shown as **Transcribing** on every
+roster/rail that lists it: an **orange** dot with a **"Transcribing..."** label.
+This tells the owner - and anyone else on the fleet - that the session is busy
+receiving a dictated message, so nobody else starts typing into it mid-dictation.
+It is orange, not red, so it is "active", never "needs you". On-hold still wins
+over it (a parked session stays grey).
+
+### Where the flag lives, per surface
+
+The mechanism differs because each surface reads its roster from a different place,
+but the visible result is identical:
+
+| Surface | How Transcribing is marked and surfaced |
+| --- | --- |
+| Mobile PWA / Blazor Cockpit | Gateway-owned transient flag: the client calls `POST /sessions/{sid}/transcribing`, the Gateway stamps `SessionDto.Transcribing` onto the roster it serves, and `SessionOrdering.EffectiveColor` folds it to orange. Not forwarded to the Director. |
+| Desktop Avalonia | In-process flag on the `Session` object (`IsTranscribing`), honored by `SessionStatusWingman` and painted by the session rail. The desktop reads its own in-process sessions, not the Gateway roster, so it does not use the Gateway flag. |
+| Plain HTML (Director view) | Inherits the "release immediately + background submit" speed from the shared web module. The orange roster flag is a Gateway/desktop concept, so it does not light up on this stand-alone page. |
+
+### The one place Send still waits
+
+From PAUSED there is nothing to transcribe (the text already exists), so Send
+submits instantly with no background step and no Transcribing state. Insert always
+waits for the transcript, on every surface, because Insert exists to hand back
+editable text.

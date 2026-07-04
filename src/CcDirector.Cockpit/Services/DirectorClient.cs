@@ -95,6 +95,22 @@ public sealed class DirectorClient
     }
 
     /// <summary>
+    /// Mark or clear a session as transcribing a dictated utterance in the background (the Speak
+    /// dialog released the screen and the audio is being transcribed). This is a Gateway-owned
+    /// transient flag - the roster paints the session orange ("Transcribing...") so nobody else
+    /// starts using it. Sent true the instant Send is pressed and false once the background
+    /// transcribe-and-submit finishes or fails. Despite this client's name the call goes to the
+    /// Gateway's own <c>POST /sessions/{sid}/transcribing</c> route (not forwarded to the Director).
+    /// </summary>
+    public async Task SetTranscribingAsync(string sid, bool transcribing, CancellationToken ct = default)
+    {
+        _log.LogDebug("SetTranscribing sid={Sid} transcribing={Transcribing}", sid, transcribing);
+        var resp = await _http.PostAsJsonAsync($"sessions/{sid}/transcribing",
+            new { transcribing }, ct);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
     /// Raw PTY keystroke(s) - NO trailing Enter. <c>appendEnter:false</c> routes to
     /// <c>session.SendInput(bytes)</c>, so control sequences (Esc \x1b, Ctrl+C \x03, arrows,
     /// the slash-command UI) reach the terminal exactly as typed. Used by the live terminal's

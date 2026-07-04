@@ -1447,6 +1447,10 @@
     // It returns the cleaned text via OnDictateInsert (drop into composer) or OnDictateSend
     // (drop into composer AND submit). _dictating guards against opening it twice.
     private bool _dictating;
+    // The session the open Speak dialog is dictating into, captured at OpenDictate so the
+    // fire-and-forget background send marks/clears the RIGHT session's orange "Transcribing" state
+    // even if the user selects a different session while the transcription runs in the background.
+    private string? _dictatingSessionId;
     private DotNetObjectReference<Cockpit>? _dictateRef;
     private IJSObjectReference? _composerDropModule;
 
@@ -1535,6 +1539,7 @@
         try
         {
             _dictating = true;
+            _dictatingSessionId = Selected.SessionId;
             _actError = null;
             _dictateRef ??= DotNetObjectReference.Create(this);
             // Issue #268: dictate over a same-origin WS to the GATEWAY (never the Director's own
@@ -1604,6 +1609,47 @@
         _dictating = false;
         _voiceDictation = false;
         ActionInfo("speak-stop", "result=cancel");
+        return InvokeAsync(StateHasChanged);
+    }
+
+    // Fire-and-forget Send (spec section 10): the overlay closed the instant Send was pressed and
+    // the transcribe-and-submit is now running in the background. Release the dialog guard so the
+    // user can act immediately, and mark the session orange ("Transcribing...") on the roster so
+    // nobody else starts using it. The matching OnDictateSend still fires later with the text.
+    [JSInvokable]
+    public async Task OnDictateTranscribingStart()
+    {
+        _dictating = false;
+        var sid = _dictatingSessionId;
+        ActionInfo("speak-transcribing", "state=start");
+        await InvokeAsync(StateHasChanged);
+        if (!string.IsNullOrEmpty(sid))
+        {
+            try { await Director.SetTranscribingAsync(sid, true); }
+            catch (Exception ex) { Log.LogDebug(ex, "SetTranscribing(true) failed for {Sid}", sid); }
+        }
+    }
+
+    // The background transcription finished (or failed) - clear the orange "Transcribing" mark.
+    [JSInvokable]
+    public async Task OnDictateTranscribingEnd()
+    {
+        var sid = _dictatingSessionId;
+        ActionInfo("speak-transcribing", "state=end");
+        if (!string.IsNullOrEmpty(sid))
+        {
+            try { await Director.SetTranscribingAsync(sid, false); }
+            catch (Exception ex) { Log.LogDebug(ex, "SetTranscribing(false) failed for {Sid}", sid); }
+        }
+    }
+
+    // The background send failed after the overlay closed - surface the cause (the orange mark is
+    // already cleared by OnDictateTranscribingEnd, which fires first).
+    [JSInvokable]
+    public Task OnDictateError(string message)
+    {
+        _actError = message;
+        Log.LogWarning("Cockpit dictation background send failed: {Message}", message);
         return InvokeAsync(StateHasChanged);
     }
 

@@ -151,6 +151,14 @@ window.dictationOverlay = (function () {
   // Resolve the three outcome callbacks from the options object. A Blazor host passes a
   // DotNetObjectReference (dotNetRef) and we invoke its OnDictate* methods; a plain-JS host
   // passes onInsert/onSend/onCancel directly. onSend falls back to onInsert when omitted.
+  //
+  // The fire-and-forget Send (spec section 10) also needs three background hooks:
+  // onTranscribingStart / onTranscribingEnd mark and clear the session's orange "Transcribing"
+  // roster state around the background transcribe-and-submit, and onError surfaces a background
+  // failure once the overlay is already gone. A Blazor host that has not implemented the matching
+  // OnDictate* methods simply no-ops (notifyDotNet swallows the "no such method"); a plain-JS host
+  // (the Director's stand-alone page) leaves them as the defaults, so it gets the speed with no
+  // roster flag - exactly the per-surface split the spec describes.
   function resolveCallbacks(opts) {
     if (opts.dotNetRef) {
       const ref = opts.dotNetRef;
@@ -158,6 +166,9 @@ window.dictationOverlay = (function () {
         onInsert: (text) => notifyDotNet(ref, 'OnDictateInsert', text),
         onSend: (text) => notifyDotNet(ref, 'OnDictateSend', text),
         onCancel: () => notifyDotNet(ref, 'OnDictateCancel'),
+        onTranscribingStart: () => notifyDotNet(ref, 'OnDictateTranscribingStart'),
+        onTranscribingEnd: () => notifyDotNet(ref, 'OnDictateTranscribingEnd'),
+        onError: (msg) => notifyDotNet(ref, 'OnDictateError', msg),
       };
     }
     const onInsert = opts.onInsert || function () {};
@@ -165,6 +176,9 @@ window.dictationOverlay = (function () {
       onInsert,
       onSend: opts.onSend || onInsert,
       onCancel: opts.onCancel || function () {},
+      onTranscribingStart: opts.onTranscribingStart || function () {},
+      onTranscribingEnd: opts.onTranscribingEnd || function () {},
+      onError: opts.onError || function (msg) { try { console.warn('[dictation] background send failed:', msg); } catch (e) {} },
     };
   }
 
@@ -178,7 +192,7 @@ window.dictationOverlay = (function () {
     const profile = opts.profile || 'default';
     const workletUrl = opts.workletUrl || '/dictate-worklet.js';
     const wsUrl = opts.wsUrl || defaultWsUrl();
-    const { onInsert, onSend, onCancel } = resolveCallbacks(opts);
+    const { onInsert, onSend, onCancel, onTranscribingStart, onTranscribingEnd, onError } = resolveCallbacks(opts);
 
     if (!window.AudioWorkletNode || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       onCancel();
@@ -217,6 +231,8 @@ window.dictationOverlay = (function () {
     let stage = 'starting';            // starting | recording | transcribing | paused | error
     let finalIntent = 'pause';         // what to do when 'final' arrives: pause | insert | send
     let finalizing = false;            // guards the tail-drain window so finalize can't re-enter
+    let backgrounded = false;          // true once a RECORDING Send closed the overlay and left the
+                                       // transcribe-and-submit running in the background (spec s10)
     let accumulatedText = '';          // cleaned text from finalized segments
     let selectedDeviceId = '';         // '' = system default
     let done = false;
@@ -480,7 +496,10 @@ window.dictationOverlay = (function () {
           case 'final': {
             const cleaned = (m.cleaned || m.raw || '');
             accumulatedText = joinText(accumulatedText, cleaned);
-            if (finalIntent === 'pause') { teardownSegment(); setStage('paused'); }
+            // Fire-and-forget Send (spec s10): the overlay is already gone; submit the finished
+            // text into the session and clear the orange "Transcribing" mark.
+            if (backgrounded) finishBackground(onSend);
+            else if (finalIntent === 'pause') { teardownSegment(); setStage('paused'); }
             else if (finalIntent === 'insert') finishWith(onInsert);
             else if (finalIntent === 'send') finishWith(onSend);
             break;
@@ -491,7 +510,10 @@ window.dictationOverlay = (function () {
             // (e.g. "no API key on the owning machine") instead of a bare close code/reason.
             const cause = m.message || 'unknown';
             lastServerError = cause;
-            showError('Server error: ' + cause);
+            // A background send has no overlay to show the error on - clear the orange mark and
+            // hand the cause to the host instead.
+            if (backgrounded) finishBackgroundError('Dictation failed: ' + cause);
+            else showError('Server error: ' + cause);
             break;
           }
         }
@@ -503,12 +525,17 @@ window.dictationOverlay = (function () {
       let wasReady = false;
       ws.onerror = () => {
         if (stage === 'transcribing') return;
+        // A backgrounded send has no overlay to paint an error on; let onclose do the cleanup.
+        if (backgrounded) return;
         showError(wasReady
           ? 'Dictation connection failed mid-stream.'
           : 'Could not reach the owning Director through the Gateway (it may be offline or unreachable).');
       };
       ws.onclose = (ev) => {
         if (done || stage === 'paused') return;
+        // Fire-and-forget Send: the screen is already released, so any drop now just means the
+        // background transcription failed - clear the orange mark and report, no error UI.
+        if (backgrounded) { finishBackgroundError(describeDrop(ev)); return; }
         if (stage === 'starting') {
           showError(wasReady
             ? 'Dictation stream closed before it was ready.'
@@ -589,6 +616,57 @@ window.dictationOverlay = (function () {
       callback(text);
     }
 
+    // ---------- fire-and-forget Send (spec section 10) ----------
+    // Pressing Send while RECORDING must not hold the screen. Mark the session "Transcribing"
+    // (orange on the roster), remove the overlay immediately, and keep ONLY the socket + mic graph
+    // alive to drain the tail, stop, and receive the single 'final' - then submit and clear the
+    // mark. Unlike finalizeFromRecording this never shows the in-dialog TRANSCRIBING wait, because
+    // there is no dialog anymore. The captured audio lives on the server side of the open socket,
+    // so it survives the overlay being torn out of the DOM.
+    function startBackgroundSend() {
+      if (finalizing) return;
+      finalizing = true;
+      finalIntent = 'send';
+      backgrounded = true;
+      elapsedBeforeMs += performance.now() - t0;
+      onTranscribingStart();     // roster -> orange "Transcribing..."
+      detachOverlay();           // release the screen NOW
+      setTimeout(sendStop, DRAIN_MS);
+    }
+
+    // Remove the overlay's visuals and input wiring but KEEP the socket + audio graph so the
+    // background drain/stop/final can still complete. The counterpart teardownSegment (called on
+    // 'final' or on failure) is what finally closes the socket and releases the microphone.
+    function detachOverlay() {
+      try { if (timerHandle) clearInterval(timerHandle); } catch (e) {} timerHandle = null;
+      try { if (rafId) cancelAnimationFrame(rafId); } catch (e) {} rafId = null;
+      try { if (levelCtx) levelCtx.close(); } catch (e) {} levelCtx = null;
+      document.removeEventListener('keydown', onKeyDown);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+
+    // The background transcription landed: submit the finished text and clear the orange mark.
+    function finishBackground(callback) {
+      if (done) return;
+      const text = (accumulatedText || '').trim();
+      teardownSegment();
+      try { if (timerHandle) clearInterval(timerHandle); } catch (e) {} timerHandle = null;
+      done = true;
+      if (text) callback(text);
+      onTranscribingEnd();
+    }
+
+    // The background transcription failed (server error or a mid-stream drop after the overlay
+    // closed): clear the orange mark and hand the cause to the host. Never leaves a session orange.
+    function finishBackgroundError(msg) {
+      if (done) return;
+      teardownSegment();
+      try { if (timerHandle) clearInterval(timerHandle); } catch (e) {} timerHandle = null;
+      done = true;
+      onTranscribingEnd();
+      onError(msg);
+    }
+
     // ---------- teardown ----------
     function teardownSegment() {
       try { if (rafId) cancelAnimationFrame(rafId); } catch (e) {} rafId = null;
@@ -625,7 +703,9 @@ window.dictationOverlay = (function () {
       else if (stage === 'paused') finishWith(onInsert);
     });
     sendBtn.addEventListener('click', () => {
-      if (stage === 'recording') finalizeFromRecording('send');
+      // RECORDING Send is fire-and-forget - release the screen now, transcribe + submit in the
+      // background (spec s10). PAUSED Send already has the text, so it submits instantly.
+      if (stage === 'recording') startBackgroundSend();
       else if (stage === 'paused') finishWith(onSend);
     });
 

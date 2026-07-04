@@ -42,6 +42,14 @@ public static class StatusColor
     public const string Blue = "blue";
     public const string Purple = "purple";
 
+    /// <summary>The session is receiving a dictated message: the Speak dialog released the screen and
+    /// the recorded audio is being transcribed and submitted in the background. An overlay on top of
+    /// whatever the session is doing (it wins over every activity colour), so the operator - and
+    /// anyone else on the fleet - can see the session is busy and does not start typing into it
+    /// mid-dictation. Cleared the moment the transcript is submitted or the attempt fails. Rendered as
+    /// <c>#F97316</c> by every client. On-hold still wins over it (a parked session stays grey).</summary>
+    public const string Orange = "orange";
+
     /// <summary>A controlled sub-agent (issue #815): another session spawned and drives it, so it
     /// recedes to a muted slate. Painted only while its controller is alive; red "needs you" wins
     /// over it. Rendered as <c>#64748B</c> by every client.</summary>

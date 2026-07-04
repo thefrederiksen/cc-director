@@ -33,6 +33,7 @@ public sealed class SessionStatusWingman : IDisposable
     private readonly ConcurrentDictionary<Guid, Action<ActivityState, ActivityState>> _activityHandlers = new();
     private readonly ConcurrentDictionary<Guid, Action<bool>> _explainHandlers = new();
     private readonly ConcurrentDictionary<Guid, Action<bool>> _backgroundHandlers = new();
+    private readonly ConcurrentDictionary<Guid, Action<bool>> _transcribingHandlers = new();
     private readonly ConcurrentDictionary<Guid, Action<BriefingState>> _briefingHandlers = new();
     private readonly ConcurrentDictionary<Guid, PromptInjectionWatcher> _injectionWatchers = new();
     private bool _started;
@@ -246,6 +247,27 @@ public sealed class SessionStatusWingman : IDisposable
         _backgroundHandlers[session.Id] = backgroundHandler;
         session.OnIsBackgroundRunningChanged += backgroundHandler;
 
+        // The Speak dialog flips Session.IsTranscribing around a fire-and-forget background dictation
+        // send. When it flips we recompute the colour so the dot moves to Orange ("Transcribing...")
+        // the instant Send is pressed and back to its real colour when the transcript is submitted or
+        // the attempt fails. Like the explain overlay, the activity state has NOT changed during this
+        // window - only the orange overlay - so we do not write to StateChangeLog.
+        Action<bool> transcribingHandler = isTranscribing =>
+        {
+            try
+            {
+                var (c, r) = ComputeColor(session, isNew: false);
+                session.SetStatusColor(c, r);
+                FileLog.Write($"[SessionStatusWingman] {session.Id} transcribing={isTranscribing} => {c} ({r})");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[SessionStatusWingman] transcribing handler failed for {session.Id}: {ex.Message}");
+            }
+        };
+        _transcribingHandlers[session.Id] = transcribingHandler;
+        session.OnIsTranscribingChanged += transcribingHandler;
+
         // Subscribe to the byte stream so we re-scan Claude Code's input-prompt
         // line whenever the TUI redraws and then goes quiet. The watcher debounces
         // bursts; we only run extraction once writes settle.
@@ -352,6 +374,16 @@ public sealed class SessionStatusWingman : IDisposable
     {
         var baseColor = ColorFromActivityState(session.ActivityState, isNew);
 
+        // Orange overlay: a dictated utterance is being transcribed and submitted into this session
+        // in the background (the Speak dialog released the screen on Send). Checked FIRST and with NO
+        // turn-end gate, because - unlike the wingman overlays below - it is a user-initiated "this
+        // session is busy receiving a message" signal that must show regardless of what the session is
+        // doing underneath, so nobody else types into it mid-dictation. On-hold still wins (the UI
+        // paints a parked session grey). Every color writer routes through here, so the orange holds
+        // against a byte-burst repaint until the flag clears.
+        if (session.IsTranscribing)
+            return (StatusColor.Orange, "Transcribing...");
+
         var atTurnEnd = session.ActivityState is ActivityState.WaitingForInput
                                               or ActivityState.WaitingForPerm;
 
@@ -403,6 +435,8 @@ public sealed class SessionStatusWingman : IDisposable
                 s.OnIsExplainingChanged -= eh;
             if (_backgroundHandlers.TryRemove(s.Id, out var bh))
                 s.OnIsBackgroundRunningChanged -= bh;
+            if (_transcribingHandlers.TryRemove(s.Id, out var th))
+                s.OnIsTranscribingChanged -= th;
             if (_briefingHandlers.TryRemove(s.Id, out var brh))
                 s.OnBriefingStateChanged -= brh;
         }

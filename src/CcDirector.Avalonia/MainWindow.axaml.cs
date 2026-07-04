@@ -2916,8 +2916,32 @@ public partial class MainWindow : Window
             var caretBefore = PromptInput.CaretIndex;
             if (caretBefore < 0 || caretBefore > existingTextBefore.Length)
                 caretBefore = existingTextBefore.Length;
-            var dlg = new global::CcDirector.Avalonia.Voice.SpeakDialog(options);
+            // Capture the session the user is dictating INTO now, so a fire-and-forget Send submits
+            // to the right session even if the user switches away while it transcribes in background.
+            var target = _activeSession?.Session;
+            var dlg = new global::CcDirector.Avalonia.Voice.SpeakDialog(options)
+            {
+                // Fire-and-forget Send (spec section 10) needs a target session to submit into and to
+                // mark orange; only enable it when we have one.
+                EnableBackgroundSend = target is not null,
+            };
             await dlg.ShowDialog(this);
+
+            // Fire-and-forget Send: the dialog handed us the still-capturing recorder and closed. The
+            // screen is already released; transcribe + submit in the background while the session
+            // shows orange "Transcribing...". Not awaited - that is the whole point.
+            if (dlg.IsBackgroundSend && dlg.BackgroundRecorder is not null && target is not null)
+            {
+                var recorder = dlg.BackgroundRecorder;
+                var prefix = dlg.BackgroundPrefix;
+                FileLog.Write($"[MainWindow] BtnSpeak_Click: background dictation send to session {target.Id}");
+                _ = global::CcDirector.Avalonia.Voice.BackgroundDictationSend.RunAsync(
+                    recorder, prefix, target,
+                    text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
+                        () => SubmitDictatedTextAsync(target, text)));
+                return;
+            }
+
             var transcript = dlg.ResultText;
             if (string.IsNullOrWhiteSpace(transcript))
             {
@@ -2957,6 +2981,35 @@ public partial class MainWindow : Window
         PromptInput.Text = prefix + insert + suffix;
         PromptInput.CaretIndex = prefix.Length + insert.Length;
         PromptInput.Focus();
+    }
+
+    /// <summary>
+    /// Submit a background-dictated message straight into a specific session (fire-and-forget Send,
+    /// spec section 10). Unlike <see cref="SendPrompt"/> this does NOT read the compose box - it
+    /// targets the session the user dictated into (captured when the Speak dialog opened), so it lands
+    /// in the right session even if the user has since switched away or typed something else. Keeps
+    /// the important parts of the normal send: a history snapshot (a rewind point), the Clean-view
+    /// echo when that session is on screen, and the Enter retry. Runs on the UI thread.
+    /// </summary>
+    private async Task SubmitDictatedTextAsync(Session target, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        text = text.ReplaceLineEndings(" ").Trim();
+        if (string.IsNullOrEmpty(text)) return;
+
+        FileLog.Write($"[MainWindow] SubmitDictatedTextAsync: {text.Length} chars to session {target.Id}");
+
+        // Rewind point, exactly like SendPrompt.
+        target.InitializeHistory();
+        target.History?.TakeSnapshot();
+
+        // Only echo into the Clean view when the dictated session is the one on screen; if the user
+        // switched away, the prompt still lands in the right session and shows when they switch back.
+        if (_activeSession?.Session == target)
+            CleanView.InjectUserPrompt(text);
+
+        await target.SendTextAsync(text);
+        ScheduleEnterRetry(target);
     }
 
     private void BtnOpenInBrowser_Click(object? sender, RoutedEventArgs e)

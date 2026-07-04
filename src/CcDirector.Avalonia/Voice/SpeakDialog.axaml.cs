@@ -92,6 +92,29 @@ public partial class SpeakDialog : Window
     /// </summary>
     public bool ShouldSubmit { get; private set; }
 
+    /// <summary>
+    /// Opt in to fire-and-forget Send (spec section 10). When true, pressing Send while RECORDING
+    /// hands the still-capturing recorder to the caller and closes the dialog IMMEDIATELY instead of
+    /// blocking on transcription - the caller then transcribes + submits in the background while the
+    /// session shows orange "Transcribing...". Default false keeps the original blocking behavior for
+    /// callers that cannot run a background send (they read <see cref="ResultText"/> as before).
+    /// </summary>
+    public bool EnableBackgroundSend { get; set; }
+
+    /// <summary>True when the dialog closed for a fire-and-forget Send: the caller must transcribe
+    /// <see cref="BackgroundRecorder"/> in the background (joining onto <see cref="BackgroundPrefix"/>)
+    /// and submit the result. <see cref="ResultText"/> is null in this case.</summary>
+    public bool IsBackgroundSend { get; private set; }
+
+    /// <summary>The still-capturing recorder handed to the caller for a fire-and-forget Send. The
+    /// caller owns it: it calls <c>TranscribeAsync()</c> (which stops the mic) then disposes it. Null
+    /// unless <see cref="IsBackgroundSend"/> is true.</summary>
+    public BatchDictationRecorder? BackgroundRecorder { get; private set; }
+
+    /// <summary>The already-transcribed text from earlier Pause/Resume segments, to prepend to the
+    /// background segment's transcript. Empty in the common "just talk and Send" case.</summary>
+    public string BackgroundPrefix { get; private set; } = "";
+
     public SpeakDialog(AgentOptions options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -384,11 +407,15 @@ public partial class SpeakDialog : Window
 
     private async void PrimaryButton_Click(object? sender, RoutedEventArgs e)
     {
-        // Send: transcribe the current segment (if recording) and append, then
-        // close with ShouldSubmit=true.
+        // Send. From RECORDING with fire-and-forget enabled (spec section 10), hand the recorder to
+        // the caller and close NOW; otherwise transcribe-then-close (the original blocking Send).
+        // From PAUSED the text already exists, so it commits instantly either way.
         if (_stage == Stage.Recording)
         {
-            await FinalizeFromRecordingAsync(submitOnClose: true);
+            if (EnableBackgroundSend)
+                StartBackgroundSend();
+            else
+                await FinalizeFromRecordingAsync(submitOnClose: true);
         }
         else if (_stage == Stage.Paused)
         {
@@ -432,6 +459,39 @@ public partial class SpeakDialog : Window
         // Cancel/Close: no text. An interrupted or cancelled turn produces no transcript.
         ResultText = null;
         ShouldSubmit = false;
+        Close();
+    }
+
+    /// <summary>
+    /// Fire-and-forget Send (spec section 10): hand the still-capturing recorder to the caller and
+    /// close IMMEDIATELY, without waiting for transcription. The caller transcribes it in the
+    /// background (joining onto <see cref="BackgroundPrefix"/>), submits, and marks the session orange
+    /// "Transcribing..." meanwhile. We detach the recorder from this dialog first (null out
+    /// <c>_service</c> and drop our event subscriptions) so the close handler does NOT dispose it and
+    /// its capture callbacks stop touching the closing dialog - the caller owns the recorder now.
+    /// </summary>
+    private void StartBackgroundSend()
+    {
+        var svc = _service;
+        if (svc is null)
+        {
+            // Nothing captured (no active recorder) - close with no result, like a cancel.
+            ResultText = null;
+            ShouldSubmit = false;
+            Close();
+            return;
+        }
+        _service = null;
+        svc.OnAudioBands -= OnAudioBands;
+        svc.OnInputRms -= OnInputRms;
+        svc.OnCaptureStarted -= OnServiceCaptureStarted;
+        svc.OnTranscriptionProgress -= OnServiceTranscriptionProgress;
+        BackgroundRecorder = svc;
+        BackgroundPrefix = _accumulatedText;
+        IsBackgroundSend = true;
+        ResultText = null;
+        ShouldSubmit = false;
+        FileLog.Write("[SpeakDialog] Send: handing recorder to background transcribe-and-submit, closing now");
         Close();
     }
 

@@ -532,6 +532,34 @@ public sealed class Session : IDisposable
     /// <summary>Fires when <see cref="IsExplaining"/> changes. Arg: new value.</summary>
     public event Action<bool>? OnIsExplainingChanged;
 
+    private bool _isTranscribing;
+
+    /// <summary>
+    /// True while a dictated utterance is being transcribed and submitted into this session in the
+    /// background: the desktop Speak dialog released the screen the instant Send was pressed, and the
+    /// recorded audio is being transcribed off the UI thread (see the desktop background dictation
+    /// send). A user-driven overlay ORTHOGONAL to <see cref="ActivityState"/>, exactly like
+    /// <see cref="IsExplaining"/>: the underlying activity state is still reported truthfully, and this
+    /// flag sits on top so <c>SessionStatusWingman</c> paints the badge Orange ("Transcribing...") so
+    /// nobody else starts typing into the session mid-dictation. Set true when Send is pressed and
+    /// cleared when the background transcribe-and-submit finishes or fails. Transient (in-memory only);
+    /// <see cref="OnIsTranscribingChanged"/> notifies the SessionStatusWingman so it can repaint the dot.
+    /// </summary>
+    public bool IsTranscribing
+    {
+        get => _isTranscribing;
+        set
+        {
+            if (_isTranscribing == value) return;
+            _isTranscribing = value;
+            OnIsTranscribingChanged?.Invoke(value);
+        }
+    }
+
+    /// <summary>Fires when <see cref="IsTranscribing"/> changes. Arg: new value. The
+    /// SessionStatusWingman subscribes so it can repaint the badge Orange/back.</summary>
+    public event Action<bool>? OnIsTranscribingChanged;
+
     private bool _isBackgroundRunning;
     private string _backgroundReason = "running in background";
 
