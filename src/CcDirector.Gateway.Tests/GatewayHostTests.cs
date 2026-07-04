@@ -59,6 +59,10 @@ public sealed class GatewayHostTests : IAsyncLifetime
         _gateway = new GatewayHost(port: AllocateFreePort(), token: "test-token-12345", authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            // Isolate the device registry to this test's temp dir. Without this the DeviceRegistry falls
+            // back to the REAL per-user path and this test's /devices/register calls leak
+            // "regression-test-device" rows into the developer's live registry (found 2026-07-04).
+            devicesPath: Path.Combine(_instancesDir, "devices.json"),
             account: GatewayAccountFactory.Build(
                 new InMemoryTokenStore(),
                 Path.Combine(_instancesDir, "auth-events.jsonl")));
