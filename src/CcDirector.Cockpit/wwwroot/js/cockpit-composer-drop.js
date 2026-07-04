@@ -16,6 +16,28 @@ export function resizeTextarea(el) {
   el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 }
 
+// Read the caret position of a composer textarea, so a dictation Insert/Send can drop the words where
+// the cursor was rather than at the end. Falls back to the end of the text when unavailable.
+export function caretOf(el) {
+  if (!el) return 0;
+  try {
+    const pos = el.selectionStart;
+    return (typeof pos === 'number') ? pos : (el.value ? el.value.length : 0);
+  } catch (_) {
+    return el.value ? el.value.length : 0;
+  }
+}
+
+// Move the caret to a position and focus the textarea, so after an Insert the user can keep editing
+// right after the words that were dropped in.
+export function setCaret(el, pos) {
+  if (!el) return;
+  try {
+    el.focus();
+    el.selectionStart = el.selectionEnd = pos;
+  } catch (_) {}
+}
+
 export function init() {
   if (window.__cockpitComposerDropInit) return;
   window.__cockpitComposerDropInit = true;

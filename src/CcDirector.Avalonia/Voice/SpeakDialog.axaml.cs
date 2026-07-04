@@ -96,8 +96,8 @@ public partial class SpeakDialog : Window
     /// Opt in to fire-and-forget Send (spec section 10). When true, pressing Send while RECORDING
     /// hands the still-capturing recorder to the caller and closes the dialog IMMEDIATELY instead of
     /// blocking on transcription - the caller then transcribes + submits in the background while the
-    /// session shows orange "Transcribing...". Default false keeps the original blocking behavior for
-    /// callers that cannot run a background send (they read <see cref="ResultText"/> as before).
+    /// session shows orange "Transcribing...". Default false keeps the blocking behavior for callers
+    /// that cannot run a background send (e.g. the Wingman surface; they read <see cref="ResultText"/>).
     /// </summary>
     public bool EnableBackgroundSend { get; set; }
 
@@ -408,7 +408,8 @@ public partial class SpeakDialog : Window
     private async void PrimaryButton_Click(object? sender, RoutedEventArgs e)
     {
         // Send. From RECORDING with fire-and-forget enabled (spec section 10), hand the recorder to
-        // the caller and close NOW; otherwise transcribe-then-close (the original blocking Send).
+        // the caller and close NOW so the screen is released immediately; the caller transcribes and
+        // submits in the background. Without it (the Wingman surface), transcribe-then-close (blocking).
         // From PAUSED the text already exists, so it commits instantly either way.
         if (_stage == Stage.Recording)
         {

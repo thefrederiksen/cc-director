@@ -21,8 +21,8 @@ export interface CapturedUtterance {
   blob: Blob;
   /** Wall-clock milliseconds the segment was capturing (capture-health, issue #863). */
   recordedMs: number;
-  /** Already-transcribed text from earlier Pause/Resume segments to prepend to this final segment.
-   *  Empty in the common "just talk and Send" case (no pause). */
+  /** Earlier Pause/Resume dictation segments, joined ahead of this final segment's transcript to form
+   *  the full dictation. Empty in the common "just talk and Send" case (no pause). */
   prefixText: string;
 }
 
@@ -30,6 +30,14 @@ export interface CapturedUtterance {
  *  and the roster's orange flag clearing is the visible completion signal. */
 export interface BackgroundSendHooks {
   onError?: (message: string) => void;
+  /** Called when the transcribe/submit chain throws, so the host can restore anything (e.g. the typed
+   *  compose text) it cleared at dialog-close time for a send that never went. */
+  onFailed?: () => void;
+  /** Place the dictated words into the final message. The host uses this to insert them at the caret
+   *  inside any typed compose text (like the Insert button), then this result is submitted. Defaults
+   *  to submitting the dictation alone. Called even for an empty dictation, so a Send pressed with
+   *  typed text present still submits that text; a fully-empty message submits nothing. */
+  compose?: (dictation: string) => string;
 }
 
 // Mark the session transcribing (roster -> orange), transcode + upload + transcribe the captured
@@ -57,14 +65,17 @@ export async function backgroundTranscribeAndSend(
     };
     logCaptureHealth("mobile", health);
     const segment = await transcribeUtterance(transcoded.wav, health);
-    const text = joinText(captured.prefixText, segment).trim();
-    // A silent clip (no speech captured) transcribes to nothing - submit nothing rather than an
-    // empty line, so a mis-tapped Send does not fire a blank turn into the session.
-    if (text.length > 0) {
-      await sendPrompt(sessionId, text, true);
+    const dictation = joinText(captured.prefixText, segment).trim();
+    // Let the host place the dictation (it inserts at the caret inside any typed text); default to the
+    // dictation alone. The typed text survives an empty/silent clip because compose still returns it,
+    // and a fully-empty message submits nothing so a mis-tapped Send does not fire a blank turn.
+    const message = (hooks.compose ? hooks.compose(dictation) : dictation).trim();
+    if (message.length > 0) {
+      await sendPrompt(sessionId, message, true);
     }
   } catch (err) {
     hooks.onError?.(err instanceof Error ? err.message : "Transcription failed");
+    hooks.onFailed?.();
   } finally {
     // Authoritative clear - releases the orange roster state whether the transcript submitted or the
     // attempt failed. Best-effort; the Gateway also expires an abandoned mark as a backstop.

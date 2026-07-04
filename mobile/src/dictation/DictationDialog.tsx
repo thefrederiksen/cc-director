@@ -31,12 +31,12 @@ export interface DictationDialogProps {
   /** Commit the transcript AND submit it (the view's Send path). Used for the instant PAUSED-stage
    *  Send (the text is already transcribed) and as the fallback Send when onSendAudio is not wired. */
   onSend: (text: string) => void;
-  /** Fire-and-forget Send: when provided, hitting Send while still RECORDING captures the audio
-   *  buffer, hands it here, and closes the dialog IMMEDIATELY - the host then transcodes, uploads,
-   *  transcribes, and submits in the background (marking the session "Transcribing..."). This is what
-   *  releases the screen the instant Send is pressed, since the result cannot be viewed here anyway.
-   *  When omitted (e.g. the Voice-mode reply panel) Send falls back to the blocking transcribe-then-
-   *  submit path via onSend. */
+  /** Immediate (fire-and-forget) Send: when provided, hitting Send while still RECORDING captures the
+   *  audio buffer, hands it here, and closes the dialog IMMEDIATELY - the host then transcodes,
+   *  uploads, transcribes, and submits in the background (marking the session "Transcribing..."). This
+   *  is what releases the screen the instant Send is pressed, since the result cannot be viewed here
+   *  anyway. When omitted (e.g. the Voice-mode reply panel) Send falls back to the blocking
+   *  transcribe-then-submit path via onSend. */
   onSendAudio?: (captured: CapturedUtterance) => void;
   /** Close the dialog (Cancel, or after a commit). Nothing is sent on Cancel. */
   onClose: () => void;
@@ -210,11 +210,11 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     [stage, transcript, transcribeCurrentSegment, onClose],
   );
 
-  // Send. The whole point of this handler (issue: mobile Speak should not hold the screen): when we
-  // are still RECORDING and the host wired the fire-and-forget path (onSendAudio), grab the captured
-  // audio buffer and hand it up, then close IMMEDIATELY - the host transcribes + submits in the
-  // background and marks the session "Transcribing...". The user cannot see the transcript here
-  // anyway (Send submits straight into the session), so waiting for it is pure dead time.
+  // Send. The whole point of this handler (mobile Speak should not hold the screen): when we are
+  // still RECORDING and the host wired the fire-and-forget path (onSendAudio), grab the captured audio
+  // buffer and hand it up, then close IMMEDIATELY - the host transcribes + submits in the background
+  // and marks the session "Transcribing...". The user cannot see the transcript here anyway (Send
+  // submits straight into the session), so waiting for it is pure dead time.
   //   * PAUSED: the text is already transcribed - submit it instantly, no audio round trip.
   //   * RECORDING without onSendAudio (Voice-mode reply panel): fall back to the blocking
   //     transcribe-then-submit commit so that surface is unchanged.

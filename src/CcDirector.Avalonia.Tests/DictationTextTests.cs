@@ -69,4 +69,52 @@ public class DictationTextTests
         Assert.EndsWith(newSpeech, result);
         Assert.Equal(edited + " " + newSpeech, result);
     }
+
+    // InsertAt underpins "Send drops the dictation at the caret, exactly like the Insert button".
+
+    [Fact]
+    public void InsertAt_EmptyExisting_ReturnsInsertUnchanged()
+    {
+        Assert.Equal("hello", DictationText.InsertAt("", 0, "hello"));
+    }
+
+    [Fact]
+    public void InsertAt_EmptyInsert_ReturnsExistingUnchanged()
+    {
+        Assert.Equal("fix the bug", DictationText.InsertAt("fix the bug", 4, ""));
+    }
+
+    [Fact]
+    public void InsertAt_AtEnd_AppendsWithSingleSpace()
+    {
+        Assert.Equal("fix the login bug and add a test",
+            DictationText.InsertAt("fix the login bug", 17, "and add a test"));
+    }
+
+    [Fact]
+    public void InsertAt_InMiddleOnWordBoundary_SpacesOnlyTheOpenSide()
+    {
+        // Caret sits just after "fix the " (index 8), before "bug". The left side already ends in a
+        // space so no space is added there; the right side starts with a letter so one space is added.
+        Assert.Equal("fix the and bug", DictationText.InsertAt("fix the bug", 8, "and"));
+    }
+
+    [Fact]
+    public void InsertAt_InMiddleMidWord_SpacesBothSides()
+    {
+        // Caret between two non-space characters: a separating space is added on both sides.
+        Assert.Equal("foo bar baz", DictationText.InsertAt("foobaz", 3, "bar"));
+    }
+
+    [Fact]
+    public void InsertAt_CaretOutOfRange_ClampsToEnd()
+    {
+        Assert.Equal("hello world", DictationText.InsertAt("hello", 999, "world"));
+    }
+
+    [Fact]
+    public void InsertAt_CaretAtStart_PrependsWithSingleSpace()
+    {
+        Assert.Equal("hello world", DictationText.InsertAt("world", 0, "hello"));
+    }
 }
