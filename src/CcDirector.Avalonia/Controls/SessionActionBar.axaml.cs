@@ -83,6 +83,7 @@ public partial class SessionActionBar : UserControl
     {
         BtnClearContext.IsEnabled = !locked;
         BtnHistory.IsEnabled = !locked;
+        TranscribingLabel.IsVisible = locked;
     }
 
     /// <summary>Timer-callback boundary (and the immediate kick from <see cref="Configure"/>):
