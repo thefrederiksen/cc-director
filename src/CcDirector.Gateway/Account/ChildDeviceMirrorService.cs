@@ -27,6 +27,9 @@ namespace CcDirector.Gateway.Account;
 /// mirrors up any child not yet mirrored, pulls the cloud roster (GET /devices returns only non-revoked
 /// devices), drops the local pairing key of any child this Gateway mirrored that is now absent from the
 /// roster (revoked on the account page), and advances each surviving child's last-seen with a heartbeat.
+/// A device enrolled via <c>/m/enroll</c> is recorded with its cloud roster id exactly like a paired child,
+/// so it is subject to the same revoke-down removal. Persistent reconcile failures are surfaced via
+/// <see cref="HasPersistentReconcileFailure"/> (issue #924) rather than being retried forever in silence.
 /// </item>
 /// </list>
 ///
@@ -41,10 +44,28 @@ namespace CcDirector.Gateway.Account;
 /// </summary>
 public sealed class ChildDeviceMirrorService
 {
+    /// <summary>
+    /// How many consecutive reconcile sweeps must fail on a real cloud error before the condition is
+    /// treated as PERSISTENT and surfaced (issue #924). At the ~1-minute sweep this is ~3 minutes of the
+    /// revoke-down path being unable to reach the cloud - long enough to rule out a single transient blip,
+    /// short enough that a genuinely-stuck "revokes are not propagating" condition becomes visible quickly
+    /// rather than being retried forever in silence.
+    /// </summary>
+    public const int PersistentReconcileFailureThreshold = 3;
+
     private readonly DevThrottleAccountService _account;
     private readonly DeviceRegistryClient _client;
     private readonly DeviceRegistry _devices;
     private readonly string? _appVersion;
+
+    // Reconcile-failure visibility (issue #924): the revoke-down sweep used to swallow every cloud error
+    // into a per-sweep log line and retry forever, so a persistently-broken sweep ("website revokes are
+    // not reaching this Gateway") was invisible. These fields count consecutive real reconcile failures so
+    // the Cockpit/tray can read a status and a distinct escalated log signal fires once it is persistent.
+    // Written on the sweep (timer) thread and read by status callers, so guarded by _statusGate.
+    private readonly object _statusGate = new();
+    private int _consecutiveReconcileFailures;
+    private string? _lastReconcileError;
 
     /// <summary>
     /// Creates the child-mirror coordinator.
@@ -63,6 +84,53 @@ public sealed class ChildDeviceMirrorService
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _devices = devices ?? throw new ArgumentNullException(nameof(devices));
         _appVersion = appVersion;
+    }
+
+    /// <summary>
+    /// The number of consecutive reconcile sweeps that have failed on a real cloud error (issue #924),
+    /// reset to zero by the next clean sweep. A read-only status the Cockpit/tray can poll. No network call.
+    /// </summary>
+    public int ConsecutiveReconcileFailures
+    {
+        get { lock (_statusGate) { return _consecutiveReconcileFailures; } }
+    }
+
+    /// <summary>
+    /// The message of the most recent reconcile failure (issue #924), or null when the last sweep was clean.
+    /// A user-safe reason (never a token or key - those are never in the exception messages we record here).
+    /// </summary>
+    public string? LastReconcileError
+    {
+        get { lock (_statusGate) { return _lastReconcileError; } }
+    }
+
+    /// <summary>
+    /// True when the revoke-down path is PERSISTENTLY unable to propagate account-page revokes to this
+    /// Gateway (issue #924) - so a stuck "website revokes are not reaching this device" condition is a
+    /// visible status the Cockpit/tray can show, not a silent forever-retry. It is set by EITHER of the two
+    /// ways the sweep can be persistently stuck:
+    /// <list type="bullet">
+    /// <item>the reconcile cloud call itself has failed on
+    /// <see cref="PersistentReconcileFailureThreshold"/> or more consecutive sweeps; or</item>
+    /// <item>the Gateway's account-token refresh is persistently failing
+    /// (<see cref="DevThrottleAccountService.HasPersistentRefreshFailure"/>, the Phase 3 / issue #911
+    /// signal) - the reconcile then has no usable token to pull the roster with and silently skips, which is
+    /// exactly the invisible-forever case this surfaces.</item>
+    /// </list>
+    /// Cleared by the next clean sweep (and, for the refresh half, by the next successful token refresh). No
+    /// network call.
+    /// </summary>
+    public bool HasPersistentReconcileFailure
+    {
+        get
+        {
+            if (_account.HasPersistentRefreshFailure)
+                return true;
+            lock (_statusGate)
+            {
+                return _consecutiveReconcileFailures >= PersistentReconcileFailureThreshold;
+            }
+        }
     }
 
     /// <summary>
@@ -119,6 +187,13 @@ public sealed class ChildDeviceMirrorService
     /// boundary try/catch so a cloud failure only logs and the next sweep retries - it never throws to the
     /// timer. Per-child steps are individually guarded so one bad child never stops the sweep.
     /// </summary>
+    /// <remarks>
+    /// Guaranteed revocation-latency bound (issue #924): because this is PULL-based on the periodic sweep
+    /// (no inbound cloud-to-Gateway push - a Non-goal of epic #916), a device revoked on the account page
+    /// keeps working until the NEXT sweep runs. The bound is therefore ONE sweep interval (the Gateway's
+    /// cron sweep, ~1 minute); a revoked device is refused within that window and not before. This bound is
+    /// also documented in docs/architecture/mobile/DEVICE_AUTH_SECURITY_MODEL.md.
+    /// </remarks>
     /// <param name="ct">Cancels the cloud calls.</param>
     public async Task ReconcileAsync(CancellationToken ct = default)
     {
@@ -127,6 +202,10 @@ public sealed class ChildDeviceMirrorService
             var token = _account.GetAccessTokenForForwarding();
             if (string.IsNullOrEmpty(token))
             {
+                // A genuinely signed-out Gateway has no reconcile failure of its own (the dead-token case is
+                // surfaced separately by the account's persistent-refresh-failure signal, issue #911/#924),
+                // so a clean sign-out clears any prior cloud-call failure streak.
+                ClearReconcileFailure();
                 FileLog.Write("[ChildDeviceMirrorService] ReconcileAsync: Gateway not signed in -> skipping child reconcile");
                 return;
             }
@@ -134,6 +213,7 @@ public sealed class ChildDeviceMirrorService
             var children = _devices.MirrorSnapshot();
             if (children.Count == 0)
             {
+                ClearReconcileFailure();
                 FileLog.Write("[ChildDeviceMirrorService] ReconcileAsync: no local children -> nothing to reconcile");
                 return;
             }
@@ -192,13 +272,60 @@ public sealed class ChildDeviceMirrorService
                     FileLog.Write($"[ChildDeviceMirrorService] ReconcileAsync: heartbeat failed for child id={child.DeviceId} (retry next sweep): {ex.Message}");
                 }
             }
+
+            // Reaching here means the roster pull (the revoke-down source of truth) succeeded, so the
+            // revoke-down path is healthy this sweep - clear any prior cloud-call failure streak (issue #924).
+            ClearReconcileFailure();
         }
         catch (Exception ex)
         {
             // Graceful degradation (#857): a cloud failure must not crash, block, or gate the Gateway. Log
-            // and let the next sweep retry - the Gateway stays signed in and running.
-            FileLog.Write($"[ChildDeviceMirrorService] ReconcileAsync: cloud reconcile failed (Gateway stays signed in and running; retry next sweep): {ex.Message}");
+            // and let the next sweep retry - the Gateway stays signed in and running. Issue #924: record the
+            // failure so a PERSISTENTLY-broken revoke-down path becomes a visible status + a distinct log
+            // signal instead of an invisible forever-retry.
+            RecordReconcileFailure(ex);
         }
+    }
+
+    /// <summary>
+    /// Clears the consecutive-reconcile-failure streak after a clean sweep (issue #924). Logs a one-time
+    /// recovery line when a previously-persistent failure has just cleared so the recovery is as visible as
+    /// the escalation was.
+    /// </summary>
+    private void ClearReconcileFailure()
+    {
+        bool wasPersistent;
+        lock (_statusGate)
+        {
+            wasPersistent = _consecutiveReconcileFailures >= PersistentReconcileFailureThreshold;
+            _consecutiveReconcileFailures = 0;
+            _lastReconcileError = null;
+        }
+        if (wasPersistent)
+            FileLog.Write("[ChildDeviceMirrorService] ReconcileAsync: revoke-down path RECOVERED - the reconcile sweep reached the cloud roster again after a persistent failure");
+    }
+
+    /// <summary>
+    /// Records one failed reconcile sweep (issue #924): advances the consecutive-failure counter, stores the
+    /// message, and logs. The message never carries a token or key (those are not in the exception messages
+    /// the reconcile can throw). Emits a DISTINCT escalated log signal on the sweep that first crosses
+    /// <see cref="PersistentReconcileFailureThreshold"/>, so a stuck "revokes are not propagating" condition
+    /// is a greppable, visible event rather than one indistinguishable retry line among many.
+    /// </summary>
+    private void RecordReconcileFailure(Exception ex)
+    {
+        int failures;
+        bool justBecamePersistent;
+        lock (_statusGate)
+        {
+            failures = ++_consecutiveReconcileFailures;
+            _lastReconcileError = ex.Message;
+            justBecamePersistent = failures == PersistentReconcileFailureThreshold;
+        }
+
+        FileLog.Write($"[ChildDeviceMirrorService] ReconcileAsync: cloud reconcile failed (Gateway stays signed in and running; retry next sweep); consecutiveFailures={failures}: {ex.Message}");
+        if (justBecamePersistent)
+            FileLog.Write($"[ChildDeviceMirrorService] ReconcileAsync: PERSISTENT reconcile failure - the revoke-down sweep has failed {failures} times in a row and website device revokes are NOT reaching this Gateway; sign-in/connectivity needs attention (HasPersistentReconcileFailure is now true)");
     }
 
     /// <summary>
