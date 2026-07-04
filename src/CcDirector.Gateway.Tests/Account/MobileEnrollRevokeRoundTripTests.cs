@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using CcDirector.Core.Account;
 using CcDirector.Gateway.Account;
 using CcDirector.Gateway.Pairing;
+using CcDirector.Gateway.Util;
+using Microsoft.AspNetCore.Http;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests.Account;
@@ -102,6 +104,98 @@ public sealed class MobileEnrollRevokeRoundTripTests
 
     private static DeviceRegistry TempRegistry() =>
         new(Path.Combine(Path.GetTempPath(), "cc-gw-revoke-" + Guid.NewGuid().ToString("N") + ".json"));
+
+    // The per-machine shared Gateway token, distinct from any issued per-device key, so a request bearing
+    // the phone's local key authenticates ONLY via the device registry (the path this test exercises).
+    private const string GatewayToken = "shared-machine-token-924";
+
+    /// <summary>
+    /// Drives the real host-wide auth gate (<see cref="AuthMiddleware.Run"/>, enforced by default since
+    /// issue #917) for a data endpoint request carrying the given Bearer, and reports what the gate did:
+    /// whether the request was allowed through (the downstream ran) and the HTTP status it left behind. This
+    /// is the enforced path a revoked phone hits - after its local key is dropped the same request must 401.
+    /// </summary>
+    private static async Task<(bool Allowed, int StatusCode, string Body)> RunEnforcedGateAsync(DeviceRegistry devices, string bearer)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Method = HttpMethods.Get;
+        ctx.Request.Path = "/sessions";                 // a gated data endpoint (not public, not /m)
+        ctx.Request.Headers["Authorization"] = $"Bearer {bearer}";
+        ctx.Request.Headers["Accept"] = "application/json"; // non-browser -> a 401 (not a login redirect)
+        ctx.Response.Body = new MemoryStream();
+
+        var allowed = false;
+        var cfg = new AuthMiddleware.RequireToken { Token = GatewayToken, Devices = devices };
+        await AuthMiddleware.Run(ctx, cfg, () => { allowed = true; return Task.CompletedTask; });
+
+        ctx.Response.Body.Position = 0;
+        var body = await new StreamReader(ctx.Response.Body).ReadToEndAsync();
+        return (allowed, ctx.Response.StatusCode, body);
+    }
+
+    // Acceptance criterion (issue #924): end to end under enforcement. An enrolled phone's local key is
+    // accepted by the enforced gate; after a website revoke drops it from the roster and ONE reconcile runs,
+    // the SAME request to the enforced Gateway returns 401. This extends the round trip past "the key stops
+    // validating" to the real enforced-gate outcome the phone actually sees.
+    [Fact]
+    public async Task Enroll_then_website_revoke_under_enforcement_makes_the_next_request_401()
+    {
+        var account = MakeAccount();
+        var stub = new StubCloud();
+        var devices = TempRegistry();
+
+        // Enroll (the /m/enroll path): the phone gets a local key AND is recorded with its cloud roster id,
+        // so it is subject to the same revoke-down removal as a paired child.
+        var enroll = new MobileDeviceEnrollmentService(account, ClientOver(stub), devices);
+        var outcome = await enroll.EnrollAsync(CloudKey, InstallId, "Pixel", "android");
+        Assert.Equal(MobileEnrollmentOutcome.ResultKind.Ok, outcome.Kind);
+        var localKey = outcome.LocalDeviceKey;
+        Assert.NotNull(localKey);
+
+        // Before the revoke: the enforced gate ALLOWS the phone's request (200-class, downstream ran).
+        var before = await RunEnforcedGateAsync(devices, localKey);
+        Assert.True(before.Allowed, "an enrolled phone's local key must pass the enforced gate");
+        Assert.Equal(StatusCodes.Status200OK, before.StatusCode);
+
+        // Website revoke, then ONE reconcile sweep drops the local key.
+        stub.Revoked = true;
+        await new ChildDeviceMirrorService(account, ClientOver(stub), devices).ReconcileAsync();
+        Assert.False(devices.IsValidDeviceKey(localKey), "one reconcile after the revoke must drop the local key");
+
+        // After the revoke + reconcile: the SAME request is now REFUSED by the enforced gate with a hard 401.
+        var after = await RunEnforcedGateAsync(devices, localKey);
+        Assert.False(after.Allowed, "a revoked phone's request must not reach the downstream");
+        Assert.Equal(StatusCodes.Status401Unauthorized, after.StatusCode);
+        Assert.Contains("missing or invalid token", after.Body, StringComparison.Ordinal);
+    }
+
+    // Acceptance criterion (issue #924): no false eviction. A device STILL on the roster is not removed by
+    // reconcile, and its request keeps passing the enforced gate.
+    [Fact]
+    public async Task Enroll_then_reconcile_with_device_still_on_roster_keeps_enforced_access()
+    {
+        var account = MakeAccount();
+        var stub = new StubCloud();
+        var devices = TempRegistry();
+
+        var enroll = new MobileDeviceEnrollmentService(account, ClientOver(stub), devices);
+        var outcome = await enroll.EnrollAsync(CloudKey, InstallId, "Pixel", "android");
+        Assert.Equal(MobileEnrollmentOutcome.ResultKind.Ok, outcome.Kind);
+        var localKey = outcome.LocalDeviceKey;
+        Assert.NotNull(localKey);
+
+        // The phone is NOT revoked (stub.Revoked stays false), so it stays on the roster across reconciles.
+        var mirror = new ChildDeviceMirrorService(account, ClientOver(stub), devices);
+        await mirror.ReconcileAsync();
+        await mirror.ReconcileAsync();
+
+        Assert.True(devices.IsValidDeviceKey(localKey), "a device still on the roster must keep its local key");
+        Assert.Equal(1, devices.Count);
+        var stillAllowed = await RunEnforcedGateAsync(devices, localKey);
+        Assert.True(stillAllowed.Allowed, "a non-revoked phone must keep passing the enforced gate");
+        Assert.Equal(StatusCodes.Status200OK, stillAllowed.StatusCode);
+        Assert.False(mirror.HasPersistentReconcileFailure, "healthy reconciles must not report a reconcile failure");
+    }
 
     [Fact]
     public async Task Enroll_then_website_revoke_drops_the_local_key()

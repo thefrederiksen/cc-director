@@ -68,6 +68,13 @@ public sealed class ChildDeviceMirrorTests
         public string? LastRegisterName { get; private set; }
         public readonly List<string> HeartbeatInstallIds = new();
 
+        /// <summary>
+        /// When non-zero, GET /devices (the revoke-down roster pull) answers this HTTP status instead of the
+        /// roster - modelling a cloud/auth outage on the reconcile's source-of-truth call (issue #924). A 500
+        /// makes <c>ListDevicesAsync</c> throw, which the reconcile records as a failure.
+        /// </summary>
+        public int ListStatusOverride { get; set; }
+
         public string CloudIdFor(string installId) => _byInstall[installId].Id;
         public void Revoke(string installId) => _revoked.Add(installId);
         public void HeartbeatNotFound(string installId) => _heartbeat404.Add(installId);
@@ -82,6 +89,8 @@ public sealed class ChildDeviceMirrorTests
             if (method == HttpMethod.Get && path == DeviceRegistryClient.DevicesPath)
             {
                 ListCallCount++;
+                if (ListStatusOverride != 0)
+                    return Json((HttpStatusCode)ListStatusOverride, "{\"error\":\"roster unavailable\"}");
                 var rows = _byInstall
                     .Where(kv => !_revoked.Contains(kv.Key))
                     .Select(kv => RecordJson(kv.Value))
@@ -376,5 +385,78 @@ public sealed class ChildDeviceMirrorTests
         Assert.Equal(0, stub.ListCallCount);
         Assert.Null(stub.LastAuthorization);
         Assert.True(devices.IsValidDeviceKey(childKey), "a not-signed-in Gateway must never drop a child");
+    }
+
+    // Issue #924 (failure-surfaced): when the revoke-down roster pull PERSISTENTLY fails, the reconcile
+    // surfaces a visible status (HasPersistentReconcileFailure / ConsecutiveReconcileFailures /
+    // LastReconcileError) AND emits a distinct escalated log signal - it is not swallowed into an
+    // indistinguishable forever-retry. A failing sweep must never look like a revoke (no child is evicted),
+    // and a later clean sweep clears the status.
+    [Fact]
+    public async Task Reconcile_CloudRosterPullPersistentlyFails_SurfacesPersistentReconcileFailure()
+    {
+        var account = MakeAccount(signedIn: true);
+        var stub = new StubCloudDeviceRegistry();
+        var devices = TempRegistry();
+        var childKey = EnrollChild(devices);
+        var mirror = new ChildDeviceMirrorService(account, ClientOver(stub), devices);
+
+        stub.ListStatusOverride = 500; // the revoke-down roster pull fails on every sweep (cloud/auth outage)
+
+        IReadOnlyList<string> lines;
+        using (var scope = FileLog.RedirectForTests())
+        {
+            for (var i = 0; i < ChildDeviceMirrorService.PersistentReconcileFailureThreshold; i++)
+                await mirror.ReconcileAsync();
+            lines = scope.DrainAndReadLines();
+        }
+
+        Assert.Equal(ChildDeviceMirrorService.PersistentReconcileFailureThreshold, mirror.ConsecutiveReconcileFailures);
+        Assert.True(mirror.HasPersistentReconcileFailure, "a persistently-failing roster pull must surface as a persistent reconcile failure");
+        Assert.NotNull(mirror.LastReconcileError);
+        Assert.Contains(lines, l => l.Contains("PERSISTENT reconcile failure", StringComparison.Ordinal));
+        Assert.True(devices.IsValidDeviceKey(childKey), "a reconcile failure must not evict a child (no false revoke)");
+
+        // Recovery: once the cloud answers again, the next clean sweep clears the persistent status and logs it.
+        stub.ListStatusOverride = 0;
+        await mirror.ReconcileAsync();
+        Assert.Equal(0, mirror.ConsecutiveReconcileFailures);
+        Assert.False(mirror.HasPersistentReconcileFailure, "a clean sweep must clear the persistent-failure status");
+        Assert.Null(mirror.LastReconcileError);
+    }
+
+    // Issue #924 (failure-surfaced, reusing the Phase 3 signal): when the Gateway's account-token refresh is
+    // persistently failing (issue #911), reconcile has no usable token to pull the roster and would silently
+    // skip forever - so HasPersistentReconcileFailure reports the stuck condition via that reused signal.
+    [Fact]
+    public async Task HasPersistentReconcileFailure_WhenAccountRefreshPersistentlyFailing_IsTrue()
+    {
+        var account = MakePersistentRefreshFailingAccount();
+        await account.RefreshIfNeededAsync();
+        Assert.True(account.HasPersistentRefreshFailure, "precondition: the account is in the Phase 3 persistent-refresh-failure state");
+
+        var mirror = new ChildDeviceMirrorService(account, ClientOver(new StubCloudDeviceRegistry()), TempRegistry());
+
+        Assert.True(mirror.HasPersistentReconcileFailure, "a persistent account-refresh failure must surface as a persistent reconcile failure");
+    }
+
+    /// <summary>
+    /// Builds a signed-in account whose token refresh is PERSISTENTLY misconfigured (issue #911): an expired
+    /// access token plus a refresher with no anonymous key, which short-circuits to a persistent
+    /// misconfiguration WITHOUT a network call. After <c>RefreshIfNeededAsync</c> the account reports
+    /// <see cref="DevThrottleAccountService.HasPersistentRefreshFailure"/>. Cross-platform (in-memory store).
+    /// </summary>
+    private static DevThrottleAccountService MakePersistentRefreshFailingAccount()
+    {
+        var authEventsLog = Path.Combine(Path.GetTempPath(), "cc-gw-child-mirror-refreshfail-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        var store = new InMemoryTokenStore();
+        var validator = new JwtAccessTokenValidator(GatewayTestJwt.SigningSecret);
+        var eventLog = new AuthEventLog(authEventsLog);
+        // A resolvable endpoint but a null anon key -> the exchange is persistently misconfigured (issue #911)
+        // and short-circuits before sending any request.
+        var refresher = new GatewayHttpTokenRefresher(new HttpClient(), () => "http://127.0.0.1:9/refresh", () => null);
+        var service = new DevThrottleAccountService(store, validator, eventLog, refresher);
+        service.StoreTokens(new DevThrottleTokens(GatewayTestJwt.Create(DateTime.UtcNow.AddHours(-1)), "seed-refresh"));
+        return service;
     }
 }

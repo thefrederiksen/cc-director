@@ -100,6 +100,23 @@ cookie carrying (C); `AuthMiddleware` accepts (C) on both the Bearer header and 
 
 Revocation is per-device: removing one phone never affects any other device or the master token.
 
+**Guaranteed revocation-latency bound (issue #924).** Revocation is PULL-based, not push: there is no
+inbound cloud-to-Gateway channel (sub-second/instant revoke is a Non-goal of epic #916 - it would need a
+persistent relay). A website revoke reaches the Gateway only on its next OUTBOUND reconcile sweep, so the
+bound is exactly **one sweep interval - `GatewayHost.CronSweepInterval`, ~1 minute**. A revoked device may
+keep working up to that one interval and is refused on the first request after the sweep that drops its
+key; it is never refused sooner (nothing pushes the revoke) and never later than one sweep (the sweep is
+periodic). Under host-wide enforcement (issue #917) that refusal is a hard `401`.
+
+**Revoke-propagation failures are visible (issue #924).** The reconcile sweep no longer swallows a broken
+revoke path into an indistinguishable retry line. `ChildDeviceMirrorService` counts consecutive reconcile
+failures and exposes `HasPersistentReconcileFailure` (plus `ConsecutiveReconcileFailures` /
+`LastReconcileError`) for the Cockpit/tray to read, and logs a distinct escalated signal once the path is
+persistently stuck. That status is also set when the Gateway's account-token refresh is persistently
+failing (the issue #911 signal) - the case where reconcile has no usable token and would otherwise skip in
+silence. So a "website revokes are not reaching this Gateway" condition surfaces instead of retrying
+forever unseen.
+
 ---
 
 ## 4. What each control defends against
@@ -117,6 +134,13 @@ Revocation is per-device: removing one phone never affects any other device or t
 ---
 
 ## 5. Known gaps (open audit items)
+
+> Update (issue #924): epic #916 has since landed its enforcement and refresh phases. Gap 1 is closed by
+> Phase 1 (#917 - the host-wide auth gate is now ON by default) and gap 2 by Phase 3 (#911 - the refresh
+> exchange now sends the `apikey`). Phase 4 (#924) additionally makes revoke-propagation failures visible
+> (see the Revoke section above). The gaps are retained below as the original audit record; gap 3 (a live,
+> end-to-end enforced audit across the whole fleet, including the owner's real-phone revoke round-trip)
+> remains the epic's real done-check and is owner-run.
 
 1. **Host-wide enforcement is OFF by default.** The device-key check only *enforces* when the Gateway
    runs with `CC_GATEWAY_AUTH=1`. With it off (the shipped default; the tailnet is the boundary today),
