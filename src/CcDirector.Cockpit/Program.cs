@@ -176,26 +176,7 @@ static string ReadGatewayToken()
     return System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path).Trim() : "";
 }
 
-// Mobile text-to-speech (the Mobile screen's Speak button). The browser fetches the synthesized
-// audio DIRECTLY over plain HTTP from here - deliberately NOT through the Blazor SignalR circuit,
-// which chokes when a multi-megabyte mp3 is marshalled as a base64 string. This endpoint proxies
-// the Gateway's OpenAI text-to-speech (model tts-1, voice "nova" - the natural voice the phone uses)
-// and streams the mp3 back same-origin. Returns 503 when the Gateway has no OpenAI key configured;
-// the page then shows a clear message rather than silently falling back to the robotic browser voice.
-app.MapPost("/api/tts", async (TtsRequest body, GatewayClient gateway, CancellationToken ct) =>
-{
-    if (string.IsNullOrWhiteSpace(body?.Text))
-        return Results.BadRequest(new { error = "text is required" });
-    var audio = await gateway.SynthesizeSpeechAsync(body.Text, ct);
-    return audio is { Length: > 0 }
-        ? Results.Bytes(audio, "audio/mpeg")
-        : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-}).DisableAntiforgery();
-
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
-
-/// <summary>Body of POST /api/tts: the text to synthesize into speech.</summary>
-internal sealed record TtsRequest(string Text);

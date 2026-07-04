@@ -363,10 +363,10 @@ details (gesture-safe autoplay, the session color logic, the offline upload outb
 <table>
   <thead><tr><th>Remove</th><th>What it was</th><th>Replaced by</th></tr></thead>
   <tbody>
-    <tr><td><code>Components/Pages/Mobile.razor</code></td><td>Blazor Server mobile roster + history page</td><td>Mobile PWA roster + session detail</td></tr>
+    <tr><td><code>Components/Pages/Mobile.razor</code> <em>(removed 2026-07-04)</em></td><td>Blazor Server mobile roster + history page</td><td>Mobile PWA roster + session detail</td></tr>
     <tr><td><code>wwwroot/m/</code> (vanilla)</td><td>Wingman Voice static app</td><td>Mobile PWA voice feature</td></tr>
     <tr><td><code>wwwroot/pages/voice/</code></td><td>Voice Mode static PWA</td><td>Mobile PWA voice feature</td></tr>
-    <tr><td>Cockpit nav "Mobile" item</td><td>manual menu entry</td><td>automatic device redirect</td></tr>
+    <tr><td>Cockpit nav "Mobile" item <em>(removed 2026-07-04)</em></td><td>manual menu entry</td><td>automatic device redirect</td></tr>
   </tbody>
 </table>
 <p class="muted">Removal happens only after the new app reaches parity on the features that matter; it is the last phase, not the first.</p>
@@ -376,7 +376,7 @@ details (gesture-safe autoplay, the session color logic, the offline upload outb
   <li><strong>Scaffold.</strong> Create <code>mobile/</code> (Vite + React + TS + vite-plugin-pwa). Gateway emits OpenAPI; wire the codegen step and the MSBuild build/copy. Gateway serves the build at <code>/m</code> with token injection. Ship a one-screen "sessions roster" to prove the whole pipe end-to-end on the phone.</li>
   <li><strong>Forwarding.</strong> Add the Gateway device-redirect middleware (mobile UA -&gt; <code>/m</code>) and confirm the Desktop-site escape hatch.</li>
   <li><strong>Core features.</strong> Session detail / conversation history, voice (the current <code>/m/</code> behavior), then progressively the rest - built and tested from the phone.</li>
-  <li><strong>Cutover.</strong> Once parity is reached, delete the Blazor <code>/mobile</code> page, the vanilla <code>/m/</code>, and <code>/voice/</code>, and drop the Cockpit "Mobile" nav item.</li>
+  <li><strong>Cutover.</strong> Once parity is reached, delete the Blazor <code>/mobile</code> page, the vanilla <code>/m/</code>, and <code>/voice/</code>, and drop the Cockpit "Mobile" nav item. <strong>(Done 2026-07-04: the Blazor <code>/mobile</code> page, its scoped stylesheet, the Cockpit "Mobile" nav item, and the server-side text-to-speech chain that fed only it - <code>SpeechText</code>, the Cockpit <code>/api/tts</code> proxy, <code>cockpitVoice.speakViaServer</code>, and <code>GatewayClient.SynthesizeSpeechAsync</code> - have been removed. The remaining vanilla <code>/m/</code> and <code>/voice/</code> cleanup is separate.)</strong></li>
 </ol>
 
 <h2>10. Open decisions for sign-off</h2>
