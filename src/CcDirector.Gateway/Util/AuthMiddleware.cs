@@ -6,9 +6,15 @@ namespace CcDirector.Gateway.Util;
 /// <summary>
 /// Bearer-or-cookie auth for the Gateway.
 ///
-/// Public, no auth:    /healthz, /login, /logout, /devices/register
+/// Public, no auth:    /healthz, /cockpit, /login, /logout, /favicon.ico, /devices/register, and the
+///                     mobile app shell /m + everything under /m/ (which includes the mobile enroll
+///                     path POST /m/enroll - it carries its own account-scoped authorization).
 /// Authenticated:      every other route (Bearer header OR cc-gateway-token cookie OR, per
 ///                     issue #469, a per-device key issued at enrollment).
+///
+/// This public set is deliberately the ONLY way in without a credential once the host-wide gate is on
+/// by default (issue #917): the enroll/pairing entry points carry their own authorization and the login
+/// surface must be reachable to obtain one, while every data endpoint stays credential-gated.
 ///
 /// Browser requests (Accept: text/html) get a 302 redirect to /login.
 /// Non-browser requests get a 401 with JSON body.

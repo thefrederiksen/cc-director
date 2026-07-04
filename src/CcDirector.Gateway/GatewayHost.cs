@@ -35,22 +35,43 @@ public sealed class GatewayHost : IAsyncDisposable
     public bool AuthEnabled { get; }
 
     /// <summary>
-    /// Environment opt-in that turns the host-wide auth gate ON for a Gateway that would otherwise
-    /// default to off (issue #908). Set <c>CC_GATEWAY_AUTH=1</c> so reaching the Gateway on the tailnet
-    /// is no longer sufficient - a request must present the shared token or a per-device key. This
-    /// mirrors the <c>CC_GATEWAY_NO_TAILSCALE</c> env-toggle precedent and keeps the shipped default
-    /// unchanged (off) so no install starts requiring credentials without an explicit opt-in.
+    /// Environment override for the host-wide auth gate (issue #917). As of Phase 1 the gate is ON by
+    /// default, so this variable is now a DISABLE override for debugging: set <c>CC_GATEWAY_AUTH=0</c> to
+    /// turn the gate off. (Setting it to <c>1</c> is a harmless no-op since enforcement is already the
+    /// default.) A request that reaches the Gateway on the tailnet must present the shared token or a
+    /// per-device key unless the gate is explicitly disabled.
     /// </summary>
     public const string AuthEnabledEnvVar = "CC_GATEWAY_AUTH";
 
     /// <summary>
-    /// Resolves whether the host-wide auth gate runs: the explicit constructor flag OR the
-    /// <see cref="AuthEnabledEnvVar"/> environment opt-in. Pure and side-effect free so it is unit-tested
-    /// directly.
+    /// Environment override that turns the host-wide auth gate OFF for debugging (issue #917). Set
+    /// <c>CC_GATEWAY_NO_AUTH=1</c> to disable enforcement on a Gateway that would otherwise enforce by
+    /// default. This mirrors the <c>CC_GATEWAY_NO_TAILSCALE</c> env-toggle precedent.
     /// </summary>
-    internal static bool ResolveAuthEnabled(bool explicitlyEnabled) =>
-        explicitlyEnabled
-        || string.Equals(Environment.GetEnvironmentVariable(AuthEnabledEnvVar), "1", StringComparison.Ordinal);
+    public const string AuthDisabledEnvVar = "CC_GATEWAY_NO_AUTH";
+
+    /// <summary>
+    /// Resolves whether the host-wide auth gate runs. As of issue #917 enforcement is ON by default:
+    /// <list type="bullet">
+    /// <item>An explicit constructor choice (<paramref name="explicitChoice"/> non-null) always wins - a
+    /// test forces the gate on or off deterministically regardless of the environment.</item>
+    /// <item>With no explicit choice (production), the gate is ON unless a disable override is set:
+    /// <c>CC_GATEWAY_NO_AUTH=1</c> or <c>CC_GATEWAY_AUTH=0</c> turns it off for debugging.</item>
+    /// </list>
+    /// Pure and side-effect free so it is unit-tested directly.
+    /// </summary>
+    internal static bool ResolveAuthEnabled(bool? explicitChoice)
+    {
+        if (explicitChoice.HasValue)
+            return explicitChoice.Value;
+
+        if (string.Equals(Environment.GetEnvironmentVariable(AuthDisabledEnvVar), "1", StringComparison.Ordinal))
+            return false;
+        if (string.Equals(Environment.GetEnvironmentVariable(AuthEnabledEnvVar), "0", StringComparison.Ordinal))
+            return false;
+
+        return true;
+    }
 
     /// <summary>
     /// Issue #469: mints and verifies the short-lived 4-digit pairing code that authorizes a new
@@ -269,15 +290,17 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool authEnabled = false, string? instancesDirectory = null, int? cockpitProxyPort = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, int? cockpitProxyPort = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
         Devices = new Pairing.DeviceRegistry(devicesPath);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
-        if (AuthEnabled && !authEnabled)
-            FileLog.Write($"[GatewayHost] {AuthEnabledEnvVar}=1 -> host-wide auth gate ENABLED (a per-device key or the shared token is now required, even on the tailnet)");
+        if (AuthEnabled)
+            FileLog.Write($"[GatewayHost] auth gate booted ON (enforced by default, issue #917 - a per-device key or the shared token is required, even on the tailnet; set {AuthDisabledEnvVar}=1 to disable for debugging)");
+        else
+            FileLog.Write($"[GatewayHost] auth gate booted OFF (disabled via override - requests are accepted without a credential; this is a debugging mode, not the shipped default)");
         _client = new DirectorEndpointClient(Token);
         _cockpitProxyPort = cockpitProxyPort ?? Cockpit.CockpitSupervisor.ResolvePort();
         _serveProvisioner = new TailscaleServeProvisioner(Registry, Port, Cockpit.CockpitSupervisor.ResolvePort());
