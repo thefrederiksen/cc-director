@@ -78,10 +78,13 @@ public static class SessionOrdering
     /// bucket atomic: while the wingman reads a finished turn the session IS yellow; while
     /// a user-requested deep dive runs it IS orange (issue #217); red ("needs you") may
     /// only appear after the brief or report lands. Issue #553: a voice-mode session also
-    /// holds yellow until its playable audio exists (<see cref="IsVoicePreparing"/>).
+    /// holds yellow until its playable audio exists (<see cref="IsVoicePreparing"/>). A session
+    /// whose dictated utterance is being transcribed in the background
+    /// (<see cref="SessionDto.Transcribing"/>) shows orange ("Transcribing...") so no one else grabs it.
     /// </summary>
     public static string EffectiveColor(SessionDto s) =>
         s.OnHold ? "grey"
+        : s.Transcribing ? "orange"
         : IsExplaining(s) ? "orange"
         : IsBriefing(s) ? "yellow"
         : IsVoicePreparing(s) ? "yellow"

@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { sendEscape, sendInterrupt, sendPrompt } from "../api/client";
+import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
 import { DictationDialog } from "../dictation/DictationDialog";
 import {
   KEY_ARROW_DOWN,
@@ -122,6 +123,20 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
     [sessionId, onFlash, onError],
   );
 
+  // Fire-and-forget Send from the Speak dialog: the dialog already captured the audio buffer and
+  // closed itself, releasing the screen. We now transcode + upload + transcribe + submit in the
+  // background while the roster shows the session orange ("Transcribing..."), so the user can move on
+  // immediately. The flash is a brief acknowledgement; the persistent signal is the orange roster row.
+  const onDictateSendAudio = useCallback(
+    (captured: CapturedUtterance) => {
+      setDictating(false);
+      if (!sessionId) return;
+      onFlash("Transcribing...");
+      void backgroundTranscribeAndSend(sessionId, captured, { onError });
+    },
+    [sessionId, onFlash, onError],
+  );
+
   return (
     <div className="term-controls">
       <div className="term-row term-row-input">
@@ -189,6 +204,7 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
         <DictationDialog
           onInsert={onDictateInsert}
           onSend={onDictateSend}
+          onSendAudio={onDictateSendAudio}
           onClose={() => setDictating(false)}
         />
       )}

@@ -228,6 +228,17 @@ public sealed class SessionDto
     public bool VoiceAudioReady { get; set; }
 
     /// <summary>
+    /// True while a client is transcribing a dictated utterance into this session: the phone has
+    /// released the Speak dialog and the Gateway is uploading + transcribing the recorded audio in
+    /// the background, which will then be submitted into the session. Stamped by the Gateway
+    /// aggregator only (from the in-memory <c>TranscribingSessions</c> store); always false in
+    /// Director-local responses. Drives the orange "Transcribing..." roster color so every client
+    /// sees the session is busy and nobody else starts using it (see
+    /// <see cref="SessionOrdering.EffectiveColor"/>).
+    /// </summary>
+    public bool Transcribing { get; set; }
+
+    /// <summary>
     /// Whether the Wingman experience is enabled for this session: auto-explain briefing on
     /// turn-end, Voice + Wingman tabs visible, Yellow "Wingman is reading" state available.
     /// Default OFF. When false the session behaves as a plain terminal -- clients hide the

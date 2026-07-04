@@ -279,6 +279,30 @@ export async function holdSession(
   return result.onHold ?? onHold;
 }
 
+// POST /sessions/{sid}/transcribing - mark or clear this session as transcribing a dictated
+// utterance in the background (the phone hit Send in the Speak dialog and released the screen). This
+// is a Gateway-owned transient flag ONLY - it is not forwarded to the Director; it drives the orange
+// "Transcribing..." roster color so nobody else starts using the session while its audio is being
+// uploaded and transcribed. Sent true the instant Send is pressed and false once the background
+// upload/transcribe/submit finishes or fails. Reaches a Gateway-native literal route (no Director
+// hop) with the injected Bearer.
+export async function setTranscribing(
+  sessionId: string,
+  transcribing: boolean,
+  signal?: AbortSignal,
+): Promise<void> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/transcribing`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    body: JSON.stringify({ transcribing }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `POST transcribing failed: ${res.status}`);
+  }
+}
+
 // DELETE /sessions/{sid} - kill the agent process and remove the session from the roster (the
 // Android kill/remove semantics, gated behind a confirmation per the owner's #545 request). Reaches
 // the Director through the Gateway catch-all session proxy with the injected Bearer.

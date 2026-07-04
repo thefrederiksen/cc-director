@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeUtterance } from "../api/client";
+import type { CapturedUtterance } from "./backgroundSend";
 import { logCaptureHealth } from "./captureHealth";
 import { MicRecorder } from "./recorder";
+import { joinText } from "./transcript";
 import { blobToWav16kMono } from "./wav";
 
 // The ONE shared mobile dictation dialog (issue #817), used by the Terminal view (#810) and, when
@@ -26,8 +28,16 @@ export interface DictationDialogProps {
   /** Commit the transcript WITHOUT submitting (drop into the view's text box for editing). Required
    *  only when Insert is shown; ignored when showInsert is false. */
   onInsert?: (text: string) => void;
-  /** Commit the transcript AND submit it (the view's Send path). */
+  /** Commit the transcript AND submit it (the view's Send path). Used for the instant PAUSED-stage
+   *  Send (the text is already transcribed) and as the fallback Send when onSendAudio is not wired. */
   onSend: (text: string) => void;
+  /** Fire-and-forget Send: when provided, hitting Send while still RECORDING captures the audio
+   *  buffer, hands it here, and closes the dialog IMMEDIATELY - the host then transcodes, uploads,
+   *  transcribes, and submits in the background (marking the session "Transcribing..."). This is what
+   *  releases the screen the instant Send is pressed, since the result cannot be viewed here anyway.
+   *  When omitted (e.g. the Voice-mode reply panel) Send falls back to the blocking transcribe-then-
+   *  submit path via onSend. */
+  onSendAudio?: (captured: CapturedUtterance) => void;
   /** Close the dialog (Cancel, or after a commit). Nothing is sent on Cancel. */
   onClose: () => void;
   /** Whether to offer the Insert button. The Voice mode "Respond" flow (issue #850, mockup F) sets
@@ -38,16 +48,6 @@ export interface DictationDialogProps {
 
 const BAR_COUNT = 9;
 
-// Join two transcript fragments with exactly one separating space unless either side already
-// supplies the boundary whitespace (mirrors the desktop/phone DictationText.Join). This is the only
-// transformation allowed on the user's words on the client.
-function joinText(left: string, right: string): string {
-  if (!left) return right;
-  if (!right) return left;
-  const boundary = /\s$/.test(left) || /^\s/.test(right);
-  return boundary ? left + right : left + " " + right;
-}
-
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -55,7 +55,7 @@ function formatElapsed(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-export function DictationDialog({ onInsert, onSend, onClose, showInsert = true }: DictationDialogProps) {
+export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showInsert = true }: DictationDialogProps) {
   const recorderRef = useRef<MicRecorder>(new MicRecorder());
   const accumulatedRef = useRef<string>(""); // committed segments; the box may be edited past this
   const busyRef = useRef<boolean>(false); // guards the transcribe window against double taps
@@ -210,6 +210,47 @@ export function DictationDialog({ onInsert, onSend, onClose, showInsert = true }
     [stage, transcript, transcribeCurrentSegment, onClose],
   );
 
+  // Send. The whole point of this handler (issue: mobile Speak should not hold the screen): when we
+  // are still RECORDING and the host wired the fire-and-forget path (onSendAudio), grab the captured
+  // audio buffer and hand it up, then close IMMEDIATELY - the host transcribes + submits in the
+  // background and marks the session "Transcribing...". The user cannot see the transcript here
+  // anyway (Send submits straight into the session), so waiting for it is pure dead time.
+  //   * PAUSED: the text is already transcribed - submit it instantly, no audio round trip.
+  //   * RECORDING without onSendAudio (Voice-mode reply panel): fall back to the blocking
+  //     transcribe-then-submit commit so that surface is unchanged.
+  const onSendClick = useCallback(async () => {
+    if (busyRef.current) return;
+    if (stage === "paused") {
+      onSend(transcript.trim());
+      onClose();
+      return;
+    }
+    if (stage !== "recording") return;
+    if (!onSendAudio) {
+      await commit(onSend);
+      return;
+    }
+    busyRef.current = true;
+    elapsedBeforeRef.current += performance.now() - segmentStartRef.current;
+    let captured: Blob;
+    try {
+      captured = await recorderRef.current.stop();
+    } catch (err) {
+      // Could not finalize the mic - keep the user's audio session alive in PAUSED rather than
+      // dropping it, and surface why. (No text is lost; nothing was committed.)
+      setHint(err instanceof Error ? err.message : "Could not capture the recording.");
+      setStage("paused");
+      busyRef.current = false;
+      return;
+    }
+    onSendAudio({
+      blob: captured,
+      recordedMs: recorderRef.current.lastRecordedMs,
+      prefixText: accumulatedRef.current,
+    });
+    onClose();
+  }, [stage, transcript, onSend, onSendAudio, onClose, commit]);
+
   const onCancel = useCallback(() => {
     recorderRef.current.dispose();
     onClose();
@@ -298,7 +339,7 @@ export function DictationDialog({ onInsert, onSend, onClose, showInsert = true }
               <button
                 type="button"
                 className="dictate-btn dictate-send"
-                onClick={() => commit(onSend)}
+                onClick={onSendClick}
                 disabled={isTranscribing}
               >
                 Send

@@ -5287,6 +5287,7 @@ export interface components {
             onHold?: boolean;
             voiceGenerating?: boolean;
             voiceAudioReady?: boolean;
+            transcribing?: boolean;
             wingmanEnabled?: boolean;
             remoteRepo?: string;
             remoteThreadUrl?: string;

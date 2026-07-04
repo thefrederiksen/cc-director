@@ -172,6 +172,10 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Running.WorkListRunnerManager _runnerManager = new();
     // Issue #218: Gateway-owned clock for when each session entered the red / NEEDS-YOU state.
     private readonly NeedsYouClock _needsYouClock = new();
+    // Gateway-owned set of sessions whose dictated utterance is being transcribed in the background
+    // (the phone released the Speak dialog and the audio is uploading/transcribing). Stamps the
+    // orange "Transcribing..." roster color so nobody else grabs the session mid-dictation.
+    private readonly Transcription.TranscribingSessions _transcribingSessions = new();
     // Issue #549: the always-on turn-brief stamping pipeline (GatewayTurnBriefAgent) is retired.
     // TurnEndWatcher stays and runs unconditionally - its only job now is firing voice
     // auto-refresh on turn-end for voice sessions, and clearing the stale voice/text cache on
@@ -796,6 +800,11 @@ public sealed class GatewayHost : IAsyncDisposable
             voiceAudioReadyFor: sid => _voiceService?.HasVoice(sid) == true,
             // Issue #218: stamp the Gateway-owned NeedsYouSince entry clock onto each session.
             needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
+            // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded
+            // and transcribed in the background for this session (mobile Speak -> Send).
+            transcribingFor: sid => _transcribingSessions.IsTranscribing(sid),
+            // The mobile Speak flow marks/clears this via POST /sessions/{sid}/transcribing.
+            transcribingSessions: _transcribingSessions,
             // Issue #212 W3: enrich the Interrupted sessions list from the durable brief store. Always
             // available (read-only is safe even with briefing disabled), and the brief survives
             // the Director that died - which is exactly when we need it.

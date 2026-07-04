@@ -36,10 +36,12 @@ function isVoicePreparing(s: SessionDto): boolean {
 }
 
 // The ONE effective status color every client renders and triages on (issue #196): on-hold
-// greys out, a user-requested explain is orange, the wingman reading a finished turn is yellow,
+// greys out, a session whose dictated utterance is being transcribed in the background is orange,
+// a user-requested explain is orange, the wingman reading a finished turn is yellow,
 // a voice-mode session preparing audio is yellow - otherwise the raw Director status color.
 export function effectiveColor(s: SessionDto): string {
   if (s.onHold) return "grey";
+  if (s.transcribing) return "orange";
   if (isExplaining(s)) return "orange";
   if (isBriefing(s)) return "yellow";
   if (isVoicePreparing(s)) return "yellow";
@@ -78,6 +80,7 @@ export function dotColor(color: string): string {
 // activity state. Never empty so every row reads cleanly.
 export function contextLine(s: SessionDto): string {
   if (s.onHold) return "On hold";
+  if (s.transcribing) return "Transcribing...";
   if (s.lastStatusReason) return s.lastStatusReason;
   return s.assessedState ?? s.activityState ?? s.status ?? "";
 }

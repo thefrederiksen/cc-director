@@ -47,6 +47,8 @@ internal static class GatewayEndpoints
         Func<string, bool>? voiceGeneratingFor = null,
         Func<string, bool>? voiceAudioReadyFor = null,
         Func<string, bool, DateTime?>? needsYouStampFor = null,
+        Func<string, bool>? transcribingFor = null,
+        Transcription.TranscribingSessions? transcribingSessions = null,
         Func<string, (string? RailLine, string? Headline)>? interruptedBriefFor = null,
         Func<string, List<TurnBriefDto>>? briefHistoryFor = null,
         SessionOwnerCache? owners = null,
@@ -511,6 +513,12 @@ internal static class GatewayEndpoints
                         s.VoiceGenerating = voiceGeneratingFor(s.SessionId);
                     if (voiceAudioReadyFor is not null)
                         s.VoiceAudioReady = voiceAudioReadyFor(s.SessionId);
+                    // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in
+                    // the background for this session (mobile Speak -> Send released the screen). Stamped
+                    // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange
+                    // (a transcribing session is not "needs you") when the clock reads the final color.
+                    if (transcribingFor is not null)
+                        s.Transcribing = transcribingFor(s.SessionId);
                     // Issue #218: stamp NeedsYouSince AFTER the briefing/rail fields above, so the
                     // EffectiveColor fold sees this refresh's final BriefingState/RailLine/OnHold -
                     // a session still being briefed/explained is effective yellow/orange (not red)
@@ -801,6 +809,28 @@ internal static class GatewayEndpoints
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Content(body, "application/json");
+        });
+
+        // Mark / clear a session as transcribing a dictated utterance. Unlike hold this is a purely
+        // Gateway-owned transient flag - it is NOT forwarded to the Director; it only feeds the
+        // orange "Transcribing..." roster color. The mobile Speak flow calls { transcribing: true }
+        // the instant the user hits Send (releasing the screen) and { transcribing: false } once the
+        // background upload/transcribe/submit finishes or fails. A literal route so it wins over the
+        // /sessions/{sid}/{**rest} catch-all Director proxy. Verified the session exists so a stale id
+        // cannot pin a phantom mark.
+        app.MapPost("/sessions/{sid}/transcribing", async (string sid, TranscribingRequest req) =>
+        {
+            if (transcribingSessions is null)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            if (session is null || director is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+            var transcribing = req?.Transcribing ?? false;
+            if (transcribing)
+                transcribingSessions.Begin(sid);
+            else
+                transcribingSessions.End(sid);
+            return Results.Json(new { transcribing });
         });
 
         app.MapPatch("/sessions/{sid}", async (string sid, SessionUpdateRequest req) =>

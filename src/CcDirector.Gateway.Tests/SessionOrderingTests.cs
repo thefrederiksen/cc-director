@@ -138,6 +138,33 @@ public sealed class SessionOrderingTests
         Assert.Equal("orange", SessionOrdering.EffectiveColor(S("x", color: "red", briefingState: "Explaining")));
     }
 
+    // ---------- Transcribing "orange while a dictated utterance is being transcribed" ----------
+
+    [Fact]
+    public void EffectiveColor_WhileTranscribing_IsOrange_RegardlessOfRawColor()
+    {
+        // The phone released the Speak dialog and the audio is uploading/transcribing in the
+        // background: orange no matter what the session is doing underneath, so nobody else grabs it.
+        Assert.Equal("orange", SessionOrdering.EffectiveColor(new SessionDto { SessionId = "x", StatusColor = "blue", Transcribing = true }));
+        Assert.Equal("orange", SessionOrdering.EffectiveColor(new SessionDto { SessionId = "x", StatusColor = "green", Transcribing = true }));
+    }
+
+    [Fact]
+    public void EffectiveColor_OnHold_WinsOverTranscribing()
+    {
+        // A parked session stays grey; transcribing does not override the user's explicit hold.
+        Assert.Equal("grey", SessionOrdering.EffectiveColor(new SessionDto { SessionId = "x", StatusColor = "blue", OnHold = true, Transcribing = true }));
+    }
+
+    [Fact]
+    public void Classify_Transcribing_IsActive_NotNeedsYou()
+    {
+        // Orange is not red, so a transcribing session sits in Active - it must never jump into the
+        // needs-you group just because it is busy transcribing.
+        Assert.Equal(SessionOrdering.TriageBucket.Active,
+            SessionOrdering.Classify(new SessionDto { SessionId = "x", StatusColor = "red", Transcribing = true }));
+    }
+
     // ---------- Voice-mode "yellow until audio ready" (issue #553) ----------
 
     private static SessionDto Voice(string color, string activityState, bool generating, bool audioReady) => new()
