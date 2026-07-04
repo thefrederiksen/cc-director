@@ -33,6 +33,12 @@ public sealed class DevThrottleAccountService
     // Token rotation makes overlapping exchanges actively harmful (the second one presents an
     // already-rotated refresh token and looks revoked), so refresh passes are single-flight.
     private readonly SemaphoreSlim _refreshFlight = new(1, 1);
+    // The persistent-refresh-failure signal (issue #911): set when a refresh attempt fails with a
+    // misconfiguration that retrying alone will not fix (a missing/invalid apikey - the endpoint
+    // answering 401 "No API key found in request"). While this is set an expired access token can
+    // never be renewed, so the cached credential is not genuinely usable and must not read as signed
+    // in. Cleared on the next successful refresh. Guarded by _gate.
+    private bool _refreshPersistentlyFailing;
 
     /// <summary>
     /// Creates the service from its collaborators. None is optional - each one is a real dependency
@@ -79,20 +85,42 @@ public sealed class DevThrottleAccountService
     }
 
     /// <summary>
-    /// Answers "is this install logged in?" entirely from the cached credential, with NO outbound
-    /// network call. Returns true when a stored access token's signature verifies and either has not
-    /// expired or is expired-but-well-formed (a genuinely-ours token that the background refresh can
-    /// renew). Returns false when no credential is stored, the stored entry cannot be decrypted, or
-    /// the access token is tampered / wrong-signature.
+    /// True when a refresh attempt has persistently failed on a misconfiguration that retrying alone
+    /// will not fix (a missing/invalid <c>apikey</c>; issue #911). Surfaces the persistent-refresh-
+    /// failure signal so the tray/Cockpit can show "sign-in needs attention" rather than a stale
+    /// "Signed in", and so an expired-and-unrenewable credential does not read as usable. Cleared by
+    /// the next successful refresh. No network call.
+    /// </summary>
+    public bool HasPersistentRefreshFailure
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _refreshPersistentlyFailing;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Answers "is this install logged in with a genuinely-usable token?" entirely from the cached
+    /// credential, with NO outbound network call. Returns true when a stored access token's signature
+    /// verifies AND it either has not expired, or is expired-but-well-formed WHILE the background
+    /// refresh is healthy (a genuinely-ours token the refresh can still renew). Returns false when no
+    /// credential is stored, the stored entry cannot be decrypted, the access token is tampered /
+    /// wrong-signature, or the token is expired AND refresh is persistently failing (issue #911) - so
+    /// a dead-and-unrenewable credential the cloud rejects does not read as signed in.
     /// </summary>
     public bool IsLoggedIn()
     {
         FileLog.Write("[DevThrottleAccountService] IsLoggedIn: checking cached credential locally (no network call)");
 
         DevThrottleTokens? tokens;
+        bool refreshPersistentlyFailing;
         lock (_gate)
         {
             tokens = _store.Load();
+            refreshPersistentlyFailing = _refreshPersistentlyFailing;
         }
 
         if (tokens is null)
@@ -102,8 +130,12 @@ public sealed class DevThrottleAccountService
         }
 
         var validation = _validator.Validate(tokens.AccessToken);
-        var loggedIn = validation.IsValid || validation.IsExpiredButWellFormed;
-        FileLog.Write($"[DevThrottleAccountService] IsLoggedIn: valid={validation.IsValid}, expiredButWellFormed={validation.IsExpiredButWellFormed}, result={loggedIn} (no network call)");
+        // An expired-but-well-formed token normally still reads as signed in (a grace window while the
+        // background refresh renews it). But once refresh is persistently failing it can never be
+        // renewed and the cloud rejects it, so it is no longer a usable credential (issue #911).
+        var expiredButRenewable = validation.IsExpiredButWellFormed && !refreshPersistentlyFailing;
+        var loggedIn = validation.IsValid || expiredButRenewable;
+        FileLog.Write($"[DevThrottleAccountService] IsLoggedIn: valid={validation.IsValid}, expiredButWellFormed={validation.IsExpiredButWellFormed}, refreshPersistentlyFailing={refreshPersistentlyFailing}, result={loggedIn} (no network call)");
         return loggedIn;
     }
 
@@ -171,6 +203,9 @@ public sealed class DevThrottleAccountService
                 lock (_gate)
                 {
                     _store.Save(result.Renewed);
+                    // A successful renewal proves refresh is healthy again - clear any prior
+                    // persistent-failure signal (issue #911).
+                    _refreshPersistentlyFailing = false;
                 }
                 FileLog.Write("[DevThrottleAccountService] RefreshIfNeededAsync: refreshed access token stored");
                 return true;
@@ -186,13 +221,30 @@ public sealed class DevThrottleAccountService
                 {
                     var wasLoggedIn = _store.HasTokens;
                     _store.Clear();
+                    // The credential is gone; there is nothing left to renew, so reset the signal.
+                    _refreshPersistentlyFailing = false;
                     if (wasLoggedIn)
                         _eventLog.RecordLoggedOut();
                 }
                 return false;
             }
 
-            FileLog.Write("[DevThrottleAccountService] RefreshIfNeededAsync: refresh unavailable (offline or backend error) -> keeping cached credential");
+            if (result.RefreshMisconfigured)
+            {
+                // The exchange is persistently broken by a client-side misconfiguration (a missing or
+                // invalid apikey - the endpoint answering 401 "No API key found in request"; issue
+                // #911). The refresh token itself may be fine, so keep the cached credential, but raise
+                // the persistent-failure signal so an expired token no longer reads as signed in and
+                // the failure is surfaced instead of masked forever as a transient outage.
+                FileLog.Write("[DevThrottleAccountService] RefreshIfNeededAsync: refresh persistently misconfigured (apikey missing/invalid) -> keeping cached credential but surfacing the persistent-refresh-failure signal; a fix or re-sign-in is required");
+                lock (_gate)
+                {
+                    _refreshPersistentlyFailing = true;
+                }
+                return false;
+            }
+
+            FileLog.Write("[DevThrottleAccountService] RefreshIfNeededAsync: refresh unavailable (offline or backend error) -> keeping cached credential (transient; signal unchanged)");
             return false;
         }
         finally

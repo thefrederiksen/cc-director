@@ -194,11 +194,13 @@ public sealed class GatewayTokenRefreshTests : IDisposable
         Assert.False(result.RefreshTokenRejected);
     }
 
-    // Issue #876: with the override environment variables unset, the refresher resolves the embedded
-    // production endpoint, but the anonymous API key must come from configuration so the public repo
-    // does not contain key material.
+    // Issue #911: with the override environment variables unset, the refresher resolves BOTH the
+    // embedded production endpoint AND the embedded public anonymous key. Before #911 the key came
+    // only from configuration and resolved to null on the Gateway, so the exchange sent no apikey
+    // header and Supabase answered 401 "No API key found in request". The embedded key is the public
+    // "anon"-role publishable key for the production project (ompujpfrglgqvqprilxa).
     [Fact]
-    public void DefaultResolution_NoEnvironmentOverrides_UsesEmbeddedEndpointButNoApiKey()
+    public void DefaultResolution_NoEnvironmentOverrides_UsesEmbeddedEndpointAndAnonKey()
     {
         var previousUrl = Environment.GetEnvironmentVariable(DevThrottleAuthBackend.RefreshUrlEnvVar);
         var previousKey = Environment.GetEnvironmentVariable(DevThrottleAuthBackend.AnonymousKeyEnvVar);
@@ -207,14 +209,116 @@ public sealed class GatewayTokenRefreshTests : IDisposable
         try
         {
             Assert.Equal(DevThrottleAuthBackend.ProductionRefreshUrl, DevThrottleAuthBackend.ResolveRefreshUrl());
-            Assert.Null(DevThrottleAuthBackend.ResolveAnonymousKey());
+            Assert.Equal(DevThrottleAuthBackend.ProductionAnonymousKey, DevThrottleAuthBackend.ResolveAnonymousKey());
+            Assert.False(string.IsNullOrWhiteSpace(DevThrottleAuthBackend.ResolveAnonymousKey()));
             Assert.Contains("grant_type=refresh_token", DevThrottleAuthBackend.ProductionRefreshUrl);
+            Assert.StartsWith("ompujpfrglgqvqprilxa", new Uri(DevThrottleAuthBackend.ProductionRefreshUrl).Host);
         }
         finally
         {
             Environment.SetEnvironmentVariable(DevThrottleAuthBackend.RefreshUrlEnvVar, previousUrl);
             Environment.SetEnvironmentVariable(DevThrottleAuthBackend.AnonymousKeyEnvVar, previousKey);
         }
+    }
+
+    // Issue #911 (criterion: apikey present with the expected value): the default resolver (no env
+    // override) attaches the embedded production anonymous key on the exchange - proving the Gateway
+    // now sends the apikey the endpoint requires, without any configuration.
+    [Fact]
+    public async Task Exchange_WithDefaultResolver_SendsEmbeddedProductionAnonKeyAsApiKeyHeader()
+    {
+        var previousKey = Environment.GetEnvironmentVariable(DevThrottleAuthBackend.AnonymousKeyEnvVar);
+        Environment.SetEnvironmentVariable(DevThrottleAuthBackend.AnonymousKeyEnvVar, null);
+        try
+        {
+            await using var stub = await RefreshStub.StartAsync(_ =>
+                (GatewayTestJwt.Create(DateTime.UtcNow.AddHours(1)), "rotated-refresh-token"));
+
+            // No apiKey resolver injected -> defaults to DevThrottleAuthBackend.ResolveAnonymousKey.
+            var refresher = new GatewayHttpTokenRefresher(new HttpClient(), () => stub.Url);
+
+            var result = await refresher.RefreshAsync("seed-refresh-token");
+
+            Assert.NotNull(result.Renewed);
+            Assert.Equal(DevThrottleAuthBackend.ProductionAnonymousKey, stub.LastApiKeyHeader);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DevThrottleAuthBackend.AnonymousKeyEnvVar, previousKey);
+        }
+    }
+
+    // Issue #911 (criterion: missing/empty anon-key detected and surfaced, NOT masked as
+    // "unavailable / keep cached"): a resolver that returns null short-circuits to Misconfigured
+    // WITHOUT sending a doomed keyless request (the stub is never called).
+    [Fact]
+    public async Task Exchange_WithMissingAnonKey_ReportsMisconfiguredWithoutSendingRequest()
+    {
+        await using var stub = await RefreshStub.StartAsync(_ =>
+            (GatewayTestJwt.Create(DateTime.UtcNow.AddHours(1)), "rotated-refresh-token"));
+
+        var refresher = new GatewayHttpTokenRefresher(
+            new HttpClient(), () => stub.Url, () => null);
+
+        var result = await refresher.RefreshAsync("seed-refresh-token");
+
+        Assert.True(result.RefreshMisconfigured);            // surfaced as a persistent misconfiguration
+        Assert.False(result.RefreshTokenRejected);           // NOT a dead-credential rejection
+        Assert.Null(result.Renewed);
+        Assert.Equal(0, stub.RequestCount);                  // no keyless request was ever sent
+    }
+
+    // Issue #911 (criterion: a 401 "No API key found in request" is surfaced, not masked): the
+    // endpoint answering 401 is classified Misconfigured (persistent), not Unavailable (transient).
+    [Fact]
+    public async Task Exchange_EndpointAnswers401_ReportsMisconfigured()
+    {
+        await using var stub = await RefreshStub.StartRejectingAsync(
+            """{"message":"No API key found in request"}""", statusCode: 401);
+
+        var refresher = new GatewayHttpTokenRefresher(
+            new HttpClient(), () => stub.Url, () => "some-api-key");
+
+        var result = await refresher.RefreshAsync("seed-refresh-token");
+
+        Assert.True(result.RefreshMisconfigured);
+        Assert.False(result.RefreshTokenRejected);
+        Assert.Null(result.Renewed);
+        Assert.Equal(1, stub.RequestCount);
+    }
+
+    // Issue #911 (criterion: signedIn reflects a genuinely-usable token): with an expired token and a
+    // refresh that is persistently misconfigured (missing apikey), the credential is KEPT (the refresh
+    // token may be fine) but IsLoggedIn/signedIn no longer reports true - the dead-and-unrenewable
+    // token the cloud would reject does not read as signed in - and the persistent-failure signal is
+    // surfaced.
+    [Fact]
+    public async Task RefreshIfNeeded_MissingAnonKey_SignedInReflectsUnusableToken()
+    {
+        if (!OnWindows) return;
+
+        await using var stub = await RefreshStub.StartAsync(_ =>
+            (GatewayTestJwt.Create(DateTime.UtcNow.AddHours(1)), "rotated-refresh-token"));
+
+        // The endpoint is reachable, but no apikey resolves -> the exchange is persistently misconfigured.
+        var refresher = new GatewayHttpTokenRefresher(new HttpClient(), () => stub.Url, () => null);
+        var service = MakeService(refresher);
+
+        var expiredAccess = GatewayTestJwt.Create(DateTime.UtcNow.AddHours(-1));
+        service.StoreTokens(new DevThrottleTokens(expiredAccess, "seed-refresh-token"));
+        Assert.True(service.IsLoggedIn());                   // before any refresh: grace window, reads signed-in
+
+        var refreshed = await service.RefreshIfNeededAsync();
+
+        Assert.False(refreshed);
+        Assert.Equal(0, stub.RequestCount);                  // the keyless request was never sent
+        Assert.True(service.HasPersistentRefreshFailure);    // the persistent-failure signal is surfaced
+        Assert.False(service.IsLoggedIn());                  // the expired-and-unrenewable token is not "signed in"
+        // The credential is KEPT (not cleared) - the refresh token may still be valid once the key is fixed.
+        var store = new WindowsProtectedTokenStore(_blobPath);
+        var kept = store.Load();
+        Assert.NotNull(kept);
+        Assert.Equal(expiredAccess, kept.AccessToken);
     }
 
     // Issue #876: the exchange carries the public anonymous key in the apikey header (the backend

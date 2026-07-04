@@ -74,6 +74,51 @@ public sealed class DevThrottleAccountServiceTests : IDisposable
         Assert.False(refresher.WasCalled);
     }
 
+    // Issue #911: an expired-but-well-formed token normally reads as signed in (the grace window while
+    // the background refresh renews it), but once a refresh attempt fails with a persistent
+    // misconfiguration (a missing/invalid apikey) the token can never be renewed and the cloud rejects
+    // it - so signedIn must NOT report true. The credential is KEPT (the refresh token may be fine)
+    // and the persistent-failure signal is surfaced.
+    [Fact]
+    public async Task IsLoggedIn_ExpiredTokenAfterMisconfiguredRefresh_ReturnsFalseAndSurfacesSignal()
+    {
+        var store = new InMemoryTokenStore();
+        var refresher = StubTokenRefresher.Misconfigured();
+        var service = MakeService(store, refresher);
+        service.StoreTokens(new DevThrottleTokens(TestJwt.Create(_now.AddHours(-1)), "refresh-1"));
+
+        Assert.True(service.IsLoggedIn());                   // before the refresh: grace window, signed-in
+        Assert.False(service.HasPersistentRefreshFailure);
+
+        var refreshed = await service.RefreshIfNeededAsync();
+
+        Assert.False(refreshed);
+        Assert.True(refresher.WasCalled);
+        Assert.True(service.HasPersistentRefreshFailure);    // signal surfaced
+        Assert.False(service.IsLoggedIn());                  // dead-and-unrenewable token is not "signed in"
+        Assert.NotNull(store.Load());                        // credential kept, not cleared
+    }
+
+    // Issue #911: a still-VALID (unexpired) token stays signed in even if refresh is persistently
+    // misconfigured - only an EXPIRED-and-unrenewable token flips to not-signed-in, so a transient key
+    // problem never signs out a user whose access token is still good.
+    [Fact]
+    public async Task IsLoggedIn_ValidTokenWithPersistentRefreshFailure_StillSignedIn()
+    {
+        var store = new InMemoryTokenStore();
+        var refresher = StubTokenRefresher.Misconfigured();
+        var service = MakeService(store, refresher);
+        // Seed an EXPIRED token, fail refresh to raise the signal, then store a fresh VALID token: the
+        // valid token reads as signed in regardless of the (now stale) signal.
+        service.StoreTokens(new DevThrottleTokens(TestJwt.Create(_now.AddHours(-1)), "refresh-1"));
+        await service.RefreshIfNeededAsync();
+        Assert.True(service.HasPersistentRefreshFailure);
+
+        service.StoreTokens(new DevThrottleTokens(TestJwt.Create(_now.AddHours(1)), "refresh-2"));
+
+        Assert.True(service.IsLoggedIn());
+    }
+
     // Acceptance criterion: a tampered/wrong-signature cached access token is treated as not logged in.
     [Fact]
     public void IsLoggedIn_TamperedCredential_ReturnsFalse()

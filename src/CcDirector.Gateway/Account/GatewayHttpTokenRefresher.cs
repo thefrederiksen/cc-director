@@ -18,13 +18,17 @@ namespace CcDirector.Gateway.Account;
 /// a POST whose JSON body is <c>{ "refresh_token": "..." }</c>, answered with
 /// <c>{ "access_token": "...", "refresh_token": "..." }</c>.
 ///
-/// Outcome classification (issue #876): HTTP 400 is the backend DEFINITIVELY refusing the refresh
-/// token (verified live: <c>{"code":400,"error_code":"validation_failed","msg":"Refresh token is not
-/// valid"}</c>) - reported as <see cref="TokenRefreshResult.Rejected"/> so the caller clears the dead
-/// credential. Every other failure - connectivity, timeout, a 401 missing-key misconfiguration, 429,
-/// 5xx, or an unparseable response - is <see cref="TokenRefreshResult.Unavailable"/>: the caller
-/// keeps the cached credential and retries next sweep. Only a 400 may kill a credential, because a
-/// misconfiguration or outage must never sign the user out.
+/// Outcome classification (issue #876, refined for #911): HTTP 400 is the backend DEFINITIVELY
+/// refusing the refresh token (verified live: <c>{"code":400,"error_code":"validation_failed",
+/// "msg":"Refresh token is not valid"}</c>) - reported as <see cref="TokenRefreshResult.Rejected"/> so
+/// the caller clears the dead credential. HTTP 401 is the <c>apikey</c> gate rejecting the request
+/// ("No API key found in request", or an invalid key) - a PERSISTENT client-side misconfiguration
+/// reported as <see cref="TokenRefreshResult.Misconfigured"/> so it is surfaced rather than masked
+/// forever (the #911 bug); a missing/empty resolved key short-circuits to the same signal WITHOUT
+/// sending a doomed keyless request. Every other failure - connectivity, timeout, 429, 5xx, or an
+/// unparseable response - is <see cref="TokenRefreshResult.Unavailable"/>: the caller keeps the cached
+/// credential and retries next sweep. Only a 400 may kill a credential, because a misconfiguration or
+/// outage must never sign the user out.
 ///
 /// Security rule DT-05 (carried over from #636/#637): the access and refresh tokens are NEVER written
 /// to the log on any path - only the outcome (exchanged / rejected / unavailable-with-reason) is
@@ -52,9 +56,11 @@ public sealed class GatewayHttpTokenRefresher : ITokenRefresher
     /// A resolver returning null reports refresh unavailable.
     /// </param>
     /// <param name="resolveApiKey">
-    /// Resolves the configured anonymous key sent as the <c>apikey</c> header. Defaults to
-    /// <see cref="DevThrottleAuthBackend.ResolveAnonymousKey"/>; tests inject a fixed resolver. A
-    /// resolver returning null sends no header (the stub endpoints in tests do not require one).
+    /// Resolves the anonymous key sent as the <c>apikey</c> header. Defaults to
+    /// <see cref="DevThrottleAuthBackend.ResolveAnonymousKey"/> (which since #911 always yields the
+    /// embedded publishable key); tests inject a fixed resolver. A resolver returning null/empty is a
+    /// misconfiguration: the exchange short-circuits to <see cref="TokenRefreshResult.Misconfigured"/>
+    /// without sending a doomed keyless request.
     /// </param>
     public GatewayHttpTokenRefresher(
         HttpClient http,
@@ -96,6 +102,16 @@ public sealed class GatewayHttpTokenRefresher : ITokenRefresher
     /// </summary>
     private async Task<TokenRefreshResult> ExchangeAsync(string url, string refreshToken, CancellationToken ct)
     {
+        var apiKey = _resolveApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            // No apikey resolved: the endpoint would answer 401 "No API key found in request" and the
+            // renewal would stall forever. Surface this as a persistent misconfiguration instead of
+            // sending a doomed keyless request and masking it as a transient outage (the #911 bug).
+            FileLog.Write("[GatewayHttpTokenRefresher] ExchangeAsync: no apikey resolved -> refresh misconfigured (persistent; cached credential kept, failure surfaced)");
+            return TokenRefreshResult.Misconfigured;
+        }
+
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, url)
@@ -105,11 +121,19 @@ public sealed class GatewayHttpTokenRefresher : ITokenRefresher
                     Encoding.UTF8,
                     "application/json"),
             };
-            var apiKey = _resolveApiKey();
-            if (!string.IsNullOrWhiteSpace(apiKey))
-                request.Headers.TryAddWithoutValidation("apikey", apiKey);
+            request.Headers.TryAddWithoutValidation("apikey", apiKey);
 
             using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                // The apikey gate rejected the request ("No API key found in request" or an invalid
+                // key). This is a PERSISTENT client-side misconfiguration, not proof the credential is
+                // dead and not a transient blip - surface it so it cannot hide forever (issue #911).
+                var reason = await ReadErrorSummaryAsync(response, ct).ConfigureAwait(false);
+                FileLog.Write($"[GatewayHttpTokenRefresher] ExchangeAsync: endpoint rejected the apikey (status 401, {reason}) -> refresh misconfigured (persistent; cached credential kept, failure surfaced)");
+                return TokenRefreshResult.Misconfigured;
+            }
 
             if (response.StatusCode == HttpStatusCode.BadRequest)
             {
@@ -123,8 +147,8 @@ public sealed class GatewayHttpTokenRefresher : ITokenRefresher
 
             if (!response.IsSuccessStatusCode)
             {
-                // Anything else - a 401 missing-key misconfiguration, 429 rate limiting, a 5xx - is a
-                // problem with the exchange, not proof the credential is dead. Keep it and retry.
+                // Anything else - 429 rate limiting, a 5xx - is a transient problem with the exchange,
+                // not proof the credential is dead. Keep it and retry next sweep.
                 var reason = await ReadErrorSummaryAsync(response, ct).ConfigureAwait(false);
                 FileLog.Write($"[GatewayHttpTokenRefresher] ExchangeAsync: exchange did not complete (status {(int)response.StatusCode}, {reason}) -> refresh unavailable (cached credential kept)");
                 return TokenRefreshResult.Unavailable;
