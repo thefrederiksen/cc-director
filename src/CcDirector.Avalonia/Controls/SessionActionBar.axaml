@@ -47,6 +47,15 @@
                Foreground="#888888" FontSize="11"
                VerticalAlignment="Center" Margin="4,0,0,0" />
 
+    <!-- Subtle "Transcribing..." status, shown only while the compose surface is locked for a
+         background dictation send (see SetTranscribingLock). Orange to match the session roster's
+         transcribing color; italic and small so it reads as a quiet status, not a button. -->
+    <TextBlock x:Name="TranscribingLabel"
+               Text="Transcribing..."
+               IsVisible="False"
+               Foreground="#F97316" FontSize="11" FontStyle="Italic"
+               VerticalAlignment="Center" Margin="4,0,0,0" />
+
     <!-- Live context-usage gauge (issue #799), shown only when the session's driver declares
          DriverCapabilities.ContextUsage. A thin track with a colour-banded fill plus a compact
          "ctx <used> / <window> (<pct>%)" label, refreshed off-thread by a low-frequency poll. -->
