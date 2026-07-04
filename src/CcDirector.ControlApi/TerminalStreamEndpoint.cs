@@ -21,9 +21,16 @@ namespace CcDirector.ControlApi;
 ///
 /// Wire protocol:
 ///   Server -> {"type":"size","cols":C,"rows":R}   (immediately, and again on every PTY resize)
-///   Server -> &lt;binary frames&gt;                  (raw PTY bytes: full history first, then live)
+///   Server -> &lt;binary snapshot frame&gt;            (ANSI that reconstructs the CURRENT screen)
+///   Server -> &lt;binary frames&gt;                  (raw PTY bytes: live output from the snapshot on)
 ///   Server -> {"type":"closed","reason":"..."}     (session ended) then the socket closes
 ///   Client -> &lt;binary/text frames&gt;               (the user's keystrokes -> the PTY)
+///
+/// On attach the server sends a self-contained SNAPSHOT of the current screen (see
+/// <see cref="Session.GetTerminalSnapshot"/>) rather than replaying a mid-stream slice of raw bytes:
+/// a byte replay only reconstructs correctly from byte 0, so starting mid-stream tears the screen for
+/// agents that repaint incrementally (Codex). The snapshot carries its own byte cursor, so live
+/// output resumes with no gap or overlap.
 ///
 /// The terminal is bidirectional: the client (xterm.js) sends the user's keystrokes as
 /// frames and we forward every byte straight to the PTY via <c>Session.SendInput</c>, so
@@ -35,10 +42,6 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class TerminalStreamEndpoint
 {
-    /// <summary>Max bytes of history replayed on attach. See the cursor comment in
-    /// <see cref="StreamSessionAsync"/> - pairs with the attach nudge.</summary>
-    private const int ReplayCapBytes = 256 * 1024;
-
     public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager)
     {
         // Vendored xterm.js assets (offline; no CDN -- the phone reaches the Director
@@ -113,14 +116,31 @@ internal static class TerminalStreamEndpoint
         // attaches take seconds, and 256KB is still thousands of scrollback lines. Starting
         // mid-stream can tear the first reconstructed screen, but the attach nudge below
         // forces a full Claude repaint that heals it -- the cap and the nudge are a pair.
-        long cursor = 0;
-        short lastCols = -1;
-        short lastRows = -1;
-        var nudged = false;
+        long cursor;
+        short lastCols;
+        short lastRows;
+
+        // Attach: send a self-contained SNAPSHOT of the current screen (the server's authoritative
+        // PTY-sized parser serialized back to ANSI), NOT a mid-stream slice of raw bytes. A byte
+        // replay from a fresh client terminal only reconstructs correctly from byte 0; starting
+        // mid-stream tears the screen for agents that repaint incrementally (Codex). The snapshot is
+        // correct regardless, and it carries its own byte cursor so live output resumes with no gap
+        // or overlap. This replaces the old 256KB replay + resize-jiggle "nudge" heal entirely.
         {
-            var buffer0 = sessionManager.GetSession(guid)?.Buffer;
-            if (buffer0 is not null)
-                cursor = Math.Max(0, buffer0.TotalBytesWritten - ReplayCapBytes);
+            var session0 = sessionManager.GetSession(guid);
+            if (session0 is null)
+            {
+                await SendJsonAsync(ws, new { type = "closed", reason = "session not found" }, ct);
+                return;
+            }
+            var (snapshot, reflected, snapCols, snapRows) = session0.GetTerminalSnapshot();
+            lastCols = (short)snapCols;
+            lastRows = (short)snapRows;
+            cursor = reflected;
+            await SendJsonAsync(ws, new { type = "size", cols = snapCols, rows = snapRows }, ct);
+            if (snapshot.Length > 0)
+                await ws.SendAsync(snapshot, WebSocketMessageType.Binary, endOfMessage: true, ct);
+            FileLog.Write($"[TerminalStreamEndpoint] attach snapshot: sid={guid}, grid={snapCols}x{snapRows}, snapshotBytes={snapshot.Length}, cursor={cursor}");
         }
 
         while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
@@ -132,28 +152,8 @@ internal static class TerminalStreamEndpoint
                 break;
             }
 
-            // One-time attach nudge, mirroring the desktop's attach behavior: on a
-            // long-running session the ring buffer has wrapped, so the replay starts at an
-            // arbitrary byte boundary and the reconstructed screen carries torn rows that
-            // Claude Code's incremental footer repaints never overwrite. A resize jiggle is
-            // the ConPty SIGWINCH-equivalent -- Claude repaints the WHOLE screen, and those
-            // bytes reach this client right after the backlog, healing the attach artifacts.
-            // SuppressActivityFor first, so the detector does not misread our repaint burst
-            // as agent work (the Wingman repaint-loop invariant); the unchanged-size guard
-            // in Session.Resize makes the restore a real second SIGWINCH, not a no-op pair.
-            if (!nudged && session.Status == SessionStatus.Running && session.CurrentRows > 2)
-            {
-                nudged = true;
-                var cols = session.CurrentCols;
-                var rows = session.CurrentRows;
-                FileLog.Write($"[TerminalStreamEndpoint] attach nudge: sid={guid}, jiggle {cols}x{rows} for full repaint");
-                session.SuppressActivityFor(TimeSpan.FromSeconds(2));
-                session.Resize(cols, (short)(rows - 1));
-                session.Resize(cols, rows);
-            }
-
-            // Report the current PTY size up front and whenever the desktop pane resizes
-            // it, so xterm renders the grid at the true width instead of guessing.
+            // Report a LIVE PTY resize (the desktop pane changed size) so xterm re-sizes its grid.
+            // The agent's repaint after the resize flows through as live bytes below.
             if (session.CurrentCols != lastCols || session.CurrentRows != lastRows)
             {
                 lastCols = session.CurrentCols;
