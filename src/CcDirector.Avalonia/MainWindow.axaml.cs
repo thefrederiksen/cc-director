@@ -2110,13 +2110,56 @@ public partial class MainWindow : Window
 
         var menu = new ContextMenu();
 
+        // The menu is rebuilt on every open, so a plain AlphaMode.IsEnabled check below is
+        // enough to gate alpha-only items - no AlphaMode.Changed rewiring is needed here.
+
+        // --- Section 1: the session's own identity and lifecycle ---
+
         var rename = new MenuItem { Header = "Rename" };
+        ToolTip.SetTip(rename, "Give this session a memorable name shown in the list.");
         rename.Click += (_, _) => ShowRenameDialog(vm);
+
+        // On-hold toggle: parks the session out of the FIFO rotation and paints its
+        // list strip dark blue so you can see at a glance which sessions you've set aside.
+        var hold = new MenuItem { Header = vm.IsOnHold ? "Take Off Hold" : "Hold" };
+        ToolTip.SetTip(hold, vm.IsOnHold
+            ? "Return this session to the \"Your Turn\" rotation."
+            : "Park this session out of the \"Your Turn\" rotation and mark it dark blue.");
+        hold.Click += (_, _) => ToggleSessionHold(vm);
+
+        // Wingman toggle is an alpha-only feature (issue #559): the Voice/Wingman tabs are
+        // hidden outside alpha mode, so the menu action that turns Wingman on must be hidden
+        // too, or a non-alpha user could enable a feature they cannot otherwise reach.
+        MenuItem? wingman = null;
+        if (AlphaMode.IsEnabled)
+        {
+            // When on, the session gets the auto-explain briefing, the Voice/Wingman tabs,
+            // and the Yellow "Wingman is reading" state. Removing it drops the session back
+            // to a plain terminal (Blue->Red, no Wingman tabs).
+            wingman = new MenuItem { Header = vm.Session.WingmanEnabled ? "Remove Wingman" : "Add Wingman" };
+            ToolTip.SetTip(wingman, vm.Session.WingmanEnabled
+                ? "Turn off Wingman auto-briefing and hide the Voice and Wingman tabs."
+                : "Turn on Wingman auto-briefing and show the Voice and Wingman tabs.");
+            wingman.Click += (_, _) => ToggleSessionWingman(vm);
+        }
+
+        // --- Section 2: open the session's repository in an external tool ---
+
+        var openExplorer = new MenuItem { Header = "Open in Explorer" };
+        ToolTip.SetTip(openExplorer, "Open this session's repository folder in File Explorer.");
+        openExplorer.Click += (_, _) => OpenInExplorer(vm);
+
+        var openVsCode = new MenuItem { Header = "Open in VS Code" };
+        ToolTip.SetTip(openVsCode, "Open this session's repository in Visual Studio Code.");
+        openVsCode.Click += (_, _) => OpenInVsCode(vm);
+
+        // --- Section 3: advanced / power-user actions ---
 
         // Copy a full handover block (session name + id, plus this Director's identity
         // and version) to the clipboard so it can be handed to another agent (e.g. via
         // the Control API) to locate, recall from memory, and talk to this exact session.
         var copyId = new MenuItem { Header = "Copy Handover Info" };
+        ToolTip.SetTip(copyId, "Copy this session's name, id and Director identity so another agent can find and talk to it.");
         copyId.Click += async (_, _) =>
         {
             try
@@ -2135,6 +2178,7 @@ public partial class MainWindow : Window
         // Named Sessions tab. Saving from a running session means the repo and agent are real and
         // verified - the preset is valid the moment it is created.
         var saveNamed = new MenuItem { Header = "Save as named session" };
+        ToolTip.SetTip(saveNamed, "Save this session's repository, agent and name as a reusable preset for one-click relaunch.");
         saveNamed.Click += async (_, _) =>
         {
             try
@@ -2148,59 +2192,28 @@ public partial class MainWindow : Window
             }
         };
 
-        var separator1 = new Separator();
-
-        var openJsonl = new MenuItem { Header = "Open .jsonl in Explorer" };
-        openJsonl.Click += (_, _) => OpenSessionJsonl(vm);
-
-        var separator2 = new Separator();
-
-        var openExplorer = new MenuItem { Header = "Open in Explorer" };
-        openExplorer.Click += (_, _) => OpenInExplorer(vm);
-
-        var openVsCode = new MenuItem { Header = "Open in VS Code" };
-        openVsCode.Click += (_, _) => OpenInVsCode(vm);
-
-        // Jumps straight to GitHub's "new issue" form for the session's repository
-        // (derived from the repo's origin remote) so a bug can be filed mid-session.
-        var newIssue = new MenuItem { Header = "New GitHub Issue" };
-        newIssue.Click += (_, _) => OpenNewGitHubIssue(vm);
-
         var relink = new MenuItem { Header = "Relink Session..." };
+        ToolTip.SetTip(relink, "Recovery: re-point this row at a different underlying conversation transcript.");
         relink.Click += (_, _) => _ = ShowRelinkDialog(vm);
 
-        var separatorHold = new Separator();
-
-        // On-hold toggle: parks the session out of the FIFO rotation and paints its
-        // list strip dark blue so you can see at a glance which sessions you've set aside.
-        var hold = new MenuItem { Header = vm.IsOnHold ? "Take Off Hold" : "Hold" };
-        hold.Click += (_, _) => ToggleSessionHold(vm);
-
-        // Wingman toggle: when on, the session gets the auto-explain briefing, the
-        // Voice/Wingman tabs, and the Yellow "Wingman is reading" state. Removing it
-        // drops the session back to a plain terminal (Blue->Red, no Wingman tabs).
-        var wingman = new MenuItem { Header = vm.Session.WingmanEnabled ? "Remove Wingman" : "Add Wingman" };
-        wingman.Click += (_, _) => ToggleSessionWingman(vm);
-
-        var separator3 = new Separator();
+        // --- Section 4: close ---
 
         var close = new MenuItem { Header = "Close Session" };
+        ToolTip.SetTip(close, "Close this session and remove it from the list.");
         close.Click += (_, _) => _ = CloseSessionAsync(vm);
 
         menu.Items.Add(rename);
-        menu.Items.Add(relink);
-        menu.Items.Add(copyId);
-        menu.Items.Add(saveNamed);
-        menu.Items.Add(separator1);
-        menu.Items.Add(openJsonl);
-        menu.Items.Add(separator2);
+        menu.Items.Add(hold);
+        if (wingman is not null)
+            menu.Items.Add(wingman);
+        menu.Items.Add(new Separator());
         menu.Items.Add(openExplorer);
         menu.Items.Add(openVsCode);
-        menu.Items.Add(newIssue);
-        menu.Items.Add(separatorHold);
-        menu.Items.Add(hold);
-        menu.Items.Add(wingman);
-        menu.Items.Add(separator3);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(copyId);
+        menu.Items.Add(saveNamed);
+        menu.Items.Add(relink);
+        menu.Items.Add(new Separator());
         menu.Items.Add(close);
 
         menu.Open(button);
@@ -2409,34 +2422,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OpenSessionJsonl(SessionViewModel vm)
-    {
-        FileLog.Write("[MainWindow] OpenSessionJsonl");
-        var claudeSessionId = vm.Session.ClaudeSessionId;
-        if (string.IsNullOrEmpty(claudeSessionId))
-        {
-            FileLog.Write("[MainWindow] OpenSessionJsonl: no ClaudeSessionId");
-            ShowNotification("Session not linked to Claude yet -- no .jsonl file available");
-            return;
-        }
-
-        var jsonlPath = ClaudeSessionReader.GetJsonlPath(claudeSessionId, vm.Session.RepoPath);
-        if (!File.Exists(jsonlPath))
-        {
-            FileLog.Write($"[MainWindow] OpenSessionJsonl: file not found: {jsonlPath}");
-            ShowNotification($"Session file not found: {jsonlPath}");
-            return;
-        }
-
-        FileLog.Write($"[MainWindow] OpenSessionJsonl: opening {jsonlPath}");
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = "explorer.exe",
-            Arguments = $"/select,\"{jsonlPath}\"",
-            UseShellExecute = true,
-        });
-    }
-
     private void OpenInExplorer(SessionViewModel vm)
     {
         FileLog.Write($"[MainWindow] OpenInExplorer: {vm.Session.RepoPath}");
@@ -2462,31 +2447,6 @@ public partial class MainWindow : Window
             Arguments = $"\"{vm.Session.RepoPath}\"",
             UseShellExecute = true,
         });
-    }
-
-    /// <summary>
-    /// Opens the default browser on GitHub's "new issue" form for the session's
-    /// repository. The repo is resolved from the session repo's origin remote;
-    /// a clear notification is shown when the repo has no GitHub origin.
-    /// </summary>
-    private async void OpenNewGitHubIssue(SessionViewModel vm)
-    {
-        FileLog.Write($"[MainWindow] OpenNewGitHubIssue: repo={vm.Session.RepoPath}");
-        try
-        {
-            var url = await Task.Run(() => GitHubUrls.BuildNewIssueUrl(vm.Session.RepoPath));
-            FileLog.Write($"[MainWindow] OpenNewGitHubIssue: opening {url}");
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = url,
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OpenNewGitHubIssue FAILED: {ex.Message}");
-            ShowNotification(ex.Message);
-        }
     }
 
     private async Task CloseSessionAsync(SessionViewModel vm)

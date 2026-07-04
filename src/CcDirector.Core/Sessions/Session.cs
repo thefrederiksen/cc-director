@@ -98,6 +98,28 @@ public sealed class Session : IDisposable
     private AnsiParser? _htmlParser;
     private Action<byte[]>? _htmlParserFeed;
 
+    // ===== Live-attach terminal emulator (the WebSocket stream's attach snapshot) =====
+    // A SECOND authoritative parser, fed the same bytes from byte 0 but sized to track the REAL
+    // PTY geometry (unlike the fixed-grid _htmlParser above). A freshly-attaching browser client
+    // cannot rebuild a long session's screen from a mid-stream byte slice (relative cursor moves and
+    // scrolls land on a baseline the slice never established, so an incrementally-repainting agent
+    // like Codex reconstructs torn). This parser always holds the correct current screen, so the
+    // stream endpoint serializes it into a self-contained "prime" frame on attach - the reattach
+    // strategy tmux/mosh use. Kept separate from _htmlParser so its geometry tracking cannot perturb
+    // the Cockpit "Raw terminal" tab or the Wingman screen detection that read _htmlParser. Fed and
+    // read under the same _htmlParserLock so both parsers and the snapshot are always consistent.
+    private const int StreamMaxScrollback = 5000;
+    private TerminalCell[,]? _streamCells;
+    private List<TerminalCell[]>? _streamScrollback;
+    private AnsiParser? _streamParser;
+    private int _streamGridCols;
+    private int _streamGridRows;
+    // Total bytes the live-attach parser has consumed. Captured with the snapshot (under the same
+    // lock) so the stream endpoint resumes live output at EXACTLY the byte the snapshot reflects -
+    // no gap (missing bytes) and no overlap (double-applied bytes). Equals the buffer's absolute
+    // position because the parser is subscribed from session start, before any output.
+    private long _streamBytesReflected;
+
     public SessionBackendType BackendType { get; }
 
     /// <summary>True when this session is a GitHub Actions remote session.</summary>
@@ -1143,6 +1165,16 @@ public sealed class Session : IDisposable
         _htmlCells = new TerminalCell[HtmlGridCols, HtmlGridRows];
         _htmlScrollback = new List<TerminalCell[]>();
         _htmlParser = new AnsiParser(_htmlCells, HtmlGridCols, HtmlGridRows, _htmlScrollback, HtmlMaxScrollback);
+
+        // The live-attach parser tracks the real PTY size so its screen matches what a browser
+        // xterm at the same geometry shows. It starts at the current PTY dimensions and is resized
+        // in Resize() as the PTY changes.
+        _streamGridCols = Math.Max(1, (int)CurrentCols);
+        _streamGridRows = Math.Max(1, (int)CurrentRows);
+        _streamCells = new TerminalCell[_streamGridCols, _streamGridRows];
+        _streamScrollback = new List<TerminalCell[]>();
+        _streamParser = new AnsiParser(_streamCells, _streamGridCols, _streamGridRows, _streamScrollback, StreamMaxScrollback);
+
         _htmlParserFeed = data =>
         {
             // Raw "the terminal moved" timestamp -- every byte, no cosmetic filtering.
@@ -1151,10 +1183,12 @@ public sealed class Session : IDisposable
             lock (_htmlParserLock)
             {
                 _htmlParser?.Parse(data);
+                _streamParser?.Parse(data);
+                _streamBytesReflected += data.Length;
             }
         };
         buffer.OnBytesWritten += _htmlParserFeed;
-        FileLog.Write($"[Session] InitializeHtmlParser: sessionId={Id}, grid={HtmlGridCols}x{HtmlGridRows}, maxScrollback={HtmlMaxScrollback}");
+        FileLog.Write($"[Session] InitializeHtmlParser: sessionId={Id}, grid={HtmlGridCols}x{HtmlGridRows}, streamGrid={_streamGridCols}x{_streamGridRows}, maxScrollback={HtmlMaxScrollback}");
     }
 
     /// <summary>
@@ -1801,9 +1835,64 @@ public sealed class Session : IDisposable
         // feed a repaint storm (the Wingman repaint-loop invariant). Guard against it so a
         // chatty Cockpit (window-drag events) can't hammer the PTY.
         if (cols == CurrentCols && rows == CurrentRows) return;
+        // Re-size the live-attach parser to match the new PTY geometry BEFORE the PTY repaints, so
+        // the agent's post-resize output is parsed at the correct width/height. Overlapping content
+        // is copied so an agent that does not fully repaint on resize (Codex) keeps its screen; any
+        // imperfection self-heals on the repaint the resize triggers. The fixed-grid _htmlParser is
+        // intentionally left alone (its consumers depend on its stable geometry).
+        ResizeStreamParser(cols, rows);
         _backend.Resize(cols, rows);
         CurrentCols = cols;
         CurrentRows = rows;
+    }
+
+    // Grow/shrink the live-attach parser's grid, copying the overlapping cells so existing content
+    // survives the resize (mirrors the desktop TerminalControl's resize path). Under _htmlParserLock
+    // because the buffer feed thread parses into this same parser.
+    private void ResizeStreamParser(int cols, int rows)
+    {
+        cols = Math.Max(1, cols);
+        rows = Math.Max(1, rows);
+        lock (_htmlParserLock)
+        {
+            if (_streamParser is null || _streamCells is null) return;
+            if (cols == _streamGridCols && rows == _streamGridRows) return;
+            var newCells = new TerminalCell[cols, rows];
+            int copyC = Math.Min(_streamGridCols, cols);
+            int copyR = Math.Min(_streamGridRows, rows);
+            for (int r = 0; r < copyR; r++)
+                for (int c = 0; c < copyC; c++)
+                    newCells[c, r] = _streamCells[c, r];
+            _streamParser.UpdateGrid(newCells, cols, rows);
+            _streamCells = newCells;
+            _streamGridCols = cols;
+            _streamGridRows = rows;
+        }
+    }
+
+    /// <summary>
+    /// Build a self-contained ANSI "prime" frame that reconstructs the session's CURRENT terminal
+    /// screen (scrollback + visible grid + cursor) when replayed into a fresh client terminal. This
+    /// is what the WebSocket stream endpoint sends on attach instead of a mid-stream raw-byte replay,
+    /// so a browser xterm rebuilds the exact screen regardless of how far back or how incrementally
+    /// the agent drew it. Returns an empty array for sessions with no server-side parser (Embedded).
+    /// </summary>
+    public (byte[] Snapshot, long ReflectedCursor, int Cols, int Rows) GetTerminalSnapshot()
+    {
+        if (_streamParser is null) return (System.Array.Empty<byte>(), 0, CurrentCols, CurrentRows);
+        lock (_htmlParserLock)
+        {
+            if (_streamParser is null || _streamScrollback is null)
+                return (System.Array.Empty<byte>(), _streamBytesReflected, CurrentCols, CurrentRows);
+            var cells = _streamParser.ActiveCells;
+            int cols = cells.GetLength(0);
+            int rows = cells.GetLength(1);
+            var (cc, cr) = _streamParser.GetCursorPosition();
+            var bytes = TerminalSnapshotSerializer.ToAnsi(
+                _streamScrollback, cells, cols, rows, cc, cr,
+                _streamParser.IsCursorVisible, _streamParser.IsAlternateScreen);
+            return (bytes, _streamBytesReflected, cols, rows);
+        }
     }
 
     /// <summary>Kill the session gracefully, then force if needed.</summary>
