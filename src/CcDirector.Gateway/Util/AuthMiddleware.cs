@@ -36,11 +36,13 @@ internal static class AuthMiddleware
 
         if (PublicPaths.Contains(path)) { await next(); return; }
 
-        // Issue #806: the mobile app shell (/m and its built assets) carries no secret - the
-        // per-machine token is injected into its index.html and the app then authenticates its
-        // OWN API calls (e.g. /sessions) with that Bearer. Letting the shell load without the
-        // global gate is what makes the page render whether global Gateway auth is on or off,
-        // while the data endpoints stay token-gated.
+        // Issue #806 / #908: the mobile app shell (/m and its built assets) carries no secret. It must
+        // load without the global gate so the Sign in screen can render before the phone has any
+        // credential; the phone then enrolls (POST /m/enroll, itself under /m/ and carrying its own
+        // authorization - an account-scoped device key) and authenticates its OWN API calls (e.g.
+        // /sessions) with the per-device key it receives. The master token is no longer injected into
+        // the shell (issue #908), so reaching /m grants no access on its own - the data endpoints stay
+        // Bearer/cookie-gated on that per-device key.
         if (string.Equals(path, "/m", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/m/", StringComparison.OrdinalIgnoreCase))
         {
@@ -98,9 +100,19 @@ internal static class AuthMiddleware
             }
         }
 
-        // Cookie
-        return ctx.Request.Cookies.TryGetValue(CookieName, out var cookieValue) &&
-               string.Equals(cookieValue, token, StringComparison.Ordinal);
+        // Cookie. A browser WebSocket cannot set an Authorization header, so the live terminal stream
+        // authenticates via this cookie. It accepts the shared machine token OR, per issue #908, an
+        // active per-device key - so a phone that enrolled with its own device key (and mirrors that key
+        // into the cookie) can open the stream, exactly as it can call the Bearer-authenticated endpoints.
+        if (ctx.Request.Cookies.TryGetValue(CookieName, out var cookieValue))
+        {
+            if (string.Equals(cookieValue, token, StringComparison.Ordinal))
+                return true;
+            if (devices is not null && devices.IsValidDeviceKey(cookieValue))
+                return true;
+        }
+
+        return false;
     }
 
     public sealed class RequireToken

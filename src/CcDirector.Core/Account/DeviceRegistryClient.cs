@@ -98,6 +98,13 @@ public sealed class DeviceRegistryClient
     /// <summary>The path that advances this device's last-seen timestamp.</summary>
     public const string HeartbeatPath = "/api/v1/devices/heartbeat";
 
+    /// <summary>
+    /// The path that confirms a presented per-device key belongs to the caller's own account
+    /// (issue #908). Account-scoped: the cloud matches the key's hash against a non-revoked device
+    /// under the caller's member, so it never confirms another account's key.
+    /// </summary>
+    public const string VerifyPath = "/api/v1/devices/verify";
+
     private readonly HttpClient _client;
     private readonly string _baseUrl;
 
@@ -305,6 +312,61 @@ public sealed class DeviceRegistryClient
 
         response.EnsureSuccessStatusCode();
         return true;
+    }
+
+    /// <summary>
+    /// Confirms a presented per-device key belongs to the signed-in account via
+    /// <c>POST /api/v1/devices/verify</c>, returning the cloud device id when it does and null when it
+    /// does not (issue #908). This is how a Gateway admits a phone that enrolled on devthrottle.com and
+    /// received its per-device key, WITHOUT ever handling the account session: the phone hands the
+    /// Gateway only its device key, and the Gateway confirms - account-scoped, by key hash - that the key
+    /// is a live device on the Gateway's OWN account before issuing a local key. The verify is
+    /// account-scoped by the caller's Bearer, so a key belonging to a different account returns null (not
+    /// a match), and a masked-roster prefix/last-four compare is deliberately NOT used (too few bits to
+    /// resist a guess). Throws on a non-success response or a malformed body (an unreachable or erroring
+    /// cloud surfaces as a clear failure the caller handles, never a fabricated match). The device key is
+    /// sent only in the request body and is NEVER written to the log (security rule DT-05).
+    /// </summary>
+    /// <param name="accessToken">The Bearer access token the Gateway holds. Never logged.</param>
+    /// <param name="deviceKey">The presented per-device key to confirm. Never logged.</param>
+    /// <param name="ct">Cancels the request.</param>
+    public async Task<string?> VerifyDeviceKeyAsync(string accessToken, string deviceKey, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken))
+            throw new ArgumentException("Access token is required", nameof(accessToken));
+        if (string.IsNullOrWhiteSpace(deviceKey))
+            throw new ArgumentException("Device key is required", nameof(deviceKey));
+
+        var endpoint = $"{_baseUrl}{VerifyPath}";
+        FileLog.Write($"[DeviceRegistryClient] VerifyDeviceKeyAsync: POST {endpoint} (device key not logged)");
+
+        var body = new JsonObject { ["device_key"] = deviceKey };
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        {
+            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using var response = await _client.SendAsync(request, ct).ConfigureAwait(false);
+        FileLog.Write($"[DeviceRegistryClient] VerifyDeviceKeyAsync: response status={(int)response.StatusCode}");
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var data = DataObject(json, "device verify");
+
+        var valid = data.TryGetPropertyValue("valid", out var validNode)
+            && validNode is JsonValue validValue
+            && validValue.TryGetValue<bool>(out var b) && b;
+        if (!valid)
+        {
+            FileLog.Write("[DeviceRegistryClient] VerifyDeviceKeyAsync: key is not a live device on this account -> null");
+            return null;
+        }
+
+        var id = StringField(data, "id")
+            ?? throw new InvalidOperationException("device verify response had valid=true but no string 'data.id'");
+        FileLog.Write($"[DeviceRegistryClient] VerifyDeviceKeyAsync: verified device id={id}");
+        return id;
     }
 
     /// <summary>

@@ -112,9 +112,17 @@ public static class MobileApp
             return;
         }
 
+        // Issue #908: the shell is served AS-IS - the per-machine master token is NO LONGER injected.
+        // The app has no credential until the phone signs in on devthrottle.com and enrolls (POST
+        // /m/enroll), which returns a per-device key the app stores and sends itself. So reaching /m
+        // hands out nothing; the gatewayToken parameter is retained only for backward compatibility with
+        // the Map() signature and is deliberately unused. A defensive replace still strips the old
+        // placeholder to an empty string in case a stale index.html (from a prior build) still carries it,
+        // so a literal "__GATEWAY_TOKEN__" never reaches the browser.
+        _ = gatewayToken;
         var template = await File.ReadAllTextAsync(indexPath);
-        var html = template.Replace(TokenPlaceholder, gatewayToken);
-        // The shell carries the per-machine token, so it must never be cached by a shared cache.
+        var html = template.Replace(TokenPlaceholder, string.Empty);
+        // The shell no longer carries a secret, but it still must revalidate so an updated app is picked up.
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.ContentType = "text/html; charset=utf-8";
         await ctx.Response.WriteAsync(html);

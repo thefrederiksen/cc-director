@@ -6,13 +6,10 @@
     <meta name="theme-color" content="#0B1020" />
     <title>DevThrottle Mobile</title>
     <!--
-      The per-machine Gateway token is injected here server-side (the Gateway replaces the
-      __GATEWAY_TOKEN__ placeholder before serving this page, the same pattern the /voice page
-      uses). The app reads window.__GW_TOKEN__ and sends it as a Bearer header on API calls.
-      A value still starting with "__" means the page was served without injection (treated as
-      absent by the client).
+      Issue #908: the shell carries NO credential. The master token is no longer injected here. The
+      app authenticates with a per-device key it obtains by signing in on devthrottle.com and enrolling
+      (POST /m/enroll); that key lives in the app's own device-key store, never in the page.
     -->
-    <script>window.__GW_TOKEN__ = "__GATEWAY_TOKEN__";</script>
   </head>
   <body>
     <div id="root"></div>
