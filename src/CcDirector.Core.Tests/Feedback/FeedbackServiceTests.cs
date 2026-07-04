@@ -24,7 +24,7 @@ public sealed class FeedbackServiceTests
         Assert.Contains("It flickers when scrolling.", stub.CreatedIssueBody);
         Assert.Contains("CC Director version: 1.2.3", stub.CreatedIssueBody);
         Assert.DoesNotContain("![screenshot]", stub.CreatedIssueBody);
-        Assert.Contains("devthrottle/devthrottle", issue.HtmlUrl);
+        Assert.Contains("thefrederiksen/devthrottle", issue.HtmlUrl);
     }
 
     [Fact]
@@ -32,7 +32,7 @@ public sealed class FeedbackServiceTests
     {
         var stub = new StubGitHubClient
         {
-            UploadDownloadUrl = "https://raw.githubusercontent.com/devthrottle/devthrottle/feedback-assets/feedback/screenshots/x.png",
+            UploadDownloadUrl = "https://raw.githubusercontent.com/thefrederiksen/devthrottle/feedback-assets/feedback/screenshots/x.png",
         };
         var service = new FeedbackService(stub);
         var png = new byte[] { 1, 2, 3, 4 };
@@ -44,7 +44,7 @@ public sealed class FeedbackServiceTests
         Assert.StartsWith("feedback/screenshots/", upload.Path);
         Assert.EndsWith(".png", upload.Path);
         Assert.Equal(png.Length, upload.Bytes);
-        Assert.Contains("![screenshot](https://raw.githubusercontent.com/devthrottle/devthrottle/feedback-assets/feedback/screenshots/x.png)",
+        Assert.Contains("![screenshot](https://raw.githubusercontent.com/thefrederiksen/devthrottle/feedback-assets/feedback/screenshots/x.png)",
             stub.CreatedIssueBody);
     }
 
