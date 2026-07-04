@@ -1,21 +1,22 @@
 using System.Net.Http;
 using CcDirector.Core.Account;
+using CcDirector.Core.Storage;
 using CcDirectorSetup.Services;
 using Xunit;
 
 namespace CcDirectorSetup.Tests;
 
 /// <summary>
-/// Tests for the installer sign-in runner (issues #657 and #658). They drive the runner against a REAL
-/// <see cref="LoopbackLoginListener"/> on a free loopback port (no backend), with the "browser" stood
-/// in by a direct HTTP call to the loopback callback - the same hand-back the dev stand-in and the real
-/// backend perform. This proves the cancel, timeout, success, and failure outcomes end to end, and
-/// (issue #658) that a captured credential is persisted to the Director credential store on success and
-/// nothing is written on any incomplete sign-in.
+/// Tests for the installer sign-in runner (issues #657, #658, and #906). They drive the runner against a
+/// REAL <see cref="LoopbackLoginListener"/> on a free loopback port (no backend), with the "browser"
+/// stood in by a direct HTTP call to the loopback callback - the same hand-back the dev stand-in and the
+/// real backend perform. This proves the cancel, timeout, success, and failure outcomes end to end, and
+/// that a captured credential is persisted to the GATEWAY credential store on success (issue #906 -
+/// the account moved onto the Gateway) and nothing is written on any incomplete sign-in.
 ///
 /// The success-path tests inject a recording persistence seam so they never touch the real per-user
-/// credential blob, except the one test that deliberately exercises the full default persistence path
-/// (the real <see cref="WindowsProtectedTokenStore"/>) at an explicit temporary path it cleans up.
+/// credential blob, except the tests that deliberately exercise the full default persistence path
+/// (the real <see cref="WindowsProtectedTokenStore"/>) at an explicit temporary path they clean up.
 /// </summary>
 public sealed class SignInRunnerTests
 {
@@ -216,6 +217,62 @@ public sealed class SignInRunnerTests
         {
             if (System.IO.File.Exists(blobPath))
                 System.IO.File.Delete(blobPath);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_GatewayPersistenceSeam_WritesGatewayReadableBlobAndAuthEvent()
+    {
+        // Arrange: drive the installer sign-in through the SAME store type and factory overload the
+        // default persist path now uses for the Gateway (issue #906) - a WindowsProtectedTokenStore at
+        // an explicit Gateway-style credential path plus DevThrottleAccountFactory.Build(store,
+        // authEventsLogPath) pointed at a Gateway-style authentication-event log. Then read the blob
+        // back exactly the way the Gateway reads it (a fresh WindowsProtectedTokenStore at the same
+        // path), proving the installer-written credential is Gateway-readable and the "logged-in"
+        // event landed in the Gateway's authentication-event log, not the Director's.
+        var blobPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"gateway-cred-{Guid.NewGuid():N}.bin");
+        var authEventsPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"gateway-auth-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var installerStore = new WindowsProtectedTokenStore(blobPath);
+            var installerService = DevThrottleAccountFactory.Build(installerStore, authEventsPath);
+
+            var listener = new LoopbackLoginListener();
+            using var http = new HttpClient();
+
+            var runner = new SignInRunner(
+                listenerFactory: () => listener,
+                openBrowser: url =>
+                {
+                    var callback = listener.CallbackUrl.ToString();
+                    var handBack = $"{callback}?access_token=gateway-access&refresh_token=gateway-refresh";
+                    _ = Task.Run(() => http.GetAsync(handBack));
+                },
+                persistCredential: installerService.StoreTokens,
+                timeout: TimeSpan.FromSeconds(10));
+
+            // Act
+            var result = await runner.RunAsync();
+
+            // Assert: the Gateway reads the credential back through its own store construction.
+            Assert.True(result.Succeeded);
+            Assert.True(System.IO.File.Exists(blobPath));
+            var gatewayStore = new WindowsProtectedTokenStore(blobPath);
+            var readByGateway = gatewayStore.Load();
+            Assert.NotNull(readByGateway);
+            Assert.Equal("gateway-access", readByGateway.AccessToken);
+            Assert.Equal("gateway-refresh", readByGateway.RefreshToken);
+
+            // Assert: the logged-in audit event went to the Gateway authentication-event log.
+            var events = new AuthEventLog(authEventsPath).ReadAll();
+            Assert.Contains(events, e => e.Kind == AuthEventLog.LoggedIn);
+        }
+        finally
+        {
+            if (System.IO.File.Exists(blobPath))
+                System.IO.File.Delete(blobPath);
+            if (System.IO.File.Exists(authEventsPath))
+                System.IO.File.Delete(authEventsPath);
         }
     }
 
