@@ -171,3 +171,64 @@ class TestForwardMessageNote:
         client.forward_message("id1", ["a@example.com"], body="Line1\nLine2")
         assert forward.body.startswith("Line1\nLine2\n\n")
         forward.send.assert_called_once()
+
+
+class TestCreateEventTimezone:
+    """Regression tests for the calendar-create timezone crash.
+
+    create_event previously assigned a NAIVE datetime (or a fixed-offset
+    datetime.timezone via _as_aware/.astimezone()) to event.start / event.end.
+    The O365 Event start/end setters isinstance-check tzinfo against ZoneInfo
+    and raise 'TimeZone data must be set using ZoneInfo objects' otherwise. The
+    fix attaches the machine's local zone via tzlocal.get_localzone(), which is
+    a real zoneinfo.ZoneInfo.
+    """
+
+    def _client_with_event(self):
+        account = MagicMock()
+        event = MagicMock()
+        # Plain attributes so assignment stores the real value for inspection.
+        event.start = None
+        event.end = None
+        event.object_id = "fake-event-id"
+        calendar = MagicMock()
+        calendar.new_event.return_value = event
+        account.schedule.return_value.get_default_calendar.return_value = calendar
+        client = OutlookClient(account=account)
+        return client, event
+
+    def test_naive_datetime_does_not_raise_and_is_aware(self):
+        client, event = self._client_with_event()
+
+        naive = datetime(2027, 1, 1, 9, 0)  # tzinfo is None
+        assert naive.tzinfo is None
+
+        # (a) must not raise
+        result = client.create_event(
+            subject="tz-regression", start_time=naive, duration_minutes=30
+        )
+
+        event.save.assert_called_once()
+
+        # (b) the datetime assigned to event.start / event.end is tz-aware
+        assert event.start is not None
+        assert event.start.tzinfo is not None
+        assert event.end is not None
+        assert event.end.tzinfo is not None
+        assert result["subject"] == "tz-regression"
+
+    def test_daily_recurrence_threads_through(self):
+        client, event = self._client_with_event()
+
+        naive = datetime(2026, 7, 5, 8, 0)
+        client.create_event(
+            subject="daily",
+            start_time=naive,
+            duration_minutes=15,
+            recurrence="daily",
+        )
+
+        event.recurrence.set_daily.assert_called_once()
+        args, kwargs = event.recurrence.set_daily.call_args
+        assert args[0] == 1
+        assert kwargs.get("start") == naive.date()

@@ -28,6 +28,7 @@ def _to_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 from O365 import Account
+from tzlocal import get_localzone
 
 logger = logging.getLogger(__name__)
 
@@ -623,7 +624,7 @@ class OutlookClient:
     def create_event(self, subject: str, start_time: datetime,
                      duration_minutes: int = 60, attendees: list = None,
                      location: str = None, body: str = None,
-                     all_day: bool = False) -> dict:
+                     all_day: bool = False, recurrence: str = None) -> dict:
         """
         Create a calendar event.
 
@@ -635,19 +636,29 @@ class OutlookClient:
             location: Event location
             body: Event description
             all_day: Create as all-day event
+            recurrence: Recurrence rule. Currently only 'daily' is supported,
+                which creates a daily-repeating series with no end date.
 
         Returns:
             Created event info
         """
+        # The O365 library requires timezone-aware datetimes whose tzinfo is a
+        # zoneinfo.ZoneInfo. The CLI parses dates with strptime, which produces
+        # naive datetimes; a fixed-offset tzinfo (from .astimezone()) is also
+        # rejected. Attach the machine's local zone as a ZoneInfo so O365 does
+        # not raise "TimeZone data must be set using ZoneInfo objects".
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=get_localzone())
+
+        end_time = start_time + timedelta(minutes=duration_minutes)
+
         schedule = self.account.schedule()
         calendar = schedule.get_default_calendar()
 
         event = calendar.new_event()
         event.subject = subject
-        # Attach the local timezone so the event is not shifted by the local
-        # offset (O365 treats naive datetimes as UTC).
-        event.start = _as_aware(start_time)
-        event.end = _as_aware(start_time + timedelta(minutes=duration_minutes))
+        event.start = start_time
+        event.end = end_time
 
         if all_day:
             event.is_all_day = True
@@ -662,6 +673,16 @@ class OutlookClient:
             for attendee_email in attendees:
                 event.attendees.add(attendee_email)
 
+        if recurrence:
+            rule = recurrence.strip().lower()
+            if rule == 'daily':
+                # Daily series, every day, with no end date.
+                event.recurrence.set_daily(1, start=start_time.date())
+            else:
+                raise ValueError(
+                    f"Unsupported recurrence: {recurrence}. Only 'daily' is supported."
+                )
+
         event.save()
 
         return {
@@ -669,6 +690,7 @@ class OutlookClient:
             'subject': subject,
             'start': start_time.isoformat(),
             'duration': duration_minutes,
+            'recurrence': recurrence,
         }
 
     # =========================================================================

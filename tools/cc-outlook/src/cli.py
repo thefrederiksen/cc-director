@@ -1303,6 +1303,7 @@ def calendar_create(
     attendees: str = typer.Option(None, "--attendees", help="Attendee emails, comma-separated"),
     body: str = typer.Option(None, "-b", "--body", help="Event description"),
     all_day: bool = typer.Option(False, "--all-day", help="Create as all-day event"),
+    repeat: str = typer.Option(None, "--repeat", help="Recurrence rule. Only 'daily' is supported (repeats every day, no end date)."),
 ):
     """Create a calendar event."""
     client = get_client()
@@ -1326,11 +1327,14 @@ def calendar_create(
             location=location,
             body=body,
             all_day=all_day,
+            recurrence=repeat,
         )
         console.print(f"[green]Event created:[/green] {subject}")
         console.print(f"  Time: {start_time} ({duration} min)")
         if location:
             console.print(f"  Location: {location}")
+        if repeat:
+            console.print(f"  Repeat: {repeat}")
 
     except ValueError as e:
         logger.error(f"Error creating event: {e}")
