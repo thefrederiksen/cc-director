@@ -13,6 +13,7 @@ import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { ensureGatewayCookie } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "./push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
+import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import "./styles.css";
 
 // The auth gate (issue #908): every real screen requires an enrolled device key. Without one, the
@@ -20,7 +21,16 @@ import "./styles.css";
 // can reach them. hasDeviceKey() is read at navigation time, so enrolling (or a 401-triggered
 // clear) re-gates on the next route.
 function RequireDeviceKey() {
-  return hasDeviceKey() ? <Outlet /> : <Navigate to="/signin" replace />;
+  return hasDeviceKey() ? <GatedLayout /> : <Navigate to="/signin" replace />;
+}
+
+// The layout wrapping every gated page. It owns the app-level screen wake lock (issue #981) so the
+// phone stays awake on ANY page (roster, Chat, Voice, New session, AI settings, Terminal) while the
+// app is foregrounded. Because this layout stays mounted across navigations between gated child
+// routes, the lock is acquired once (a single sentinel), not once per page.
+function GatedLayout() {
+  useScreenWakeLock();
+  return <Outlet />;
 }
 
 // Mirror the injected per-machine token into the cc-gateway-token cookie at startup so the live
