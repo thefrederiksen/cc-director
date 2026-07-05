@@ -10,6 +10,8 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using CcDirector.Avalonia.HostedAi;
+using CcDirector.Core.HostedAi;
 using Avalonia.VisualTree;
 using CcDirector.ControlApi;
 using CcDirector.Core.Account;
@@ -4395,6 +4397,14 @@ public partial class MainWindow : Window
     // We watch the session's ActivityState directly (in-process, no double-send): we
     // first wait for it to ENTER Working so a fast poll cannot read the PREVIOUS
     // reply, then wait for it to leave Working into a stopping state.
+    /// <summary>
+    /// Read-aloud (text-to-speech) on the Voice tab ran dry (issue #940): show the ONE shared
+    /// add-credits dialog instead of the failure being logged and silently swallowed. Queued on the UI
+    /// thread so the modal shows after the current text-to-speech call unwinds.
+    /// </summary>
+    private void VoiceUnavailable(HostedAiState state)
+        => Dispatcher.UIThread.Post(() => { _ = DesktopHostedAiGate.ShowAsync(this, state); });
+
     private async Task FollowAgentTurnAndSpeakAsync(SessionViewModel vm)
     {
         var app = global::Avalonia.Application.Current as App;
@@ -4445,7 +4455,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(spoken) && _ttsPlayer is not null)
         {
             VoiceView.SetStatus("Speaking...", "#2B6CB0");
-            await _ttsPlayer.SpeakAsync(spoken);
+            await _ttsPlayer.SpeakAsync(spoken, onUnavailable: VoiceUnavailable);
         }
         VoiceView.SetStatus("Ready", "#5FD08A");
     }
@@ -4484,7 +4494,7 @@ public partial class MainWindow : Window
             if (_ttsPlayer is not null)
             {
                 VoiceView.SetStatus("Speaking...", "#2B6CB0");
-                await _ttsPlayer.SpeakAsync(answer);
+                await _ttsPlayer.SpeakAsync(answer, onUnavailable: VoiceUnavailable);
             }
             VoiceView.SetStatus("Ready", "#5FD08A");
         }

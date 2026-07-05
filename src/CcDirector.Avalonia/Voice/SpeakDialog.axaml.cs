@@ -4,7 +4,10 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
+using CcDirector.Avalonia.HostedAi;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.HostedAi;
+using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia.Voice;
@@ -177,6 +180,18 @@ public partial class SpeakDialog : Window
         _eqTimer.Start();
         try
         {
+            // Pre-flight (issue #940): do NOT record into a dead feature. If hosted AI is not ready
+            // (out of credits, or no bring-your-own key), close without recording and show the ONE
+            // shared "add credits / add a key" dialog over the owner instead of a raw failure later.
+            var state = await DesktopHostedAiGate.CheckAsync();
+            if (state != HostedAiState.Ready)
+            {
+                FileLog.Write($"[SpeakDialog] pre-flight not ready ({state}); not recording");
+                await DesktopHostedAiGate.ShowAsync(this, state);
+                Close();
+                return;
+            }
+
             // Resolve the saved mic choice to a current device index BEFORE the
             // first capture starts, so we record from the right device from the
             // very first frame. Then show the device list in the selector.
@@ -515,8 +530,27 @@ public partial class SpeakDialog : Window
         catch (Exception ex)
         {
             FileLog.Write($"[SpeakDialog] FinalizeFromRecording FAILED: {ex.Message}");
+            if (await TryShowOutOfCreditsAsync(ex)) return;
             SwitchToFailed(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// If the transcription failed because hosted AI ran out of credits (a 402 surfaced as
+    /// <see cref="InsufficientCreditsException"/>), show the ONE shared "add credits" dialog and close -
+    /// instead of dumping the raw "Transcription returned 402: ..." string into the transcript box
+    /// (issue #940). Returns true when it handled the exception. Any other error falls through to the
+    /// existing failed state.
+    /// </summary>
+    private async Task<bool> TryShowOutOfCreditsAsync(Exception ex)
+    {
+        if (ex is InsufficientCreditsException credits)
+        {
+            await DesktopHostedAiGate.ShowAsync(this, HostedAiErrorMapper.MapCode(credits.Code));
+            Close();
+            return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -542,6 +576,7 @@ public partial class SpeakDialog : Window
         catch (Exception ex)
         {
             FileLog.Write($"[SpeakDialog] PauseAsync FAILED: {ex.Message}");
+            if (await TryShowOutOfCreditsAsync(ex)) return;
             SwitchToFailed("Pause failed: " + ex.Message);
         }
     }

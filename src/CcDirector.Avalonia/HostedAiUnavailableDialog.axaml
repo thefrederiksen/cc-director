@@ -1,0 +1,29 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CcDirector.Avalonia.HostedAiUnavailableDialog"
+        Title="Voice unavailable"
+        Width="440" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#252526">
+
+    <StackPanel Margin="20" Spacing="18">
+        <TextBlock x:Name="MessageText"
+                   Foreground="#CCCCCC"
+                   FontSize="14"
+                   TextWrapping="Wrap" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <Button x:Name="CloseButton" Content="Close" MinWidth="80" Height="28"
+                    Click="BtnClose_Click"
+                    Background="#3A3D41" Foreground="#CCCCCC"
+                    BorderThickness="0"
+                    Cursor="Hand" />
+            <Button x:Name="CtaButton" MinWidth="110" Height="28"
+                    Click="BtnCta_Click"
+                    Background="#007ACC" Foreground="White"
+                    BorderThickness="0"
+                    Cursor="Hand" />
+        </StackPanel>
+    </StackPanel>
+</Window>

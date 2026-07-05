@@ -9,10 +9,13 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
+using CcDirector.Avalonia.HostedAi;
 using CcDirector.Avalonia.Voice;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia;
@@ -166,7 +169,7 @@ public partial class FifoWindow : Window
 
             // Speak the briefing aloud: the FIFO is wingman-led, you should hear what's
             // happening, not have to read it. A failed/cancelled voice never breaks the turn.
-            try { await _tts.SpeakAsync(briefing, ct); }
+            try { await _tts.SpeakAsync(briefing, ct, onUnavailable: VoiceUnavailable); }
             catch (OperationCanceledException) { }
             catch (Exception ex) { FileLog.Write($"[FifoWindow] briefing tts FAILED: {ex.Message}"); }
         }
@@ -274,6 +277,14 @@ public partial class FifoWindow : Window
     private async void OnAskAgentClick(object? sender, RoutedEventArgs e) => await HandleTalkAsync(wingman: false);
     private async void OnAskWingmanClick(object? sender, RoutedEventArgs e) => await HandleTalkAsync(wingman: true);
 
+    /// <summary>
+    /// Read-aloud (text-to-speech) ran dry (issue #940): show the ONE shared add-credits dialog instead
+    /// of the failure being logged and silently swallowed. Queued on the UI thread so the modal shows
+    /// after the current text-to-speech call unwinds (never re-entered mid-await).
+    /// </summary>
+    private void VoiceUnavailable(HostedAiState state)
+        => Dispatcher.UIThread.Post(() => { _ = DesktopHostedAiGate.ShowAsync(this, state); });
+
     private async Task HandleTalkAsync(bool wingman)
     {
         if (_busy || _current is null) return;
@@ -281,9 +292,14 @@ public partial class FifoWindow : Window
         // ---- START capture ----
         if (!_recording)
         {
-            if (string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey()))
+            // Pre-flight (issue #940): the shared readiness gate covers BOTH missing bring-your-own key
+            // AND out-of-credits on the hosted account, showing the ONE consistent dialog - replacing the
+            // old bring-your-own-only, hand-written key message that ignored the credits case.
+            var state = await DesktopHostedAiGate.CheckAsync();
+            if (state != HostedAiState.Ready)
             {
-                SetStatus("Voice needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.", Red);
+                FileLog.Write($"[FifoWindow] pre-flight not ready ({state}); not recording");
+                await DesktopHostedAiGate.ShowAsync(this, state);
                 return;
             }
             try
@@ -354,6 +370,13 @@ public partial class FifoWindow : Window
             if (_wingmanTurn) await AskWingmanAsync(transcript);
             else await SendToAgentAsync(transcript);
         }
+        catch (InsufficientCreditsException credits)
+        {
+            // Ran dry mid-use (issue #940): show the ONE shared add-credits dialog, not a raw 402 string.
+            FileLog.Write($"[FifoWindow] stop/act OUT OF CREDITS: {credits.Code}");
+            SetStatus("Voice needs credit.", Red);
+            await DesktopHostedAiGate.ShowAsync(this, HostedAiErrorMapper.MapCode(credits.Code));
+        }
         catch (Exception ex)
         {
             FileLog.Write($"[FifoWindow] stop/act FAILED: {ex.Message}");
@@ -389,7 +412,7 @@ public partial class FifoWindow : Window
         try
         {
             SetStatus("Speaking...", Blue);
-            await _tts.SpeakAsync(answer);
+            await _tts.SpeakAsync(answer, onUnavailable: VoiceUnavailable);
         }
         catch (Exception ex) { FileLog.Write($"[FifoWindow] tts FAILED: {ex.Message}"); }
         SetStatus("Ask Agent, Ask Wingman, Skip, Hold, or Next", Green);
