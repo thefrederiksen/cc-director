@@ -158,9 +158,13 @@ function SessionRow({ session }: { session: SessionDto }) {
   // regenerated typed client. Null on sessions/Directors without a number - then no prefix shows.
   const num = session.number;
   const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;
+  // Issue #948: a voice-mode session opens straight on its Voice tab (the surface it is meant to be
+  // used from), not on the default Chat tab; every other session still opens on Chat.
+  const sid = encodeURIComponent(session.sessionId ?? "");
+  const to = session.voiceMode ? `/session/${sid}/voice` : `/session/${sid}`;
   return (
     <li className={`row${attention ? " row-attention" : ""}`}>
-      <Link className="row-link" to={`/session/${encodeURIComponent(session.sessionId ?? "")}`}>
+      <Link className="row-link" to={to}>
         <span className="dot" style={{ backgroundColor: dotColor(color) }} aria-hidden="true" />
         <span className="row-body">
           {/* The name uses the full card width and WRAPS (no truncation) - issue #838. A muted
