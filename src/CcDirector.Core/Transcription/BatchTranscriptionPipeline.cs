@@ -4,6 +4,7 @@ using CcDirector.Core.Audio;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Transcription;
@@ -295,30 +296,11 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         => string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "...";
 
     /// <summary>
-    /// Best-effort read of the machine-readable error code from an OpenAI-compatible error body
-    /// (<c>{ "error": { "code": "insufficient_credits" } }</c> or a flat <c>{ "code": ... }</c>).
-    /// Defaults to "insufficient_credits" when the body has no code, since the caller only reaches
-    /// here on a 402.
+    /// Best-effort read of the machine-readable error code from an OpenAI-compatible 402 body. Delegates
+    /// to the shared <see cref="HostedAiErrorMapper.ParseErrorCode"/> so the whole stack parses the 402
+    /// code in exactly one place (issue #938) - the transcription path and the epic-wide gate never drift.
     /// </summary>
-    private static string ParseErrorCode(string body)
-    {
-        if (string.IsNullOrWhiteSpace(body)) return "insufficient_credits";
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.Object
-                && err.TryGetProperty("code", out var nested) && nested.ValueKind == JsonValueKind.String)
-                return nested.GetString() ?? "insufficient_credits";
-            if (root.TryGetProperty("code", out var flat) && flat.ValueKind == JsonValueKind.String)
-                return flat.GetString() ?? "insufficient_credits";
-        }
-        catch (JsonException)
-        {
-            // A non-JSON 402 body still means out of credits; fall through to the default code.
-        }
-        return "insufficient_credits";
-    }
+    private static string ParseErrorCode(string body) => HostedAiErrorMapper.ParseErrorCode(body);
 
     public void Dispose()
     {
