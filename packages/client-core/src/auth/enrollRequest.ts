@@ -5,8 +5,12 @@
 // VITE_DT_SITE_BASE (for example http://localhost:5173) so the flow can be exercised end to end
 // without the production site.
 
-export const SITE_BASE: string =
-  (import.meta.env.VITE_DT_SITE_BASE as string | undefined) || "https://devthrottle.com";
+// Gateway-only-ingress exception (#967/#968): the sign-in flow points the browser at the PUBLIC
+// devthrottle.com website (NOT a Director) to mint a device key. This is the one intended
+// absolute-URL egress; the Gateway front door is unaffected. The eslint-disable directly below
+// carries that reason at the one banned literal so the lint stays green.
+// eslint-disable-next-line no-restricted-syntax -- documented Gateway-only-ingress exception (#967/#968)
+export const SITE_BASE: string = (import.meta.env.VITE_DT_SITE_BASE as string | undefined) || "https://devthrottle.com";
 
 // The path the site hands the device key back to. Must match the mobile router route and the site's
 // MOBILE_CALLBACK_PATH (website/src/lib/loopback.js).

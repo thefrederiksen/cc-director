@@ -77,7 +77,11 @@
        content flows transitively, into the GatewayApp tray exe that references this project.
        ============================================================================ -->
   <PropertyGroup>
-    <MobileDir>$(MSBuildProjectDirectory)\..\..\mobile\</MobileDir>
+    <!-- Issue #968: the front-end is now an npm workspace at the repo root. The mobile app moved to
+         apps/mobile and its shared logic to packages/client-core, so dependencies install once at the
+         workspace root and the app builds through the workspace (Vite pulls client-core from source). -->
+    <WorkspaceRoot>$(MSBuildProjectDirectory)\..\..\</WorkspaceRoot>
+    <MobileDir>$(MSBuildProjectDirectory)\..\..\apps\mobile\</MobileDir>
     <MobileWwwroot>$(MSBuildProjectDirectory)\wwwroot\m</MobileWwwroot>
     <!-- Run the web build for a publish/release configuration, or on explicit opt-in. -->
     <RunMobileBuild Condition="'$(RunMobileBuild)' == '' and ('$(Configuration)' == 'Release' or '$(BuildMobile)' == 'true')">true</RunMobileBuild>
@@ -85,9 +89,9 @@
   </PropertyGroup>
 
   <Target Name="BuildMobileApp" BeforeTargets="AssignTargetPaths" Condition="'$(RunMobileBuild)' == 'true'">
-    <Message Importance="high" Text="[BuildMobileApp] building the mobile PWA ($(Configuration)) from $(MobileDir)" />
-    <Exec Command="npm ci" WorkingDirectory="$(MobileDir)" />
-    <Exec Command="npm run build" WorkingDirectory="$(MobileDir)" />
+    <Message Importance="high" Text="[BuildMobileApp] building the mobile PWA ($(Configuration)) from $(MobileDir) via the workspace at $(WorkspaceRoot)" />
+    <Exec Command="npm ci" WorkingDirectory="$(WorkspaceRoot)" />
+    <Exec Command="npm run build --workspace @devthrottle/mobile" WorkingDirectory="$(WorkspaceRoot)" />
     <RemoveDir Directories="$(MobileWwwroot)" />
     <ItemGroup>
       <_MobileDistFiles Include="$(MobileDir)dist\**\*" />

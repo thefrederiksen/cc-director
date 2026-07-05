@@ -7,10 +7,10 @@ import { Terminal } from "./pages/Terminal";
 import { Chat } from "./pages/Chat";
 import { VoiceMode } from "./pages/VoiceMode";
 import { AiSettings } from "./pages/AiSettings";
-import { SignIn } from "./auth/SignIn";
-import { DeviceCallback } from "./auth/DeviceCallback";
-import { hasDeviceKey } from "./auth/deviceKey";
-import { ensureGatewayCookie } from "./api/client";
+import { SignIn } from "@devthrottle/client-core/auth/SignIn";
+import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
+import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
+import { ensureGatewayCookie } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "./push/register";
 import "./styles.css";
 

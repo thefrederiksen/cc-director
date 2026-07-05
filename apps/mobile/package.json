@@ -1,20 +1,18 @@
 {
-  "name": "devthrottle-mobile",
+  "name": "@devthrottle/mobile",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DevThrottle mobile Progressive Web App, served by the Gateway at /m.",
+  "description": "DevThrottle mobile Progressive Web App, served by the Gateway at /m. A thin shell over @devthrottle/client-core.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "gen:api": "openapi-typescript http://127.0.0.1:7878/openapi/v1.json --output src/api/schema.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@xterm/addon-fit": "0.10.0",
+    "@devthrottle/client-core": "*",
     "@xterm/xterm": "5.5.0",
-    "marked": "^14.1.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "6.28.0"
@@ -23,7 +21,6 @@
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
     "@vitejs/plugin-react": "4.3.4",
-    "openapi-typescript": "7.4.4",
     "typescript": "5.7.2",
     "vite": "6.0.3",
     "vite-plugin-pwa": "0.21.1"

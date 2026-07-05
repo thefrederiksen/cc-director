@@ -1,0 +1,21 @@
+{
+  "name": "devthrottle-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "DevThrottle browser front-end workspace. One shared TypeScript library (packages/client-core) feeds every browser shell (apps/mobile today, apps/cockpit next). Every shell talks only to the Gateway through root-relative URLs.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspace @devthrottle/mobile",
+    "lint": "eslint .",
+    "gen:api": "npm run gen:api --workspace @devthrottle/client-core"
+  },
+  "devDependencies": {
+    "eslint": "9.15.0",
+    "typescript-eslint": "8.16.0"
+  }
+}

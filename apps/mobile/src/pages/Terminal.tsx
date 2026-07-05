@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import "@xterm/xterm/css/xterm.css";
-import { listSessions } from "../api/client";
-import { TerminalMirror } from "../terminal/stream";
+import { listSessions } from "@devthrottle/client-core/api/client";
+import { TerminalMirror } from "@devthrottle/client-core/terminal/stream";
 import { SessionControls } from "../components/SessionControls";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";

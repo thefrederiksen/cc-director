@@ -8,7 +8,7 @@
 // and clears it when nothing is waiting - the Gateway never pushes a zero (a push must show a
 // notification), so clearing the dot is the client's job.
 
-import { authHeaders } from "../api/client";
+import { authHeaders } from "@devthrottle/client-core/api/client";
 
 // Kept in sync with the tag public/push-sw.js uses, so the page can close the same notification.
 const NEEDS_YOU_TAG = "devthrottle-needs-you";

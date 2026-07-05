@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { listSessions, type SessionDto } from "../api/client";
-import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, isWorking, repoLeaf } from "../sessions/ordering";
-import { useNow, waitingLabel } from "../sessions/waiting";
+import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
+import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
+import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "../voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
 import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "../push/register";

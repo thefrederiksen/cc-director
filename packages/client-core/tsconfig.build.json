@@ -1,0 +1,13 @@
+{
+  // The library's own standalone build: emit declaration files to dist/ so `npm run build` proves the
+  // package compiles on its own (Issue #968 acceptance criterion 1). The shells consume the package
+  // as TypeScript source (see the "exports" map in package.json), so no JavaScript emit is needed -
+  // and `moduleResolution: bundler` only permits declaration-only emit anyway.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist"
+  }
+}
