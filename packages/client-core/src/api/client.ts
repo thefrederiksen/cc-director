@@ -236,6 +236,246 @@ export async function sendInterrupt(sessionId: string, signal?: AbortSignal): Pr
   }
 }
 
+// Reset the conversation context in place (/clear for Claude, /new for pi) without ending the
+// process. POST /sessions/{sid}/clear-context. Only meaningful for drivers that declare the
+// ClearContext capability; the caller gates the button on SessionDto.driverCapabilities.
+export async function sendClearContext(sessionId: string, signal?: AbortSignal): Promise<void> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/clear-context`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `POST clear-context failed: ${res.status}`);
+  }
+}
+
+// Open the tool's in-terminal history / rewind picker (Claude's double-Esc). POST
+// /sessions/{sid}/history-picker. Gated on the History capability - a visible-terminal feature.
+export async function sendHistoryPicker(sessionId: string, signal?: AbortSignal): Promise<void> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/history-picker`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `POST history-picker failed: ${res.status}`);
+  }
+}
+
+// ===== Prompt queue (issue #972): the composer's Queue and the queue panel verbs =====
+// A faithful port of the Blazor Cockpit DirectorClient queue methods. Every verb returns the
+// server's authoritative queue (the owning Director owns the ordered list), so the caller
+// replaces its whole list from the response rather than mutating optimistically. All routes are
+// root-relative to the Gateway, which forwards the session-scoped verb to the owning Director.
+
+/** One queued prompt, as returned by GET /sessions/{sid}/queue on a Director. */
+export interface QueueItem {
+  id: string;
+  text: string;
+  /** ISO 8601 UTC when the item was queued. */
+  createdAt: string;
+}
+
+// Read the response's { items } as the authoritative queue. Shared by every queue verb so the
+// parse lives in one place; a non-2xx throws so the caller surfaces it (no silent empty queue).
+async function readQueue(res: Response, label: string): Promise<QueueItem[]> {
+  if (!res.ok) {
+    throw new GatewayError(res.status, `${label} failed: ${res.status}`);
+  }
+  const body = (await res.json().catch(() => ({}))) as { items?: QueueItem[] };
+  return body.items ?? [];
+}
+
+// GET /sessions/{sid}/queue - the session's current queued prompts, in order.
+export async function getQueue(sessionId: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/queue`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  return readQueue(res, "GET queue");
+}
+
+// POST /sessions/{sid}/queue { text } - append a prompt to the queue; returns the new queue.
+export async function enqueuePrompt(sessionId: string, text: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/queue`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    body: JSON.stringify({ text }),
+    signal,
+  });
+  return readQueue(res, "POST queue");
+}
+
+// DELETE /sessions/{sid}/queue/{itemId} - remove one item; returns the remaining queue.
+export async function deleteQueueItem(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const id = encodeURIComponent(itemId);
+  const res = await fetch(`/sessions/${sid}/queue/${id}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  return readQueue(res, "DELETE queue item");
+}
+
+// POST /sessions/{sid}/queue/{itemId}/send - submit one queued item now; returns the remaining queue.
+export async function sendQueueItem(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const id = encodeURIComponent(itemId);
+  const res = await fetch(`/sessions/${sid}/queue/${id}/send`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  return readQueue(res, "POST queue send");
+}
+
+// PATCH /sessions/{sid}/queue/{itemId} { text } - edit one item's text; returns the updated queue.
+export async function editQueueItem(sessionId: string, itemId: string, text: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const id = encodeURIComponent(itemId);
+  const res = await fetch(`/sessions/${sid}/queue/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    body: JSON.stringify({ text }),
+    signal,
+  });
+  return readQueue(res, "PATCH queue item");
+}
+
+// POST /sessions/{sid}/queue/{itemId}/move-up - move one item earlier; returns the reordered queue.
+export async function moveQueueItemUp(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const id = encodeURIComponent(itemId);
+  const res = await fetch(`/sessions/${sid}/queue/${id}/move-up`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  return readQueue(res, "POST queue move-up");
+}
+
+// POST /sessions/{sid}/queue/{itemId}/move-down - move one item later; returns the reordered queue.
+export async function moveQueueItemDown(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const id = encodeURIComponent(itemId);
+  const res = await fetch(`/sessions/${sid}/queue/${id}/move-down`, {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  return readQueue(res, "POST queue move-down");
+}
+
+// DELETE /sessions/{sid}/queue - clear the whole queue; returns the (empty) queue.
+export async function clearQueue(sessionId: string, signal?: AbortSignal): Promise<QueueItem[]> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/queue`, {
+    method: "DELETE",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  return readQueue(res, "DELETE queue");
+}
+
+// ===== Screenshots gallery (issue #972): the captured-screenshots folder on the owning Director =====
+// A faithful port of the Blazor DirectorClient screenshots methods. The folder is per-machine on the
+// Director, but the Cockpit always asks in the context of the selected session, so the session id is
+// the routing key and the Gateway forwards to the owning Director's machine-wide folder. The image
+// BYTES are loaded by the browser same-origin through the Gateway's per-session proxy
+// (screenshotFileUrl), so no absolute Director address ever reaches the page (issue #317 / #967).
+
+/** One screenshot on a Director's machine. The Director pre-formats timeLabel so every surface
+ *  shows the same label without re-deriving it. */
+export interface ScreenshotInfo {
+  fileName: string;
+  /** Absolute on-disk path on the Director's machine, injected into the composer so the owning
+   *  agent can read the image directly (no upload). */
+  path: string;
+  timeLabel: string;
+  lastWriteUtc: string;
+  sizeBytes: number;
+}
+
+/** GET /sessions/{sid}/screenshots: the resolved folder + its newest image files. */
+export interface ScreenshotsResult {
+  directory: string;
+  /** Full folder count regardless of any count cap; 0 on old Directors (treat items.length as total). */
+  total: number;
+  items: ScreenshotInfo[];
+}
+
+// The same-origin URL for a screenshot's bytes, used as the thumbnail <img src> and the "view
+// full size" link. Root-relative to the Gateway (never a Director address), so a Director that
+// advertises only a loopback endpoint still renders correctly for a remote browser (issue #317).
+export function screenshotFileUrl(sessionId: string, fileName: string): string {
+  const sid = encodeURIComponent(sessionId);
+  return `/sessions/${sid}/screenshots/file?name=${encodeURIComponent(fileName)}`;
+}
+
+// GET /sessions/{sid}/screenshots[?count=N] - the newest screenshots' metadata (not the bytes).
+// count <= 0 fetches everything (the folder can hold thousands, so callers pass a cap). A 503 means
+// the owning Director is offline (the Gateway could not reach it for this leg, issue #412); it is
+// surfaced as a GatewayError so the caller can show a graceful "Director offline" state + Retry.
+export async function getScreenshots(sessionId: string, count = 0, signal?: AbortSignal): Promise<ScreenshotsResult> {
+  const sid = encodeURIComponent(sessionId);
+  const path = count > 0 ? `/sessions/${sid}/screenshots?count=${count}` : `/sessions/${sid}/screenshots`;
+  const res = await fetch(path, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET screenshots failed: ${res.status}`);
+  }
+  const body = (await res.json().catch(() => ({}))) as Partial<ScreenshotsResult>;
+  return {
+    directory: body.directory ?? "",
+    total: Number(body.total ?? 0),
+    items: body.items ?? [],
+  };
+}
+
+// DELETE /sessions/{sid}/screenshots/file?name=... - delete one screenshot file from the Director's disk.
+export async function deleteScreenshot(sessionId: string, fileName: string, signal?: AbortSignal): Promise<void> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/screenshots/file?name=${encodeURIComponent(fileName)}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `DELETE screenshot failed: ${res.status}`);
+  }
+}
+
+// POST /sessions/{sid}/upload-image (multipart, field "file") - forward a device-local image to the
+// owning Director, which saves it to its Screenshots folder and returns the absolute on-disk path.
+// The caller inserts that path into the composer so the agent can read the image directly; the
+// upload endpoint itself injects nothing into the session.
+export async function uploadImage(sessionId: string, file: File, signal?: AbortSignal): Promise<string> {
+  const sid = encodeURIComponent(sessionId);
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(`/sessions/${sid}/upload-image`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+    body: form,
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `POST upload-image failed: ${res.status}`);
+  }
+  const body = (await res.json().catch(() => ({}))) as { path?: string };
+  return body.path ?? "";
+}
+
 // ===== Session management (issue #812): the add-session flow + Hold/Resume + Remove =====
 // A faithful 1:1 of the Android (MAUI) phone/CcDirectorClient "+ New session" flow and the
 // owner's Hold/Remove decision. Every call carries the same Bearer the rest of the client uses, so

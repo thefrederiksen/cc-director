@@ -1,0 +1,147 @@
+import { useCallback, useEffect, useState } from "react";
+import {
+  deleteScreenshot,
+  getScreenshots,
+  screenshotFileUrl,
+  type ScreenshotInfo,
+} from "@devthrottle/client-core/api/client";
+
+// The screenshots gallery panel (issue #972) - the React port of the Blazor Cockpit screenshots tab.
+// The folder lives on the owning Director's machine; the Cockpit asks in the context of the selected
+// session, so the session id is the routing key (the Gateway forwards to the Director). The image
+// BYTES load same-origin through the Gateway's per-session proxy (screenshotFileUrl) - never a
+// Director address - so a loopback-only Director still renders for a remote browser.
+//
+// The folder can hold thousands of files, so the gallery is deliberately bounded: fetch the newest
+// FETCH_COUNT only, render INITIAL_SHOWN thumbnails, and grow on demand. Clicking a thumbnail VIEWS
+// it full-size (new tab); Insert drops the Director-side path into the composer; Delete removes the
+// file from the Director's disk.
+const FETCH_COUNT = 60;
+const INITIAL_SHOWN = 12;
+const SHOW_MORE_STEP = 24;
+
+export interface ScreenshotsPanelProps {
+  sessionId: string | undefined;
+  /** Insert a screenshot's on-disk path into the composer. */
+  onInsert: (path: string) => void;
+}
+
+export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps) {
+  const [shots, setShots] = useState<ScreenshotInfo[]>([]);
+  const [total, setTotal] = useState(0);
+  const [shown, setShown] = useState(INITIAL_SHOWN);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loadedOnce, setLoadedOnce] = useState(false);
+
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!sessionId) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const result = await getScreenshots(sessionId, FETCH_COUNT, signal);
+        setShots(result.items);
+        setTotal(result.total > 0 ? result.total : result.items.length);
+        setShown(INITIAL_SHOWN);
+        setLoadedOnce(true);
+      } catch (err) {
+        if (signal?.aborted) return;
+        setError(err instanceof Error ? err.message : "Screenshots unavailable");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sessionId],
+  );
+
+  // Load on mount and whenever the selected session changes.
+  useEffect(() => {
+    const controller = new AbortController();
+    setShots([]);
+    setTotal(0);
+    setLoadedOnce(false);
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+
+  const onDelete = useCallback(
+    async (fileName: string) => {
+      if (!sessionId) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await deleteScreenshot(sessionId, fileName);
+        setShots((cur) => cur.filter((s) => s.fileName !== fileName));
+        setTotal((t) => Math.max(0, t - 1));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Delete failed");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sessionId],
+  );
+
+  return (
+    <div className="shots-panel">
+      <div className="shots-head">
+        <span className="shots-title">Screenshots</span>
+        <button type="button" className="linkbtn" disabled={busy} onClick={() => void load()} title="Reload from the Director">
+          Refresh
+        </button>
+      </div>
+
+      {error !== null && (
+        <div className="shots-error">
+          {error}{" "}
+          <button type="button" className="linkbtn" disabled={busy} onClick={() => void load()}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {error === null && busy && shots.length === 0 && <div className="shots-empty">Loading screenshots...</div>}
+
+      {error === null && loadedOnce && shots.length === 0 && !busy && (
+        <div className="shots-empty">No screenshots in this Director's folder yet.</div>
+      )}
+
+      {shots.length > 0 && (
+        <>
+          <div className="gallery">
+            {shots.slice(0, shown).map((s) => (
+              <div className="shot-card" key={s.fileName}>
+                {sessionId && (
+                  <a href={screenshotFileUrl(sessionId, s.fileName)} target="_blank" rel="noreferrer" title="View full size">
+                    <img className="shot-thumb" src={screenshotFileUrl(sessionId, s.fileName)} alt={s.fileName} loading="lazy" />
+                  </a>
+                )}
+                <div className="shot-row">
+                  <span className="shot-time">{s.timeLabel}</span>
+                  <button type="button" className="linkbtn" title="Insert path into the composer" onClick={() => onInsert(s.path)}>
+                    Insert
+                  </button>
+                  <button type="button" className="linkbtn del" disabled={busy} onClick={() => void onDelete(s.fileName)}>
+                    Del
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          {shots.length > shown ? (
+            <button type="button" className="gallery-more" onClick={() => setShown((n) => n + SHOW_MORE_STEP)}>
+              Show {Math.min(SHOW_MORE_STEP, shots.length - shown)} more
+            </button>
+          ) : (
+            total > shots.length && (
+              <div className="gallery-foot">
+                Newest {shots.length} of {total} - older files stay on the Director's disk.
+              </div>
+            )
+          )}
+        </>
+      )}
+    </div>
+  );
+}
