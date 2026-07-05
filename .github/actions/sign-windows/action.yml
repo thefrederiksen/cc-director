@@ -2,6 +2,12 @@
 # (a.k.a. Azure Artifact Signing) so downloaded executables show the verified
 # publisher "Center Consulting Inc." instead of "Unknown Publisher".
 #
+# Full runbook (Azure setup steps, the verified certificate chain, client-secret
+# rotation, and the deferred macOS-signing plan) lives in the PRIVATE repo:
+#   thefrederiksen/devthrottle_internal -> docs/signing/signing.md
+# It is kept out of this public repo because it contains internal business detail.
+# The quick reference below is enough to operate the signing from here.
+#
 # ---------------------------------------------------------------------------
 # One-time setup required in the repository before signing does anything
 # (until then, callers guard this with `if: ${{ vars.SIGNING_CERT_PROFILE != '' }}`
