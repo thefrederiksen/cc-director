@@ -5026,10 +5026,12 @@ public partial class MainWindow : Window
         // Inject user prompt into Clean view immediately for instant feedback
         CleanView.InjectUserPrompt(text);
 
-        // Notify user when large input is redirected to a temp file
+        // Notify user when large input is redirected to a temp file. Name the
+        // active session's actual agent, not a hardcoded "Claude Code".
         if (CcDirector.Core.Input.LargeInputHandler.IsLargeInput(text))
         {
-            ShowNotification($"Text over {CcDirector.Core.Input.LargeInputHandler.LargeInputThreshold:N0} chars -- saved to temp file and @filepath sent to Claude Code ({text.Length:N0} chars)");
+            var agentName = AgentPluginRegistry.Get(_activeSession.Session.AgentKind).DisplayName;
+            ShowNotification(CcDirector.Core.Input.LargeInputHandler.FormatRedirectNotice(agentName, text.Length));
         }
         else
         {

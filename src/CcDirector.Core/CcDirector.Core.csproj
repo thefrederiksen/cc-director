@@ -17,7 +17,10 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.2" />
     <!-- Pin the patched native SQLite library (3.0.x) to resolve advisory GHSA-2m69-gcr7-jv3q
          (NU1903 high-severity). All of SQLitePCLRaw <= 2.1.11 is vulnerable and Microsoft.Data.Sqlite
-         still pulls 2.1.11 transitively, so override its native bundle + core to the patched 3.0 line. -->
+         still pulls 2.1.11 transitively, so override its native bundle + core to the patched 3.0 line.
+         Re-evaluated 2026-07-05 (issue #544): still required. The latest stable Microsoft.Data.Sqlite
+         (10.0.9) continues to depend on SQLitePCLRaw 2.1.11; only the unreleased 11.0 preview line has
+         moved to 3.0.3. Remove this override once a stable Microsoft.Data.Sqlite depends on 3.0.x. -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageReference Include="SQLitePCLRaw.core" Version="3.0.3" />
     <PackageReference Include="YamlDotNet" Version="16.2.1" />

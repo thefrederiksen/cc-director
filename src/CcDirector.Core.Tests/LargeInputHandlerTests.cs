@@ -150,4 +150,25 @@ public class LargeInputHandlerTests : IDisposable
         // Document the expected threshold value
         Assert.Equal(1000, LargeInputHandler.LargeInputThreshold);
     }
+
+    [Fact]
+    public void FormatRedirectNotice_NamesTheGivenAgent()
+    {
+        // Issue #763: the notice must name the active session's actual agent,
+        // not a hardcoded "Claude Code".
+        var notice = LargeInputHandler.FormatRedirectNotice("Codex", 1802);
+
+        Assert.Contains("sent to Codex", notice);
+        Assert.DoesNotContain("Claude Code", notice);
+        Assert.Contains("1,802 chars", notice);
+    }
+
+    [Fact]
+    public void FormatRedirectNotice_UsesEachAgentNameVerbatim()
+    {
+        foreach (var name in new[] { "Claude Code", "Pi", "Gemini", "OpenCode", "Grok", "GitHub Copilot" })
+        {
+            Assert.Contains($"sent to {name}", LargeInputHandler.FormatRedirectNotice(name, 1500));
+        }
+    }
 }
