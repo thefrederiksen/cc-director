@@ -164,6 +164,12 @@ public partial class App : Application
         // the claimed .dirty.json files.
         try
         {
+            // Sweep stale crash journals first (issue #961): only the last week of crashes is
+            // useful for recovery, so older .dirty.json files are removed instead of accumulating.
+            var swept = DirectorCrashJournal.SweepExpired();
+            if (swept > 0)
+                FileLog.Write($"[App] Crash recovery: swept {swept} stale crash journal(s) older than {DirectorCrashJournal.DirtyJournalRetention.TotalDays:0} days.");
+
             var dirty = DirectorCrashJournal.DetectAndClaim(Environment.ProcessId);
             if (dirty.Count > 0)
                 FileLog.Write($"[App] Crash recovery: {dirty.Count} Director(s) died abnormally with " +

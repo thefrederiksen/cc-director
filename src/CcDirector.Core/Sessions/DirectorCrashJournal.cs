@@ -85,6 +85,58 @@ public sealed class DirectorCrashJournal
     public static string DefaultDirectory => Path.Combine(CcStorage.ToolConfig("director"), "crash-journal");
 
     /// <summary>
+    /// How long a claimed crash journal is kept before it is swept as stale (issue #961). Only the
+    /// last week of crashes is useful for recovery; older <c>.dirty.json</c> files just accumulate
+    /// and clutter the Interrupted list. The recovery read surface also hides anything older.
+    /// </summary>
+    public static readonly TimeSpan DirtyJournalRetention = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Delete claimed <c>.dirty.json</c> journals whose last activity (<c>LastUpdatedUtc</c>) is
+    /// older than <paramref name="maxAge"/> (default <see cref="DirtyJournalRetention"/>). Returns
+    /// the number deleted. Robust per-file: one unreadable or locked journal never aborts the sweep.
+    /// </summary>
+    public static int SweepExpired(TimeSpan? maxAge = null, string? directory = null)
+    {
+        var dir = directory ?? DefaultDirectory;
+        if (!Directory.Exists(dir)) return 0;
+        var cutoff = DateTimeOffset.UtcNow - (maxAge ?? DirtyJournalRetention);
+        var deleted = 0;
+        foreach (var path in Directory.EnumerateFiles(dir, "*.dirty.json"))
+        {
+            try
+            {
+                if (IsExpired(path, cutoff))
+                {
+                    File.Delete(path);
+                    deleted++;
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[DirectorCrashJournal] SweepExpired: could not remove {path}: {ex.Message}");
+            }
+        }
+        if (deleted > 0)
+            FileLog.Write($"[DirectorCrashJournal] SweepExpired: removed {deleted} crash journal(s) older than {(maxAge ?? DirtyJournalRetention).TotalDays:0.#} day(s).");
+        return deleted;
+    }
+
+    // A dirty journal is expired when its recorded last activity is older than the cutoff. Falls
+    // back to the file's last-write time when the content cannot be read, so a corrupt or ancient
+    // file is still swept rather than lingering forever.
+    private static bool IsExpired(string path, DateTimeOffset cutoff)
+    {
+        try
+        {
+            var data = JsonSerializer.Deserialize<DirectorCrashJournalData>(File.ReadAllText(path), JsonOptions);
+            if (data is not null) return data.LastUpdatedUtc < cutoff;
+        }
+        catch { /* fall through to the file's timestamp */ }
+        return File.GetLastWriteTimeUtc(path) < cutoff;
+    }
+
+    /// <summary>
     /// Replace the journal's session roster and flush to disk atomically. Called whenever
     /// the live session set changes (create/rename/relink/close) so the on-disk roster is
     /// never more than one event stale.
@@ -182,12 +234,15 @@ public sealed class DirectorCrashJournal
         var result = new List<DirectorCrashJournalData>();
         if (!Directory.Exists(dir)) return result;
 
+        // Hide journals older than the retention window (issue #961) so the Interrupted list only
+        // ever shows genuinely recent crashes, even if the startup sweep has not run yet.
+        var cutoff = DateTimeOffset.UtcNow - DirtyJournalRetention;
         foreach (var path in Directory.EnumerateFiles(dir, "*.dirty.json"))
         {
             try
             {
                 var data = JsonSerializer.Deserialize<DirectorCrashJournalData>(File.ReadAllText(path), JsonOptions);
-                if (data is not null) result.Add(data);
+                if (data is not null && data.LastUpdatedUtc >= cutoff) result.Add(data);
             }
             catch (Exception ex)
             {
