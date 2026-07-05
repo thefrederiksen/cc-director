@@ -86,6 +86,14 @@
     <!-- Run the web build for a publish/release configuration, or on explicit opt-in. -->
     <RunMobileBuild Condition="'$(RunMobileBuild)' == '' and ('$(Configuration)' == 'Release' or '$(BuildMobile)' == 'true')">true</RunMobileBuild>
     <RunMobileBuild Condition="'$(RunMobileBuild)' == ''">false</RunMobileBuild>
+
+    <!-- Epic #967: the React desktop Cockpit is the second workspace shell (apps/cockpit), served by
+         the Gateway at /c beside the mobile app at /m. It builds through the same workspace and is
+         staged into wwwroot/c under the same RELEASE-ONLY gate as the mobile app. -->
+    <CockpitDir>$(MSBuildProjectDirectory)\..\..\apps\cockpit\</CockpitDir>
+    <CockpitWwwroot>$(MSBuildProjectDirectory)\wwwroot\c</CockpitWwwroot>
+    <RunCockpitBuild Condition="'$(RunCockpitBuild)' == '' and ('$(Configuration)' == 'Release' or '$(BuildCockpit)' == 'true')">true</RunCockpitBuild>
+    <RunCockpitBuild Condition="'$(RunCockpitBuild)' == ''">false</RunCockpitBuild>
   </PropertyGroup>
 
   <Target Name="BuildMobileApp" BeforeTargets="AssignTargetPaths" Condition="'$(RunMobileBuild)' == 'true'">
@@ -102,6 +110,32 @@
     <Message Importance="high" Text="[BuildMobileApp] staged @(_MobileDistFiles->Count()) file(s) into $(MobileWwwroot)" />
     <ItemGroup>
       <Content Include="wwwroot\m\**\*" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+  <!-- ============================================================================
+       Epic #967: build the React desktop Cockpit (apps/cockpit) and stage it under wwwroot/c.
+
+       Same shape and gating as BuildMobileApp above: BUILD-TIME ONLY and RELEASE-ONLY. A routine
+       `dotnet build` (Debug) does NOT invoke npm; the built static files ship in the release and the
+       Gateway serves them at /c. The freshly built dist/** is copied into wwwroot/c and added to
+       Content INSIDE the target so it flows to this project's output (and transitively to the tray
+       exe that references this project).
+       ============================================================================ -->
+  <Target Name="BuildCockpitApp" BeforeTargets="AssignTargetPaths" Condition="'$(RunCockpitBuild)' == 'true'">
+    <Message Importance="high" Text="[BuildCockpitApp] building the React Cockpit ($(Configuration)) from $(CockpitDir) via the workspace at $(WorkspaceRoot)" />
+    <Exec Command="npm ci" WorkingDirectory="$(WorkspaceRoot)" />
+    <Exec Command="npm run build --workspace @devthrottle/cockpit" WorkingDirectory="$(WorkspaceRoot)" />
+    <RemoveDir Directories="$(CockpitWwwroot)" />
+    <ItemGroup>
+      <_CockpitDistFiles Include="$(CockpitDir)dist\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_CockpitDistFiles)"
+          DestinationFiles="@(_CockpitDistFiles->'$(CockpitWwwroot)\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="[BuildCockpitApp] staged @(_CockpitDistFiles->Count()) file(s) into $(CockpitWwwroot)" />
+    <ItemGroup>
+      <Content Include="wwwroot\c\**\*" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
   </Target>
 

@@ -1071,6 +1071,12 @@ public sealed class GatewayHost : IAsyncDisposable
 
         Mobile.MobileApp.Map(_app, Token);
 
+        // Epic #967: the React desktop Cockpit static shell at /c (built into wwwroot/c by the
+        // release-gated MSBuild target). Mapped before the fallback proxy so these explicit /c routes
+        // win, while every other path keeps falling through to the live Blazor Cockpit - the two run
+        // side by side so a path can flip from Blazor to React one at a time. Same pattern as /m above.
+        Cockpit.CockpitReactApp.Map(_app);
+
         // One URL: everything no explicit endpoint above claimed falls through to the
         // loopback Cockpit (docs/plans/one-url-cockpit.md). Mapped LAST by design.
         Cockpit.CockpitProxy.Map(_app, cockpitForwarder);
