@@ -13,7 +13,7 @@
 // layer beneath it (a cold start re-reads bytes from the cache with no network).
 
 import { useEffect, useState } from "react";
-import { fetchWingmanVoiceAudio, getWingmanVoice, type SessionDto } from "@devthrottle/client-core/api/client";
+import { fetchWingmanVoiceAudio, getWingmanVoice, type SessionDto, type WingmanVoice } from "@devthrottle/client-core/api/client";
 
 export type ClipPhase = "none" | "downloading" | "ready" | "error";
 
@@ -128,6 +128,31 @@ export async function ensureClip(sid: string, generatedAt: string): Promise<void
   }
 }
 
+// ----- Voice metadata cache (issue #1015): the narration state + spoken TEXT, cached alongside the
+// audio so the Voice screen can render and start speaking from cache with no network round-trip.
+// localStorage (small JSON, survives reloads); absence is capability-detected, not a fallback.
+const META_PREFIX = "dt.voice.meta.";
+
+/** Persist a session's latest voice metadata (readiness + spoken narration text). */
+export function saveVoiceMeta(sid: string, voice: WingmanVoice): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(META_PREFIX + sid, JSON.stringify(voice));
+  } catch {
+    // storage unavailable/full; the in-memory poll still drives the screen this page load
+  }
+}
+
+/** The cached voice metadata for a session, or null - read synchronously to seed the first render. */
+export function getVoiceMeta(sid: string): WingmanVoice | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(META_PREFIX + sid);
+    return raw ? (JSON.parse(raw) as WingmanVoice) : null;
+  } catch {
+    return null;
+  }
+}
+
 // Pull every gateway-ready voice session's current clip down to the phone. Called from the roster
 // poll so a voice session's card can flip from the yellow "working" state to the play-triangle the
 // moment its audio is local. Per-session metadata misses are isolated: one session's transient
@@ -140,6 +165,8 @@ export async function syncVoiceSessions(sessions: SessionDto[]): Promise<void> {
       const sid = s.sessionId ?? "";
       try {
         const voice = await getWingmanVoice(sid);
+        // Cache the state + narration text (issue #1015) so entering the screen shows it instantly.
+        saveVoiceMeta(sid, voice);
         if (voice.ready && voice.generatedAt) await ensureClip(sid, voice.generatedAt);
       } catch {
         // Transient per-session miss (Director briefly unreachable); retried on the next poll tick.
