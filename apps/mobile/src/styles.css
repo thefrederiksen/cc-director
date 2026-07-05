@@ -1595,8 +1595,10 @@ a.banner-btn {
   cursor: default;
 }
 
-/* Hold = amber (defer), Resume = green (re-activate), Remove = red (destructive) - matching the
+/* Back to sessions = accent blue, and the widest button in the row (the most-used control, #1004).
+   Hold = amber (defer), Resume = green (re-activate), Remove = red (destructive) - matching the
    Android-tab semantic palette already used by .term-esc / .term-enter / .term-stop. */
+.manage-back { flex: 1.6 1 0; background: var(--accent); color: #ffffff; }
 .manage-hold { background: #e8b339; color: #221a06; }
 .manage-resume { background: #5fd08a; color: #06210f; }
 .manage-remove { background: #e5484d; color: #ffffff; }
