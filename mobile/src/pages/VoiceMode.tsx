@@ -18,6 +18,7 @@ import { DictationDialog } from "../dictation/DictationDialog";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
 import { ensureClip, getClipState, stopPlayback, useVoiceClips } from "../voice/clips";
+import { isWorking } from "../sessions/ordering";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
 // alongside Terminal (#817) and Chat (#811). A read-only Wingman narrates every completed turn as
@@ -168,9 +169,30 @@ export function VoiceMode() {
   const phoneReady =
     generatedAt.length > 0 && clip.phase === "ready" && clip.generatedAt === generatedAt && clip.url !== null;
 
-  // Auto-play a freshly downloaded clip exactly once, and only while the voice screen is foreground
-  // (decision 4: never auto-play from the list, never while the app is hidden).
+  // Whether the agent has resumed working (blue) - the instant it does, the finished-turn narration is
+  // stale and must not be spoken or offered, exactly like the roster play-triangle (Home.tsx). A null
+  // session (not yet loaded) is treated as not-working.
+  const agentWorking = session !== null && isWorking(session);
+
+  // Retire a stale narration the moment the agent starts working again: stop this screen's own
+  // playback and any shared roster clip. The speaking-state play-triangle is hidden below while
+  // working, so a stale clip can neither keep talking nor be replayed until the next turn parks the
+  // session again.
   useEffect(() => {
+    if (!agentWorking) return;
+    try {
+      audioRef.current?.pause();
+    } catch {
+      /* nothing playing */
+    }
+    stopPlayback();
+  }, [agentWorking]);
+
+  // Auto-play a freshly downloaded clip exactly once, and only while the voice screen is foreground
+  // (decision 4: never auto-play from the list, never while the app is hidden). Never auto-play while
+  // the agent is working again - that narration is stale (the same rule the roster triangle follows).
+  useEffect(() => {
+    if (agentWorking) return;
     if (!phoneReady || generatedAt.length === 0) return;
     if (autoPlayedRef.current === generatedAt) return;
     if (typeof document !== "undefined" && document.hidden) return;
@@ -183,7 +205,7 @@ export function VoiceMode() {
         /* autoplay policy may require a gesture; the play-triangle covers it */
       });
     }
-  }, [phoneReady, generatedAt]);
+  }, [phoneReady, generatedAt, agentWorking]);
 
   const onSwitchOn = useCallback(async () => {
     if (sid.length === 0 || enabling) return;
@@ -310,7 +332,10 @@ export function VoiceMode() {
 
   const voiceOn = localEnabled || Boolean(session?.voiceMode);
   const waitingChoice = voiceOn && menu !== null;
-  const speaking = voiceOn && !waitingChoice && phoneReady && (voice?.spoken.length ?? 0) > 0;
+  // The speaking state (and its play-triangle) is suppressed while the agent is working again: the
+  // finished-turn narration is stale, so the screen falls back to the working card instead of
+  // offering a replay of it.
+  const speaking = voiceOn && !waitingChoice && phoneReady && (voice?.spoken.length ?? 0) > 0 && !agentWorking;
   const working = voiceOn && !waitingChoice && !speaking;
   const progress = dur > 0 ? Math.min(1, pos / dur) : 0;
   const narrative = voice?.spoken ?? "";
@@ -359,24 +384,30 @@ export function VoiceMode() {
           </div>
         )}
 
-        {/* B. WORKING - the Wingman is reading and the phone is downloading the clip. */}
+        {/* B. WORKING - either the Wingman is reading + the phone is downloading the clip, or (when
+            agentWorking) the agent has resumed and the finished-turn narration has been retired: show
+            truthful copy for each so we never promise auto-play that the working gate suppresses. */}
         {working && (
           <>
             <div className="voice-statusbar">
-              <span className="voice-state voice-state-yellow">Wingman is reading...</span>
+              <span className="voice-state voice-state-yellow">
+                {agentWorking ? "Agent is working..." : "Wingman is reading..."}
+              </span>
             </div>
             <div className="voice-narr">
-              <div className="voice-narr-title">Listening</div>
+              <div className="voice-narr-title">{agentWorking ? "Working" : "Listening"}</div>
               <div className="voice-narr-body">
                 {enableNote.length > 0
                   ? enableNote
-                  : "Preparing the spoken summary of the latest turn. This will play automatically."}
+                  : agentWorking
+                    ? "The agent is working on the next step. The Wingman will narrate the next completed turn."
+                    : "Preparing the spoken summary of the latest turn. This will play automatically."}
               </div>
             </div>
             {enableNote.length === 0 && (
               <div className="voice-working">
                 <span className="voice-spinner" aria-hidden="true" />
-                <span className="voice-ref">rendering audio + downloading</span>
+                <span className="voice-ref">{agentWorking ? "working" : "rendering audio + downloading"}</span>
               </div>
             )}
           </>
