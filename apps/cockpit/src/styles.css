@@ -10,6 +10,14 @@
   --text-dim: #99a0b8;
   --accent: #3b82f6;
   --attention: #f14c4c;
+  /* Brief accents (issue #973): warning yellow, an inset code/tail surface, and the tinted
+     needs-you panel. Tokens so the Brief hard-codes no color outside this file. */
+  --warn: #f59e0b;
+  --code-bg: #0a0f1e;
+  --needsyou-bg: #2a1d1f;
+  --needsyou-text: #f1d8d8;
+  --needsyou-fyi-bg: #262017;
+  --needsyou-fyi-text: #e8dcc8;
 
   --rail-left-width: 220px;
   --rail-right-width: 300px;
@@ -808,6 +816,327 @@ body {
   font-size: 11px;
   color: var(--text-dim);
   line-height: 1.4;
+}
+
+/* ===== Session view tabs (issue #973): Terminal | Brief ========================================
+   The tab strip sits above the session content. The terminal stays mounted (hidden via
+   .session-pane-off, never unmounted) behind the Brief so its live stream is never torn down. */
+.session-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.session-tab {
+  padding: 7px 16px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.session-tab:hover {
+  color: var(--text);
+}
+
+.session-tab.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.session-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.session-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-pane-off {
+  display: none;
+}
+
+/* The Brief pane scrolls its own content within the session-content region. */
+.session-pane.brief-scroll {
+  display: block;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+/* ===== The Brief (issue #973): a one-to-one port of the Blazor Cockpit .brief* styles onto the
+   desktop Cockpit tokens. The condenser + raw tiers only (the wingman tier lands with #974). ====== */
+.brief {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 22px 32px 16px;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.brief .blabel {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  margin-bottom: 7px;
+}
+
+.brief .blabel.red {
+  color: var(--attention);
+}
+
+.brief .blabel.yellow {
+  color: var(--warn);
+}
+
+.brief-loading,
+.brief-muted {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.brief-error {
+  color: var(--attention);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.brief-error-hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.brief-status .brief-muted {
+  margin: 6px 0;
+}
+
+.brief-goal {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 22px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brief-goal .blabel {
+  margin-bottom: 0;
+}
+
+.brief-goal-text {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.brief-block {
+  margin-bottom: 24px;
+}
+
+.brief-ask {
+  color: var(--text);
+  font-size: 15px;
+  white-space: pre-wrap;
+}
+
+.brief-did {
+  margin: 0;
+  padding-left: 22px;
+  color: var(--text);
+}
+
+.brief-did li {
+  margin-bottom: 5px;
+}
+
+.brief-needsyou {
+  border-left: 3px solid var(--attention);
+  background: var(--needsyou-bg);
+  color: var(--needsyou-text);
+  padding: 12px 16px;
+  border-radius: 0 6px 6px 0;
+  font-size: 15px;
+  white-space: pre-wrap;
+}
+
+.brief-needsyou.urgency-blocking,
+.brief-needsyou.urgency-review {
+  border-left-color: var(--attention);
+}
+
+.brief-needsyou.urgency-fyi {
+  border-left-color: var(--warn);
+  background: var(--needsyou-fyi-bg);
+  color: var(--needsyou-fyi-text);
+}
+
+.brief-verbatim-tag {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-dim);
+  margin-left: 8px;
+  font-size: 10px;
+}
+
+.brief-working {
+  color: var(--text-dim);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.brief-divider {
+  border-top: 1px solid var(--border);
+  margin: 6px 0 20px;
+}
+
+.brief-tail {
+  margin: 8px 0 10px;
+  padding: 10px 14px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.brief-expand {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 6px 0 0;
+  display: block;
+}
+
+.brief-expand:hover {
+  text-decoration: underline;
+}
+
+.brief-reply-md {
+  margin-top: 10px;
+  padding: 14px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  overflow-x: auto;
+}
+
+.brief-reply-md h1,
+.brief-reply-md h2,
+.brief-reply-md h3 {
+  font-size: 15px;
+  margin: 14px 0 6px;
+}
+
+.brief-reply-md p {
+  margin: 7px 0;
+}
+
+.brief-reply-md pre {
+  background: var(--code-bg);
+  padding: 10px 12px;
+  border-radius: 5px;
+  overflow-x: auto;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+}
+
+.brief-reply-md code {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12.5px;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.brief-reply-md pre code {
+  padding: 0;
+  background: none;
+}
+
+.brief-reply-md ul,
+.brief-reply-md ol {
+  padding-left: 24px;
+}
+
+.brief-reply-md table {
+  border-collapse: collapse;
+}
+
+.brief-reply-md td,
+.brief-reply-md th {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.brief-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+
+.brief-foot-spacer {
+  flex: 1;
+}
+
+.brief-refresh {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.brief-refresh:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.brief-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.brief-open-term {
+  margin-top: 10px;
+  border: 1px solid var(--attention);
+  background: none;
+  color: var(--attention);
+  border-radius: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.brief-open-term:hover {
+  background: var(--needsyou-bg);
 }
 
 /* The seam to the mobile shell is around the tablet breakpoint: below it the right (awareness) rail
