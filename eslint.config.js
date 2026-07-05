@@ -62,4 +62,14 @@ export default [
       "no-restricted-syntax": ["error", ...bannedAbsoluteUrl],
     },
   },
+  {
+    // Unit tests are not shipped client code - they never run in the browser and make no real
+    // request. Their fixtures legitimately contain absolute-URL string literals as TEST DATA (e.g.
+    // the link recognizer must be exercised with "https://example.com"), so the Gateway-only-ingress
+    // ban does not apply to them.
+    files: ["**/*.test.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": "off",
+    },
+  },
 ];

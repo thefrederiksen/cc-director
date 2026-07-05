@@ -1005,6 +1005,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // like the rest of the Gateway surface.
         WorkListEndpoints.Map(_app, _workLists);
 
+        // Per-work-item title + status for the Cockpit Lists view (issue #275, moved behind the
+        // Gateway for the React rebuild, issue #970). The React Cockpit is a browser SPA that holds
+        // no secret, so the GitHub resolve lives here: the browser calls GET
+        // /gateway/lists/item-status?source&id same-origin and the GitHub token never leaves the
+        // Gateway host. Inherits the host-wide token middleware above.
+        Api.ItemStatusEndpoint.Map(_app, Api.GitHubItemStatusResolver.CreateDefault());
+
         // Cron jobs (epic #479, part 1 = #482): the REST CRUD surface over the cron-job definition
         // store. Manages definitions only - the background firing engine is part 2 (#483).
         // Persisted to cronjobs.json across restarts (write-through + reload-on-start with

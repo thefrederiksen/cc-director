@@ -13,6 +13,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
     "gen:api": "openapi-typescript http://127.0.0.1:7878/openapi/v1.json --output src/api/schema.ts"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@types/react": "18.3.12",
     "openapi-typescript": "7.4.4",
-    "typescript": "5.7.2"
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
   }
 }

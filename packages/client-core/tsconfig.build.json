@@ -9,5 +9,8 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "outDir": "dist"
-  }
+  },
+  // The unit tests are type-checked by `npm run typecheck` (tsconfig.json includes them) but are not
+  // part of the shipped library, so they are excluded from the declaration build.
+  "exclude": ["**/*.test.ts"]
 }
