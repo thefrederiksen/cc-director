@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using CcDirector.AgentBrain;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Gateway.Wingman;
@@ -86,11 +87,14 @@ public sealed class HostedInferenceBrain : IAgentBrain
         if (!resp.IsSuccessStatusCode)
         {
             _log($"[HostedInferenceBrain] chat/completions model={_model} -> {(int)resp.StatusCode} ({text.Length} bytes)");
+            // Out of credits / monthly cap (issue #939): use the ONE shared message, branched by the
+            // 402 code (insufficient_credits vs monthly_limit_reached) - not a hand-written string that
+            // can only say "out of credits" and drifts from the other surfaces.
+            var detail = resp.StatusCode == System.Net.HttpStatusCode.PaymentRequired
+                ? HostedAiMessages.For(HostedAiErrorMapper.Map402(text)).Text
+                : "Check the AI provider settings and that the account/key is valid.";
             throw new InvalidOperationException(
-                $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " +
-                (resp.StatusCode == System.Net.HttpStatusCode.PaymentRequired
-                    ? "Your DevThrottle account is out of credits - add credits to keep hosted AI working."
-                    : "Check the AI provider settings and that the account/key is valid."));
+                $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail);
         }
 
         var content = ExtractContent(text);

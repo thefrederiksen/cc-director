@@ -46,6 +46,7 @@ internal static class GatewayEndpoints
         Action<string, string, string>? onSessionState = null,
         Func<string, bool>? voiceGeneratingFor = null,
         Func<string, bool>? voiceAudioReadyFor = null,
+        Func<string, Core.HostedAi.HostedAiState?>? voiceUnavailableFor = null,
         Func<string, bool, DateTime?>? needsYouStampFor = null,
         Func<string, bool>? transcribingFor = null,
         Transcription.TranscribingSessions? transcribingSessions = null,
@@ -513,6 +514,12 @@ internal static class GatewayEndpoints
                         s.VoiceGenerating = voiceGeneratingFor(s.SessionId);
                     if (voiceAudioReadyFor is not null)
                         s.VoiceAudioReady = voiceAudioReadyFor(s.SessionId);
+                    // Issue #939: when the gateway could not keep this session's voice because hosted AI
+                    // is unavailable (out of credits / cap / no key), stamp the ONE shared message so the
+                    // owning UI shows the consistent add-credit / add-key state instead of a silently
+                    // missing play triangle. Null (voice fine) leaves the field unset.
+                    if (voiceUnavailableFor is not null && voiceUnavailableFor(s.SessionId) is Core.HostedAi.HostedAiState reason)
+                        s.VoiceUnavailable = HostedAi.HostedAiHttp.Dto(reason);
                     // Orange "Transcribing..." while a dictated utterance is uploading/transcribing in
                     // the background for this session (mobile Speak -> Send released the screen). Stamped
                     // BEFORE the NeedsYouSince clock below so the EffectiveColor fold already sees orange

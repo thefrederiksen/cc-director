@@ -228,6 +228,16 @@ public sealed class SessionDto
     public bool VoiceAudioReady { get; set; }
 
     /// <summary>
+    /// Issue #939 (epic #937): set when the Gateway could NOT keep this session's voice because hosted
+    /// AI is unavailable (out of credits, monthly cap reached, or - in bring-your-own mode - no key).
+    /// Carries the ONE shared message + call-to-action (built from the single-source
+    /// <c>HostedAiMessages</c>), so the owning UI shows the consistent "add credit / add a key" state
+    /// instead of a silently missing play triangle. Null when voice is fine. Stamped by the Gateway
+    /// aggregator only; cleared on the next successful generation (dismissible).
+    /// </summary>
+    public HostedAiMessageDto? VoiceUnavailable { get; set; }
+
+    /// <summary>
     /// True while a client is transcribing a dictated utterance into this session: the phone has
     /// released the Speak dialog and the Gateway is uploading + transcribing the recorded audio in
     /// the background, which will then be submitted into the session. Stamped by the Gateway

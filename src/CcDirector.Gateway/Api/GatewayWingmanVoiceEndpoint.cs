@@ -5,10 +5,12 @@ using CcDirector.AgentBrain;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Voice.Services;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Voice;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
@@ -174,6 +176,11 @@ internal static class GatewayWingmanVoiceEndpoint
             var result = await transcription.TranscribeAsync(
                 assembledAudio, "audio." + (req.Ext ?? "webm"), req.Mime ?? "audio/webm", applyCorrection: true, ct);
             uploads.Delete(uploadId);
+            // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
+            // instead of flattening it into a generic 502 - so the client shows the consistent
+            // add-credits message and keeps the recording, not "transcription failed".
+            if (result.Outcome == Transcription.TranscriptionOutcome.OutOfCredits)
+                return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.MapCode(result.Code));
             if (result.Outcome != Transcription.TranscriptionOutcome.Ok)
                 return Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway);
             FileLog.Write($"[GatewayWingmanVoice] utterance complete {uploadId}: mode={result.Mode}, chars={result.Text?.Length ?? 0}");
@@ -222,6 +229,10 @@ internal static class GatewayWingmanVoiceEndpoint
                 {
                     var body = await resp.Content.ReadAsStringAsync(ct);
                     FileLog.Write($"[GatewayWingmanVoice] tts {mode.ToConfigString()} {(int)resp.StatusCode}: {body[..Math.Min(200, body.Length)]}");
+                    // Out of credits / monthly cap (issue #939): map to the shared 402 state by code
+                    // instead of a generic "text-to-speech returned 402".
+                    if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)
+                        return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.Map402(body));
                     return Results.Json(new { error = $"text-to-speech returned {(int)resp.StatusCode}" },
                         statusCode: StatusCodes.Status502BadGateway);
                 }
@@ -356,6 +367,11 @@ internal static class GatewayWingmanVoiceEndpoint
             // Transcribe WITH the validated dictionary correction applied (the SAME engine every other
             // surface uses; fails open to the raw transcript in local mode or on any cleanup error).
             var result = await transcription.TranscribeAsync(bytes, fileName, contentType, applyCorrection: true, ct);
+            // Out of credits / monthly cap (issue #939): map to the shared 402 state (branch by code)
+            // instead of flattening it into a generic 502 - so the client shows the consistent
+            // add-credits message and keeps the recording, not "transcription failed".
+            if (result.Outcome == Transcription.TranscriptionOutcome.OutOfCredits)
+                return HostedAiHttp.PaymentRequiredResult(HostedAiErrorMapper.MapCode(result.Code));
             if (result.Outcome != Transcription.TranscriptionOutcome.Ok)
                 return Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway);
             return Results.Json(new { transcript = result.Text });

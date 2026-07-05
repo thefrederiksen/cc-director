@@ -841,6 +841,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // the single truthful "voice you can play right now" signal. Holds a voice-mode waiting
             // session yellow until this is true, then lets it go red (SessionOrdering.IsVoicePreparing).
             voiceAudioReadyFor: sid => _voiceService?.HasVoice(sid) == true,
+            // Issue #939: when turn-end voice could not be kept because hosted AI is unavailable (out
+            // of credits / cap / no key), stamp the shared unavailable state onto the session so the UI
+            // shows the consistent add-credit / add-key message instead of a silently missing triangle.
+            voiceUnavailableFor: sid => _voiceService?.VoiceUnavailableFor(sid),
             // Issue #218: stamp the Gateway-owned NeedsYouSince entry clock onto each session.
             needsYouStampFor: (sid, isRed) => _needsYouClock.Stamp(sid, isRed),
             // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded

@@ -70,14 +70,29 @@ public sealed class HostedInferenceBrainTests
     }
 
     [Fact]
-    public async Task AskAsync_PaymentRequired_ThrowsCreditsMessage()
+    public async Task AskAsync_PaymentRequired_ThrowsSharedNeedsCreditsMessage()
     {
-        var stub = new StubHandler(HttpStatusCode.PaymentRequired, "{\"error\":\"insufficient_credits\"}");
+        // Issue #939: the 402 message is now the ONE shared copy (branched by code), not a hand-written
+        // string - so it matches every other surface by construction.
+        var stub = new StubHandler(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"insufficient_credits\"}}");
         using var http = new HttpClient(stub);
         var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { });
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => brain.AskAsync("hi"));
-        Assert.Contains("credits", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Core.HostedAi.HostedAiMessages.For(Core.HostedAi.HostedAiState.NeedsCredits).Text, ex.Message);
+    }
+
+    [Fact]
+    public async Task AskAsync_MonthlyLimit402_ThrowsSharedCapReachedMessage()
+    {
+        // Branch on the code, not the status: a monthly-cap 402 yields the CapReached copy, distinct
+        // from the out-of-credits copy.
+        var stub = new StubHandler(HttpStatusCode.PaymentRequired, "{\"error\":{\"code\":\"monthly_limit_reached\"}}");
+        using var http = new HttpClient(stub);
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { });
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => brain.AskAsync("hi"));
+        Assert.Contains(Core.HostedAi.HostedAiMessages.For(Core.HostedAi.HostedAiState.CapReached).Text, ex.Message);
     }
 
     [Fact]
