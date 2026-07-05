@@ -3,6 +3,7 @@ using System.Text;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
 using CcDirector.Core.HostedAi;
+using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Wingman;
 using Xunit;
@@ -310,6 +311,69 @@ public sealed class WingmanVoiceServiceTests
         await good.StoreSpokenAsync("sid-2", "spoken", "reply");
         Assert.True(good.HasVoice("sid-2"));
         Assert.Null(good.VoiceUnavailableFor("sid-2"));
+    }
+
+    /// <summary>A text-to-speech transport that throws <see cref="OperationCanceledException"/> - the
+    /// shape a per-attempt timeout takes - for the first <c>_timeouts</c> calls, then returns 200 with
+    /// audio. TtsSynthesis converts each such throw (while the caller's token is live) into a retry, so
+    /// this drives the retry path without a real 15-second wait. With <see cref="int.MaxValue"/> it
+    /// always times out.</summary>
+    private sealed class TtsTimeoutHandler : HttpMessageHandler
+    {
+        private readonly int _timeouts;
+        private int _calls;
+        public int Calls => _calls;
+        public TtsTimeoutHandler(int timeouts) { _timeouts = timeouts; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var n = Interlocked.Increment(ref _calls);
+            if (n <= _timeouts)
+                throw new OperationCanceledException("simulated per-attempt timeout");
+            var resp = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(new byte[] { 9, 9, 9 }),
+            };
+            return Task.FromResult(resp);
+        }
+    }
+
+    private static WingmanVoiceService ServiceWithHandler(HttpMessageHandler handler)
+    {
+        Func<CancellationToken, Task<IAgentBrain>> brain =
+            _ => throw new InvalidOperationException("brain must not be called for the store-spoken path");
+        var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
+        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        var vault = new KeyVault(vaultPath);
+        vault.Set("OPENAI_API_KEY", "sk-test");
+        vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
+        return new WingmanVoiceService(brain, vault, new DirectorEndpointClient(), persistPath, ttsHttpClient: new HttpClient(handler));
+    }
+
+    [Fact]
+    public async Task StoreSpokenAsync_TtsTimesOutOnceThenSucceeds_RetriesAndMarksReady()
+    {
+        // Regression: a single stalled upstream voice call must be retried, not surfaced as a freeze
+        // or failure. The first attempt times out; the retry returns audio, so the session is ready.
+        var handler = new TtsTimeoutHandler(timeouts: 1);
+        var svc = ServiceWithHandler(handler);
+        await svc.StoreSpokenAsync("sid-retry", "spoken", "reply");
+
+        Assert.Equal(2, handler.Calls);                        // the retry actually fired
+        Assert.True(svc.HasVoice("sid-retry"));                // and produced audio
+        Assert.Null(svc.VoiceUnavailableFor("sid-retry"));
+    }
+
+    [Fact]
+    public async Task StoreSpokenAsync_TtsTimesOutEveryAttempt_GivesUpBounded_NoReady()
+    {
+        // Regression: when every attempt stalls, TtsSynthesis gives up after a BOUNDED number of
+        // attempts (no infinite spin, no 60-second freeze) and the turn-end records no audio.
+        var handler = new TtsTimeoutHandler(timeouts: int.MaxValue);
+        var svc = ServiceWithHandler(handler);
+        await svc.StoreSpokenAsync("sid-dead", "spoken", "reply");
+
+        Assert.Equal(TtsSynthesis.Attempts, handler.Calls);    // exactly the attempt cap, then stop
+        Assert.False(svc.HasVoice("sid-dead"));
     }
 
     [Fact]
