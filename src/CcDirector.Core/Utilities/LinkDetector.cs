@@ -23,9 +23,12 @@ public static class LinkDetector
     // 50ms timeout to prevent catastrophic backtracking
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(50);
 
-    // Absolute Windows paths (e.g., C:\path\to\file or C:/path/to/file)
+    // Absolute Windows paths (e.g., C:\path\to\file or C:/path/to/file). The (?<![A-Za-z]) guard keeps
+    // a drive letter that is really part of a longer word from being mis-claimed: without it, scanning
+    // "file:///D:/..." matches the "e" of "file" (e:///D:/...), so the highlight starts in the wrong
+    // place and the target is garbage (issue #252). The same guard stops "node:", "http:" etc.
     internal static readonly Regex AbsoluteWindowsPathRegex =
-        new(@"[A-Za-z]:[/\\][^\s""'`<>|*?()\[\]]+", RegexOptions.Compiled, RegexTimeout);
+        new(@"(?<![A-Za-z])[A-Za-z]:[/\\][^\s""'`<>|*?()\[\]]+", RegexOptions.Compiled, RegexTimeout);
 
     // Unix-style absolute paths (e.g., /c/path/to/file for Git Bash / WSL)
     internal static readonly Regex AbsoluteUnixPathRegex =
@@ -39,6 +42,14 @@ public static class LinkDetector
     // URLs (http/https or git@)
     internal static readonly Regex UrlRegex =
         new(@"https?://[^\s""'`<>()\[\]]+|git@[^\s""'`<>()\[\]]+",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+
+    // file:// URLs (RFC 8089), e.g. file:///D:/path/file.html. These name a LOCAL file, so they are
+    // surfaced as Path links (View File / Open in File Manager) with the whole file://... span
+    // highlighted and the resolved local path as the target (issue #252). Matched before the Windows
+    // and Unix path matchers so the whole span is claimed as one link instead of the inner drive path.
+    internal static readonly Regex FileUrlRegex =
+        new(@"file://[^\s""'`<>|*?()\[\]]+",
             RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
 
     // Characters that look like a path start inside a quoted span
@@ -104,6 +115,21 @@ public static class LinkDetector
             string url = StripTrailingPunctuation(m.Value);
             int endCol = m.Index + url.Length;
             matches.Add(new LinkMatch(m.Index, endCol, url, LinkType.Url));
+            claimedRanges.Add((m.Index, m.Index + m.Length));
+        }
+
+        // 2b. file:// URLs -> the resolved LOCAL file path (a Path link). The whole file://... span is
+        // highlighted, but the match Text is the local path so clicking opens the actual file. Runs
+        // before the path matchers so they cannot mis-claim the drive letter inside the URL.
+        foreach (Match m in FileUrlRegex.Matches(lineText))
+        {
+            if (Overlaps(claimedRanges, m.Index, m.Index + m.Length))
+                continue;
+            string span = StripTrailingPunctuation(m.Value);
+            if (!TryConvertFileUrlToLocalPath(span, out string localPath))
+                continue;
+            int endCol = m.Index + span.Length;
+            matches.Add(new LinkMatch(m.Index, endCol, localPath, LinkType.Path));
             claimedRanges.Add((m.Index, m.Index + m.Length));
         }
 
@@ -204,6 +230,17 @@ public static class LinkDetector
             urlMatch = urlMatch.NextMatch();
         }
 
+        // 2b. file:// URLs -> the resolved local file path (a Path link), whole span clickable.
+        var fileUrlMatch = FileUrlRegex.Match(lineText);
+        while (fileUrlMatch.Success)
+        {
+            string span = StripTrailingPunctuation(fileUrlMatch.Value);
+            if (col >= fileUrlMatch.Index && col < fileUrlMatch.Index + span.Length
+                && TryConvertFileUrlToLocalPath(span, out string localPath))
+                return (localPath, LinkType.Path);
+            fileUrlMatch = fileUrlMatch.NextMatch();
+        }
+
         // 3. Absolute Windows paths
         var winMatch = AbsoluteWindowsPathRegex.Match(lineText);
         while (winMatch.Success)
@@ -269,6 +306,27 @@ public static class LinkDetector
             return path;
         }
         return path;
+    }
+
+    /// <summary>
+    /// Convert a <c>file://</c> URL to the local filesystem path it names, e.g.
+    /// <c>file:///D:/Repos/x.html</c> to <c>D:\Repos\x.html</c> (issue #252). Uses <see cref="Uri"/>
+    /// so percent-encoding and UNC hosts (<c>file://server/share</c>) are handled correctly. Returns
+    /// false for anything that does not parse as an absolute file URL, so the caller falls through to
+    /// the ordinary path matchers rather than surfacing a broken link.
+    /// </summary>
+    public static bool TryConvertFileUrlToLocalPath(string fileUrl, out string localPath)
+    {
+        localPath = string.Empty;
+        if (string.IsNullOrEmpty(fileUrl))
+            return false;
+        if (!Uri.TryCreate(fileUrl, UriKind.Absolute, out Uri? uri) || !uri.IsFile)
+            return false;
+        string candidate = uri.LocalPath;
+        if (string.IsNullOrEmpty(candidate))
+            return false;
+        localPath = candidate;
+        return true;
     }
 
     /// <summary>
