@@ -88,6 +88,12 @@ export class InteractiveTerminal {
   private attempts = 0; // consecutive failed connect attempts; reset on the first live byte
   private gotFirstByte = false;
 
+  // Keystroke send serialization (issue #1021). Bytes from onData are appended here in the EXACT
+  // order xterm emits them; a single pump drains this buffer one POST at a time, awaiting each send
+  // before starting the next, so the PTY never sees reordered or dropped input at any typing speed.
+  private pendingInput = "";
+  private inputPumping = false;
+
   constructor(hostEl: HTMLElement, sessionId: string) {
     this.hostEl = hostEl;
     this.sessionId = sessionId;
@@ -108,24 +114,68 @@ export class InteractiveTerminal {
     this.term = term;
 
     // Forward every keystroke (raw bytes incl. Esc/Ctrl+C/arrows/the slash-command UI) to the owning
-    // Director's PTY via a DIRECT REST call to the Gateway - appendEnter:false writes the bytes
-    // verbatim (no submit newline). This is fire-and-forget by design: a keystroke is not a
-    // request/response, xterm does not echo locally, and the rendered result returns over the output
-    // stream. A failed send is logged (a degraded network) and the user simply retypes; blocking the
-    // key handler on the POST would make typing feel laggy. Input does not depend on the OUTPUT
-    // stream's health, so a dropped/reconnecting stream never blocks typing (the #971 goal).
+    // Director's PTY via a REST call to the Gateway - appendEnter:false writes the bytes verbatim (no
+    // submit newline). xterm does not echo locally; the rendered result returns over the output stream,
+    // and input does not depend on the OUTPUT stream's health, so a dropped/reconnecting stream never
+    // blocks typing (the #971 goal).
+    //
+    // Ordering (issue #1021): the sends are NOT fire-and-forget. Firing an independent, unawaited POST
+    // per keystroke let concurrent POSTs complete out of order at the Director, so fast typing reached
+    // the PTY reordered or dropped ("abc...789" arrived as "...645789"; "echoTESTxyz" became
+    // "echoTESTyyz"). Instead each keystroke is appended to a buffer and a single async pump drains it
+    // one POST at a time - awaiting the previous send before the next - so bytes reach the PTY in the
+    // exact order typed. Keystrokes that pile up while a send is in flight are coalesced into the next
+    // POST, which both preserves order and cuts the request count under fast typing. The key handler
+    // never blocks (enqueue is synchronous; the await happens inside the pump), so typing stays
+    // responsive. Control keys are raw bytes like any other and keep their position in the stream.
     term.onData((data) => {
       if (!data) return;
-      void sendPrompt(this.sessionId, data, false).catch((err) => {
-        console.debug("[cockpit-terminal] keystroke send failed", this.sessionId, err);
-      });
+      this.enqueueInput(data);
     });
 
     this.openWs();
   }
 
+  // Append typed bytes to the FIFO buffer and make sure the pump is running. Synchronous and
+  // non-blocking so the xterm key handler returns immediately; the actual POST happens inside the
+  // pump. Bytes are buffered in the exact order onData delivers them (issue #1021).
+  private enqueueInput(data: string): void {
+    this.pendingInput += data;
+    if (this.inputPumping) return; // a pump is already draining; it will pick these bytes up
+    this.inputPumping = true;
+    void this.pumpInput();
+  }
+
+  // Drain the keystroke buffer one POST at a time, awaiting each send before the next so the PTY
+  // receives bytes in the exact order typed (issue #1021). Bytes that arrive while a send is in
+  // flight are coalesced into the following POST. A failed send is logged and the buffered bytes it
+  // carried are dropped (a degraded network; the user retypes) - we do NOT re-queue, which would risk
+  // duplicating bytes the Director may already have applied. The loop re-checks pendingInput after
+  // every await, so anything enqueued mid-send is still sent, in order.
+  private async pumpInput(): Promise<void> {
+    try {
+      while (this.pendingInput.length > 0) {
+        if (!this.wantOpen) {
+          // Disposed mid-drain: drop any not-yet-sent input rather than typing into a torn-down term.
+          this.pendingInput = "";
+          return;
+        }
+        const chunk = this.pendingInput;
+        this.pendingInput = "";
+        try {
+          await sendPrompt(this.sessionId, chunk, false);
+        } catch (err) {
+          console.debug("[cockpit-terminal] keystroke send failed", this.sessionId, err);
+        }
+      }
+    } finally {
+      this.inputPumping = false;
+    }
+  }
+
   dispose(): void {
     this.wantOpen = false;
+    this.pendingInput = ""; // drop any keystrokes not yet sent; the pump exits on its next check
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

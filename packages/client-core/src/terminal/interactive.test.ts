@@ -97,10 +97,18 @@ import { InteractiveTerminal } from "./interactive";
 
 const SID = "sess-123";
 
+// Drain the microtask queue so the serialized keystroke pump (issue #1021) can advance between
+// awaited sends. Under fake timers this still flushes microtasks (Promise.resolve resolves without a
+// timer), which is all the default sendPrompt mock needs.
+async function flush(times = 8): Promise<void> {
+  for (let i = 0; i < times; i++) await Promise.resolve();
+}
+
 beforeEach(() => {
   hoisted.terminals.length = 0;
   FakeWebSocket.instances.length = 0;
-  sendPrompt.mockClear();
+  sendPrompt.mockReset();
+  sendPrompt.mockImplementation((_sid: string, _text: string, _appendEnter: boolean) => Promise.resolve());
   ensureGatewayCookie.mockClear();
   vi.useFakeTimers();
   // Minimal window/global surface the engine touches. setTimeout/clearTimeout delegate to globalThis
@@ -144,12 +152,15 @@ describe("InteractiveTerminal typing", () => {
     expect(sendPrompt).toHaveBeenCalledWith(SID, "a", false);
   });
 
-  it("forwards control keys (Esc, Ctrl+C) verbatim", () => {
+  it("forwards control keys (Esc, Ctrl+C) verbatim and in order", async () => {
     const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
     t.start();
     const term = hoisted.terminals[0];
     term.onDataCb?.("\x1b"); // Esc
     term.onDataCb?.("\x03"); // Ctrl+C
+    // Sends are serialized (issue #1021): the first POST fires immediately, the second only after the
+    // first resolves, so flush the pump before asserting both landed in order.
+    await flush();
     expect(sendPrompt).toHaveBeenNthCalledWith(1, SID, "\x1b", false);
     expect(sendPrompt).toHaveBeenNthCalledWith(2, SID, "\x03", false);
   });
@@ -159,6 +170,76 @@ describe("InteractiveTerminal typing", () => {
     t.start();
     hoisted.terminals[0].onDataCb?.("");
     expect(sendPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe("InteractiveTerminal keystroke ordering (issue #1021)", () => {
+  // Model the Director as it really behaves under concurrent POSTs: it applies each POST body to the
+  // PTY when that POST COMPLETES (arrives), and here every POST is given an adversarial latency so an
+  // earlier-dispatched POST finishes LAST. The OLD fire-and-forget code dispatched one unawaited POST
+  // per keystroke, so all POSTs were in flight at once and completion order != typed order - the PTY
+  // saw reordered/dropped bytes. The serialized pump must make the applied order equal the typed order
+  // regardless of latency, and must never have more than one POST in flight.
+  function installReorderingDirector(): { applied: string[]; readonly maxInFlight: number } {
+    const applied: string[] = []; // bytes as the PTY receives them, in completion (arrival) order
+    let dispatched = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    sendPrompt.mockImplementation((_sid: string, text: string) => {
+      const n = dispatched++;
+      inFlight += 1;
+      if (inFlight > maxInFlight) maxInFlight = inFlight;
+      // Earlier POSTs get LONGER latency: if two are ever in flight together, the later one lands
+      // first - exactly the race that corrupted fast typing before the fix.
+      const delay = 100 - n;
+      return new Promise<void>((resolve) => {
+        globalThis.setTimeout(() => {
+          applied.push(text);
+          inFlight -= 1;
+          resolve();
+        }, delay);
+      });
+    });
+    return {
+      applied,
+      get maxInFlight() {
+        return maxInFlight;
+      },
+    };
+  }
+
+  it("keeps a fast-typed 36-char string exactly in order at 0ms/key", async () => {
+    const input = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
+    t.start();
+    const term = hoisted.terminals[0];
+    const director = installReorderingDirector();
+
+    // Type every character in the same tick (0ms/key) - xterm fires onData once per keystroke.
+    for (const ch of input) term.onDataCb?.(ch);
+    await vi.runAllTimersAsync();
+
+    // Every byte reached the PTY, none dropped or reordered. (With the old fire-and-forget code the
+    // adversarial latency reverses the order, so this would read "9876...a".)
+    expect(director.applied.join("")).toBe(input);
+    // Serialization is the mechanism: never more than one POST in flight at a time (the old code would
+    // have had all 36 in flight together).
+    expect(director.maxInFlight).toBe(1);
+  });
+
+  it("preserves order for a burst mixing typed text and control keys", async () => {
+    // "ec" + Ctrl+C + "ho" + Esc + arrow-up + "x", all in one tick.
+    const seq = ["e", "c", "\x03", "h", "o", "\x1b", "\x1b[A", "x"];
+    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
+    t.start();
+    const term = hoisted.terminals[0];
+    const director = installReorderingDirector();
+
+    for (const s of seq) term.onDataCb?.(s);
+    await vi.runAllTimersAsync();
+
+    expect(director.applied.join("")).toBe(seq.join(""));
+    expect(director.maxInFlight).toBe(1);
   });
 });
 
