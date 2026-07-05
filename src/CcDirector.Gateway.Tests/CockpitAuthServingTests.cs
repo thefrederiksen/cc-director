@@ -7,14 +7,13 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Issue #920 (security epic #916, Phase 2): the Cockpit must authenticate under the enforced Gateway
-/// auth gate (#917). /cockpit is a dual-use path - the JSON API form stays public so the desktop app's
-/// Open Cockpit / Learn buttons can resolve the front-door URL with no credential, but a BROWSER
-/// navigation to /cockpit (Accept: text/html) is the Blazor shell whose /_blazor circuit and /_framework
-/// assets are gated. Serving that shell unauthenticated produced a dead Cockpit whose circuit 401s, so a
-/// browser navigation to /cockpit is now driven to /login first; after sign-in the cookie carries to the
-/// shell's assets so they authenticate. This boots a Gateway with auth ON and proves each half without
-/// weakening the gate on /_blazor or session data.
+/// Issue #920 (security epic #916, Phase 2), carried through the epic #967 cutover (issue #979): the
+/// Cockpit must authenticate under the enforced Gateway auth gate (#917). /cockpit is a dual-use path -
+/// the JSON API form stays public so the desktop app's Open Cockpit / Learn buttons can resolve the
+/// front-door URL with no credential, but a BROWSER navigation to /cockpit (Accept: text/html) is the
+/// React Cockpit shell whose data endpoints are gated. So a browser navigation to /cockpit is driven to
+/// /login first; after sign-in the cookie carries to the shell so its API calls authenticate. This boots
+/// a Gateway with auth ON and proves each half without weakening the gate on session data.
 /// </summary>
 public sealed class CockpitAuthServingTests : IAsyncLifetime
 {
@@ -27,11 +26,11 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // cockpitProxyPort: 1 is a dead loopback port - a request that PASSES the gate and is forwarded
-        // to the Cockpit hits the "Cockpit starting..." interstitial (503), never a real dev Cockpit.
-        // That 503 is itself proof the gate accepted the request and handed it to the proxy.
+        // The React bundle is not built into this Debug host, so a request that PASSES the gate and is
+        // served the Cockpit shell answers the 404 "not built" notice - never a redirect and never 401.
+        // That is itself proof the gate accepted the request and handed it to the shell path.
         _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1,
+            instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
 
@@ -78,7 +77,8 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
     {
         // With the cc-gateway-token cookie present (the state after sign-in), a browser navigation to
         // /cockpit must NOT be redirected to /login and must NOT be 401 - it passes the gate and is
-        // forwarded to the Cockpit (here the dead-port interstitial, 503). Either way it cleared auth.
+        // served the Cockpit shell (here the 404 "not built" notice in this Debug host). Either way it
+        // cleared auth.
         using var req = new HttpRequestMessage(HttpMethod.Get, "/cockpit");
         req.Headers.Accept.ParseAdd("text/html");
         req.Headers.Add("Cookie", $"{Util.AuthMiddleware.CookieName}={Token}");
@@ -90,21 +90,12 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Blazor_circuit_without_a_credential_still_401s()
+    public async Task Non_public_asset_path_without_a_credential_still_401s()
     {
-        // The gate must NOT be weakened: the /_blazor SignalR circuit (session-data plumbing) still
-        // requires the credential. A fetch/WebSocket negotiate carries no Accept: text/html, so an
-        // unauthenticated call gets the JSON 401, never a redirect and never a pass-through.
-        using var res = await _http.GetAsync("/_blazor");
-        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
-    }
-
-    [Fact]
-    public async Task Framework_assets_without_a_credential_still_401()
-    {
-        // /_framework assets are gated too (this fix does not classify them public); the cookie present
-        // after sign-in is what lets the browser load them. Unauthenticated -> 401.
-        using var res = await _http.GetAsync("/_framework/blazor.web.js");
+        // The gate must NOT be weakened: an arbitrary non-public path (a fetch for a Cockpit asset)
+        // carrying no Accept: text/html and no credential gets the JSON 401, never a redirect and never
+        // a pass-through. The cookie present after sign-in is what lets the browser load the shell assets.
+        using var res = await _http.GetAsync("/assets/index-abc123.js");
         Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
     }
 

@@ -4,7 +4,6 @@ using System.Net.Sockets;
 using CcDirector.Core.Diagnostics;
 using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
-using CcDirector.Gateway.Cockpit;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Util;
@@ -186,18 +185,17 @@ internal static class GatewayEndpoints
             ServerTime = DateTime.UtcNow,
         }));
 
-        // Where is this machine's Cockpit? ONE URL: the Cockpit is served through the Gateway
-        // front door (fallback proxy), so the answer is the front-door base URL itself - never
-        // a :7470 URL. Url is null when Tailscale is unavailable; the caller surfaces that.
-        // Port/Up still describe the loopback child the supervisor runs (diagnostics).
-        app.MapGet("/cockpit", async () =>
+        // Where is this machine's Cockpit? ONE URL: the React Cockpit is served in-process by the
+        // Gateway itself at the site root (issue #979 retired the separate Blazor Cockpit), so the
+        // answer is the front-door base URL. Url is null when Tailscale is unavailable; the caller
+        // surfaces that. Port is the Gateway port and Up is true whenever the Gateway is answering.
+        app.MapGet("/cockpit", (HttpContext ctx) =>
         {
-            var port = CockpitSupervisor.ResolvePort();
             return Results.Json(new CockpitInfoDto
             {
                 Url = TailscaleIdentity.TryGetFrontDoorBaseUrl() is { } b ? b + "/" : null,
-                Port = port,
-                Up = await IsLoopbackPortOpenAsync(port),
+                Port = ctx.Connection.LocalPort,
+                Up = true,
             });
         });
 
@@ -1564,25 +1562,6 @@ internal static class GatewayEndpoints
         return $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
     }
 
-    // Quick liveness check: can we open a TCP connection to a loopback port? Used by
-    // /cockpit to report whether the Cockpit process is actually accepting connections,
-    // without a full HTTP round-trip. A 500ms ceiling keeps the endpoint snappy.
-    private static async Task<bool> IsLoopbackPortOpenAsync(int port)
-    {
-        try
-        {
-            using var tcp = new TcpClient();
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-            await tcp.ConnectAsync("127.0.0.1", port, cts.Token);
-            return tcp.Connected;
-        }
-        catch (Exception)
-        {
-            // A refused or timed-out connect IS the answer this probe exists to give
-            // (the Cockpit is not up); it is not an error to propagate.
-            return false;
-        }
-    }
 
     private static string? ResolveDirectorExe()
     {

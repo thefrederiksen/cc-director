@@ -8,7 +8,7 @@ public sealed record MacAppResult(bool Success, string Message, string? Version)
 /// <summary>
 /// Places the Director on macOS. The generic UpdateRunner places single-file exes and skips archives,
 /// so the Director (shipped as cc-director-mac-arm64.zip containing "CC Director.app") needs this
-/// dedicated step - the analog of CockpitPackage on Windows. It downloads + SHA-256 verifies the zip,
+/// dedicated step - the analog of MobilePackage's side-car-zip handling. It downloads + SHA-256 verifies the zip,
 /// extracts the .app with ditto (preserving the bundle's symlinks + exec bits), swaps it into
 /// ~/Applications, strips the Gatekeeper quarantine, and marks the launcher executable. Mirrors
 /// UpdateInstaller.SwapMac so a fresh install and an auto-update converge on the same on-disk result.

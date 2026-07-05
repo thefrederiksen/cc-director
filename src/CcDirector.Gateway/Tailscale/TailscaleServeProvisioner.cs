@@ -52,6 +52,13 @@ public sealed class TailscaleServeProvisioner : IDisposable
     /// <summary>Public front-door port: a phone hits https://&lt;tailnet&gt;/ with no port.</summary>
     private const int FrontDoorHttpsPort = 443;
 
+    /// <summary>
+    /// The port the retired Blazor Server Cockpit used to be served on (issue #979). Kept only so
+    /// Start() can drop a stale direct Cockpit Serve mapping left on machines upgraded from a
+    /// pre-cutover install; nothing serves on it any more.
+    /// </summary>
+    private const int LegacyCockpitPort = 7470;
+
     /// <summary>Director Control API port range (see PortAllocator). Only LOCAL Directors in
     /// this range get a serve mapping; ephemeral-port (hosted-agent) and remote-machine
     /// Directors never do (issue #179).</summary>
@@ -67,7 +74,6 @@ public sealed class TailscaleServeProvisioner : IDisposable
 
     private readonly DirectorRegistry _registry;
     private readonly int _gatewayPort;
-    private readonly int _legacyCockpitPort;
     private readonly string _localMachineName;
     private readonly bool _enabled;
     private readonly object _cliGate = new();
@@ -78,11 +84,10 @@ public sealed class TailscaleServeProvisioner : IDisposable
     private int _frontDoorRunning;
     private bool _disposed;
 
-    public TailscaleServeProvisioner(DirectorRegistry registry, int gatewayPort, int legacyCockpitPort)
+    public TailscaleServeProvisioner(DirectorRegistry registry, int gatewayPort)
     {
         _registry = registry;
         _gatewayPort = gatewayPort;
-        _legacyCockpitPort = legacyCockpitPort;
         _localMachineName = Environment.MachineName;
 
         // Dev/test isolation: CC_GATEWAY_NO_TAILSCALE=1 lets a second Gateway run on this machine
@@ -112,15 +117,14 @@ public sealed class TailscaleServeProvisioner : IDisposable
         _registry.OnDirectorAdded += HandleAdded;
         _registry.OnDirectorRemoved += HandleRemoved;
 
-        // Front door: https://<tailnet>/ -> gateway. Idempotent. The Cockpit is reached
-        // THROUGH this front door (one-URL plan: the gateway fallback-proxies to it), so it
-        // no longer gets its own tailnet port.
+        // Front door: https://<tailnet>/ -> gateway. Idempotent. The Cockpit is the Gateway's own
+        // in-process front door (issue #979), so it never gets its own tailnet port.
         QueueServeOn(FrontDoorHttpsPort, _gatewayPort, "gateway");
 
         // One-time cleanup of the pre-one-URL world: drop the legacy direct Cockpit mapping
         // (https://<tailnet>:7470) if this machine still carries one. Idempotent and safe
         // when absent ("serve off" on a missing mapping is a no-op).
-        _ = Task.Run(() => ServeOff(_legacyCockpitPort, "legacy cockpit (one-URL: served via the front door)"));
+        _ = Task.Run(() => ServeOff(LegacyCockpitPort, "legacy cockpit (one-URL: served via the front door)"));
 
         foreach (var d in _registry.ListDirectors())
             HandleAdded(d);

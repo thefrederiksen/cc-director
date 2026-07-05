@@ -1,11 +1,11 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// The desktop Cockpit is served by the Gateway under /c (the direct analog of how the mobile app
-// is served under /m), so every asset URL must be /c-rooted. Build output goes to dist/, which the
-// Gateway's release-gated MSBuild target (BuildCockpitApp on CcDirector.Gateway.csproj) copies into
-// wwwroot/c/. This coexists with the live Blazor Cockpit at "/" during the epic #967 migration, so a
-// path can flip from Blazor to React one at a time.
+// The desktop Cockpit is the Gateway's canonical front door: it is served at the site root "/"
+// (epic #967 cutover, issue #979 - the Blazor Server Cockpit is retired). Every asset URL is
+// root-relative. Build output goes to dist/, which the Gateway's release-gated MSBuild target
+// (BuildCockpitApp on CcDirector.Gateway.csproj) copies into wwwroot/c/; the Gateway serves those
+// files at "/" and falls unknown page paths back to index.html for the React router.
 //
 // No service worker / PWA here: the desktop Cockpit is not an offline-installable app the way the
 // phone shell is. It is a plain static single-page app the Gateway serves same-origin.
@@ -28,7 +28,7 @@ const devProxy = proxyTarget
   : undefined;
 
 export default defineConfig({
-  base: "/c/",
+  base: "/",
   plugins: [react()],
   server: {
     proxy: devProxy,

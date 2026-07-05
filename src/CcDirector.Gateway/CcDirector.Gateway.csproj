@@ -48,7 +48,7 @@
     <!-- The Gateway's in-process warm brain (issues #184/#185): BrainSupervisor + HostedAgent
          power the turn-brief stamping machine. -->
     <ProjectReference Include="..\CcDirector.HostedAgent\CcDirector.HostedAgent.csproj" />
-    <!-- Setup engine: the Cockpit supervisor auto-updates the Cockpit in place (CockpitUpdater). -->
+    <!-- Setup engine: install-layout paths + the Tailscale front-door helper the Gateway shares. -->
     <ProjectReference Include="..\..\tools\cc-director-setup-engine\CcDirector.Setup.Engine.csproj" />
   </ItemGroup>
 

@@ -209,9 +209,10 @@ internal static class Commands
             return Ok;
         }
 
-        // The generic runner places the Gateway exe but skips the Cockpit .zip and never starts the
-        // tray app. On a Gateway install, finish the work here (extract Cockpit, start the tray app
-        // in managed mode, wait for health; the app registers its own autostart Run key).
+        // The generic runner places the Gateway exe but never starts the tray app. On a Gateway
+        // install, finish the work here (extract the mobile side-car app, start the tray app in
+        // managed mode, wait for health; the app registers its own autostart Run key). The Cockpit is
+        // served in-process by the Gateway now (issue #979), so there is no Cockpit zip to extract.
         if (isGatewayInstall && result.Failed == 0 && OperatingSystem.IsWindows())
         {
             var key = OpenAiKey()
@@ -253,10 +254,10 @@ internal static class Commands
 
         // Per-user finalization (wizard parity): if the Director, the tools bundle, or any other
         // per-user component was placed, add the bin dir to PATH and create the Start Menu shortcut.
-        // Skipped when only machine components (gateway/cockpit) changed.
+        // Skipped when only the machine-tier Gateway changed.
         var perUserTouched = toolsInstalled || result.Results.Any(r =>
             r.Status is ApplyStatus.Installed or ApplyStatus.Updated &&
-            r.ComponentId is not ("gateway" or "cockpit"));
+            r.ComponentId is not "gateway");
         if (perUserTouched && OperatingSystem.IsWindows())
         {
             var pathChanged = InstallFinalizer.AddBinToPath(layout);
@@ -421,7 +422,7 @@ internal static class Commands
     {
         "director" => ComponentRegistry.Director,
         "gateway" => ComponentRegistry.Gateway,
-        "cockpit" => ComponentRegistry.Cockpit,
+        "launcher" => ComponentRegistry.Launcher,
         _ => ComponentRegistry.ToolComponent(id),
     };
 

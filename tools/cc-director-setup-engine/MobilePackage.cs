@@ -7,7 +7,7 @@ namespace CcDirector.Setup.Engine;
 /// PWA (issue #806) the Gateway serves at <c>/m</c>. The single-file Gateway exe carries NO loose
 /// content, so a delivery of only the exe drops the mobile app and <c>/m</c> answers 404 on every
 /// installed / self-updated / redeployed Gateway (issue #809). The build ships the mobile app as a
-/// side-car zip (the Cockpit-zip pattern, <see cref="CockpitPackage"/>) that the setup engine unpacks
+/// side-car zip (the side-car-zip delivery pattern) that the setup engine unpacks
 /// into <c>wwwroot/m</c> BESIDE the Gateway exe - exactly where
 /// <c>MobileApp.WebRoot</c> (<c>AppContext.BaseDirectory/wwwroot/m</c>, see
 /// <see cref="InstallLayout.GatewayMobileDir"/>) looks. Kept separate from the Windows-only tray work

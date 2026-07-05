@@ -52,15 +52,15 @@ internal static class AuthMiddleware
     {
         var path = ctx.Request.Path.Value ?? "";
 
-        // Issue #920: a BROWSER navigation to /cockpit (the Blazor shell) is never public - only the
-        // JSON /cockpit API form is. The shell's /_blazor circuit and /_framework assets are gated, so
-        // an unauthenticated browser must be driven to /login (and get the cookie) BEFORE it loads the
-        // shell, rather than being handed a dead shell whose circuit 401s. IsBrowserPageRequest is the
-        // one definition of "person navigating to a dual-use page" (GET + Accept: text/html), reused
-        // here so the classification cannot drift from the CockpitProxy that forwards these navigations.
+        // Issue #920: a BROWSER navigation to /cockpit (the Cockpit shell) is never public - only the
+        // JSON /cockpit API form is. The shell's own data endpoints are gated, so an unauthenticated
+        // browser must be driven to /login (and get the cookie) BEFORE it loads the shell, rather than
+        // being handed a shell whose API calls 401. IsBrowserPageRequest is the one definition of
+        // "person navigating to a dual-use page" (GET + Accept: text/html), reused here so the
+        // classification cannot drift from the CockpitReactApp that serves these navigations.
         var isCockpitBrowserShell =
             string.Equals(path, "/cockpit", StringComparison.OrdinalIgnoreCase)
-            && CockpitProxy.IsBrowserPageRequest(ctx.Request.Method, ctx.Request.Path, ctx.Request.Headers.Accept);
+            && CockpitReactApp.IsBrowserPageRequest(ctx.Request.Method, ctx.Request.Path, ctx.Request.Headers.Accept);
 
         if (!isCockpitBrowserShell && PublicPaths.Contains(path)) { await next(); return; }
 

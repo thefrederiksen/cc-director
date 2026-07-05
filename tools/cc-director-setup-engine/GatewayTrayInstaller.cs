@@ -24,10 +24,7 @@ public sealed class GatewayTrayInstaller
     /// <summary>The Gateway's default port; kept here so the engine has no compile dependency on the Gateway exe.</summary>
     public const int GatewayDefaultPort = 7878;
 
-    /// <summary>The Cockpit's default port (the Gateway supervises it there).</summary>
-    public const int CockpitDefaultPort = 7470;
-
-    /// <summary>The arguments the installed tray app runs with: managed mode supervises the Cockpit.</summary>
+    /// <summary>The arguments the installed tray app runs with (managed mode: self-update on).</summary>
     public const string InstalledArguments = "--managed";
 
     private readonly InstallLayout _layout;
@@ -78,26 +75,15 @@ public sealed class GatewayTrayInstaller
             steps.Add("OPENAI_API_KEY already present in the user environment");
         }
 
-        // 2. Stop any already-running installed Gateway/Cockpit so the Cockpit files unlock before
-        // extraction (re-install / repair path). Scoped to processes under the install dirs only.
+        // 2. Stop any already-running installed Gateway (and a legacy Cockpit child from a
+        // pre-cutover install) so their files unlock before extraction (re-install / repair path).
+        // Scoped to processes under the install dirs only.
         StopInstalledProcesses(steps);
 
-        // 3. Extract the Cockpit zip (the runner skips archive assets). The tray app supervises this exe.
-        try
-        {
-            var cockpitExe = await CockpitPackage.ExtractAsync(_layout, release, source, ct);
-            steps.Add($"extracted {CockpitPackage.AssetName} -> {_layout.CockpitDir}");
-            EngineLog.Write($"[GatewayTrayInstaller] cockpit exe at {cockpitExe}");
-        }
-        catch (Exception ex)
-        {
-            return Fail(steps, $"Cockpit extraction failed: {ex.Message}");
-        }
-
-        // 3b. Extract the mobile app (issue #809) into wwwroot/m beside the Gateway exe so /m serves on
+        // 3. Extract the mobile app (issue #809) into wwwroot/m beside the Gateway exe so /m serves on
         // a clean install with no manual copy. The single-file exe carries no loose content, so this
-        // side-car zip (the Cockpit-zip pattern) is the delivery. A release that predates the mobile
-        // app (#806) has no such asset and simply serves no /m (ExtractAsync returns null).
+        // side-car zip is the delivery. A release that predates the mobile app (#806) has no such asset
+        // and simply serves no /m (ExtractAsync returns null).
         try
         {
             var mobileDir = await MobilePackage.ExtractAsync(_layout, release, source, ct);
@@ -109,6 +95,23 @@ public sealed class GatewayTrayInstaller
         catch (Exception ex)
         {
             return Fail(steps, $"Mobile app extraction failed: {ex.Message}");
+        }
+
+        // 3b. Extract the React Cockpit (epic #967 cutover, issue #979) into wwwroot/c beside the exe so
+        // the Gateway serves the Cockpit at the site root on a clean install. Same side-car delivery as
+        // the mobile app above (the single-file exe carries no loose content). A release that predates
+        // the cutover has no such asset and serves no Cockpit (ExtractAsync returns null).
+        try
+        {
+            var cockpitDir = await CockpitAssetPackage.ExtractAsync(_layout, release, source, ct);
+            steps.Add(cockpitDir is null
+                ? "no Cockpit asset in this release (no Cockpit UI)"
+                : $"extracted {CockpitAssetPackage.AssetName} -> {cockpitDir}");
+            EngineLog.Write($"[GatewayTrayInstaller] Cockpit at {(cockpitDir ?? "(none)")}");
+        }
+        catch (Exception ex)
+        {
+            return Fail(steps, $"Cockpit extraction failed: {ex.Message}");
         }
 
         // 4. Start the tray app. It registers its own HKCU Run-key autostart (pointing at itself with
@@ -126,16 +129,12 @@ public sealed class GatewayTrayInstaller
             return Fail(steps, $"Failed to start the Gateway tray app: {ex.Message}");
         }
 
-        // 5. Wait for health: the Gateway itself, then the Cockpit it supervises.
+        // 5. Wait for health: the Gateway itself. It serves the React Cockpit in-process (issue #979),
+        // so a healthy Gateway IS a live Cockpit - there is no separate Cockpit process to health-check.
         var gatewayUp = await WaitForHttpAsync($"http://127.0.0.1:{GatewayDefaultPort}/healthz", TimeSpan.FromSeconds(20), ct);
         steps.Add($"gateway healthz on {GatewayDefaultPort}: {(gatewayUp ? "OK" : "no response")}");
         if (!gatewayUp)
             return Fail(steps, $"Gateway tray app started but did not answer on {GatewayDefaultPort}. Check {_layout.LogsDir}.");
-
-        var cockpitUp = await WaitForHttpAsync($"http://127.0.0.1:{CockpitDefaultPort}/", TimeSpan.FromSeconds(30), ct);
-        steps.Add($"cockpit on {CockpitDefaultPort}: {(cockpitUp ? "OK" : "no response")}");
-        if (!cockpitUp)
-            return Fail(steps, $"Gateway is up but the supervised Cockpit did not answer on {CockpitDefaultPort}. Check {_layout.LogsDir}.");
 
         var registered = GatewayAutostart.IsRegistered();
         steps.Add($"autostart Run key: {(registered ? "registered" : "NOT registered")}");

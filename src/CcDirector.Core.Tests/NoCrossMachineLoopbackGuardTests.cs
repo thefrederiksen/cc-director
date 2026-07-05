@@ -36,8 +36,6 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.ControlApi/GatewayConnectivitySelfTest.cs"] = "Probes the local loopback Control API as part of self-test.",
         ["src/CcDirector.ControlApi/DictationEndpoint.cs"] = "Doc comment: 'Localhost-only by default' (describes the loopback bind).",
         ["src/CcDirector.ControlApi/TerminalStreamEndpoint.cs"] = "Doc comment: 'Localhost-only by default' (describes the loopback bind).",
-        ["src/CcDirector.Gateway/Cockpit/CockpitProxy.cs"] = "Proxies to the co-located Cockpit child on loopback (same machine).",
-        ["src/CcDirector.Gateway/Cockpit/CockpitSupervisor.cs"] = "Supervises/health-checks the local Cockpit child on loopback.",
         ["src/CcDirector.Gateway/GatewayHost.cs"] = "Local loopback bind / same-machine wiring.",
         ["src/CcDirector.Gateway/GatewayWorker.cs"] = "Same-machine worker wiring.",
         ["src/CcDirector.Gateway/Tailscale/TailscaleServeProvisioner.cs"] = "Maps the tailnet front door to local loopback backends.",
@@ -45,11 +43,10 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Gateway/Api/MachineEndpoints.cs"] = "Same-machine relay/launcher wiring.",
         ["src/CcDirector.Gateway/Running/IDirectorLauncher.cs"] = "RelayDirectorLauncher posts to the local Gateway's own loopback port to relay a Director start request (same-machine self-call to the Gateway's own /machines/{machine}/director/start endpoint).",
         ["src/CcDirector.GatewayApp/Program.cs"] = "Local Gateway bootstrap.",
-        ["src/CcDirector.GatewayApp/GatewayTrayController.cs"] = "Probes its own port + the co-located Cockpit on loopback (same machine).",
+        ["src/CcDirector.GatewayApp/GatewayTrayController.cs"] = "Probes its own Gateway port on loopback (same machine); the Cockpit is served in-process by that Gateway.",
         ["src/CcDirector.Launcher/DirectorSupervisor.cs"] = "Supervises a local Director over loopback.",
         ["src/CcDirector.Launcher/LauncherHost.cs"] = "Local launcher loopback bind.",
         ["src/CcDirector.Launcher/Program.cs"] = "Self-update helper POSTs /shutdown + probes /healthz on the launcher's own loopback (same machine).",
-        ["src/CcDirector.Cockpit/Program.cs"] = "Cockpit child binds loopback; fronted by the Gateway.",
         ["src/CcDirector.Core/Account/LoopbackLoginListener.cs"] = "Binds an HttpListener on 127.0.0.1 only (operating-system-assigned ephemeral port) to receive the first-run browser sign-in hand-back; same-machine loopback trust boundary (security rule DT-07, issue #581).",
 
         // --- Loopback DETECTION / classification / labelling (the no-loopback policy itself) ---

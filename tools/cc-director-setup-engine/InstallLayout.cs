@@ -74,7 +74,12 @@ public sealed class InstallLayout
     /// <summary>The Gateway tray app's binaries.</summary>
     public string GatewayDir => Path.Combine(LocalRoot, "gateway");
 
-    /// <summary>The Cockpit web app's binaries (unpacked from the Cockpit zip, supervised by the Gateway).</summary>
+    /// <summary>
+    /// The retired Blazor Cockpit's install directory (issue #979). Nothing installs here any more -
+    /// the React Cockpit is served in-process by the Gateway - but the path is retained so the
+    /// uninstaller and the install-time process-stop can clean up a directory left by a pre-cutover
+    /// install.
+    /// </summary>
     public string CockpitDir => Path.Combine(LocalRoot, "cockpit");
 
     /// <summary>
@@ -84,6 +89,15 @@ public sealed class InstallLayout
     /// zip the setup engine unpacks here on clean install and self-update.
     /// </summary>
     public string GatewayMobileDir => Path.Combine(GatewayDir, "wwwroot", "m");
+
+    /// <summary>
+    /// The React desktop Cockpit's static files (epic #967 cutover, issue #979): wwwroot/c BESIDE the
+    /// Gateway exe, exactly where <c>CockpitReactApp.WebRoot</c> (<c>AppContext.BaseDirectory/wwwroot/c</c>)
+    /// looks. Same delivery as the mobile app (<see cref="GatewayMobileDir"/>): the single-file Gateway
+    /// exe carries no loose content, so the built Cockpit ships as a side-car zip the setup engine
+    /// unpacks here on clean install and self-update.
+    /// </summary>
+    public string GatewayCockpitDir => Path.Combine(GatewayDir, "wwwroot", "c");
 
     /// <summary>The CC Launcher tray app's binaries (issue #250).</summary>
     public string LauncherDir => Path.Combine(LocalRoot, "launcher");
@@ -100,8 +114,8 @@ public sealed class InstallLayout
         ArgumentNullException.ThrowIfNull(component);
 
         // macOS is Workstation-only: the Director is a .app in ~/Applications (matching the manual
-        // install + UpdateInstaller.SwapMac); tools carry no .exe extension. Gateway/Cockpit/Launcher
-        // are Windows-only roles and are never placed on mac.
+        // install + UpdateInstaller.SwapMac); tools carry no .exe extension. Gateway/Launcher are
+        // Windows-only roles and are never placed on mac.
         if (!OperatingSystem.IsWindows())
         {
             return component.Kind switch
@@ -109,7 +123,6 @@ public sealed class InstallLayout
                 ComponentKind.Director => Path.Combine(MacAppsDir, "CC Director.app"),
                 ComponentKind.Tool => Path.Combine(BinDir, component.Id),
                 ComponentKind.Gateway => Path.Combine(GatewayDir, "devthrottle-gateway"),
-                ComponentKind.Cockpit => Path.Combine(CockpitDir, "devthrottle-cockpit"),
                 ComponentKind.Launcher => Path.Combine(LauncherDir, "cc-launcher"),
                 _ => throw new ArgumentOutOfRangeException(nameof(component), component.Kind, "Unknown component kind."),
             };
@@ -119,7 +132,6 @@ public sealed class InstallLayout
         {
             ComponentKind.Director => Path.Combine(AppDir, "cc-director.exe"),
             ComponentKind.Gateway => Path.Combine(GatewayDir, "devthrottle-gateway.exe"),
-            ComponentKind.Cockpit => Path.Combine(CockpitDir, "devthrottle-cockpit.exe"),
             ComponentKind.Tool => Path.Combine(BinDir, $"{component.Id}.exe"),
             ComponentKind.Launcher => Path.Combine(LauncherDir, "cc-launcher.exe"),
             _ => throw new ArgumentOutOfRangeException(nameof(component), component.Kind, "Unknown component kind."),

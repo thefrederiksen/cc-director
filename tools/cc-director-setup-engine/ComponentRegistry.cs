@@ -3,13 +3,13 @@ namespace CcDirector.Setup.Engine;
 /// <summary>
 /// The canonical list of installable components and the role -> component mapping.
 ///
-/// The three apps (Director, Gateway, Cockpit) are fixed entries with known
-/// assets and paths. Tools are built on demand from their id, because the full
-/// tool set is enumerated at runtime from the release manifest / what is present
-/// in bin (it changes faster than this code).
+/// The apps (Director, Gateway, Launcher) are fixed entries with known assets and
+/// paths. Tools are built on demand from their id, because the full tool set is
+/// enumerated at runtime from the release manifest / what is present in bin (it
+/// changes faster than this code).
 ///
 /// Asset naming follows the release pipeline (release.yml):
-///   apps   -> cc-director[-gateway|-cockpit]-win-x64.(exe|zip)
+///   apps   -> cc-director(-gateway)?-win-x64.(exe)
 ///   tools  -> &lt;id&gt;-win-x64.exe
 /// </summary>
 public static class ComponentRegistry
@@ -36,14 +36,6 @@ public static class ComponentRegistry
         WindowsAsset: "devthrottle-gateway-win-x64.exe",
         Roles: GatewayOnly);
 
-    /// <summary>The Cockpit ships only to the Gateway-role machine (the service supervises it).</summary>
-    public static readonly Component Cockpit = new(
-        Id: "cockpit",
-        Kind: ComponentKind.Cockpit,
-        DisplayName: "DevThrottle Cockpit",
-        WindowsAsset: "devthrottle-cockpit-win-x64.zip",
-        Roles: GatewayOnly);
-
     /// <summary>
     /// The CC Launcher tray app (issue #250): always-on Windows launcher with clean process
     /// parentage and a loopback REST API. Ships to both roles so any machine can use it.
@@ -55,8 +47,8 @@ public static class ComponentRegistry
         WindowsAsset: "cc-launcher-win-x64.exe",
         Roles: BothRoles);
 
-    /// <summary>The fixed app components (Director, Gateway, Cockpit, Launcher).</summary>
-    public static readonly IReadOnlyList<Component> Apps = [Director, Gateway, Cockpit, Launcher];
+    /// <summary>The fixed app components (Director, Gateway, Launcher).</summary>
+    public static readonly IReadOnlyList<Component> Apps = [Director, Gateway, Launcher];
 
     /// <summary>
     /// A conservative default tool set (the tools the release pipeline ships
@@ -103,7 +95,7 @@ public static class ComponentRegistry
 
     /// <summary>
     /// The tool ids actually shipped in a release: every asset named
-    /// "&lt;id&gt;-win-x64.exe" except the apps (Director/Gateway/Cockpit) and the
+    /// "&lt;id&gt;-win-x64.exe" except the apps (Director/Gateway/Launcher) and the
     /// installer itself. The manifest is authoritative about what shipped, so the
     /// installer tracks the release pipeline with no code change when a tool is
     /// added or dropped. Returned in a stable (ordinal-sorted) order.
@@ -116,9 +108,9 @@ public static class ComponentRegistry
         {
             "cc-director",          // the Director app (its own component, not a tool)
             "cc-director-gateway",  // the Gateway app (legacy asset name, pre-rename)
-            "cc-director-cockpit",  // the Cockpit app (legacy asset name, pre-rename)
+            "cc-director-cockpit",  // the retired Blazor Cockpit (legacy asset name; never a tool)
             "devthrottle-gateway",  // the Gateway app
-            "devthrottle-cockpit",  // the Cockpit app (ships as .zip anyway)
+            "devthrottle-cockpit",  // the retired Blazor Cockpit (legacy asset; never a tool)
             "cc-director-setup",    // the installer wizard (legacy asset name, pre-rename)
             "cc-director-setup-cli",// the installer CLI (legacy asset name, pre-rename)
             "devthrottle-setup",    // the installer wizard itself

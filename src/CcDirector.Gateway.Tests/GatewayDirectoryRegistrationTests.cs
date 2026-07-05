@@ -30,7 +30,7 @@ public sealed class GatewayDirectoryRegistrationTests : IAsyncLifetime
         // cockpitProxyPort: a dead port so "/" hits the interstitial, never a real
         // Cockpit that may be running on the dev machine.
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1,
+            instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
 
@@ -221,19 +221,22 @@ public sealed class GatewayDirectoryRegistrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Root_falls_through_to_the_cockpit_proxy()
+    public async Task Root_is_served_by_the_react_cockpit()
     {
-        // ONE URL (docs/plans/one-url-cockpit.md): the Gateway serves no UI pages. "/" (and
-        // every other unmatched path) falls through the fallback proxy to the loopback
-        // Cockpit. No Cockpit runs in this test, so the proxy answers the 503 "Cockpit
-        // starting..." interstitial - which proves the fallback route is wired.
+        // ONE URL (epic #967 cutover, issue #979): the Gateway serves no UI JSON at "/". "/" (and every
+        // other unmatched path) is handled by the in-process React Cockpit - the shell when it is built
+        // into the host, or the 404 "not built" notice in a Debug build. Either way it is text (never a
+        // JSON API, never a redirect for an authenticated request), which is the fallback-wiring proof.
         using var browser = new HttpClient { BaseAddress = _http.BaseAddress };
         browser.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
         browser.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
         var resp = await browser.GetAsync("/");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-        var body = await resp.Content.ReadAsStringAsync();
-        Assert.Contains("Cockpit starting", body);
+
+        Assert.True(resp.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound,
+            $"expected the Cockpit shell (200) or the not-built notice (404); got {(int)resp.StatusCode}");
+        var mediaType = resp.Content.Headers.ContentType?.MediaType;
+        Assert.True(mediaType is "text/html" or "text/plain",
+            $"expected the Cockpit shell to answer text; got {mediaType}");
     }
 
     private static int FreePort()

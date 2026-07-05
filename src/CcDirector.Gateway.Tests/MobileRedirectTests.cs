@@ -23,10 +23,10 @@ public sealed class MobileRedirectTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // cockpitProxyPort: a dead port, so a DESKTOP navigation that falls through lands on the
-        // Cockpit interstitial (503) - the observable proof it was NOT redirected to /m/.
+        // A DESKTOP navigation that falls through is served the in-process React Cockpit (shell, or the
+        // 404 not-built notice in a Debug build) - the observable proof it was NOT redirected to /m/.
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: false,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1,
+            instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
 
@@ -132,7 +132,7 @@ public sealed class MobileRedirectTests : IAsyncLifetime
 
         using var res = await _http.SendAsync(req);
 
-        // It falls through to the Cockpit proxy (dead port -> 503 interstitial), never a 302 to /m/.
+        // It falls through to the in-process React Cockpit (shell / not-built notice), never a 302 to /m/.
         Assert.NotEqual(HttpStatusCode.Found, res.StatusCode);
         Assert.NotEqual("/m/", res.Headers.Location?.ToString());
     }

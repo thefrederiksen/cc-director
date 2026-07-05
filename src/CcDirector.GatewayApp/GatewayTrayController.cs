@@ -13,7 +13,6 @@ using CcDirector.Core.Network;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway;
-using CcDirector.Gateway.Cockpit;
 using CcDirector.Gateway.Tray;
 using CcDirector.HostedAgent;
 using CcDirector.Setup.Engine;
@@ -71,7 +70,6 @@ public sealed class GatewayTrayController : IDisposable
     private Bitmap? _icon;
     private string _statusText = "Gateway stopped";
     private GatewayHost? _host;
-    private CockpitSupervisor? _cockpit;
     private PairingWindow? _pairingWindow;
 
     // The flyout's "Details" section: resolved once, off the UI thread, right after Start (they are
@@ -142,8 +140,6 @@ public sealed class GatewayTrayController : IDisposable
         // The Details section values (build date, install root, installed versions): read once, off
         // the UI thread - they cannot change within one run.
         _ = Task.Run(ResolveAboutInfo);
-
-        StartCockpitSupervisor();
 
         if (GatewayAppOptions.Managed)
             _ = RunUpdateLoopAsync(_lifetime.Token);
@@ -384,11 +380,13 @@ public sealed class GatewayTrayController : IDisposable
     /// </summary>
     private async Task RefreshLocalStatusCacheAsync()
     {
-        var cockpitPort = CockpitSupervisor.ResolvePort();
+        // The Cockpit is served in-process by the Gateway (issue #979 retired the separate Blazor
+        // Cockpit process), so its reachability is the Gateway's own: probe the Gateway health port.
+        var cockpitPort = GatewayAppOptions.Port;
         bool cockpitUp;
         try
         {
-            using var resp = await CockpitProbeHttp.GetAsync($"http://127.0.0.1:{cockpitPort}/");
+            using var resp = await CockpitProbeHttp.GetAsync($"http://127.0.0.1:{cockpitPort}/healthz");
             cockpitUp = resp.IsSuccessStatusCode;
         }
         catch
@@ -618,25 +616,6 @@ public sealed class GatewayTrayController : IDisposable
     }
 
     /// <summary>
-    /// Supervise the Cockpit web app. Managed mode (installed) supervises the canonical per-user
-    /// Cockpit install; a dev launch stays inert unless CC_COCKPIT_MANAGED=1 is set explicitly
-    /// (CockpitSupervisor.FromEnvironment), so a repo build never fights the installed Gateway
-    /// for the Cockpit port.
-    /// </summary>
-    private void StartCockpitSupervisor()
-    {
-        _cockpit = GatewayAppOptions.Managed
-            ? new CockpitSupervisor(
-                enabled: true,
-                exePath: Environment.GetEnvironmentVariable("CC_COCKPIT_EXE") is { Length: > 0 } exe
-                    ? exe
-                    : InstallLayout.Default().PathFor(ComponentRegistry.Cockpit),
-                port: CockpitSupervisor.ResolvePort())
-            : CockpitSupervisor.FromEnvironment();
-        _cockpit.Start();
-    }
-
-    /// <summary>
     /// Periodic machine-tier auto-update (managed mode only): check for a newer Gateway and, if
     /// found, launch the detached self-update helper (it POSTs /shutdown -> swap -> relaunch ->
     /// health -> auto-rollback). The Cockpit picks up its own update on the relaunch. Failures only log.
@@ -847,8 +826,6 @@ public sealed class GatewayTrayController : IDisposable
     {
         FileLog.Write("[GatewayTrayController] QuitAsync");
         _lifetime.Cancel();
-        _cockpit?.Dispose();
-        _cockpit = null;
         // Issue #880: same as RestartAsync - the host stop (which also gracefully stops the
         // host-owned brain) must never run with the UI thread's context captured, or a slow
         // brain stop freezes the tray and wedges the quit.
@@ -895,7 +872,7 @@ public sealed class GatewayTrayController : IDisposable
 
     private void OpenCockpit()
         // ONE URL: the Cockpit is served through the gateway front door
-        // (https://<magicdns>/ -> :7878 -> fallback proxy -> loopback Cockpit).
+        // (https://<magicdns>/ -> :7878 -> the Gateway's in-process React Cockpit).
         // Issue #855: read the front-door URL from the heartbeat-refreshed cache instead of shelling
         // the tailscale CLI on the click. When it has not resolved yet (or Tailscale is unavailable)
         // the cached value is null, so OpenTailnetUrl takes the existing refuse-with-clear-message
@@ -1011,7 +988,6 @@ public sealed class GatewayTrayController : IDisposable
         _disposed = true;
         _lifetime.Cancel();
         // Synchronous best-effort stop on shutdown.
-        try { _cockpit?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayTrayController] Dispose cockpit error: {ex.Message}"); }
         try { _host?.StopAsync().GetAwaiter().GetResult(); } // also gracefully stops the host-owned brain
         catch (Exception ex) { FileLog.Write($"[GatewayTrayController] Dispose stop error: {ex.Message}"); }
         _host = null;

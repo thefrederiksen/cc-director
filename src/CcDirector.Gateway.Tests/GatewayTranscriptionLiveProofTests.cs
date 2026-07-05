@@ -46,7 +46,7 @@ public sealed class GatewayTranscriptionLiveProofTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _gateway = new GatewayHost(port: AllocateFreePort(), token: "", authEnabled: false,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1, keyVaultPath: _keyVaultPath,
+            instancesDirectory: _instancesDir, keyVaultPath: _keyVaultPath,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };

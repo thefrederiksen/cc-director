@@ -159,8 +159,8 @@ running Director, each acceptance criterion shown Expected vs Actual, plus the H
 After the implementation loop merges an issue to main on a clean QA pass, this machine
 (`MACHINE_A`) deploys and reports:
 - **Deploy:** rebuild and deploy the affected surface with the repo's own scripts -
-  `scripts/redeploy-gateway.ps1` (Gateway serves the mobile app) and/or
-  `scripts/deploy-cockpit.ps1`. Verify with `scripts/verify-gateway.ps1`. (A robocopy exit code 1 is
+  `scripts/redeploy-gateway.ps1` (the Gateway serves the mobile app AND the in-process React Cockpit,
+  issue #979). Verify with `scripts/verify-gateway.ps1`. (A robocopy exit code 1 is
   a known false-alarm, not a failure.)
 - **QA report email:** the QA Agent already produces an HTML QA report under
   `docs/cencon/proof/issue-<n>/`. The user has explicitly authorized emailing the final QA report

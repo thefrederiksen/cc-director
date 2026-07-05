@@ -9,10 +9,9 @@ public class ComponentRegistryTests
     public void Build_ProducesAppsPlusTools()
     {
         var all = ComponentRegistry.Build(["cc-pdf", "cc-html"]);
-        Assert.Equal(6, all.Count); // 4 apps (director, gateway, cockpit, launcher) + 2 tools
+        Assert.Equal(5, all.Count); // 3 apps (director, gateway, launcher) + 2 tools
         Assert.Contains(all, c => c.Id == "director");
         Assert.Contains(all, c => c.Id == "gateway");
-        Assert.Contains(all, c => c.Id == "cockpit");
         Assert.Contains(all, c => c.Id == "cc-launcher");
         Assert.Contains(all, c => c.Id == "cc-pdf");
     }
@@ -32,7 +31,7 @@ public class ComponentRegistryTests
     }
 
     [Fact]
-    public void Workstation_ExcludesGatewayAndCockpit()
+    public void Workstation_ExcludesGateway()
     {
         var all = ComponentRegistry.Build(["cc-pdf"]);
         var ws = ComponentRegistry.ForRole(all, InstallRole.Workstation);
@@ -40,7 +39,6 @@ public class ComponentRegistryTests
         Assert.Contains(ws, c => c.Id == "director");
         Assert.Contains(ws, c => c.Id == "cc-pdf");
         Assert.DoesNotContain(ws, c => c.Id == "gateway");
-        Assert.DoesNotContain(ws, c => c.Id == "cockpit");
     }
 
     [Fact]
@@ -52,9 +50,8 @@ public class ComponentRegistryTests
 
         // Gateway contains everything the workstation has...
         Assert.True(ws.IsSubsetOf(gw));
-        // ...plus the gateway + cockpit.
+        // ...plus the gateway itself.
         Assert.Contains("gateway", gw);
-        Assert.Contains("cockpit", gw);
     }
 
     [Fact]

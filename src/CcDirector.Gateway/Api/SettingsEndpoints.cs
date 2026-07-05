@@ -5,7 +5,6 @@ using CcDirector.AgentBrain;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
-using CcDirector.Gateway.Cockpit;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -41,8 +40,11 @@ internal static class SettingsEndpoints
     {
         app.MapGet("/gateway/settings", async () =>
         {
-            var cockpitPort = CockpitSupervisor.ResolvePort();
-            var cockpitUp = await IsLoopbackPortOpenAsync(cockpitPort);
+            // The Cockpit is served in-process by the Gateway (issue #979 retired the separate Blazor
+            // Cockpit process), so its reachability is the Gateway's own and its "port" is the Gateway
+            // port - there is no distinct loopback child to probe.
+            var cockpitPort = host.Port;
+            var cockpitUp = true;
             var up = DateTime.UtcNow - host.StartedAtUtc;
 
             return Results.Json(new
@@ -440,21 +442,6 @@ internal static class SettingsEndpoints
 
     private static bool IsNotStarted(string status) =>
         string.Equals(status, "NotStarted", StringComparison.OrdinalIgnoreCase);
-
-    private static async Task<bool> IsLoopbackPortOpenAsync(int port)
-    {
-        try
-        {
-            using var tcp = new TcpClient();
-            var connect = tcp.ConnectAsync(IPAddress.Loopback, port);
-            var done = await Task.WhenAny(connect, Task.Delay(500));
-            return done == connect && tcp.Connected;
-        }
-        catch
-        {
-            return false;
-        }
-    }
 
     /// <summary>
     /// The consolidated AI-provider snapshot the Cockpit AI page renders: the selected provider plus
