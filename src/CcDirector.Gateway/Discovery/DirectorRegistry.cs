@@ -510,7 +510,15 @@ public sealed class DirectorRegistry : IDisposable
                     try { System.Diagnostics.Process.GetProcessById(pid); }
                     catch (ArgumentException) // process not running
                     {
-                        try { File.Delete(f); } catch { }
+                        // Issue #891: do NOT swallow a failed delete. If the file is locked or we lack
+                        // permission it stays on disk; the orphan-file sweep below completes the delete
+                        // on a later pass (this loop iterates the in-memory roster, from which the entry
+                        // is about to be removed, so it would otherwise never be revisited).
+                        try { File.Delete(f); }
+                        catch (Exception ex)
+                        {
+                            FileLog.Write($"[DirectorRegistry] Sweeper could not delete instance file for {kv.Key} (pid {pid} dead); orphan sweep will retry: {ex.Message}");
+                        }
                         if (_directors.TryRemove(kv.Key, out _))
                         {
                             FileLog.Write($"[DirectorRegistry] Sweeper removed orphan (pid {pid} dead): {kv.Key}");
@@ -520,11 +528,93 @@ public sealed class DirectorRegistry : IDisposable
                     catch { /* permission errors etc - leave it for next pass */ }
                 }
             }
+
+            SweepOrphanInstanceFiles();
         }
         catch (Exception ex)
         {
             FileLog.Write($"[DirectorRegistry] SweepStale error: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Directory-level safety net (issue #891). The in-memory sweep above removes a dead Director from
+    /// the roster even if deleting its backing instance file failed (locked, permission). Because that
+    /// loop iterates the in-memory dictionary, such a file is never revisited and, on the next Gateway
+    /// restart, <see cref="LoadExisting"/> re-imports it - which can resurrect a phantom Director if the
+    /// recorded process id has since been recycled to an unrelated live process. This scan completes the
+    /// delete: it enumerates the watch directory for files that have NO live in-memory entry and whose
+    /// recorded process id is dead, and deletes them. Files with a live entry are handled by the sweep
+    /// above; files whose process is still alive, or that predate pid stamping (pid &lt;= 0), are left
+    /// untouched so a healthy Director's file is never removed.
+    /// </summary>
+    internal void SweepOrphanInstanceFiles()
+    {
+        string[] files;
+        try
+        {
+            files = Directory.GetFiles(WatchDirectory, "*.json");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorRegistry] Orphan-file sweep could not enumerate {WatchDirectory}: {ex.Message}");
+            return;
+        }
+
+        foreach (var f in files)
+        {
+            var id = Path.GetFileNameWithoutExtension(f);
+            // A file backing a still-known Director is the in-memory sweep's responsibility; leave it.
+            if (!string.IsNullOrEmpty(id) && _directors.ContainsKey(id))
+                continue;
+
+            int pid;
+            try
+            {
+                var json = File.ReadAllText(f);
+                if (string.IsNullOrWhiteSpace(json)) continue; // being written; try next pass
+                var dto = JsonSerializer.Deserialize<DirectorDto>(json, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                });
+                if (dto is null) continue;
+                pid = dto.Pid;
+            }
+            catch (IOException) { continue; /* still being written */ }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[DirectorRegistry] Orphan-file sweep could not read {Path.GetFileName(f)}: {ex.Message}");
+                continue;
+            }
+
+            // Only delete when we can PROVE the process is gone. pid <= 0 predates pid stamping, so we
+            // cannot prove death and must leave the file rather than risk deleting a live Director's.
+            if (pid <= 0 || !IsProcessDead(pid))
+                continue;
+
+            try
+            {
+                File.Delete(f);
+                FileLog.Write($"[DirectorRegistry] Orphan-file sweep deleted stale instance file {Path.GetFileName(f)} (pid {pid} dead)");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[DirectorRegistry] Orphan-file sweep could not delete {Path.GetFileName(f)} (pid {pid} dead); will retry next sweep: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>True when no process with <paramref name="pid"/> is currently running. A permission or
+    /// other unexpected error returns false (do not assume dead) so we never delete on uncertainty.</summary>
+    private static bool IsProcessDead(int pid)
+    {
+        try
+        {
+            using var _ = System.Diagnostics.Process.GetProcessById(pid);
+            return false;
+        }
+        catch (ArgumentException) { return true; }
+        catch { return false; }
     }
 
     public void Dispose()
