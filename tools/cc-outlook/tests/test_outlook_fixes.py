@@ -232,3 +232,96 @@ class TestCreateEventTimezone:
         args, kwargs = event.recurrence.set_daily.call_args
         assert args[0] == 1
         assert kwargs.get("start") == naive.date()
+
+
+class TestFlagMessage:
+    """Regression tests for issue #455.
+
+    flag_message previously did `message.flag = flag_data`, but the O365
+    Message.flag property has no setter, so every flag command crashed with
+    "property 'flag' of 'Message' object has no setter". The fix drives the
+    MessageFlag helper methods (set_flagged / set_completed / delete_flag).
+    """
+
+    def _client_with_inbox_message(self):
+        account = MagicMock()
+        message = MagicMock()
+        account.mailbox.return_value.get_message.return_value = message
+        client = OutlookClient(account=account)
+        return client, message
+
+    def test_flagged_calls_set_flagged(self):
+        client, message = self._client_with_inbox_message()
+        due = datetime(2027, 1, 2, 9, 0)
+
+        result = client.flag_message("id-1", flag_status="flagged", due_date=due)
+
+        assert result is True
+        message.flag.set_flagged.assert_called_once_with(due_date=due)
+        message.save_message.assert_called_once()
+
+    def test_complete_calls_set_completed(self):
+        client, message = self._client_with_inbox_message()
+
+        client.flag_message("id-1", flag_status="complete")
+
+        message.flag.set_completed.assert_called_once()
+        message.save_message.assert_called_once()
+
+    def test_notflagged_calls_delete_flag(self):
+        client, message = self._client_with_inbox_message()
+
+        client.flag_message("id-1", flag_status="notFlagged")
+
+        message.flag.delete_flag.assert_called_once()
+        message.save_message.assert_called_once()
+
+    def test_unknown_status_raises(self):
+        client, message = self._client_with_inbox_message()
+
+        with pytest.raises(ValueError):
+            client.flag_message("id-1", flag_status="bogus")
+
+
+class TestListAttachments:
+    """Regression tests for issue #530.
+
+    list_attachments / download_attachment fetched the message without
+    download_attachments=True, so message.attachments was always empty and the
+    command wrongly reported "No attachments". The fix loads the attachments
+    when fetching the message.
+    """
+
+    def _client(self):
+        account = MagicMock()
+        client = OutlookClient(account=account)
+        return client, account.mailbox.return_value
+
+    def test_list_attachments_requests_download(self):
+        client, mailbox = self._client()
+        att = MagicMock()
+        att.attachment_id = "att-1"
+        att.name = "invite.ics"
+        mailbox.get_message.return_value.attachments = [att]
+
+        result = client.list_attachments("msg-1")
+
+        # The message must be fetched WITH attachments loaded.
+        _, kwargs = mailbox.get_message.call_args
+        assert kwargs.get("download_attachments") is True
+        assert len(result) == 1
+        assert result[0]["id"] == "att-1"
+        assert result[0]["name"] == "invite.ics"
+
+    def test_download_attachment_requests_download(self):
+        client, mailbox = self._client()
+        att = MagicMock()
+        att.attachment_id = "att-1"
+        att.name = "invite.ics"
+        mailbox.get_message.return_value.attachments = [att]
+
+        client.download_attachment("msg-1", "att-1", "C:/tmp/invite.ics")
+
+        _, kwargs = mailbox.get_message.call_args
+        assert kwargs.get("download_attachments") is True
+        att.save.assert_called_once_with("C:/tmp/invite.ics")
