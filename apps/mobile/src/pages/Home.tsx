@@ -164,7 +164,9 @@ function SessionRow({ session }: { session: SessionDto }) {
   const to = session.voiceMode ? `/session/${sid}/voice` : `/session/${sid}`;
   return (
     <li className={`row${attention ? " row-attention" : ""}`}>
-      <Link className="row-link" to={to}>
+      {/* Hand the known voice-mode state to the destination (issue #1015) so the Voice screen paints
+          the right state on the first render instead of flashing OFF while its first poll resolves. */}
+      <Link className="row-link" to={to} state={{ voiceMode: Boolean(session.voiceMode) }}>
         <span className="dot" style={{ backgroundColor: dotColor(color) }} aria-hidden="true" />
         <span className="row-body">
           {/* The name uses the full card width and WRAPS (no truncation) - issue #838. A muted

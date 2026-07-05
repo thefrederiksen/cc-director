@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import {
   getWingmanVoice,
   listSessions,
@@ -14,7 +14,7 @@ import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDia
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
-import { ensureClip, getClipState, stopPlayback, useVoiceClips } from "../voice/clips";
+import { ensureClip, getClipState, getVoiceMeta, saveVoiceMeta, stopPlayback, useVoiceClips } from "../voice/clips";
 import { positionFor, saveMark, wasAutoPlayed } from "../voice/playbackPositions";
 import { isWorking } from "@devthrottle/client-core/sessions/ordering";
 
@@ -70,10 +70,19 @@ export function VoiceMode() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const sid = sessionId ?? "";
 
+  // The roster hands the known voice-mode state on navigation (issue #1015), so the screen renders
+  // the right state on the FIRST paint instead of flashing OFF while its first poll resolves.
+  const location = useLocation();
+  const seededVoiceOn = (location.state as { voiceMode?: boolean } | null)?.voiceMode;
+
   const [name, setName] = useState<string | null>(null);
   const [session, setSession] = useState<SessionDto | null>(null);
-  const [voice, setVoice] = useState<WingmanVoice | null>(null);
+  // Seed the narration state + text from the on-device cache so it shows instantly (issue #1015).
+  const [voice, setVoice] = useState<WingmanVoice | null>(() => getVoiceMeta(sid));
   const [error, setError] = useState<string | null>(null);
+  // Whether a real poll has resolved the true state yet. Until it has, we never paint the OFF card -
+  // the screen starts blank (or ON when the roster seeded it) and only shows OFF once confirmed.
+  const [pollDone, setPollDone] = useState(false);
 
   // Optimistic "this session is now a voice session" the instant Switch is tapped, so the screen
   // moves to the working state immediately (responsive UI) before the roster reflects voiceMode.
@@ -90,6 +99,13 @@ export function VoiceMode() {
   // Re-render this screen when a clip download completes (phone-ready).
   useVoiceClips();
   const clip = getClipState(sid);
+
+  // Warm the clip from the on-device cache (Cache Storage, no network) so a cold entry can show and
+  // start playback instantly when the roster already prefetched it (issue #1015).
+  useEffect(() => {
+    const meta = getVoiceMeta(sid);
+    if (meta?.ready && meta.generatedAt) void ensureClip(sid, meta.generatedAt);
+  }, [sid]);
 
   // ----- playback element + progress (display only) -----
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -136,6 +152,7 @@ export function VoiceMode() {
         // Only re-render when a field the screen uses actually changed (issue #951).
         setSession((prev) => (sameSessionForVoice(prev, match) ? prev : match));
         if (match?.name && match.name.trim()) setName(match.name.trim());
+        setPollDone(true); // the true state is now known - OFF may render from here on if applicable
 
         const on = localEnabledRef.current || Boolean(match?.voiceMode);
         if (!on) {
@@ -146,6 +163,7 @@ export function VoiceMode() {
 
         const v = await getWingmanVoice(sid, signal);
         setVoice((prev) => (sameVoice(prev, v) ? prev : v));
+        saveVoiceMeta(sid, v); // keep the cached state + text fresh for the next instant entry (#1015)
         // Kick the phone-side download the moment a (new) clip is ready on the Gateway.
         if (v.ready && v.generatedAt) void ensureClip(sid, v.generatedAt);
         setError(null);
@@ -413,7 +431,9 @@ export function VoiceMode() {
     [sid, session],
   );
 
-  const voiceOn = localEnabled || Boolean(session?.voiceMode);
+  // Until the first poll resolves, trust the roster's seed so a voice session drops straight into the
+  // ON state; once the poll has spoken, the real session flag governs (a stale seed cannot stick).
+  const voiceOn = localEnabled || Boolean(session?.voiceMode) || (!pollDone && seededVoiceOn === true);
   // The speaking state (and its play-triangle) is suppressed while the agent is working again: the
   // finished-turn narration is stale, so the screen falls back to the working card instead of
   // offering a replay of it.
@@ -450,8 +470,9 @@ export function VoiceMode() {
           <div className="banner banner-error" role="alert">{error}</div>
         )}
 
-        {/* A. OFF - one clear "Switch to voice mode" button. */}
-        {!voiceOn && (
+        {/* A. OFF - one clear "Switch to voice mode" button. Only ever shown once a poll has confirmed
+            the session is NOT in voice mode, so the screen never flashes OFF then flips (issue #1015). */}
+        {!voiceOn && pollDone && (
           <div className="voice-off">
             <p className="voice-off-title">Voice mode is off for this session.</p>
             <p className="voice-hint">Turn it on and the Wingman will start narrating every turn.</p>
