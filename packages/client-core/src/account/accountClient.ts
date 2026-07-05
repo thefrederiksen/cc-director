@@ -1,0 +1,156 @@
+// The DevThrottle account surface of the Gateway (issue #978, epic #967): the typed, same-origin
+// client the React Cockpit's Account page reads and drives. It is the shared-library port of the
+// Blazor Cockpit's GatewayClient account methods (GetAccountStatusAsync / LogoutAccountAsync /
+// GetAccountDevicesAsync / RemoveAccountDeviceAsync / StartSignInAsync), so the desktop React shell
+// keeps exactly one copy of each account contract.
+//
+// The credential lives on the Gateway; this client NEVER fetches, stores, or displays the raw token
+// (security rule DT-05). Every contract here is token-free. Every request is root-relative to the
+// Gateway front door (never a Director address) and carries the same Bearer via authHeaders(). A user
+// action throws GatewayError carrying the Gateway's own message on a non-2xx.
+import { authHeaders, GatewayError } from "../api/client";
+
+/** The GET /account/status body (also the body POST /account/logout echoes back). Token-free: only the
+ *  signed-in boolean and, when signed in with a resolvable identity, the email + provider. */
+export interface AccountStatus {
+  signedIn: boolean;
+  email?: string | null;
+  provider?: string | null;
+}
+
+/** One device in the account device list (GET /account/devices). Every field is a display value the
+ *  cloud already masked - never a raw key (DT-05). */
+export interface AccountDevice {
+  id: string;
+  name: string;
+  platform?: string | null;
+  deviceType?: string | null;
+  appVersion?: string | null;
+  keyPrefix?: string | null;
+  keyLast4?: string | null;
+  createdAt?: string | null;
+  lastSeenAt?: string | null;
+  /** True when this record is the Gateway's own machine, so the page can mark it "This device". */
+  thisDevice: boolean;
+}
+
+/** The GET /account/devices envelope. When signed in, signedIn is true and devices carries the list
+ *  (possibly empty); when signed out, signedIn is false and devices is omitted (an explicit signed-out
+ *  envelope, never a fabricated empty list). */
+export interface AccountDevicesResponse {
+  signedIn: boolean;
+  devices?: AccountDevice[] | null;
+}
+
+/** The POST /account/sign-in result: whether a browser sign-in flow is now in flight, whether the
+ *  Gateway was already signed in, and a user-safe reason when it could not start. Token-free. */
+export interface SignInStartResult {
+  started: boolean;
+  alreadySignedIn: boolean;
+  error?: string | null;
+}
+
+async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
+  let detail = `${res.status}`;
+  try {
+    const text = await res.text();
+    if (text.length > 0) {
+      try {
+        const body = JSON.parse(text) as { error?: string; detail?: string };
+        detail = body.error ?? body.detail ?? text;
+      } catch {
+        detail = text;
+      }
+    }
+  } catch {
+    /* body unreadable - keep the status code */
+  }
+  return new GatewayError(res.status, `${label} failed: ${detail}`);
+}
+
+// GET /account/status - the Gateway's signed-in DevThrottle identity, computed locally with no cloud
+// call. Throws on transport failure so the Account page shows an error banner rather than a dead
+// Gateway masquerading as a signed-out one.
+export async function getAccountStatus(signal?: AbortSignal): Promise<AccountStatus> {
+  const res = await fetch("/account/status", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, "GET /account/status");
+  const body = (await res.json()) as Partial<AccountStatus> | null;
+  return {
+    signedIn: Boolean(body?.signedIn),
+    email: body?.email ?? null,
+    provider: body?.provider ?? null,
+  };
+}
+
+// POST /account/logout - clear the Gateway credential. Returns the post-logout status the Gateway
+// echoes back (signed-out) so the page confirms without a second round-trip. Throws with the server
+// error on failure.
+export async function logoutAccount(signal?: AbortSignal): Promise<AccountStatus> {
+  const res = await fetch("/account/logout", {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, "POST /account/logout");
+  const body = (await res.json()) as Partial<AccountStatus> | null;
+  return {
+    signedIn: Boolean(body?.signedIn),
+    email: body?.email ?? null,
+    provider: body?.provider ?? null,
+  };
+}
+
+// GET /account/devices - the account-wide device list behind the Gateway's own stored credential.
+// Throws on a Gateway/cloud error (502 etc.) so the page shows an explicit error state rather than
+// presenting an empty list as "no devices".
+export async function getAccountDevices(signal?: AbortSignal): Promise<AccountDevicesResponse> {
+  const res = await fetch("/account/devices", {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, "GET /account/devices");
+  const body = (await res.json()) as Partial<AccountDevicesResponse> | null;
+  return {
+    signedIn: Boolean(body?.signedIn),
+    // Preserve the signed-out envelope's omitted list as null; a signed-in account with no devices is
+    // an empty array. Never fabricate one from the other.
+    devices: body?.devices ?? null,
+  };
+}
+
+// DELETE /account/devices/{id} - revoke one device from the account. Throws with the server error on
+// failure (incl. 404 when the id is not the account's, 502 when the cloud is unreachable) so the page
+// can show it; on success the caller refreshes the list.
+export async function removeAccountDevice(deviceId: string, signal?: AbortSignal): Promise<void> {
+  const id = encodeURIComponent(deviceId);
+  const res = await fetch(`/account/devices/${id}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, `DELETE /account/devices/${deviceId}`);
+}
+
+// POST /account/sign-in - start the Gateway's browser loopback sign-in (the #637 flow). The sign-in
+// runs in the background on the Gateway; this returns as soon as it is kicked off (or reports it was
+// already signed in / not available). After a started result the caller polls getAccountStatus to
+// observe completion. Throws with the server error on transport failure.
+export async function startSignIn(signal?: AbortSignal): Promise<SignInStartResult> {
+  const res = await fetch("/account/sign-in", {
+    method: "POST",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) throw await gatewayErrorFrom(res, "POST /account/sign-in");
+  const body = (await res.json()) as Partial<SignInStartResult> | null;
+  return {
+    started: Boolean(body?.started),
+    alreadySignedIn: Boolean(body?.alreadySignedIn),
+    error: body?.error ?? null,
+  };
+}

@@ -1,0 +1,79 @@
+/* About page (issue #978) - the React port of the Blazor Cockpit About.razor. Rendered as normal
+   scrolling content inside the padded main pane. Every color is a token from the app theme
+   (src/styles.css :root) - nothing hard-codes a color inline (the Blazor original used inline VS Code
+   hex; the React shell uses the shared tokens so every page reads as one product). */
+.abt {
+  max-width: 780px;
+}
+
+.abt .page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.abt .page-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+.abt-lede {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+
+.abt-error {
+  background: #3a1b1b;
+  color: #f1a0a0;
+  border: 1px solid #5a2a2a;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+}
+.abt-loading {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.abt-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.abt-row {
+  display: flex;
+  margin-bottom: 6px;
+}
+.abt-row:last-child {
+  margin-bottom: 0;
+}
+.abt-row-label {
+  width: 170px;
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.abt-row-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  word-break: break-all;
+}
+
+.abt-h2 {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin: 22px 0 8px;
+}
+
+.abt-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+}

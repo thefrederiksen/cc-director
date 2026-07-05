@@ -1,0 +1,326 @@
+/* Account page (issue #978) - the React port of the Blazor Cockpit Account.razor. Rendered as normal
+   scrolling content inside the padded main pane. Every color is a token from the app theme
+   (src/styles.css :root) or a local custom property here (the Blazor original used inline VS Code hex;
+   the React shell uses the shared tokens so every page reads as one product). */
+.acct {
+  --acct-on: #22c55e;
+  max-width: 780px;
+}
+
+.acct .page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.acct .page-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+.acct-lede {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0 0 16px;
+}
+
+.acct-error {
+  background: #3a1b1b;
+  color: #f1a0a0;
+  border: 1px solid #5a2a2a;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+}
+.acct-loading {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.acct-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.acct-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.acct-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: 0 0 auto;
+}
+.acct-dot.on {
+  background: var(--acct-on);
+}
+.acct-state-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.acct-state-label.on {
+  color: var(--acct-on);
+}
+
+.acct-row {
+  display: flex;
+  margin-bottom: 6px;
+}
+.acct-row:last-child {
+  margin-bottom: 0;
+}
+.acct-row-label {
+  width: 120px;
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.acct-row-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  word-break: break-all;
+}
+
+/* ---- buttons (shared) ---- */
+.acct-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.acct-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.acct-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.acct-btn.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.acct-btn.primary:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.1);
+}
+.acct-btn.danger {
+  background: var(--attention);
+  color: #fff;
+  border-color: var(--attention);
+}
+.acct-btn.danger:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.1);
+}
+.acct-btn.signin {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 600;
+  padding: 8px 20px;
+  font-size: 14px;
+}
+.acct-btn.signin:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.1);
+}
+
+.acct-logout-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+.acct-note {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* ---- devices ---- */
+.acct-devices {
+  margin-top: 28px;
+}
+.acct-devices-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.acct-devices-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.acct-devices-sub {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.acct-devices-loading {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.acct-devices-error {
+  background: #3a1b1b;
+  color: #f1a0a0;
+  border: 1px solid #5a2a2a;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+}
+.acct-devices-retry-row {
+  margin-top: 8px;
+}
+.acct-devices-signedout {
+  background: rgba(138, 122, 51, 0.15);
+  border: 1px solid #8a7a33;
+  color: #d8cf9b;
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.acct-devices-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.acct-devices-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.acct-device-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+.acct-device-row:first-child {
+  border-top: none;
+}
+.acct-device-main {
+  flex: 1;
+  min-width: 0;
+}
+.acct-device-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acct-device-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-all;
+}
+.acct-this-device {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--acct-on);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 8px;
+  flex: 0 0 auto;
+}
+.acct-device-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-top: 3px;
+}
+.acct-device-sep {
+  color: var(--border);
+}
+
+.acct-remove-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.acct-remove-ask {
+  color: #f1a0a0;
+  font-size: 12px;
+}
+
+.acct-remove-error {
+  margin-top: 10px;
+  background: #3a1b1b;
+  border: 1px solid #5a2a2a;
+  color: #f1a0a0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.acct-remove-ok {
+  margin-top: 10px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid var(--acct-on);
+  color: #9be3b4;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* ---- signed-out ---- */
+.acct-signedout-explain {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 16px;
+}
+.acct-signin-note {
+  margin: 10px 0 0;
+}
+.acct-signin-progress {
+  margin-top: 14px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid var(--accent);
+  color: #9bbce3;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.acct-signin-error {
+  margin-top: 14px;
+  background: #3a1b1b;
+  border: 1px solid #5a2a2a;
+  color: #f1a0a0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.acct-loggedout {
+  margin-top: 16px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid var(--acct-on);
+  color: #9be3b4;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
