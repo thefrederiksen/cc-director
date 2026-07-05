@@ -743,6 +743,12 @@ public partial class TalkPage : ContentPage
             // User cancelled or navigated away.
             VoiceStatusLabel.Text = "Tap Record and talk to the agent.";
         }
+        catch (HostedAiUnavailableException credits)
+        {
+            // Out of credits / cap (issue #943): the ONE shared message + Add-credits prompt.
+            VoiceStatusLabel.Text = "";
+            await HostedAiPrompt.ShowAsync(this, credits);
+        }
         catch (Exception ex)
         {
             VoiceStatusLabel.Text = "";
