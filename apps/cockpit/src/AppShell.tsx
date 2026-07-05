@@ -14,6 +14,8 @@ const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
   { to: "/directors", label: "Directors" },
   { to: "/schedule", label: "Schedule" },
   { to: "/lists", label: "Lists" },
+  { to: "/dictionary", label: "Dictionary" },
+  { to: "/learn", label: "Learning" },
   { to: "/telemetry", label: "Telemetry" },
 ];
 

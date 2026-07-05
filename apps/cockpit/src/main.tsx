@@ -11,10 +11,20 @@ import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
 import { WingmanQueueView } from "./wingman/WingmanQueueView";
+import { ListsView } from "./lists/ListsView";
+import { DictionaryView } from "./dictionary/DictionaryView";
+import { TranscriptsView } from "./transcripts/TranscriptsView";
+import { ExesView } from "./exes/ExesView";
+import { LearningView } from "./learning/LearningView";
 import "./styles.css";
 import "./fleet/fleet.css";
 import "./schedule/schedule.css";
 import "./wingman/wingman.css";
+import "./lists/lists.css";
+import "./dictionary/dictionary.css";
+import "./transcripts/transcripts.css";
+import "./exes/exes.css";
+import "./learning/learning.css";
 
 // Mirror any injected per-machine token into the cc-gateway-token cookie at startup so the live
 // terminal WebSocket (which cannot carry an Authorization header) authenticates same-origin to the
@@ -56,7 +66,17 @@ const router = createBrowserRouter(
         // by its direct route, as the Blazor page is.
         { path: "/schedule", element: <ScheduleView /> },
         { path: "/wingman", element: <WingmanQueueView /> },
-        { path: "/lists", element: <PlaceholderPane title="Lists" /> },
+        // The tools + data pages (issue #977): one-to-one ports of the Blazor Lists.razor,
+        // Dictionary.razor, Transcripts.razor, Exes.razor, and Learning.razor over the same Gateway
+        // REST surface. Lists per-item title + flow:* status come from the Gateway item-status
+        // endpoint (issue #970), never a browser-held GitHub token. Following the Blazor nav (which
+        // shows Dictionary + Learning in the rail but reaches Recordings/Builds by their direct
+        // route), Dictionary and Learning get a left-rail entry; Transcripts and Exes are route-only.
+        { path: "/lists", element: <ListsView /> },
+        { path: "/dictionary", element: <DictionaryView /> },
+        { path: "/transcripts", element: <TranscriptsView /> },
+        { path: "/exes", element: <ExesView /> },
+        { path: "/learn", element: <LearningView /> },
         { path: "/telemetry", element: <PlaceholderPane title="Telemetry" /> },
         { path: "*", element: <PlaceholderPane title="Not found" /> },
       ],
