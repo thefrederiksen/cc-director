@@ -23,8 +23,8 @@ namespace CcDirector.Gateway.Cockpit;
 /// <list type="bullet">
 /// <item><see cref="UseBrowserPageRoutes"/> - a PERSON navigating to a dual-use path that is BOTH a
 ///   Gateway API surface (JSON) and a Cockpit page (<c>/sessions</c>, <c>/directors</c>,
-///   <c>/cockpit</c>) is served the React shell, while programmatic clients keep getting JSON from
-///   the explicit endpoints. Registered after auth, before routing.</item>
+///   <c>/cockpit</c>, <c>/lists</c>) is served the React shell, while programmatic clients keep
+///   getting JSON from the explicit endpoints. Registered after auth, before routing.</item>
 /// <item><see cref="Map"/> - the site-root fallback: everything no explicit endpoint claimed serves
 ///   a real static asset when the path resolves to a file, otherwise the <c>index.html</c> shell.
 ///   Mapped LAST (lowest routing precedence) so the whole REST surface is unchanged.</item>
@@ -37,13 +37,35 @@ public static class CockpitReactApp
     private static readonly FileExtensionContentTypeProvider ContentTypes = new();
 
     /// <summary>
-    /// The path roots that are both a Gateway API surface (JSON) and a Cockpit page (HTML): the list
-    /// page (<c>/sessions</c>) and its detail page (<c>/sessions/{sid}</c>) - one id segment, never
-    /// deeper. Three-segment paths (<c>/sessions/{sid}/turnbriefs</c>, <c>/directors/{id}/repos</c>)
-    /// stay API-only; <c>/cockpit/{sid}</c> would fall through to the shell anyway, but matching it
-    /// here keeps the policy one rule instead of two.
+    /// The path roots that are both a Gateway API surface (JSON, a top-level single-segment
+    /// <c>MapGet</c>) AND a Cockpit page (HTML). This is the audited set of dual-use paths, one entry
+    /// per collision between a React client-side route and a Gateway JSON endpoint at the SAME path:
+    /// <list type="bullet">
+    /// <item><c>cockpit</c> - <c>MapGet("/cockpit")</c> vs the roster redirect page.</item>
+    /// <item><c>sessions</c> - <c>MapGet("/sessions")</c> and <c>MapGet("/sessions/{sid}")</c> vs the
+    ///   roster + session-detail pages.</item>
+    /// <item><c>directors</c> - <c>MapGet("/directors")</c> vs the Directors registry + detail pages.</item>
+    /// <item><c>lists</c> - <c>MapGet("/lists")</c> (the Work-List API) vs the Lists page. Added in the
+    ///   #979 cutover: at <c>/c/lists</c> the API path <c>/lists</c> did not collide; flipping the
+    ///   front door to <c>/</c> made <c>/lists</c> dual-use, so a browser reload/deep-link to
+    ///   <c>/lists</c> was being served the raw <c>{"lists":[]}</c> JSON instead of the shell.</item>
+    /// </list>
+    /// The match is on the FIRST segment for one- or two-segment paths only: the list page
+    /// (<c>/sessions</c>) and its detail page (<c>/sessions/{sid}</c>) - one id segment, never deeper.
+    /// Three-segment paths (<c>/sessions/{sid}/turnbriefs</c>, <c>/directors/{id}/repos</c>) stay
+    /// API-only; <c>/cockpit/{sid}</c> would fall through to the shell anyway, but matching it here
+    /// keeps the policy one rule instead of two.
+    ///
+    /// Every OTHER React page (<c>/fleet</c>, <c>/schedule</c>, <c>/wingman</c>, <c>/dictionary</c>,
+    /// <c>/transcripts</c>, <c>/exes</c>, <c>/learn</c>, <c>/telemetry</c>, <c>/account</c>,
+    /// <c>/about</c>, <c>/feedback</c>, <c>/session/{id}</c>) is deliberately absent: none has a
+    /// top-level single-segment <c>MapGet</c> at its own path, so a hard navigation to it already falls
+    /// through the whole REST surface to the SPA fallback (<see cref="Map"/>) and serves the shell.
+    /// Adding one here would wrongly shadow that page's UNDERLYING nested API path (e.g. adding
+    /// <c>exes</c> would divert a browser GET of <c>/exes/list</c> to the shell), so this set stays the
+    /// exact intersection of "React page" and "same-path JSON endpoint".
     /// </summary>
-    private static readonly string[] BrowserPageRoots = { "cockpit", "sessions", "directors" };
+    private static readonly string[] BrowserPageRoots = { "cockpit", "sessions", "directors", "lists" };
 
     /// <summary>
     /// The directory the built React Cockpit is served from: <c>wwwroot/c</c> beside the running

@@ -50,8 +50,10 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("/sessions")]
     [InlineData("/directors")]
     [InlineData("/cockpit")]
+    [InlineData("/lists")]                        // #979 regression: Work-List API vs Lists page
     [InlineData("/sessions/")]                    // trailing slash
     [InlineData("/SESSIONS")]                     // case-insensitive
+    [InlineData("/LISTS")]                         // case-insensitive
     [InlineData("/sessions/abc123")]              // detail page: one id segment
     [InlineData("/directors/abc123")]             // detail page: one id segment
     [InlineData("/cockpit/abc123")]               // deep-linked cockpit session
@@ -68,8 +70,23 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("POST", "/sessions", "text/html")]             // wrong method
     [InlineData("GET", "/sessions/abc123", "application/json")] // detail JSON stays API
     [InlineData("GET", "/healthz", "text/html")]               // not a dual-use path
+    [InlineData("GET", "/lists", "application/json")]           // Work-List API client stays JSON
+    [InlineData("GET", "/lists", null)]                        // curl / script default stays JSON
     [InlineData("GET", "/sessions/abc/turnbriefs", "text/html")] // 3 segments = API only
     [InlineData("GET", "/directors/abc/repos", "text/html")]     // 3 segments = API only
+    // Audited NON-collisions: a React page whose OWN path has no top-level single-segment JSON
+    // endpoint must NOT be a page-request root, so its nested JSON path is never shadowed for a
+    // browser. These would break if someone over-broadly added the page root to BrowserPageRoots.
+    [InlineData("GET", "/exes/list", "text/html")]             // page is /exes; /exes/list stays JSON
+    [InlineData("GET", "/account/status", "text/html")]        // page is /account; nested API stays JSON
+    [InlineData("GET", "/account/devices", "text/html")]       // page is /account; nested API stays JSON
+    [InlineData("GET", "/wingman/queue", "text/html")]         // page is /wingman; queue API stays JSON
+    [InlineData("GET", "/fleet", "text/html")]                 // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/schedule", "text/html")]              // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/dictionary", "text/html")]            // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/transcripts", "text/html")]           // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/telemetry", "text/html")]             // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/about", "text/html")]                 // no same-path JSON: served by SPA fallback
     public void Non_navigation_requests_are_not_page_requests(string method, string path, string? accept)
     {
         Assert.False(CockpitReactApp.IsBrowserPageRequest(method, path, accept));
@@ -81,6 +98,7 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("sessions")]
     [InlineData("directors")]
     [InlineData("cockpit")]
+    [InlineData("lists")]
     public async Task Browser_navigation_is_served_the_cockpit_shell(string path)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
@@ -99,6 +117,7 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("sessions")]
     [InlineData("directors")]
     [InlineData("cockpit")]
+    [InlineData("lists")]
     public async Task Api_clients_keep_getting_json(string path)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
