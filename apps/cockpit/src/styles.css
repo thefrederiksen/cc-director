@@ -1,0 +1,152 @@
+/* DevThrottle desktop Cockpit theme. Dark, desktop-first, sharing the palette of the mobile shell
+   (/m) and the /voice prototype so the two shells read as one product. All colors are tokens here;
+   nothing hard-codes a color outside this file. */
+:root {
+  --bg: #0b1020;
+  --surface: #141a2e;
+  --surface-2: #1b2238;
+  --border: #28304a;
+  --text: #e6e9f2;
+  --text-dim: #99a0b8;
+  --accent: #3b82f6;
+  --attention: #f14c4c;
+
+  --rail-left-width: 220px;
+  --rail-right-width: 300px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100vh;
+}
+
+/* The three-region desktop frame: left rail | main pane | right rail. Grid so the main pane takes
+   all remaining width and each rail keeps a fixed measure. */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-left-width) 1fr var(--rail-right-width);
+  height: 100vh;
+  min-height: 0;
+}
+
+.rail {
+  background: var(--surface);
+  border-color: var(--border);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.rail-left {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+}
+
+.rail-right {
+  border-left: 1px solid var(--border);
+  padding: 16px 14px;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.2px;
+  padding: 4px 8px 16px;
+}
+
+.nav {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.nav-link {
+  display: block;
+  padding: 9px 10px;
+  border-radius: 8px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.nav-link:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-link-active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.rail-foot {
+  padding: 12px 8px 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.main-pane {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 24px 28px;
+}
+
+.rail-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.rail-empty {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.pane-title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.pane-note {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--text-dim);
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+/* The seam to the mobile shell is around the tablet breakpoint: below it the right (awareness) rail
+   folds away so the frame stays usable on a small laptop without becoming a phone layout. */
+@media (max-width: 1024px) {
+  .shell {
+    grid-template-columns: var(--rail-left-width) 1fr;
+  }
+
+  .rail-right {
+    display: none;
+  }
+}

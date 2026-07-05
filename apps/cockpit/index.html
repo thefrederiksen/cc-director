@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0B1020" />
+    <title>DevThrottle Cockpit</title>
+    <!--
+      Epic #967: this is the React rebuild of the desktop Cockpit, served same-origin by the Gateway
+      at /c. It carries NO credential in the page - the browser talks only to the Gateway through
+      root-relative paths, and the WebSocket token rides as the cc-gateway-token cookie. This scaffold
+      is a minimal shell (layout frame + routing + placeholder panes); feature pages are their own
+      issues and get ported one at a time behind the Gateway proxy.
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
