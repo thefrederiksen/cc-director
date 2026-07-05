@@ -41,6 +41,43 @@ function isWaiting(s: SessionDto | null): boolean {
   return state === "WaitingForInput" || state === "WaitingForPerm";
 }
 
+// Issue #951: the 3s poll used to push a fresh object into state on every tick, re-rendering the whole
+// Voice screen even when nothing had changed (flashing narration, a jumping player row). These compare
+// only the fields the screen actually renders/derives from, so the poll can return the PREVIOUS state
+// object when it is unchanged and React skips the re-render. Volatile fields the screen never uses
+// (heartbeat timestamps, etc.) are intentionally ignored so they do not force a redraw.
+function sameSessionForVoice(a: SessionDto | null, b: SessionDto | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return a.sessionId === b.sessionId
+    && a.name === b.name
+    && Boolean(a.voiceMode) === Boolean(b.voiceMode)
+    && Boolean(a.onHold) === Boolean(b.onHold)
+    && a.statusColor === b.statusColor
+    && a.assessedState === b.assessedState
+    && a.activityState === b.activityState;
+}
+
+function sameVoice(a: WingmanVoice | null, b: WingmanVoice | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return a.ready === b.ready && a.generatedAt === b.generatedAt
+    && a.spoken === b.spoken && a.reply === b.reply;
+}
+
+function sameMenu(a: WingmanMenu | null, b: WingmanMenu | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  if (a.question !== b.question || a.selectionMode !== b.selectionMode
+    || a.submit !== b.submit || a.options.length !== b.options.length) return false;
+  for (let i = 0; i < a.options.length; i++) {
+    const x = a.options[i];
+    const y = b.options[i];
+    if (x.key !== y.key || x.send !== y.send || x.recommended !== y.recommended) return false;
+  }
+  return true;
+}
+
 // mm:ss for the playback clock (display only).
 function formatClock(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return "0:00";
@@ -115,7 +152,8 @@ export function VoiceMode() {
       try {
         const all = await listSessions(signal);
         const match = all.find((s) => s.sessionId === sid) ?? null;
-        setSession(match);
+        // Only re-render when a field the screen uses actually changed (issue #951).
+        setSession((prev) => (sameSessionForVoice(prev, match) ? prev : match));
         if (match?.name && match.name.trim()) setName(match.name.trim());
 
         const on = localEnabledRef.current || Boolean(match?.voiceMode);
@@ -127,7 +165,7 @@ export function VoiceMode() {
         }
 
         const v = await getWingmanVoice(sid, signal);
-        setVoice(v);
+        setVoice((prev) => (sameVoice(prev, v) ? prev : v));
         // Kick the phone-side download the moment a (new) clip is ready on the Gateway.
         if (v.ready && v.generatedAt) void ensureClip(sid, v.generatedAt);
 
@@ -135,7 +173,8 @@ export function VoiceMode() {
         // the cheap gate the Gateway uses too, so a working agent never triggers a menu extraction.
         if (isWaiting(match)) {
           const m = await getWingmanMenu(sid, signal);
-          setMenu(m.isMenu && m.options.length > 0 ? m : null);
+          const next = m.isMenu && m.options.length > 0 ? m : null;
+          setMenu((prev) => (sameMenu(prev, next) ? prev : next));
         } else {
           setMenu(null);
         }
