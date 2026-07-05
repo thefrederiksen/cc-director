@@ -183,7 +183,7 @@ public class HomeStatusBuilderTests
     // ---------- Test-result-driven tools row (pass/fail/not-built breakdown) ----------
 
     [Fact]
-    public void Build_ToolHealthWithFailure_ShowsBreakdownWarnsAndRoutesToTools()
+    public void Build_ToolHealthWithFailure_ShowsBreakdownWarnsAndOffersRepair()
     {
         var health = new ToolHealthSummary(24, 1, 4,0, new[] { "cc-foo" });
         var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
@@ -194,7 +194,7 @@ public class HomeStatusBuilderTests
         Assert.Contains("1 fail", tools.Detail);
         Assert.Contains("4 not built", tools.Detail);
         Assert.Contains("cc-foo", tools.Detail);
-        Assert.Equal(HomeCheckAction.OpenTools, tools.Action); // a plain failure routes to the Tools page
+        Assert.Equal(HomeCheckAction.RepairTools, tools.Action); // a failing built tool is repairable (issue #995)
         Assert.False(status.AllReady);
     }
 
@@ -232,6 +232,34 @@ public class HomeStatusBuilderTests
         var tools = Row(status, "cc-* tools");
         Assert.Equal(HomeCheckLevel.Warn, tools.Level);
         Assert.Equal(HomeCheckAction.RepairTools, tools.Action); // broken -> one-click Fix
+    }
+
+    [Fact]
+    public void Build_BasePythonBroken_BadRowOffersRepairWithClearMessage()
+    {
+        // The shared base Python is hollow - present but unable to import its standard library - so every
+        // Python cc-* tool fails at once. The row must be red, name the runtime problem, and offer a real
+        // repair (not a navigate-to-Tools) so one click re-provisions the runtime (issue #995).
+        var health = new ToolHealthSummary(0, 9, 0, 0, new[] { "cc-vault", "cc-html", "cc-pdf" });
+        var status = HomeStatusBuilder.Build(
+            new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health, basePythonBroken: true);
+
+        var tools = Row(status, "cc-* tools");
+        Assert.Equal(HomeCheckLevel.Bad, tools.Level);
+        Assert.Equal(HomeCheckAction.RepairTools, tools.Action);
+        Assert.Contains("runtime broken", tools.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Build_ToolHealthNotBuiltOnly_StillRoutesToTools_NotRepair()
+    {
+        // Regression guard for the routing change: a not-built-ONLY state (no failing built tool, nothing
+        // broken) is optional tools, not a repairable failure - it must still route to the Tools page.
+        var health = new ToolHealthSummary(24, 0, 4, 0, Array.Empty<string>());
+        var status = HomeStatusBuilder.Build(new[] { Cli("Claude Code", true, "2.1") }, 0, 0, null, health);
+
+        var tools = Row(status, "cc-* tools");
+        Assert.Equal(HomeCheckAction.OpenTools, tools.Action);
     }
 
     [Fact]

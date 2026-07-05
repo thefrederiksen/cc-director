@@ -992,7 +992,7 @@ public partial class MainWindow : Window
 
             _lastClis = facts.clis;
             _lastBuildFacts = (facts.built, facts.total, facts.missing);
-            _lastHomeStatus = HomeStatusBuilder.Build(facts.clis, facts.built, facts.total, facts.missing, _lastToolHealth);
+            _lastHomeStatus = HomeStatusBuilder.Build(facts.clis, facts.built, facts.total, facts.missing, _lastToolHealth, _lastBasePythonBroken);
 
             ApplyHomeHealth();
 
@@ -1059,6 +1059,9 @@ public partial class MainWindow : Window
     private List<AgentCliFact>? _lastClis;
     private (int built, int total, List<string> missing)? _lastBuildFacts;
     private CcDirector.Core.Tools.ToolHealthSummary? _lastToolHealth;
+    // Cached result of the last shared base-Python runtime probe (issue #995), so the immediate home render
+    // in RefreshHomeAsync reflects a known-broken runtime without re-launching the probe on the fast path.
+    private bool _lastBasePythonBroken;
     private bool _toolHealthRunning;
 
     // ---- Active cc-* tools indicator state machine (issue #829) ----
@@ -1087,7 +1090,7 @@ public partial class MainWindow : Window
         _toolHealthRunning = true;
         try
         {
-            var summary = await Task.Run(async () =>
+            var (summary, basePythonBroken) = await Task.Run(async () =>
             {
                 var catalog = new ToolCatalogService().GetCatalog();
                 var runner = new ToolTestRunner();
@@ -1106,16 +1109,33 @@ public partial class MainWindow : Window
                     }
                     finally { gate.Release(); }
                 }));
-                return CcDirector.Core.Tools.ToolHealthSummary.From(inputs);
+                // Probe the shared base Python directly. Every Python cc-* tool delegates to it, so if it is
+                // hollow (present but cannot import its standard library) they ALL fail at once - a single,
+                // repairable runtime failure the per-tool breakdown would otherwise show as N unrelated fails.
+                var pyBroken = !CcDirector.Setup.Engine.PythonRuntimeProbe.IsBasePythonHealthy(
+                    CcDirector.Setup.Engine.InstallLayout.Default());
+                return (summary: CcDirector.Core.Tools.ToolHealthSummary.From(inputs), basePythonBroken: pyBroken);
             });
 
             _lastToolHealth = summary;
-            FileLog.Write($"[MainWindow] tool health: pass={summary.Pass}, fail={summary.Fail}, notBuilt={summary.NotBuilt}, broken={summary.Broken}");
+            _lastBasePythonBroken = basePythonBroken;
+            FileLog.Write($"[MainWindow] tool health: pass={summary.Pass}, fail={summary.Fail}, notBuilt={summary.NotBuilt}, broken={summary.Broken}, basePythonBroken={basePythonBroken}");
 
             if (_lastClis is { } clis && _lastBuildFacts is { } bf)
             {
-                _lastHomeStatus = HomeStatusBuilder.Build(clis, bf.built, bf.total, bf.missing, summary);
+                _lastHomeStatus = HomeStatusBuilder.Build(clis, bf.built, bf.total, bf.missing, summary, basePythonBroken);
                 ApplyHomeHealth();
+            }
+
+            // Startup auto self-heal for a hollow shared Python runtime (issue #995): the tool exes exist and
+            // resolve on PATH, so the missing-tools trigger in RefreshHomeAsync never fires - yet every Python
+            // tool is failing because the shared base Python cannot start. Repair re-provisions it. Guarded to
+            // fire at most once per run so a failed repair leaves the manual "Fix" button rather than looping.
+            if (basePythonBroken && !_autoRepairAttempted && !_repairingTools)
+            {
+                _autoRepairAttempted = true;
+                FileLog.Write("[MainWindow] startup auto self-heal: shared base Python runtime is broken, repairing automatically");
+                _ = RepairToolsAsync(auto: true);
             }
         }
         catch (Exception ex)
