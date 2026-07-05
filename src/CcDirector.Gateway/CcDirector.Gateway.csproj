@@ -125,6 +125,12 @@
   <Target Name="BuildCockpitApp" BeforeTargets="AssignTargetPaths" Condition="'$(RunCockpitBuild)' == 'true'">
     <Message Importance="high" Text="[BuildCockpitApp] building the React Cockpit ($(Configuration)) from $(CockpitDir) via the workspace at $(WorkspaceRoot)" />
     <Exec Command="npm ci" WorkingDirectory="$(WorkspaceRoot)" />
+    <!-- Issue #1010: the workspace build (vite / esbuild) does not type-check, and the per-package
+         declaration build (tsconfig.build.json) excludes the test files, so a strictly-typed test file
+         could regress unnoticed. Run the test-inclusive strict typecheck (tsc noEmit over every
+         workspace, whose tsconfig include of "src" covers test files) as a blocking build-gate step. -->
+    <Message Importance="high" Text="[BuildCockpitApp] running the strict test-inclusive typecheck (npm run typecheck) across all workspaces" />
+    <Exec Command="npm run typecheck --workspaces --if-present" WorkingDirectory="$(WorkspaceRoot)" />
     <Exec Command="npm run build --workspace @devthrottle/cockpit" WorkingDirectory="$(WorkspaceRoot)" />
     <RemoveDir Directories="$(CockpitWwwroot)" />
     <ItemGroup>

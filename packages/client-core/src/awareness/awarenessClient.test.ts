@@ -4,13 +4,17 @@ import { generateRecap, getRecap, getTurnSummaries } from "./awarenessClient";
 // Awareness Gateway reads (issue #974). These exercise the root-relative paths (Gateway-only-ingress),
 // the 404-to-empty degrade on turn-summaries, and that a POST recap is issued for a fresh generation.
 
+// Mirror the real fetch signature (input, init) so the mock's recorded call arguments are typed as a
+// two-element tuple. Without the declared parameters, vitest infers mock.calls[0] as the empty tuple
+// [], and reading calls[0][0] / destructuring [url, init] fails a strict tsc --noEmit (issue #1010).
 function mockFetch(status: number, body: unknown) {
-  return vi.fn(async () =>
-    ({
-      ok: status >= 200 && status < 300,
-      status,
-      json: async () => body,
-    }) as unknown as Response,
+  return vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body,
+      }) as unknown as Response,
   );
 }
 
