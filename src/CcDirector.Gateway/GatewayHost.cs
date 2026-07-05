@@ -899,7 +899,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, _client, SessionOwners, Token,
-            new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads);
+            new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices);
         // Sweep abandoned upload staging + the complete-idempotency cache after ~1 hour.
         _dictationSweepTimer = new System.Threading.Timer(_ =>
         {

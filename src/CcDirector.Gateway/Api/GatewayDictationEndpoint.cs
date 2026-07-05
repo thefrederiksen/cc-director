@@ -50,11 +50,11 @@ internal static class GatewayDictationEndpoint
 
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
-        TranscribingSessions transcribingSessions, VoiceUploadStore uploads)
+        TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices)
     {
         app.MapPost("/dictation/upload", (DictationUploadRequest? body, HttpContext ctx) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
             var sid = body?.SessionId ?? "";
             if (!Guid.TryParse(sid, out _))
@@ -71,7 +71,7 @@ internal static class GatewayDictationEndpoint
 
         app.MapPut("/dictation/{uploadId}/chunk/{index:int}", async (string uploadId, int index, HttpContext ctx) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
             if (!uploads.Exists(uploadId))
                 return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
@@ -93,7 +93,7 @@ internal static class GatewayDictationEndpoint
 
         app.MapPost("/dictation/{uploadId}/complete", async (string uploadId, DictationCompleteRequest? req, HttpContext ctx) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
             if (req is null || req.TotalChunks <= 0 || !Guid.TryParse(req.SessionId ?? "", out _))
                 return Results.Json(new { error = "sessionId (guid) and totalChunks (>0) are required" },
