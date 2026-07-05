@@ -6,8 +6,7 @@ import { NavLink, Outlet } from "react-router-dom";
 // issue at a time. Desktop-first: the frame stays usable down to a small laptop, and the right rail
 // collapses around the tablet breakpoint (see styles.css), which is the seam to the mobile shell.
 
-// The left-rail destinations. Each is a placeholder route today; porting a page (its own issue)
-// swaps the placeholder for the real pane without touching this frame.
+// The left-rail destinations. Each maps to a real routed page (the epic ported them in one at a time).
 const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
   { to: "/", label: "Sessions" },
   { to: "/fleet", label: "Fleet" },
@@ -16,7 +15,18 @@ const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
   { to: "/lists", label: "Lists" },
   { to: "/dictionary", label: "Dictionary" },
   { to: "/learn", label: "Learning" },
+  { to: "/account", label: "Account" },
   { to: "/telemetry", label: "Telemetry" },
+  { to: "/about", label: "About" },
+];
+
+// Full-load destinations (issue #978): pages the Gateway still serves as static HTML rather than React
+// routes. Settings is the plain-HTML tool page (wwwroot/pages/settings.html) - re-homed into this rail
+// as a root-relative anchor that does a full document load (the same behavior the Blazor NavMenu used
+// with data-enhance-nav="false"), leaving the React app to land on the Gateway-served page. It is
+// root-relative to the Gateway front door, never a Director address.
+const EXTERNAL_ITEMS: ReadonlyArray<{ href: string; label: string }> = [
+  { href: "/settings", label: "Settings" },
 ];
 
 export function AppShell() {
@@ -34,6 +44,14 @@ export function AppShell() {
               >
                 {item.label}
               </NavLink>
+            </li>
+          ))}
+          {EXTERNAL_ITEMS.map((item) => (
+            <li key={item.href}>
+              {/* Full document load to a Gateway-served static page (leaves the React app). */}
+              <a className="nav-link" href={item.href}>
+                {item.label}
+              </a>
             </li>
           ))}
         </ul>
