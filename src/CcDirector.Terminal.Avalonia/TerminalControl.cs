@@ -103,6 +103,23 @@ public class TerminalControl : Control
     private int _scrollOffset; // 0 = bottom (current view), >0 = scrolled up
     private bool _userScrolled; // True when user has manually scrolled up (prevents auto-scroll)
 
+    // Last observed value of the parser's monotonic line counter. The per-poll delta
+    // tells us how many lines were appended to scrollback so a scrolled-up viewport
+    // can be nudged to stay pinned to the same content (issue #761).
+    private long _lastScrollTotal;
+
+    /// <summary>
+    /// The scrollback the viewport is reading from right now: the parser's alternate-screen
+    /// history while a full-screen agent is on the alternate screen, otherwise the local
+    /// primary-buffer history (issue #761).
+    /// </summary>
+    private IReadOnlyList<TerminalCell[]> ActiveScrollback =>
+        _parser?.IsAlternateScreen == true ? _parser.AltScrollback : _scrollback;
+
+    /// <summary>Line count of the currently active scrollback (see <see cref="ActiveScrollback"/>).</summary>
+    private int ActiveScrollbackCount =>
+        _parser?.IsAlternateScreen == true ? _parser.AltScrollbackCount : _scrollback.Count;
+
     // Selection state
     private bool _isSelecting;
     private (int col, int row) _selectionStart;  // Anchor point (where mouse down occurred)
@@ -162,7 +179,7 @@ public class TerminalControl : Control
         get => _scrollOffset;
         set
         {
-            int clamped = Math.Max(0, Math.Min(_scrollback.Count, value));
+            int clamped = Math.Max(0, Math.Min(ActiveScrollbackCount, value));
             if (_scrollOffset != clamped)
             {
                 _scrollOffset = clamped;
@@ -193,7 +210,7 @@ public class TerminalControl : Control
     /// growing concurrently with a redraw.
     /// </summary>
     public ScrollSnapshot GetScrollSnapshot()
-        => new(_scrollback.Count, _rows, _scrollOffset);
+        => new(ActiveScrollbackCount, _rows, _scrollOffset);
 
     /// <summary>Total number of lines (scrollback + current screen) - includes empty rows.</summary>
     public int TotalLineCount => _scrollback.Count + _rows;
@@ -315,6 +332,7 @@ public class TerminalControl : Control
         _bufferPosition = 0;
         _scrollOffset = 0;
         _userScrolled = false;
+        _lastScrollTotal = 0;
         _scrollback.Clear();
         _pathExistsCache.Clear();
 
@@ -379,6 +397,7 @@ public class TerminalControl : Control
         _scrollback.Clear();
         _scrollOffset = 0;
         _userScrolled = false;
+        _lastScrollTotal = 0;
         _pathExistsCache.Clear();
 
         _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
@@ -396,6 +415,10 @@ public class TerminalControl : Control
         // After replay the parser may be on the alternate screen, drawing into its own buffer;
         // render that, not the frozen array we constructed it with.
         SyncActiveGrid();
+
+        // The replay already advanced the parser's line counter; baseline our tracker to it so the
+        // first live poll computes a delta of zero, not the whole replayed history (issue #761).
+        _lastScrollTotal = _parser?.TotalLinesScrolled ?? 0;
 
         FileLog.Write($"[TerminalControl] RebuildFromBuffer: cols={_cols}, rows={_rows}, replayedBytes={replayedBytes}, scrollback={_scrollback.Count}");
     }
@@ -748,7 +771,23 @@ public class TerminalControl : Control
         // Only auto-scroll if user hasn't manually scrolled up
         // This lets users review history while output continues
         if (!_userScrolled && _scrollOffset > 0)
+        {
             _scrollOffset = 0;
+        }
+        else if (_userScrolled)
+        {
+            // The user is reading back. As the parser appends lines to scrollback,
+            // a fixed distance-from-bottom offset would let the pinned content drift
+            // upward out of view (and jump again when the oldest lines are trimmed).
+            // Advance the offset by however many lines were just appended so the text
+            // the user is reading stays put; clamp when their content ages off the top.
+            long total = _parser?.TotalLinesScrolled ?? _lastScrollTotal;
+            long delta = total - _lastScrollTotal;
+            if (delta > 0)
+                _scrollOffset = Math.Min(ActiveScrollbackCount, _scrollOffset + (int)delta);
+        }
+
+        _lastScrollTotal = _parser?.TotalLinesScrolled ?? 0;
 
         // Synchronized output (?2026): if the agent is mid-frame, hold the repaint
         // so we never paint a half-drawn frame (that mid-frame paint is what makes
@@ -780,11 +819,13 @@ public class TerminalControl : Control
         _scrollback.Clear();
         _scrollOffset = 0;
         _userScrolled = false;
+        _lastScrollTotal = 0;
         _pathExistsCache.Clear();
         _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
         if (data.Length > 0)
             _parser.Parse(data);
         SyncActiveGrid();
+        _lastScrollTotal = _parser.TotalLinesScrolled;
         InvalidateVisual();
     }
 
@@ -804,6 +845,22 @@ public class TerminalControl : Control
 
     /// <summary>Harness: the live parser, for reading the active (alt-aware) grid as ground truth.</summary>
     internal AnsiParser? HarnessParser => _parser;
+
+    /// <summary>Harness: emulate a wheel scroll-up of <paramref name="lines"/> rows, exactly like the
+    /// pointer-wheel handler on the normal buffer, so a test can drive the scrolled-up pin behavior
+    /// (issue #761).</summary>
+    internal void HarnessScrollUp(int lines)
+    {
+        ScrollOffset = _scrollOffset + lines;
+        _userScrolled = _scrollOffset > 0;
+    }
+
+    /// <summary>Harness: the plain text of visible viewport row <paramref name="row"/> (0 = top),
+    /// read through the same scrollback-aware path the renderer uses.</summary>
+    internal string HarnessVisibleLine(int row) => GetLineText(row).TrimEnd();
+
+    /// <summary>Harness: current scroll offset (lines up from the live bottom).</summary>
+    internal int HarnessScrollOffset => _scrollOffset;
 
     // Harness: stand-in for the session's RepoPath so relative path links (e.g. "docs/") resolve
     // to real on-disk directories and exercise the path-existence link rendering.
@@ -880,7 +937,7 @@ public class TerminalControl : Control
         var (curCol, curRow) = _parser.GetCursorPosition();
 
         var ctx = new RenderContext(
-            _scrollback, _scrollOffset,
+            ActiveScrollback, _scrollOffset,
             _hasSelection, selStartCol, selStartRow, selEndCol, selEndRow,
             cursorVisible, curCol, curRow,
             renderLinkRegions,
@@ -1236,20 +1293,35 @@ public class TerminalControl : Control
     {
         try
         {
-            // When a full-screen application is on the alternate screen and has
-            // requested mouse reporting (e.g. Claude Code), the local scrollback
-            // is empty by design -- the application scrolls its own view. Forward
-            // the wheel to it as mouse-wheel reports instead of scrolling local
-            // history, which would do nothing and leave the user stuck.
-            if (_session != null && _parser != null
-                && _parser.IsAlternateScreen && _parser.MouseReportingEnabled)
+            int lines = e.Delta.Y > 0 ? 3 : -3;
+
+            // On the alternate screen, prefer our recovered local scrollback (issue #761)
+            // so a running full-screen agent (Claude Code, Codex, Grok, Copilot) can be
+            // scrolled back through. We only hand the wheel to the application when the
+            // user is already at the live bottom and scrolling further down, so an app
+            // that scrolls its own view still works but the user is never stuck.
+            if (_parser != null && _parser.IsAlternateScreen)
             {
-                ForwardWheelToApplication(e);
+                bool scrollingUp = e.Delta.Y > 0;
+                bool hasLocalHistory = _parser.AltScrollbackCount > 0;
+
+                if (hasLocalHistory && (scrollingUp || _scrollOffset > 0))
+                {
+                    ScrollOffset = _scrollOffset + lines; // Uses property to trigger event
+                    _userScrolled = _scrollOffset > 0;
+                    e.Handled = true;
+                    return;
+                }
+
+                // At the live bottom (or nothing captured yet): let the application scroll
+                // its own view if it asked for mouse reporting.
+                if (_session != null && _parser.MouseReportingEnabled)
+                    ForwardWheelToApplication(e);
+
                 e.Handled = true;
                 return;
             }
 
-            int lines = e.Delta.Y > 0 ? 3 : -3;
             ScrollOffset = _scrollOffset + lines; // Uses property to trigger event
 
             // Track if user is reviewing history (scrolled up)
@@ -1367,20 +1439,21 @@ public class TerminalControl : Control
     {
         if (_scrollOffset > 0)
         {
-            int virtualIndex = _scrollback.Count - _scrollOffset + row;
+            var scrollback = ActiveScrollback;
+            int virtualIndex = scrollback.Count - _scrollOffset + row;
 
             if (virtualIndex < 0)
             {
                 return default;
             }
-            else if (virtualIndex < _scrollback.Count)
+            else if (virtualIndex < scrollback.Count)
             {
-                var line = _scrollback[virtualIndex];
+                var line = scrollback[virtualIndex];
                 return col < line.Length ? line[col] : default;
             }
             else
             {
-                int screenRow = virtualIndex - _scrollback.Count;
+                int screenRow = virtualIndex - scrollback.Count;
                 return (screenRow >= 0 && screenRow < _rows)
                     ? _cells[col, screenRow]
                     : default;
@@ -1503,20 +1576,21 @@ public class TerminalControl : Control
                 if (_scrollOffset > 0)
                 {
                     // Same logic as Render for scrollback
-                    int virtualIndex = _scrollback.Count - _scrollOffset + row;
+                    var scrollback = ActiveScrollback;
+                    int virtualIndex = scrollback.Count - _scrollOffset + row;
 
                     if (virtualIndex < 0)
                     {
                         cell = default;
                     }
-                    else if (virtualIndex < _scrollback.Count)
+                    else if (virtualIndex < scrollback.Count)
                     {
-                        var line = _scrollback[virtualIndex];
+                        var line = scrollback[virtualIndex];
                         cell = col < line.Length ? line[col] : default;
                     }
                     else
                     {
-                        int screenRow = virtualIndex - _scrollback.Count;
+                        int screenRow = virtualIndex - scrollback.Count;
                         cell = (screenRow >= 0 && screenRow < _rows)
                             ? _cells[col, screenRow]
                             : default;
