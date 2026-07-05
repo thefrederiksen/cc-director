@@ -1,0 +1,70 @@
+# Reusable composite action: code-sign Windows binaries with Azure Trusted Signing
+# (a.k.a. Azure Artifact Signing) so downloaded executables show the verified
+# publisher "Center Consulting Inc." instead of "Unknown Publisher".
+#
+# ---------------------------------------------------------------------------
+# One-time setup required in the repository before signing does anything
+# (until then, callers guard this with `if: ${{ vars.SIGNING_CERT_PROFILE != '' }}`
+# so releases keep building UNSIGNED and nothing breaks):
+#
+#   Repository VARIABLE (Settings -> Secrets and variables -> Actions -> Variables):
+#     SIGNING_CERT_PROFILE   The Trusted Signing certificate profile name created on
+#                            the "centerconsulting" account after the Center Consulting
+#                            Inc. identity validation is approved.
+#
+#   Repository SECRETS (Settings -> Secrets and variables -> Actions -> Secrets):
+#     AZURE_TENANT_ID        Tenant of the Entra app registration used by CI.
+#     AZURE_CLIENT_ID        App registration (service principal) client id.
+#     AZURE_CLIENT_SECRET    A client secret for that app registration.
+#   The service principal must hold the "Trusted Signing Certificate Profile Signer"
+#   role on the signing account (resource group CenterConsultingSigning ->
+#   account "centerconsulting").
+#
+# Fixed facts for our account (safe to hard-code; not secret):
+#   endpoint = https://eus.codesigning.azure.net/   (East US)
+#   signing-account-name = centerconsulting
+# ---------------------------------------------------------------------------
+
+name: Sign Windows binaries (Azure Trusted Signing)
+description: Code-sign Windows .exe/.dll files as Center Consulting Inc. via Azure Trusted Signing.
+
+inputs:
+  folder:
+    description: Folder whose matching files are signed (recurses into subfolders).
+    required: true
+  filter:
+    description: Comma-separated file extensions to sign.
+    required: false
+    default: exe
+  azure-tenant-id:
+    required: true
+  azure-client-id:
+    required: true
+  azure-client-secret:
+    required: true
+  certificate-profile-name:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # NOTE: verify the action version against the latest release of
+    # https://github.com/Azure/trusted-signing-action before the first signed release.
+    # v2.0.0 (2026-05) migrated to the new artifactsigning module and renamed
+    # trusted-signing-account-name to signing-account-name (the old name still works
+    # but is deprecated).
+    - name: Sign ${{ inputs.folder }}
+      uses: azure/trusted-signing-action@v2.0.0
+      with:
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-client-secret: ${{ inputs.azure-client-secret }}
+        endpoint: https://eus.codesigning.azure.net/
+        signing-account-name: centerconsulting
+        certificate-profile-name: ${{ inputs.certificate-profile-name }}
+        files-folder: ${{ inputs.folder }}
+        files-folder-filter: ${{ inputs.filter }}
+        files-folder-recurse: true
+        file-digest: SHA256
+        timestamp-rfc3161: http://timestamp.acs.microsoft.com/
+        timestamp-digest: SHA256

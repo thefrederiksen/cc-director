@@ -36,6 +36,18 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:UpdaterEnabled=true
 
+      # Sign the exe as Center Consulting Inc. before it becomes the release asset.
+      # No-op until the repo has SIGNING_CERT_PROFILE + the AZURE_* secrets set.
+      - name: Sign cc-director.exe
+        if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          folder: src/CcDirector.Avalonia/bin/Release/net10.0/win-x64/publish
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE }}
+
       - name: Upload cc-director artifact
         uses: actions/upload-artifact@v6
         with:
@@ -187,6 +199,17 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
 
+      # filter: exe -> signs only devthrottle-gateway.exe, not the wwwroot/m web assets.
+      - name: Sign devthrottle-gateway.exe
+        if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          folder: src/CcDirector.GatewayApp/bin/Release/net10.0-windows/win-x64/publish
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE }}
+
       - name: Upload gateway artifact
         uses: actions/upload-artifact@v6
         with:
@@ -247,6 +270,16 @@ jobs:
           -c Release -r win-x64 --self-contained false
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
+
+      - name: Sign cc-launcher.exe
+        if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          folder: src/CcDirector.Launcher/bin/Release/net10.0-windows/win-x64/publish
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE }}
 
       - name: Upload launcher artifact
         uses: actions/upload-artifact@v6
@@ -357,6 +390,18 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           --nologo
 
+      # The setup wizard is the FIRST thing new downloaders run, so signing it
+      # (killing "Unknown Publisher" on the installer) matters most of all.
+      - name: Sign cc-director-setup.exe
+        if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          folder: tools/cc-director-setup/bin/Release/net10.0-windows/win-x64/publish
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE }}
+
       - name: Upload setup wizard artifact
         uses: actions/upload-artifact@v6
         with:
@@ -373,6 +418,16 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           --nologo
+
+      - name: Sign cc-director-setup-cli.exe
+        if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          folder: tools/cc-director-setup-cli/bin/Release/net10.0/win-x64/publish
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE }}
 
       - name: Upload setup CLI artifact
         uses: actions/upload-artifact@v6
