@@ -174,7 +174,7 @@ public sealed class PythonToolsInstaller
             var installedBundle = installedAtStart.Get(ComponentId);
             var runtimeHealthy = File.Exists(venvPython)
                 && VenvHasAllTools(manifest.Scripts)
-                && BasePythonRuns(pythonExe);
+                && PythonRuntimeProbe.CanImportStdlib(pythonExe);
             if (installedBundle == manifest.BundleVersion && runtimeHealthy)
             {
                 Step($"Python tools bundle {manifest.BundleVersion} already installed and healthy; skipping rebuild");
@@ -204,7 +204,7 @@ public sealed class PythonToolsInstaller
                     : Path.Combine(staged, "bin", "python3");
                 if (!File.Exists(stagedPythonExe))
                     return Fail(steps, $"staged Python is missing its interpreter at {stagedPythonExe}; the existing Python was left untouched.");
-                if (!BasePythonRuns(stagedPythonExe))
+                if (!PythonRuntimeProbe.CanImportStdlib(stagedPythonExe))
                     return Fail(steps, "staged Python is incomplete - it cannot import its standard library (a partial extract). The existing Python was left untouched.");
 
                 Step("swapping in the verified Python");
@@ -586,30 +586,6 @@ public sealed class PythonToolsInstaller
     {
         if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         Directory.CreateDirectory(dir);
-    }
-
-    /// <summary>
-    /// True when the interpreter at <paramref name="pythonExe"/> actually runs - specifically, when it can
-    /// import its own standard library. A Python whose Lib\ (or pythonNNN.zip) went missing dies at startup
-    /// with "No module named 'encodings'" (the field failure in issue #994), so the mere existence of
-    /// python.exe does NOT prove the runtime works. A launch that throws (e.g. a non-PE file) is likewise a
-    /// dead runtime. This is the honest health probe for the shared base Python, used both to decide the
-    /// no-op early-out and to verify a freshly-staged Python before swapping it in.
-    /// </summary>
-    private static bool BasePythonRuns(string pythonExe)
-    {
-        if (!File.Exists(pythonExe)) return false;
-        try
-        {
-            var (exit, _) = ProcessRunner.Run(pythonExe, "-c \"import encodings\"", onStdoutLine: null, TimeSpan.FromSeconds(30));
-            return exit == 0;
-        }
-        catch
-        {
-            // A process that cannot even start (not a valid interpreter) is a dead runtime, not an error to
-            // surface here - the caller treats false as "needs (re)provisioning".
-            return false;
-        }
     }
 
     /// <summary>

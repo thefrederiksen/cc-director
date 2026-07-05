@@ -62,13 +62,24 @@ public static class HomeStatusBuilder
         int toolsBuilt,
         int toolsTotal,
         IReadOnlyList<string>? brokenTools = null,
-        Tools.ToolHealthSummary? toolHealth = null)
+        Tools.ToolHealthSummary? toolHealth = null,
+        bool basePythonBroken = false)
     {
+        // The shared base Python being hollow (present but unable to import its standard library) takes down
+        // EVERY Python cc-* tool at once (issue #995). It is a distinct, repairable runtime failure, so it
+        // short-circuits the per-tool breakdown with a clear message and a one-click repair - the repair
+        // re-provisions the base Python.
+        HomeCheck toolsCheck;
+        if (basePythonBroken)
+            toolsCheck = new HomeCheck("cc-* tools", HomeCheckLevel.Bad,
+                "Python runtime broken - the shared Python cannot start; one-click repair reinstalls it",
+                HomeCheckAction.RepairTools);
         // When tool tests have run (toolHealth supplied) the tools row reflects pass/fail/not-built;
         // before that it falls back to the cheap build-status check so the home renders immediately.
-        var toolsCheck = toolHealth is { } h
-            ? BuildToolsFromHealth(h)
-            : BuildTools(toolsBuilt, toolsTotal, brokenTools ?? Array.Empty<string>());
+        else if (toolHealth is { } h)
+            toolsCheck = BuildToolsFromHealth(h);
+        else
+            toolsCheck = BuildTools(toolsBuilt, toolsTotal, brokenTools ?? Array.Empty<string>());
 
         var checks = new List<HomeCheck>
         {
@@ -84,8 +95,10 @@ public static class HomeStatusBuilder
     /// <summary>
     /// The cc-* tools row from actual test results. Green ONLY when every tool passes. Otherwise it
     /// warns and shows the true breakdown ("26 pass · 2 not built" / "24 pass · 1 fail · 4 not built") -
-    /// any failing OR not-built tool surfaces here rather than hiding behind "all systems go". A broken
-    /// (expected-but-missing) tool offers the one-click repair; anything else routes to the Tools page.
+    /// any failing OR not-built tool surfaces here rather than hiding behind "all systems go". A failing
+    /// built tool OR a broken (expected-but-missing) tool offers the one-click repair - a failure is
+    /// repairable, not merely something to look at; a not-built-only state (optional tools) routes to the
+    /// Tools page.
     /// </summary>
     private static HomeCheck BuildToolsFromHealth(Tools.ToolHealthSummary h)
     {
@@ -107,7 +120,7 @@ public static class HomeStatusBuilder
             detail += $" - failing: {shown}";
         }
 
-        var action = h.Broken > 0 ? HomeCheckAction.RepairTools : HomeCheckAction.OpenTools;
+        var action = (h.Broken > 0 || h.Fail > 0) ? HomeCheckAction.RepairTools : HomeCheckAction.OpenTools;
         return new HomeCheck("cc-* tools", HomeCheckLevel.Warn, detail, action);
     }
 
