@@ -1,0 +1,533 @@
+/* Schedule page (issue #976) - the React port of the Blazor Schedule.razor / Schedule.razor.css
+   (#488). Rendered as normal scrolling content inside the padded main pane. Every color is a token
+   from the app theme (src/styles.css :root) or a literal defined here in this stylesheet - nothing
+   hard-codes a color in a component. The status green has no theme token, so it is a named local
+   custom property here (matching the Blazor --green #22C55E). */
+
+.sched {
+  --sched-green: #22c55e;
+  max-width: 1400px;
+}
+
+.sched .mono {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.sched .dim {
+  color: var(--text-dim);
+}
+
+/* ---- page header ---- */
+.sched-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.sched-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.sched-sub {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.sched-refreshed {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.sched-spacer {
+  flex: 1;
+}
+
+/* ---- buttons ---- */
+.sched-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sched-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.sched-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sched-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* ---- banners / empty ---- */
+.sched-banner-error {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 8px;
+  color: var(--attention);
+  font-size: 13px;
+}
+
+.sched-empty {
+  margin-top: 18px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+/* ---- tables ---- */
+.sched-tbl {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+.sched-tbl th,
+.sched-tbl td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.sched-tbl th {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sched-row {
+  cursor: pointer;
+}
+
+.sched-row:hover td {
+  background: var(--surface-2);
+}
+
+.sched-row.sel td {
+  background: var(--surface-2);
+}
+
+.sched-cell-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sched-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.sched-linkbtn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12.5px;
+  padding: 0 6px;
+}
+
+.sched-linkbtn:hover {
+  text-decoration: underline;
+}
+
+.sched-linkbtn.del {
+  color: var(--attention);
+}
+
+/* enabled/disabled toggle chip */
+.sched-chip {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  padding: 2px 8px;
+  border: 1px solid;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sched-chip.enabled {
+  color: var(--sched-green);
+  border-color: var(--sched-green);
+}
+
+.sched-chip.disabled {
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
+/* run-complete notification badge (#622) */
+.sched-notify-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  white-space: nowrap;
+}
+
+/* run-history status text */
+.sched-st {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sched-st.ok {
+  color: var(--sched-green);
+}
+
+.sched-st.warn {
+  color: var(--warn);
+}
+
+.sched-st.err {
+  color: var(--attention);
+}
+
+.sched-st.dim {
+  color: var(--text-dim);
+}
+
+/* section head above the run-history table */
+.sched-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 22px 0 10px;
+}
+
+.sched-sec-head h2 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0;
+}
+
+.sched-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* ---- modal (create / edit) ---- */
+.sched-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.sched-modal {
+  width: 460px;
+  max-width: 92vw;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+.sched-modal-head {
+  padding: 14px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.sched-modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.sched-modal-foot {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.sched-modal-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 6px;
+  color: var(--attention);
+  font-size: 12.5px;
+}
+
+.sched-fld {
+  margin-bottom: 12px;
+}
+
+.sched-fld-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.sched-fld input,
+.sched-fld select {
+  width: 100%;
+  background: var(--code-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
+
+.sched-fld input.mono {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.sched-fld input:focus,
+.sched-fld select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ---- compact Director field + picker dialog (#495) ---- */
+.sched-dpick-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sched-dpick-chosen {
+  flex: 1;
+  min-width: 0;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sched-dpick-chosen.none {
+  color: var(--text-dim);
+  font-style: italic;
+  font-family: inherit;
+}
+
+.dpick-choose {
+  flex: none;
+}
+
+.dpicker-over {
+  z-index: 60;
+}
+
+.dpicker-modal {
+  width: 560px;
+  max-width: 94vw;
+}
+
+.dpicker-modal .sched-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sched-dpicker-filter {
+  width: 100%;
+  background: var(--code-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
+
+.sched-dpicker-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.sched-dpick {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden auto;
+  max-height: 56vh;
+  background: var(--code-bg);
+}
+
+.sched-dpick-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 12px;
+  padding: 8px 2px;
+}
+
+.sched-dcard {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--border);
+  padding: 9px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sched-dcard:last-child {
+  border-bottom: none;
+}
+
+.sched-dcard:hover {
+  background: var(--surface-2);
+}
+
+.sched-dcard.sel {
+  background: var(--surface-2);
+  border-left-color: var(--accent);
+}
+
+.sched-dcard-top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.sched-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.sched-dot.ok {
+  background: var(--sched-green);
+}
+
+.sched-dot.dead {
+  background: var(--attention);
+}
+
+.sched-dname {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.sched-dmeta {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.sched-dneeds {
+  color: var(--attention);
+  font-weight: 700;
+  font-size: 10px;
+  border: 1px solid var(--attention);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+.sched-dsub {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 5px 0 0 18px;
+}
+
+.sched-dsub.dempty {
+  font-style: italic;
+}
+
+.sched-dsess {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  margin: 3px 0 0 18px;
+  color: var(--text-dim);
+}
+
+.sched-sdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.sched-sdot.run {
+  background: var(--sched-green);
+}
+
+.sched-sdot.needs {
+  background: var(--attention);
+}
+
+.sched-sdot.idle {
+  background: var(--text-dim);
+}
+
+.sched-sname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sched-sstate {
+  margin-left: auto;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.sched-sstate.needs {
+  color: var(--attention);
+}
+
+.sched-sstate.run {
+  color: var(--sched-green);
+}
