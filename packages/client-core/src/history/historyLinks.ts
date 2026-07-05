@@ -11,13 +11,18 @@ export interface HistoryLink {
   isUrl: boolean;
 }
 
-// Absolute Windows paths (e.g. C:\path\to\file or C:/path/to/file). In C# the verbatim string's
-// "" is a single quote char inside the negated class.
-const AbsoluteWindowsPathRegex = /[A-Za-z]:[/\\][^\s"'`<>|*?()[\]]+/g;
+// Absolute Windows paths (e.g. C:\path\to\file or C:/path/to/file). The (?<![A-Za-z]) guard keeps a
+// drive letter that is really part of a longer word from being mis-claimed (e.g. the "e" of "file:"
+// in "file:///D:/..."), matching the C# AbsoluteWindowsPathRegex (issue #252).
+const AbsoluteWindowsPathRegex = /(?<![A-Za-z])[A-Za-z]:[/\\][^\s"'`<>|*?()[\]]+/g;
 // Unix-style absolute paths (e.g. /c/path/to/file for Git Bash / WSL).
 const AbsoluteUnixPathRegex = /\/[a-z]\/[^\s"'`<>|*?()[\]]+/gi;
 // URLs (http/https or git@).
 const UrlRegex = /https?:\/\/[^\s"'`<>()[\]]+|git@[^\s"'`<>()[\]]+/gi;
+// file:// URLs (RFC 8089), e.g. file:///D:/path/file.html. These name a LOCAL file, so they surface
+// as Path links with the whole file://... span claimed and the resolved local path as the text
+// (issue #252). Matched before the Windows/Unix path matchers so the whole span is one link.
+const FileUrlRegex = /file:\/\/[^\s"'`<>|*?()[\]]+/gi;
 // Characters that look like a path start inside a quoted span.
 const PathLikeRegex = /^(?:[A-Za-z]:[/\\]|\/[a-z]\/|\.{0,2}[/\\]|[A-Za-z_][A-Za-z0-9_-]*[/\\])/i;
 
@@ -88,6 +93,20 @@ function findAllLinkMatches(lineText: string): LinkMatch[] {
     if (overlaps(claimed, start, end)) continue;
     const url = stripTrailingPunctuation(m[0]);
     matches.push({ text: url, isUrl: true });
+    claimed.push({ start, end });
+  }
+
+  // 2b. file:// URLs -> the resolved LOCAL file path (a Path link). The whole file://... span is
+  //     claimed, but the text is the local path so the link opens the actual file. Runs before the
+  //     path matchers so they cannot mis-claim the drive letter inside the URL.
+  for (const m of lineText.matchAll(FileUrlRegex)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    if (overlaps(claimed, start, end)) continue;
+    const span = stripTrailingPunctuation(m[0]);
+    const localPath = tryConvertFileUrlToLocalPath(span);
+    if (localPath === null) continue;
+    matches.push({ text: localPath, isUrl: false });
     claimed.push({ start, end });
   }
 
@@ -166,6 +185,39 @@ function extractQuotedSpans(text: string): QuotedSpan[] {
     i++;
   }
   return spans;
+}
+
+// Convert a file:// URL to the local Windows path it names, e.g. file:///D:/My%20Docs/report.md ->
+// D:\My Docs\report.md (issue #252). Mirrors the C# TryConvertFileUrlToLocalPath (which uses
+// Uri.LocalPath): percent-encoding is decoded and forward slashes become backslashes. Returns null
+// for anything that is not an absolute file URL, so the caller falls through to the path matchers.
+export function tryConvertFileUrlToLocalPath(fileUrl: string): string | null {
+  if (!fileUrl) return null;
+  let url: URL;
+  try {
+    url = new URL(fileUrl);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "file:") return null;
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.pathname);
+  } catch {
+    return null;
+  }
+
+  // A UNC path (file://server/share) keeps the host as the leading \\server; otherwise the pathname
+  // is /D:/... where the leading slash precedes the drive letter and must be dropped.
+  let local: string;
+  if (url.host) {
+    local = `\\\\${url.host}${decoded}`;
+  } else {
+    local = decoded.startsWith("/") ? decoded.slice(1) : decoded;
+  }
+  local = local.replace(/\//g, "\\");
+  return local.length === 0 ? null : local;
 }
 
 function isRelativePath(path: string): boolean {
