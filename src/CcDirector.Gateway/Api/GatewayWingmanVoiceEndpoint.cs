@@ -221,10 +221,10 @@ internal static class GatewayWingmanVoiceEndpoint
             var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
             try
             {
-                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-                http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-                using var payload = JsonContent.Create(new { model, voice, input, response_format = "mp3" });
-                using var resp = await http.PostAsync(url, payload, ct);
+                // Short per-attempt timeout + one retry (TtsSynthesis) so a stalled upstream voice
+                // worker fails fast and retries instead of freezing the caller for a flat 60 seconds.
+                using var http = new HttpClient();
+                using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, ct);
                 if (!resp.IsSuccessStatusCode)
                 {
                     var body = await resp.Content.ReadAsStringAsync(ct);

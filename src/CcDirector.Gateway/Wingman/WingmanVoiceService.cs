@@ -338,16 +338,13 @@ public sealed class WingmanVoiceService
         var model = TtsModelConfig.Resolve(mode);
         var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
         // Reuse the injected client (tests) or a per-call one; auth goes on the request, not the shared
-        // client's default headers, so a shared client is safe under concurrent turn-ends.
-        var http = _ttsHttp ?? new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        // client's default headers, so a shared client is safe under concurrent turn-ends. The effective
+        // timeout is the short per-attempt cap inside TtsSynthesis, which also retries once when a
+        // stalled upstream worker never answers - so a flaky voice backend no longer freezes the turn.
+        var http = _ttsHttp ?? new HttpClient();
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, url)
-            {
-                Content = JsonContent.Create(new { model, voice, input, response_format = "mp3" }),
-            };
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            using var resp = await http.SendAsync(req, ct);
+            using var resp = await TtsSynthesis.PostAsync(http, url, key, new { model, voice, input, response_format = "mp3" }, ct);
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);
