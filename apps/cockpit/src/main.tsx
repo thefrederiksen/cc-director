@@ -9,8 +9,12 @@ import { SessionDetail } from "./sessions/SessionDetail";
 import { FleetView } from "./fleet/FleetView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
+import { ScheduleView } from "./schedule/ScheduleView";
+import { WingmanQueueView } from "./wingman/WingmanQueueView";
 import "./styles.css";
 import "./fleet/fleet.css";
+import "./schedule/schedule.css";
+import "./wingman/wingman.css";
 
 // Mirror any injected per-machine token into the cc-gateway-token cookie at startup so the live
 // terminal WebSocket (which cannot carry an Authorization header) authenticates same-origin to the
@@ -45,7 +49,13 @@ const router = createBrowserRouter(
         { path: "/fleet", element: <FleetView /> },
         { path: "/directors", element: <DirectorsView /> },
         { path: "/directors/:directorId", element: <DirectorDetailView /> },
-        { path: "/schedule", element: <PlaceholderPane title="Schedule" /> },
+        // The Schedule + Wingman-pipeline pages (issue #976): one-to-one ports of the Blazor
+        // Schedule.razor (cron jobs, /cron/jobs surface) and WingmanQueue.razor (read-only
+        // /wingman/queue snapshot) over the same Gateway REST surface. Wingman has no left-rail nav
+        // entry (mirroring the Blazor nav, which hides both from the v1 default view); it is reached
+        // by its direct route, as the Blazor page is.
+        { path: "/schedule", element: <ScheduleView /> },
+        { path: "/wingman", element: <WingmanQueueView /> },
         { path: "/lists", element: <PlaceholderPane title="Lists" /> },
         { path: "/telemetry", element: <PlaceholderPane title="Telemetry" /> },
         { path: "*", element: <PlaceholderPane title="Not found" /> },

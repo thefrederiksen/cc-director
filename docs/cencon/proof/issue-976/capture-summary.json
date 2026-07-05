@@ -1,0 +1,10 @@
+{
+  "created_posts": [
+    "{\"id\":\"\",\"name\":\"Playwright proof job\",\"enabled\":true,\"scheduleKind\":\"oneOff\",\"cronExpression\":null,\"runAt\":\"\",\"timeZoneId\":\"\",\"target\":{\"machine\":\"SOREN_NORTH\"},\"action\":{\"repoPath\":\"\",\"seed\":\"\",\"workListName\":\"\"},\"preventOverlap\":true,\"notifyOn\":\"none\",\"notifyWebhookUrl\":null}"
+  ],
+  "runs_fired": [
+    "job-nightly"
+  ],
+  "puts": [],
+  "deletes": []
+}

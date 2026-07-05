@@ -22,6 +22,8 @@ const devProxy = proxyTarget
       "/directors": { target: proxyTarget, changeOrigin: true },
       "/interrupted": { target: proxyTarget, changeOrigin: true },
       "/fanout": { target: proxyTarget, changeOrigin: true },
+      "/cron": { target: proxyTarget, changeOrigin: true },
+      "/wingman": { target: proxyTarget, changeOrigin: true },
     }
   : undefined;
 
