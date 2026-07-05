@@ -348,6 +348,13 @@ def spawn(
     command_args: Optional[str] = typer.Option(
         None, "--command-args", help="For --agent RawCli: arguments for the command."
     ),
+    args: Optional[str] = typer.Option(
+        None,
+        "--args",
+        help="Override the agent's command-line arguments for this session (issue #1017). "
+        "When omitted, the session inherits the same default agent settings (permission mode, "
+        "default model) the desktop New Session dialog applies.",
+    ),
     controlled_by: Optional[str] = typer.Option(
         None,
         "--controlled-by",
@@ -359,7 +366,7 @@ def spawn(
 ) -> None:
     """Open a new session on the local Director and print its id."""
     spawn_session(
-        repo, agent, prompt, name, purpose, session_type, command, command_args, controlled_by
+        repo, agent, prompt, name, purpose, session_type, command, command_args, controlled_by, args
     )
 
 
