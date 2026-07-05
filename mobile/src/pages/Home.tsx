@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { listSessions, type SessionDto } from "../api/client";
-import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, repoLeaf } from "../sessions/ordering";
+import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, isWorking, repoLeaf } from "../sessions/ordering";
 import { useNow, waitingLabel } from "../sessions/waiting";
 import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "../voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
@@ -191,9 +191,22 @@ function SessionRow({ session }: { session: SessionDto }) {
 // Gateway or the phone is still downloading, a yellow spinner shows instead. Non-voice sessions
 // render nothing here. Tapping the triangle plays the locally-stored clip with no download wait;
 // preventDefault/stopPropagation keep the tap from also following the row's link.
+//
+// The finished-turn narration is retired the instant the session starts working again: while
+// isWorking(session) is true the whole indicator renders nothing (no triangle, no spinner), because
+// that verbal cue is now stale. If this session's clip is playing at that moment it is stopped, so a
+// stale clip cannot keep talking after the agent has resumed.
 function VoiceIndicator({ session }: { session: SessionDto }) {
-  if (!session.voiceMode) return null;
   const sid = session.sessionId ?? "";
+  const working = isWorking(session);
+
+  useEffect(() => {
+    if (working && playingSid() === sid) stopPlayback();
+  }, [working, sid]);
+
+  if (!session.voiceMode) return null;
+  if (working) return null;
+
   const clip = getClipState(sid);
 
   if (clip.phase === "ready") {

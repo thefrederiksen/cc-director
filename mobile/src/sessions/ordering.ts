@@ -48,6 +48,20 @@ export function effectiveColor(s: SessionDto): string {
   return s.statusColor ?? "unknown";
 }
 
+// True while the agent is actively running a turn - the "working" state. Blue is the authoritative
+// working color (StatusColor.cs: blue = agent working / a turn is in progress); the raw activity /
+// assessed state is checked too so a session mid-turn still counts before its color settles. A
+// deferred (on-hold) session is never "working" - the user parked it. Used to retire a now-stale
+// Wingman voice cue: the roster play-triangle is shown only while a session is red / parked and is
+// removed the instant it starts working again (you no longer want to hear the finished-turn
+// narration).
+export function isWorking(s: SessionDto): boolean {
+  if (s.onHold) return false;
+  if ((s.statusColor ?? "").toLowerCase() === "blue") return true;
+  const state = s.assessedState ?? s.activityState ?? "";
+  return state === "Working";
+}
+
 // Classify a session for triage. On-hold takes precedence over color (the user deferred it);
 // otherwise an effective-red session "needs you", everything else is active.
 export function classify(s: SessionDto): TriageBucket {
