@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  getWingmanMenu,
   getWingmanVoice,
   listSessions,
   markVoiceAndExplain,
-  pressWingmanMenu,
   sendPrompt,
   setVoiceMode,
   stopWingmanVoice,
   type SessionDto,
-  type WingmanMenu,
-  type WingmanMenuOption,
   type WingmanVoice,
 } from "../api/client";
 import { DictationDialog } from "../dictation/DictationDialog";
@@ -27,20 +23,14 @@ import { isWorking } from "../sessions/ordering";
 // watcher), and this screen downloads it to the phone before offering playback - the one new rule
 // is "phone-ready, not just gateway-ready" (see voice/clips.ts and docs/architecture/mobile/voice-mode.html).
 //
-// Screen states (mockups A-D, F): off (one "Switch to voice mode" button), working (Wingman reading
-// + phone downloading), speaking (clip plays, narrative shown, Respond), and waiting-on-choice (the
-// agent is waiting on options rendered as buttons). Reply is the existing dictation interface with
-// Cancel / Pause / Send and NO Insert (mockup F); Send transcribes and goes straight into the
-// session via the same POST /prompt path. A future "Talk to the Wingman" reply target is out of
-// scope; the Respond control leaves room for it but does not build it.
+// Screen states: off (one "Switch to voice mode" button), working (Wingman reading + phone
+// downloading), and speaking (clip plays, narrative shown, Respond). Voice mode is HANDS-FREE (issue
+// #947): a waiting choice is NOT rendered as tappable option buttons - the Wingman speaks the question
+// and its options in the narration and you answer by voice through Respond. Reply is the existing
+// dictation interface with Cancel / Pause / Send and NO Insert; Send transcribes and goes straight
+// into the session via the same POST /prompt path.
 
 const VOICE_POLL_MS = 3000; // a slightly faster poll than the 5s roster, only while this screen is open
-
-function isWaiting(s: SessionDto | null): boolean {
-  if (s === null) return false;
-  const state = s.assessedState ?? s.activityState ?? "";
-  return state === "WaitingForInput" || state === "WaitingForPerm";
-}
 
 // Issue #951: the 3s poll used to push a fresh object into state on every tick, re-rendering the whole
 // Voice screen even when nothing had changed (flashing narration, a jumping player row). These compare
@@ -66,19 +56,6 @@ function sameVoice(a: WingmanVoice | null, b: WingmanVoice | null): boolean {
     && a.spoken === b.spoken && a.reply === b.reply;
 }
 
-function sameMenu(a: WingmanMenu | null, b: WingmanMenu | null): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  if (a.question !== b.question || a.selectionMode !== b.selectionMode
-    || a.submit !== b.submit || a.options.length !== b.options.length) return false;
-  for (let i = 0; i < a.options.length; i++) {
-    const x = a.options[i];
-    const y = b.options[i];
-    if (x.key !== y.key || x.send !== y.send || x.recommended !== y.recommended) return false;
-  }
-  return true;
-}
-
 // mm:ss for the playback clock (display only).
 function formatClock(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return "0:00";
@@ -95,7 +72,6 @@ export function VoiceMode() {
   const [name, setName] = useState<string | null>(null);
   const [session, setSession] = useState<SessionDto | null>(null);
   const [voice, setVoice] = useState<WingmanVoice | null>(null);
-  const [menu, setMenu] = useState<WingmanMenu | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Optimistic "this session is now a voice session" the instant Switch is tapped, so the screen
@@ -109,7 +85,6 @@ export function VoiceMode() {
   const [enabling, setEnabling] = useState(false);
   const [enableNote, setEnableNote] = useState<string>(""); // "nothing to summarize yet" message
   const [responding, setResponding] = useState(false);
-  const [selected, setSelected] = useState<Set<number>>(new Set()); // multi-select choices
 
   // Re-render this screen when a clip download completes (phone-ready).
   useVoiceClips();
@@ -147,7 +122,7 @@ export function VoiceMode() {
     };
   }, []);
 
-  // ----- the single poll that drives every state (session flags + voice + menu) -----
+  // ----- the single poll that drives every state (session flags + voice) -----
   const poll = useCallback(
     async (signal: AbortSignal) => {
       try {
@@ -160,7 +135,6 @@ export function VoiceMode() {
         const on = localEnabledRef.current || Boolean(match?.voiceMode);
         if (!on) {
           setVoice(null);
-          setMenu(null);
           setError(null);
           return;
         }
@@ -169,16 +143,6 @@ export function VoiceMode() {
         setVoice((prev) => (sameVoice(prev, v) ? prev : v));
         // Kick the phone-side download the moment a (new) clip is ready on the Gateway.
         if (v.ready && v.generatedAt) void ensureClip(sid, v.generatedAt);
-
-        // Only ask the Wingman for the on-screen menu when the agent is actually waiting - this is
-        // the cheap gate the Gateway uses too, so a working agent never triggers a menu extraction.
-        if (isWaiting(match)) {
-          const m = await getWingmanMenu(sid, signal);
-          const next = m.isMenu && m.options.length > 0 ? m : null;
-          setMenu((prev) => (sameMenu(prev, next) ? prev : next));
-        } else {
-          setMenu(null);
-        }
         setError(null);
       } catch (err) {
         if (signal.aborted) return;
@@ -199,11 +163,6 @@ export function VoiceMode() {
       window.clearInterval(timer);
     };
   }, [poll]);
-
-  // Reset multi-select when the waiting choice changes (or clears).
-  useEffect(() => {
-    setSelected(new Set());
-  }, [menu?.question, menu?.options.length]);
 
   const generatedAt = voice?.generatedAt ?? "";
   const phoneReady =
@@ -284,7 +243,6 @@ export function VoiceMode() {
     stopPlayback(); // stop any roster clip too
     setLocalEnabled(false);
     setVoice(null);
-    setMenu(null);
     setEnableNote("");
     setSession((prev) => (prev ? { ...prev, voiceMode: false } : prev));
     autoPlayedRef.current = "";
@@ -347,52 +305,12 @@ export function VoiceMode() {
     [sid],
   );
 
-  const onPressSingle = useCallback(
-    async (opt: WingmanMenuOption) => {
-      if (sid.length === 0) return;
-      try {
-        await pressWingmanMenu(sid, opt.send);
-        setMenu(null); // optimistic; the next narration replaces it
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not select that option");
-      }
-    },
-    [sid],
-  );
-
-  const onSubmitMultiple = useCallback(async () => {
-    if (sid.length === 0 || menu === null) return;
-    const chosen = menu.options.filter((_, i) => selected.has(i));
-    if (chosen.length === 0) return;
-    // Multiple-select: each option's send is just its toggle keystroke; press every chosen toggle
-    // then the menu's submit keystroke completes the selection.
-    const send = chosen.map((o) => o.send).join("");
-    const submit = menu.submit.length > 0 ? menu.submit : "\r";
-    try {
-      await pressWingmanMenu(sid, send, submit);
-      setMenu(null);
-      setSelected(new Set());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not submit your selection");
-    }
-  }, [sid, menu, selected]);
-
-  const toggleSelected = useCallback((index: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
-      return next;
-    });
-  }, []);
-
   const voiceOn = localEnabled || Boolean(session?.voiceMode);
-  const waitingChoice = voiceOn && menu !== null;
   // The speaking state (and its play-triangle) is suppressed while the agent is working again: the
   // finished-turn narration is stale, so the screen falls back to the working card instead of
   // offering a replay of it.
-  const speaking = voiceOn && !waitingChoice && phoneReady && (voice?.spoken.length ?? 0) > 0 && !agentWorking;
-  const working = voiceOn && !waitingChoice && !speaking;
+  const speaking = voiceOn && phoneReady && (voice?.spoken.length ?? 0) > 0 && !agentWorking;
+  const working = voiceOn && !speaking;
   const progress = dur > 0 ? Math.min(1, pos / dur) : 0;
   const narrative = voice?.spoken ?? "";
 
@@ -501,71 +419,9 @@ export function VoiceMode() {
           </>
         )}
 
-        {/* D. WAITING ON CHOICE - options become buttons (single, or "pick any" with Submit). */}
-        {waitingChoice && menu !== null && (
-          <>
-            <div className="voice-statusbar">
-              <span className="voice-state voice-state-green">Waiting on you</span>
-              <span className="voice-ref">
-                {menu.selectionMode === "multiple" ? "pick any that apply" : "pick one"}
-              </span>
-            </div>
-            <div className="voice-narr">
-              <div className="voice-narr-title">{menu.spoken.length > 0 ? menu.spoken : narrative}</div>
-              <div className="voice-narr-body">
-                {menu.selectionMode === "multiple"
-                  ? "Select the items to include, then submit."
-                  : "Tap an option to choose it."}
-              </div>
-            </div>
-
-            {menu.options.map((opt, i) => {
-              const isSelected = selected.has(i);
-              if (menu.selectionMode === "multiple") {
-                return (
-                  <button
-                    type="button"
-                    key={`${opt.key}-${i}`}
-                    className={`voice-opt${opt.recommended ? " voice-opt-rec" : ""}${isSelected ? " voice-opt-selected" : ""}`}
-                    onClick={() => toggleSelected(i)}
-                    aria-pressed={isSelected}
-                  >
-                    <span className="voice-opt-key">{i + 1}</span>
-                    <span className="voice-opt-label">{opt.key}</span>
-                    {opt.recommended && <span className="voice-opt-tag">SUGGESTED</span>}
-                  </button>
-                );
-              }
-              return (
-                <button
-                  type="button"
-                  key={`${opt.key}-${i}`}
-                  className={`voice-opt${opt.recommended ? " voice-opt-rec" : ""}`}
-                  onClick={() => void onPressSingle(opt)}
-                >
-                  <span className="voice-opt-key">{i + 1}</span>
-                  <span className="voice-opt-label">{opt.key}</span>
-                  {opt.recommended && <span className="voice-opt-tag">SUGGESTED</span>}
-                </button>
-              );
-            })}
-
-            {menu.selectionMode === "multiple" && (
-              <button
-                type="button"
-                className="voice-submit"
-                onClick={() => void onSubmitMultiple()}
-                disabled={selected.size === 0}
-              >
-                Submit selection
-              </button>
-            )}
-          </>
-        )}
-
-        {/* Turn voice off: a low-emphasis control present in every on-state (working, speaking,
-            waiting-on-choice). It tells the owning Director to leave voice mode (ViewMode -> Text),
-            the same call the native app makes, and the screen returns to the off state. */}
+        {/* Turn voice off: a low-emphasis control present in every on-state (working, speaking). It
+            tells the owning Director to leave voice mode (ViewMode -> Text), the same call the native
+            app makes, and the screen returns to the off state. */}
         {voiceOn && (
           <button type="button" className="voice-off-toggle" onClick={() => void onSwitchOff()}>
             Turn voice off
