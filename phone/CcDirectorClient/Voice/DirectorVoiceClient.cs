@@ -109,7 +109,13 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
             JsonBody(new { TotalChunks = 1, Mime = mime, SessionId = sessionId }), ct);
         var compBody = await compResp.Content.ReadAsStringAsync(ct);
         if (!compResp.IsSuccessStatusCode)
+        {
+            // Out of credits / cap (issue #943): throw the typed exception carrying the shared message +
+            // call-to-action so the UI shows the add-credits prompt, not a raw "complete failed: 402".
+            var credits = HostedAiUnavailableException.TryFrom((int)compResp.StatusCode, compBody);
+            if (credits is not null) throw credits;
             throw new HttpRequestException($"voice/utterance complete failed: {(int)compResp.StatusCode} {compBody}");
+        }
 
         var comp = JsonSerializer.Deserialize<CompleteResp>(compBody, Json)
                    ?? throw new InvalidOperationException("voice/utterance complete returned no body");
@@ -169,6 +175,9 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
         if (!resp.IsSuccessStatusCode)
         {
             var body = await resp.Content.ReadAsStringAsync(ct);
+            // Out of credits / cap (issue #943): the typed exception carries the shared add-credits message.
+            var credits = HostedAiUnavailableException.TryFrom((int)resp.StatusCode, body);
+            if (credits is not null) throw credits;
             throw new HttpRequestException($"tts failed: {(int)resp.StatusCode} {body}");
         }
         var bytes = await resp.Content.ReadAsByteArrayAsync(ct);

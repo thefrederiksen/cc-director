@@ -212,6 +212,14 @@ public partial class VoiceSessionView : ContentView
         {
             return; // host cancelled or moved on
         }
+        catch (HostedAiUnavailableException credits)
+        {
+            // Out of credits / cap (issue #943): no longer swallowed - show the shared add-credits prompt
+            // so the briefing failing on credits is visible, not a silent "-".
+            ClientLog.Write($"[VoiceSessionView] PrepareExplain out of credits: {credits.State}");
+            var page = FindAncestorPage();
+            if (page is not null) await HostedAiPrompt.ShowAsync(page, credits);
+        }
         catch (Exception ex)
         {
             ClientLog.Write($"[VoiceSessionView] PrepareExplain failed: {ex.Message}");
@@ -419,6 +427,15 @@ public partial class VoiceSessionView : ContentView
         catch (OperationCanceledException)
         {
             SetBusy(false);
+        }
+        catch (HostedAiUnavailableException credits)
+        {
+            // Out of credits / cap (issue #943): the ONE shared message + Add-credits prompt.
+            _audioCue?.PlayError();
+            SetStatus("Voice needs credit", StatusRed);
+            SetBusy(false);
+            var page = FindAncestorPage();
+            if (page is not null) await HostedAiPrompt.ShowAsync(page, credits);
         }
         catch (Exception ex)
         {
