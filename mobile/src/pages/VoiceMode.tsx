@@ -15,6 +15,7 @@ import {
   type WingmanVoice,
 } from "../api/client";
 import { DictationDialog } from "../dictation/DictationDialog";
+import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
 import { ensureClip, getClipState, stopPlayback, useVoiceClips } from "../voice/clips";
@@ -330,6 +331,22 @@ export function VoiceMode() {
     [sid],
   );
 
+  // Issue #949: the fast fire-and-forget Send - the SAME path the Terminal/Chat Speak use. When Send is
+  // pressed while still recording, the dialog hands up the captured audio and closes immediately; the
+  // transcode/upload/transcribe/submit then runs in the background (the roster shows the session
+  // orange), so dictating a reply in voice mode is as fast as dictating anywhere else instead of
+  // blocking on the transcription. The PAUSED-stage Send still uses onRespondSend (text already in hand).
+  const onRespondSendAudio = useCallback(
+    (captured: CapturedUtterance) => {
+      setResponding(false);
+      if (sid.length === 0) return;
+      void backgroundTranscribeAndSend(sid, captured, {
+        onError: (message) => setError(message),
+      });
+    },
+    [sid],
+  );
+
   const onPressSingle = useCallback(
     async (opt: WingmanMenuOption) => {
       if (sid.length === 0) return;
@@ -562,6 +579,7 @@ export function VoiceMode() {
         <DictationDialog
           showInsert={false}
           onSend={(text) => void onRespondSend(text)}
+          onSendAudio={onRespondSendAudio}
           onClose={() => setResponding(false)}
         />
       )}
