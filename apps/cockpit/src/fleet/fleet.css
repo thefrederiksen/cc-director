@@ -1,0 +1,789 @@
+/* Fleet + Directors + Director detail (issue #975). The React port of the Blazor Fleet / Directors /
+   DirectorDetail pages. These render as normal scrolling content inside the padded main pane (unlike
+   the full-bleed Sessions/terminal panes), so they need no negative-margin bleed. Every color is a
+   token from the app theme (src/styles.css :root) or a literal defined here in this stylesheet -
+   nothing hard-codes a color in a component. */
+
+/* ---- Fleet cards dashboard ---- */
+.fleet {
+  max-width: 1400px;
+}
+
+.fleet-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.fleet-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.fleet-stats {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.fleet-red {
+  color: var(--attention);
+}
+
+.fleet-yellow {
+  color: var(--warn);
+}
+
+.fleet-interrupted {
+  color: var(--warn);
+}
+
+.fleet-spacer {
+  flex: 1;
+}
+
+.fleet-error {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 8px;
+  color: var(--attention);
+  font-size: 13px;
+}
+
+.fleet-empty {
+  margin-top: 24px;
+  padding: 28px;
+  text-align: center;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.fleet-empty-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.fleet-empty code {
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.fleet-group {
+  margin-bottom: 24px;
+}
+
+.fleet-machine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px 8px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.fleet-mname {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.fleet-muser,
+.fleet-mcount {
+  color: var(--text-dim);
+}
+
+.fleet-munreachable {
+  color: var(--attention);
+  font-weight: 600;
+}
+
+.fleet-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.fleet-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 120ms;
+}
+
+.fleet-card:hover {
+  border-color: var(--text-dim);
+}
+
+.fleet-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fleet-dot {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  cursor: help;
+}
+
+.fleet-dot-interrupted {
+  background: transparent;
+  border: 2px solid var(--warn);
+  box-shadow: none;
+  width: 14px;
+  height: 14px;
+}
+
+.fleet-num {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 14px;
+  flex: 0 0 auto;
+}
+
+.fleet-cardtitle {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.fleet-cardtitle.fleet-unnamed {
+  color: var(--text-dim);
+  font-style: italic;
+  font-weight: 500;
+}
+
+.fleet-pencil {
+  opacity: 0;
+  margin-left: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  transition: opacity 120ms;
+}
+
+.fleet-card:hover .fleet-pencil {
+  opacity: 1;
+}
+
+.fleet-name-edit {
+  flex: 1;
+  min-width: 0;
+  max-width: 240px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+}
+
+.fleet-agent {
+  flex-shrink: 0;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 10px;
+  text-transform: capitalize;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+}
+
+.fleet-repo {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-state-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.fleet-state {
+  color: var(--text);
+}
+
+.fleet-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 2px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fleet-open:hover {
+  filter: brightness(1.1);
+}
+
+/* ---- Interrupted sessions recovery panel ---- */
+.fint-wrap {
+  margin-bottom: 28px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.05);
+  padding: 4px 12px 14px;
+}
+
+.fint-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 4px;
+  flex-wrap: wrap;
+}
+
+.fint-badge {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warn);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.fint-bannertext {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.fint-group {
+  margin-top: 6px;
+  border-top: 1px solid rgba(245, 158, 11, 0.18);
+  padding-top: 10px;
+}
+
+.fint-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 4px 10px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.fint-machine {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.fint-when {
+  color: var(--text-dim);
+}
+
+.fint-dismiss {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fint-dismiss:hover:not(:disabled) {
+  color: var(--warn);
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+.fint-dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fint-card {
+  background: var(--surface);
+  border: 1px dashed rgba(245, 158, 11, 0.45);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fint-rail {
+  font-size: 12px;
+  color: var(--text);
+  background: var(--code-bg);
+  border-left: 3px solid var(--warn);
+  padding: 6px 9px;
+  border-radius: 0 4px 4px 0;
+}
+
+.fint-rail-lbl {
+  display: block;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 2px;
+}
+
+.fint-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+.fint-restore {
+  background: var(--warn);
+  color: #1a1a1a;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fint-restore:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.fint-restore:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.fint-carddismiss {
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 5px 6px;
+}
+
+.fint-carddismiss:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.fint-carddismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fint-restoring {
+  font-size: 12px;
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.fint-restoredone {
+  font-size: 12px;
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.fint-restoredone a {
+  color: var(--accent);
+  text-decoration: none;
+  margin-left: 6px;
+}
+
+.fint-restoredone a:hover {
+  text-decoration: underline;
+}
+
+/* ---- Directors table + Director detail (shared page chrome) ---- */
+.dpage {
+  max-width: 1400px;
+}
+
+.dpage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.dpage-h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.dpage-sub {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.dpage-refreshed {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.dpage-error {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 8px;
+  color: var(--attention);
+  font-size: 13px;
+}
+
+.dtbl-empty {
+  margin-top: 16px;
+  padding: 24px;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.dtbl-empty code {
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.dtbl-scroll {
+  overflow-x: auto;
+}
+
+.dtbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dtbl th {
+  text-align: left;
+  padding: 8px 10px;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.dtbl td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.dtbl-rowlink {
+  cursor: pointer;
+}
+
+.dtbl-rowlink:hover {
+  background: var(--surface-2);
+}
+
+.dmono {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.ddim {
+  color: var(--text-dim);
+}
+
+.dcell-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.dcell-ellipsis {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dcell-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+.dcell-sub {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  margin-top: 3px;
+}
+
+.dcell-briefing {
+  color: var(--warn);
+}
+
+.dtag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  border: 1px solid var(--border);
+}
+
+.dtag-hold {
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+
+.dstat-ok {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.dstat-warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.dstat-err {
+  color: var(--attention);
+  font-weight: 600;
+}
+
+.ddet-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.ddet-link:hover {
+  text-decoration: underline;
+}
+
+/* pager */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.pager-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.pager-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.pager-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pager-info {
+  color: var(--text-dim);
+}
+
+/* ---- Director detail layout ---- */
+.ddet-head .ddet-chip {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
+
+.ddet-cols {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 20px;
+  align-items: start;
+}
+
+.ddet-sec {
+  margin-bottom: 22px;
+}
+
+.ddet-sec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.ddet-sec-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ddet-sec-meta {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.ddet-quiet {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+.ddet-kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  font-size: 13px;
+}
+
+.ddet-kv dt {
+  color: var(--text-dim);
+}
+
+.ddet-kv dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+/* director settings editor */
+.ddet-settings-load {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ddet-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ddet-settings-box {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  padding: 10px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ddet-settings-box:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ddet-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ddet-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.ddet-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.ddet-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ddet-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.ddet-settings-status {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.ddet-settings-error {
+  margin-top: 8px;
+  color: var(--attention);
+  font-size: 12px;
+}
+
+/* Fold the detail's right column under the main on a narrow laptop, like the shell's other panes. */
+@media (max-width: 1100px) {
+  .ddet-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .fleet-cards {
+    grid-template-columns: 1fr;
+  }
+}

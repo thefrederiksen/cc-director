@@ -20,6 +20,7 @@ const devProxy = proxyTarget
   ? {
       "/sessions": { target: proxyTarget, changeOrigin: true, ws: true },
       "/directors": { target: proxyTarget, changeOrigin: true },
+      "/interrupted": { target: proxyTarget, changeOrigin: true },
       "/fanout": { target: proxyTarget, changeOrigin: true },
     }
   : undefined;

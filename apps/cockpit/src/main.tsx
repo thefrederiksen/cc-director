@@ -6,7 +6,11 @@ import { AppShell } from "./AppShell";
 import { PlaceholderPane } from "./panes/PlaceholderPane";
 import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
 import { SessionDetail } from "./sessions/SessionDetail";
+import { FleetView } from "./fleet/FleetView";
+import { DirectorsView } from "./fleet/DirectorsView";
+import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import "./styles.css";
+import "./fleet/fleet.css";
 
 // Mirror any injected per-machine token into the cc-gateway-token cookie at startup so the live
 // terminal WebSocket (which cannot carry an Authorization header) authenticates same-origin to the
@@ -35,7 +39,12 @@ const router = createBrowserRouter(
             { path: "session/:sessionId", element: <SessionDetail /> },
           ],
         },
-        { path: "/fleet", element: <PlaceholderPane title="Fleet" /> },
+        // The fleet + machine views (issue #975): the Fleet cards dashboard, the Directors registry
+        // table, and the standalone Director-detail page. Ported one-to-one from the Blazor
+        // Fleet.razor / Directors.razor / DirectorDetail.razor over the same Gateway REST surface.
+        { path: "/fleet", element: <FleetView /> },
+        { path: "/directors", element: <DirectorsView /> },
+        { path: "/directors/:directorId", element: <DirectorDetailView /> },
         { path: "/schedule", element: <PlaceholderPane title="Schedule" /> },
         { path: "/lists", element: <PlaceholderPane title="Lists" /> },
         { path: "/telemetry", element: <PlaceholderPane title="Telemetry" /> },
