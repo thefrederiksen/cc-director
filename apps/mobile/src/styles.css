@@ -39,9 +39,9 @@ body {
   position: sticky;
   top: 0;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
-  padding: 16px 0 12px;
+  padding: 12px 0;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   z-index: 5;
@@ -65,10 +65,30 @@ body {
   text-decoration: none;
 }
 
+/* Issue #1004: a real, thumb-sized tap target (>= 44x44, Apple HIG) with button chrome instead of a
+   tiny text link - the PWA is used hands-busy (in the car, in voice mode) and "back to Roster" must
+   be hittable without looking. Shared by every per-session screen via .back-link. */
 .back-link {
-  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
   color: var(--accent);
-  margin-right: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  flex: 0 0 auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.back-link:active {
+  background: var(--surface-2);
 }
 
 .banner {
@@ -932,12 +952,26 @@ a.banner-btn {
   }
 }
 
-/* C. Speaking: the player row (replay triangle + progress + clock). */
+/* The pinned top controls on the voice screen: the audio bar + Respond stay reachable at the TOP
+   even when the response text below is long (issue #1003, voice-mode layout). Sticky so it stays put
+   while the narrative scrolls beneath it inside .voice-body. */
+.voice-top {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+  padding-top: 2px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* C. Speaking: the player row (play/pause + restart + seek slider + clock). */
 .voice-player {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 4px 0 12px;
+  gap: 8px;
+  margin: 8px 0;
 }
 
 .voice-tri-btn {
@@ -971,22 +1005,109 @@ a.banner-btn {
   border-right: 4px solid #ffffff;
 }
 
-.voice-progress {
-  position: relative;
-  flex: 1 1 auto;
-  height: 6px;
-  background: var(--surface-2);
-  border-radius: 999px;
-  overflow: hidden;
+/* Restart-from-the-start button (issue #1003, "listen again from scratch"). CSS-only skip-to-start
+   glyph (a bar + a left triangle), no unicode. */
+.voice-restart-btn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
 
-.voice-progress-fill {
+.voice-restart {
+  position: relative;
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  color: var(--text);
+}
+
+.voice-restart::before {
+  content: "";
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
-  background: #22c55e;
+  width: 3px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.voice-restart::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-right: 9px solid currentColor;
+}
+
+/* Seek slider - drag to listen from anywhere (issue #1003). Sized for touch on iOS/Android; the
+   visible track is thin but the control is a tall, easy hit area. */
+.voice-seek {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.voice-seek::-webkit-slider-runnable-track {
+  height: 6px;
   border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.voice-seek::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.voice-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #22c55e;
+  border: 2px solid var(--bg);
+}
+
+.voice-seek::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+/* The clock reads position / total; tabular figures so it does not jitter as it ticks. */
+.voice-clock {
+  flex: 0 0 auto;
+  min-width: 78px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The response text sits below the pinned controls and scrolls with the body (issue #1003). */
+.voice-narr-scroll {
+  margin-top: 0;
 }
 
 .voice-respond {

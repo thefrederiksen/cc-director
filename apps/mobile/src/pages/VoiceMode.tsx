@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   getWingmanVoice,
@@ -15,6 +15,7 @@ import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottl
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
 import { ensureClip, getClipState, stopPlayback, useVoiceClips } from "../voice/clips";
+import { positionFor, saveMark, wasAutoPlayed } from "../voice/playbackPositions";
 import { isWorking } from "@devthrottle/client-core/sessions/ordering";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
@@ -99,10 +100,14 @@ export function VoiceMode() {
     audioRef.current = el;
     if (el !== null) liveAudioRef.current = el;
   }, []);
-  const autoPlayedRef = useRef<string>(""); // the generatedAt we have already auto-played
+  // The generatedAt whose saved position we have already restored onto the current audio element, so
+  // we seek to the remembered spot exactly once per (session, clip) mount and never fight the user's
+  // own seeking/restart afterwards (issue #1003 per-session resume).
+  const restoredForRef = useRef<string>("");
   const [pos, setPos] = useState(0);
   const [dur, setDur] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [resumed, setResumed] = useState(false); // showed "picked up where you left off" this mount
 
   // Stop the narration when you LEAVE the voice screen (roster, another view tab, the drawer) so it
   // never keeps talking after you have moved on - the bug this fixes. Runs once, on unmount.
@@ -193,18 +198,29 @@ export function VoiceMode() {
   useEffect(() => {
     if (agentWorking) return;
     if (!phoneReady || generatedAt.length === 0) return;
-    if (autoPlayedRef.current === generatedAt) return;
     if (typeof document !== "undefined" && document.hidden) return;
-    autoPlayedRef.current = generatedAt;
+    // Only auto-play a genuinely NEW clip: one this device has not auto-played AND that has no
+    // remembered position for this session. A clip you already listened part-way is restored to its
+    // saved spot (onLoadedMeta) and waits for you to press play - returning to a session, or flipping
+    // back to it, must never restart the narration from the top (issue #1003).
+    if (wasAutoPlayed(sid, generatedAt)) return;
+    if (positionFor(sid, generatedAt) > 0) return;
     const el = audioRef.current;
     if (el) {
       stopPlayback(); // never overlap a roster clip with this screen's playback
       el.currentTime = 0;
+      saveMark(sid, { generatedAt, pos: 0, dur: el.duration || 0, autoPlayed: true });
       void el.play().catch(() => {
         /* autoplay policy may require a gesture; the play-triangle covers it */
       });
     }
-  }, [phoneReady, generatedAt, agentWorking]);
+  }, [phoneReady, generatedAt, agentWorking, sid]);
+
+  // A new turn's clip resets the per-mount resume guards so its saved position (0) restores cleanly.
+  useEffect(() => {
+    lastSavedSecRef.current = -1;
+    setResumed(false);
+  }, [generatedAt]);
 
   const onSwitchOn = useCallback(async () => {
     if (sid.length === 0 || enabling) return;
@@ -245,7 +261,8 @@ export function VoiceMode() {
     setVoice(null);
     setEnableNote("");
     setSession((prev) => (prev ? { ...prev, voiceMode: false } : prev));
-    autoPlayedRef.current = "";
+    restoredForRef.current = "";
+    setResumed(false);
     try {
       // Two calls, matching the on path's two: tell the Director to leave voice (roster flag) AND
       // tell the Gateway to stop keeping voice (stops the per-turn Opus + text-to-speech, issue #859).
@@ -256,22 +273,110 @@ export function VoiceMode() {
     }
   }, [sid]);
 
+  // The whole second we last persisted, so onTimeUpdate saves the position roughly once a second
+  // rather than on every ~4Hz tick (issue #1003 per-session resume).
+  const lastSavedSecRef = useRef<number>(-1);
+
+  // Persist how far this session has listened. `started` marks the clip as having begun on this
+  // device, so returning to the session resumes (never auto-restarts). autoPlayed, once set, stays set.
+  const persist = useCallback(
+    (el: HTMLAudioElement, opts?: { started?: boolean }) => {
+      if (generatedAt.length === 0) return;
+      const autoPlayed = wasAutoPlayed(sid, generatedAt) || Boolean(opts?.started);
+      saveMark(sid, { generatedAt, pos: el.currentTime, dur: el.duration || 0, autoPlayed });
+    },
+    [sid, generatedAt],
+  );
+
+  // Metadata is loaded: publish the duration and, exactly once per (session, clip), restore the
+  // remembered position so you pick up where you left off. Guarded so it never fights a later seek.
+  const onLoadedMeta = useCallback(
+    (e: SyntheticEvent<HTMLAudioElement>) => {
+      const el = e.currentTarget;
+      setDur(el.duration || 0);
+      if (generatedAt.length === 0 || restoredForRef.current === generatedAt) return;
+      restoredForRef.current = generatedAt;
+      const saved = positionFor(sid, generatedAt);
+      if (saved > 0 && el.duration > 0 && saved < el.duration - 0.5) {
+        el.currentTime = saved;
+        setPos(saved);
+        setResumed(true);
+      }
+    },
+    [sid, generatedAt],
+  );
+
+  // Playback progressed: reflect it and save the position about once per second.
+  const onTimeUpdate = useCallback(
+    (e: SyntheticEvent<HTMLAudioElement>) => {
+      const el = e.currentTarget;
+      setPos(el.currentTime);
+      const sec = Math.floor(el.currentTime);
+      if (sec !== lastSavedSecRef.current) {
+        lastSavedSecRef.current = sec;
+        persist(el);
+      }
+    },
+    [persist],
+  );
+
+  const onEndedAudio = useCallback(
+    (e: SyntheticEvent<HTMLAudioElement>) => {
+      const el = e.currentTarget;
+      setPos(el.duration || 0);
+      setPlaying(false);
+      persist(el); // remember it was listened to the end
+    },
+    [persist],
+  );
+
+  // Drag the slider to listen from anywhere.
+  const onSeek = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const el = audioRef.current;
+      if (!el) return;
+      const t = Number(e.target.value);
+      el.currentTime = t;
+      setPos(t);
+      setResumed(false);
+      persist(el);
+    },
+    [persist],
+  );
+
+  // Restart the clip from the beginning ("listen again from scratch").
+  const onRestart = useCallback(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    stopPlayback();
+    el.currentTime = 0;
+    setPos(0);
+    setResumed(false);
+    persist(el, { started: true });
+    void el.play().catch(() => {
+      /* ignore - a tap already gestured */
+    });
+  }, [persist]);
+
   // Play/pause toggle - the clear "stop the speech" control the person asked for. Tapping while it is
-  // speaking pauses it immediately; tapping when paused resumes (or replays from the start once ended).
+  // speaking pauses it immediately; tapping when paused resumes from where it left off (or replays
+  // from the start once it has ended).
   const onTogglePlay = useCallback(() => {
     const el = audioRef.current;
     if (!el) return;
     if (!el.paused) {
       el.pause();
       stopPlayback(); // also stop any roster clip playing through the shared player
+      persist(el);
       return;
     }
     stopPlayback(); // never let two clips play at once
     if (el.ended || (el.duration > 0 && el.currentTime >= el.duration)) el.currentTime = 0;
+    persist(el, { started: true });
     void el.play().catch(() => {
       /* ignore - a tap already gestured */
     });
-  }, []);
+  }, [persist]);
 
   const onRespondSend = useCallback(
     async (text: string) => {
@@ -311,7 +416,6 @@ export function VoiceMode() {
   // offering a replay of it.
   const speaking = voiceOn && phoneReady && (voice?.spoken.length ?? 0) > 0 && !agentWorking;
   const working = voiceOn && !speaking;
-  const progress = dur > 0 ? Math.min(1, pos / dur) : 0;
   const narrative = voice?.spoken ?? "";
 
   return (
@@ -331,14 +435,11 @@ export function VoiceMode() {
         ref={setAudioEl}
         src={clip.url ?? undefined}
         preload="auto"
-        onLoadedMetadata={(e) => setDur(e.currentTarget.duration)}
-        onTimeUpdate={(e) => setPos(e.currentTarget.currentTime)}
+        onLoadedMetadata={onLoadedMeta}
+        onTimeUpdate={onTimeUpdate}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onEnded={(e) => {
-          setPos(e.currentTarget.duration);
-          setPlaying(false);
-        }}
+        onEnded={onEndedAudio}
         style={{ display: "none" }}
       />
 
@@ -387,35 +488,56 @@ export function VoiceMode() {
           </>
         )}
 
-        {/* C. SPEAKING - the clip plays; the narrative is shown; replay or dictate a reply. */}
+        {/* C. SPEAKING - the audio bar and Respond are pinned at the TOP (the controls you actually
+            use in voice mode); the response text sits BELOW and scrolls. In voice mode the text is a
+            nice-to-have, so a long response must never push the controls off-screen - the top block
+            is sticky (issue #1003, voice-mode screen layout). */}
         {speaking && (
           <>
-            <div className="voice-statusbar">
-              <span className="voice-state voice-state-green">Speaking</span>
+            <div className="voice-top">
+              <div className="voice-statusbar">
+                <span className="voice-state voice-state-green">Speaking</span>
+                {resumed && <span className="voice-ref">picked up where you left off</span>}
+              </div>
+              <div className="voice-player">
+                <button
+                  type="button"
+                  className="voice-tri-btn"
+                  onClick={onTogglePlay}
+                  aria-label={playing ? "Pause" : "Play"}
+                >
+                  <span className={playing ? "voice-pause" : "voice-tri"} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="voice-restart-btn"
+                  onClick={onRestart}
+                  aria-label="Restart from the beginning"
+                >
+                  <span className="voice-restart" aria-hidden="true" />
+                </button>
+                <input
+                  type="range"
+                  className="voice-seek"
+                  min={0}
+                  max={dur > 0 ? dur : 0}
+                  step="any"
+                  value={dur > 0 ? Math.min(pos, dur) : 0}
+                  onChange={onSeek}
+                  aria-label="Seek through the narration"
+                />
+                <span className="voice-ref voice-clock">{formatClock(pos)} / {formatClock(dur)}</span>
+              </div>
+              <button type="button" className="voice-respond" onClick={() => setResponding(true)}>
+                Respond
+              </button>
             </div>
-            <div className="voice-narr">
+            <div className="voice-narr voice-narr-scroll">
               <div className="voice-narr-title">{narrative}</div>
               <div className="voice-narr-body">
-                {playing ? "Tap to stop the voice, or answer below." : "Tap to replay, or just answer below."}
+                {playing ? "Speaking. Tap pause to stop, or Respond to answer." : "Tap play to listen, or Respond to answer."}
               </div>
             </div>
-            <div className="voice-player">
-              <button
-                type="button"
-                className="voice-tri-btn"
-                onClick={onTogglePlay}
-                aria-label={playing ? "Stop the voice" : "Play"}
-              >
-                <span className={playing ? "voice-pause" : "voice-tri"} aria-hidden="true" />
-              </button>
-              <div className="voice-progress" aria-hidden="true">
-                <div className="voice-progress-fill" style={{ width: `${progress * 100}%` }} />
-              </div>
-              <span className="voice-ref">{formatClock(pos)}</span>
-            </div>
-            <button type="button" className="voice-respond" onClick={() => setResponding(true)}>
-              Respond
-            </button>
           </>
         )}
 
