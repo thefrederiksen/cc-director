@@ -48,16 +48,38 @@ function Sync-CockpitWwwroot {
   return $rc
 }
 
+# Read the configured gateway auth token (config.json gateway.token) so the deploy can present it on
+# the auth-enforced /shutdown call (issue #916). Returns '' when it cannot be read (best effort).
+function Get-GatewayToken {
+  param([string] $ConfigPath = (Join-Path $env:LOCALAPPDATA 'cc-director\config\config.json'))
+  if (-not (Test-Path $ConfigPath)) { return '' }
+  try {
+    $j = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    if ($j.gateway -and $j.gateway.token) { return [string]$j.gateway.token }
+  } catch {}
+  return ''
+}
+
 if ($DefineOnly) { return }
 
 if (-not (Test-Path "$stage\devthrottle-cockpit.dll")) { Write-Host "ERROR: cockpit build not staged at $stage." ; exit 1 }
 if (-not (Test-Path $gatewayExe)) { Write-Host "ERROR: Gateway tray app not installed at $gatewayExe." ; exit 1 }
 
 Write-Host "Asking the Gateway tray app to exit (Directors + sessions are separate and survive)..."
-try { Invoke-WebRequest 'http://127.0.0.1:7878/shutdown' -Method POST -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
+# Auth-enforced Gateways (issue #916) reject an UNauthenticated /shutdown, which leaves the exe
+# locked and fails the swap - present the configured gateway token so the graceful shutdown is
+# accepted (same fix as redeploy-gateway.ps1).
+$gwToken = Get-GatewayToken
+$shutdownHeaders = @{}
+if ($gwToken) { $shutdownHeaders['Authorization'] = "Bearer $gwToken" }
+try { Invoke-WebRequest 'http://127.0.0.1:7878/shutdown' -Method POST -Headers $shutdownHeaders -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
+$stillUp = $true
 for ($i = 0; $i -lt 20; $i++) {
-  if (-not (Get-Process -Name devthrottle-gateway,devthrottle-cockpit -ErrorAction SilentlyContinue)) { break }
+  if (-not (Get-Process -Name devthrottle-gateway,devthrottle-cockpit -ErrorAction SilentlyContinue)) { $stillUp = $false; break }
   Start-Sleep -Milliseconds 500
+}
+if ($stillUp) {
+  Write-Host "ERROR: the Gateway/Cockpit did not exit after POST /shutdown (files still locked). If auth is enforced, verify config.json gateway.token." ; exit 1
 }
 Start-Sleep -Seconds 1
 
