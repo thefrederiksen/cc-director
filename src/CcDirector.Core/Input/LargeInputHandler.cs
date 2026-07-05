@@ -30,6 +30,16 @@ public static class LargeInputHandler
         || text.Contains('\r');
 
     /// <summary>
+    /// Builds the notification shown when large input is redirected to a temp file.
+    /// The agent name is passed in so the message reflects the active session's
+    /// actual agent instead of a hardcoded "Claude Code".
+    /// </summary>
+    /// <param name="agentName">Display name of the active session's agent.</param>
+    /// <param name="textLength">Length of the original text, in characters.</param>
+    public static string FormatRedirectNotice(string agentName, int textLength) =>
+        $"Text over {LargeInputThreshold:N0} chars -- saved to temp file and @filepath sent to {agentName} ({textLength:N0} chars)";
+
+    /// <summary>
     /// Creates a temp file in {workingDir}/.temp/ and returns the full path.
     /// The file contains the original text and can be referenced via @filepath in Claude Code.
     /// </summary>

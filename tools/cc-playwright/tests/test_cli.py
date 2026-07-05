@@ -446,6 +446,23 @@ def test_browser_command_lines_filter_includes_chromium(monkeypatch):
         assert name in joined
 
 
+# --------------------------------------------------------------------------
+# Issue #177: `start -h` must format its help without crashing. A bare '%' in
+# a help string (e.g. an unescaped %LOCALAPPDATA%) makes argparse raise
+# ValueError while expanding help. The percent must be doubled to '%%'.
+# --------------------------------------------------------------------------
+
+def test_start_help_does_not_crash(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cc-playwright", "start", "-h"])
+    # argparse prints help and exits 0 for -h; it must NOT raise ValueError.
+    with pytest.raises(SystemExit) as ex:
+        cli.main()
+    assert ex.value.code == 0
+    out = capsys.readouterr().out
+    # A literal percent survives argparse expansion (proves it was escaped).
+    assert "%LOCALAPPDATA%" in out
+
+
 def test_connect_error_message_does_not_say_brave(monkeypatch):
     # State says running so we reach the connect attempt, which fails.
     monkeypatch.setattr(cli, "_load_state",
