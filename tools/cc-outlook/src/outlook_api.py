@@ -815,16 +815,22 @@ class OutlookClient:
         if not message:
             raise ValueError(f"Message not found: {message_id}")
 
-        # Set flag using the internal attribute
-        flag_data = {'flagStatus': flag_status}
-        if due_date and flag_status == 'flagged':
-            # Convert to UTC so the due date is not shifted by the local offset.
-            flag_data['dueDateTime'] = {
-                'dateTime': _to_utc(due_date).isoformat(),
-                'timeZone': 'UTC'
-            }
+        # Message.flag is a read-only property in the O365 library, so it cannot
+        # be assigned directly (that raises "property 'flag' has no setter").
+        # The flag is changed through its MessageFlag helper methods instead.
+        status = flag_status.strip().lower()
+        if status == 'flagged':
+            message.flag.set_flagged(due_date=due_date)
+        elif status in ('complete', 'completed'):
+            message.flag.set_completed()
+        elif status in ('notflagged', 'clear'):
+            message.flag.delete_flag()
+        else:
+            raise ValueError(
+                f"Unsupported flag status: {flag_status}. "
+                "Use 'flagged', 'complete', or 'notFlagged'."
+            )
 
-        message.flag = flag_data
         message.save_message()
 
         return True
@@ -866,7 +872,10 @@ class OutlookClient:
             List of attachment dicts
         """
         mailbox = self.account.mailbox()
-        message = mailbox.get_message(object_id=message_id)
+        # The attachments collection is not populated unless the message is
+        # fetched with download_attachments=True. Without it, message.attachments
+        # is always empty and the command wrongly reports "No attachments".
+        message = mailbox.get_message(object_id=message_id, download_attachments=True)
 
         if not message:
             raise ValueError(f"Message not found: {message_id}")
@@ -899,7 +908,8 @@ class OutlookClient:
             Dict with download info
         """
         mailbox = self.account.mailbox()
-        message = mailbox.get_message(object_id=message_id)
+        # Attachments are only present when fetched with download_attachments=True.
+        message = mailbox.get_message(object_id=message_id, download_attachments=True)
 
         if not message:
             raise ValueError(f"Message not found: {message_id}")
