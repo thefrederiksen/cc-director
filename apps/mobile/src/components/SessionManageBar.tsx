@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { holdSession, killSession, listSessions } from "../api/client";
+import { holdSession, killSession, listSessions } from "@devthrottle/client-core/api/client";
 
 // Session management buttons on the SESSION screen (issue #812, owner decision A). Hold and Remove
 // have NO Android UI (they are backend-only verbs), so the owner placed them as LARGE BUTTONS on the

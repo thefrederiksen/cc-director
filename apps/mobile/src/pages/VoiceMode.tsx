@@ -9,13 +9,13 @@ import {
   stopWingmanVoice,
   type SessionDto,
   type WingmanVoice,
-} from "../api/client";
-import { DictationDialog } from "../dictation/DictationDialog";
-import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
+} from "@devthrottle/client-core/api/client";
+import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
+import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
 import { ensureClip, getClipState, stopPlayback, useVoiceClips } from "../voice/clips";
-import { isWorking } from "../sessions/ordering";
+import { isWorking } from "@devthrottle/client-core/sessions/ordering";
 
 // Session Voice mode (issue #850): the hands-free Wingman narration screen, the third session view
 // alongside Terminal (#817) and Chat (#811). A read-only Wingman narrates every completed turn as

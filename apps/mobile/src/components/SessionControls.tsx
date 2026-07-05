@@ -1,15 +1,15 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { sendEscape, sendInterrupt, sendPrompt } from "../api/client";
-import { backgroundTranscribeAndSend, type CapturedUtterance } from "../dictation/backgroundSend";
-import { DictationDialog } from "../dictation/DictationDialog";
-import { insertAt, joinText } from "../dictation/transcript";
+import { sendEscape, sendInterrupt, sendPrompt } from "@devthrottle/client-core/api/client";
+import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
+import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
+import { insertAt, joinText } from "@devthrottle/client-core/dictation/transcript";
 import {
   KEY_ARROW_DOWN,
   KEY_ARROW_LEFT,
   KEY_ARROW_RIGHT,
   KEY_ARROW_UP,
   KEY_ENTER,
-} from "../terminal/keys";
+} from "@devthrottle/client-core/terminal/keys";
 
 // The ONE shared session control surface (issue #811): the full-width input row, the Send/Speak row
 // (Send first, Speak second, equal halves), the Enter/Esc/Stop row, and the arrow row, plus the

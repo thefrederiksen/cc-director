@@ -12,7 +12,7 @@ import {
   setWingmanModel,
   testChat,
   ttsSample,
-} from "../api/ai";
+} from "@devthrottle/client-core/api/ai";
 
 const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 

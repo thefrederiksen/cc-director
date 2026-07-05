@@ -6,8 +6,8 @@ import {
   getRepos,
   type DirectorInfo,
   type RepoInfo,
-} from "../api/client";
-import { durationLabel, useNow } from "../sessions/waiting";
+} from "@devthrottle/client-core/api/client";
+import { durationLabel, useNow } from "@devthrottle/client-core/sessions/waiting";
 
 // Add-session flow (issue #812): a faithful 1:1 translation of the Android (MAUI)
 // phone/CcDirectorClient NewSessionPanel (TalkPage.xaml ~287-345, TalkPage.xaml.cs

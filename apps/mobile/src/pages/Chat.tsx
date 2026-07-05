@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getSessionHistory, listSessions } from "../api/client";
-import type { SessionHistoryDto } from "../history/types";
+import { getSessionHistory, listSessions } from "@devthrottle/client-core/api/client";
+import type { SessionHistoryDto } from "@devthrottle/client-core/history/types";
 import {
   anyHidden,
   mapHistory,
   type HistoryBubble,
   type HistoryBubbleFilter,
-} from "../history/bubbleMapper";
-import { cleanForReading } from "../history/historyText";
-import { markdownToHtml } from "../history/historyMarkdown";
-import { extractLinks, type HistoryLink } from "../history/historyLinks";
+} from "@devthrottle/client-core/history/bubbleMapper";
+import { cleanForReading } from "@devthrottle/client-core/history/historyText";
+import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
+import { extractLinks, type HistoryLink } from "@devthrottle/client-core/history/historyLinks";
 import { SessionControls } from "../components/SessionControls";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
