@@ -5,6 +5,7 @@ using CcDirector.Core.Audio;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 using Microsoft.AspNetCore.Builder;
@@ -296,6 +297,16 @@ internal static class DictationEndpoint
             });
 
             transcript = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, profile, ct, progress);
+        }
+        catch (InsufficientCreditsException credits)
+        {
+            // Out of credits / cap (issue #941): send the ONE shared message (mirrored into the raw
+            // `message` field the overlay already shows) plus the richer `hostedAi` shape so the client
+            // can render the add-credits call-to-action - instead of "transcription failed: ...402...".
+            var payload = HostedAiPayload.For(HostedAiErrorMapper.MapCode(credits.Code));
+            FileLog.Write($"[DictationEndpoint] sid={sessionId} OUT OF CREDITS: {credits.Code}");
+            clientError = payload.Text;
+            await SendJsonAsync(ws, new { type = "error", message = payload.Text, hostedAi = payload }, ct);
         }
         catch (Exception ex)
         {

@@ -135,6 +135,13 @@ public sealed class VoiceService
         {
             transcription = await TranscribeAndCorrectAsync(audio, fileName, routing, ct);
         }
+        catch (InsufficientCreditsException credits)
+        {
+            // Out of credits / cap (issue #941): carry the machine code as the status so the endpoint
+            // maps it to the shared 402 message, instead of a generic "transcribe_failed".
+            FileLog.Write($"[VoiceService] TranscribeAndCleanAsync OUT OF CREDITS: {credits.Code}");
+            return new VoiceCommandResponse { Status = credits.Code, Error = credits.Message };
+        }
         catch (Exception ex)
         {
             FileLog.Write($"[VoiceService] TranscribeAndCleanAsync transcribe FAILED: {ex.Message}");

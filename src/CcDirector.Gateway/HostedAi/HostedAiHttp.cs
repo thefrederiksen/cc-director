@@ -31,18 +31,9 @@ public static class HostedAiHttp
         };
     }
 
-    /// <summary>The HTTP 402 response for a state, carrying the shared message + call-to-action.</summary>
+    /// <summary>The HTTP 402 response for a state, carrying the shared message + call-to-action. The
+    /// wire shape is the single-source <see cref="HostedAiPayload"/> (issue #941), so the Gateway and the
+    /// Director Control API return the identical body.</summary>
     public static IResult PaymentRequiredResult(HostedAiState state)
-    {
-        var dto = Dto(state);
-        return Results.Json(new
-        {
-            error = dto.Text,
-            state = dto.State,
-            text = dto.Text,
-            ctaLabel = dto.CtaLabel,
-            ctaAction = dto.CtaAction,
-            ctaUrl = dto.CtaUrl,
-        }, statusCode: PaymentRequired);
-    }
+        => Results.Json(HostedAiPayload.For(state), statusCode: PaymentRequired);
 }
