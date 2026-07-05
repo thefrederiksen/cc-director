@@ -11,6 +11,7 @@ import { NavLink, Outlet } from "react-router-dom";
 const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
   { to: "/", label: "Sessions" },
   { to: "/fleet", label: "Fleet" },
+  { to: "/directors", label: "Directors" },
   { to: "/schedule", label: "Schedule" },
   { to: "/lists", label: "Lists" },
   { to: "/telemetry", label: "Telemetry" },
