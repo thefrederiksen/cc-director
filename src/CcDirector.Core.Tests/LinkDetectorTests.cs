@@ -718,4 +718,113 @@ public class LinkDetectorTests
 
         Assert.Empty(spans);
     }
+
+    // ========================================================================
+    // file:// URLs (issue #252)
+    // ========================================================================
+
+    [Fact]
+    public void FindAllLinkMatches_FileUrl_HighlightsWholeSpanAsLocalPath()
+    {
+        // The exact case from issue #252: the link must start at the 'f' of file (not the 'e' of
+        // an inner e:), be a single Path link, and resolve to the local file.
+        string line = "file:///D:/ReposFred/cc-consult/marketing/marketing.html";
+        var matches = LinkDetector.FindAllLinkMatches(line, null, null);
+
+        Assert.Single(matches);
+        Assert.Equal(LinkDetector.LinkType.Path, matches[0].Type);
+        Assert.Equal(0, matches[0].StartCol);                         // starts at 'f', not 'e'
+        Assert.Equal(line.Length, matches[0].EndCol);                 // whole span highlighted
+        Assert.Equal(@"D:\ReposFred\cc-consult\marketing\marketing.html", matches[0].Text);
+        Assert.DoesNotContain("e:///", matches[0].Text);              // the old broken target is gone
+    }
+
+    [Fact]
+    public void FindAllLinkMatches_FileUrl_InSentence_StartsAtF()
+    {
+        string line = "Report at file:///D:/Repos/x.html now";
+        int fIndex = line.IndexOf("file://", System.StringComparison.Ordinal);
+        var matches = LinkDetector.FindAllLinkMatches(line, null, null);
+
+        Assert.Single(matches);
+        Assert.Equal(fIndex, matches[0].StartCol);
+        Assert.Equal(LinkDetector.LinkType.Path, matches[0].Type);
+        Assert.Equal(@"D:\Repos\x.html", matches[0].Text);
+    }
+
+    [Fact]
+    public void FindAllLinkMatches_FileUrl_StripsTrailingPeriod()
+    {
+        var matches = LinkDetector.FindAllLinkMatches(
+            "See file:///D:/Repos/x.html.", null, null);
+
+        Assert.Single(matches);
+        Assert.Equal(@"D:\Repos\x.html", matches[0].Text);
+    }
+
+    [Fact]
+    public void FindAllLinkMatches_FileUrl_PercentEncodedSpace_Decoded()
+    {
+        var matches = LinkDetector.FindAllLinkMatches(
+            "file:///D:/My%20Docs/report.md", null, null);
+
+        Assert.Single(matches);
+        Assert.Equal(@"D:\My Docs\report.md", matches[0].Text);
+    }
+
+    [Fact]
+    public void DetectLinkAtPosition_InsideFileUrl_ReturnsLocalPath()
+    {
+        string line = "open file:///D:/Repos/x.html";
+        int fIndex = line.IndexOf("file://", System.StringComparison.Ordinal);
+        // A column in the middle of the file:// span.
+        var (text, type) = LinkDetector.DetectLinkAtPosition(line, fIndex + 12, null, null);
+
+        Assert.Equal(LinkDetector.LinkType.Path, type);
+        Assert.Equal(@"D:\Repos\x.html", text);
+    }
+
+    [Theory]
+    [InlineData("file:///D:/Repos/x.html", @"D:\Repos\x.html")]
+    [InlineData("file:///C:/a/b.txt", @"C:\a\b.txt")]
+    public void TryConvertFileUrlToLocalPath_ValidUrls_Convert(string url, string expected)
+    {
+        bool ok = LinkDetector.TryConvertFileUrlToLocalPath(url, out string local);
+
+        Assert.True(ok);
+        Assert.Equal(expected, local);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("https://example.com/x")]
+    [InlineData("not a url")]
+    public void TryConvertFileUrlToLocalPath_NonFileUrls_ReturnFalse(string input)
+    {
+        bool ok = LinkDetector.TryConvertFileUrlToLocalPath(input, out string local);
+
+        Assert.False(ok);
+        Assert.Equal(string.Empty, local);
+    }
+
+    [Fact]
+    public void FindAllLinkMatches_DriveLetterInsideWord_NotMisclaimed()
+    {
+        // The boundary guard: a lone letter that is part of a longer word must not be read as a drive
+        // letter. "node:" here would previously surface a bogus "e:/..." path.
+        var matches = LinkDetector.FindAllLinkMatches("node:/foo/bar baz", null, null);
+
+        Assert.DoesNotContain(matches, m => m.Text.StartsWith("e:", System.StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FindAllLinkMatches_BareWindowsPath_StillMatchesAfterBoundaryGuard()
+    {
+        // Regression guard: the boundary change must not stop ordinary absolute paths from matching.
+        var matches = LinkDetector.FindAllLinkMatches(@"See D:\Repos\file.txt here", null, null);
+
+        Assert.Single(matches);
+        Assert.Equal(@"D:\Repos\file.txt", matches[0].Text);
+        Assert.Equal(LinkDetector.LinkType.Path, matches[0].Type);
+    }
 }
