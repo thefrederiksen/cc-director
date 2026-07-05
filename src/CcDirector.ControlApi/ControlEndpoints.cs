@@ -2782,6 +2782,25 @@ internal static class ControlEndpoints
                 ? new RawCliAgent(req.Command!, req.CommandArgs)
                 : AgentPluginRegistry.CreateAgent(kind, sessionManager.Options);
 
+            // Issue #1017: a programmatically-created session (the CLI `session spawn`, a Gateway
+            // schedule, any REST client) must inherit the SAME configured agent defaults - most
+            // importantly the permission-mode preset - that the desktop New Session dialog applies,
+            // or it comes up prompting for approval on everything and is unusable for unattended
+            // work. When the caller supplies no Args, resolve the default effective launch line for
+            // the requested kind from the user's configured agent library, exactly as the dialog
+            // does (AgentLaunchDefaults mirrors its default entry selection). An explicitly supplied
+            // Args (even empty) is honored verbatim as a per-session override and skips this. RawCli
+            // carries its whole command line explicitly, so it has nothing to inherit. Empty is
+            // normalized back to null so Claude's legacy DefaultClaudeArgs fallback still applies -
+            // this is the same null-when-empty rule the dialog uses.
+            string? effectiveArgs = req.Args;
+            if (req.Args is null && kind != AgentKind.RawCli)
+            {
+                var resolvedDefault = AgentLaunchDefaults.ResolveDefaultArgs(kind, sessionManager.Options);
+                effectiveArgs = string.IsNullOrWhiteSpace(resolvedDefault) ? null : resolvedDefault;
+                FileLog.Write($"[ControlEndpoints] POST /sessions: no args supplied; applied default agent settings for {kind}: \"{effectiveArgs ?? "(empty)"}\"");
+            }
+
             // Issue #800: enforce a meaningful name at birth. An EXPLICIT name (req.Name supplied,
             // even if blank) that is blank or equal to the bare repository folder name is rejected;
             // an ABSENT name (req.Name == null) is auto-composed from folder + purpose +
@@ -2809,7 +2828,7 @@ internal static class ControlEndpoints
                 session = sessionManager.CreateSession(
                     req.RepoPath,
                     agent,
-                    req.Args,
+                    effectiveArgs,
                     SessionBackendType.ConPty,
                     resumeSessionId: string.IsNullOrWhiteSpace(req.ResumeSessionId) ? null : req.ResumeSessionId,
                     nameFactory: id => SessionName.Compose(

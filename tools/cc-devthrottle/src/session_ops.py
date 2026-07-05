@@ -311,6 +311,7 @@ def spawn_session(
     command: Optional[str],
     command_args: Optional[str],
     controlled_by: Optional[str] = None,
+    args: Optional[str] = None,
 ) -> None:
     """Open a new session on the local Director."""
     # Issue #815: spawn the new session as a controlled "Supporting" sub-agent of another session.
@@ -338,6 +339,12 @@ def spawn_session(
         )
 
     body: Dict[str, Any] = {"repoPath": repo, "agent": agent}
+    # Issue #1017: with no --args, the Director applies the SAME default agent settings (permission
+    # mode preset, default model) the desktop New Session dialog uses, so a spawned session is
+    # usable for unattended work without hand-fixing permissions. Passing --args overrides that
+    # default with an explicit command line for this session only.
+    if args is not None:
+        body["args"] = args
     if name:
         body["name"] = name
     if purpose:
