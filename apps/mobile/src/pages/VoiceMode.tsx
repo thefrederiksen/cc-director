@@ -405,9 +405,12 @@ export function VoiceMode() {
       if (sid.length === 0) return;
       void backgroundTranscribeAndSend(sid, captured, {
         onError: (message) => setError(message),
+        // Record the session's terminal-byte position now, so a clip resumed later is not injected
+        // into a session that has moved on (issue #1006 guard).
+        baselineBufferBytes: Number(session?.totalBufferBytes ?? 0),
       });
     },
-    [sid],
+    [sid, session],
   );
 
   const voiceOn = localEnabled || Boolean(session?.voiceMode);

@@ -107,6 +107,15 @@ public static class CcStorage
     public static string VoiceTurnUploads() => Ensure(Path.Combine(Base(), "voice-turn-uploads"));
 
     /// <summary>
+    /// Resumable upload staging for durable dictation (issue #1006): base/dictation-uploads/&lt;uploadId&gt;/.
+    /// The mobile app persists the raw audio locally the instant Send is pressed and streams it here in
+    /// SHA-checked chunks; once assembled the Gateway transcribes it and injects the turn into the owning
+    /// session itself, so a dead tab or a dropped connection cannot lose a recorded utterance. Abandoned
+    /// staging dirs are swept after ~1 hour. Owned by the Gateway.
+    /// </summary>
+    public static string DictationUploads() => Ensure(Path.Combine(Base(), "dictation-uploads"));
+
+    /// <summary>
     /// Wingman training data (issue #531 follow-up): base/wingman-training/. When the
     /// "wingman_training_capture" setting is on, every wingman summary appends one JSON-lines record
     /// here holding up to 20,000 characters of the session terminal, the agent reply + context the

@@ -173,12 +173,12 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
       onFlash("Transcribing...");
       void backgroundTranscribeAndSend(sessionId, captured, {
         onError,
-        // Insert the dictated words at the snapshotted caret inside the typed text, then submit.
-        compose: (dictation) => insertAt(composerText, caret, dictation),
-        // On a genuine transcription failure the audio is unrecoverable, but the typed text is not:
-        // put it back (ahead of anything typed since) so Send never silently loses it. If the user has
-        // navigated away this component is unmounted and setInput is a harmless no-op; the onError
-        // notification is then the signal.
+        // Insert the dictated words at the snapshotted caret inside the typed text: the Gateway submits
+        // before + dictation + after. The caret splits the typed text into the two halves.
+        composeParts: { before: composerText.slice(0, caret), after: composerText.slice(caret) },
+        // On a send that does not complete the audio is kept durably for resume, but the typed text is
+        // client-only: put it back (ahead of anything typed since) so Send never silently loses it. If
+        // the user navigated away this component is unmounted and setInput is a harmless no-op.
         onFailed: () => {
           if (composerText.trim().length > 0) setInput((cur) => joinText(composerText, cur));
         },

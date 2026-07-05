@@ -14,6 +14,7 @@ import { ensureGatewayCookie } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "./push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
+import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import "./styles.css";
 
 // The auth gate (issue #908): every real screen requires an enrolled device key. Without one, the
@@ -30,6 +31,11 @@ function RequireDeviceKey() {
 // routes, the lock is acquired once (a single sentinel), not once per page.
 function GatedLayout() {
   useScreenWakeLock();
+  // Resume any recorded-but-unsent dictation once the phone is enrolled (issue #1006): a clip whose
+  // upload was interrupted by a refresh / crash / dropped connection is re-driven to the session here.
+  React.useEffect(() => {
+    void resumePendingDictations();
+  }, []);
   return <Outlet />;
 }
 

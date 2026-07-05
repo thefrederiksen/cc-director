@@ -1,88 +1,128 @@
-import { sendPrompt, setTranscribing, transcribeUtterance } from "../api/client";
-import { logCaptureHealth } from "./captureHealth";
-import { joinText } from "./transcript";
-import { blobToWav16kMono } from "./wav";
+import { uploadDictationToSession } from "../api/client";
+import { deletePending, prunePending, savePending, type PendingDictation } from "./pendingStore";
 
-// The fire-and-forget Send pipeline for the mobile Speak dialog. The instant the user hits Send the
-// dialog captures the recorded audio buffer, hands it here, and closes - the screen is released
-// immediately, because everything left to do (transcode, upload, transcribe, submit) needs the
-// buffer, not the user, and the result cannot be viewed on that screen anyway (Send submits straight
-// into the session). This function then does that whole chain in the background while the roster
-// shows the session orange ("Transcribing...") so nobody else starts using it.
+// The durable Send pipeline for the mobile Speak dialog (issue #1006). The instant the user hits Send
+// the dialog hands the recorded audio here and closes; we persist the raw audio locally (IndexedDB)
+// BEFORE any network work, then stream it to the Gateway in resumable chunks. The Gateway assembles,
+// transcribes, and INJECTS the turn into the session itself, so once the audio is uploaded a dead tab
+// or a dropped connection can no longer lose it. If anything is interrupted, the durable record
+// survives and resumePendingDictations() (called on app load) re-drives the upload+submit.
 //
 // It deliberately lives OUTSIDE the DictationDialog component: the dialog unmounts (and disposes its
-// recorder) the moment Send is pressed, so the work must not be tied to the dialog's lifecycle. The
-// captured Blob is independent of the recorder, so disposing the recorder does not affect it.
+// recorder) the moment Send is pressed, so the work must not be tied to the dialog's lifecycle.
 
-/** The audio buffer + context the dialog hands up when Send is pressed while still recording. */
+/** How long a recorded-but-unsent clip is kept before it is pruned unsent (issue #1006): an hour.
+ *  This is a temporary out-of-bandwidth buffer, not a mailbox - a clip we never managed to send
+ *  within the hour is dropped rather than injected into a session that has long since moved on. */
+const PENDING_TTL_MS = 60 * 60 * 1000;
+
+/** The audio buffer + context the dialog hands up when Send is pressed. */
 export interface CapturedUtterance {
-  /** The raw recorded audio exactly as the microphone produced it (WebM/Opus etc.); transcoded to
-   *  WAV here, off the dialog's critical path, so the screen is released before any transcode. */
+  /** The raw recorded audio exactly as the microphone produced it (WebM/Opus etc.). */
   blob: Blob;
   /** Wall-clock milliseconds the segment was capturing (capture-health, issue #863). */
   recordedMs: number;
-  /** Earlier Pause/Resume dictation segments, joined ahead of this final segment's transcript to form
-   *  the full dictation. Empty in the common "just talk and Send" case (no pause). */
+  /** Earlier Pause/Resume dictation segments, already turned to text, joined ahead of this final
+   *  segment. Empty in the common "just talk and Send" case. */
   prefixText: string;
 }
 
-/** Callbacks so the host can surface a failure. Success is silent - the submitted turn IS the proof
- *  and the roster's orange flag clearing is the visible completion signal. */
+/** Callbacks so the host can surface a failure. Success is silent - the submitted turn IS the proof. */
 export interface BackgroundSendHooks {
   onError?: (message: string) => void;
-  /** Called when the transcribe/submit chain throws, so the host can restore anything (e.g. the typed
-   *  compose text) it cleared at dialog-close time for a send that never went. */
+  /** Called when the send does not complete (kept durably for resume), so the host can restore any
+   *  typed compose text it cleared at dialog-close time. */
   onFailed?: () => void;
-  /** Place the dictated words into the final message. The host uses this to insert them at the caret
-   *  inside any typed compose text (like the Insert button), then this result is submitted. Defaults
-   *  to submitting the dictation alone. Called even for an empty dictation, so a Send pressed with
-   *  typed text present still submits that text; a fully-empty message submits nothing. */
-  compose?: (dictation: string) => string;
+  /** Typed text the caret split the dictation around (Terminal Speak's Insert-then-Enter). The voice
+   *  case omits this and the transcript is submitted alone. */
+  composeParts?: { before: string; after: string };
+  /** The session's TotalBufferBytes at record time, for the Gateway's "session moved on" guard when a
+   *  clip is resumed later. Omit when unknown (the guard is then skipped for safety). */
+  baselineBufferBytes?: number;
 }
 
-// Mark the session transcribing (roster -> orange), transcode + upload + transcribe the captured
-// audio, submit the joined transcript into the session, then clear the transcribing mark. The mark
-// is cleared in a finally so a transcode/transcribe/submit failure still releases the orange state.
+// Persist the recorded audio durably, then drive the server-owned upload+transcribe+inject. On a
+// terminal outcome (submitted, or dropped as stale) the durable record is deleted; otherwise it is
+// kept so the next app load resumes it.
 export async function backgroundTranscribeAndSend(
   sessionId: string,
   captured: CapturedUtterance,
   hooks: BackgroundSendHooks = {},
 ): Promise<void> {
-  // Flip the roster to orange first, so the busy signal shows from the moment the screen is released.
-  // Best-effort: a marker failure must not abort the actual transcription+send the user asked for.
+  const rec: PendingDictation = {
+    id: crypto.randomUUID(),
+    sessionId,
+    blob: captured.blob,
+    recordedMs: captured.recordedMs,
+    before: hooks.composeParts?.before ?? "",
+    after: hooks.composeParts?.after ?? "",
+    prefix: captured.prefixText ?? "",
+    baselineBufferBytes: hooks.baselineBufferBytes ?? 0,
+    createdAt: Date.now(),
+  };
+
+  // Save the audio the instant Send is pressed - even if this tab dies right now, it is not lost.
+  let persisted = false;
   try {
-    await setTranscribing(sessionId, true);
+    await savePending(rec);
+    persisted = true;
   } catch {
-    /* the marker is a visual nicety; press on with the real work */
+    // No durable store in this context (rare): press on with a best-effort, non-durable send.
   }
 
   try {
-    const transcoded = await blobToWav16kMono(captured.blob);
-    const health = {
-      recordedMs: captured.recordedMs,
-      decodedSeconds: transcoded.decodedSeconds,
-      sourceBytes: transcoded.sourceBytes,
-    };
-    logCaptureHealth("mobile", health);
-    const segment = await transcribeUtterance(transcoded.wav, health);
-    const dictation = joinText(captured.prefixText, segment).trim();
-    // Let the host place the dictation (it inserts at the caret inside any typed text); default to the
-    // dictation alone. The typed text survives an empty/silent clip because compose still returns it,
-    // and a fully-empty message submits nothing so a mis-tapped Send does not fire a blank turn.
-    const message = (hooks.compose ? hooks.compose(dictation) : dictation).trim();
-    if (message.length > 0) {
-      await sendPrompt(sessionId, message, true);
+    const outcome = await uploadDictationToSession({
+      sessionId,
+      uploadId: rec.id,
+      audio: rec.blob,
+      before: rec.before,
+      after: rec.after,
+      prefix: rec.prefix,
+      baselineBufferBytes: rec.baselineBufferBytes,
+      resumed: false,
+    });
+    if (outcome.terminal) {
+      if (persisted) await deletePending(rec.id);
+    } else {
+      // The server did not confirm the turn; keep the durable record so resume-on-load retries it, and
+      // surface the soft error. (If there is no durable copy, this utterance is genuinely lost - the
+      // onError is then the signal, exactly as before.)
+      hooks.onError?.(outcome.error ?? "Dictation upload failed");
+      hooks.onFailed?.();
     }
   } catch (err) {
     hooks.onError?.(err instanceof Error ? err.message : "Transcription failed");
     hooks.onFailed?.();
-  } finally {
-    // Authoritative clear - releases the orange roster state whether the transcript submitted or the
-    // attempt failed. Best-effort; the Gateway also expires an abandoned mark as a backstop.
+  }
+}
+
+// Re-drive every recorded-but-unsent dictation on app load: prune anything past the TTL, then resume
+// the upload+submit for the rest. Idempotent by upload id, so a clip that actually landed before the
+// tab died is de-duplicated by the Gateway rather than double-submitted. Best-effort: a clip that
+// still cannot send is kept for the next load (until it ages out).
+export async function resumePendingDictations(): Promise<void> {
+  let survivors: PendingDictation[];
+  try {
+    survivors = await prunePending(PENDING_TTL_MS);
+  } catch {
+    return; // no durable store; nothing to resume
+  }
+  for (const rec of survivors) {
     try {
-      await setTranscribing(sessionId, false);
+      const outcome = await uploadDictationToSession({
+        sessionId: rec.sessionId,
+        uploadId: rec.id,
+        audio: rec.blob,
+        before: rec.before,
+        after: rec.after,
+        prefix: rec.prefix,
+        baselineBufferBytes: rec.baselineBufferBytes,
+        resumed: true,
+      });
+      if (outcome.terminal) await deletePending(rec.id);
+      // Non-terminal: keep it for the next load.
     } catch {
-      /* the Gateway's stale-mark backstop clears it if this never lands */
+      // Credits/network still down: keep the record; the next launch retries until the TTL prunes it.
     }
   }
 }
