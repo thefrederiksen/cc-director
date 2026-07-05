@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using System.Threading;
 
 namespace CcDirector.Setup.Engine;
 
@@ -14,10 +15,17 @@ public sealed record PythonToolsResult(
 ///   macOS:   cc-python-macos-arm64.tar.gz + cc-tools-pyenv-macos-arm64.tar.gz
 /// Each carries a relocatable CPython and a de-duped wheelhouse + requirements.lock + tools-manifest.json.
 ///
-/// Flow: download + SHA-verify both assets, extract the python, create a venv with it, pip-install
-/// every tool OFFLINE (--no-index --find-links wheelhouse), then create tool shims (bin\&lt;script&gt;.cmd
-/// on Windows; ~/.local/bin/&lt;script&gt; symlinks on macOS). Per-user, no admin. Idempotent: python\ and
-/// pyenv\ are rebuilt each run.
+/// Flow: download + SHA-verify both assets, read the tools bundle, and ONLY when a rebuild is actually
+/// needed (the recorded version differs, or the on-disk runtime is not healthy) re-provision the shared
+/// base Python and rebuild the venv, pip-install every tool OFFLINE (--no-index --find-links wheelhouse),
+/// then create tool shims (bin\&lt;script&gt;.cmd on Windows; ~/.local/bin/&lt;script&gt; symlinks on macOS).
+/// Per-user, no admin.
+///
+/// Safety (issue #994): the base Python is a runtime other Directors share. A redundant install (the same
+/// version, already healthy) is a genuine no-op - it never deletes or re-extracts the shared Python. When a
+/// rebuild IS needed the new Python is staged and verified runnable, then swapped in with a whole-directory
+/// rename, so a partial or locked extract can never leave the live runtime half-populated. Concurrent
+/// installs across processes are serialized by a machine-local lock.
 /// </summary>
 public sealed class PythonToolsInstaller
 {
@@ -115,19 +123,17 @@ public sealed class PythonToolsInstaller
             if (!Hashing.Sha256Matches(toolsZip, toolsAsset.Sha256))
                 return Fail(steps, $"{ToolsAsset} SHA-256 mismatch; download rejected.");
 
-            // 2. Extract the python (into the canonical location) and the tools bundle (into temp).
-            // The mac archives are .tar.gz extracted with tar so the standalone python's +x bits and
-            // symlinks survive (the bundle script lays the python out flat: PythonDir/bin/python3).
-            Step("extracting bundled Python");
+            // 2. Extract the TOOLS bundle to a temp dir (non-destructive) so we can read the bundle version
+            //    and health-check the installed runtime BEFORE touching the shared base Python. The base
+            //    Python is a runtime other Directors share; re-extracting it when nothing has changed is
+            //    what corrupted it in the field (issue #994) - a redundant second install (the Gateway step
+            //    re-running the tools install) blew the working Python away and then died on a file a running
+            //    Director held open, leaving it with no standard library.
+            Step("reading the tools bundle");
             percent?.Report(20);
-            ResetDir(_layout.PythonDir);
-            var (pyOk, pyExtractOut) = Extract(pyZip, _layout.PythonDir);
-            if (!pyOk) return Fail(steps, $"extracting {PythonAsset} failed: {Trim(pyExtractOut)}");
-
             bundleDir = Path.Combine(Path.GetTempPath(), $"cc-pytools-{Guid.NewGuid():N}");
             var (tOk, tExtractOut) = Extract(toolsZip, bundleDir);
             if (!tOk) return Fail(steps, $"extracting {ToolsAsset} failed: {Trim(tExtractOut)}");
-            percent?.Report(25);
 
             var manifestPath = Path.Combine(bundleDir, "tools-manifest.json");
             var wheelhouse = Path.Combine(bundleDir, "wheelhouse");
@@ -135,42 +141,90 @@ public sealed class PythonToolsInstaller
             if (!Directory.Exists(wheelhouse)) return Fail(steps, "bundle is missing the wheelhouse.");
 
             var manifest = ToolsBundleManifest.Load(manifestPath);
+            percent?.Report(25);
+
             var pythonExe = OperatingSystem.IsWindows()
                 ? Path.Combine(_layout.PythonDir, "python.exe")
                 : Path.Combine(_layout.PythonDir, "bin", "python3");
-            if (!File.Exists(pythonExe)) return Fail(steps, $"bundled python not found at {pythonExe}.");
+            var venvPython = Path.Combine(_layout.PyenvBinDir, OperatingSystem.IsWindows() ? "python.exe" : "python3");
 
-            // 2b. Early-out: if the on-disk bundle is already at this version AND the venv looks healthy,
-            // skip the 5-8 minute venv-reset + offline-pip-install rebuild. Saves most update runs from
-            // the long stall when only the Director version (not the tools bundle) has changed. We can't
-            // check this before download because release-manifest.json does not yet expose the bundle
-            // version — the version lives inside tools-manifest.json, which only exists post-extract.
+            // Serialize the whole decision-and-rebuild across processes. Several Directors plus the installer
+            // can run at once and all target the same shared python\ and pyenv\; two concurrent resets/extracts
+            // of one tree is the race that half-destroyed the runtime (issue #994). Holding the lock across the
+            // early-out too means a second install that waits behind a first one wakes to find the runtime
+            // already current and healthy, and simply no-ops instead of rebuilding.
+            SharedInstallLock installLock;
+            try
+            {
+                installLock = SharedInstallLock.Acquire(PipInstallTimeout);
+            }
+            catch (TimeoutException ex)
+            {
+                return Fail(steps, $"another Python tools install is in progress and did not finish in time ({ex.Message}); nothing was changed.");
+            }
+            using var heldLock = installLock;
+
+            // 2b. Early-out BEFORE any destructive work: the recorded version matches AND the runtime is
+            //     genuinely HEALTHY - the venv has every tool's console script, the venv python runs, and the
+            //     base Python runs (its standard library is intact). Nothing to do; do NOT delete or
+            //     re-extract the shared base Python. A version match alone is not enough: a venv whose
+            //     site-packages was stripped, or a base Python whose standard library went missing (issue
+            //     #994), is the exact half-installed state that must trigger a repair, not a false skip.
             var installedAtStart = InstalledManifest.Load(_layout);
             var installedBundle = installedAtStart.Get(ComponentId);
-            var venvPython = Path.Combine(_layout.PyenvBinDir, OperatingSystem.IsWindows() ? "python.exe" : "python3");
-            // Trust installed.json only when the venv is actually HEALTHY: python present AND every tool's
-            // console script on disk. A version match alone is not enough - a venv whose site-packages was
-            // stripped or half-built (python.exe present, packages gone) is the exact "half-installed" state
-            // that left tools broken in the field (wrappers in bin\ pointing at missing pyenv\Scripts exes).
-            // Rejecting it here makes simply re-running the installer repair the venv.
-            var venvHealthy = File.Exists(venvPython) && VenvHasAllTools(manifest.Scripts);
-            if (installedBundle == manifest.BundleVersion && venvHealthy)
+            var runtimeHealthy = File.Exists(venvPython)
+                && VenvHasAllTools(manifest.Scripts)
+                && BasePythonRuns(pythonExe);
+            if (installedBundle == manifest.BundleVersion && runtimeHealthy)
             {
-                Step($"Python tools bundle {manifest.BundleVersion} already installed; skipping rebuild");
+                Step($"Python tools bundle {manifest.BundleVersion} already installed and healthy; skipping rebuild");
                 percent?.Report(100);
                 return new PythonToolsResult(true,
                     $"Python tools bundle {manifest.BundleVersion} already installed.",
                     steps, manifest.Dists.Count, manifest.BundleVersion);
             }
-            if (installedBundle == manifest.BundleVersion && !venvHealthy)
-                Step($"installed.json claims bundle {manifest.BundleVersion}, but the venv is missing tool scripts; rebuilding to repair");
+            if (installedBundle == manifest.BundleVersion && !runtimeHealthy)
+                Step($"installed.json claims bundle {manifest.BundleVersion}, but the runtime is not healthy; rebuilding to repair");
 
-            // 3. Create the shared venv from the bundled python (on-target, so console-script paths are correct).
-            // Remove the managed bin shims FIRST, so that if anything below fails or is interrupted (a hung
-            // pip killed by the timeout, the wizard closed mid-run, a crash), we never leave a bin\<name>.cmd
-            // whose pyenv\Scripts\<name>.exe target the venv reset just deleted. The shim and its target exe
-            // live and die together: shims are (re)written ONLY after pip succeeds AND the venv is verified
-            // healthy. This is the atomic-shim guarantee for issue #577.
+            // 3. (Re)provision the base Python CRASH-SAFELY. Extract it to a staging dir, verify it is a
+            //    COMPLETE, runnable interpreter (python.exe present AND it can import its own standard
+            //    library), then swap it into place with a whole-directory rename. The delete/extract happens
+            //    on the staging copy, so a partial or locked extract can no longer half-populate the live
+            //    tree: on ANY failure the previous working Python is left untouched.
+            Step("staging bundled Python");
+            var staged = _layout.PythonDir + ".staging-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                ResetDir(staged);
+                var (pyOk, pyExtractOut) = Extract(pyZip, staged);
+                if (!pyOk) return Fail(steps, $"extracting {PythonAsset} failed: {Trim(pyExtractOut)}");
+
+                var stagedPythonExe = OperatingSystem.IsWindows()
+                    ? Path.Combine(staged, "python.exe")
+                    : Path.Combine(staged, "bin", "python3");
+                if (!File.Exists(stagedPythonExe))
+                    return Fail(steps, $"staged Python is missing its interpreter at {stagedPythonExe}; the existing Python was left untouched.");
+                if (!BasePythonRuns(stagedPythonExe))
+                    return Fail(steps, "staged Python is incomplete - it cannot import its standard library (a partial extract). The existing Python was left untouched.");
+
+                Step("swapping in the verified Python");
+                if (!SwapDir(staged, _layout.PythonDir, out var swapError))
+                    return Fail(steps, $"could not replace the base Python (a running Director may be holding its files): {swapError}. The existing Python was left untouched.");
+            }
+            finally
+            {
+                if (Directory.Exists(staged)) TryDeleteDir(staged);
+            }
+
+            if (!File.Exists(pythonExe))
+                return Fail(steps, $"bundled python not found at {pythonExe} after the swap.");
+
+            // 4. Create the shared venv from the freshly swapped-in python (on-target, so console-script
+            // paths are correct). Remove the managed bin shims FIRST, so that if anything below fails or is
+            // interrupted (a hung pip killed by the timeout, the wizard closed mid-run, a crash), we never
+            // leave a bin\<name>.cmd whose pyenv\Scripts\<name>.exe target the venv reset just deleted. The
+            // shim and its target exe live and die together: shims are (re)written ONLY after pip succeeds
+            // AND the venv is verified healthy. This is the atomic-shim guarantee for issue #577.
             Step("creating the shared Python venv");
             RemoveManagedShims(manifest.Scripts);
             ResetDir(_layout.PyenvDir);
@@ -182,7 +236,7 @@ public sealed class PythonToolsInstaller
             if (!File.Exists(venvPython))
                 return Fail(steps, $"venv creation reported success but produced no interpreter at {venvPython}.");
 
-            // 4. Install every tool OFFLINE from the wheelhouse. Percent bands across the whole
+            // 5. Install every tool OFFLINE from the wheelhouse. Percent bands across the whole
             //    bundle install: download 0-20 (byte-level, above), extract 20-25, then two-phase
             //    pip progress for honest pacing:
             //    a. Parse phase (~10 s): pip prints "Processing <wheel>" for all wheels in a burst.
@@ -261,7 +315,7 @@ public sealed class PythonToolsInstaller
             percent?.Report(100);
             progress?.Report($"Installed {wheelCount} packages");
 
-            // 5. Verify the venv is healthy BEFORE writing any shim or recording the version. Every tool's
+            // 6. Verify the venv is healthy BEFORE writing any shim or recording the version. Every tool's
             // console script must be on disk. If pip exited 0 but a script is missing (a partial/corrupt
             // wheelhouse), we must NOT write shims to missing targets nor stamp a version that would suppress
             // a future repair - we fail loud and leave no stale shim behind.
@@ -271,11 +325,11 @@ public sealed class PythonToolsInstaller
                 return Fail(steps, $"venv is incomplete after pip install: missing console scripts [{string.Join(", ", missing)}]. No shims written, version not recorded.");
             }
 
-            // 6. The venv is healthy: NOW write bin\<script>.cmd shims (target exes are guaranteed present).
+            // 7. The venv is healthy: NOW write bin\<script>.cmd shims (target exes are guaranteed present).
             Step($"writing {manifest.Scripts.Count} tool shims to bin");
             WriteShims(manifest.Scripts);
 
-            // 7. Record the bundle version ONLY now that the venv is healthy and the shims point at real
+            // 8. Record the bundle version ONLY now that the venv is healthy and the shims point at real
             // targets. Gating im.Set on VenvHasAllTools means a half-built venv never records a version that
             // would make the version-gated auto-update skip the machine forever (issue #577).
             var im = InstalledManifest.Load(_layout);
@@ -534,6 +588,66 @@ public sealed class PythonToolsInstaller
         Directory.CreateDirectory(dir);
     }
 
+    /// <summary>
+    /// True when the interpreter at <paramref name="pythonExe"/> actually runs - specifically, when it can
+    /// import its own standard library. A Python whose Lib\ (or pythonNNN.zip) went missing dies at startup
+    /// with "No module named 'encodings'" (the field failure in issue #994), so the mere existence of
+    /// python.exe does NOT prove the runtime works. A launch that throws (e.g. a non-PE file) is likewise a
+    /// dead runtime. This is the honest health probe for the shared base Python, used both to decide the
+    /// no-op early-out and to verify a freshly-staged Python before swapping it in.
+    /// </summary>
+    private static bool BasePythonRuns(string pythonExe)
+    {
+        if (!File.Exists(pythonExe)) return false;
+        try
+        {
+            var (exit, _) = ProcessRunner.Run(pythonExe, "-c \"import encodings\"", onStdoutLine: null, TimeSpan.FromSeconds(30));
+            return exit == 0;
+        }
+        catch
+        {
+            // A process that cannot even start (not a valid interpreter) is a dead runtime, not an error to
+            // surface here - the caller treats false as "needs (re)provisioning".
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Replace directory <paramref name="live"/> with <paramref name="staged"/> using whole-directory
+    /// renames, so the swap is atomic and can never half-populate the live tree. The live dir is first
+    /// renamed aside; Windows refuses to rename a directory that has an open handle inside it, so if a
+    /// running Director is holding a Python file open this throws and we abort with the live tree STILL
+    /// INTACT - rather than the partial recursive delete that corrupted the runtime in issue #994. On
+    /// success the aside copy is removed best-effort; on a mid-swap failure it is rolled back into place.
+    /// </summary>
+    internal static bool SwapDir(string staged, string live, out string error)
+    {
+        error = "";
+        string? aside = null;
+        try
+        {
+            if (Directory.Exists(live))
+            {
+                aside = live + ".old-" + Guid.NewGuid().ToString("N");
+                Directory.Move(live, aside);
+            }
+            Directory.Move(staged, live);
+            if (aside is not null) TryDeleteDir(aside);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            try
+            {
+                if (aside is not null && Directory.Exists(aside) && !Directory.Exists(live))
+                    Directory.Move(aside, live);
+            }
+            catch { /* best-effort rollback; the live tree may already be restored */ }
+            return false;
+        }
+    }
+
     private static void TryDelete(string? path)
     {
         if (path is null) return;
@@ -580,6 +694,47 @@ public sealed class PythonToolsInstaller
     {
         EngineLog.Write($"[PythonToolsInstaller] FAILED: {message}");
         return new PythonToolsResult(false, message, steps, 0, null);
+    }
+}
+
+/// <summary>
+/// A machine-local, cross-process lock serializing installs against the shared python\ and pyenv\ trees.
+/// Several Directors plus the installer target the same folders; two concurrent resets/extracts of one
+/// tree is the race that corrupted the runtime (issue #994). Session-scoped (a plain, unqualified Mutex
+/// name), which covers the processes that actually collide: the update wizard, the Gateway install CLI it
+/// shells, and the user's running Directors - all in one login session.
+/// </summary>
+internal sealed class SharedInstallLock : IDisposable
+{
+    private const string MutexName = "cc-director-python-tools-install";
+    private readonly Mutex? _mutex;
+
+    private SharedInstallLock(Mutex? mutex) => _mutex = mutex;
+
+    /// <summary>
+    /// Block until the lock is free or <paramref name="timeout"/> elapses. Throws <see cref="TimeoutException"/>
+    /// if another install holds it for the whole bound. An abandoned mutex (a previous holder that crashed
+    /// without releasing) is treated as acquired, so one crashed install never wedges every future one.
+    /// </summary>
+    public static SharedInstallLock Acquire(TimeSpan timeout)
+    {
+        var mutex = new Mutex(initiallyOwned: false, MutexName);
+        bool owned;
+        try { owned = mutex.WaitOne(timeout); }
+        catch (AbandonedMutexException) { owned = true; }
+        if (!owned)
+        {
+            mutex.Dispose();
+            throw new TimeoutException($"waited {timeout.TotalMinutes:F0} min for the shared Python install lock");
+        }
+        return new SharedInstallLock(mutex);
+    }
+
+    public void Dispose()
+    {
+        if (_mutex is null) return;
+        try { _mutex.ReleaseMutex(); } catch { /* not owned / already released */ }
+        _mutex.Dispose();
     }
 }
 
