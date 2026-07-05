@@ -13,7 +13,9 @@
 #      commit we just published. On mismatch it exits non-zero naming expected vs actual.
 #
 # -DefineOnly loads the functions below for hermetic testing (scripts\test\) WITHOUT running a
-# deploy - the same pattern deploy-cockpit.ps1 uses.
+# deploy. This is the ONE deploy path for the Cockpit too: the React Cockpit is served in-process by
+# the Gateway (issue #979 retired the separate Blazor Cockpit + its deploy-cockpit.ps1), shipping as
+# the wwwroot tree copied beside the exe below.
 
 [CmdletBinding()]
 param(
@@ -228,10 +230,16 @@ function Copy-GatewayPayload {
     if (-not (Test-Path $exe)) { throw "Copy-GatewayPayload: published exe not found at $exe" }
     Copy-Item $exe $GatewayDir -Force
 
-    $srcWww   = Join-Path $StageDir 'wwwroot'
-    $srcIndex = Join-Path $srcWww 'm\index.html'
+    $srcWww     = Join-Path $StageDir 'wwwroot'
+    $srcIndex   = Join-Path $srcWww 'm\index.html'
+    $srcCockpit = Join-Path $srcWww 'c\index.html'
     if (-not (Test-Path $srcIndex)) {
         throw "Copy-GatewayPayload: mobile app missing in publish output ($srcIndex). A Release publish must stage wwwroot\m (issue #809)."
+    }
+    # Issue #979: the React Cockpit is served in-process at the site root and ships as wwwroot\c staged
+    # by the release-gated BuildCockpitApp target. A Release publish must stage it beside wwwroot\m.
+    if (-not (Test-Path $srcCockpit)) {
+        throw "Copy-GatewayPayload: Cockpit missing in publish output ($srcCockpit). A Release publish must stage wwwroot\c (issue #979)."
     }
     $dstWww = Join-Path $GatewayDir 'wwwroot'
     if (Test-Path $dstWww) { Remove-Item -Recurse -Force $dstWww }
@@ -241,7 +249,11 @@ function Copy-GatewayPayload {
     if (-not (Test-Path $dstIndex)) {
         throw "Copy-GatewayPayload: wwwroot\m\index.html not present beside the exe after copy ($dstIndex)"
     }
-    Write-Host "[redeploy-gateway] copied Gateway payload (exe + wwwroot\m) -> $GatewayDir"
+    $dstCockpit = Join-Path $GatewayDir 'wwwroot\c\index.html'
+    if (-not (Test-Path $dstCockpit)) {
+        throw "Copy-GatewayPayload: wwwroot\c\index.html not present beside the exe after copy ($dstCockpit)"
+    }
+    Write-Host "[redeploy-gateway] copied Gateway payload (exe + wwwroot\m + wwwroot\c) -> $GatewayDir"
 }
 
 # Read the configured gateway auth token (config.json gateway.token) so the deploy can present it on

@@ -30,6 +30,13 @@ public sealed class GatewayUpdater
     /// </summary>
     public string StagedMobileZipPath => Path.Combine(_layout.StateDir, "staged", MobilePackage.AssetName);
 
+    /// <summary>
+    /// The staging path the matching React Cockpit zip is downloaded to before a self-update (epic
+    /// #967 cutover, issue #979), so the detached update helper can lay <c>wwwroot/c</c> beside the
+    /// swapped exe with no download. Staged + SHA-verified by <see cref="StageAsync"/>.
+    /// </summary>
+    public string StagedCockpitZipPath => Path.Combine(_layout.StateDir, "staged", CockpitAssetPackage.AssetName);
+
     /// <summary>True when the release has a Gateway newer than the installed one (and it isn't pinned).</summary>
     public bool IsUpdateAvailable(ResolvedRelease release)
     {
@@ -73,6 +80,7 @@ public sealed class GatewayUpdater
             // no loose content). The exe and its mobile app ship from the SAME release, so they stage
             // together.
             await StageMobileZipAsync(release, source, ct);
+            await StageCockpitZipAsync(release, source, ct);
             return (StagedExePath, asset.Version);
         }
         finally
@@ -106,6 +114,38 @@ public sealed class GatewayUpdater
             Directory.CreateDirectory(Path.GetDirectoryName(StagedMobileZipPath) ?? _layout.StateDir);
             File.Copy(downloaded, StagedMobileZipPath, overwrite: true);
             EngineLog.Write($"[GatewayUpdater] staged {MobilePackage.AssetName} {asset.Version} -> {StagedMobileZipPath}");
+        }
+        finally
+        {
+            try { if (File.Exists(downloaded)) File.Delete(downloaded); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
+    /// Stage the matching React Cockpit zip (epic #967 cutover, issue #979) to
+    /// <see cref="StagedCockpitZipPath"/>. SHA-verified here (never stage a corrupt build). When the
+    /// release carries no Cockpit asset (a release that predates the cutover), any stale staged zip is
+    /// removed so the helper never applies an out-of-date Cockpit build over a newer one.
+    /// </summary>
+    private async Task StageCockpitZipAsync(ResolvedRelease release, ReleaseSource source, CancellationToken ct)
+    {
+        var asset = release.Manifest.TryGetAsset(CockpitAssetPackage.AssetName);
+        if (asset is null)
+        {
+            try { if (File.Exists(StagedCockpitZipPath)) File.Delete(StagedCockpitZipPath); } catch { /* best effort */ }
+            EngineLog.Write($"[GatewayUpdater] release has no {CockpitAssetPackage.AssetName}; no Cockpit files staged");
+            return;
+        }
+
+        var downloaded = await source.DownloadAssetAsync(asset.Name, release.DownloadUrls, ct);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Sha256) && !Hashing.Sha256Matches(downloaded, asset.Sha256))
+                throw new InvalidOperationException("Cockpit zip SHA-256 mismatch; not staging.");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(StagedCockpitZipPath) ?? _layout.StateDir);
+            File.Copy(downloaded, StagedCockpitZipPath, overwrite: true);
+            EngineLog.Write($"[GatewayUpdater] staged {CockpitAssetPackage.AssetName} {asset.Version} -> {StagedCockpitZipPath}");
         }
         finally
         {

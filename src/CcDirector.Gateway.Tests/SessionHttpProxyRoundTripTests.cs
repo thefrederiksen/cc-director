@@ -35,7 +35,7 @@ public sealed class SessionHttpProxyRoundTripTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1,
+            instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
 

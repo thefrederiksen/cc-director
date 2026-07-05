@@ -1,22 +1,22 @@
 # DevThrottle Cockpit (React)
 
-A React + TypeScript single-page app, served by the Gateway at `/c`. It is the desktop **shell** of
-the Cockpit rebuild (epic #967): the whole user interface moves off Blazor Server onto React, thin
-over the shared library `@devthrottle/client-core` (`packages/client-core`). Every shared concern -
-the typed Gateway client, history rendering, the terminal byte-stream engine, dictation, device auth,
-and session ordering - lives in the package, and this app owns only its screens, routing, and styles.
+A React + TypeScript single-page app, served by the Gateway at the site root `/`. It is the desktop
+**shell** of the Cockpit rebuild (epic #967): the whole user interface moved off Blazor Server onto
+React, thin over the shared library `@devthrottle/client-core` (`packages/client-core`). Every shared
+concern - the typed Gateway client, history rendering, the terminal byte-stream engine, dictation,
+device auth, and session ordering - lives in the package, and this app owns only its screens, routing,
+and styles.
 
 This app is one member of the npm **workspace** rooted at the repository root (`packages/*` and
 `apps/*`), alongside the mobile shell (`apps/mobile`). Install dependencies once at the workspace
 root, not here.
 
-## Coexistence with the Blazor Cockpit
+## The canonical Cockpit
 
-This is a **scaffold** - a minimal shell (the desktop layout frame plus routing between placeholder
-panes). It runs **side by side** with the live Blazor Cockpit: Blazor still serves `/` and every
-existing path, and this React app is served under its own base `/c`. Each Cockpit page is ported from
-its `.razor` component into this shell in a later issue, and a path flips from Blazor to React one at
-a time (mirroring how `/m` is served today). Nothing here changes the Blazor Cockpit.
+This React app **is** the Cockpit. The Blazor Server Cockpit was retired in the epic #967 cutover
+(issue #979): the Gateway now serves this app at the site root `/` and every Cockpit page path falls
+back to `index.html` so the React router resolves it, exactly as the mobile shell is served at `/m`.
+There is no Blazor Cockpit process any more.
 
 ## Build
 
@@ -52,5 +52,5 @@ npm run dev --workspace @devthrottle/cockpit   # Vite dev server; proxy API path
 
 - `src/AppShell.tsx` - the three-region desktop layout frame (left rail / main pane / right rail).
 - `src/panes/` - placeholder panes, each replaced by a real ported page in its own issue.
-- `src/main.tsx` - the router (rooted at `/c`).
+- `src/main.tsx` - the router (rooted at the site root `/`).
 - Everything shared with the mobile shell lives in `@devthrottle/client-core`.

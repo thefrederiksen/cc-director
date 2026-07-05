@@ -6,23 +6,29 @@ using Microsoft.AspNetCore.StaticFiles;
 namespace CcDirector.Gateway.Cockpit;
 
 /// <summary>
-/// Serves the React desktop Cockpit at <c>/c</c> (epic #967, the rebuild of the Blazor Server
-/// Cockpit). The build output (Vite, copied into <c>wwwroot/c</c> by the release-gated MSBuild
-/// target <c>BuildCockpitApp</c> on CcDirector.Gateway.csproj) is served as static files, with any
-/// unknown path under <c>/c</c> falling back to <c>index.html</c> so a hard navigation to a
-/// client-side route (<c>/c/fleet</c>) still renders the shell for the React router to resolve.
+/// Serves the React desktop Cockpit as the Gateway's canonical front door (epic #967 cutover,
+/// issue #979 - the Blazor Server Cockpit is retired). The build output (Vite, copied into
+/// <c>wwwroot/c</c> by the release-gated MSBuild target <c>BuildCockpitApp</c> on
+/// CcDirector.Gateway.csproj) is served as static files at the site root, with any unknown path
+/// falling back to <c>index.html</c> so a hard navigation to a client-side route (<c>/fleet</c>)
+/// still renders the shell for the React router to resolve.
 ///
 /// This is the direct desktop analog of how the mobile app is served at <c>/m</c>
-/// (<see cref="Mobile.MobileApp"/>), and it is mapped BEFORE the fallback Cockpit proxy
-/// (<see cref="CockpitProxy"/>) so these explicit <c>/c</c> routes win while every other path keeps
-/// falling through to the live Blazor Cockpit unchanged. That is the coexistence the migration needs:
-/// the React and Blazor Cockpits run side by side and a path flips from one to the other when it is
-/// ready.
+/// (<see cref="Mobile.MobileApp"/>): a static single-page app the Gateway serves same-origin. The
+/// shell carries NO credential and needs no token injection - the browser talks only to the Gateway
+/// through root-relative paths, and the terminal WebSocket token rides as the
+/// <c>cc-gateway-token</c> cookie the client-core startup sets.
 ///
-/// Unlike <c>/m</c>, the shell carries NO credential and needs no token injection: the browser talks
-/// only to the Gateway through root-relative paths, and the terminal WebSocket token rides as the
-/// <c>cc-gateway-token</c> cookie the client-core startup sets - so <c>index.html</c> is served
-/// verbatim.
+/// Routing has two parts:
+/// <list type="bullet">
+/// <item><see cref="UseBrowserPageRoutes"/> - a PERSON navigating to a dual-use path that is BOTH a
+///   Gateway API surface (JSON) and a Cockpit page (<c>/sessions</c>, <c>/directors</c>,
+///   <c>/cockpit</c>, <c>/lists</c>) is served the React shell, while programmatic clients keep
+///   getting JSON from the explicit endpoints. Registered after auth, before routing.</item>
+/// <item><see cref="Map"/> - the site-root fallback: everything no explicit endpoint claimed serves
+///   a real static asset when the path resolves to a file, otherwise the <c>index.html</c> shell.
+///   Mapped LAST (lowest routing precedence) so the whole REST surface is unchanged.</item>
+/// </list>
 /// </summary>
 public static class CockpitReactApp
 {
@@ -31,37 +37,106 @@ public static class CockpitReactApp
     private static readonly FileExtensionContentTypeProvider ContentTypes = new();
 
     /// <summary>
+    /// The path roots that are both a Gateway API surface (JSON, a top-level single-segment
+    /// <c>MapGet</c>) AND a Cockpit page (HTML). This is the audited set of dual-use paths, one entry
+    /// per collision between a React client-side route and a Gateway JSON endpoint at the SAME path:
+    /// <list type="bullet">
+    /// <item><c>cockpit</c> - <c>MapGet("/cockpit")</c> vs the roster redirect page.</item>
+    /// <item><c>sessions</c> - <c>MapGet("/sessions")</c> and <c>MapGet("/sessions/{sid}")</c> vs the
+    ///   roster + session-detail pages.</item>
+    /// <item><c>directors</c> - <c>MapGet("/directors")</c> vs the Directors registry + detail pages.</item>
+    /// <item><c>lists</c> - <c>MapGet("/lists")</c> (the Work-List API) vs the Lists page. Added in the
+    ///   #979 cutover: at <c>/c/lists</c> the API path <c>/lists</c> did not collide; flipping the
+    ///   front door to <c>/</c> made <c>/lists</c> dual-use, so a browser reload/deep-link to
+    ///   <c>/lists</c> was being served the raw <c>{"lists":[]}</c> JSON instead of the shell.</item>
+    /// </list>
+    /// The match is on the FIRST segment for one- or two-segment paths only: the list page
+    /// (<c>/sessions</c>) and its detail page (<c>/sessions/{sid}</c>) - one id segment, never deeper.
+    /// Three-segment paths (<c>/sessions/{sid}/turnbriefs</c>, <c>/directors/{id}/repos</c>) stay
+    /// API-only; <c>/cockpit/{sid}</c> would fall through to the shell anyway, but matching it here
+    /// keeps the policy one rule instead of two.
+    ///
+    /// Every OTHER React page (<c>/fleet</c>, <c>/schedule</c>, <c>/wingman</c>, <c>/dictionary</c>,
+    /// <c>/transcripts</c>, <c>/exes</c>, <c>/learn</c>, <c>/telemetry</c>, <c>/account</c>,
+    /// <c>/about</c>, <c>/feedback</c>, <c>/session/{id}</c>) is deliberately absent: none has a
+    /// top-level single-segment <c>MapGet</c> at its own path, so a hard navigation to it already falls
+    /// through the whole REST surface to the SPA fallback (<see cref="Map"/>) and serves the shell.
+    /// Adding one here would wrongly shadow that page's UNDERLYING nested API path (e.g. adding
+    /// <c>exes</c> would divert a browser GET of <c>/exes/list</c> to the shell), so this set stays the
+    /// exact intersection of "React page" and "same-path JSON endpoint".
+    /// </summary>
+    private static readonly string[] BrowserPageRoots = { "cockpit", "sessions", "directors", "lists" };
+
+    /// <summary>
     /// The directory the built React Cockpit is served from: <c>wwwroot/c</c> beside the running
     /// executable. The release-gated MSBuild target populates it; on a routine (Debug) build it does
-    /// not exist and <c>/c</c> answers 404 (the React Cockpit ships only in release builds, exactly
+    /// not exist and the Cockpit answers 404 (the React Cockpit ships only in release builds, exactly
     /// like <c>/m</c>).
     /// </summary>
     public static string WebRoot => Path.Combine(AppContext.BaseDirectory, "wwwroot", "c");
 
     /// <summary>
-    /// Map the <c>/c</c> routes. Call BEFORE the fallback Cockpit proxy so these explicit routes win
-    /// over the Blazor Cockpit catch-all.
+    /// Decide whether this request is a PERSON navigating to a dual-use path (HTML page) rather than a
+    /// PROGRAM fetching JSON. Public so the policy is unit-testable and so
+    /// <see cref="Util.AuthMiddleware"/> can reuse the one definition (its <c>/cockpit</c>
+    /// browser-shell gating cannot drift from this).
     /// </summary>
-    public static void Map(WebApplication app)
+    public static bool IsBrowserPageRequest(string method, PathString path, string? acceptHeader)
     {
-        FileLog.Write($"[CockpitReactApp] serving /c from {WebRoot} (exists={Directory.Exists(WebRoot)})");
-
-        app.MapGet("/c", (HttpContext ctx) => ServeAsync(ctx, ""));
-        app.MapGet("/c/{*path}", (HttpContext ctx, string? path) => ServeAsync(ctx, path ?? ""));
+        if (!HttpMethods.IsGet(method)) return false;
+        if (acceptHeader is null || !acceptHeader.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var segments = (path.Value ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length is 0 or > 2) return false;
+        return BrowserPageRoots.Any(r => string.Equals(r, segments[0], StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
-    /// Serve one request under <c>/c</c>: a real static asset when the path resolves to a file in the
-    /// web root, otherwise <c>index.html</c> (the single-page-app shell and client-route fallback).
-    /// Answers 404 only when the React Cockpit is not built into this host. Writes the response
-    /// directly (the handler is a RequestDelegate), so it returns a non-generic Task.
+    /// Middleware that serves the React shell for browser navigations on dual-use paths. Add AFTER
+    /// auth (pages stay protected) and BEFORE routing (it must win over the explicit JSON endpoints
+    /// for these requests, which a program still reaches with a non-HTML Accept).
+    /// </summary>
+    public static void UseBrowserPageRoutes(WebApplication app)
+    {
+        app.Use(async (ctx, next) =>
+        {
+            if (IsBrowserPageRequest(ctx.Request.Method, ctx.Request.Path, ctx.Request.Headers.Accept))
+            {
+                FileLog.Write($"[CockpitReactApp] browser navigation {ctx.Request.Path} -> React shell");
+                await ServeIndexAsync(ctx, WebRoot);
+                return;
+            }
+            await next();
+        });
+    }
+
+    /// <summary>
+    /// Map the site-root fallback. Call AFTER every explicit endpoint is mapped so the REST surface
+    /// wins; everything else (the shell at <c>/</c>, client-side routes, and Vite's hashed assets)
+    /// resolves here.
+    /// </summary>
+    public static void Map(WebApplication app)
+    {
+        FileLog.Write($"[CockpitReactApp] serving the Cockpit from {WebRoot} (exists={Directory.Exists(WebRoot)})");
+
+        // Explicit "{*path}" pattern: the parameterless MapFallback uses "{*path:nonfile}", whose
+        // :nonfile constraint skips anything with a file extension - which would 404 every Cockpit
+        // asset (index-*.js, index-*.css, ...). The shell must serve FILES too.
+        app.MapFallback("{*path}", (HttpContext ctx, string? path) => ServeAsync(ctx, path ?? ""));
+    }
+
+    /// <summary>
+    /// Serve one request: a real static asset when the path resolves to a file in the web root,
+    /// otherwise <c>index.html</c> (the single-page-app shell and client-route fallback). Answers 404
+    /// only when the React Cockpit is not built into this host. Writes the response directly (the
+    /// handler is a RequestDelegate), so it returns a non-generic Task.
     /// </summary>
     private static async Task ServeAsync(HttpContext ctx, string relativePath)
     {
         var webRoot = WebRoot;
         if (!Directory.Exists(webRoot))
         {
-            FileLog.Write("[CockpitReactApp] /c requested but the React Cockpit is not built into this host (no wwwroot/c)");
+            FileLog.Write("[CockpitReactApp] request but the React Cockpit is not built into this host (no wwwroot/c)");
             await WriteNotFoundAsync(ctx, "React Cockpit not built into this Gateway (release build only).");
             return;
         }
@@ -110,6 +185,13 @@ public static class CockpitReactApp
 
     private static async Task ServeIndexAsync(HttpContext ctx, string webRoot)
     {
+        if (!Directory.Exists(webRoot))
+        {
+            FileLog.Write("[CockpitReactApp] shell requested but the React Cockpit is not built into this host (no wwwroot/c)");
+            await WriteNotFoundAsync(ctx, "React Cockpit not built into this Gateway (release build only).");
+            return;
+        }
+
         var indexPath = Path.Combine(webRoot, IndexFile);
         if (!File.Exists(indexPath))
         {

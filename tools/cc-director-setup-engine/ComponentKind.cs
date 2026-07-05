@@ -9,9 +9,6 @@ public enum ComponentKind
     /// <summary>The always-on Gateway service (Gateway-role machines only).</summary>
     Gateway,
 
-    /// <summary>The Cockpit web app, supervised by the Gateway service.</summary>
-    Cockpit,
-
     /// <summary>One of the cc-* command-line tools installed to bin/.</summary>
     Tool,
 

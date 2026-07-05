@@ -38,7 +38,7 @@ public sealed class ProxyInjectsFleetTokenTests : IAsyncLifetime
         // The Gateway's own token IS the fleet token - exactly the production shape where the
         // Director's gateway.token equals the Gateway's token.
         _gateway = new GatewayHost(port: FreePort(), token: FleetToken, authEnabled: true,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1,
+            instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
 

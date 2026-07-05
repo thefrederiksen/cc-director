@@ -147,6 +147,25 @@ public static class Program
             {
                 FileLog.Write($"[Program] mobile app apply FAILED (prior /m build still served): {ex.Message}");
             }
+
+            // Issue #979: lay the matching React Cockpit down beside the freshly swapped exe so the
+            // Cockpit keeps serving at the site root after a self-update (the single-file exe carries no
+            // loose content). Same contract as the mobile app above: the running Gateway staged +
+            // SHA-verified the zip before launching this helper. Boundary try/catch so a failure leaves
+            // the prior Cockpit build serving and never undoes an already-successful exe update.
+            try
+            {
+                var layout = InstallLayout.Default();
+                var stagedCockpitZip = new GatewayUpdater(layout).StagedCockpitZipPath;
+                var appliedDir = CockpitAssetPackage.ExtractStagedZip(layout, stagedCockpitZip);
+                FileLog.Write(appliedDir is null
+                    ? "[Program] no staged Cockpit zip to apply (release without the Cockpit)"
+                    : $"[Program] applied Cockpit -> {appliedDir}");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[Program] Cockpit apply FAILED (prior Cockpit build still served): {ex.Message}");
+            }
         }
 
         FileLog.Stop();

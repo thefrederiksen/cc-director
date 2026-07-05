@@ -5,9 +5,10 @@
 .DESCRIPTION
   Exercises the process-based self-update end to end (POST /shutdown -> swap -> relaunch ->
   /healthz -> auto-rollback) on a disposable Gateway instance on an alternate port. It NEVER
-  touches the live Gateway (7878) or Cockpit (7470): the throwaway runs with
+  touches the live Gateway (7878): the throwaway runs with
   CC_GATEWAY_NO_TAILSCALE=1 (no serve-mapping writes), --no-autostart (no Run-key write),
-  and never --managed (no Cockpit supervision). No elevation needed.
+  and never --managed (no auto-update loop). The Cockpit is served in-process by the Gateway
+  now (issue #979), so there is no separate Cockpit process/port to protect. No elevation needed.
 
   Two checks:
    1. Happy path: stage a good build, expect it to swap in and stay healthy (outcome Updated, exit 0).
@@ -19,7 +20,7 @@
   Cleans up the throwaway processes and temp files at the end.
 
 .PARAMETER Port
-  Alternate port the throwaway instance binds (default 7899 - NOT the live 7878/7470).
+  Alternate port the throwaway instance binds (default 7899 - NOT the live 7878).
 
 .PARAMETER Root
   ISOLATED install root for this test run (issue #176). The self-update helper records the new

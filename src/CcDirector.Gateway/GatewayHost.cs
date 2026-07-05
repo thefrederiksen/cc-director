@@ -247,16 +247,9 @@ public sealed class GatewayHost : IAsyncDisposable
     private WebApplication? _app;
     private bool _stopped;
 
-    private readonly int _cockpitProxyPort;
-
     /// <param name="instancesDirectory">
     /// Override the Director-discovery instances directory (see <see cref="DirectorRegistry"/>).
     /// Tests pass an isolated temp directory; production omits it for the shared default.
-    /// </param>
-    /// <param name="cockpitProxyPort">
-    /// Override the loopback port the fallback proxy forwards to (one-URL plan). Tests pass
-    /// a dead port so they never reach a real Cockpit running on the dev machine; production
-    /// omits it for <see cref="Cockpit.CockpitSupervisor.ResolvePort"/>.
     /// </param>
     /// <param name="turnBriefDirectory">
     /// Override the gateway turn-brief store directory (issue #185). Tests pass an isolated
@@ -295,7 +288,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, int? cockpitProxyPort = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
@@ -307,8 +300,7 @@ public sealed class GatewayHost : IAsyncDisposable
         else
             FileLog.Write($"[GatewayHost] auth gate booted OFF (disabled via override - requests are accepted without a credential; this is a debugging mode, not the shipped default)");
         _client = new DirectorEndpointClient(Token);
-        _cockpitProxyPort = cockpitProxyPort ?? Cockpit.CockpitSupervisor.ResolvePort();
-        _serveProvisioner = new TailscaleServeProvisioner(Registry, Port, Cockpit.CockpitSupervisor.ResolvePort());
+        _serveProvisioner = new TailscaleServeProvisioner(Registry, Port);
 
         // The Gateway's in-process warm brain (issue #184): supervisor only - the chosen
         // tool spawns on first use (the brief agent's first ask, or Settings' Restart Brain).
@@ -707,7 +699,7 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.Services.AddRoutingCore();
-        // Direct forwarding for the one-URL front door (CockpitProxy fallback route).
+        // Direct forwarding for the per-Director request proxy (see DirectorForwarding).
         builder.Services.AddHttpForwarder();
         // Issue #806 (mobile foundation): emit an OpenAPI document at /openapi/v1.json. The mobile
         // app's build-time codegen (openapi-typescript) turns it into a typed TypeScript client, so
@@ -768,10 +760,8 @@ public sealed class GatewayHost : IAsyncDisposable
                 var path = ctx.Request.Path.Value ?? "";
                 if (!path.Equals("/healthz", StringComparison.OrdinalIgnoreCase)
                     && !path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase)
-                    // Proxied Blazor plumbing (circuit + static assets) would flood the log.
-                    && !path.StartsWith("/_blazor", StringComparison.OrdinalIgnoreCase)
-                    && !path.StartsWith("/_framework", StringComparison.OrdinalIgnoreCase)
-                    && !path.StartsWith("/_content", StringComparison.OrdinalIgnoreCase))
+                    // The React Cockpit's hashed static assets would flood the log.
+                    && !path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
                 {
                     var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "?";
                     FileLog.Write($"[GatewayHost] {ctx.Request.Method} {path}{ctx.Request.QueryString} -> {ctx.Response.StatusCode} ({sw.ElapsedMilliseconds}ms) client={client} host={ctx.Request.Host}");
@@ -796,10 +786,9 @@ public sealed class GatewayHost : IAsyncDisposable
         Mobile.MobileRedirect.UseMobileRedirect(_app);
 
         // Browser-aware front door (the Cockpit sitemap): a PERSON navigating to /sessions,
-        // /directors, or /cockpit (Accept: text/html) gets the Cockpit page; programs keep
+        // /directors, or /cockpit (Accept: text/html) gets the React Cockpit shell; programs keep
         // getting JSON from the explicit endpoints below. After auth, before routing.
-        var cockpitForwarder = new Cockpit.CockpitProxy.CockpitForwarder(_app.Services, _cockpitProxyPort);
-        Cockpit.CockpitProxy.UseBrowserPageRoutes(_app, cockpitForwarder);
+        Cockpit.CockpitReactApp.UseBrowserPageRoutes(_app);
 
         // Enable ASP.NET WebSocket support so the per-session proxy can recognize an inbound WS
         // upgrade (ctx.WebSockets.IsWebSocketRequest) and accept it (AcceptWebSocketAsync) for the
@@ -1099,15 +1088,12 @@ public sealed class GatewayHost : IAsyncDisposable
 
         Mobile.MobileApp.Map(_app, Token);
 
-        // Epic #967: the React desktop Cockpit static shell at /c (built into wwwroot/c by the
-        // release-gated MSBuild target). Mapped before the fallback proxy so these explicit /c routes
-        // win, while every other path keeps falling through to the live Blazor Cockpit - the two run
-        // side by side so a path can flip from Blazor to React one at a time. Same pattern as /m above.
+        // One URL (epic #967 cutover, issue #979): the React desktop Cockpit is the Gateway's
+        // canonical front door. Everything no explicit endpoint above claimed - the shell at "/",
+        // client-side routes, and the hashed static assets (built into wwwroot/c by the release-gated
+        // MSBuild target) - resolves here. Mapped LAST by design, exactly like /m above. The Blazor
+        // Server Cockpit and its fallback reverse-proxy were retired in this cutover.
         Cockpit.CockpitReactApp.Map(_app);
-
-        // One URL: everything no explicit endpoint above claimed falls through to the
-        // loopback Cockpit (docs/plans/one-url-cockpit.md). Mapped LAST by design.
-        Cockpit.CockpitProxy.Map(_app, cockpitForwarder);
 
         await _app.StartAsync();
         FileLog.Write($"[GatewayHost] listening on http://127.0.0.1:{Port} (version {version})");

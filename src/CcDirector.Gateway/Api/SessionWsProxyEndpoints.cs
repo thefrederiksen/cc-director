@@ -37,8 +37,8 @@ namespace CcDirector.Gateway.Api;
 /// <c>/dictate</c>, and screenshots stay at <c>/screenshots/file</c> (the Gateway introduces the
 /// sid in the path so it can pick the owning Director - Assumption A1).
 ///
-/// These routes MUST be mapped BEFORE the <see cref="Cockpit.CockpitProxy"/> fallback and the
-/// browser-page routes so they win for these paths.
+/// These routes MUST be mapped BEFORE the <see cref="Cockpit.CockpitReactApp"/> site-root fallback
+/// and the browser-page routes so they win for these paths.
 /// </summary>
 internal static class SessionWsProxyEndpoints
 {

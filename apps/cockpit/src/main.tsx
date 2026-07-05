@@ -42,10 +42,9 @@ import "./feedback/feedback.css";
 // so the terminal port (issue #971) inherits an already-authenticated origin.
 ensureGatewayCookie();
 
-// The app is served under /c, so the router is rooted there. A hard navigation to a deep link
-// (e.g. /c/fleet) is served the index.html shell by the Gateway and the router then resolves it
-// client-side. These are placeholder panes only - each real page is its own porting issue under the
-// epic and replaces the matching placeholder one at a time.
+// The app is the Gateway's canonical Cockpit, served at the site root "/" (issue #979 cutover). A
+// hard navigation to a deep link (e.g. /fleet) is served the index.html shell by the Gateway and the
+// router then resolves it client-side.
 const router = createBrowserRouter(
   [
     {
@@ -111,7 +110,6 @@ const router = createBrowserRouter(
       ],
     },
   ],
-  { basename: "/c" }
 );
 
 const rootElement = document.getElementById("root");

@@ -23,7 +23,7 @@ the Workstation role.
 | Role | What it installs | Admin needed? |
 |------|------------------|---------------|
 | **Workstation** | Director app + CLI tools, entirely per-user | No - never |
-| **Gateway** | Everything a Workstation installs, PLUS the Gateway tray app (starts at logon) and the Cockpit it supervises | No - never |
+| **Gateway** | Everything a Workstation installs, PLUS the Gateway tray app (starts at logon), which serves the React Cockpit in-process | No - never |
 
 There is exactly one Gateway on a tailnet; it is usually someone's main
 workstation, not a headless box. The Gateway is a **per-user tray app** that
@@ -37,8 +37,8 @@ apps) and because its hosted agents (claude.exe) must authenticate as the user.
 Admin is required **never**. Both roles are 100% per-user under
 `%LOCALAPPDATA%\cc-director`: install, update, rollback, and uninstall all run
 unelevated (including from a cloud / CI session). The Gateway tray app swaps its
-own binary (and the Cockpit's) and relaunches itself with no UAC because
-everything it touches is user-writable by design.
+own binary (and its bundled Cockpit + mobile static files) and relaunches itself
+with no UAC because everything it touches is user-writable by design.
 
 ---
 
@@ -59,7 +59,8 @@ per-user).
 | `app\cc-director.exe` | The Director desktop app (in-place self-update by the user) |
 | `bin\<tool>.exe` | CLI tools (cc-pdf, cc-html, cc-word, ...), added to the USER PATH |
 | `gateway\cc-director-gateway.exe` | The Gateway tray app (Gateway role only; starts at logon via the HKCU Run key `CcDirectorGateway`, runs with `--managed`) |
-| `cockpit\cc-director-cockpit.exe` | The Cockpit, supervised as a child of the Gateway tray app (Gateway role only) |
+| `gateway\wwwroot\c\` | The React Cockpit static files, served in-process by the Gateway at the site root `/` (Gateway role only; issue #979). Unpacked from the `devthrottle-gateway-cockpit-win-x64.zip` side-car on install/self-update |
+| `gateway\wwwroot\m\` | The mobile app static files, served by the Gateway at `/m` (Gateway role only) |
 | `config\` | Per-user app configuration (`config\config.json`) |
 | `config\setup\update-pins.json` | Rollback pins (versions to skip) |
 | `state\` | Setup/update scratch state (e.g. the staged Gateway exe during self-update) |
@@ -86,8 +87,8 @@ without touching the Director, and vice versa. This is driven by a per-asset
   "version": "0.4.0",                 // release tag (informational)
   "assets": {
     "cc-director-win-x64.exe":         { "version": "0.4.0", "sha256": "...", "platform": "windows" },
-    "cc-director-gateway-win-x64.exe": { "version": "0.4.0", "sha256": "...", "platform": "windows" },
-    "cc-director-cockpit-win-x64.zip": { "version": "0.4.0", "sha256": "...", "platform": "windows" },
+    "devthrottle-gateway-win-x64.exe": { "version": "0.4.0", "sha256": "...", "platform": "windows" },
+    "devthrottle-gateway-cockpit-win-x64.zip": { "version": "0.4.0", "sha256": "...", "platform": "windows" },
     "cc-pdf-win-x64.exe":              { "version": "1.2.0", "sha256": "...", "platform": "windows" },
     "cc-html-win-x64.exe":             { "version": "1.1.3", "sha256": "...", "platform": "windows" }
   }
@@ -147,7 +148,9 @@ runs the framework's own installer.
 
 .NET runtime: the Director and Gateway ship framework-dependent (they need the
 .NET 10 runtime; the installer detects it and guides via winget when missing).
-The Cockpit ships self-contained inside its zip.
+The Cockpit is a static React bundle (no runtime of its own) served in-process by
+the Gateway; it ships as the `devthrottle-gateway-cockpit-win-x64.zip` side-car,
+unpacked into `wwwroot/c` beside the Gateway exe.
 
 A Gateway-role install has one extra requirement, checked up front and failed
 loudly (never half-installed):
@@ -163,8 +166,8 @@ loudly (never half-installed):
   user environment directly.
 
 No elevation: the Gateway is a per-user tray app; the installer extracts the
-Cockpit, starts the tray app with `--managed`, and the app registers its own
-HKCU Run-key autostart.
+Cockpit and mobile static files beside the exe, starts the tray app with
+`--managed`, and the app registers its own HKCU Run-key autostart.
 
 ---
 
@@ -257,8 +260,9 @@ the product ships to external users.
 - Engine source: `tools/cc-director-setup-engine/`
 - CLI source: `tools/cc-director-setup-cli/`
 - Release pipeline: `.github/workflows/release.yml`
-- Gateway scripts: `scripts/verify-gateway.ps1`, `scripts/deploy-cockpit.ps1`,
-  `scripts/redeploy-gateway.ps1`, `scripts/test-gateway-selfupdate.ps1`
+- Gateway scripts: `scripts/verify-gateway.ps1`, `scripts/redeploy-gateway.ps1`
+  (the one deploy path - it ships the in-process React Cockpit too),
+  `scripts/test-gateway-selfupdate.ps1`
 
 > Reminder: this file is the master spec (see the banner at top). When you change
 > install behavior, change THIS document first, then make the code match it.

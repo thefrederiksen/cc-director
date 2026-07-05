@@ -109,9 +109,16 @@ public class UpdateRunnerTests : IDisposable
     [Fact]
     public async Task ZipAsset_IsSkipped()
     {
-        var cockpit = ComponentRegistry.Cockpit; // ships as .zip
-        var runner = new UpdateRunner(_layout, [cockpit], DownloaderWith("ignored"));
-        var plan = PlanOf(new PlanItem("cockpit", PlanItemKind.Update, cockpit.WindowsAsset, "0.3.0", "0.4.0", "AB"));
+        // The generic runner places single-file exes and SKIPS archive (.zip) assets: those are
+        // unpacked by their own dedicated step (e.g. the mobile side-car zip), never the runner.
+        var archive = new Component(
+            Id: "archived",
+            Kind: ComponentKind.Tool,
+            DisplayName: "Archived",
+            WindowsAsset: "archived-win-x64.zip",
+            Roles: new HashSet<InstallRole> { InstallRole.Gateway });
+        var runner = new UpdateRunner(_layout, [archive], DownloaderWith("ignored"));
+        var plan = PlanOf(new PlanItem("archived", PlanItemKind.Update, archive.WindowsAsset, "0.3.0", "0.4.0", "AB"));
 
         var result = await runner.ApplyAsync(plan);
 

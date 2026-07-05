@@ -8,11 +8,12 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Epic #967 / issue #969: the React desktop Cockpit is served by the REAL Gateway host at /c,
-/// side by side with the fallback Blazor Cockpit. These tests start an actual <see cref="GatewayHost"/>
-/// (the same wiring the product runs) with a dead Blazor Cockpit proxy port, so an unclaimed path
-/// answers the "Cockpit starting" interstitial - which is the observable proof of coexistence: /c is
-/// owned by the React app while everything else still falls through to Blazor.
+/// Epic #967 cutover (issue #979): the React desktop Cockpit is served by the REAL Gateway host as the
+/// canonical front door at the site root "/". These tests start an actual <see cref="GatewayHost"/> (the
+/// same wiring the product runs) and prove the single-front-door behavior: the shell at "/", the
+/// single-page-app fallback for deep client routes, immutable hashed assets, and - the cutover
+/// guarantee - that an unknown path now ALSO serves the React shell, because the Blazor Cockpit and its
+/// fallback reverse-proxy are gone.
 ///
 /// The built React app normally lands in <c>wwwroot/c</c> via a release-gated MSBuild target; these
 /// tests fabricate a tiny shell there (index.html + one hashed asset) so the serving behavior can be
@@ -32,19 +33,18 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // Fabricate the built shell the release pipeline would stage into wwwroot/c.
+        // Fabricate the built shell the release pipeline would stage into wwwroot/c. Assets are
+        // root-relative now (Vite base "/"), matching how the Gateway serves the app at the site root.
         var webRoot = CockpitReactApp.WebRoot;
         if (Directory.Exists(webRoot)) Directory.Delete(webRoot, true);
         Directory.CreateDirectory(Path.Combine(webRoot, "assets"));
         await File.WriteAllTextAsync(Path.Combine(webRoot, "index.html"),
-            "<!doctype html><html><head><script type=\"module\" src=\"/c/assets/index-abc123.js\"></script></head>"
+            "<!doctype html><html><head><script type=\"module\" src=\"/assets/index-abc123.js\"></script></head>"
             + "<body>" + ShellMarker + "</body></html>");
         await File.WriteAllTextAsync(Path.Combine(webRoot, "assets", "index-abc123.js"), AssetBody);
 
-        // Dead Blazor Cockpit proxy port (1): a path the React app does not claim answers the 503
-        // interstitial, which is the observable proof it fell through to the Blazor fallback.
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1,
+            instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
 
@@ -63,9 +63,9 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Root_of_c_serves_the_react_shell()
+    public async Task Site_root_serves_the_react_shell()
     {
-        var resp = await _http.GetAsync("c");
+        var resp = await _http.GetAsync("");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("text/html", resp.Content.Headers.ContentType?.MediaType);
@@ -77,7 +77,7 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
     {
         // A hard navigation to a client-side route (no matching file) must serve index.html so the
         // React router can resolve it - the single-page-app fallback.
-        var resp = await _http.GetAsync("c/fleet");
+        var resp = await _http.GetAsync("fleet");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("text/html", resp.Content.Headers.ContentType?.MediaType);
@@ -87,7 +87,7 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
     [Fact]
     public async Task Hashed_asset_is_served_immutably()
     {
-        var resp = await _http.GetAsync("c/assets/index-abc123.js");
+        var resp = await _http.GetAsync("assets/index-abc123.js");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal(AssetBody, await resp.Content.ReadAsStringAsync());
@@ -95,15 +95,15 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Unknown_path_still_falls_through_to_the_blazor_cockpit()
+    public async Task Unknown_path_now_serves_the_react_shell_no_blazor_fallback()
     {
-        // Coexistence: a path the React app does not own is NOT served the shell; it flows to the
-        // fallback proxy (dead port -> interstitial). This is the side-by-side guarantee - Blazor
-        // keeps serving every path /c does not claim.
-        var resp = await _http.GetAsync("some-blazor-page");
+        // The cutover guarantee (issue #979): a path no explicit endpoint claims is served the React
+        // shell, NOT forwarded to a retired Blazor Cockpit. There is one front door.
+        var resp = await _http.GetAsync("some-cockpit-page");
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-        Assert.Contains("Cockpit starting", await resp.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("text/html", resp.Content.Headers.ContentType?.MediaType);
+        Assert.Contains(ShellMarker, await resp.Content.ReadAsStringAsync());
     }
 
     private static int FreePort()

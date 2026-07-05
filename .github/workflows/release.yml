@@ -243,6 +243,32 @@ jobs:
           path: artifacts/devthrottle-gateway-mobile-win-x64.zip
           if-no-files-found: error
 
+      # Issue #979 (epic #967 cutover): the single-file Gateway exe carries NO loose content, so the
+      # built React Cockpit (staged into wwwroot/c by the release-gated BuildCockpitApp MSBuild target
+      # during the Release publish above) must ship as its OWN asset - the setup engine unpacks it
+      # beside the exe on install + self-update. The zip's root is the CONTENTS of wwwroot/c
+      # (index.html + hashed assets/), matching CockpitAssetPackage's extract-into-wwwroot/c contract.
+      - name: Package Cockpit (wwwroot/c) as zip
+        shell: pwsh
+        run: |
+          $pub = "src/CcDirector.GatewayApp/bin/Release/net10.0-windows/win-x64/publish"
+          $c = Join-Path $pub "wwwroot/c"
+          if (-not (Test-Path (Join-Path $c "index.html"))) {
+            Write-Error "Cockpit build missing: $c/index.html not found in the Gateway publish output. The release-gated Cockpit build (CcDirector.Gateway.csproj BuildCockpitApp target) did not run."
+            exit 1
+          }
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Compress-Archive -Path (Join-Path $c '*') -DestinationPath "artifacts/devthrottle-gateway-cockpit-win-x64.zip" -Force
+          Write-Host "Packaged Cockpit files:"
+          Get-ChildItem -Recurse -File $c | ForEach-Object { $_.FullName.Substring($c.Length).TrimStart('\','/') }
+
+      - name: Upload gateway cockpit artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: gateway-cockpit-win
+          path: artifacts/devthrottle-gateway-cockpit-win-x64.zip
+          if-no-files-found: error
+
   # ---------------------------------------------------------------
   # Job 1c2: Build the CC Launcher tray app (Windows)
   # ---------------------------------------------------------------
@@ -288,62 +314,10 @@ jobs:
           path: src/CcDirector.Launcher/bin/Release/net10.0-windows/win-x64/publish/cc-launcher.exe
           if-no-files-found: error
 
-  # ---------------------------------------------------------------
-  # Job 1d: Build the CC Cockpit web app (Windows)
-  # ---------------------------------------------------------------
-  # Blazor Server web UI (port 7470) supervised by the Gateway service. Unlike the
-  # single-file apps, the Cockpit is a folder of assemblies + wwwroot, so it ships
-  # as a .zip (ComponentRegistry.Cockpit.WindowsAsset = devthrottle-cockpit-win-x64.zip).
-  # Published SELF-CONTAINED so the target machine does not need a matching .NET
-  # runtime installed. The setup engine's UpdateRunner deliberately skips .zip assets;
-  # unpacking is the Gateway service's job (Phase 2), so this job only PRODUCES the zip.
-  build-cockpit-win:
-    name: Build CC Cockpit (Windows)
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup .NET 10
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: Publish Cockpit for Windows x64 (framework-dependent)
-        # Framework-dependent: requires the .NET 10 ASP.NET Core runtime on the target.
-        run: >
-          dotnet publish src/CcDirector.Cockpit/CcDirector.Cockpit.csproj
-          -c Release -r win-x64 --self-contained false
-          -o cockpit-publish
-
-      # Sign the Cockpit assemblies as Center Consulting Inc. before they are
-      # zipped: our own devthrottle-cockpit.dll, CcDirector.Gateway.Contracts.dll,
-      # CcDirector.Core.dll, the app-host devthrottle-cockpit.exe, and the bundled
-      # Markdig.dll dependency (framework-dependent, so the shared .NET runtime is
-      # not present to sign). No-op until SIGNING_CERT_PROFILE + AZURE_* are set.
-      - name: Sign Cockpit assemblies
-        if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
-        uses: ./.github/actions/sign-windows
-        with:
-          folder: cockpit-publish
-          filter: dll,exe
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE }}
-
-      - name: Package Cockpit publish folder as zip
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          Compress-Archive -Path "cockpit-publish/*" -DestinationPath "artifacts/devthrottle-cockpit-win-x64.zip" -Force
-
-      - name: Upload cockpit artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: cockpit-win
-          path: artifacts/devthrottle-cockpit-win-x64.zip
-          if-no-files-found: error
+  # The Blazor Server Cockpit had its own build job here; it was retired in the epic #967 cutover
+  # (issue #979). The React Cockpit now ships INSIDE the Gateway: the release-gated BuildCockpitApp
+  # MSBuild target on CcDirector.Gateway.csproj builds apps/cockpit and stages it into the Gateway's
+  # wwwroot/c during the Gateway publish job below. There is no separate Cockpit artifact.
 
   # ---------------------------------------------------------------
   # Job 2: Build the Python tools bundle (Windows)
@@ -463,7 +437,6 @@ jobs:
       - build-director-mac
       - build-gateway-win
       - build-launcher-win
-      - build-cockpit-win
       - build-python-bundle-win
       - build-python-bundle-mac
       - build-setup-wizard-win
@@ -516,11 +489,15 @@ jobs:
           # the Gateway exe by the setup engine on install + self-update so /m serves with no manual copy.
           cp release-artifacts/gateway-mobile-win/devthrottle-gateway-mobile-win-x64.zip "$RELEASE_DIR/devthrottle-gateway-mobile-win-x64.zip"
 
+          # Windows React Cockpit (issue #979): the built wwwroot/c, unpacked beside the Gateway exe by
+          # the setup engine on install + self-update so the Cockpit serves at the site root.
+          cp release-artifacts/gateway-cockpit-win/devthrottle-gateway-cockpit-win-x64.zip "$RELEASE_DIR/devthrottle-gateway-cockpit-win-x64.zip"
+
           # Windows Launcher tray app (publish emits cc-launcher.exe)
           cp release-artifacts/launcher-win/cc-launcher.exe "$RELEASE_DIR/cc-launcher-win-x64.exe"
 
-          # Windows Cockpit web app (already the zip name the engine expects)
-          cp release-artifacts/cockpit-win/devthrottle-cockpit-win-x64.zip "$RELEASE_DIR/devthrottle-cockpit-win-x64.zip"
+          # The Cockpit is served in-process by the Gateway (issue #979): its React bundle is baked into
+          # the Gateway exe by the BuildCockpitApp MSBuild target, so there is no separate Cockpit asset.
 
           # Windows Python tools bundle (one shared-venv bundle: core tools only).
           cp release-artifacts/python-bundle-win/cc-python-win-x64.zip "$RELEASE_DIR/cc-python-win-x64.zip"
@@ -548,8 +525,8 @@ jobs:
             cc-director-mac-arm64.zip
             devthrottle-gateway-win-x64.exe
             devthrottle-gateway-mobile-win-x64.zip
+            devthrottle-gateway-cockpit-win-x64.zip
             cc-launcher-win-x64.exe
-            devthrottle-cockpit-win-x64.zip
             devthrottle-setup-win-x64.exe
             devthrottle-setup-cli-win-x64.exe
             cc-python-win-x64.zip

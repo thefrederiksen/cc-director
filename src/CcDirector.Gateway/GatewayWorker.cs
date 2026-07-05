@@ -1,20 +1,19 @@
 using CcDirector.Core.Utilities;
-using CcDirector.Gateway.Cockpit;
 using Microsoft.Extensions.Hosting;
 
 namespace CcDirector.Gateway;
 
 /// <summary>
-/// Hosts the Gateway's Kestrel host (plus the env-gated Cockpit supervisor) inside the generic
-/// host for the DEV console loop (<c>dotnet run</c>, Ctrl+C to stop). The shipped Gateway is the
-/// tray app (CcDirector.GatewayApp), which owns Cockpit supervision and self-update in managed
-/// mode; this host deliberately has neither.
+/// Hosts the Gateway's Kestrel host inside the generic host for the DEV console loop
+/// (<c>dotnet run</c>, Ctrl+C to stop). The shipped Gateway is the tray app
+/// (CcDirector.GatewayApp), which owns self-update in managed mode; this host deliberately has
+/// neither. The React Cockpit is served in-process by <see cref="GatewayHost"/> - there is no
+/// separate Cockpit process to supervise (issue #979 retired the Blazor Server Cockpit).
 /// </summary>
 public sealed class GatewayWorker : BackgroundService
 {
     private readonly int _port;
     private GatewayHost? _host;
-    private CockpitSupervisor? _cockpit;
 
     public GatewayWorker(int port)
     {
@@ -34,11 +33,6 @@ public sealed class GatewayWorker : BackgroundService
         };
         await _host.StartAsync();
 
-        // Inert unless CC_COCKPIT_MANAGED=1 is set explicitly; in dev the developer runs the
-        // Cockpit themselves (dotnet run) for hot reload/debugging.
-        _cockpit = CockpitSupervisor.FromEnvironment();
-        _cockpit.Start();
-
         FileLog.Write($"[GatewayWorker] running on http://127.0.0.1:{_host.Port}");
 
         // Stay alive until the host signals shutdown (Ctrl+C or ProcessExit).
@@ -57,7 +51,6 @@ public sealed class GatewayWorker : BackgroundService
         FileLog.Write("[GatewayWorker] StopAsync");
         try
         {
-            _cockpit?.Dispose();
             if (_host is not null)
                 await _host.StopAsync();
         }

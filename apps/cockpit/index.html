@@ -6,11 +6,10 @@
     <meta name="theme-color" content="#0B1020" />
     <title>DevThrottle Cockpit</title>
     <!--
-      Epic #967: this is the React rebuild of the desktop Cockpit, served same-origin by the Gateway
-      at /c. It carries NO credential in the page - the browser talks only to the Gateway through
-      root-relative paths, and the WebSocket token rides as the cc-gateway-token cookie. This scaffold
-      is a minimal shell (layout frame + routing + placeholder panes); feature pages are their own
-      issues and get ported one at a time behind the Gateway proxy.
+      Epic #967: this is the React Cockpit, served same-origin by the Gateway at the site root "/"
+      (issue #979 retired the Blazor Server Cockpit). It carries NO credential in the page - the
+      browser talks only to the Gateway through root-relative paths, and the WebSocket token rides as
+      the cc-gateway-token cookie.
     -->
   </head>
   <body>

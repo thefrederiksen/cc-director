@@ -6,9 +6,10 @@
 .DESCRIPTION
     The product version lives in EXACTLY ONE file: Directory.Build.props at the
     repo root (see docs/architecture/VERSIONING.md). MSBuild stamps that version
-    into every .NET binary in the release (Director, Gateway, Cockpit, setup
+    into every .NET binary in the release (Director, Gateway, Launcher, setup
     wizards, setup CLI); all UIs read it from their assembly at runtime, so no
-    other file needs to change.
+    other file needs to change. (The Cockpit is the React app served in-process by
+    the Gateway now - issue #979 - so it has no separate stamped binary.)
 
     This script bumps Directory.Build.props, commits, creates the vX.Y.Z git tag,
     and pushes. The GitHub Actions release workflow builds and publishes the

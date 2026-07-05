@@ -22,7 +22,7 @@ public class InstallLayoutTests
     }
 
     [Fact]
-    public void PathFor_GatewayAndCockpit_AreUnderTheUserRoot()
+    public void PathFor_GatewayAndLauncher_AreUnderTheUserRoot()
     {
         // The Gateway is a per-user tray app: everything lives under the one user root
         // (docs/plans/gateway-tray-app.md) so install/update/uninstall never elevate.
@@ -30,8 +30,8 @@ public class InstallLayoutTests
             Path.Combine(@"C:\root", "gateway", "devthrottle-gateway.exe"),
             Layout.PathFor(ComponentRegistry.Gateway));
         Assert.Equal(
-            Path.Combine(@"C:\root", "cockpit", "devthrottle-cockpit.exe"),
-            Layout.PathFor(ComponentRegistry.Cockpit));
+            Path.Combine(@"C:\root", "launcher", "cc-launcher.exe"),
+            Layout.PathFor(ComponentRegistry.Launcher));
     }
 
     [Fact]

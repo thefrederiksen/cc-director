@@ -10,8 +10,12 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Browser-aware front door (the Cockpit sitemap): GET /sessions, /directors, and /cockpit
 /// are BOTH an API endpoint (JSON) and a Cockpit page (HTML). A browser navigation announces
-/// itself with "Accept: text/html", which no API client sends, so the Gateway forwards those
-/// navigations to the Cockpit and serves JSON to everything else.
+/// itself with "Accept: text/html", which no API client sends, so the Gateway serves those
+/// navigations the React Cockpit shell (issue #979) and serves JSON to everything else.
+///
+/// In a Debug test build the React bundle is not built into the host (wwwroot/c is release-gated),
+/// so the shell path answers 404 with the "not built" notice. That 404 is still the observable proof
+/// the request took the shell path rather than the JSON endpoint (which answers 200 application/json).
 /// </summary>
 public sealed class BrowserPageRoutesTests : IAsyncLifetime
 {
@@ -23,11 +27,8 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // cockpitProxyPort: a dead port. A forwarded browser navigation therefore lands on
-        // the 503 interstitial - which is exactly the observable proof it took the Cockpit
-        // path instead of the JSON endpoint.
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
-            instancesDirectory: _instancesDir, cockpitProxyPort: 1,
+            instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
         await _gateway.StartAsync();
 
@@ -49,14 +50,16 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("/sessions")]
     [InlineData("/directors")]
     [InlineData("/cockpit")]
+    [InlineData("/lists")]                        // #979 regression: Work-List API vs Lists page
     [InlineData("/sessions/")]                    // trailing slash
     [InlineData("/SESSIONS")]                     // case-insensitive
+    [InlineData("/LISTS")]                         // case-insensitive
     [InlineData("/sessions/abc123")]              // detail page: one id segment
     [InlineData("/directors/abc123")]             // detail page: one id segment
     [InlineData("/cockpit/abc123")]               // deep-linked cockpit session
     public void Browser_navigation_on_dual_use_path_is_a_page_request(string path)
     {
-        Assert.True(CockpitProxy.IsBrowserPageRequest(
+        Assert.True(CockpitReactApp.IsBrowserPageRequest(
             "GET", path, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"));
     }
 
@@ -67,11 +70,26 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("POST", "/sessions", "text/html")]             // wrong method
     [InlineData("GET", "/sessions/abc123", "application/json")] // detail JSON stays API
     [InlineData("GET", "/healthz", "text/html")]               // not a dual-use path
+    [InlineData("GET", "/lists", "application/json")]           // Work-List API client stays JSON
+    [InlineData("GET", "/lists", null)]                        // curl / script default stays JSON
     [InlineData("GET", "/sessions/abc/turnbriefs", "text/html")] // 3 segments = API only
     [InlineData("GET", "/directors/abc/repos", "text/html")]     // 3 segments = API only
+    // Audited NON-collisions: a React page whose OWN path has no top-level single-segment JSON
+    // endpoint must NOT be a page-request root, so its nested JSON path is never shadowed for a
+    // browser. These would break if someone over-broadly added the page root to BrowserPageRoots.
+    [InlineData("GET", "/exes/list", "text/html")]             // page is /exes; /exes/list stays JSON
+    [InlineData("GET", "/account/status", "text/html")]        // page is /account; nested API stays JSON
+    [InlineData("GET", "/account/devices", "text/html")]       // page is /account; nested API stays JSON
+    [InlineData("GET", "/wingman/queue", "text/html")]         // page is /wingman; queue API stays JSON
+    [InlineData("GET", "/fleet", "text/html")]                 // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/schedule", "text/html")]              // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/dictionary", "text/html")]            // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/transcripts", "text/html")]           // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/telemetry", "text/html")]             // no same-path JSON: served by SPA fallback
+    [InlineData("GET", "/about", "text/html")]                 // no same-path JSON: served by SPA fallback
     public void Non_navigation_requests_are_not_page_requests(string method, string path, string? accept)
     {
-        Assert.False(CockpitProxy.IsBrowserPageRequest(method, path, accept));
+        Assert.False(CockpitReactApp.IsBrowserPageRequest(method, path, accept));
     }
 
     // ---- wire tests ----
@@ -80,23 +98,26 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     [InlineData("sessions")]
     [InlineData("directors")]
     [InlineData("cockpit")]
-    public async Task Browser_navigation_is_forwarded_to_the_cockpit(string path)
+    [InlineData("lists")]
+    public async Task Browser_navigation_is_served_the_cockpit_shell(string path)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
         req.Headers.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
 
         var resp = await _http.SendAsync(req);
 
-        // Dead Cockpit port -> the proxy path answers the interstitial, never JSON.
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-        Assert.Equal("text/html", resp.Content.Headers.ContentType?.MediaType);
-        Assert.Contains("Cockpit starting", await resp.Content.ReadAsStringAsync());
+        // The navigation took the React-shell path, not the JSON endpoint. The shell is not built into
+        // this Debug host, so it answers 404 with the "not built" notice - never application/json.
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Equal("text/plain", resp.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
     }
 
     [Theory]
     [InlineData("sessions")]
     [InlineData("directors")]
     [InlineData("cockpit")]
+    [InlineData("lists")]
     public async Task Api_clients_keep_getting_json(string path)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
@@ -109,16 +130,17 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Session_detail_navigation_is_forwarded_to_the_cockpit()
+    public async Task Session_detail_navigation_is_served_the_cockpit_shell()
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, "sessions/00000000-0000-0000-0000-000000000000");
         req.Headers.Accept.ParseAdd("text/html");
 
         var resp = await _http.SendAsync(req);
 
-        // Dead Cockpit port -> interstitial: the navigation took the page path, not the API.
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
-        Assert.Contains("Cockpit starting", await resp.Content.ReadAsStringAsync());
+        // The navigation took the React-shell path, not the API (which would answer JSON). The shell is
+        // not built into this Debug host, so it answers the 404 "not built" notice.
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
     }
 
     [Fact]

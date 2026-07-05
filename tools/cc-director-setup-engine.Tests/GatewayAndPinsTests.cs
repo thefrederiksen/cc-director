@@ -44,8 +44,8 @@ public class GatewayTrayInstallerTests
     [Fact]
     public void InstalledArguments_IsManaged()
     {
-        // The installed tray app must run managed (supervise the Cockpit + self-update);
-        // the relauncher and the autostart Run key both reuse this constant.
+        // The installed tray app must run managed (self-update on); the relauncher and the autostart
+        // Run key both reuse this constant.
         Assert.Equal("--managed", GatewayTrayInstaller.InstalledArguments);
     }
 
@@ -53,7 +53,6 @@ public class GatewayTrayInstallerTests
     public void DefaultPorts_AreCanonical()
     {
         Assert.Equal(7878, GatewayTrayInstaller.GatewayDefaultPort);
-        Assert.Equal(7470, GatewayTrayInstaller.CockpitDefaultPort);
     }
 
     // --- Issue #175: the tray launch must NOT inherit the caller's stdio ---------------------------

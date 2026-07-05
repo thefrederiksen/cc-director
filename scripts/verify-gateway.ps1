@@ -7,7 +7,10 @@
   `cc-director-setup-cli install --role gateway`). It checks that the Gateway
   tray app (devthrottle-gateway.exe) is installed at the canonical per-user
   location, registered to start at logon (HKCU Run key), RUNNING, and that the
-  Gateway (7878) and the supervised Cockpit (7470) actually answer.
+  Gateway (7878) answers. The Cockpit is served in-process by the Gateway at the
+  site root (issue #979 retired the separate Blazor Cockpit process), so the
+  Cockpit's static bundle beside the exe (wwwroot/c) is checked instead of a
+  separate Cockpit process/port.
 
   Read-only and non-destructive; never needs administrator rights (the whole
   Gateway lifecycle is per-user - docs/plans/gateway-tray-app.md).
@@ -15,9 +18,6 @@
 
 .PARAMETER GatewayPort
   Gateway health port (default 7878).
-
-.PARAMETER CockpitPort
-  Cockpit port (default 7470).
 
 .PARAMETER TimeoutSeconds
   How long to wait for each endpoint to answer before giving up (default 60).
@@ -28,7 +28,6 @@
 [CmdletBinding()]
 param(
     [int]$GatewayPort = 7878,
-    [int]$CockpitPort = 7470,
     [int]$TimeoutSeconds = 60
 )
 
@@ -56,15 +55,17 @@ function Wait-Http([string]$url, [int]$timeoutSec) {
 }
 
 Write-Host "=== CC Director Gateway verification (tray app) ==="
-Write-Host ("gateway=:{0}  cockpit=:{1}  timeout={2}s" -f $GatewayPort, $CockpitPort, $TimeoutSeconds)
+Write-Host ("gateway=:{0}  timeout={1}s" -f $GatewayPort, $TimeoutSeconds)
 Write-Host ""
 
 # 1. Installed at the canonical per-user path (master spec: docs/install/INSTALLATION.md).
 $root  = Join-Path $env:LOCALAPPDATA 'cc-director'
 $gwExe = Join-Path $root 'gateway\devthrottle-gateway.exe'
-$ckExe = Join-Path $root 'cockpit\devthrottle-cockpit.exe'
+# The React Cockpit ships as static files beside the Gateway exe (wwwroot/c), served in-process at
+# the site root (issue #979) - there is no separate Cockpit exe.
+$ckIndex = Join-Path $root 'gateway\wwwroot\c\index.html'
 Add-Result "Gateway exe installed" (Test-Path $gwExe) $gwExe
-Add-Result "Cockpit exe installed" (Test-Path $ckExe) $ckExe
+Add-Result "Cockpit bundle installed" (Test-Path $ckIndex) $ckIndex
 
 # 2. Autostart Run key (proxy for 'comes back at next logon'; an actual logoff/logon is the
 # ultimate test). The tray app registers itself on startup.
@@ -76,13 +77,10 @@ $proc = Get-Process -Name 'devthrottle-gateway' -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and $_.Path -ieq $gwExe } | Select-Object -First 1
 Add-Result "Tray app running" ($null -ne $proc) ($(if ($proc) { "pid=$($proc.Id)" } else { "no process from $gwExe" }))
 
-# 4. Gateway health endpoint
+# 4. Gateway health endpoint. The Gateway serves the Cockpit in-process, so a healthy Gateway IS a
+# live Cockpit - there is no separate Cockpit port to probe.
 $gwUrl = "http://127.0.0.1:$GatewayPort/healthz"
 Add-Result "Gateway /healthz" (Wait-Http $gwUrl $TimeoutSeconds) $gwUrl
-
-# 5. Cockpit endpoint
-$ckUrl = "http://127.0.0.1:$CockpitPort/"
-Add-Result "Cockpit responding" (Wait-Http $ckUrl $TimeoutSeconds) $ckUrl
 
 # Resolve the Tailscale host so we show a URL that works from the phone / anywhere on the tailnet -
 # never localhost (localhost is useless off this machine).
@@ -102,9 +100,9 @@ Write-Host ""
 $failed = @($results | Where-Object { -not $_.Pass })
 if ($failed.Count -eq 0) {
     $tnet = Get-TailnetHost
-    Write-Host "RESULT: PASS - Gateway tray app installed and serving Gateway + Cockpit." -ForegroundColor Green
+    Write-Host "RESULT: PASS - Gateway tray app installed and serving the Cockpit." -ForegroundColor Green
     if ($tnet) {
-        # ONE URL: the Cockpit is served through the Gateway front door (fallback proxy).
+        # ONE URL: the React Cockpit is served in-process by the Gateway at the site root (issue #979).
         Write-Host ("Open the Cockpit: https://{0}/" -f $tnet)
     } else {
         Write-Host "Open the Cockpit at https://<tailnet-host>/ (Tailscale not detected to build the URL)."
