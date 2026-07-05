@@ -136,6 +136,24 @@ public sealed class WingmanTranslatorTests
     }
 
     [Fact]
+    public async Task TranslateAsync_PromptInstructsFocusedSpokenFriendlyNarration()
+    {
+        // Issue #946: the narration is LISTENED to, so the prompt must tell the wingman to lead with
+        // the point (focused) and to describe paths/URLs/symbols in words rather than voicing raw
+        // punctuation ("hashtag", "colon slash slash"). This is prompt-only - guard that the rules are
+        // present so they cannot silently regress.
+        var brain = new FakeBrain(_ => "ok");
+        var translator = BuildTranslator(brain);
+
+        await translator.TranslateAsync("q", "I edited file:///D:/repo/x.html");
+
+        var prompt = Assert.Single(brain.Asks);
+        Assert.Contains("BE FOCUSED", prompt);
+        Assert.Contains("SPEAK FOR THE EAR", prompt);
+        Assert.Contains("colon slash slash", prompt); // the concrete "do not voice this" example
+    }
+
+    [Fact]
     public async Task TranslateAsync_EmptyReply_ThrowsBecauseThereIsNothingToTranslate()
     {
         var translator = BuildTranslator(new FakeBrain(_ => "x"));
