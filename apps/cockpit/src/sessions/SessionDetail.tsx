@@ -7,6 +7,7 @@ import { SessionActionBar } from "./SessionActionBar";
 import { SessionComposer } from "./SessionComposer";
 import { QueuePanel } from "./QueuePanel";
 import { ScreenshotsPanel } from "./ScreenshotsPanel";
+import { BriefPane } from "./BriefPane";
 
 // The selected session's detail region (issue #972): the live terminal (issue #971's TerminalPane,
 // reused verbatim) stacked over the driver action bar and the composer, with a tabbed dock for the
@@ -15,6 +16,10 @@ import { ScreenshotsPanel } from "./ScreenshotsPanel";
 // the composer text, and the queue are all per-session).
 
 type DockTab = "queue" | "shots";
+// The session-main view can show either the live terminal (issue #971) or the Brief (issue #973).
+// The terminal stays MOUNTED across this switch (hidden via CSS, never torn down) so the Brief - an
+// async enrichment that catches up over its own fetch - never blocks or freezes the live terminal.
+type MainTab = "terminal" | "brief";
 
 export function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -24,6 +29,7 @@ export function SessionDetail() {
   const [compose, setCompose] = useState("");
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [tab, setTab] = useState<DockTab>("queue");
+  const [mainTab, setMainTab] = useState<MainTab>("terminal");
 
   // Load the queue for the selected session (and reset the composer) whenever the session changes, so
   // the composer and the queue never carry over from a previously-selected session.
@@ -48,7 +54,45 @@ export function SessionDetail() {
   return (
     <div className="session-detail">
       <div className="session-main">
-        <TerminalPane />
+        <div className="session-tabs" role="tablist" aria-label="Session view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mainTab === "terminal"}
+            className={`session-tab ${mainTab === "terminal" ? "on" : ""}`}
+            onClick={() => setMainTab("terminal")}
+          >
+            Terminal
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mainTab === "brief"}
+            className={`session-tab ${mainTab === "brief" ? "on" : ""}`}
+            onClick={() => setMainTab("brief")}
+          >
+            Brief
+          </button>
+        </div>
+
+        <div className="session-content">
+          {/* The terminal is always mounted (hidden, not unmounted, on the Brief tab) so its live
+              WebSocket is never torn down while the Brief catches up over its own fetch. */}
+          <div className={`session-pane ${mainTab === "terminal" ? "" : "session-pane-off"}`}>
+            <TerminalPane />
+          </div>
+          {mainTab === "brief" && (
+            <div className="session-pane brief-scroll">
+              <BriefPane
+                sessionId={sessionId}
+                activityState={selected?.activityState ?? ""}
+                briefingState={selected?.briefingState ?? "None"}
+                onOpenTerminal={() => setMainTab("terminal")}
+              />
+            </div>
+          )}
+        </div>
+
         <SessionActionBar sessionId={sessionId} capabilities={selected?.driverCapabilities} />
         <SessionComposer sessionId={sessionId} value={compose} onChange={setCompose} onQueued={setQueue} />
       </div>
