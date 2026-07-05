@@ -139,6 +139,64 @@ body {
   font-size: 14px;
 }
 
+/* The live terminal pane (issue #971). It fills the whole main pane: a slim bar names the session,
+   and the xterm host takes all remaining height. The host uses the terminal's own dark background
+   (#1e1e1e, matching the desktop terminal and the engine's xterm theme) rather than a token, so the
+   PTY grid sits on the exact color xterm renders behind its glyphs. */
+.term-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  /* The main pane pads its routed content; the terminal wants the full area, so cancel that padding
+     for this pane only (negative margins against .main-pane's 24px/28px). */
+  margin: -24px -28px;
+}
+
+.term-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.term-bar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.term-bar-sid {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The xterm host. flex:1 so it takes all height under the bar; the exact-size PTY grid is anchored
+   to the BOTTOM (justify-content: flex-end) so a PTY shorter than the pane keeps its live input box
+   at the bottom edge - and a PTY taller than the pane scrolls within xterm's own viewport. */
+.term-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #1e1e1e;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 6px 8px;
+}
+
+/* xterm sizes itself to its exact grid; let it own its measured box inside the bottom-anchored host. */
+.term-host .xterm {
+  flex: 0 0 auto;
+}
+
 /* The seam to the mobile shell is around the tablet breakpoint: below it the right (awareness) rail
    folds away so the frame stays usable on a small laptop without becoming a phone layout. */
 @media (max-width: 1024px) {

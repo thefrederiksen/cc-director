@@ -4,6 +4,7 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { ensureGatewayCookie } from "@devthrottle/client-core/api/client";
 import { AppShell } from "./AppShell";
 import { PlaceholderPane } from "./panes/PlaceholderPane";
+import { TerminalPane } from "./panes/TerminalPane";
 import "./styles.css";
 
 // Mirror any injected per-machine token into the cc-gateway-token cookie at startup so the live
@@ -23,6 +24,10 @@ const router = createBrowserRouter(
       element: <AppShell />,
       children: [
         { path: "/", element: <PlaceholderPane title="Sessions" /> },
+        // The live, interactive terminal for one session (issue #971). The session roster / rail
+        // (issue #972) links here with a real session id; until then the pane is reachable directly
+        // at /c/session/<sid>. It serves exactly one session and remounts when the id changes.
+        { path: "/session/:sessionId", element: <TerminalPane /> },
         { path: "/fleet", element: <PlaceholderPane title="Fleet" /> },
         { path: "/schedule", element: <PlaceholderPane title="Schedule" /> },
         { path: "/lists", element: <PlaceholderPane title="Lists" /> },
