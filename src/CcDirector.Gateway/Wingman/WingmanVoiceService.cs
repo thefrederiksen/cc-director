@@ -4,10 +4,13 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
+using CcDirector.Core.Configuration;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.HostedAi;
 
 namespace CcDirector.Gateway.Wingman;
 
@@ -25,8 +28,11 @@ public sealed class WingmanVoiceService
 {
     public sealed record VoiceReady(string Spoken, string Reply, byte[] Audio, DateTime AtUtc);
 
-    private const string TtsModel = "tts-1";
-    private const string TtsVoice = "nova";
+    /// <summary>The outcome of one text-to-speech synthesis (issue #939): the audio bytes on success,
+    /// or the shared <see cref="HostedAiState"/> when hosted AI is unavailable (out of credits, cap
+    /// reached, or - in bring-your-own mode - no key) so the caller can surface it instead of a silent
+    /// null. Both null means a generic provider error (logged, no shared state).</summary>
+    private sealed record TtsResult(byte[]? Audio, HostedAiState? Unavailable);
 
     private readonly WingmanTranslator _translator;
     private readonly KeyVault _vault;
@@ -35,18 +41,23 @@ public sealed class WingmanVoiceService
     private readonly ConcurrentDictionary<string, byte> _voiceSessions = new();   // sid -> marker
     private readonly ConcurrentDictionary<string, VoiceReady> _ready = new();      // sid -> spoken+audio
     private readonly ConcurrentDictionary<string, byte> _generating = new();       // sid -> wingman is running now
+    private readonly ConcurrentDictionary<string, HostedAiState> _voiceUnavailable = new();  // sid -> why voice is off (issue #939)
     private readonly string _persistPath;
     private readonly string _audioDir;
+    private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); a per-call client when null
 
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
     private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc);
 
-    public WingmanVoiceService(Func<CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, DirectorEndpointClient client, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null)
+    /// <param name="ttsHttpClient">Optional HTTP client for the text-to-speech call (tests inject a stub
+    /// over a fake handler, issue #939). A per-call 60-second client is created when null.</param>
+    public WingmanVoiceService(Func<CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, DirectorEndpointClient client, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null)
     {
         _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
         _vault = vault;
         _client = client;
+        _ttsHttp = ttsHttpClient;
         _training = training ?? new WingmanTrainingStore();
         // Which sessions are voice sessions survives a gateway restart. Issue #553: the per-session
         // audio cache is now ALSO durable - it is persisted next to voice-sessions.json under a
@@ -158,6 +169,16 @@ public sealed class WingmanVoiceService
     public void EndGenerating(string sid) => _generating.TryRemove(sid, out _);
 
     /// <summary>
+    /// Why the Gateway could not keep this session's voice, or null when voice is fine (issue #939).
+    /// Set when a turn-end generation hit an out-of-credits / cap / no-key condition instead of being
+    /// swallowed silently; cleared on the next successful generation and when voice is turned off. The
+    /// <c>/sessions</c> aggregation stamps the shared message onto <c>SessionDto.VoiceUnavailable</c>
+    /// from this so the owning UI shows the consistent state.
+    /// </summary>
+    public HostedAiState? VoiceUnavailableFor(string sid)
+        => _voiceUnavailable.TryGetValue(sid, out var s) ? s : (HostedAiState?)null;
+
+    /// <summary>
     /// Capture one wingman summary for the training dataset (no-op unless the setting is on).
     /// Best-effort and fire-and-forget at the call site so it never delays a voice turn; the
     /// store fetches up to 20,000 chars of the session terminal and appends the record itself.
@@ -188,6 +209,7 @@ public sealed class WingmanVoiceService
         var wasVoice = _voiceSessions.TryRemove(sid, out _);
         if (wasVoice) SaveVoiceSessions();
         _generating.TryRemove(sid, out _);
+        _voiceUnavailable.TryRemove(sid, out _);   // voice is off, so its unavailable-state is moot (issue #939)
         if (_ready.TryRemove(sid, out _))
             DeleteReadyAudio(sid);   // keep the durable cache in step so a stale tap can't 404
         if (wasVoice)
@@ -205,6 +227,7 @@ public sealed class WingmanVoiceService
         // A new turn (blue) supersedes any in-flight generation for the old turn, so drop the
         // yellow "wingman running" marker too - raw activity wins while the agent works.
         _generating.TryRemove(sid, out _);
+        _voiceUnavailable.TryRemove(sid, out _);   // a fresh turn clears the old unavailable-state (dismissible, issue #939)
         if (_ready.TryRemove(sid, out _))
         {
             DeleteReadyAudio(sid);   // issue #553: keep the durable cache in step so a stale tap can't 404
@@ -221,12 +244,23 @@ public sealed class WingmanVoiceService
     {
         Mark(sid);
         if (string.IsNullOrWhiteSpace(spoken)) return;
-        var audio = await TtsAsync(spoken, ct);
+        var tts = await TtsAsync(spoken, ct);
         // The "if anything fails, remove the triangle" rule: when synthesis returns null/empty we
         // leave _ready WITHOUT this session, so HasVoice stays false and no triangle shows. Only a
         // real, playable summary becomes ready - and is persisted (issue #553) so it survives a restart.
-        if (audio is { Length: > 0 })
-            StoreReady(sid, spoken, reply ?? "", audio);
+        if (tts.Audio is { Length: > 0 })
+        {
+            _voiceUnavailable.TryRemove(sid, out _);   // success clears any prior unavailable-state (dismissible)
+            StoreReady(sid, spoken, reply ?? "", tts.Audio);
+        }
+        else if (tts.Unavailable is HostedAiState state)
+        {
+            // Issue #939: no longer swallowed. Record WHY voice is unavailable so the /sessions
+            // aggregation can show the consistent add-credit / add-key state instead of a silently
+            // missing triangle. Left as-is until the next successful turn-end generation clears it.
+            _voiceUnavailable[sid] = state;
+            FileLog.Write($"[WingmanVoiceService] voice unavailable sid={sid}: {state}");
+        }
     }
 
     /// <summary>Mark a session ready with already-synthesized audio: update the in-memory cache and
@@ -280,20 +314,53 @@ public sealed class WingmanVoiceService
         }
     }
 
-    private async Task<byte[]?> TtsAsync(string text, CancellationToken ct)
+    /// <summary>
+    /// Synthesize the spoken summary to audio through the SAME provider seam the <c>/wingman/tts</c>
+    /// endpoint uses (issue #939): the configured mode's base URL + key + model + the user's chosen
+    /// voice (<see cref="TtsVoiceConfig"/> / <see cref="TtsModelConfig"/>). This replaced a hardcoded
+    /// OpenAI <c>tts-1</c>/<c>nova</c> call - so a DevThrottle-mode user now hears their configured
+    /// voice and hosted narration works without a bring-your-own key. An out-of-credits / cap / no-key
+    /// condition is returned as a typed <see cref="HostedAiState"/> instead of a silent null, so the
+    /// caller can surface the consistent unavailable state.
+    /// </summary>
+    private async Task<TtsResult> TtsAsync(string text, CancellationToken ct)
     {
-        var key = _vault.Get("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(key)) return null;
+        var mode = TranscriptionModeConfig.Get();
+        var tts = TranscriptionEndpointResolver.ResolveTts(mode);
+        var key = _vault.Get(tts.KeyName);
+        if (string.IsNullOrWhiteSpace(key))
+            // No key for the mode: bring-your-own means the user must add their OpenAI key; the hosted
+            // mode with no key is a sign-in gap (outside the credits/key gate), left silent as before.
+            return new TtsResult(null, mode == TranscriptionMode.Byo ? HostedAiState.NeedsKey : (HostedAiState?)null);
+
         var input = text.Length > 4000 ? text[..4000] : text;
+        var voice = TtsVoiceConfig.Resolve(mode);
+        var model = TtsModelConfig.Resolve(mode);
+        var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
+        // Reuse the injected client (tests) or a per-call one; auth goes on the request, not the shared
+        // client's default headers, so a shared client is safe under concurrent turn-ends.
+        var http = _ttsHttp ?? new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            using var payload = JsonContent.Create(new { model = TtsModel, voice = TtsVoice, input, response_format = "mp3" });
-            using var resp = await http.PostAsync("https://api.openai.com/v1/audio/speech", payload, ct);
-            if (!resp.IsSuccessStatusCode) { FileLog.Write($"[WingmanVoiceService] tts {(int)resp.StatusCode}"); return null; }
-            return await resp.Content.ReadAsByteArrayAsync(ct);
+            using var req = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = JsonContent.Create(new { model, voice, input, response_format = "mp3" }),
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            using var resp = await http.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                FileLog.Write($"[WingmanVoiceService] tts {mode.ToConfigString()} {(int)resp.StatusCode}");
+                // Out of credits / monthly cap (402): map by code to the shared state so the caller
+                // records the consistent unavailable state instead of a silent null (issue #939).
+                if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)
+                    return new TtsResult(null, HostedAiErrorMapper.Map402(body));
+                return new TtsResult(null, null);   // other provider error: logged, no shared state
+            }
+            return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), null);
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message}"); return null; }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message}"); return new TtsResult(null, null); }
+        finally { if (_ttsHttp is null) http.Dispose(); }
     }
 }
