@@ -142,4 +142,25 @@ public sealed class VoiceUploadStoreTests : IDisposable
         _store.Delete(id);
         Assert.False(_store.Exists(id));
     }
+
+    [Fact]
+    public async Task SweepAbandoned_RemovesStaleUploads_KeepsFresh()
+    {
+        // Issue #1006: an upload whose client dropped before completing must not leak forever. The
+        // sweep removes staging dirs older than maxAge and leaves recent ones untouched.
+        var stale = _store.Register(null);
+        await _store.StoreChunkAsync(stale, 0, Bytes("old"), null);
+        var fresh = _store.Register(null);
+        await _store.StoreChunkAsync(fresh, 0, Bytes("new"), null);
+
+        // Age the stale upload's staging dir two hours into the past.
+        var staleDir = Path.Combine(_root, Guid.Parse(stale).ToString("N"));
+        Directory.SetLastWriteTimeUtc(staleDir, DateTime.UtcNow.AddHours(-2));
+
+        var removed = _store.SweepAbandoned(TimeSpan.FromHours(1));
+
+        Assert.Equal(1, removed);
+        Assert.False(_store.Exists(stale));
+        Assert.True(_store.Exists(fresh));
+    }
 }

@@ -226,6 +226,11 @@ public sealed class GatewayHost : IAsyncDisposable
     // Shared training-data store: the voice service WRITES captures, the instructions A/B test READS them.
     private readonly Wingman.WingmanTrainingStore _trainingStore = new();
     private System.Threading.Timer? _voiceSweepTimer;
+    // Durable dictation upload staging (issue #1006): the phone streams recorded audio here in chunks;
+    // the Gateway assembles, transcribes, and injects the turn itself. A background timer sweeps
+    // abandoned uploads after ~1 hour so an interrupted upload never leaks.
+    private readonly Voice.VoiceUploadStore _dictationUploads = new(CcDirector.Core.Storage.CcStorage.DictationUploads());
+    private System.Threading.Timer? _dictationSweepTimer;
     private AdvertisedEndpointMonitor? _endpointMonitor;
     // Issue #629: the durable, bounded, restart-surviving retry queue behind the login-telemetry
     // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
@@ -901,6 +906,22 @@ public sealed class GatewayHost : IAsyncDisposable
         _voiceSweepTimer = new System.Threading.Timer(_ => { _ = SweepVoiceSessionsAsync(); }, null,
             TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(45));
 
+        // Durable, server-owned dictation upload (issue #1006): the phone streams recorded audio here
+        // in resumable chunks and the Gateway assembles → transcribes → injects the turn into the
+        // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
+        GatewayDictationEndpoint.Map(_app, Registry, _client, SessionOwners, Token,
+            new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads);
+        // Sweep abandoned upload staging + the complete-idempotency cache after ~1 hour.
+        _dictationSweepTimer = new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                _dictationUploads.SweepAbandoned(TimeSpan.FromHours(1));
+                GatewayDictationEndpoint.SweepCompletes(TimeSpan.FromHours(1));
+            }
+            catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation sweep error: {ex.Message}"); }
+        }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+
         // Central key vault (docs/architecture/gateway/GATEWAY_KEY_VAULT.md): set keys once
         // here (via the Cockpit Keys page); Directors pull them on demand. Inherits the
         // host-wide token middleware above.
@@ -1196,6 +1217,8 @@ public sealed class GatewayHost : IAsyncDisposable
         // supervisor's dispose gracefully stops the hosted claude.exe (never leaked).
         try { _voiceSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice sweep dispose error: {ex.Message}"); }
         _voiceSweepTimer = null;
+        try { _dictationSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation sweep dispose error: {ex.Message}"); }
+        _dictationSweepTimer = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         _turnEndWatcher = null;
         try { Brain.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] brain dispose error: {ex.Message}"); }

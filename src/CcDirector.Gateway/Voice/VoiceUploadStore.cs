@@ -134,6 +134,41 @@ public sealed class VoiceUploadStore
         return AssembleResult.Ok(bytes);
     }
 
+    /// <summary>
+    /// Delete staging dirs whose last write is older than <paramref name="maxAge"/> — abandoned uploads
+    /// whose client dropped before completing (the staging is only deleted on success, so without this
+    /// an interrupted upload would leak forever). Best-effort per dir; returns how many were removed.
+    /// </summary>
+    public int SweepAbandoned(TimeSpan maxAge)
+    {
+        var removed = 0;
+        var cutoff = DateTime.UtcNow - maxAge;
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(_root))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(dir) < cutoff)
+                    {
+                        Directory.Delete(dir, recursive: true);
+                        removed++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[VoiceUploadStore] Sweep dir={dir} failed: {ex.Message}");
+                }
+            }
+            if (removed > 0) FileLog.Write($"[VoiceUploadStore] SweepAbandoned removed={removed} older than {maxAge}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] SweepAbandoned failed: {ex.Message}");
+        }
+        return removed;
+    }
+
     /// <summary>Delete the staging dir for an upload. Best-effort; called once the turn is started.</summary>
     public void Delete(string uploadId)
     {

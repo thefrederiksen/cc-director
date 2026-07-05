@@ -732,6 +732,141 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
     .join("");
 }
 
+// ===== Durable, server-owned dictation upload (issue #1006) =====================================
+// Streams the raw recorded audio to the Gateway in resumable, SHA-checked chunks; the Gateway then
+// assembles, transcribes, and INJECTS the turn into the session itself. Once every chunk is up the
+// turn lands even if this tab dies. Idempotent by uploadId, so a resume re-runs safely.
+
+/** Outcome of a durable dictation submit. `terminal` means the server handled it (submitted or
+ *  dropped as stale) and the durable local copy can be deleted; otherwise retry it on resume. */
+export interface DictationSubmitResult {
+  terminal: boolean;
+  submitted: boolean;
+  movedOn: boolean;
+  transcript: string;
+  error?: string;
+}
+
+export interface DictationUploadArgs {
+  sessionId: string;
+  /** The durable record id; also the server upload id and Idempotency-Key. */
+  uploadId: string;
+  /** Raw recorded audio exactly as the microphone produced it. */
+  audio: Blob;
+  before: string;
+  after: string;
+  prefix: string;
+  baselineBufferBytes: number;
+  resumed: boolean;
+}
+
+const CHUNK_RETRIES = 4;
+
+export async function uploadDictationToSession(
+  args: DictationUploadArgs,
+  signal?: AbortSignal,
+): Promise<DictationSubmitResult> {
+  const fail = (error: string): DictationSubmitResult => ({ terminal: false, submitted: false, movedOn: false, transcript: "", error });
+
+  // 1. Register (idempotent: the same id re-opens the same staging after a resume).
+  const reg = await fetch(`/dictation/upload`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", "Idempotency-Key": args.uploadId, ...authHeaders() },
+    body: JSON.stringify({ sessionId: args.sessionId, baselineBufferBytes: args.baselineBufferBytes }),
+    signal,
+  });
+  if (!reg.ok) return fail(`register failed: ${reg.status}`);
+  const regBody = (await reg.json().catch(() => ({}))) as { upload_id?: string };
+  const id = encodeURIComponent(regBody.upload_id ?? args.uploadId);
+
+  // 2. Upload chunks with per-chunk retry, so a dropped chunk on a bad connection resumes at that
+  //    chunk instead of restarting the whole clip.
+  const bytes = new Uint8Array(await args.audio.arrayBuffer());
+  const ranges = planUploadChunks(bytes.length, MAX_UPLOAD_CHUNK_BYTES);
+  for (const range of ranges) {
+    const part = bytes.subarray(range.start, range.end);
+    const sha = await sha256Hex(part);
+    let ok = false;
+    let lastErr = "";
+    for (let attempt = 0; attempt < CHUNK_RETRIES && !ok; attempt++) {
+      try {
+        const put = await fetch(`/dictation/${id}/chunk/${range.index}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
+          body: part,
+          signal,
+        });
+        ok = put.ok;
+        if (!ok) lastErr = `chunk ${range.index}: ${put.status}`;
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+      }
+      if (!ok && attempt < CHUNK_RETRIES - 1) await uploadBackoff(400 * (attempt + 1), signal);
+    }
+    if (!ok) return fail(lastErr);
+  }
+
+  // 3. Complete: the server assembles, transcribes, and injects the turn.
+  const completeBody = {
+    sessionId: args.sessionId,
+    totalChunks: ranges.length,
+    mime: args.audio.type || "audio/webm",
+    ext: extForMime(args.audio.type),
+    before: args.before,
+    after: args.after,
+    prefix: args.prefix,
+    baselineBufferBytes: args.baselineBufferBytes,
+    resumed: args.resumed,
+  };
+  const complete = (): Promise<Response> =>
+    fetch(`/dictation/${id}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+      body: JSON.stringify(completeBody),
+      signal,
+    });
+
+  let comp = await complete();
+  if (comp.status === 409) {
+    // Some chunks did not land; re-send exactly those, then complete once more.
+    const body = (await comp.json().catch(() => ({}))) as { missing?: number[] };
+    for (const i of body.missing ?? []) {
+      const r = ranges[i];
+      if (!r) continue;
+      const part = bytes.subarray(r.start, r.end);
+      await fetch(`/dictation/${id}/chunk/${i}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": await sha256Hex(part), ...authHeaders() },
+        body: part,
+        signal,
+      });
+    }
+    comp = await complete();
+  }
+
+  if (comp.status === 402) throw creditsErrorFrom(await comp.json().catch(() => ({})));
+  const body = (await comp.json().catch(() => ({}))) as { submitted?: boolean; movedOn?: boolean; transcript?: string; error?: string };
+  if (!comp.ok) return fail(body.error ?? `complete: ${comp.status}`);
+  return { terminal: true, submitted: Boolean(body.submitted), movedOn: Boolean(body.movedOn), transcript: body.transcript ?? "" };
+}
+
+function extForMime(mime: string | undefined): string {
+  const m = (mime ?? "").toLowerCase();
+  if (m.includes("webm")) return "webm";
+  if (m.includes("ogg")) return "ogg";
+  if (m.includes("mp4") || m.includes("m4a") || m.includes("aac")) return "m4a";
+  if (m.includes("mpeg") || m.includes("mp3")) return "mp3";
+  if (m.includes("wav")) return "wav";
+  return "webm";
+}
+
+function uploadBackoff(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(t); reject(new Error("aborted")); }, { once: true });
+  });
+}
+
 // ===== Wingman Voice mode (issue #850): the mobile hands-free narration loop =====
 // The whole backend is already built and proven on the desktop Cockpit voice tab and the native
 // phone app (the explain/voice/ready/menu endpoints below). These typed helpers are the mobile
