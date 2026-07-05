@@ -38,7 +38,23 @@ public class AnsiParser
     // scrolling region. The grid is never modified here, so xterm parity is
     // unaffected; this only ever appends to _scrollback.
     private TerminalCell[][]? _committedFrame; // snapshot of the last completed frame
-    private int _scrollbackCountAtFrame;       // _scrollback.Count at last frame (ScrollUp reconciliation)
+    private int _scrollbackCountAtFrame;       // active-scrollback count at last frame (ScrollUp reconciliation)
+
+    // --- Alternate-screen scrollback (issue #761) ---
+    // Full-screen agents (Claude Code, Codex, Grok, Copilot) run on the alternate
+    // screen, which by tradition has no scrollback. But those agents repaint their
+    // transcript in place, so lines that scroll off the top are lost and the user
+    // cannot read back. We recover that history exactly as we do for the primary
+    // buffer -- ScrollUp and the repaint-diff both append displaced lines -- but into
+    // this dedicated list, which is cleared whenever the app enters or leaves the
+    // alternate screen so shell history and app history never bleed into each other.
+    private readonly List<TerminalCell[]> _altScrollback = new();
+
+    // Monotonic count of every line ever appended to a scrollback list (primary or
+    // alternate), counted BEFORE the max-scrollback trim so it is immune to trimming.
+    // The owning control reads the per-tick delta to keep a scrolled-up viewport pinned
+    // to the same content as new lines arrive (issue #761, the drift fix).
+    private long _totalLinesScrolled;
 
     // --- Cursor ---
     private int _cursorCol;
@@ -285,6 +301,32 @@ public class AnsiParser
     /// wheel to the application while this is true.
     /// </summary>
     public bool IsAlternateScreen => _altCells != null;
+
+    /// <summary>
+    /// The alternate screen's recovered scrollback (issue #761). Empty unless a
+    /// full-screen agent is on the alternate screen and has repainted lines off the
+    /// top. The owning control renders this instead of the primary scrollback while
+    /// <see cref="IsAlternateScreen"/> is true, so the user can scroll back through a
+    /// running Claude Code / Codex / Grok / Copilot session.
+    /// </summary>
+    public IReadOnlyList<TerminalCell[]> AltScrollback => _altScrollback;
+
+    /// <summary>Number of lines currently held in the alternate-screen scrollback.</summary>
+    public int AltScrollbackCount => _altScrollback.Count;
+
+    /// <summary>
+    /// Monotonic count of every line ever pushed into scrollback (primary or alternate),
+    /// counted before the max-scrollback trim. The owning control reads the delta between
+    /// polls to keep a scrolled-up viewport anchored to the same content as history grows
+    /// (issue #761). Resets to zero only when a fresh parser is constructed.
+    /// </summary>
+    public long TotalLinesScrolled => _totalLinesScrolled;
+
+    /// <summary>
+    /// The scrollback list history is appended to right now: the alternate-screen list
+    /// while an alternate screen is active, otherwise the caller-owned primary list.
+    /// </summary>
+    private List<TerminalCell[]> ActiveScrollback => _altCells != null ? _altScrollback : _scrollback;
 
     /// <summary>
     /// True while the application is inside a synchronized output frame (it has sent
@@ -1136,15 +1178,18 @@ public class AnsiParser
     {
         // Only save to scrollback when scrolling the full screen (top margin
         // at row 0); otherwise we're inside a DECSTBM region and the rows
-        // that leave are gone.
-        if (_scrollTop == 0 && _altCells == null)
+        // that leave are gone. On the alternate screen this feeds the dedicated
+        // alt scrollback so full-screen agents get local history too (issue #761).
+        if (_scrollTop == 0)
         {
+            var sb = ActiveScrollback;
             var savedRow = new TerminalCell[_cols];
             for (int c = 0; c < _cols; c++)
                 savedRow[c] = _cells[c, 0];
-            _scrollback.Add(savedRow);
-            while (_scrollback.Count > _maxScrollback)
-                _scrollback.RemoveAt(0);
+            sb.Add(savedRow);
+            _totalLinesScrolled++;
+            while (sb.Count > _maxScrollback)
+                sb.RemoveAt(0);
         }
 
         for (int r = _scrollTop; r < _scrollBottom; r++)
@@ -1177,7 +1222,10 @@ public class AnsiParser
     /// </summary>
     private void CommitRepaintFrame()
     {
-        if (_altCells != null) return; // never capture alt-screen frames
+        // Runs for both the primary buffer and the alternate screen. On the alternate
+        // screen the recovered lines go into the dedicated alt scrollback (issue #761);
+        // the diff logic below is identical either way and never mutates the grid.
+        var sb = ActiveScrollback;
 
         var current = SnapshotGrid();
 
@@ -1185,16 +1233,16 @@ public class AnsiParser
         if (_committedFrame == null || _committedFrame.Length != _rows)
         {
             _committedFrame = current;
-            _scrollbackCountAtFrame = _scrollback.Count;
+            _scrollbackCountAtFrame = sb.Count;
             return;
         }
 
         // If real scrolling (ScrollUp) already pushed lines since the last frame,
         // that path captured the history -- don't double-count it here.
-        if (_scrollback.Count != _scrollbackCountAtFrame)
+        if (sb.Count != _scrollbackCountAtFrame)
         {
             _committedFrame = current;
-            _scrollbackCountAtFrame = _scrollback.Count;
+            _scrollbackCountAtFrame = sb.Count;
             return;
         }
 
@@ -1239,17 +1287,18 @@ public class AnsiParser
                     // frame-boundary capture can re-emit a settled line once (e.g. a
                     // section header on both scroll-off and the final flush). Blank
                     // lines are preserved so paragraph spacing survives.
-                    if (_scrollback.Count > 0 && !RowIsBlank(row) && RowTextEquals(_scrollback[^1], row))
+                    if (sb.Count > 0 && !RowIsBlank(row) && RowTextEquals(sb[^1], row))
                         continue;
-                    _scrollback.Add(CopyRow(row));
-                    if (_scrollback.Count > _maxScrollback)
-                        _scrollback.RemoveAt(0);
+                    sb.Add(CopyRow(row));
+                    _totalLinesScrolled++;
+                    if (sb.Count > _maxScrollback)
+                        sb.RemoveAt(0);
                 }
             }
         }
 
         _committedFrame = current;
-        _scrollbackCountAtFrame = _scrollback.Count;
+        _scrollbackCountAtFrame = sb.Count;
     }
 
     private TerminalCell[][] SnapshotGrid()
@@ -1562,6 +1611,8 @@ public class AnsiParser
             _altSavedScrollTop = _scrollTop;
             _altSavedScrollBottom = _scrollBottom;
             _altCells = _cells;
+            // Start the alternate screen with empty local history (issue #761).
+            _altScrollback.Clear();
             var fresh = new TerminalCell[_cols, _rows];
             _cells = fresh;
             // Caller can't see _cells; but our public API hands the grid to
@@ -1584,6 +1635,8 @@ public class AnsiParser
             if (_altCells == null) return;
             _cells = _altCells;
             _altCells = null;
+            // Drop the alternate screen's recovered history; the shell owns the view now (issue #761).
+            _altScrollback.Clear();
             _scrollTop = _altSavedScrollTop;
             _scrollBottom = Math.Min(_altSavedScrollBottom, _rows - 1);
             if (saveCursor) RestoreCursor();
@@ -1626,5 +1679,6 @@ public class AnsiParser
             for (int c = 0; c < _cols; c++)
                 _cells[c, r] = new TerminalCell();
         _scrollback.Clear();
+        _altScrollback.Clear();
     }
 }

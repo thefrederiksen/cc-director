@@ -6,7 +6,7 @@ namespace CcDirector.Terminal.Core.Rendering;
 /// </summary>
 public readonly struct RenderContext
 {
-    public readonly List<TerminalCell[]> Scrollback;
+    public readonly IReadOnlyList<TerminalCell[]> Scrollback;
     public readonly int ScrollOffset;
     public readonly bool HasSelection;
     public readonly int SelectionStartCol;
@@ -22,7 +22,7 @@ public readonly struct RenderContext
     public readonly string? RepoPath;
 
     public RenderContext(
-        List<TerminalCell[]> scrollback,
+        IReadOnlyList<TerminalCell[]> scrollback,
         int scrollOffset,
         bool hasSelection,
         int selectionStartCol, int selectionStartRow,

@@ -3134,10 +3134,12 @@ public partial class MainWindow : Window
         // scrollback list while the parser was growing it concurrently.
         var snap = TerminalHost.GetScrollSnapshot();
 
-        // On the alternate screen (e.g. Claude Code) there is no local scrollback
-        // -- the application owns scrolling and the wheel is forwarded to it. A
-        // visible-but-dead scrollbar reads as "scrolling is broken", so hide it.
-        if (TerminalHost.IsOnAlternateScreen)
+        // On the alternate screen the snapshot reports the recovered alt-screen
+        // scrollback (issue #761). Until a full-screen agent has repainted any lines
+        // off the top there is nothing to scroll, so hide the bar -- a visible-but-dead
+        // scrollbar reads as "scrolling is broken". Once history exists, show it so the
+        // user can scroll back through the running agent's transcript.
+        if (TerminalHost.IsOnAlternateScreen && snap.ScrollbackCount == 0)
         {
             TerminalScrollBar.IsVisible = false;
             return;
