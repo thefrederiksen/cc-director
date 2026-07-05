@@ -61,27 +61,8 @@ export function Terminal() {
     return () => { mirror.dispose(); mirrorRef.current = null; };
   }, [sessionId]);
 
-  // Keep the screen awake while the Terminal view is open (Waze-style, matching the Android tab's
-  // KeepScreenOn). Wake locks drop when the tab is hidden, so re-acquire on visibility return.
-  useEffect(() => {
-    type WakeLockSentinelLike = { release: () => Promise<void> };
-    type WakeLockNavigator = Navigator & { wakeLock?: { request: (t: "screen") => Promise<WakeLockSentinelLike> } };
-    const wl = (navigator as WakeLockNavigator).wakeLock;
-    if (!wl) return; // not supported on this browser; nothing to do (no fallback)
-    let sentinel: WakeLockSentinelLike | null = null;
-    let released = false;
-    const acquire = async () => {
-      try { sentinel = await wl.request("screen"); } catch { /* denied/again on next visibility */ }
-    };
-    const onVisibility = () => { if (document.visibilityState === "visible" && !released) void acquire(); };
-    void acquire();
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      released = true;
-      document.removeEventListener("visibilitychange", onVisibility);
-      if (sentinel) { void sentinel.release().catch(() => { /* already gone */ }); }
-    };
-  }, []);
+  // The screen is kept awake app-wide by the gated layout's useScreenWakeLock (issue #981), which
+  // covers the Terminal view too - so this page no longer holds its own separate wake lock.
 
   // Flash an action result in the status line, then settle back to the base "read-only" label.
   const flash = useCallback((message: string) => {
