@@ -194,6 +194,22 @@ public sealed class Session : IDisposable
 
     public int? ExitCode { get; internal set; }
 
+    /// <summary>
+    /// True when the agent process ended UNEXPECTEDLY - a crash (issue #959). Set on process exit
+    /// when the exit was not a clean, intentional end (see <see cref="IsUnexpectedExit"/>). A crashed
+    /// session is kept in the roster in an Error state rather than being auto-removed, so the user
+    /// sees that work stopped instead of the session silently disappearing.
+    /// </summary>
+    public bool Crashed { get; private set; }
+
+    /// <summary>
+    /// The pure decision for "did this session crash?" A process exit is treated as a crash when it
+    /// returns a non-zero exit code OR when the session dropped out while it was actively working
+    /// (some crashes exit with code 0, so the exit code alone is not enough). A clean exit (code 0)
+    /// from an idle/waiting session is an intentional end and is NOT a crash.
+    /// </summary>
+    public static bool IsUnexpectedExit(int exitCode, bool wasWorking) => exitCode != 0 || wasWorking;
+
     /// <summary>The terminal buffer from the backend. May be null for Embedded mode.</summary>
     public CircularTerminalBuffer? Buffer => _backend.Buffer;
 
@@ -1918,11 +1934,29 @@ public sealed class Session : IDisposable
     private void OnBackendProcessExited(int exitCode)
     {
         FileLog.Write($"[Session] ProcessExited: session={Id}, exitCode={exitCode}, pid={ProcessId}, uptime={(DateTimeOffset.UtcNow - CreatedAt).TotalSeconds:F1}s");
+
+        // Decide crash-vs-clean BEFORE we overwrite the activity state: a session that dropped out
+        // while it was actively working is a crash even if its exit code is 0 (issue #959).
+        var wasWorking = ActivityState == ActivityState.Working;
+        var crashed = IsUnexpectedExit(exitCode, wasWorking);
+
         ExitCode = exitCode;
-        Status = SessionStatus.Exited;
+        Crashed = crashed;
+        Status = crashed ? SessionStatus.Failed : SessionStatus.Exited;
         // Process exit is an authoritative, transport-independent signal - drive the
         // state directly so it works in both terminal-driven and hook modes.
         SetActivityState(ActivityState.Exited);
+
+        // A crash keeps the row visible in an Error colour so the user sees work stopped rather than
+        // the session silently disappearing. SetActivityState above bumped the colour generation, so
+        // this authoritative crash colour is not dropped by the sticky positive-evidence guard.
+        if (crashed)
+        {
+            var reason = exitCode == 0
+                ? "crashed: the agent process ended unexpectedly while working"
+                : $"crashed: the agent process exited with code {exitCode}";
+            SetStatusColor(CcDirector.Core.Wingman.StatusColor.Error, reason);
+        }
 
         // Announce the exit exactly once (a backend could theoretically raise its
         // ProcessExited more than once). This is an event-raise on a backend thread,
