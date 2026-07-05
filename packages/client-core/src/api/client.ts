@@ -95,6 +95,55 @@ export class GatewayError extends Error {
   }
 }
 
+// The shared "hosted AI is unavailable" body every money endpoint returns on HTTP 402 (issue #939/#941;
+// consumed by mobile in #942): the single-source message + call-to-action. `text` is the message to show;
+// `ctaUrl` deep-links to Billing.
+export interface HostedAiUnavailable {
+  state: string;      // "NeedsCredits" | "CapReached" | "NeedsKey"
+  text: string;
+  ctaLabel: string;
+  ctaAction: string;  // "OpenBilling" | "OpenSettings"
+  ctaUrl: string | null;
+}
+
+// A 402 from a hosted-AI call (out of credits / cap / no key). Its `message` IS the shared text, so any
+// surface that already shows `err.message` displays the correct copy by construction; `info` carries the
+// call-to-action for the app-level notice (issue #942).
+export class CreditsError extends GatewayError {
+  readonly info: HostedAiUnavailable;
+  constructor(info: HostedAiUnavailable) {
+    super(402, info.text || info.state || "Voice needs credit.");
+    this.name = "CreditsError";
+    this.info = info;
+  }
+}
+
+// App-level subscription so ONE notice (with the "Add credits" button) shows wherever a 402 happens,
+// without every surface widening its string error state. The client emits on every hosted-AI 402; the
+// app renders a single CreditsNotice. Returns an unsubscribe function.
+type CreditsListener = (info: HostedAiUnavailable) => void;
+const creditsListeners = new Set<CreditsListener>();
+export function onCreditsNeeded(fn: CreditsListener): () => void {
+  creditsListeners.add(fn);
+  return () => { creditsListeners.delete(fn); };
+}
+
+// Build a CreditsError from an already-parsed 402 body and notify the app-level notice. Defaults keep the
+// message correct even if a field is missing. Call from the `!res.ok` branch of any hosted-AI call when
+// `res.status === 402` (the body is already the shared shape from the Gateway).
+export function creditsErrorFrom(body: unknown): CreditsError {
+  const b = (body ?? {}) as Partial<HostedAiUnavailable> & { error?: string };
+  const info: HostedAiUnavailable = {
+    state: b.state ?? "NeedsCredits",
+    text: b.text ?? b.error ?? "Voice needs credit. Add credits to turn it on.",
+    ctaLabel: b.ctaLabel ?? "Add credits",
+    ctaAction: b.ctaAction ?? "OpenBilling",
+    ctaUrl: b.ctaUrl ?? null,
+  };
+  for (const fn of creditsListeners) { try { fn(info); } catch { /* a listener must never break the throw */ } }
+  return new CreditsError(info);
+}
+
 // GET /sessions - the fleet roster aggregator. Returns the same SessionDto shape the Cockpit
 // Mobile page consumes. Throws GatewayError on a non-2xx so the caller surfaces it (no silent
 // fallback). The request is same-origin against the Gateway front door.
@@ -427,6 +476,8 @@ export async function transcribeUtterance(
   });
   const compBody = (await comp.json().catch(() => ({}))) as { transcript?: string; error?: string };
   if (!comp.ok) {
+    // Out of credits / cap (issue #942): a typed CreditsError carrying the shared message + call-to-action.
+    if (comp.status === 402) throw creditsErrorFrom(compBody);
     throw new GatewayError(comp.status, compBody.error ?? `transcription failed: ${comp.status}`);
   }
   return (compBody.transcript ?? "").trim();
@@ -509,6 +560,8 @@ export async function markVoiceAndExplain(sessionId: string, signal?: AbortSigna
     signal,
   });
   if (!res.ok) {
+    // Switching a session to voice mode ran into out-of-credits (issue #942): the shared notice.
+    if (res.status === 402) throw creditsErrorFrom(await res.json().catch(() => ({})));
     throw new GatewayError(res.status, `POST wingman/explain failed: ${res.status}`);
   }
   const body = (await res.json()) as Partial<WingmanExplain>;
@@ -552,6 +605,8 @@ export async function fetchWingmanVoiceAudio(sessionId: string, signal?: AbortSi
     signal,
   });
   if (!res.ok) {
+    // Narration audio unavailable because of credits (issue #942): a 402 body is JSON even here.
+    if (res.status === 402) throw creditsErrorFrom(await res.json().catch(() => ({})));
     throw new GatewayError(res.status, `GET wingman/voice/audio failed: ${res.status}`);
   }
   return res.arrayBuffer();

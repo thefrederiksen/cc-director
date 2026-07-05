@@ -114,6 +114,36 @@ body {
   cursor: default;
 }
 
+/* Issue #942: the app-level out-of-credits notice floats above the current screen so any surface's
+   402 is covered by one consistent message + call-to-action. */
+.credits-notice {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2000;
+  padding: 0 12px calc(12px + env(safe-area-inset-bottom));
+  pointer-events: none;
+}
+.credits-notice .banner {
+  pointer-events: auto;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.credits-notice-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+a.banner-btn {
+  text-decoration: none;
+  display: inline-block;
+}
+.credits-notice-dismiss {
+  background: transparent;
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
 .status-line {
   color: var(--text-dim);
   font-size: 14px;
