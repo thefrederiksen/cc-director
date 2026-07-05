@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Voice;
 using NAudio.Wave;
@@ -49,7 +50,11 @@ public sealed class DesktopTtsPlayer : IDisposable
     /// take down the caller's turn - but the bool lets a caller (e.g. the playback
     /// dialog) surface the failure instead of closing as if it had spoken.
     /// </summary>
-    public async Task<bool> SpeakAsync(string text, CancellationToken ct = default)
+    /// <param name="onUnavailable">Issue #940: invoked (with the shared state) when generation failed
+    /// because hosted AI is out of credits / capped - so the caller can surface the ONE add-credits
+    /// message instead of the failure being logged and silently swallowed. Not called for ordinary
+    /// generation failures (no key, network), which stay quiet as before.</param>
+    public async Task<bool> SpeakAsync(string text, CancellationToken ct = default, Action<HostedAiState>? onUnavailable = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
 
@@ -58,6 +63,10 @@ public sealed class DesktopTtsPlayer : IDisposable
         if (!result.Success || result.AudioBytes is null)
         {
             FileLog.Write($"[DesktopTtsPlayer] TTS not played: status={result.Status} error={result.ErrorMessage}");
+            // A 402 carries the machine code as its status (issue #940): map it to the shared state and
+            // hand it to the caller so read-aloud out-of-credits is no longer a silent nothing.
+            if (onUnavailable is not null && IsOutOfCreditsStatus(result.Status))
+                onUnavailable(HostedAiErrorMapper.MapCode(result.Status));
             return false;
         }
 
@@ -92,6 +101,11 @@ public sealed class DesktopTtsPlayer : IDisposable
 
         return true;
     }
+
+    /// <summary>True when a failed generation's status is one of the out-of-credits / cap codes a 402
+    /// carries (issue #940), so the shared add-credits state should be surfaced.</summary>
+    private static bool IsOutOfCreditsStatus(string? status) =>
+        status == HostedAiErrorMapper.InsufficientCreditsCode || status == HostedAiErrorMapper.MonthlyLimitReachedCode;
 
     /// <summary>Stop any in-progress playback immediately.</summary>
     public void Stop()

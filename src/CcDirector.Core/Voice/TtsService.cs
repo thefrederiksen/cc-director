@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.HostedAi;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Voice;
@@ -296,7 +297,13 @@ public sealed class TtsService
                 var body = await resp.Content.ReadAsStringAsync(requestCts.Token);
                 var status = (int)resp.StatusCode;
                 FileLog.Write($"[TtsService] chunk {chunkIndex} attempt {attempt} OpenAI returned {status}: {Truncate(body, 400)}");
-                // 5xx is transient (server-side, worth a retry); 4xx is a
+                // Out of credits / monthly cap (issue #940): carry the machine-readable code as the
+                // status so the desktop player maps it to the ONE shared state and surfaces the
+                // add-credits message, instead of swallowing a generic "openai_failed" silently. Not
+                // transient - retrying an out-of-credits call is pointless.
+                if (status == 402)
+                    return TtsResult.Error(HostedAiErrorMapper.ParseErrorCode(body), $"text-to-speech returned 402: {Truncate(body, 300)}", transient: false);
+                // 5xx is transient (server-side, worth a retry); other 4xx is a
                 // permanent request error and must not be retried.
                 var transient = status >= 500;
                 return TtsResult.Error("openai_failed", $"OpenAI returned {status}: {Truncate(body, 300)}", transient);
