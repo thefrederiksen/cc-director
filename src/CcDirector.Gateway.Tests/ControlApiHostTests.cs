@@ -147,6 +147,61 @@ public sealed class ControlApiHostTests : IAsyncLifetime
         Assert.True(_host.IsListening);
         Assert.Null(_host.StartupError);
     }
+
+    // OS shell used as a harmless RawCli agent so these tests exercise the real create
+    // path without depending on an installed coding-agent CLI.
+    private static string TestShellPath =>
+        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows) ? "cmd.exe" : "/bin/sh";
+
+    [Fact]
+    public async Task Post_sessions_applies_explicit_name_at_birth()
+    {
+        // Issue #807 regression: a session created via POST /sessions with a meaningful Name
+        // must come back with THAT name immediately (name-at-birth, issue #800) - the create
+        // response AND a subsequent GET must both show it, with no PATCH. The reported failure
+        // was the session born unnamed, then displaying as the bare repo folder name.
+        var repo = Path.GetTempPath();
+        const string name = "mobile PWA - impl loop #806";
+
+        var resp = await _client.PostAsJsonAsync("sessions", new NewSessionRequest
+        {
+            RepoPath = repo,
+            Agent = "RawCli",
+            Command = TestShellPath,
+            Name = name,
+        });
+
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        var created = await resp.Content.ReadFromJsonAsync<SessionDto>();
+        Assert.NotNull(created);
+        Assert.Equal(name, created!.Name);
+
+        // GET by id returns the same name with no PATCH in between.
+        var fetched = await _client.GetFromJsonAsync<SessionDto>($"sessions/{created.SessionId}");
+        Assert.NotNull(fetched);
+        Assert.Equal(name, fetched!.Name);
+        Assert.NotEqual(Path.GetFileName(repo.TrimEnd('\\', '/')), fetched.Name);
+    }
+
+    [Fact]
+    public async Task Post_sessions_rejects_weak_explicit_name()
+    {
+        // The other half of issue #800: an explicit name equal to the bare repository folder
+        // name is refused with 400, so a caller that bothers to pass a name passes a useful one.
+        var repo = Path.GetTempPath();
+        var folder = Path.GetFileName(repo.TrimEnd('\\', '/'));
+
+        var resp = await _client.PostAsJsonAsync("sessions", new NewSessionRequest
+        {
+            RepoPath = repo,
+            Agent = "RawCli",
+            Command = TestShellPath,
+            Name = folder,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
 }
 
 /// <summary>
