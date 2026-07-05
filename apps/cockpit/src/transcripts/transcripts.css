@@ -1,0 +1,234 @@
+/* Voice Recorder page (issue #977) - the React port of the Blazor Cockpit Transcripts.razor(.css)
+   (#183). Rendered as normal scrolling content inside the padded main pane. The Blazor page had its
+   own navy palette; the React shell is already navy (src/styles.css :root), so this maps onto the
+   theme tokens and keeps the same layout. Colors are tokens or named local literals (the status
+   greens/ambers have no exact theme token). */
+
+.ts-root {
+  --ts-green: #5fd08a;
+  --ts-amber: #e8b339;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.ts-wrap {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 4px 0 40px;
+}
+.ts-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.ts-top h1 {
+  font-size: 24px;
+  margin: 0;
+}
+.ts-topactions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.ts-back {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+}
+.ts-back:hover {
+  text-decoration: underline;
+}
+.ts-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ts-ghost:hover {
+  border-color: var(--accent);
+}
+.ts-agentmsg {
+  color: var(--ts-green);
+  font-size: 12.5px;
+}
+.ts-sub {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin: 0 0 22px;
+}
+
+.ts-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin: 12px 0;
+}
+.ts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+.ts-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.ts-subtitle {
+  color: var(--text);
+  opacity: 0.8;
+  font-size: 13.5px;
+  margin-top: 1px;
+}
+.ts-meta {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+.ts-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ts-b-uploaded {
+  background: rgba(95, 208, 138, 0.16);
+  color: var(--ts-green);
+  border: 1px solid rgba(95, 208, 138, 0.4);
+}
+.ts-b-other {
+  background: rgba(232, 179, 57, 0.14);
+  color: var(--ts-amber);
+  border: 1px solid rgba(232, 179, 57, 0.4);
+}
+.ts-b-vault {
+  background: rgba(59, 130, 246, 0.16);
+  color: #6aa9f0;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+}
+.ts-badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ts-body {
+  margin-top: 14px;
+}
+.ts-controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ts-controls button,
+.ts-save {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.ts-controls button:hover:not(:disabled),
+.ts-save:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.ts-play {
+  background: #1f7a47 !important;
+  border-color: #2a9c5b !important;
+  color: #fff !important;
+}
+.ts-danger {
+  background: #3a1418 !important;
+  border-color: #7a2429 !important;
+  color: #f0b4b6 !important;
+}
+.ts-danger:hover:not(:disabled) {
+  border-color: var(--attention) !important;
+}
+.ts-controls button:disabled,
+.ts-save:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ts-controls button:disabled:hover {
+  border-color: var(--border);
+}
+
+.ts-copied,
+.ts-nowplaying,
+.ts-vaultmsg,
+.ts-savemsg {
+  color: var(--ts-green);
+  font-size: 12.5px;
+  margin-left: 8px;
+}
+
+.ts-details {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.ts-fld {
+  display: block;
+  margin-bottom: 10px;
+}
+.ts-lbl {
+  display: block;
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.ts-details input,
+.ts-details textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.ts-details input:focus,
+.ts-details textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ts-details textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.ts-transcript {
+  white-space: pre-wrap;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 14px;
+  color: var(--text);
+  max-height: 380px;
+  overflow: auto;
+}
+.ts-empty {
+  color: var(--text-dim);
+  text-align: center;
+  padding: 60px 0;
+}

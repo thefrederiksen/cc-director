@@ -1,0 +1,193 @@
+/* Dictionary page (issue #977) - the React port of the Blazor Cockpit Dictionary.razor(.css) (#183).
+   Rendered as normal scrolling content inside the padded main pane. The Blazor page had its own navy
+   palette; the React shell is already navy (src/styles.css :root), so this maps onto the theme tokens
+   and keeps the same layout. Every color is a token or a named local literal (the save-green has no
+   theme token). */
+
+.dc-root {
+  --dc-green: #22c55e;
+  --dc-green-msg: #5fd08a;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.dc-wrap {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 4px 0 40px;
+}
+.dc-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.dc-top h1 {
+  font-size: 24px;
+  margin: 0;
+}
+.dc-back {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+}
+.dc-back:hover {
+  text-decoration: underline;
+}
+
+.dc-sub {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin: 0 0 6px;
+  max-width: 640px;
+}
+.dc-sub strong {
+  color: var(--text);
+}
+.dc-loading {
+  color: var(--text-dim);
+  text-align: center;
+  padding: 60px 0;
+}
+
+.dc-saverow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 14px 0 18px;
+}
+.dc-saveactions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+.dc-savemsg {
+  color: var(--dc-green-msg);
+  font-size: 12.5px;
+}
+
+.dc-save {
+  background: #1f7a47;
+  color: #fff;
+  border: 1px solid #2a9c5b;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.dc-save:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.dc-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dc-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin: 14px 0;
+}
+.dc-section h2 {
+  font-size: 15px;
+  margin: 0 0 2px;
+}
+.dc-hint {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  margin: 0 0 12px;
+}
+
+.dc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.dc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 6px 4px 12px;
+  font-size: 13px;
+}
+.dc-x {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.dc-x:hover {
+  color: var(--attention);
+}
+
+.dc-addbox {
+  background: var(--code-bg);
+  color: var(--text);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 13px;
+  min-width: 180px;
+}
+.dc-addbox:focus {
+  outline: none;
+  border-color: var(--accent);
+  border-style: solid;
+}
+.dc-variant-add {
+  min-width: 150px;
+}
+.dc-addterm {
+  min-width: 240px;
+}
+.dc-addterm-row {
+  margin-top: 12px;
+}
+
+.dc-mrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.dc-mrow:first-of-type {
+  border-top: none;
+}
+.dc-mterm {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 160px;
+  padding-top: 5px;
+}
+.dc-mterm .dc-arrow {
+  color: var(--text-dim);
+}
+.dc-mterm .dc-name {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.dc-mterm .dc-x {
+  font-size: 14px;
+}
+.dc-mvariants {
+  flex: 1;
+}
+
+.dc-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 0;
+}
