@@ -16,8 +16,7 @@ namespace CcDirector.ControlApi;
 /// </summary>
 public sealed class InstanceRegistration : IDisposable
 {
-    public static string InstancesDirectory { get; } =
-        Path.Combine(CcStorage.Config(), "director", "instances");
+    public static string InstancesDirectory { get; } = CcStorage.DirectorInstances();
 
     /// <summary>How often the heartbeat re-writes the instance file. Short enough that
     /// accidental cleanups self-heal quickly; long enough not to thrash the disk.</summary>

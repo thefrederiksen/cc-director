@@ -25,8 +25,7 @@ namespace CcDirector.Gateway.Discovery;
 /// </summary>
 public sealed class DirectorRegistry : IDisposable
 {
-    public static string InstancesDirectory { get; } =
-        Path.Combine(CcStorage.Config(), "director", "instances");
+    public static string InstancesDirectory { get; } = CcStorage.DirectorInstances();
 
     /// <summary>The directory this registry actually watches (the shared default in production).</summary>
     public string WatchDirectory { get; }
