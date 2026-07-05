@@ -1,0 +1,104 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Outlet, useMatch } from "react-router-dom";
+import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
+import { SessionRoster, type RosterView } from "./SessionRoster";
+
+// The Sessions experience (issue #972): the core driving loop - see every session, select one,
+// answer it. This layout route owns the fleet roster poll and the ordering-view state, renders the
+// roster on the left, and routes the selected session's detail (terminal + reply/action bar) into
+// the right region via <Outlet>. The roster stays mounted while you switch sessions, so the poll and
+// the selection persist across navigations.
+const POLL_INTERVAL_MS = 3000;
+const VIEW_STORAGE_KEY = "cockpit.rosterView";
+
+// The default ordering is "My order" (the session-rail ordering decision): attention-first is opt-in,
+// never automatic. Read the last choice back so the toggle is sticky per browser, defaulting to
+// My order when nothing is stored or storage is unavailable.
+function initialView(): RosterView {
+  try {
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "attention" ? "attention" : "my-order";
+  } catch {
+    return "my-order";
+  }
+}
+
+/** The selected session, for the detail region to read (driver capabilities, name, hold state). */
+export interface SessionsOutletContext {
+  sessions: SessionDto[] | null;
+}
+
+export function SessionsView() {
+  const [sessions, setSessions] = useState<SessionDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<RosterView>(initialView);
+  const loadedOnce = useRef(false);
+
+  // The selected session id comes from the child route (/session/:sessionId). This layout route is an
+  // ancestor of that route, so it reads the id with useMatch rather than useParams (which only exposes
+  // params matched up to this route). Empty on the index route (nothing selected yet).
+  const match = useMatch("/session/:sessionId");
+  const selectedId = match?.params.sessionId;
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const data = await listSessions(signal);
+      setSessions(data);
+      setError(null);
+      loadedOnce.current = true;
+    } catch (err) {
+      if (signal?.aborted) return;
+      // Keep the last-known roster on screen; only raise the stale banner (the roster component
+      // decides how to show it based on whether it already has data).
+      setError(err instanceof Error ? err.message : "Failed to load sessions");
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    const timer = window.setInterval(() => void load(controller.signal), POLL_INTERVAL_MS);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [load]);
+
+  const onView = useCallback((next: RosterView) => {
+    setView(next);
+    try {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+    } catch {
+      /* storage unavailable (private mode) - the toggle still works for this session */
+    }
+  }, []);
+
+  const context: SessionsOutletContext = { sessions };
+
+  return (
+    <div className="sessions-screen">
+      <SessionRoster
+        sessions={sessions}
+        selectedId={selectedId}
+        view={view}
+        onView={onView}
+        error={error}
+      />
+      <div className="sessions-detail">
+        <Outlet context={context} />
+      </div>
+    </div>
+  );
+}
+
+// Shown in the detail region on the index route, before a session is selected.
+export function SessionsEmpty() {
+  return (
+    <div className="detail-empty">
+      <h1 className="detail-empty-title">Pick a session</h1>
+      <p className="detail-empty-note">
+        Choose a session on the left to drive it: its live terminal, the action bar, the composer, the
+        prompt queue, and its screenshots.
+      </p>
+    </div>
+  );
+}
