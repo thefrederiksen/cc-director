@@ -1545,6 +1545,13 @@ internal static class ControlEndpoints
             var svc = new VoiceUtteranceService(sessionManager, sessionManager.Options);
             var resp = await svc.CompleteAsync(id, req.TotalChunks, req.Mime ?? "audio/webm", repoPath,
                 req.SessionId ?? "", sessionName, ctx.RequestAborted);
+            // Out of credits / cap (issue #941): the transcribe carried the machine code as the status;
+            // return the ONE shared 402 payload so the Voice tab shows the add-credits message + CTA.
+            if (resp.Status == Core.HostedAi.HostedAiErrorMapper.InsufficientCreditsCode
+                || resp.Status == Core.HostedAi.HostedAiErrorMapper.MonthlyLimitReachedCode)
+                return Results.Json(
+                    Core.HostedAi.HostedAiPayload.For(Core.HostedAi.HostedAiErrorMapper.MapCode(resp.Status)),
+                    statusCode: Core.HostedAi.HostedAiPayload.PaymentRequired);
             // "incomplete" is a client-recoverable state (re-send missing chunks), so 409.
             return resp.Status == "incomplete"
                 ? Results.Json(resp, statusCode: StatusCodes.Status409Conflict)
@@ -1670,6 +1677,15 @@ internal static class ControlEndpoints
             var result = await svc.GenerateAsync(req.Text, req.Voice, req.Model, ctx.RequestAborted);
             if (!result.Success || result.AudioBytes is null)
             {
+                // Out of credits / cap (issue #941): a 402 carries the machine code as the status; return
+                // the ONE shared payload (402) so the web player shows the add-credits message + CTA
+                // instead of silently falling back to the robotic browser voice.
+                if (result.Status == Core.HostedAi.HostedAiErrorMapper.InsufficientCreditsCode
+                    || result.Status == Core.HostedAi.HostedAiErrorMapper.MonthlyLimitReachedCode)
+                    return Results.Json(
+                        Core.HostedAi.HostedAiPayload.For(Core.HostedAi.HostedAiErrorMapper.MapCode(result.Status)),
+                        statusCode: Core.HostedAi.HostedAiPayload.PaymentRequired);
+
                 var status = result.Status switch
                 {
                     "no_key" => StatusCodes.Status503ServiceUnavailable,

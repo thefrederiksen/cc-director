@@ -3212,6 +3212,17 @@
               return;   // resolved later by onended / onerror
             }
           }
+          // Out of credits / cap (issue #941): the server returns 402 with the ONE shared message.
+          // Show it instead of silently masking the problem with the robotic browser voice, so the
+          // credits state is visible on this surface too.
+          if (resp.status === 402) {
+            stopCue();
+            let msg = 'Voice needs credit.';
+            try { const p = await resp.json(); msg = p.text || p.error || msg; } catch {}
+            setVoiceState(msg, 'err');
+            done();
+            return;
+          }
           // /tts returned but produced no audio: fall through to the browser fallback.
           stopCue();
         } catch {
@@ -3383,6 +3394,9 @@
       }, VOICE_TIMEOUTS.complete);
       const body = await r.json().catch(() => null);
       if (r.ok && body) return body;
+      // Out of credits / cap (issue #941): return the shared 402 payload so the caller shows the
+      // add-credits message instead of throwing a generic "complete failed (HTTP 402)".
+      if (r.status === 402 && body) return body;
       if (r.status === 409) { await waitForUploadDrain(); await new Promise(r => setTimeout(r, 500)); continue; }
       throw new Error('complete failed (HTTP ' + r.status + ')');
     }
@@ -3757,6 +3771,12 @@
       await waitForUploadDrain();
       const voiceResp = await completeUtterance(totalChunks, mimeType);
       stopCue();
+      // Out of credits / cap (issue #941): the ONE shared message, not a raw failure.
+      if (voiceResp && (voiceResp.state === 'NeedsCredits' || voiceResp.state === 'CapReached')) {
+        setVoiceState(voiceResp.text || voiceResp.error || 'Voice needs credit.', 'error');
+        appendVoiceBubble('system', voiceResp.text || voiceResp.error || 'Voice needs credit.');
+        return;
+      }
       if (voiceResp.status === 'no_key') {
         setVoiceState('Voice mode disabled: ' + (voiceResp.error || 'no OpenAI key'), 'error');
         appendVoiceBubble('system', 'Voice mode disabled. ' + (voiceResp.error || ''));
