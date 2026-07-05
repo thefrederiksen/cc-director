@@ -83,6 +83,7 @@ const COLORS: Record<string, string> = {
   blue: "#3B82F6",
   purple: "#A855F7",
   supporting: "#64748B", // issue #815: controlled sub-agent, recessive slate
+  error: "#B91C1C", // issue #959: the agent process crashed - deep red, distinct from needs-you red
   grey: "#6B7280",
 };
 

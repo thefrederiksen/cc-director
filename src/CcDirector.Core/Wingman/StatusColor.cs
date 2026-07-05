@@ -42,6 +42,13 @@ public static class StatusColor
     public const string Blue = "blue";
     public const string Purple = "purple";
 
+    /// <summary>The session's agent process ended unexpectedly - a crash: a non-zero exit, or the
+    /// process dropping out while it was actively working. The row is kept in this Error state so the
+    /// user sees that work stopped instead of the session silently disappearing (issue #959).
+    /// Rendered as a deep red (<c>#B91C1C</c>), deliberately distinct from the bright "red" that
+    /// means "needs you".</summary>
+    public const string Error = "error";
+
     /// <summary>The session is receiving a dictated message: the Speak dialog released the screen and
     /// the recorded audio is being transcribed and submitted in the background. An overlay on top of
     /// whatever the session is doing (it wins over every activity colour), so the operator - and

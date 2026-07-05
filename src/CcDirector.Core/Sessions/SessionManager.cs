@@ -192,9 +192,11 @@ public sealed class SessionManager : IDisposable
     /// </summary>
     private void OnSessionProcessExited(Session session, int exitCode)
     {
-        if (!ShouldReapOnExit(session.BackendType, exitCode))
+        // A crashed session (issue #959) is NEVER auto-removed: it stays in the roster in its Error
+        // state so the user sees that work stopped. Only an intentional clean exit is reaped.
+        if (session.Crashed || !ShouldReapOnExit(session.BackendType, exitCode))
         {
-            _log?.Invoke($"Session {session.Id} exited (code={exitCode}, backend={session.BackendType}); keeping row for recovery.");
+            _log?.Invoke($"Session {session.Id} exited (code={exitCode}, backend={session.BackendType}, crashed={session.Crashed}); keeping row.");
             return;
         }
 

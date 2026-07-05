@@ -2,6 +2,7 @@ using CcDirector.Core.Backends;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Wingman;
 using Xunit;
 
 namespace CcDirector.Core.Tests;
@@ -29,6 +30,41 @@ public sealed class SessionReapOnExitTests
         SessionBackendType backendType, int exitCode, bool expected)
     {
         Assert.Equal(expected, SessionManager.ShouldReapOnExit(backendType, exitCode));
+    }
+
+    // ---- IsUnexpectedExit (crash) decision (pure), issue #959 ----
+
+    [Theory]
+    [InlineData(0, false, false)]  // clean exit from idle -> intentional end, not a crash
+    [InlineData(0, true, true)]    // exited WHILE WORKING with code 0 -> a crash that hides in a 0 code
+    [InlineData(1, false, true)]   // non-zero exit -> crash
+    [InlineData(-1, true, true)]   // non-zero exit while working -> crash
+    public void IsUnexpectedExit_flags_nonzero_or_died_while_working(
+        int exitCode, bool wasWorking, bool expected)
+    {
+        Assert.Equal(expected, Session.IsUnexpectedExit(exitCode, wasWorking));
+    }
+
+    [Fact]
+    public async Task Crash_with_exit_zero_while_working_is_kept_in_error_state()
+    {
+        var manager = new SessionManager(new AgentOptions()) { CleanExitReapDelayMs = 0 };
+        var backend = new ExitableBackend();
+        var session = new Session(
+            Guid.NewGuid(), @"C:\test\repo", @"C:\test\repo", null,
+            backend, SessionBackendType.ConPty);
+        session.MarkRunning();
+        session.ApplyTerminalActivityState(ActivityState.Working); // mid-task
+        manager.AdoptSession(session);
+
+        backend.RaiseExit(0); // exit 0 BUT it was working -> a crash, must be kept
+
+        await Task.Delay(150); // give any (incorrect) reap a chance to run
+        var kept = manager.GetSession(session.Id);
+        Assert.NotNull(kept);
+        Assert.True(kept!.Crashed);
+        Assert.Equal(SessionStatus.Failed, kept.Status);
+        Assert.Equal(StatusColor.Error, kept.StatusColor);
     }
 
     // ---- Session.OnExited one-shot semantics ----
@@ -86,11 +122,14 @@ public sealed class SessionReapOnExitTests
         session.MarkRunning();
         manager.AdoptSession(session);
 
-        backend.RaiseExit(1); // non-zero -> keep
+        backend.RaiseExit(1); // non-zero -> a crash, kept in the Error state (issue #959)
 
         await Task.Delay(150); // give any (incorrect) reap a chance to run
-        Assert.NotNull(manager.GetSession(session.Id));
-        Assert.Equal(SessionStatus.Exited, manager.GetSession(session.Id)!.Status);
+        var kept = manager.GetSession(session.Id);
+        Assert.NotNull(kept);
+        Assert.True(kept!.Crashed);
+        Assert.Equal(SessionStatus.Failed, kept.Status);
+        Assert.Equal(StatusColor.Error, kept.StatusColor);
     }
 
     private static async Task WaitUntil(Func<bool> condition, int timeoutMs = 2000)

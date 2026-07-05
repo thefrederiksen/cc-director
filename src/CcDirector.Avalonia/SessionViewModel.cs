@@ -42,6 +42,10 @@ public class SessionViewModel : INotifyPropertyChanged
     // like the grays so it does not nag the operator, but its cool-blue tint sets it apart from the
     // exited gray (#6a6a6a) and the on-hold light gray (#9ca3af).
     private static readonly ISolidColorBrush SupportingStatusBrush = new SolidColorBrush(Color.FromRgb(0x64, 0x74, 0x8B));
+    // Deep red "Crashed" (issue #959) - the agent process ended unexpectedly. Deliberately darker
+    // than the bright red "needs you" (#EF4444) so a dead/errored session reads as a distinct error
+    // state, not just another session waiting on the user.
+    private static readonly ISolidColorBrush ErrorStatusBrush   = new SolidColorBrush(Color.FromRgb(0xB9, 0x1C, 0x1C));
     private static readonly ISolidColorBrush UnknownStatusBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0x6A, 0x6A));
 
     // Light gray shown when the user has manually parked a session on hold. Deliberately
@@ -121,6 +125,7 @@ public class SessionViewModel : INotifyPropertyChanged
                 "purple" => PurpleStatusBrush,
                 "orange" => OrangeStatusBrush,
                 "supporting" => SupportingStatusBrush,
+                "error"  => ErrorStatusBrush,
                 _        => UnknownStatusBrush,
             };
         }
