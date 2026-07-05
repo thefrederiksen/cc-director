@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   getWingmanVoice,
   listSessions,
@@ -421,7 +421,6 @@ export function VoiceMode() {
   return (
     <div className="terminal-screen">
       <header className="app-bar">
-        <Link className="back-link" to="/">&larr; Roster</Link>
         <h1 className="term-title">{name ?? "Session"}</h1>
       </header>
 

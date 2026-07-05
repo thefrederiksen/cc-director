@@ -94,6 +94,17 @@ export function SessionManageBar({ sessionId }: SessionManageBarProps) {
     <div className="session-manage">
       {error !== null && <div className="banner banner-error" role="alert">{error}</div>}
       <div className="session-manage-row">
+        {/* Back to the roster - the control used on every visit to a session. It shares this row with
+           Hold and Remove (owner request, #1004) so it is a full-size button on the left, not a tiny
+           header link; it is the widest of the three because it is the most-used. */}
+        <button
+          type="button"
+          className="manage-btn manage-back"
+          onClick={() => navigate("/")}
+          aria-label="Back to sessions"
+        >
+          &larr; Sessions
+        </button>
         <button
           type="button"
           className={`manage-btn ${held ? "manage-resume" : "manage-hold"}`}
