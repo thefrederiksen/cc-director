@@ -3,7 +3,7 @@
 // the desktop Settings "AI" tab uses - the mobile screen is just a phone-styled front end over them, so
 // there is no backend work here. The AI-settings response shapes are returned by the Gateway via
 // Results.Json without a [Produces] annotation, so they are read with the narrow local types below.
-import { authHeaders, GatewayError } from "./client";
+import { authHeaders, GatewayError, creditsErrorFrom } from "./client";
 
 export type AiProviderId = "devthrottle" | "openai";
 
@@ -105,6 +105,8 @@ export async function ttsSample(text: string, model: string, voice: string): Pro
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
+    // "Play sample" ran into out-of-credits (issue #942): the shared notice.
+    if (res.status === 402) throw creditsErrorFrom(err);
     throw new GatewayError(res.status, err.error ?? `text-to-speech failed: ${res.status}`);
   }
   return res.blob();

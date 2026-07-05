@@ -12,6 +12,7 @@ import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { ensureGatewayCookie } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "./push/register";
+import { CreditsNotice } from "./components/CreditsNotice";
 import "./styles.css";
 
 // The auth gate (issue #908): every real screen requires an enrolled device key. Without one, the
@@ -65,5 +66,6 @@ if (rootElement === null) {
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     <RouterProvider router={router} />
+    <CreditsNotice />
   </React.StrictMode>
 );
