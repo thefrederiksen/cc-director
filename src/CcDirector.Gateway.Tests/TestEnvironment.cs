@@ -25,10 +25,33 @@ namespace CcDirector.Gateway.Tests;
 /// </summary>
 internal static class TestEnvironment
 {
+    /// <summary>The throwaway per-process Director instance-discovery directory the whole test
+    /// assembly is pinned to (issue #322).</summary>
+    internal static string InstancesDir { get; } =
+        Path.Combine(Path.GetTempPath(), "cc-director-tests", "instances-" + Environment.ProcessId);
+
     [ModuleInitializer]
     internal static void Init()
     {
         CcDirector.Gateway.Briefing.TurnEndWatcher.SweepEnabled = false;
         Environment.SetEnvironmentVariable("CC_GATEWAY_NO_TAILSCALE", "1");
+
+        // Issue #322: pin the Director instance-discovery directory to a throwaway per-process temp
+        // directory so no test can ever write an instance file into the REAL
+        // %LOCALAPPDATA%\cc-director\config\director\instances\ directory. A test that spins a
+        // ControlApiHost / InstanceRegistration WITHOUT passing an isolated instancesDirectory (e.g.
+        // ChatEndpointTests) previously wrote a "1.0.0-test" instance file into the live directory; the
+        // production Gateway's file watcher then discovered it, probed the dead ephemeral loopback port,
+        // and painted a phantom amber "unreachable" Director in the real Cockpit until the sweeper
+        // evicted it. Pinning just this directory by default (via the CC_DIRECTOR_INSTANCES_DIR override
+        // that CcStorage.DirectorInstances honors) makes that pollution impossible even when a call site
+        // forgets its per-instance override - the same "guard at the process level, not per call site"
+        // approach already used for CC_GATEWAY_NO_TAILSCALE above. It is deliberately narrow: the whole
+        // storage root is left alone, so tests that read other real storage (e.g. dictation session
+        // logs) are unaffected. This runs before any test touches the path-caching statics
+        // (DirectorRegistry.InstancesDirectory, InstanceRegistration.InstancesDirectory), so their first
+        // resolution lands under the temp directory.
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_INSTANCES_DIR", InstancesDir);
+        try { Directory.CreateDirectory(InstancesDir); } catch { /* first real use will surface a failure */ }
     }
 }

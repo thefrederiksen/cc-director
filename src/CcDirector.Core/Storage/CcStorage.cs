@@ -14,6 +14,7 @@ namespace CcDirector.Core.Storage;
 /// Environment variable overrides:
 ///   CC_DIRECTOR_ROOT - Override the base directory (default: %LOCALAPPDATA%\cc-director)
 ///   CC_VAULT_PATH    - Override the vault directory specifically
+///   CC_DIRECTOR_INSTANCES_DIR - Override the Director instance-discovery directory specifically
 ///
 /// NOTE: CcStorage methods intentionally omit FileLog.Write calls because
 /// FileLog.LogDir is initialized from CcStorage.ToolLogs(), creating a
@@ -48,6 +49,23 @@ public static class CcStorage
 
     /// <summary>Tool settings, OAuth tokens, credentials, app state.</summary>
     public static string Config() => Path.Combine(Base(), "config");
+
+    /// <summary>
+    /// Director instance-discovery directory: config/director/instances/. Each running Director writes
+    /// a <c>{directorId}.json</c> here and the Gateway watches it. Honors the
+    /// <c>CC_DIRECTOR_INSTANCES_DIR</c> override (issue #322) so tests can pin JUST this directory to a
+    /// throwaway location - keeping a stray test Director's instance file out of the real directory,
+    /// where the live Gateway's file watcher would otherwise discover it, probe its dead ephemeral port,
+    /// and paint a phantom "unreachable" Director - without redirecting the whole storage root.
+    /// </summary>
+    public static string DirectorInstances()
+    {
+        var overridePath = Environment.GetEnvironmentVariable("CC_DIRECTOR_INSTANCES_DIR");
+        if (!string.IsNullOrEmpty(overridePath))
+            return overridePath;
+
+        return Path.Combine(Config(), "director", "instances");
+    }
 
     /// <summary>Generated files: PDFs, reports, transcripts, exports.</summary>
     public static string Output()
