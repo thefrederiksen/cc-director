@@ -217,6 +217,59 @@ function Stop-OwnLaunchedDirector([int]$DirectorPid, [string]$ExePath) {
     Stop-Process -Id $DirectorPid -Force -Confirm:$false
 }
 
+# Read the configured gateway token so a shutdown call is accepted if the Director enforces
+# auth (issue #916). Best effort - empty when unavailable.
+function Get-ShutdownToken {
+    $cfg = Join-Path $env:LOCALAPPDATA 'cc-director\config\config.json'
+    if (-not (Test-Path $cfg)) { return '' }
+    try {
+        $j = Get-Content $cfg -Raw | ConvertFrom-Json
+        if ($j.gateway -and $j.gateway.token) { return [string]$j.gateway.token }
+    } catch {}
+    return ''
+}
+
+# Stop a Director the RIGHT way (issue #960): ask it to shut down through its Control API so it
+# kills its own sessions and deletes its crash journal - a clean shutdown leaves NO "interrupted"
+# entry, exactly like quitting from the UI, even mid-run. A force-kill cannot clean up after
+# itself, so it is the LAST RESORT, used only when the graceful shutdown does not exit in time
+# (the Director is genuinely stuck) or when no Control API port is known.
+function Stop-DirectorCleanly([int]$DirectorPid, [int]$Port, [string]$ExePath) {
+    $exited = $false
+    if ($Port -gt 0) {
+        $headers = @{}
+        $tok = Get-ShutdownToken
+        if ($tok) { $headers['Authorization'] = "Bearer $tok" }
+        Write-Host "[teardown] requesting clean shutdown: POST http://127.0.0.1:$Port/shutdown (PID $DirectorPid)"
+        try { Invoke-WebRequest "http://127.0.0.1:$Port/shutdown" -Method POST -Headers $headers -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline) {
+            if ($null -eq (Get-Process -Id $DirectorPid -ErrorAction SilentlyContinue)) { $exited = $true; break }
+            Start-Sleep -Milliseconds 250
+        }
+    } else {
+        Write-Host "[teardown] no Control API port known for PID $DirectorPid - cannot shut down cleanly"
+    }
+
+    if (-not $exited) {
+        # LAST RESORT: the clean shutdown did not take (no port, or the process is stuck). A
+        # force-kill gives the process no chance to delete its crash journal, so this path DOES
+        # leave an "interrupted" entry - it is used only when there is no other option.
+        $alive = Get-Process -Id $DirectorPid -ErrorAction SilentlyContinue
+        if ($alive -and $alive.Path -and ($alive.Path -ieq $ExePath)) {
+            Write-Host "[teardown] clean shutdown did not exit in time - FORCE killing PID $DirectorPid (last resort)"
+            Stop-Process -Id $DirectorPid -Force -Confirm:$false
+        }
+    }
+
+    $deadline2 = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline2) {
+        if ($null -eq (Get-Process -Id $DirectorPid -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Process -Id $DirectorPid -ErrorAction SilentlyContinue) { Fail "PID $DirectorPid did not exit within the timeout." }
+}
+
 function Invoke-Launch {
     $m = Read-Manifest $Manifest
 
@@ -345,15 +398,9 @@ function Invoke-Teardown {
     }
     foreach ($p in $targets) {
         Write-Host "[teardown] stopping PID $($p.Id) ($($p.Path))"
-        Stop-Process -Id $p.Id -Force -Confirm:$false
-        $deadline = (Get-Date).AddSeconds(15)
-        while ((Get-Date) -lt $deadline) {
-            $alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
-            if ($null -eq $alive) { break }
-            Start-Sleep -Milliseconds 250
-        }
-        $alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
-        if ($alive) { Fail "PID $($p.Id) did not exit within 15s." }
+        # Clean shutdown via the Control API (force-kill only as a last resort) so this test
+        # Director does not leave a phantom "interrupted" crash journal (issue #960).
+        Stop-DirectorCleanly -DirectorPid $p.Id -Port ([int]$m.port) -ExePath $m.exePath
         Write-Host "[teardown] PID $($p.Id) exited"
     }
 

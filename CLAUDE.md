@@ -69,7 +69,9 @@ The `local_builds` directory holds the **main** build `cc-director.exe` (the use
 
 #### Cleaning up your own test Director
 
-Only kill processes whose path matches the slot YOU launched (e.g. `cc-director5.exe`). Confirm via `Get-Process | Select-Object Id, ProcessName, Path` before sending `Stop-Process`. Never use a blanket `Stop-Process -Name cc-director*` — that would kill the main build and the user's working sessions.
+**Shut a test Director down cleanly, do NOT force-kill it.** Send `POST http://127.0.0.1:<port>/shutdown` to its Control API — that makes the Director kill its own sessions and delete its crash journal, so it does not leave a phantom "interrupted" entry in the fleet (issue #960). A force-kill (`Stop-Process -Force`) gives the process no chance to clean up and DOES leave that phantom journal, so it is the last resort only — use it only if the graceful shutdown does not exit in time (the Director is genuinely stuck). The `scripts\agent-session-isolation.ps1 teardown` verb already does this.
+
+When you must force-kill as a last resort: only kill a process whose path matches the slot YOU launched (e.g. `cc-director5.exe`). Confirm via `Get-Process | Select-Object Id, ProcessName, Path` first. Never use a blanket `Stop-Process -Name cc-director*` — that would kill the main build and the user's working sessions.
 
 For non-session-creating tests (HTML rendering, REST endpoint smoke, build-only verification) launching from your context is still fine. Only session-creation tests need the Task Scheduler path.
 
