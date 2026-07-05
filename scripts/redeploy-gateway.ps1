@@ -244,6 +244,20 @@ function Copy-GatewayPayload {
     Write-Host "[redeploy-gateway] copied Gateway payload (exe + wwwroot\m) -> $GatewayDir"
 }
 
+# Read the configured gateway auth token (config.json gateway.token) so the deploy can present it on
+# the auth-enforced /shutdown call (issue #916). Returns '' when it cannot be read (best effort).
+function Get-GatewayToken {
+    [CmdletBinding()]
+    param([string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'cc-director\config\config.json'))
+
+    if (-not (Test-Path $ConfigPath)) { return '' }
+    try {
+        $j = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        if ($j.gateway -and $j.gateway.token) { return [string]$j.gateway.token }
+    } catch {}
+    return ''
+}
+
 if ($DefineOnly) { return }
 
 # ---------------------------------------------------------------------------
@@ -264,11 +278,21 @@ Write-Host "[redeploy-gateway] publishing Gateway at commit $commitSha"
 try {
     $stagedExe = New-IsolatedGatewayPublish -RepoRoot $repoRoot -CommitSha $commitSha -StageDir $stage
 
-    # Ask the running tray app to exit gracefully, then wait for the exe to unlock.
-    try { Invoke-WebRequest 'http://127.0.0.1:7878/shutdown' -Method POST -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
+    # Ask the running tray app to exit gracefully, then wait for the exe to unlock. Auth-enforced
+    # Gateways (issue #916) reject an UNauthenticated /shutdown, which used to leave the exe locked and
+    # fail the swap with a cryptic IOException - present the configured gateway token so the graceful
+    # shutdown is accepted.
+    $gwToken = Get-GatewayToken
+    $shutdownHeaders = @{}
+    if ($gwToken) { $shutdownHeaders['Authorization'] = "Bearer $gwToken" }
+    try { Invoke-WebRequest 'http://127.0.0.1:7878/shutdown' -Method POST -Headers $shutdownHeaders -UseBasicParsing -TimeoutSec 5 | Out-Null } catch {}
+    $stillUp = $true
     for ($i = 0; $i -lt 20; $i++) {
-        if (-not (Get-Process -Name devthrottle-gateway -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$gwDir*" })) { break }
+        if (-not (Get-Process -Name devthrottle-gateway -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$gwDir*" })) { $stillUp = $false; break }
         Start-Sleep -Milliseconds 500
+    }
+    if ($stillUp) {
+        throw "[redeploy-gateway] the running Gateway did not exit after POST /shutdown (it still holds $gwDir\devthrottle-gateway.exe). If auth is enforced, verify config.json gateway.token; otherwise stop the tray Gateway and re-run."
     }
 
     # Issue #809: copy the exe AND its wwwroot tree (mobile app) - not just the exe - so /m serves.
