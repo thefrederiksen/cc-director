@@ -316,6 +316,22 @@ jobs:
           -c Release -r win-x64 --self-contained false
           -o cockpit-publish
 
+      # Sign the Cockpit assemblies as Center Consulting Inc. before they are
+      # zipped: our own devthrottle-cockpit.dll, CcDirector.Gateway.Contracts.dll,
+      # CcDirector.Core.dll, the app-host devthrottle-cockpit.exe, and the bundled
+      # Markdig.dll dependency (framework-dependent, so the shared .NET runtime is
+      # not present to sign). No-op until SIGNING_CERT_PROFILE + AZURE_* are set.
+      - name: Sign Cockpit assemblies
+        if: ${{ vars.SIGNING_CERT_PROFILE != '' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          folder: cockpit-publish
+          filter: dll,exe
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          certificate-profile-name: ${{ vars.SIGNING_CERT_PROFILE }}
+
       - name: Package Cockpit publish folder as zip
         shell: pwsh
         run: |
