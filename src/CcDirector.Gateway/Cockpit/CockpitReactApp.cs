@@ -127,9 +127,11 @@ public static class CockpitReactApp
 
     /// <summary>
     /// Serve one request: a real static asset when the path resolves to a file in the web root,
-    /// otherwise <c>index.html</c> (the single-page-app shell and client-route fallback). Answers 404
-    /// only when the React Cockpit is not built into this host. Writes the response directly (the
-    /// handler is a RequestDelegate), so it returns a non-generic Task.
+    /// otherwise <c>index.html</c> (the single-page-app shell and client-route fallback). A request
+    /// that TARGETS a file (Vite's hashed <c>assets/</c>, or any path with a file extension) but does
+    /// not resolve answers 404, NOT the shell (issue #1031). Answers 404 also when the React Cockpit
+    /// is not built into this host. Writes the response directly (the handler is a RequestDelegate),
+    /// so it returns a non-generic Task.
     /// </summary>
     private static async Task ServeAsync(HttpContext ctx, string relativePath)
     {
@@ -141,18 +143,42 @@ public static class CockpitReactApp
             return;
         }
 
-        // A request for a concrete asset (has a path and is not index.html) is served as a file when
-        // it resolves safely inside the web root; everything else falls back to the shell.
+        // A request that targets a concrete file - Vite's hashed assets under assets/, or any path
+        // whose last segment has a file extension (favicon.ico, a .js/.css) - is served ONLY when it
+        // resolves to a real file inside the web root. If it does not resolve, it is a 404, NOT the
+        // index.html shell: a torn/stale deploy (index.html referencing a hash no longer on disk, or an
+        // old client asking for a purged hash) must fail loudly. Serving the shell as 200 text/html for
+        // a missing script leaves the browser parsing "<" as JavaScript and white-screening in silence
+        // (issue #1031). Only the shell document itself and extensionless client-side routes fall back
+        // to index.html.
         if (!string.IsNullOrEmpty(relativePath)
             && !string.Equals(relativePath, IndexFile, StringComparison.OrdinalIgnoreCase)
-            && TryResolveFile(webRoot, relativePath, out var fullPath))
+            && IsFileRequest(relativePath))
         {
-            await ServeStaticFileAsync(ctx, fullPath, relativePath);
+            if (TryResolveFile(webRoot, relativePath, out var fullPath))
+            {
+                await ServeStaticFileAsync(ctx, fullPath, relativePath);
+                return;
+            }
+
+            FileLog.Write($"[CockpitReactApp] file not found -> 404 (not the shell): {relativePath}");
+            await WriteNotFoundAsync(ctx, $"Not found: /{relativePath}");
             return;
         }
 
         await ServeIndexAsync(ctx, webRoot);
     }
+
+    /// <summary>
+    /// Whether a request path targets a concrete file rather than a client-side route: anything under
+    /// the Vite <c>assets/</c> directory, or any path whose last segment carries a file extension.
+    /// These must resolve to a real file on disk or answer 404 - they are never handed the SPA shell.
+    /// Extensionless paths (<c>/fleet</c>, <c>/session/{id}</c>) are client-side routes and DO fall
+    /// back to the shell, mirroring the <c>:nonfile</c> semantics of the default MapFallback.
+    /// </summary>
+    private static bool IsFileRequest(string relativePath) =>
+        relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase)
+        || Path.HasExtension(relativePath);
 
     /// <summary>
     /// Resolve a request path to a real file strictly inside the web root, defeating path traversal.

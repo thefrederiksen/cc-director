@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 // The desktop layout frame (epic #967): a two-region shell - a left rail (navigation) and the main
 // pane (the routed page). The main pane fills all remaining width. Desktop-first: the frame stays
@@ -11,8 +11,13 @@ import { NavLink, Outlet } from "react-router-dom";
 // themselves - see SessionsView - not to this frame.
 
 // The left-rail destinations. Each maps to a real routed page (the epic ported them in one at a time).
-const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
-  { to: "/", label: "Sessions" },
+// `subtree` marks a destination active for a route family that does NOT share its path prefix: the
+// Sessions index lives at "/" (matched with `end`, so it does not light up on every route), but the
+// session detail routes into "/session/:id" - a different first segment - so it needs an explicit
+// subtree so Sessions stays highlighted while a session is being driven (the Directors item does not,
+// because "/directors/:id" already shares the "/directors" prefix NavLink matches by default).
+const NAV_ITEMS: ReadonlyArray<{ to: string; label: string; subtree?: string }> = [
+  { to: "/", label: "Sessions", subtree: "/session" },
   { to: "/fleet", label: "Fleet" },
   { to: "/directors", label: "Directors" },
   { to: "/schedule", label: "Schedule" },
@@ -26,24 +31,32 @@ const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
 ];
 
 export function AppShell() {
+  const location = useLocation();
+
   return (
     <div className="shell">
       <nav className="rail rail-left" aria-label="Primary">
         <div className="brand">DevThrottle</div>
         <ul className="nav">
-          {NAV_ITEMS.map((item) => (
-            <li key={item.to}>
-              <NavLink
-                to={item.to}
-                end={item.to === "/"}
-                className={({ isActive }) => (isActive ? "nav-link nav-link-active" : "nav-link")}
-              >
-                {item.label}
-              </NavLink>
-            </li>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const inSubtree =
+              item.subtree !== undefined && location.pathname.startsWith(item.subtree);
+            return (
+              <li key={item.to}>
+                <NavLink
+                  to={item.to}
+                  end={item.to === "/"}
+                  className={({ isActive }) =>
+                    isActive || inSubtree ? "nav-link nav-link-active" : "nav-link"
+                  }
+                >
+                  {item.label}
+                </NavLink>
+              </li>
+            );
+          })}
         </ul>
-        <div className="rail-foot">Cockpit (React) - preview</div>
+        <div className="rail-foot">Cockpit (React)</div>
       </nav>
 
       <main className="main-pane" aria-label="Main">

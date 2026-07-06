@@ -128,6 +128,19 @@ body {
   font-size: 14px;
 }
 
+/* The back-to-Sessions link on the 404 page (issue #1031). Accent-coloured, no underline until hover. */
+.pane-link {
+  display: inline-block;
+  margin-top: 16px;
+  color: var(--accent);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.pane-link:hover {
+  text-decoration: underline;
+}
+
 /* The live terminal pane (issue #971). It fills the whole main pane: a slim bar names the session,
    and the xterm host takes all remaining height. The host uses the terminal's own dark background
    (#1e1e1e, matching the desktop terminal and the engine's xterm theme) rather than a token, so the
@@ -135,10 +148,13 @@ body {
 .term-screen {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
   /* The main pane pads its routed content; the terminal wants the full area, so cancel that padding
-     for this pane only (negative margins against .main-pane's 24px/28px). */
+     for this pane only (negative margins against .main-pane's 24px/28px). The negative top+bottom
+     margins pull the pane over the main pane's 24px top and 24px bottom padding, so height must add
+     that 48px back - a plain 100% resolves against the padding-reduced content box and leaves a ~48px
+     unstyled band at the bottom (issue #1031). */
+  height: calc(100% + 48px);
+  min-height: 0;
   margin: -24px -28px;
 }
 
@@ -203,7 +219,10 @@ body {
    file - nothing here hard-codes a color. */
 .sessions-screen {
   margin: -24px -28px;
-  height: 100%;
+  /* Add back the main pane's 24px top + 24px bottom padding the negative margins cancel, so the
+     full-bleed surface fills to the viewport bottom instead of stopping ~48px short (a plain 100%
+     resolves against the padding-reduced content box and leaves an unstyled dark band, issue #1031). */
+  height: calc(100% + 48px);
   min-height: 0;
   display: grid;
   grid-template-columns: 264px 1fr;

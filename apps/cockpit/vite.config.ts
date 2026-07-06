@@ -16,6 +16,11 @@ import react from "@vitejs/plugin-react";
 // server; the production build (served by the Gateway at /c) never uses it. The target is read from
 // the environment, never a hard-coded address, so the Gateway-only-ingress rule is not weakened.
 const proxyTarget = process.env.COCKPIT_PROXY_TARGET;
+// Every root-relative prefix any Cockpit page calls must be fronted, or that page 404s under
+// `npm run dev`. The list below is the union of the prefixes the pages fetch (client-core + the
+// views): the session/fleet core plus every later-ported page - Lists (/lists), Exes (/exes),
+// Account (/account), the settings + telemetry + about pages (/gateway), Dictionary + recordings
+// (/ingest, /dictation), Feedback (/turnbriefs), and the settings AI-key panel (/vault).
 const devProxy = proxyTarget
   ? {
       "/sessions": { target: proxyTarget, changeOrigin: true, ws: true },
@@ -24,6 +29,14 @@ const devProxy = proxyTarget
       "/fanout": { target: proxyTarget, changeOrigin: true },
       "/cron": { target: proxyTarget, changeOrigin: true },
       "/wingman": { target: proxyTarget, changeOrigin: true },
+      "/lists": { target: proxyTarget, changeOrigin: true },
+      "/exes": { target: proxyTarget, changeOrigin: true },
+      "/account": { target: proxyTarget, changeOrigin: true },
+      "/gateway": { target: proxyTarget, changeOrigin: true },
+      "/ingest": { target: proxyTarget, changeOrigin: true },
+      "/dictation": { target: proxyTarget, changeOrigin: true },
+      "/turnbriefs": { target: proxyTarget, changeOrigin: true },
+      "/vault": { target: proxyTarget, changeOrigin: true },
     }
   : undefined;
 
