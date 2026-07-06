@@ -281,6 +281,38 @@ public sealed class DevThrottleAccountService
     }
 
     /// <summary>
+    /// Returns this install's own account subject - the stable <c>sub</c> (account/user id) claim read
+    /// locally from the cached access token, with NO network call - or null when no credential is stored
+    /// or the cached token carries no subject claim. This is the account KEY the Gateway's account-
+    /// membership check compares a presented cloud token against (issue #1079): a presented token is a
+    /// member only when its subject equals this value. Read from the same cached credential
+    /// <see cref="GetIdentity"/> uses, and like it this decodes the token's claims without a signature
+    /// re-check (the credential was already accepted by the gate). The subject is a personally-
+    /// identifying account id and is NEVER written to the log; this method logs only whether one was
+    /// resolved (security: no personally identifiable information in logs).
+    /// </summary>
+    public string? GetAccountSubject()
+    {
+        FileLog.Write("[DevThrottleAccountService] GetAccountSubject: reading the account subject from the cached credential (no network call)");
+
+        DevThrottleTokens? tokens;
+        lock (_gate)
+        {
+            tokens = _store.Load();
+        }
+
+        if (tokens is null)
+        {
+            FileLog.Write("[DevThrottleAccountService] GetAccountSubject: no stored credential -> no subject");
+            return null;
+        }
+
+        var subject = JwtIdentityReader.ReadSubject(tokens.AccessToken);
+        FileLog.Write($"[DevThrottleAccountService] GetAccountSubject: subject={(subject is null ? "<none>" : "resolved")}");
+        return subject;
+    }
+
+    /// <summary>
     /// Returns the stored access token to attach when this install acts as the single egress to the
     /// cloud (the Gateway forwarding telemetry on the Director's behalf, issue #639), or null when the
     /// install is not signed in. "Signed in" here is the same local check <see cref="IsLoggedIn"/>

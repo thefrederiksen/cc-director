@@ -58,6 +58,50 @@ public static class JwtIdentityReader
         return new AccountIdentity(email, provider);
     }
 
+    /// <summary>
+    /// Reads the stable subject (<c>sub</c>) claim - the account/user id - from the access token's
+    /// payload, entirely locally with no network call. Returns null when the token is not a three-part
+    /// JSON Web Token, the payload cannot be decoded, or the subject claim is absent or empty. Like
+    /// <see cref="Read"/>, this decodes the payload only and does NOT verify the signature - it is used
+    /// on a credential the gate has already accepted, to surface the account key for the account-
+    /// membership check (issue #1079). The returned subject is a personally-identifying account id and
+    /// is NEVER written to the log; this method logs only whether a subject was present.
+    /// </summary>
+    public static string? ReadSubject(string accessToken)
+    {
+        FileLog.Write("[JwtIdentityReader] ReadSubject: extracting the subject claim from the cached access token (no network call)");
+
+        var parts = accessToken?.Split('.') ?? Array.Empty<string>();
+        if (parts.Length != 3)
+        {
+            FileLog.Write("[JwtIdentityReader] ReadSubject: not a three-part JSON Web Token -> no subject");
+            return null;
+        }
+
+        var payloadJson = DecodeSegment(parts[1]);
+        if (payloadJson is null)
+        {
+            FileLog.Write("[JwtIdentityReader] ReadSubject: payload could not be decoded -> no subject");
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(payloadJson);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("sub", out var sub) && sub.ValueKind == JsonValueKind.String)
+        {
+            var subject = sub.GetString();
+            if (!string.IsNullOrWhiteSpace(subject))
+            {
+                FileLog.Write("[JwtIdentityReader] ReadSubject: subject resolved");
+                return subject;
+            }
+        }
+
+        FileLog.Write("[JwtIdentityReader] ReadSubject: no subject claim present -> no subject");
+        return null;
+    }
+
     /// <summary>Reads the <c>email</c> claim from the payload, or null when it is absent or not a string.</summary>
     private static string? ReadEmail(JsonElement root)
     {

@@ -326,6 +326,31 @@ public sealed class DevThrottleAccountServiceTests : IDisposable
         Assert.Null(service.GetIdentity());
     }
 
+    // Issue #1079: the install's own account subject (sub claim) is read from the cached credential,
+    // with no network call - the account key the membership check compares a presented token against.
+    [Fact]
+    public void GetAccountSubject_StoredCredential_ReturnsSubjectWithoutNetwork()
+    {
+        var store = new InMemoryTokenStore();
+        var refresher = new StubTokenRefresher(null);
+        var service = MakeService(store, refresher);
+        service.StoreTokens(new DevThrottleTokens(TestJwt.Create(_now.AddHours(1)), "refresh-1"));
+
+        var subject = service.GetAccountSubject();
+
+        Assert.Equal("test-user", subject); // TestJwt sets sub = "test-user"
+        Assert.False(refresher.WasCalled);
+    }
+
+    // No stored credential -> no subject (a signed-out install exposes no account key).
+    [Fact]
+    public void GetAccountSubject_NoStoredCredential_ReturnsNull()
+    {
+        var service = MakeService(new InMemoryTokenStore());
+
+        Assert.Null(service.GetAccountSubject());
+    }
+
     private sealed class FixedTime : TimeProvider
     {
         private readonly DateTimeOffset _now;

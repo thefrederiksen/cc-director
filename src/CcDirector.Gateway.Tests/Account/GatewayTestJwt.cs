@@ -17,7 +17,15 @@ internal static class GatewayTestJwt
 
     /// <summary>Creates a valid HS256 token signed with <paramref name="secret"/>, expiring at <paramref name="expiresAtUtc"/>.</summary>
     public static string Create(DateTime expiresAtUtc, string secret = SigningSecret) =>
-        Build(expiresAtUtc, email: null, provider: null, secret);
+        Build(expiresAtUtc, email: null, provider: null, subject: "gateway-test-user", secret);
+
+    /// <summary>
+    /// Creates a valid HS256 token carrying a specific <c>sub</c> (account/user id) claim, so the
+    /// account-membership check (issue #1079) can be proven with the Gateway signed in as one account
+    /// and a presented token minted for another.
+    /// </summary>
+    public static string CreateWithSubject(DateTime expiresAtUtc, string subject, string secret = SigningSecret) =>
+        Build(expiresAtUtc, email: null, provider: null, subject, secret);
 
     /// <summary>
     /// Creates a valid HS256 token whose payload also carries the Supabase-shaped identity claims: an
@@ -25,9 +33,9 @@ internal static class GatewayTestJwt
     /// is null the provider claim is omitted so the "provider absent" path can be exercised.
     /// </summary>
     public static string CreateWithIdentity(DateTime expiresAtUtc, string email, string? provider, string secret = SigningSecret) =>
-        Build(expiresAtUtc, email, provider, secret);
+        Build(expiresAtUtc, email, provider, subject: "gateway-test-user", secret);
 
-    private static string Build(DateTime expiresAtUtc, string? email, string? provider, string secret)
+    private static string Build(DateTime expiresAtUtc, string? email, string? provider, string subject, string secret)
     {
         var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object>
         {
@@ -37,7 +45,7 @@ internal static class GatewayTestJwt
 
         var payloadClaims = new Dictionary<string, object>
         {
-            ["sub"] = "gateway-test-user",
+            ["sub"] = subject,
             ["exp"] = new DateTimeOffset(expiresAtUtc, TimeSpan.Zero).ToUnixTimeSeconds(),
         };
         if (email is not null)
