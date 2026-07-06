@@ -175,6 +175,31 @@
   font-weight: 500;
 }
 
+/* The rename trigger is a real <button> (issue #1032) so it is keyboard-focusable and operable with
+   Enter/Space. Strip the native button chrome so it still reads as the card title, keep the pencil
+   affordance, and give keyboard users a visible focus ring. */
+.fleet-cardtitle-btn {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.fleet-cardtitle-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Keyboard focus should reveal the pencil affordance just like mouse hover does. */
+.fleet-cardtitle-btn:focus-visible .fleet-pencil {
+  opacity: 1;
+}
+
 .fleet-pencil {
   opacity: 0;
   margin-left: 6px;
@@ -554,6 +579,24 @@
 .dcell-name {
   color: var(--text);
   font-weight: 600;
+}
+
+/* The machine-name link that makes each Director row keyboard-operable (issue #1032). Looks like the
+   plain .dcell-name text until focused/hovered, with a clear focus ring for keyboard users. */
+.dcell-namelink {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 3px;
+}
+
+.dcell-namelink:hover {
+  text-decoration: underline;
+}
+
+.dcell-namelink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .dcell-ellipsis {

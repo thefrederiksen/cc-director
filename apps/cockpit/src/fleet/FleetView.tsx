@@ -377,10 +377,15 @@ function FleetCard({ session: s, editing, editName, onEditNameChange, onBeginRen
             }}
           />
         ) : (
-          <span className={`fleet-cardtitle${unnamed ? " fleet-unnamed" : ""}`} title="Click to rename" onClick={onBeginRename}>
+          <button
+            type="button"
+            className={`fleet-cardtitle fleet-cardtitle-btn${unnamed ? " fleet-unnamed" : ""}`}
+            title="Rename session"
+            onClick={onBeginRename}
+          >
             {unnamed ? "(unnamed)" : s.name}
             <span className="fleet-pencil">&#9998;</span>
-          </span>
+          </button>
         )}
         <span className="fleet-agent">{(s.agent ?? "").trim().length === 0 ? "?" : s.agent}</span>
       </div>

@@ -356,16 +356,34 @@ describe("InteractiveTerminal reconnect", () => {
     expect(lastStatus(term)).toContain("attempt 2");
   });
 
-  it("is bounded - gives up with a visible status line after the attempt cap", () => {
+  it("keeps a slow keepalive probe past the fast cap that resumes when the Gateway returns", () => {
     startTerminal();
     const term = hoisted.terminals[0];
 
-    // Drive well past the 30-attempt cap; each cycle closes then lets the timer reopen.
-    for (let i = 0; i < 35; i++) {
+    // Drive one past the 30-attempt fast cap; each cycle closes then lets the FAST (1.2s) timer reopen.
+    for (let i = 0; i < 31; i++) {
       FakeWebSocket.instances[FakeWebSocket.instances.length - 1].triggerClose();
       vi.advanceTimersByTime(1300);
     }
-    expect(lastStatus(term)).toContain("gave up after 30 attempts");
+    // It does NOT give up - it announces the drop to the slow keepalive probe (issue #1032).
+    expect(lastStatus(term)).toContain("resumes automatically when the gateway returns");
+
+    // Past the cap the FAST timer no longer reopens: a close + 1.2s opens no new socket...
+    const afterCap = FakeWebSocket.instances.length;
+    FakeWebSocket.instances[afterCap - 1].triggerClose();
+    vi.advanceTimersByTime(1300);
+    expect(FakeWebSocket.instances.length).toBe(afterCap);
+
+    // ...but the SLOW (15s) keepalive timer DOES open a fresh socket, so recovery is automatic with no
+    // page reload or manual re-selection.
+    vi.advanceTimersByTime(15000);
+    expect(FakeWebSocket.instances.length).toBe(afterCap + 1);
+
+    // The Gateway returns: a real PTY byte proves the path is live and resets the streak, so the next
+    // drop announces "attempt 2" (back on the fast cadence), not the slow probe.
+    FakeWebSocket.instances[FakeWebSocket.instances.length - 1].emitBinary(new Uint8Array([0x68, 0x69]));
+    reconnectOnce();
+    expect(lastStatus(term)).toContain("attempt 2");
   });
 });
 
