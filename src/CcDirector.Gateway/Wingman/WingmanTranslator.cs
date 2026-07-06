@@ -122,26 +122,40 @@ public sealed class WingmanTranslator
     }
 
     /// <summary>
-    /// Pull the spoken answer out of the brain's reply. The brain is asked to wrap its answer in
-    /// the shared markers, but an LLM does not always honor a formatting instruction perfectly - so
-    /// when the markers are absent we use the whole reply (it WAS told to output only the spoken
-    /// version). This tolerance is the difference between a reliable summary and a 502: never throw
-    /// away a good answer over a missing delimiter. Internal so a test can assert both paths.
+    /// Tolerant matchers for the answer delimiters. The model is TOLD to wrap its answer in the
+    /// exact "===DEVTHROTTLE-ANSWER-BEGIN===" / "===DEVTHROTTLE-ANSWER-END===" markers, but an LLM
+    /// does not reproduce a literal delimiter perfectly every time - it may emit two equals signs
+    /// instead of three, drop one, or add a stray space. An exact-string match then misses the
+    /// ragged marker and leaks it into what the listener hears. So these match on the stable marker
+    /// TEXT and swallow whatever run of '=' and surrounding whitespace came with it. Equals signs
+    /// are never part of a real spoken answer, so consuming a "==" or "====" run is always safe.
+    /// </summary>
+    private static readonly Regex BeginMarkerRegex =
+        new(@"=*\s*" + Regex.Escape(SessionAskRunner.AnswerBeginMarker.Trim('=')) + @"\s*=*", RegexOptions.Compiled);
+    private static readonly Regex EndMarkerRegex =
+        new(@"=*\s*" + Regex.Escape(SessionAskRunner.AnswerEndMarker.Trim('=')) + @"\s*=*", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Pull the spoken answer out of the brain's reply, tolerating a ragged delimiter (see
+    /// <see cref="BeginMarkerRegex"/>). When no opening marker is present the brain answered without
+    /// the wrapper, so the whole reply IS the spoken answer (it WAS told to output only that) -
+    /// never throw a good answer away over a missing delimiter. Internal so a test can assert both
+    /// paths.
     /// </summary>
     internal static string ExtractSpoken(string reply)
     {
         if (string.IsNullOrEmpty(reply)) return "";
-        var begin = reply.IndexOf(SessionAskRunner.AnswerBeginMarker, StringComparison.Ordinal);
-        if (begin >= 0)
+        var begin = BeginMarkerRegex.Match(reply);
+        if (begin.Success)
         {
-            var contentStart = begin + SessionAskRunner.AnswerBeginMarker.Length;
-            var end = reply.IndexOf(SessionAskRunner.AnswerEndMarker, contentStart, StringComparison.Ordinal);
-            return (end > contentStart ? reply[contentStart..end] : reply[contentStart..]).Trim();
+            var afterBegin = reply[(begin.Index + begin.Length)..];
+            var end = EndMarkerRegex.Match(afterBegin);
+            return (end.Success ? afterBegin[..end.Index] : afterBegin).Trim();
         }
-        // No markers: the brain answered without the wrapper. Use the whole reply, minus any stray
-        // closing marker the model may have emitted on its own.
-        var stray = reply.IndexOf(SessionAskRunner.AnswerEndMarker, StringComparison.Ordinal);
-        return (stray >= 0 ? reply[..stray] : reply).Trim();
+        // No opening marker: the brain answered without the wrapper. Use the whole reply, minus any
+        // stray closing marker the model may have emitted on its own.
+        var stray = EndMarkerRegex.Match(reply);
+        return (stray.Success ? reply[..stray.Index] : reply).Trim();
     }
 
     /// <summary>
