@@ -127,6 +127,23 @@ internal static class GatewayDictationEndpoint
         DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions)
     {
+        var outcome = await RunCompleteCoreAsync(uploadId, req, uploads, registry, client, owners, transcription);
+        // The Gateway OWNS the orange "Transcribing..." mark, so it clears it on EVERY terminal outcome -
+        // not just the happy paths (issue #1048). Before this fix an error return (no key, empty audio, a
+        // transcription failure, out-of-credits, the session gone, a submit REFUSED because the session is
+        // parked on a modal, or an unexpected exception) left the mark set and leaned on the 20-minute
+        // MaxAge backstop to clear it - which is exactly what wedged sessions orange for up to 20 minutes.
+        // The ONLY outcome we keep the mark for is an incomplete upload: more chunks are still coming and
+        // the client completes again on the same upload id, so the session is genuinely still transcribing.
+        if (!outcome.IsIncomplete)
+            EndTranscribing(transcribingSessions, req.SessionId!);
+        return outcome;
+    }
+
+    private static async Task<DictationOutcome> RunCompleteCoreAsync(
+        string uploadId, DictationCompleteRequest req, VoiceUploadStore uploads, DirectorRegistry registry,
+        DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription)
+    {
         var sid = req.SessionId!;
         try
         {
@@ -167,7 +184,6 @@ internal static class GatewayDictationEndpoint
             {
                 // Silent/empty clip with no typed text: nothing to submit, but the turn is genuinely done.
                 uploads.Delete(uploadId);
-                EndTranscribing(transcribingSessions, sid);
                 return DictationOutcome.Submitted(false, false, transcript);
             }
 
@@ -184,7 +200,6 @@ internal static class GatewayDictationEndpoint
                 session.TotalBufferBytes > req.BaselineBufferBytes + MovedOnBufferGrowthBytes)
             {
                 uploads.Delete(uploadId);
-                EndTranscribing(transcribingSessions, sid);
                 FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: session moved on " +
                     $"(buffer {req.BaselineBufferBytes}->{session.TotalBufferBytes}); dropped");
                 return DictationOutcome.Submitted(false, true, transcript);
@@ -195,7 +210,6 @@ internal static class GatewayDictationEndpoint
                 return DictationOutcome.Error(StatusCodes.Status502BadGateway, err ?? "submit to session failed");
 
             uploads.Delete(uploadId);
-            EndTranscribing(transcribingSessions, sid);
             FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: submitted chars={message.Length}");
             return DictationOutcome.Submitted(true, false, transcript);
         }
@@ -318,6 +332,11 @@ internal sealed class DictationOutcome
 
     /// <summary>Terminal: the server handled the clip (submitted, moved-on, or empty). Do not retry.</summary>
     public bool Terminal => _kind == Kind.Submitted;
+
+    /// <summary>The upload is missing chunks and the client will complete again on the same upload id, so
+    /// the session is still genuinely transcribing - the ONE outcome that must NOT clear the orange mark
+    /// (issue #1048).</summary>
+    public bool IsIncomplete => _kind == Kind.Incomplete;
 
     public static DictationOutcome Submitted(bool submitted, bool movedOn, string transcript)
         => new(Kind.Submitted, submitted: submitted, movedOn: movedOn, transcript: transcript);
