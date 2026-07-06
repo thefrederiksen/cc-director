@@ -71,8 +71,10 @@ public class SessionManagerTests : IDisposable
     public async Task CreateAndKillSession_StatusChanges()
     {
         var session = _manager.CreateSession(Path.GetTempPath());
-        Assert.Equal(SessionStatus.Running, session.Status);
 
+        // The stand-in process can exit between CreateSession and here under CI load, so the pre-kill
+        // status may already have advanced past Running - the old strict Assert.Equal(Running) here was
+        // the source of a CI flake (issue #1048 follow-up). This test's point is the post-kill transition.
         await _manager.KillSessionAsync(session.Id);
 
         // After kill, status should be Exiting or Exited
