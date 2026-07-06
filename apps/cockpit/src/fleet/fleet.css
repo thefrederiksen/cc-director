@@ -493,6 +493,24 @@
   overflow-x: auto;
 }
 
+/* Keep the Status column - the key health signal - always visible even when the 9-column table is
+   wider than the pane (a narrow main pane clipped it off the right edge and hid it until the human
+   scrolled, issue #1026). It is pinned to the right of the horizontal scroll area, so the other
+   columns scroll underneath it while Status stays on screen. When the table fits the pane (no
+   overflow) sticky has no visual effect, so this is invisible in the common case. */
+.dtbl th.dcol-status,
+.dtbl td.dcol-status {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--bg);
+  white-space: nowrap;
+}
+/* The pinned Status cell tracks the row-hover background so it never shows a seam on hover. */
+.dtbl-rowlink:hover td.dcol-status {
+  background: var(--surface-2);
+}
+
 .dtbl {
   width: 100%;
   border-collapse: collapse;

@@ -14,13 +14,17 @@ import { authHeaders, GatewayError } from "./client";
 //   failed      - flow:failed
 //   unknown     - could not be derived (GitHub unreachable / no token) - shown explicitly, never as
 //                 a wrong "queued" (the no-fallback rule)
+//   resolving   - CLIENT-ONLY sentinel (never sent by the Gateway): the item's title + status have
+//                 not been fetched yet, so the row shows a distinct "resolving" badge instead of
+//                 masquerading as a genuine "unknown" failure (issue #1026).
 export type WorkItemStatus =
   | "queued"
   | "running"
   | "done"
   | "needs-human"
   | "failed"
-  | "unknown";
+  | "unknown"
+  | "resolving";
 
 // The GitHub-derived view of one work-list item: its display title plus the flow-derived status. For
 // a non-github item only status (queued) is meaningful; title is null and the row shows the bare id.
