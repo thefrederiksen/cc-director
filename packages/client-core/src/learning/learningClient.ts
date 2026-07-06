@@ -7,7 +7,7 @@
 // talks only to the Gateway here - never a Director. Like the Blazor method, this NEVER throws on a
 // handled error: the result carries `error` instead, so the page shows an explicit message rather
 // than failing silently (the no-fallback rule).
-import { authHeaders } from "../api/client";
+import { authHeaders, gatewayErrorMessage } from "../api/client";
 
 /** The Wingman's answer, mirroring the C# WingmanVoiceResult: `spoken` is the speakable answer on
  *  success; `error` is a human-readable message when the ask could not complete (null on success). */
@@ -33,6 +33,8 @@ export async function askDevThrottle(text: string, signal?: AbortSignal): Promis
     }
     return { spoken: body.spoken ?? null, error: body.error ?? null };
   } catch (err) {
-    return { spoken: null, error: err instanceof Error ? err.message : "Ask Wingman failed" };
+    // A network exception (the Gateway is unreachable) must not surface the browser's raw
+    // "Failed to fetch" - collapse it to the shared friendly transport line (issue #1028).
+    return { spoken: null, error: gatewayErrorMessage(err) };
   }
 }

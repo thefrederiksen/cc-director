@@ -4,6 +4,7 @@ import {
   sendEscape,
   sendHistoryPicker,
   sendInterrupt,
+  gatewayErrorMessage,
 } from "@devthrottle/client-core/api/client";
 
 // The driver action bar (issue #972) - the React port of the Blazor Cockpit action bar / desktop
@@ -49,7 +50,7 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
         await verb();
         flash(done);
       } catch (err) {
-        setError(err instanceof Error ? err.message : failed);
+        setError(err instanceof Error ? gatewayErrorMessage(err) : failed);
       } finally {
         setActing(false);
       }

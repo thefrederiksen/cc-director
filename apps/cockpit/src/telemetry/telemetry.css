@@ -27,12 +27,51 @@
 }
 
 .tel-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   background: #3a1b1b;
   color: #f1a0a0;
   border: 1px solid #5a2a2a;
   border-radius: 6px;
   padding: 12px;
   font-size: 13px;
+}
+
+/* Inline "couldn't save" notice: sits INSIDE the card, beneath the toggle, so the control stays on
+   screen while the save error is shown (issue #1028). */
+.tel-saveerror {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #f1a0a0;
+  font-size: 13px;
+}
+
+.tel-retry {
+  height: 28px;
+  padding: 0 14px;
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.tel-retry:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.tel-retry:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .tel-loading {
   color: var(--text-dim);

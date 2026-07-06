@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAbout, type AboutInfo } from "@devthrottle/client-core/about/aboutClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The About page (issue #978, epic #967) - the React port of the Blazor Cockpit About.razor. Read-only
 // diagnostics of what this Gateway is running and what is installed on its box, from GET /gateway/about.
@@ -40,7 +41,7 @@ export function AboutView() {
         setAbout(await getAbout(controller.signal));
       } catch (err) {
         if (controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : "Failed to load About info");
+        setError(gatewayErrorMessage(err));
       }
     })();
     return () => controller.abort();

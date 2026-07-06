@@ -8,6 +8,7 @@ import {
 } from "@devthrottle/client-core/brief/briefClient";
 import { finalParagraph } from "@devthrottle/client-core/brief/briefFallback";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The full-page session Brief for the React desktop Cockpit (issue #973) - the async-enrichment view
 // layered OVER the live terminal: what the user asked (YOU ASKED), what the agent did (CLAUDE DID),
@@ -104,7 +105,7 @@ export function BriefPane({ sessionId, activityState, briefingState, onOpenTermi
       }
     } catch (err) {
       if (ctl.signal.aborted) return;
-      setError(`Brief load failed: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Brief load failed: ${gatewayErrorMessage(err)}`);
     } finally {
       if (!ctl.signal.aborted) setLoading(false);
     }

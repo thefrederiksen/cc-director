@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { getRepos, type RepoInfo, type SessionDto } from "@devthrottle/client-core/api/client";
+import { gatewayErrorMessage, getRepos, type RepoInfo, type SessionDto } from "@devthrottle/client-core/api/client";
 import { dotColor, effectiveColor, inDesktopOrder } from "@devthrottle/client-core/sessions/ordering";
 import {
   getDirectorSettings,
@@ -55,13 +55,13 @@ export function DirectorDetailView() {
           setRepos(await getRepos(directorId, signal));
           setReposError(null);
         } catch (err) {
-          if (signal?.aborted !== true) setReposError(err instanceof Error ? err.message : "repo list failed");
+          if (signal?.aborted !== true) setReposError(gatewayErrorMessage(err));
         }
       }
       tickRef.current = tick + 1;
     } catch (err) {
       if (signal?.aborted === true) return;
-      setLastError(err instanceof Error ? err.message : "Failed to fetch director");
+      setLastError(gatewayErrorMessage(err));
     }
   }, [directorId]);
 
@@ -88,7 +88,7 @@ export function DirectorDetailView() {
   if (notFound) {
     return (
       <div className="dpage">
-        {lastError !== null && <div className="dpage-error">Gateway error: {lastError}</div>}
+        {lastError !== null && <div className="dpage-error">{lastError}</div>}
         <header className="dpage-head"><h1 className="dpage-h1">Director</h1></header>
         <div className="dtbl-empty">
           No Director with id <span className="dmono">{directorId}</span> is registered with this Gateway - it has
@@ -100,9 +100,24 @@ export function DirectorDetailView() {
   }
 
   if (director === null) {
+    // The initial load has not produced a Director yet. Distinguish "still loading" from "the load
+    // failed" (issue #1028): a failed initial fetch used to fall through to a permanent "loading..."
+    // sub-label under an error banner. When lastError is set and we have no Director, show an explicit
+    // error state (the page keeps polling, so it recovers on its own once the Gateway answers).
+    if (lastError !== null) {
+      return (
+        <div className="dpage">
+          <header className="dpage-head"><h1 className="dpage-h1">Director</h1><span className="dpage-sub">unavailable</span></header>
+          <div className="dpage-error">{lastError}</div>
+          <div className="dtbl-empty">
+            Could not load this Director from the Gateway. It will keep retrying automatically.{" "}
+            <Link className="ddet-link" to="/directors">Back to all directors</Link>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="dpage">
-        {lastError !== null && <div className="dpage-error">Gateway error: {lastError}</div>}
         <header className="dpage-head"><h1 className="dpage-h1">Director</h1><span className="dpage-sub">loading...</span></header>
       </div>
     );
@@ -113,7 +128,7 @@ export function DirectorDetailView() {
 
   return (
     <div className="dpage">
-      {lastError !== null && <div className="dpage-error">Gateway error: {lastError}</div>}
+      {lastError !== null && <div className="dpage-error">{lastError}</div>}
 
       <header className="dpage-head ddet-head">
         <h1 className="dpage-h1">{d.machineName}</h1>
@@ -275,7 +290,7 @@ function DirectorSettings({ directorId, reachable }: { directorId: string; reach
       setLoaded(true);
       setStatus("Loaded");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load settings");
+      setError(gatewayErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -297,7 +312,7 @@ function DirectorSettings({ directorId, reachable }: { directorId: string; reach
       await putDirectorSettings(directorId, normalized);
       setStatus("Saved - the Director re-applied it live.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save settings");
+      setError(gatewayErrorMessage(err));
     } finally {
       setBusy(false);
     }

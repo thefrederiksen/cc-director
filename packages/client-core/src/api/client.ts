@@ -191,6 +191,39 @@ export function creditsErrorFrom(body: unknown): CreditsError {
   return new CreditsError(info);
 }
 
+// The single user-facing line for "the Gateway is unreachable", shared by every page that reads the
+// Gateway on a poll (issue #1028). It implies the automatic retry those pages already perform, so the
+// copy is truthful wherever it appears.
+export const GATEWAY_UNREACHABLE_MESSAGE = "Can't reach the Gateway - retrying.";
+
+// True when an error means the request never reached a healthy backend: the browser's bare fetch
+// rejection when the Gateway is down (a TypeError, not a GatewayError), or a Gateway/proxy status
+// that signals it could not reach the backend (Bad Gateway, Service Unavailable, Gateway Timeout, or
+// a synthetic 0). These are the "unreachable" cases, distinct from a reachable Gateway that answered
+// with an application error (400/404/409/500).
+function isGatewayUnreachable(err: unknown): boolean {
+  if (err instanceof GatewayError) {
+    return err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504;
+  }
+  return err instanceof Error;
+}
+
+// Map any error thrown by a Gateway read/write into ONE user-facing line, never leaking the internal
+// "METHOD /path failed: NNN" diagnostic the client throws on a non-2xx, nor the browser's bare
+// "Failed to fetch" when the backend is down (issue #1028). An unreachable Gateway collapses to the
+// shared friendly, retry-implying line; a GatewayError that already carries human copy (a 401 re-auth
+// prompt, a 402 credits notice) is returned verbatim; any other reachable-but-erroring status is
+// reported by its number only, without the raw method and path.
+export function gatewayErrorMessage(err: unknown): string {
+  if (isGatewayUnreachable(err)) return GATEWAY_UNREACHABLE_MESSAGE;
+  if (err instanceof CreditsError) return err.message;
+  if (err instanceof GatewayError) {
+    if (err.status === 401) return err.message;
+    return `The Gateway rejected the request (error ${err.status}).`;
+  }
+  return GATEWAY_UNREACHABLE_MESSAGE;
+}
+
 // GET /sessions - the fleet roster aggregator. Returns the same SessionDto shape the Cockpit
 // Mobile page consumes. Throws GatewayError on a non-2xx so the caller surfaces it (no silent
 // fallback). The request is same-origin against the Gateway front door.

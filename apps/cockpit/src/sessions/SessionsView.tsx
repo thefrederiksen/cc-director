@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useMatch, useNavigate } from "react-router-dom";
-import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
+import { gatewayErrorMessage, listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { SessionRoster, type RosterView } from "./SessionRoster";
 import { NewSessionDialog } from "./NewSessionDialog";
 
@@ -51,8 +51,10 @@ export function SessionsView() {
     } catch (err) {
       if (signal?.aborted) return;
       // Keep the last-known roster on screen; only raise the stale banner (the roster component
-      // decides how to show it based on whether it already has data).
-      setError(err instanceof Error ? err.message : "Failed to load sessions");
+      // decides how to show it based on whether it already has data). Map to the friendly transport
+      // message so a cold start with the backend down shows "Can't reach the Gateway - retrying."
+      // instead of the browser's raw "Failed to fetch" (issue #1028).
+      setError(gatewayErrorMessage(err));
     }
   }, []);
 

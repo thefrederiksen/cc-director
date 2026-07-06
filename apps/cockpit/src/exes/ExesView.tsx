@@ -9,6 +9,7 @@ import {
   type ExesList,
   type ExesSession,
 } from "@devthrottle/client-core/exes/exesClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The Exes management page (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Exes.razor(.css) (#183). It lists the Directors running on THIS computer + their sessions and the
@@ -35,7 +36,7 @@ export function ExesView() {
       setError(null);
     } catch (err) {
       if (signal?.aborted === true) return;
-      setError(`Failed to load: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Failed to load: ${gatewayErrorMessage(err)}`);
     }
   }, []);
 
@@ -65,7 +66,7 @@ export function ExesView() {
     try {
       await killDirector(dir.directorId);
     } catch (err) {
-      window.alert(`Kill failed: ${err instanceof Error ? err.message : String(err)}`);
+      window.alert(`Kill failed: ${gatewayErrorMessage(err)}`);
     }
     await new Promise((r) => window.setTimeout(r, 600));
     await refresh();
@@ -79,7 +80,7 @@ export function ExesView() {
     try {
       await deleteSlot(n);
     } catch (err) {
-      window.alert(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+      window.alert(`Delete failed: ${gatewayErrorMessage(err)}`);
     }
     await refresh();
   };
@@ -96,7 +97,7 @@ export function ExesView() {
       const result = await buildStartSlot(n);
       window.alert(`Slot ${n} built and started (PID ${result.pid}).`);
     } catch (err) {
-      window.alert(`Build & start failed:\n\n${err instanceof Error ? err.message : String(err)}`);
+      window.alert(`Build & start failed:\n\n${gatewayErrorMessage(err)}`);
     } finally {
       setBusy(false);
       busyRef.current = false;

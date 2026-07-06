@@ -6,6 +6,7 @@ import {
   type RecapResponse,
   type TurnSummary,
 } from "@devthrottle/client-core/awareness/awarenessClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The awareness panes for the React desktop Cockpit (issue #974): the "what's happening" RECAP and the
 // TURN RAIL - the arc of the session at a glance. A port of the Blazor Cockpit's "What's happening"
@@ -63,7 +64,7 @@ export function AwarenessPane({ sessionId }: AwarenessPaneProps) {
     getRecap(sessionId, controller.signal)
       .then((r) => setRecap(r))
       .catch((err) => {
-        if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "Failed to read recap");
+        if (!controller.signal.aborted) setError(gatewayErrorMessage(err));
       });
     return () => controller.abort();
   }, [sessionId]);
@@ -82,7 +83,7 @@ export function AwarenessPane({ sessionId }: AwarenessPaneProps) {
         if (!cancelled) setTurns(ts.summaries);
       } catch (err) {
         if (cancelled || controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : "Failed to load turn summaries");
+        setError(gatewayErrorMessage(err));
       }
     };
 
@@ -120,7 +121,7 @@ export function AwarenessPane({ sessionId }: AwarenessPaneProps) {
       const fresh = await generateRecap(sessionId, ctl.signal);
       if (!ctl.signal.aborted) setRecap(fresh);
     } catch (err) {
-      if (!ctl.signal.aborted) setError(`recap failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (!ctl.signal.aborted) setError(`recap failed: ${gatewayErrorMessage(err)}`);
     } finally {
       if (!ctl.signal.aborted) setGenerating(false);
     }

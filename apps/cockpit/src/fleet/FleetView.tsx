@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { SessionDto } from "@devthrottle/client-core/api/client";
+import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import { dotColor, effectiveColor } from "@devthrottle/client-core/sessions/ordering";
 import {
   dismissInterruptedJournal,
@@ -72,7 +72,7 @@ export function FleetView() {
       setLastError(null);
     } catch (err) {
       if (signal?.aborted === true) return;
-      setLastError(err instanceof Error ? err.message : "Failed to fetch sessions");
+      setLastError(gatewayErrorMessage(err));
     }
   }, []);
 
@@ -140,7 +140,7 @@ export function FleetView() {
         prev === null ? prev : prev.map((x) => (x.sessionId === sid ? { ...x, name: dto.name } : x)),
       );
     } catch (err) {
-      setLastError(err instanceof Error ? `Rename failed: ${err.message}` : "Rename failed");
+      setLastError(`Rename failed. ${gatewayErrorMessage(err)}`);
     }
   };
 
@@ -155,7 +155,7 @@ export function FleetView() {
       if (newSid.length === 0) throw new Error("restore returned no target session");
       setRestored((prev) => ({ ...prev, [s.sessionId]: newSid }));
     } catch (err) {
-      setLastError(err instanceof Error ? `Restore failed: ${err.message}` : "Restore failed");
+      setLastError(`Restore failed. ${gatewayErrorMessage(err)}`);
     } finally {
       setRestoring((prev) => {
         const next = new Set(prev);
@@ -174,7 +174,7 @@ export function FleetView() {
         prev.filter((x) => !(x.sessionId === s.sessionId && x.deadDirectorId === g.deadDirectorId && x.deadPid === g.deadPid)),
       );
     } catch (err) {
-      setLastError(err instanceof Error ? `Dismiss failed: ${err.message}` : "Dismiss failed");
+      setLastError(`Dismiss failed. ${gatewayErrorMessage(err)}`);
     } finally {
       setDismissing((prev) => {
         const next = new Set(prev);
@@ -191,7 +191,7 @@ export function FleetView() {
       await dismissInterruptedJournal(g.deadDirectorId, g.deadPid, g.reportedByDirectorId);
       setInterrupted((prev) => prev.filter((s) => !(s.deadDirectorId === g.deadDirectorId && s.deadPid === g.deadPid)));
     } catch (err) {
-      setLastError(err instanceof Error ? `Dismiss failed: ${err.message}` : "Dismiss failed");
+      setLastError(`Dismiss failed. ${gatewayErrorMessage(err)}`);
     } finally {
       setDismissing((prev) => {
         const next = new Set(prev);
@@ -215,7 +215,7 @@ export function FleetView() {
         </span>
       </header>
 
-      {lastError !== null && <div className="fleet-error">Failed to fetch sessions: {lastError}</div>}
+      {lastError !== null && <div className="fleet-error">{lastError}</div>}
 
       {intGroups.length > 0 && (
         <section className="fint-wrap">
