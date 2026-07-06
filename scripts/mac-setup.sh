@@ -7,7 +7,7 @@
 #   • "CC Director 1".."CC Director 4" — dev test slots, in /Applications
 #     (find them in Launchpad or Spotlight). Build a slot when you want to test.
 #
-# Re-running is safe (idempotent). Requires the .NET 10 SDK (see local_builds/mac/README.md).
+# Re-running is safe (idempotent). Requires the .NET 10 SDK (see scripts/local-build/mac/README.md).
 #
 set -euo pipefail
 

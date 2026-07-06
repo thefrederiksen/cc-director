@@ -32,6 +32,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAC_DIR="$REPO_ROOT/local_builds/mac"
+MAC_HELPERS="$REPO_ROOT/scripts/local-build/mac"
 APPS_DIR="${APPS_DIR:-/Applications}"
 export APPS_DIR
 
@@ -41,7 +42,7 @@ build_one() {
     if [[ "$t" == "main" ]]; then slot="-main"; else slot="$t"; fi
     echo "==> Building $t ..."
     "$REPO_ROOT/scripts/local-build-mac.sh" --slot "$slot"
-    "$MAC_DIR/make-app-bundle.sh" --target "$t"
+    "$MAC_HELPERS/make-app-bundle.sh" --target "$t"
 }
 
 # Pin the main app to the Dock. Always unpins any existing 'CC Director' tile
@@ -86,7 +87,7 @@ case "$TARGET" in
         for n in 1 2 3 4; do build_one "$n"; done
         pin_dock ;;
     apps)
-        for t in main 1 2 3 4; do "$MAC_DIR/make-app-bundle.sh" --target "$t"; done ;;
+        for t in main 1 2 3 4; do "$MAC_HELPERS/make-app-bundle.sh" --target "$t"; done ;;
     *)
         echo "ERROR: invalid target '$TARGET' (use: main|1|2|3|4|all|apps)" >&2
         exit 1 ;;
