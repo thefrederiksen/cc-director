@@ -69,6 +69,50 @@ internal sealed class Es256TestKey : IDisposable
         return $"{signingInput}.{Base64Url(signature)}";
     }
 
+    /// <summary>
+    /// Creates a valid ES256 token carrying the authorization-mode claims: <c>aud</c> (audience),
+    /// <c>iss</c> (issuer), <c>sub</c> (subject/account id), <c>exp</c> (expiry) and, when supplied,
+    /// <c>nbf</c> (not-before). A null <paramref name="audience"/> (and null
+    /// <paramref name="audienceValues"/>) or null <paramref name="issuer"/> omits that claim entirely
+    /// so the "claim absent" path can be exercised; <paramref name="audienceValues"/> writes the
+    /// audience as a JSON array instead of a single string. Used to prove
+    /// <c>JwtAccessTokenValidator.ValidateForAuthorization</c> (issue #1074).
+    /// </summary>
+    public string CreateAuthorizationToken(
+        DateTime expiresAtUtc,
+        string? audience,
+        string? issuer,
+        string subject = "supabase-account-subject-id",
+        DateTime? notBeforeUtc = null,
+        string[]? audienceValues = null)
+    {
+        var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object>
+        {
+            ["alg"] = "ES256",
+            ["typ"] = "JWT",
+            ["kid"] = KeyId,
+        }));
+
+        var payloadClaims = new Dictionary<string, object>
+        {
+            ["sub"] = subject,
+            ["exp"] = new DateTimeOffset(expiresAtUtc, TimeSpan.Zero).ToUnixTimeSeconds(),
+        };
+        if (audienceValues is not null)
+            payloadClaims["aud"] = audienceValues;
+        else if (audience is not null)
+            payloadClaims["aud"] = audience;
+        if (issuer is not null)
+            payloadClaims["iss"] = issuer;
+        if (notBeforeUtc is not null)
+            payloadClaims["nbf"] = new DateTimeOffset(notBeforeUtc.Value, TimeSpan.Zero).ToUnixTimeSeconds();
+
+        var payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(payloadClaims));
+        var signingInput = $"{header}.{payload}";
+        var signature = _key.SignData(Encoding.ASCII.GetBytes(signingInput), HashAlgorithmName.SHA256);
+        return $"{signingInput}.{Base64Url(signature)}";
+    }
+
     public void Dispose() => _key.Dispose();
 
     private static string Base64Url(byte[] bytes) =>

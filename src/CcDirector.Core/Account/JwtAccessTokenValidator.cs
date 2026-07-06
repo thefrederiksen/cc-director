@@ -17,6 +17,20 @@ namespace CcDirector.Core.Account;
 public sealed record AccessTokenValidation(bool IsValid, bool IsExpiredButWellFormed, DateTime? ExpiresAtUtc);
 
 /// <summary>
+/// The outcome of validating a cached access token for AUTHORIZATION use - the stricter,
+/// inbound-credential check (epic #1069). A token is <see cref="IsValid"/> only when its signature
+/// verifies AND its audience, issuer, not-before, and expiry claims all pass AND it carries a
+/// non-empty subject. On success <see cref="Subject"/> carries the token's stable account/user id
+/// (the <c>sub</c> claim) so a later membership check can confirm the token belongs to this
+/// Gateway's account. On failure <see cref="InvalidReason"/> records why, for diagnostics.
+/// </summary>
+/// <param name="IsValid">True only when signature, audience, issuer, not-before, expiry, and subject all pass.</param>
+/// <param name="Subject">The token's <c>sub</c> (account/user id) claim on the valid case; null otherwise.</param>
+/// <param name="ExpiresAtUtc">The token's expiry instant, when present.</param>
+/// <param name="InvalidReason">A short reason for a not-valid result; null on the valid case.</param>
+public sealed record AuthorizationTokenValidation(bool IsValid, string? Subject, DateTime? ExpiresAtUtc, string? InvalidReason);
+
+/// <summary>
 /// Validates a cached access token entirely locally - signature and expiry only - with no network
 /// call. DevThrottle access tokens are Supabase JSON Web Tokens, and two signing schemes are
 /// supported: ES256 (the current Supabase signing keys - an elliptic-curve P-256 signature verified
@@ -31,9 +45,14 @@ public sealed class JwtAccessTokenValidator
     private readonly byte[] _signingSecret;
     private readonly IReadOnlyList<VerificationKey> _publicKeys;
     private readonly TimeProvider _timeProvider;
+    private readonly string? _expectedAudience;
+    private readonly string? _expectedIssuer;
 
     /// <summary>One elliptic-curve P-256 public verification key from the configured key set.</summary>
     private sealed record VerificationKey(string? KeyId, ECParameters PublicKey);
+
+    /// <summary>A token whose structure and signature verified, carrying its decoded payload JSON.</summary>
+    private sealed record VerifiedToken(string? Algorithm, string PayloadJson);
 
     /// <summary>
     /// Creates the validator with the verification material for both supported signing schemes.
@@ -46,7 +65,22 @@ public sealed class JwtAccessTokenValidator
     /// or empty means no ES256 keys are configured, so every ES256 token is reported not valid. A
     /// malformed document throws - a broken key configuration must fail loud, not validate nothing.
     /// </param>
-    public JwtAccessTokenValidator(string signingSecret, TimeProvider? timeProvider = null, string? publicKeySetJson = null)
+    /// <param name="expectedAudience">
+    /// The audience (<c>aud</c>) value a token must carry to pass authorization-mode validation
+    /// (see <see cref="ValidateForAuthorization"/>). Supplied as configuration, not hard-coded at the
+    /// call site. Null when this validator is only used for the outbound-call check (<see cref="Validate"/>);
+    /// authorization-mode validation then fails loud rather than silently skipping the audience check.
+    /// </param>
+    /// <param name="expectedIssuer">
+    /// The issuer (<c>iss</c>) value a token must carry to pass authorization-mode validation. Supplied
+    /// as configuration, not hard-coded at the call site. Null when only <see cref="Validate"/> is used.
+    /// </param>
+    public JwtAccessTokenValidator(
+        string signingSecret,
+        TimeProvider? timeProvider = null,
+        string? publicKeySetJson = null,
+        string? expectedAudience = null,
+        string? expectedIssuer = null)
     {
         if (string.IsNullOrEmpty(signingSecret))
             throw new ArgumentException("Signing secret is required", nameof(signingSecret));
@@ -54,6 +88,8 @@ public sealed class JwtAccessTokenValidator
         _signingSecret = Encoding.UTF8.GetBytes(signingSecret);
         _publicKeys = ParsePublicKeySet(publicKeySetJson);
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _expectedAudience = expectedAudience;
+        _expectedIssuer = expectedIssuer;
     }
 
     /// <summary>
@@ -64,18 +100,95 @@ public sealed class JwtAccessTokenValidator
     /// </summary>
     public AccessTokenValidation Validate(string accessToken)
     {
+        var verified = VerifySignature(accessToken);
+        if (verified is null)
+            return new AccessTokenValidation(IsValid: false, IsExpiredButWellFormed: false, ExpiresAtUtc: null);
+
+        using var doc = JsonDocument.Parse(verified.PayloadJson);
+        var expiresAtUtc = ReadUnixTimeClaim(doc.RootElement, "exp");
+        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        var expired = expiresAtUtc is not null && expiresAtUtc.Value <= nowUtc;
+
+        FileLog.Write($"[JwtAccessTokenValidator] Validate: signature OK ({verified.Algorithm}), expiresAtUtc={expiresAtUtc:o}, expired={expired}");
+        return new AccessTokenValidation(IsValid: !expired, IsExpiredButWellFormed: expired, ExpiresAtUtc: expiresAtUtc);
+    }
+
+    /// <summary>
+    /// Validates the access token for AUTHORIZATION use (epic #1069) entirely locally - no network
+    /// call. This is the stricter, inbound-credential check: on top of the signature and <c>exp</c>
+    /// expiry that <see cref="Validate"/> checks, it also honours the <c>nbf</c> not-before instant
+    /// and requires the token's <c>aud</c> (audience) and <c>iss</c> (issuer) claims to match the
+    /// expected values supplied at construction, so a correctly-signed token minted for a different
+    /// audience or issuer is rejected. On success it returns the token's <c>sub</c> (account/user id)
+    /// so a later membership check can confirm the token belongs to this Gateway's account.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The expected audience or issuer was not supplied at construction. Authorization-mode validation
+    /// fails loud on a missing expected value rather than silently skipping the check.
+    /// </exception>
+    public AuthorizationTokenValidation ValidateForAuthorization(string accessToken)
+    {
+        if (string.IsNullOrWhiteSpace(_expectedAudience) || string.IsNullOrWhiteSpace(_expectedIssuer))
+            throw new InvalidOperationException(
+                "ValidateForAuthorization requires the expected audience and issuer to be configured at construction");
+
+        AuthorizationTokenValidation Reject(string reason)
+        {
+            FileLog.Write($"[JwtAccessTokenValidator] ValidateForAuthorization: not valid - {reason}");
+            return new AuthorizationTokenValidation(IsValid: false, Subject: null, ExpiresAtUtc: null, InvalidReason: reason);
+        }
+
+        var verified = VerifySignature(accessToken);
+        if (verified is null)
+            return Reject("signature did not verify or the token is malformed");
+
+        using var doc = JsonDocument.Parse(verified.PayloadJson);
+        var root = doc.RootElement;
+        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+
+        var expiresAtUtc = ReadUnixTimeClaim(root, "exp");
+        if (expiresAtUtc is not null && expiresAtUtc.Value <= nowUtc)
+            return Reject("token has expired (exp is in the past)");
+
+        var notBeforeUtc = ReadUnixTimeClaim(root, "nbf");
+        if (notBeforeUtc is not null && notBeforeUtc.Value > nowUtc)
+            return Reject("token is not yet valid (nbf is in the future)");
+
+        if (!AudienceMatches(root, _expectedAudience))
+            return Reject("audience (aud) claim does not match the expected audience");
+
+        var issuer = ReadStringClaim(root, "iss");
+        if (!string.Equals(issuer, _expectedIssuer, StringComparison.Ordinal))
+            return Reject("issuer (iss) claim does not match the expected issuer");
+
+        var subject = ReadStringClaim(root, "sub");
+        if (string.IsNullOrEmpty(subject))
+            return Reject("subject (sub) claim is missing");
+
+        FileLog.Write($"[JwtAccessTokenValidator] ValidateForAuthorization: token accepted ({verified.Algorithm}), expiresAtUtc={expiresAtUtc:o}");
+        return new AuthorizationTokenValidation(IsValid: true, Subject: subject, ExpiresAtUtc: expiresAtUtc, InvalidReason: null);
+    }
+
+    /// <summary>
+    /// Verifies the token's structure and signature and returns its decoded payload JSON on success,
+    /// or null when the token is not a three-part JSON Web Token, its header is malformed, its
+    /// algorithm is unsupported, or its signature does not verify. Both <see cref="Validate"/> and
+    /// <see cref="ValidateForAuthorization"/> go through this single, fully-local signature path.
+    /// </summary>
+    private VerifiedToken? VerifySignature(string accessToken)
+    {
         var parts = accessToken?.Split('.') ?? Array.Empty<string>();
         if (parts.Length != 3)
         {
-            FileLog.Write("[JwtAccessTokenValidator] Validate: not a three-part JSON Web Token");
-            return new AccessTokenValidation(IsValid: false, IsExpiredButWellFormed: false, ExpiresAtUtc: null);
+            FileLog.Write("[JwtAccessTokenValidator] VerifySignature: not a three-part JSON Web Token");
+            return null;
         }
 
         var header = ReadHeader(parts[0]);
         if (header is null)
         {
-            FileLog.Write("[JwtAccessTokenValidator] Validate: token header is malformed");
-            return new AccessTokenValidation(IsValid: false, IsExpiredButWellFormed: false, ExpiresAtUtc: null);
+            FileLog.Write("[JwtAccessTokenValidator] VerifySignature: token header is malformed");
+            return null;
         }
 
         var signatureVerifies = header.Value.Algorithm switch
@@ -86,14 +199,16 @@ public sealed class JwtAccessTokenValidator
         };
 
         if (!signatureVerifies)
-            return new AccessTokenValidation(IsValid: false, IsExpiredButWellFormed: false, ExpiresAtUtc: null);
+            return null;
 
-        var expiresAtUtc = ReadExpiry(parts[1]);
-        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
-        var expired = expiresAtUtc is not null && expiresAtUtc.Value <= nowUtc;
+        var payloadJson = DecodeSegment(parts[1]);
+        if (payloadJson is null)
+        {
+            FileLog.Write("[JwtAccessTokenValidator] VerifySignature: payload segment could not be decoded");
+            return null;
+        }
 
-        FileLog.Write($"[JwtAccessTokenValidator] Validate: signature OK ({header.Value.Algorithm}), expiresAtUtc={expiresAtUtc:o}, expired={expired}");
-        return new AccessTokenValidation(IsValid: !expired, IsExpiredButWellFormed: expired, ExpiresAtUtc: expiresAtUtc);
+        return new VerifiedToken(header.Value.Algorithm, payloadJson);
     }
 
     /// <summary>
@@ -227,17 +342,51 @@ public sealed class JwtAccessTokenValidator
         return keys;
     }
 
-    private static DateTime? ReadExpiry(string encodedPayload)
+    /// <summary>
+    /// Reads a Unix-time (seconds-since-epoch) claim such as <c>exp</c> or <c>nbf</c> from the payload,
+    /// or null when it is absent or not a number.
+    /// </summary>
+    private static DateTime? ReadUnixTimeClaim(JsonElement payload, string claimName)
     {
-        var payloadJson = DecodeSegment(encodedPayload);
-        if (payloadJson is null)
+        if (!payload.TryGetProperty(claimName, out var value) || value.ValueKind != JsonValueKind.Number)
             return null;
 
-        using var doc = JsonDocument.Parse(payloadJson);
-        if (!doc.RootElement.TryGetProperty("exp", out var exp) || exp.ValueKind != JsonValueKind.Number)
-            return null;
+        return DateTimeOffset.FromUnixTimeSeconds(value.GetInt64()).UtcDateTime;
+    }
 
-        return DateTimeOffset.FromUnixTimeSeconds(exp.GetInt64()).UtcDateTime;
+    /// <summary>Reads a string claim from the payload, or null when it is absent or not a string.</summary>
+    private static string? ReadStringClaim(JsonElement payload, string claimName)
+    {
+        if (payload.TryGetProperty(claimName, out var value) && value.ValueKind == JsonValueKind.String)
+            return value.GetString();
+
+        return null;
+    }
+
+    /// <summary>
+    /// Returns true when the payload's <c>aud</c> claim contains <paramref name="expectedAudience"/>.
+    /// Per RFC 7519 the audience is either a single string or an array of strings; both shapes are
+    /// accepted, matching case-sensitively (an ordinal comparison, as claim values are exact tokens).
+    /// </summary>
+    private static bool AudienceMatches(JsonElement payload, string expectedAudience)
+    {
+        if (!payload.TryGetProperty("aud", out var aud))
+            return false;
+
+        if (aud.ValueKind == JsonValueKind.String)
+            return string.Equals(aud.GetString(), expectedAudience, StringComparison.Ordinal);
+
+        if (aud.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in aud.EnumerateArray())
+            {
+                if (entry.ValueKind == JsonValueKind.String
+                    && string.Equals(entry.GetString(), expectedAudience, StringComparison.Ordinal))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private static string? DecodeSegment(string segment)
