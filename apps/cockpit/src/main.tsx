@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
-import { ensureGatewayCookie } from "@devthrottle/client-core/api/client";
+import { ensureGatewayCookie, configureUnauthorizedRedirect, gatewayLoginRedirect } from "@devthrottle/client-core/api/client";
 import { AppShell } from "./AppShell";
 import { PlaceholderPane } from "./panes/PlaceholderPane";
 import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
@@ -41,6 +41,12 @@ import "./feedback/feedback.css";
 // already hold. Wiring it now keeps the desktop shell on the shared client-core contract from day one,
 // so the terminal port (issue #971) inherits an already-authenticated origin.
 ensureGatewayCookie();
+
+// Re-gate a mid-session 401 (token rotated/revoked, Gateway auth toggled) through the DESKTOP shell's
+// own sign-in entry - the Gateway /login cookie flow, carrying the current route in next= - instead of
+// the mobile /m/signin route baked into shared client-core (issue #1024). Without this the desktop
+// roster poll's 401 branch would eject the user from the desktop shell into the phone enrollment flow.
+configureUnauthorizedRedirect(gatewayLoginRedirect);
 
 // The app is the Gateway's canonical Cockpit, served at the site root "/" (issue #979 cutover). A
 // hard navigation to a deep link (e.g. /fleet) is served the index.html shell by the Gateway and the

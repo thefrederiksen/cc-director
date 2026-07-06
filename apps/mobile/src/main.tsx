@@ -10,7 +10,7 @@ import { AiSettings } from "./pages/AiSettings";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
-import { ensureGatewayCookie } from "@devthrottle/client-core/api/client";
+import { ensureGatewayCookie, configureUnauthorizedRedirect, mobileSignInRedirect } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "./push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
@@ -43,6 +43,12 @@ function GatedLayout() {
 // terminal WebSocket (which cannot carry an Authorization header) authenticates same-origin to the
 // Gateway. The cookie exposes nothing the page does not already hold (window.__GW_TOKEN__).
 ensureGatewayCookie();
+
+// Re-gate a mid-session 401 (a revoked device key) through THIS shell's own /m/signin enrollment
+// screen. This is the mobile default in shared client-core, but each shell installs its own redirect
+// so the desktop Cockpit can install the Gateway /login flow instead (issue #1024); installing it here
+// explicitly keeps the mobile shell self-documenting about its own re-gate entry.
+configureUnauthorizedRedirect(mobileSignInRedirect);
 
 // If the user already granted notification permission on a previous visit, silently refresh the push
 // subscription so the Gateway's record stays current (subscriptions can rotate). Never prompts here -
