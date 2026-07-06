@@ -21,13 +21,13 @@ since node.exe Path always points to the nodejs install dir, not the script bein
 
 ### Post-build service worker cleanup
 
-After deploying, the build clears Chrome/Brave service worker caches for all connections.
+After deploying, the build clears Chrome/Edge service worker caches for all connections.
 This is non-fatal (`-ErrorAction SilentlyContinue`) -- if a browser is still open, the
 cache clear is skipped for that connection and will take effect on the next close/open cycle.
 
-## Chrome/Brave Service Worker Caching
+## Chrome/Edge Service Worker Caching
 
-Chrome and Brave cache extension service workers in `Default/Service Worker/ScriptCache/`
+Chrome and Edge cache extension service workers in `Default/Service Worker/ScriptCache/`
 inside each connection's user-data-dir (`%LOCALAPPDATA%\cc-director\connections\<name>\`).
 
 **Key gotcha:** A browser restart does NOT clear this cache. Updated `background.js` code

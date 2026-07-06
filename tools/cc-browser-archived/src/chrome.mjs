@@ -90,14 +90,11 @@ const WINDOWS_CHROME_PATHS = [
   process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   process.env['ProgramFiles'] && join(process.env['ProgramFiles'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  // Brave
-  process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
 ].filter(Boolean);
 
 const MACOS_CHROME_PATHS = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-  '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
 ];
 
 const LINUX_CHROME_PATHS = [
@@ -106,7 +103,6 @@ const LINUX_CHROME_PATHS = [
   '/usr/bin/chromium',
   '/usr/bin/chromium-browser',
   '/usr/bin/microsoft-edge',
-  '/usr/bin/brave-browser',
 ];
 
 export function findChromeExecutable(preferredBrowser = null) {
@@ -127,7 +123,6 @@ export function findChromeExecutable(preferredBrowser = null) {
     const browserPatterns = {
       'chrome': ['chrome.exe', 'google chrome', 'google-chrome'],
       'edge': ['msedge.exe', 'microsoft edge', 'microsoft-edge'],
-      'brave': ['brave.exe', 'brave browser', 'brave-browser'],
     };
 
     const patterns = browserPatterns[pref];
@@ -144,7 +139,7 @@ export function findChromeExecutable(preferredBrowser = null) {
         }
       }
       // Preferred browser not found
-      throw new Error(`Browser "${preferredBrowser}" not found. Available: chrome, edge, brave`);
+      throw new Error(`Browser "${preferredBrowser}" not found. Available: chrome, edge`);
     }
   }
 
@@ -153,9 +148,7 @@ export function findChromeExecutable(preferredBrowser = null) {
     if (path && existsSync(path)) {
       const kind = path.toLowerCase().includes('edge')
         ? 'edge'
-        : path.toLowerCase().includes('brave')
-          ? 'brave'
-          : 'chrome';
+        : 'chrome';
       return { path, kind };
     }
   }
@@ -180,9 +173,7 @@ export function listAvailableBrowsers() {
     if (path && existsSync(path)) {
       const kind = path.toLowerCase().includes('edge')
         ? 'edge'
-        : path.toLowerCase().includes('brave')
-          ? 'brave'
-          : 'chrome';
+        : 'chrome';
       available.push({ kind, path });
     }
   }
@@ -208,8 +199,6 @@ export function getSystemChromeUserDataDir(browserKind = 'chrome') {
 
     if (browserKind === 'edge') {
       return join(localAppData, 'Microsoft', 'Edge', 'User Data');
-    } else if (browserKind === 'brave') {
-      return join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data');
     } else {
       return join(localAppData, 'Google', 'Chrome', 'User Data');
     }
@@ -217,8 +206,6 @@ export function getSystemChromeUserDataDir(browserKind = 'chrome') {
     const home = homedir();
     if (browserKind === 'edge') {
       return join(home, 'Library', 'Application Support', 'Microsoft Edge');
-    } else if (browserKind === 'brave') {
-      return join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser');
     } else {
       return join(home, 'Library', 'Application Support', 'Google', 'Chrome');
     }
@@ -226,8 +213,6 @@ export function getSystemChromeUserDataDir(browserKind = 'chrome') {
     const home = homedir();
     if (browserKind === 'edge') {
       return join(home, '.config', 'microsoft-edge');
-    } else if (browserKind === 'brave') {
-      return join(home, '.config', 'BraveSoftware', 'Brave-Browser');
     } else {
       return join(home, '.config', 'google-chrome');
     }
@@ -350,7 +335,7 @@ export async function launchChrome(opts = {}) {
     const detected = findChromeExecutable(browser);
     if (!detected) {
       throw new Error(
-        'Chrome/Edge/Brave not found. Install Chrome or specify --exe path.'
+        'Chrome/Edge not found. Install Chrome or specify --exe path.'
       );
     }
     chromePath = detected.path;

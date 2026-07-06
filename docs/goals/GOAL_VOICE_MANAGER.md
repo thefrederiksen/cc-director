@@ -17,7 +17,7 @@ The Manager is **the translator between me and the private repo.** Nothing more,
 
 ## The acceptance test (this is what "done" looks like)
 
-It's an hour from now. I'm in the car. My phone is on the passenger seat. I open one URL in mobile Brave / Safari. I see a chat interface. I tap one big button. The screen turns into "I'm recording you." I say:
+It's an hour from now. I'm in the car. My phone is on the passenger seat. I open one URL in mobile Chrome / Safari. I see a chat interface. I tap one big button. The screen turns into "I'm recording you." I say:
 
 > "Look at the Finance folder and tell me what's the latest receipt"
 

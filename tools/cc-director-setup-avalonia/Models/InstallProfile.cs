@@ -32,7 +32,7 @@ public static class ToolGroupRegistry
             ["cc-image", "cc-photos", "cc-video", "cc-voice", "cc-transcribe", "cc-whisper"],
             DefaultEnabled: true, IsRequired: false),
 
-        new("Browser", "Browser automation with Brave and Playwright",
+        new("Browser", "Browser automation with Playwright",
             ["cc-browser", "cc-playwright"],
             DefaultEnabled: true, IsRequired: false),
 

@@ -6,7 +6,7 @@ Executive summary:
 - The ASCII-only output rule is not currently met. Rich tables/panels render Unicode box drawing, and several JSON paths deliberately preserve non-ASCII user/API content.
 - Machine-readable output is inconsistent: some commands use `--json`, some use `--format json`, some have no machine mode, and several JSON modes go through Rich `console.print`.
 - `cc-vault` and `cc-comm-queue` both have configuration/path behaviors that can tell users one thing while writing or reading another location.
-- `cc-playwright` is useful but too brittle for a shipped browser tool: it assumes fixed Brave paths and gives uneven structured errors.
+- `cc-playwright` is useful but too brittle for a shipped browser tool: it assumes fixed Chrome paths and gives uneven structured errors.
 - `cc-word` is significantly more lossy than the PDF/HTML converters; common Markdown constructs are dropped when producing DOCX.
 - The improvements below are concrete enough to file as GitHub issues and are ordered by product risk.
 
@@ -80,11 +80,11 @@ Priority: Medium
 
 Tools affected: `cc-playwright`
 
-What is wrong: `_find_brave()` only checks two fixed Windows Brave install paths. The tool has no environment override, no `PATH` lookup, no Chrome/Edge fallback, and no macOS Brave/Chrome paths despite macOS being a secondary target. Several state-file errors are also swallowed and treated as empty state.
+What is wrong: `_find_chrome()` only checks two fixed Windows Chrome install paths. The tool has no environment override, no `PATH` lookup, no Edge fallback, and no macOS Chrome/Edge paths despite macOS being a secondary target. Several state-file errors are also swallowed and treated as empty state.
 
-Why it matters: a browser automation tool that fails unless Brave is installed in exactly those locations will produce avoidable support tickets. Silent state fallback can also start the wrong instance or lose the real reason a connection failed.
+Why it matters: a browser automation tool that fails unless Chrome is installed in exactly those locations will produce avoidable support tickets. Silent state fallback can also start the wrong instance or lose the real reason a connection failed.
 
-Suggested fix: support `CC_PLAYWRIGHT_BROWSER`/`--browser-path`, `shutil.which`, common Windows and macOS Brave/Chrome/Edge paths, and a clear error that includes the override option. When a state JSON file is corrupt, fail with a repair hint or move it aside with an explicit warning instead of silently returning `{}`.
+Suggested fix: support `CC_PLAYWRIGHT_BROWSER`/`--browser-path`, `shutil.which`, common Windows and macOS Chrome/Edge paths, and a clear error that includes the override option. When a state JSON file is corrupt, fail with a repair hint or move it aside with an explicit warning instead of silently returning `{}`.
 
 ### 7. Preserve normal Markdown semantics in `cc-word from-markdown`
 

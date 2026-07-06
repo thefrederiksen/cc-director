@@ -44,7 +44,7 @@ Both reviewers confirmed the round-one fixes held up (Bcc envelope-only, X-GM-MS
 | 24 | `actions` metadata for `schedule-create` still drifts (synthetic arg names) *(held: cli.py is concurrently refactored)* | cc-devthrottle | C, P |
 | 25 | `director.py` docstring still says "never needs Gateway URL/token" but schedule calls the Gateway directly | cc_shared | C |
 | 26 | cc-pdf/cc-word still use collision-prone `path_map.get(original_name)` (round-one fixed cc-html only); forced re-run accumulates `_images/` dupes | cc-pdf, cc-word | C |
-| 27 | Misc: cc-outlook `forward_message` plain-text note into HTML body; leftover empty `test/` dirs in cc-gmail/cc-outlook; cc-playwright hardcodes "Brave" in messages; Windows lock pre-check omits `chromium.exe` | several | C |
+| 27 | Misc: cc-outlook `forward_message` plain-text note into HTML body; leftover empty `test/` dirs in cc-gmail/cc-outlook; cc-playwright hardcodes a specific browser name in messages; Windows lock pre-check omits `chromium.exe` | several | C |
 
 ---
 

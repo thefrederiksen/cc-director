@@ -61,7 +61,7 @@ Set-Content -Path $cmdFile -Value '@node "%~dp0_cc-browser\src\cli.mjs" %*'
 Write-Host "[cc-browser] Installing native messaging host..."
 node "$deployDir\native-host\install.mjs" --extension-dir "$deployDir\extension" --native-host-dir "$deployDir\native-host"
 
-# Clear service worker caches so Chrome/Brave loads updated extension code
+# Clear service worker caches so Chrome/Edge loads updated extension code
 $connectionsDir = Join-Path $env:LOCALAPPDATA "cc-director\connections"
 if (Test-Path $connectionsDir) {
     Get-ChildItem $connectionsDir -Directory | ForEach-Object {

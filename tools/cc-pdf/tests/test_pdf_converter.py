@@ -161,9 +161,9 @@ class TestBrowserDiscovery:
         with patch.dict(os.environ, {BROWSER_ENV_VAR: ""}):
             with patch("pdf_converter.os.path.exists", return_value=False), \
                     patch("pdf_converter.shutil.which",
-                          side_effect=lambda n: "/usr/bin/brave" if n == "brave" else None):
+                          side_effect=lambda n: "/usr/bin/google-chrome" if n == "google-chrome" else None):
                 result = find_chrome()
-                assert result == "/usr/bin/brave"
+                assert result == "/usr/bin/google-chrome"
 
 
 class TestUserDataDir:

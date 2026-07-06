@@ -4,7 +4,7 @@
 **Report generated:** 2026-05-31 23:02 local
 **Tested against:** Cockpit on `http://localhost:7471` (ASPNETCORE_ENVIRONMENT=Development) -> Gateway `127.0.0.1:7878` -> Slot-1 final-build Director `c99a103c` on `127.0.0.1:7884`
 **Test session:** a throwaway Claude Code session in scratch repo `C:/repos/cc-director-qa-scratch` (later renamed "QA Scratch (renamed)"). No user sessions were touched.
-**Driver:** cc-playwright `cockpit-qa` connection (separate Brave, 1920x951).
+**Driver:** cc-playwright `cockpit-qa` connection (separate Chrome, 1920x951).
 
 ---
 

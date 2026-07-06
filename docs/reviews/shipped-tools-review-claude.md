@@ -117,18 +117,18 @@ flag-name and subcommand inconsistencies between sibling tools.
   `page_size`/`margin` arguments at convert time (Chrome honors `@page size`), replacing the
   static print CSS.
 
-### H5. cc-pdf only finds Google Chrome or Chromium, not Edge or Brave
+### H5. cc-pdf only finds Google Chrome or Chromium, not Edge
 - Tool: cc-pdf
 - What is wrong: `src/pdf_converter.py:17-37` lists only Chrome/Chromium paths. There is no
-  Microsoft Edge (Chromium-based, fully supports headless `--print-to-pdf`), no Brave, no
+  Microsoft Edge (Chromium-based, fully supports headless `--print-to-pdf`), no
   `shutil.which()` PATH lookup, and no environment override. Also `:23` builds
   `C:\Users\{USERNAME}\AppData\Local\...` by hand, which becomes `C:\Users\\AppData\...` when
   `USERNAME` is empty.
-- Why it matters: Chrome is the single hard dependency of cc-pdf. The house default browser
-  is Brave, and many corporate Windows machines ship only Edge. On those machines cc-pdf
+- Why it matters: Chrome is the single hard dependency of cc-pdf. Many corporate Windows
+  machines ship only Edge. On those machines cc-pdf
   fails with "Chrome not found" even though a capable Chromium browser is installed.
-- Suggested fix: add Edge and Brave paths, fall back to `shutil.which` for
-  chrome/chromium/msedge/brave, honor an environment override, and use `%LOCALAPPDATA%`
+- Suggested fix: add Edge paths, fall back to `shutil.which` for
+  chrome/chromium/msedge, honor an environment override, and use `%LOCALAPPDATA%`
   instead of hand-building the path.
 
 ### H6. cc-outlook `--html` flag is a silent no-op (text sent as HTML)
@@ -425,7 +425,7 @@ flag-name and subcommand inconsistencies between sibling tools.
 - Tool: cc-playwright. `_looks_locked` (`cli.py:195-205`) only detects POSIX singleton lock
   files; on Windows (the primary platform) a busy user-data-dir is not detected, so the
   process waits the full fifteen seconds before the timeout error (`cli.py:401-407`). Probe
-  the debug port early or detect a running Brave on that dir and surface the "close
+  the debug port early or detect a running Chrome on that dir and surface the "close
   cc-browser first" hint immediately.
 
 ### L11. cc-gmail/cc-outlook reply-all is incomplete

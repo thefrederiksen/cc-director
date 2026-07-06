@@ -243,14 +243,14 @@ items below are the ones worth fixing before the next release.
   `UnicodeEncodeError` on a cp1252 console. Fix: mirror cc-gmail's wrapper (or
   move it into the shared layer both import).
 
-### L6. cc-playwright: error/help text hardcodes "Brave" although discovery now selects Chrome/Edge/Chromium
+### L6. cc-playwright: error/help text hardcodes a specific browser name although discovery now selects Chrome/Edge/Chromium
 - cc-playwright, `src/cli.py:381, 385, 639, 641`, module docstring `:5`. After
   the round-one discovery work, a Chrome/Edge user gets failure messages naming
   a browser they are not using. Cosmetic. Fix: say "the browser" or interpolate
   the resolved executable name.
 
 ### L7. cc-playwright: Windows lock pre-check omits `chromium.exe`
-- cc-playwright, `src/cli.py:231-240` (CIM filter `brave.exe`/`chrome.exe`/`msedge.exe`)
+- cc-playwright, `src/cli.py:231-240` (CIM filter `chrome.exe`/`msedge.exe`)
   vs `BROWSER_WHICH_NAMES` which includes `chromium` (`:54-64`). If the launched
   browser is Chromium, the "profile busy" advisory pre-check can never see it
   and the user falls through to the slower debug-port timeout. Advisory only.

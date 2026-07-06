@@ -8,7 +8,7 @@ Harness (isolated from the user's running Gateway on 7878 / Cockpit on 7470):
             2 real Director instance files copied in -> live sessions aggregated
             (directors :7880 and :7881).
   Cockpit : published build, run directly on 127.0.0.1:7937, Cockpit__GatewayUrl=http://127.0.0.1:7936.
-  Browser : cc-playwright (Brave, trusted CDP), connection cockpit920.
+  Browser : cc-playwright (Chrome, trusted CDP), connection cockpit920.
   Gateway token (isolated): read from {iso}\config\director\gateway-token.txt.
 
 === A. UNAUTHENTICATED (no cc-gateway-token cookie, no Bearer) - measured with a no-redirect HttpClient ===

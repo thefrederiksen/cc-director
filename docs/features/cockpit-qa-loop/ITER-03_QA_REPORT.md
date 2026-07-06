@@ -3,7 +3,7 @@
 **App version:** 0.3.5 (build `990dba3` + uncommitted Cockpit fixes)
 **Report generated:** 2026-05-31 23:14 local
 **Tested against:** Cockpit `http://localhost:7471` -> Gateway `127.0.0.1:7878` -> Directors `c99a103c` (`7884`) and `39aad623` (`7879`, older v0.3.2 build).
-**Driver:** cc-playwright `cockpit-qa` (Brave, 1920x951) + Win32 PrintWindow capture of the desktop app.
+**Driver:** cc-playwright `cockpit-qa` (Chrome, 1920x951) + Win32 PrintWindow capture of the desktop app.
 
 ---
 

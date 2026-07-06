@@ -29,9 +29,9 @@ def find_chrome() -> Optional[str]:
     """Find a Chromium-based browser executable for headless PDF printing.
 
     Looks (in order) at the CC_PDF_BROWSER environment override, then common
-    install locations for Google Chrome, Chromium, Microsoft Edge, and Brave,
-    then falls back to a PATH lookup. Microsoft Edge and Brave are
-    Chromium-based and fully support headless ``--print-to-pdf``.
+    install locations for Google Chrome, Chromium, and Microsoft Edge,
+    then falls back to a PATH lookup. Microsoft Edge is Chromium-based and
+    fully supports headless ``--print-to-pdf``.
 
     Returns:
         Absolute path to a usable browser executable, or None if none found.
@@ -56,9 +56,6 @@ def find_chrome() -> Optional[str]:
         # Microsoft Edge - Windows
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        # Brave - Windows
-        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-        r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
         # Linux
         "/usr/bin/google-chrome",
         "/usr/bin/google-chrome-stable",
@@ -66,12 +63,10 @@ def find_chrome() -> Optional[str]:
         "/usr/bin/chromium-browser",
         "/usr/bin/microsoft-edge",
         "/usr/bin/microsoft-edge-stable",
-        "/usr/bin/brave-browser",
         # macOS
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     ]
 
     # Per-user install locations under %LOCALAPPDATA% (avoids hand-building
@@ -80,7 +75,6 @@ def find_chrome() -> Optional[str]:
         candidate_paths.extend([
             os.path.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe"),
             os.path.join(local_app_data, "Microsoft", "Edge", "Application", "msedge.exe"),
-            os.path.join(local_app_data, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
         ])
 
     for path in candidate_paths:
@@ -89,8 +83,7 @@ def find_chrome() -> Optional[str]:
 
     # 2. Fall back to a PATH lookup by common executable names.
     for name in ("chrome", "google-chrome", "google-chrome-stable",
-                 "chromium", "chromium-browser", "msedge", "microsoft-edge",
-                 "brave", "brave-browser"):
+                 "chromium", "chromium-browser", "msedge", "microsoft-edge"):
         found = shutil.which(name)
         if found:
             return found
@@ -152,7 +145,7 @@ def convert_to_pdf(
     if not chrome_exe:
         raise RuntimeError(
             "No Chromium-based browser found for PDF conversion. cc-pdf can use "
-            "Google Chrome, Chromium, Microsoft Edge, or Brave.\n"
+            "Google Chrome, Chromium, or Microsoft Edge.\n"
             f"Install one, or set the {BROWSER_ENV_VAR} environment variable to "
             "the full path of a browser executable.\n"
             "Download Chrome from: https://www.google.com/chrome/"

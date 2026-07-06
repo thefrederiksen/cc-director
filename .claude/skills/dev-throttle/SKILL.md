@@ -28,7 +28,7 @@ All tools are on PATH after install. For exact flags and examples, run any tool 
 `cc-gmail`, `cc-outlook` - read, send, and search Gmail and Outlook from the CLI.
 
 ### Web and social
-`cc-browser` (cross-session browser automation with persistent connections), `cc-playwright` (Brave + remote-debug + CDP; the default for form fills, sign-in, OTP, and React forms), `cc-reddit` (human-paced Reddit), `cc-crawl4ai` (clean markdown extraction for RAG), `cc-websiteaudit`, `cc-brandingrecommendations`.
+`cc-browser` (cross-session browser automation with persistent connections), `cc-playwright` (Chromium browser + remote-debug + CDP; the default for form fills, sign-in, OTP, and React forms), `cc-reddit` (human-paced Reddit), `cc-crawl4ai` (clean markdown extraction for RAG), `cc-websiteaudit`, `cc-brandingrecommendations`.
 
 ### Desktop automation
 `cc-click` (Windows UI: click, type, screenshot, OCR), `cc-trisight` (3-tier UI element detection: UIA + OCR + pixel), `cc-computer` (AI desktop agent with screenshot-in-the-loop).

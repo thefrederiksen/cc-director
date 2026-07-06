@@ -45,7 +45,7 @@ Every run of the wizard moves left-to-right through the same rail:
 | Step | What happens |
 |------|--------------|
 | **1. Welcome** | On a first install, you choose the role (Workstation or Gateway). On an existing install, this becomes the Update / Uninstall screen. |
-| **2. Prerequisites** | The wizard checks for the .NET 10 Runtime, Claude Code, Python, Node.js, and (optionally) Brave. You cannot continue until the required ones are found. |
+| **2. Prerequisites** | The wizard checks for the .NET 10 Runtime, Claude Code, Python, Node.js, and (optionally) Tailscale. You cannot continue until the required ones are found. |
 | **3. Skills** | Shows the Claude Code skills that will be installed. |
 | **4. Install** | Downloads and places each component, verifying every file against the manifest's SHA-256. The Gateway role adds a Gateway + Cockpit phase here. |
 | **5. Complete** | Confirms what was installed and offers to launch the app. |
@@ -117,7 +117,7 @@ On the Welcome screen, click the **Workstation** card. It highlights and shows a
 ### 2. Prerequisites
 
 The wizard checks each prerequisite and shows the version it found. The four required
-tools (.NET 10 Runtime, Claude Code, Python, Node.js) must all be **Found**; Brave is
+tools (.NET 10 Runtime, Claude Code, Python, Node.js) must all be **Found**; Tailscale is
 optional. If something is missing, install it, then click **Re-check**. When everything
 required is present you see **All prerequisites met — ready to install** and **Next**
 turns on.

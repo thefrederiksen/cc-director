@@ -19,7 +19,7 @@
 
         <TextBlock TextWrapping="Wrap" Foreground="#CCCCCC" FontSize="12"
                    Margin="0,0,0,8">
-            Before starting, please close all Brave browser windows manually.
+            Before starting, please close all browser windows manually.
             The recorder will then launch a fresh browser positioned on the
             right side of your screen, with the recording panel on the left.
         </TextBlock>

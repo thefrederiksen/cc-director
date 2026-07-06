@@ -11,7 +11,7 @@ This document outlines four feature enhancements for cc-browser identified durin
 
 **Current Architecture Summary:**
 - CLI client (`cli.mjs`) sends HTTP requests to a persistent daemon (`daemon.mjs`)
-- Daemon manages a Playwright-core connection to Chrome/Edge/Brave via CDP
+- Daemon manages a Playwright-core connection to Chrome/Edge via CDP
 - Element references (e1, e2, etc.) generated from ARIA accessibility tree snapshots
 - 27+ commands defined as flat async handler functions in `cli.mjs`
 - Custom argument parser (no CLI framework) in `cli.mjs` lines 133-160
