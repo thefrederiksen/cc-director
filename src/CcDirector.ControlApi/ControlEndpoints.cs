@@ -302,7 +302,9 @@ internal static class ControlEndpoints
             if (!Guid.TryParse(req.ToSessionId, out var toGuid))
                 return Results.BadRequest(new { error = "invalid toSessionId format" });
 
-            var framed = FrameForSender(req.FromSessionId, req.Text);
+            var framed = string.IsNullOrWhiteSpace(req.FromSessionId)
+                ? req.Text
+                : FrameForSender(req.FromSessionId, req.Text);
 
             var local = sessionManager.GetSession(toGuid);
             if (local is not null)

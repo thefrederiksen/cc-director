@@ -54,6 +54,6 @@ internal static class FleetMessaging
             ? $"  (to reply: cc-devthrottle message send {shortId} \"<your reply>\")"
             : "";
 
-        return $"{header} {oneLine}{reply}";
+        return $"Message {header} {oneLine}{reply}";
     }
 }

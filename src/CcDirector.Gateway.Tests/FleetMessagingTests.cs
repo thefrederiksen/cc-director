@@ -29,6 +29,7 @@ public sealed class FleetMessagingFramingTests
         var framed = FleetMessaging.BuildFramedMessage(
             "4c810000-1111-2222-3333-444444444444", "feature-work", "machine-A", "run the tests");
 
+        Assert.StartsWith("Message ", framed);
         Assert.Contains("[message from feature-work (machine-A), id 4c810000]", framed);
         Assert.Contains("run the tests", framed);
         Assert.Contains("(to reply: cc-devthrottle message send 4c810000", framed);

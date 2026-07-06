@@ -78,6 +78,47 @@ public sealed class TerminalSubmitTests
     }
 
     [Fact]
+    public async Task EchoVerifiedSubmit_ScrolledComposerTailEcho_WritesEnter()
+    {
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+        var text = "Do not modify files. Reply OKCODEXSENTDIRECT1A444B4E6BFDB40 only.";
+        var visibleTail = TerminalSubmit.NormalizeForEcho(text)[^16..];
+        backend.EchoScript.UseDefault(RecordingEchoStep.CustomEcho(visibleTail));
+
+        await TerminalSubmit.EchoVerifiedSubmitAsync(
+            backend,
+            text,
+            "Test",
+            echoTimeout: TimeSpan.FromMilliseconds(100),
+            pollInterval: TimeSpan.FromMilliseconds(5),
+            enterSettleDelay: TimeSpan.FromMilliseconds(1));
+
+        Assert.True(backend.WrittenBytes.Count > 2);
+        Assert.Equal(Encoding.UTF8.GetBytes(text), backend.WrittenBytes.SkipLast(1).SelectMany(b => b).ToArray());
+        Assert.Equal(new byte[] { 0x0D }, backend.WrittenBytes[^1]);
+        Assert.Equal([text], backend.SubmittedTexts);
+    }
+
+    [Fact]
+    public async Task EchoVerifiedSubmit_ShortPartialTail_DoesNotSubmit()
+    {
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+        backend.EchoScript.UseDefault(RecordingEchoStep.CustomEcho("world"));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => TerminalSubmit.EchoVerifiedSubmitAsync(
+                backend,
+                "hello world",
+                "Test",
+                echoTimeout: TimeSpan.FromMilliseconds(20),
+                pollInterval: TimeSpan.FromMilliseconds(5),
+                enterSettleDelay: TimeSpan.FromMilliseconds(1)));
+
+        Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, backend.EnterCount);
+    }
+
+    [Fact]
     public async Task EchoVerifiedSubmit_FirstEchoMissing_EscapesAndRetypesBeforeEnter()
     {
         var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
