@@ -1,5 +1,5 @@
 === Issue #917 INDEPENDENT QA harness (booting real GatewayHost via default path) ===
-Log file: C:\Users\soren\AppData\Local\cc-director\logs\director\director-2026-07-04-20064.log
+Log file: %LOCALAPPDATA%\cc-director\logs\director\director-2026-07-04-20064.log
 
 PART A - no override (production default)
   GatewayHost.AuthEnabled = True   (expected: True)

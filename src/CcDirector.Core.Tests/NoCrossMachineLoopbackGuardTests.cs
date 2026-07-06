@@ -55,6 +55,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Core/Network/EndpointProbe.cs"] = "Endpoint probing helpers incl. loopback recognition.",
         ["src/CcDirector.Core/Utilities/LinkDetector.cs"] = "Detects localhost URLs in terminal text (display only).",
         ["src/CcDirector.Core/Configuration/AddressingMode.cs"] = "Doc comment states the no-cross-machine-loopback policy.",
+        ["src/CcDirector.Core/Configuration/GatewayConfig.cs"] = "Classifies whether a URL addresses THIS machine's own Gateway (loopback / \"localhost\" host recognition); same-machine detection, never advertised cross-machine.",
 
         // --- Contracts / DTO docs that DESCRIBE endpoints ---
         ["src/CcDirector.Gateway.Contracts/DirectorDto.cs"] = "Doc comment example endpoint string.",
@@ -77,6 +78,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Avalonia/Voice/SpeakService.cs"] = "Local voice service references.",
         ["src/CcDirector.Avalonia/Voice/SpeakDialog.axaml.cs"] = "Local voice dialog references.",
         ["src/CcDirector.Avalonia/Voice/BatchDictationRecorder.cs"] = "Doc comment notes the batch path has no localhost WebSocket roundtrip.",
+        ["src/CcDirector.Avalonia/HostedAi/DesktopHostedAiCta.cs"] = "Doc comments only: describe that Settings resolves the Cockpit front door and never opens a localhost URL (states the no-loopback policy).",
         ["src/CcDirector.Core/Browser/WorkflowRunner.cs"] = "Drives a local browser via loopback CDP.",
         ["src/CcDirector.Core/Sessions/SessionManager.cs"] = "Stamps the same-machine CC_DIRECTOR_API loopback URL for in-session agents.",
     };

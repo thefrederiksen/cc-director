@@ -54,7 +54,7 @@ The GitHub Actions workflow (`.github/workflows/release.yml`) will:
 
 ### 6. Verify
 
-1. Go to the [Releases page](https://github.com/SorenFred/cc-director/releases)
+1. Go to the [Releases page](https://github.com/thefrederiksen/devthrottle/releases)
 2. Confirm the new release is marked "Latest" (if not a pre-release)
 3. Confirm these assets are attached:
    - `cc-director.exe`

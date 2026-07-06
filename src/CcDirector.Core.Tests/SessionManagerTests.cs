@@ -67,7 +67,12 @@ public class SessionManagerTests : IDisposable
         Assert.Equal(session.Id, fetched.Id);
     }
 
-    [Fact]
+    // Skipped on CI (issue #1052): this races a real stand-in process spawn+kill - the status
+    // transition after KillSessionAsync can lag the assertion under load, and even a bounded wait is not
+    // reliable (see the sibling SessionLifecycleTests.KillSession_RunningSession_TransitionsToExited).
+    // Kill/status behaviour is covered deterministically by the other kill tests here and in
+    // SessionLifecycleTests (e.g. KillSession_SetsActivityStateToExited, KillSession_AlreadyExited_DoesNotThrow).
+    [Fact(Skip = "Flaky on CI: races a real stand-in process spawn+kill; status transition can lag the assertion under load. Covered deterministically by the other kill tests.")]
     public async Task CreateAndKillSession_StatusChanges()
     {
         var session = _manager.CreateSession(Path.GetTempPath());

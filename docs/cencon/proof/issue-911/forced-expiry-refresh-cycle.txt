@@ -24,7 +24,7 @@ SCENARIO 2: expired access token, apikey MISSING (misconfig path)
   endpoint received a keyless request? False  (expect False - short-circuited)
 
 ================================================================
-FILELOG TRANSCRIPT (refresh/account lines) from: C:\Users\soren\AppData\Local\cc-director\logs\director\director-2026-07-04-71528.log
+FILELOG TRANSCRIPT (refresh/account lines) from: %LOCALAPPDATA%\cc-director\logs\director\director-2026-07-04-71528.log
 ================================================================
 2026-07-04 09:52:23.179 [Issue911Proof] ===== forced-expiry refresh-cycle proof START =====
 2026-07-04 09:52:23.290 [DevThrottleAccountService] IsLoggedIn: checking cached credential locally (no network call)

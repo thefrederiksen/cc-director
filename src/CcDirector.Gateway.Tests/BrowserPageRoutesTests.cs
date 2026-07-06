@@ -106,11 +106,17 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
 
         var resp = await _http.SendAsync(req);
 
-        // The navigation took the React-shell path, not the JSON endpoint. The shell is not built into
-        // this Debug host, so it answers 404 with the "not built" notice - never application/json.
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        Assert.Equal("text/plain", resp.Content.Headers.ContentType?.MediaType);
-        Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
+        // The navigation took the React-shell path, not the JSON endpoint - the response is NEVER
+        // application/json. Whether the shell is actually built depends on the host: an unbuilt Debug host
+        // answers 404 with the "React Cockpit not built" text/plain notice; a host where the shell WAS
+        // built (CI builds wwwroot/c before the tests) serves the shell index (200 text/html). Assert the
+        // invariant that holds either way (issue #1048 follow-up: the old assertion assumed the shell was
+        // never built and broke when CI started building it).
+        Assert.NotEqual("application/json", resp.Content.Headers.ContentType?.MediaType);
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+            Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
+        else
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
     [Theory]
@@ -137,10 +143,14 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
 
         var resp = await _http.SendAsync(req);
 
-        // The navigation took the React-shell path, not the API (which would answer JSON). The shell is
-        // not built into this Debug host, so it answers the 404 "not built" notice.
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-        Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
+        // The navigation took the React-shell path, not the API (which would answer JSON). Whether the
+        // shell is built depends on the host (see Browser_navigation_is_served_the_cockpit_shell): assert
+        // the build-state-independent invariant - it is never JSON, and if unbuilt it is the notice.
+        Assert.NotEqual("application/json", resp.Content.Headers.ContentType?.MediaType);
+        if (resp.StatusCode == HttpStatusCode.NotFound)
+            Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
+        else
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
     [Fact]

@@ -26,7 +26,7 @@ body {
 }
 
 #root {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .screen {
@@ -342,13 +342,19 @@ a.banner-btn {
    A full-height column: a status row (status + Keys toggle), the live mirror filling all remaining
    space, and the collapsible controls panel (hidden by default) beneath it. Mirrors the Android
    TalkPage terminal section and RawTerminalPage.cs. */
+/* height uses dvh (the DYNAMIC visible viewport), NOT vh. On a phone 100vh is the tall
+   "toolbar-hidden" viewport, so a 100vh column is built taller than the screen and its top tabs
+   and bottom keys get pushed off the visible area (you must scroll to reach either, never both).
+   100dvh tracks the currently visible height, so the whole column - tabs, body, keys - fits on
+   screen and only the middle body scrolls. The bottom padding also clears the iOS home indicator
+   (the page is viewport-fit=cover). */
 .terminal-screen {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
   max-width: 680px;
   margin: 0 auto;
-  padding: 0 12px 10px;
+  padding: 0 12px calc(10px + env(safe-area-inset-bottom));
 }
 
 .term-title {
