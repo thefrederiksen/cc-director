@@ -195,10 +195,14 @@ static async Task CompleteAsync(HttpListenerContext context, Dictionary<string, 
     var accessToken = MintToken(signingSecret, email, provider, DateTimeOffset.UtcNow.AddHours(1));
     var refreshToken = MintToken(signingSecret, email, provider, DateTimeOffset.UtcNow.AddDays(30));
 
-    var separator = redirectUri.Contains('?') ? '&' : '?';
-    var location = $"{redirectUri}{separator}access_token={Uri.EscapeDataString(accessToken)}&refresh_token={Uri.EscapeDataString(refreshToken)}";
+    // Hand the credential back in the URL FRAGMENT (after '#'), NOT the query string (issue #1082, absorbs
+    // #877): the browser never sends the fragment to any server, so the token pair never lands in the callback
+    // request URL, browser history, or a screenshot. The callback serves the shared hand-back page, whose
+    // script reads the fragment and POSTs the pair back to the callback same-origin. This mirrors the real
+    // cloud completion's new shape so the loopback flow is provable token-free end to end.
+    var location = $"{redirectUri}#access_token={Uri.EscapeDataString(accessToken)}&refresh_token={Uri.EscapeDataString(refreshToken)}";
 
-    Console.WriteLine($"[dev-signin] Completing sign-in (provider={provider}, email={email}) -> redirecting to loopback callback");
+    Console.WriteLine($"[dev-signin] Completing sign-in (provider={provider}, email={email}) -> redirecting to loopback callback (token pair in the URL fragment, not the query)");
     context.Response.StatusCode = 302;
     context.Response.RedirectLocation = location;
     context.Response.Close();
