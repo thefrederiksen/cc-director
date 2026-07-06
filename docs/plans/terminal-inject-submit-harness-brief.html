@@ -1,0 +1,285 @@
+<title>Reliable terminal injection - plan brief</title>
+<style>
+  :root {
+    /* warm amber-biased neutrals (CRT amber, not office grey) */
+    --paper: #f6f3ee;
+    --surface: #fffdf9;
+    --ink: #201a14;
+    --ink-soft: #4b4136;
+    --ink-faint: #7c6f5f;
+    --line: #e2d9cc;
+    --line-strong: #cdbfab;
+    --accent: #a8500a;      /* deep terminal amber */
+    --accent-soft: #f0e2cf;
+    --pass: #2f7d43;
+    --fail: #b23a2e;
+    --code-bg: #efe9df;
+    --shadow: 0 1px 2px rgba(40,30,15,.06), 0 8px 24px rgba(40,30,15,.05);
+    --sans: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #17130e;
+      --surface: #1f1a13;
+      --ink: #f0e9de;
+      --ink-soft: #c9bdac;
+      --ink-faint: #94897a;
+      --line: #322a20;
+      --line-strong: #443a2c;
+      --accent: #e59a4b;    /* brighter amber on dark ground */
+      --accent-soft: #38291a;
+      --pass: #6fbf7e;
+      --fail: #e58472;
+      --code-bg: #241d15;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --paper: #f6f3ee; --surface: #fffdf9; --ink: #201a14; --ink-soft: #4b4136;
+    --ink-faint: #7c6f5f; --line: #e2d9cc; --line-strong: #cdbfab; --accent: #a8500a;
+    --accent-soft: #f0e2cf; --pass: #2f7d43; --fail: #b23a2e; --code-bg: #efe9df;
+    --shadow: 0 1px 2px rgba(40,30,15,.06), 0 8px 24px rgba(40,30,15,.05);
+  }
+  :root[data-theme="dark"] {
+    --paper: #17130e; --surface: #1f1a13; --ink: #f0e9de; --ink-soft: #c9bdac;
+    --ink-faint: #94897a; --line: #322a20; --line-strong: #443a2c; --accent: #e59a4b;
+    --accent-soft: #38291a; --pass: #6fbf7e; --fail: #e58472; --code-bg: #241d15;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--sans); line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 56px 24px 88px; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(28px, 5vw, 40px); line-height: 1.12; margin: 0 0 14px;
+    letter-spacing: -.015em; text-wrap: balance; font-weight: 700;
+  }
+  .lede { font-size: 18px; color: var(--ink-soft); margin: 0 0 8px; max-width: 60ch; }
+  .meta {
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink-faint);
+    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
+  }
+  .meta a { color: var(--accent); text-decoration: none; }
+
+  section { margin-top: 44px; }
+  h2 {
+    font-size: 13px; font-family: var(--mono); text-transform: uppercase;
+    letter-spacing: .12em; color: var(--ink-faint); margin: 0 0 16px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  h2 .n { color: var(--accent); }
+  h3 { font-size: 17px; margin: 0 0 6px; letter-spacing: -.01em; }
+  p { margin: 0 0 14px; }
+  p.tight { margin-bottom: 0; }
+
+  /* failure signature strip */
+  .signal {
+    background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: 12px; padding: 20px 22px; box-shadow: var(--shadow);
+    display: grid; grid-template-columns: 1fr; gap: 14px;
+  }
+  .flow {
+    font-family: var(--mono); font-size: 13.5px; display: flex; flex-wrap: wrap;
+    align-items: center; gap: 8px;
+  }
+  .chip {
+    background: var(--code-bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 9px; white-space: nowrap;
+  }
+  .chip.bad { border-color: var(--fail); color: var(--fail); }
+  .arrow { color: var(--ink-faint); }
+  .signal .note { font-size: 14px; color: var(--ink-soft); margin: 0; }
+  .signal .note b { color: var(--ink); }
+
+  /* protocol steps */
+  ol.proto { list-style: none; counter-reset: s; margin: 0; padding: 0; display: grid; gap: 12px; }
+  ol.proto li {
+    counter-increment: s; position: relative; padding-left: 46px;
+    min-height: 30px;
+  }
+  ol.proto li::before {
+    content: counter(s, decimal-leading-zero); position: absolute; left: 0; top: 1px;
+    font-family: var(--mono); font-size: 12px; color: var(--accent);
+    border: 1px solid var(--line-strong); border-radius: 6px;
+    width: 30px; height: 30px; display: grid; place-items: center;
+    background: var(--surface);
+  }
+  ol.proto li b { font-weight: 650; }
+  ol.proto li .d { color: var(--ink-soft); }
+
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 18px 16px; box-shadow: var(--shadow);
+  }
+  .card .k {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-faint); margin: 0 0 8px;
+  }
+  .card p { font-size: 14.5px; color: var(--ink-soft); margin: 0; }
+  .card p + p { margin-top: 8px; }
+  .card code { font-family: var(--mono); font-size: 13px; background: var(--code-bg);
+    padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+  ul.plain { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  ul.plain li { padding-left: 20px; position: relative; color: var(--ink-soft); }
+  ul.plain li::before {
+    content: ""; position: absolute; left: 2px; top: 11px; width: 7px; height: 7px;
+    border-radius: 2px; background: var(--accent);
+  }
+  ul.plain li b { color: var(--ink); font-weight: 600; }
+
+  .verdict {
+    font-family: var(--mono); font-size: 12px; padding: 2px 8px; border-radius: 5px;
+    border: 1px solid currentColor; white-space: nowrap;
+  }
+  .v-pass { color: var(--pass); }
+  .v-fail { color: var(--fail); }
+
+  /* phases */
+  ol.phases { list-style: none; counter-reset: p; margin: 0; padding: 0; }
+  ol.phases li {
+    counter-increment: p; position: relative; padding: 14px 0 14px 52px;
+    border-top: 1px solid var(--line);
+  }
+  ol.phases li:first-child { border-top: none; }
+  ol.phases li::before {
+    content: "P" counter(p); position: absolute; left: 0; top: 14px;
+    font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent);
+    background: var(--accent-soft); border-radius: 6px; padding: 4px 8px;
+  }
+  ol.phases h3 { font-size: 15.5px; margin: 0 0 3px; }
+  ol.phases .ends { font-size: 13.5px; color: var(--ink-faint); font-family: var(--mono); }
+
+  .foot {
+    margin-top: 52px; padding-top: 18px; border-top: 1px solid var(--line);
+    font-size: 14px; color: var(--ink-soft);
+  }
+  .foot b { color: var(--ink); }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">CC Director &middot; engineering plan brief</p>
+  <h1>Making text injection into agent terminals reliable</h1>
+  <p class="lede">We send text into a coding agent's terminal and press Enter for it. The Enter keeps
+  getting lost, so the message sits in the composer unsubmitted and the agent looks idle. This is how
+  we fix it and prove it fixed.</p>
+  <p class="meta">Full plan: <a href="#">docs/plans/terminal-inject-submit-harness.md</a>
+  &nbsp;&middot;&nbsp; merged from a Claude and a Codex pass</p>
+
+  <section aria-label="failure signature">
+    <div class="signal">
+      <div class="flow">
+        <span class="chip">send text</span>
+        <span class="arrow">&rarr;</span>
+        <span class="chip">lands in composer</span>
+        <span class="arrow">&rarr;</span>
+        <span class="chip">press Enter</span>
+        <span class="arrow">&rarr;</span>
+        <span class="chip bad">Enter lost to redraw</span>
+        <span class="arrow">&rarr;</span>
+        <span class="chip bad">prompt parked</span>
+      </div>
+      <p class="note"><b>The signature.</b> The text almost always arrives. What fails is the submit:
+      the Enter reaches the agent mid-repaint and is swallowed. Worst for the fleet/REST route into
+      Codex, and for large pastes into Claude (its composer expands, and the Enter fires before it is
+      ready).</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">01</span> The core idea</h2>
+    <h3>Treat submit as a verified protocol, not a blind write</h3>
+    <p>A blind "type, wait 50&nbsp;ms, press Enter" loses a race against the agent redrawing its
+    composer. Instead, every submit runs one tested handshake for every agent &mdash; one shared base,
+    not a copy per driver:</p>
+    <ol class="proto">
+      <li><b>Type the text</b> <span class="d">&mdash; write the payload, but do <i>not</i> send Enter yet.</span></li>
+      <li><b>Wait for the echo</b> <span class="d">&mdash; poll the terminal until the composer shows back what we typed (and is not slash-corrupted). The agent has told us it is ready.</span></li>
+      <li><b>Press Enter separately</b> <span class="d">&mdash; a lone carriage return, after a tiny settle, once the echo confirms.</span></li>
+      <li><b>Confirm the turn started</b> <span class="d">&mdash; watch for the agent to actually begin processing; if not, one clean retry, then a loud, logged failure &mdash; never a silent park.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2><span class="n">02</span> Handling size and shape</h2>
+    <div class="cards">
+      <div class="card">
+        <p class="k">Small / inline</p>
+        <p>The echo-verified handshake above. Already proven for Claude, Codex, and Pi; we extend the
+        same base to the agents still doing blind writes.</p>
+      </div>
+      <div class="card">
+        <p class="k">Large / multi-line</p>
+        <p>Send it as one atomic <b>bracketed paste</b> (<code>ESC[200~ &hellip; ESC[201~</code>), then Enter
+        <i>outside</i> the brackets &mdash; the agent takes the whole block and decides when to submit,
+        so nothing auto-submits on an interior newline.</p>
+        <p>Gated on the agent actually having paste-mode on; the temp-file reference stays as the
+        fallback.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span> Prove it &mdash; at the turn level</h2>
+    <p>A test that checks "we wrote the bytes" is worthless; that always passes. Green requires proof
+    from the <b>agent's own behavior</b>:</p>
+    <ul class="plain">
+      <li><b>Sentinel token</b> &mdash; the injected prompt asks the agent to reply with a known token; we watch for it. End-to-end proof, even for agents with no transcript.</li>
+      <li><b>Transcript delta</b> &mdash; for Claude and Codex, a genuinely new message appears in their own history file.</li>
+      <li><b>Parked-composer detector</b> &mdash; on timeout we check if our text is still sitting in the box with no turn started, and classify it <span class="verdict v-fail">parked_composer</span> instead of a vague failure.</li>
+      <li><b>Flake rate, not a single run</b> &mdash; each case runs many times; reliability is a percentage that must hit <span class="verdict v-pass">100% / 20 runs</span>, because one green run is exactly how this bug hides.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="n">04</span> Once, or per agent?</h2>
+    <p class="tight">We don't guess &mdash; the harness measures it. It runs every agent through the same
+    matrix across four routes (direct, REST, fleet, voice) and compares submit strategies head to head
+    (<code>current</code>, <code>echo-verified</code>, <code>bracketed-paste</code>, <code>blind</code>).
+    If one strategy hits zero flake for everyone, we collapse onto one shared base. Where an agent
+    genuinely differs, the data says so &mdash; and that divergence is justified by evidence, not folklore.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">05</span> How we roll it out</h2>
+    <ol class="phases">
+      <li>
+        <h3>Characterize today, deterministically</h3>
+        <div class="ends">ends: dotnet test reproduces the lost-Enter race on a fake terminal</div>
+      </li>
+      <li>
+        <h3>Live proof for Claude and Codex</h3>
+        <div class="ends">ends: a real report on this machine, direct + REST + fleet routes</div>
+      </li>
+      <li>
+        <h3>The hard cases + bracketed paste</h3>
+        <div class="ends">ends: report says which strategy wins large / multi-line, per agent</div>
+      </li>
+      <li>
+        <h3>Fan out to every installed agent</h3>
+        <div class="ends">ends: strategy + flake-rate tables across the full matrix</div>
+      </li>
+      <li>
+        <h3>Decide, change the submit code, gate it</h3>
+        <div class="ends">ends: the fix shipped, with the harness keeping the flake rate at zero</div>
+      </li>
+    </ol>
+  </section>
+
+  <p class="foot"><b>Bottom line:</b> stop blind-firing Enter. Type, wait for the agent to echo, then
+  submit and confirm the turn actually started &mdash; the same verified handshake for every agent, with
+  bracketed paste for big blocks &mdash; and let a live, per-agent test harness prove the flake rate is
+  zero before and after we touch the code.</p>
+</div>
