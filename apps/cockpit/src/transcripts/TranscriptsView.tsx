@@ -10,6 +10,7 @@ import {
   updateRecordingMeta,
   type RecordingListItem,
 } from "@devthrottle/client-core/recordings/recordingsClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The Voice Recorder page (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Transcripts.razor(.css) (#183). Recordings are uploaded from the phone and transcribed on the
@@ -180,7 +181,7 @@ export function TranscriptsView() {
         return copy;
       });
     } catch (err) {
-      window.alert(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+      window.alert(`Delete failed: ${gatewayErrorMessage(err)}`);
     }
   };
 
@@ -195,7 +196,7 @@ export function TranscriptsView() {
       patchCard(item.recordingId, { vaultMsg: " saved to vault" });
       clearLater(() => patchCard(item.recordingId, { vaultMsg: "" }), 5000);
     } catch (err) {
-      patchCard(item.recordingId, { vaultMsg: ` save failed: ${err instanceof Error ? err.message : String(err)}` });
+      patchCard(item.recordingId, { vaultMsg: ` save failed: ${gatewayErrorMessage(err)}` });
     } finally {
       patchCard(item.recordingId, { promoting: false });
     }
@@ -216,7 +217,7 @@ export function TranscriptsView() {
       );
       patchCard(item.recordingId, { saveMsg: " saved" });
     } catch (err) {
-      patchCard(item.recordingId, { saveMsg: ` save failed: ${err instanceof Error ? err.message : String(err)}` });
+      patchCard(item.recordingId, { saveMsg: ` save failed: ${gatewayErrorMessage(err)}` });
     } finally {
       patchCard(item.recordingId, { saving: false });
       clearLater(() => patchCard(item.recordingId, { saveMsg: "" }), 5000);
@@ -231,7 +232,7 @@ export function TranscriptsView() {
       const ok = await copyText(text);
       setAgentMsg(ok ? " copied agent info to clipboard" : " clipboard blocked; see console");
     } catch (err) {
-      setAgentMsg(` failed: ${err instanceof Error ? err.message : String(err)}`);
+      setAgentMsg(` failed: ${gatewayErrorMessage(err)}`);
     }
     clearLater(() => setAgentMsg(""), 6000);
   };

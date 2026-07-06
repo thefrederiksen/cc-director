@@ -17,6 +17,7 @@ import {
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { clockLabel } from "../fleet/format";
 
 // The Schedule page (issue #976, epic #967) - the React port of the Blazor Cockpit Schedule.razor
@@ -133,7 +134,7 @@ export function ScheduleView() {
       }
     } catch (err) {
       if (signal?.aborted === true) return;
-      setLastError(err instanceof Error ? err.message : "Failed to fetch cron jobs");
+      setLastError(gatewayErrorMessage(err));
     }
   }, []);
 
@@ -244,7 +245,7 @@ export function ScheduleView() {
       await refresh();
     } catch (err) {
       // Surface the Gateway's message (incl. a 400 for an invalid cron) inline in the form.
-      setFormError(err instanceof Error ? err.message : "Save failed");
+      setFormError(gatewayErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -259,7 +260,7 @@ export function ScheduleView() {
         await refresh();
         setRuns(await getCronRuns(job.id));
       } catch (err) {
-        setActionError(`Run now failed: ${err instanceof Error ? err.message : String(err)}`);
+        setActionError(`Run now failed: ${gatewayErrorMessage(err)}`);
       }
     },
     [refresh],
@@ -276,7 +277,7 @@ export function ScheduleView() {
         }
         await refresh();
       } catch (err) {
-        setActionError(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+        setActionError(`Delete failed: ${gatewayErrorMessage(err)}`);
       }
     },
     [refresh],
@@ -294,7 +295,7 @@ export function ScheduleView() {
         await updateCronJob(job.id, toMutableDto(job, { enabled: !job.enabled }));
         await refresh();
       } catch (err) {
-        setActionError(`Toggle failed: ${err instanceof Error ? err.message : String(err)}`);
+        setActionError(`Toggle failed: ${gatewayErrorMessage(err)}`);
       }
     },
     [refresh],

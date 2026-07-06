@@ -3,6 +3,7 @@ import {
   deleteScreenshot,
   getScreenshots,
   screenshotFileUrl,
+  gatewayErrorMessage,
   type ScreenshotInfo,
 } from "@devthrottle/client-core/api/client";
 
@@ -47,7 +48,7 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
         setLoadedOnce(true);
       } catch (err) {
         if (signal?.aborted) return;
-        setError(err instanceof Error ? err.message : "Screenshots unavailable");
+        setError(gatewayErrorMessage(err));
       } finally {
         setBusy(false);
       }
@@ -75,7 +76,7 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
         setShots((cur) => cur.filter((s) => s.fileName !== fileName));
         setTotal((t) => Math.max(0, t - 1));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Delete failed");
+        setError(gatewayErrorMessage(err));
       } finally {
         setBusy(false);
       }

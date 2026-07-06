@@ -3,6 +3,7 @@ import {
   enqueuePrompt,
   sendPrompt,
   uploadImage,
+  gatewayErrorMessage,
   type QueueItem,
 } from "@devthrottle/client-core/api/client";
 
@@ -43,7 +44,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued }: Sessio
       setStatus("Sent");
     } catch (err) {
       onChange(text); // restore so a failed send never loses the typed text
-      setError(err instanceof Error ? err.message : "Send failed");
+      setError(gatewayErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -61,7 +62,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued }: Sessio
       onChange("");
       setStatus("Queued");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Queue failed");
+      setError(gatewayErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -103,7 +104,7 @@ export function SessionComposer({ sessionId, value, onChange, onQueued }: Sessio
           setStatus(paths.length === 1 ? "Image attached" : `${paths.length} images attached`);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Attach failed");
+        setError(gatewayErrorMessage(err));
       } finally {
         setBusy(false);
         if (fileRef.current) fileRef.current.value = ""; // allow re-selecting the same file

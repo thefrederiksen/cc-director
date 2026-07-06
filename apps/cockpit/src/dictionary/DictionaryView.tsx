@@ -5,6 +5,7 @@ import {
   saveDictionary,
   type Dictionary,
 } from "@devthrottle/client-core/dictation/dictionaryClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The dictation Dictionary editor (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Dictionary.razor (#183). The human edits the vocabulary chips biased into speech-to-text and the
@@ -138,7 +139,7 @@ export function DictionaryView() {
       if (clearMsgTimer.current !== null) window.clearTimeout(clearMsgTimer.current);
       clearMsgTimer.current = window.setTimeout(() => setSaveMsg((m) => (m === "Saved" ? "" : m)), 4000);
     } catch (err) {
-      setSaveMsg(`save failed: ${err instanceof Error ? err.message : String(err)}`);
+      setSaveMsg(`save failed: ${gatewayErrorMessage(err)}`);
     } finally {
       setSaving(false);
     }

@@ -9,6 +9,7 @@ import {
   type WorkListItemRef,
 } from "@devthrottle/client-core/lists/listsClient";
 import { resolveItemStatus, type WorkItemInfo, type WorkItemStatus } from "@devthrottle/client-core/api/itemStatus";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { clockLabel } from "../fleet/format";
 
 // The Lists page (issue #977, epic #967) - the React port of the Blazor Cockpit Lists.razor (#275).
@@ -148,7 +149,7 @@ export function ListsView() {
         await resolveInfo(fresh, signal);
       } catch (err) {
         if (signal?.aborted === true) return;
-        setLastError(err instanceof Error ? err.message : "Failed to fetch lists");
+        setLastError(gatewayErrorMessage(err));
       }
     },
     [resolveInfo],
@@ -190,7 +191,7 @@ export function ListsView() {
       busyRef.current = false;
       await refresh();
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Create failed");
+      setCreateError(gatewayErrorMessage(err));
     } finally {
       setCreating(false);
     }
@@ -228,7 +229,7 @@ export function ListsView() {
       busyRef.current = false;
       await refresh();
     } catch (err) {
-      setItemError(`Add item failed: ${err instanceof Error ? err.message : String(err)}`);
+      setItemError(`Add item failed: ${gatewayErrorMessage(err)}`);
     } finally {
       setAdding(false);
     }
@@ -243,7 +244,7 @@ export function ListsView() {
       await removeWorkListItem(listName, item.source, item.id);
       await refresh();
     } catch (err) {
-      setItemError(`Remove item failed: ${err instanceof Error ? err.message : String(err)}`);
+      setItemError(`Remove item failed: ${gatewayErrorMessage(err)}`);
     }
   };
 
@@ -256,7 +257,7 @@ export function ListsView() {
       await reorderWorkListItems(listName, order);
       await refresh();
     } catch (err) {
-      setItemError(`Reorder failed: ${err instanceof Error ? err.message : String(err)}`);
+      setItemError(`Reorder failed: ${gatewayErrorMessage(err)}`);
     }
   };
 

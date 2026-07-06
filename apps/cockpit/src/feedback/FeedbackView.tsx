@@ -3,6 +3,7 @@ import {
   getBriefFeedback,
   type BriefFeedbackItem,
 } from "@devthrottle/client-core/feedback/feedbackClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The Feedback page (issue #978, epic #967) - the React port of the Blazor Cockpit Feedback.razor. It
 // reads the Wingman feedback corpus (brief votes + reasons, issue #207) from GET /turnbriefs/feedback:
@@ -45,7 +46,7 @@ export function FeedbackView() {
       setItems(list);
     } catch (err) {
       if (signal?.aborted) return;
-      setError(err instanceof Error ? err.message : "Feedback load failed");
+      setError(gatewayErrorMessage(err));
     } finally {
       setLoading(false);
     }

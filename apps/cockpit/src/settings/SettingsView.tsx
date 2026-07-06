@@ -24,6 +24,7 @@ import {
   testChat,
   ttsSample,
 } from "@devthrottle/client-core/api/ai";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The Cockpit Settings page (issue #1025, epic #967) - the React port of the retired Blazor
 // wwwroot/pages/settings.html. The left-rail "Settings" item used to be a dead full-load anchor to
@@ -621,5 +622,5 @@ function ensureStrings(current: string, values: string[]): string[] {
 }
 
 function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return gatewayErrorMessage(e);
 }

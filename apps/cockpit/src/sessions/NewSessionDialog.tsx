@@ -3,6 +3,7 @@ import {
   createSession,
   getDirectors,
   getRepos,
+  gatewayErrorMessage,
   type DirectorInfo,
   type RepoInfo,
 } from "@devthrottle/client-core/api/client";
@@ -64,7 +65,7 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
-        setDirectorsError(err instanceof Error ? err.message : "Could not load machines");
+        setDirectorsError(gatewayErrorMessage(err));
       });
     return () => controller.abort();
   }, []);
@@ -90,7 +91,7 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
         if (controller.signal.aborted || reqId !== reposReqRef.current) return;
         setRepos([]);
         setReposStatus(
-          err instanceof Error ? `Could not load repos: ${err.message}` : "Could not load repos",
+          `Could not load repos: ${gatewayErrorMessage(err)}`,
         );
       });
     return () => controller.abort();
@@ -127,7 +128,7 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       } catch (err) {
         // Surface the Gateway's message (a bad repo path or an unreachable Director) inline, never a
         // raw thrown error.
-        setCreateError(err instanceof Error ? err.message : "Could not create session");
+        setCreateError(gatewayErrorMessage(err));
         setCreating(false);
       }
     },

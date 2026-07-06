@@ -3,6 +3,7 @@ import {
   getWingmanQueue,
   type WingmanQueueSnapshot,
 } from "@devthrottle/client-core/wingman/queueClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { clockLabel } from "../fleet/format";
 
 // The fleet-level Wingman Pipeline page (issue #976, epic #967) - the React port of the Blazor
@@ -29,7 +30,7 @@ export function WingmanQueueView() {
       setLastRefresh(new Date());
     } catch (err) {
       if (signal?.aborted === true) return;
-      setError(err instanceof Error ? err.message : "Failed to fetch the wingman pipeline");
+      setError(gatewayErrorMessage(err));
     }
   }, []);
 

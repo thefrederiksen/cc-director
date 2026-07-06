@@ -6,6 +6,7 @@ import {
   moveQueueItemDown,
   moveQueueItemUp,
   sendQueueItem,
+  gatewayErrorMessage,
   type QueueItem,
 } from "@devthrottle/client-core/api/client";
 
@@ -36,7 +37,7 @@ export function QueuePanel({ sessionId, queue, onQueue, onPop }: QueuePanelProps
       try {
         onQueue(await verb());
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Queue action failed");
+        setError(gatewayErrorMessage(err));
       } finally {
         setBusy(false);
       }

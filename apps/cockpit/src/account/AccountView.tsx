@@ -9,6 +9,7 @@ import {
   type AccountDevice,
   type AccountDevicesResponse,
 } from "@devthrottle/client-core/account/accountClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The Account page (issue #978, epic #967) - the React port of the Blazor Cockpit Account.razor
 // (#853/#648/#854). A pure client of the Gateway account endpoints: the credential lives on the
@@ -90,7 +91,7 @@ export function AccountView() {
       if (signal?.aborted) return;
       // No-fallback: a Gateway/cloud error surfaces as an explicit error state, never an empty list.
       setDevices(null);
-      setDevicesError(err instanceof Error ? err.message : "Failed to load your devices");
+      setDevicesError(gatewayErrorMessage(err));
     } finally {
       setDevicesLoading(false);
     }
@@ -105,7 +106,7 @@ export function AccountView() {
         if (next.signedIn) await loadDevices(signal);
       } catch (err) {
         if (signal?.aborted) return;
-        setError(err instanceof Error ? err.message : "Failed to load account status");
+        setError(gatewayErrorMessage(err));
       }
     },
     [loadDevices],
@@ -132,7 +133,7 @@ export function AccountView() {
       setDevicesError(null);
       setConfirmRemoveId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Logout failed");
+      setError(gatewayErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -158,7 +159,7 @@ export function AccountView() {
       // Refresh from the source so the row disappears and the list reflects the account exactly.
       await loadDevices();
     } catch (err) {
-      setRemoveError(err instanceof Error ? err.message : "Failed to remove the device");
+      setRemoveError(gatewayErrorMessage(err));
     } finally {
       setRemoveBusy(false);
     }
@@ -220,7 +221,7 @@ export function AccountView() {
       void pollUntilSignedIn();
     } catch (err) {
       setSignInInProgress(false);
-      setSignInError(err instanceof Error ? err.message : "Sign-in failed to start");
+      setSignInError(gatewayErrorMessage(err));
     }
   };
 
