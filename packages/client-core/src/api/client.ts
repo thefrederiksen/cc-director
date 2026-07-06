@@ -71,18 +71,65 @@ export function ensureGatewayCookie(): void {
   document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax`;
 }
 
-// The path the app navigates to when its credential is missing or rejected. Absolute under the /m
-// basename so it works from any in-app route.
-const SIGN_IN_PATH = "/m/signin";
+// The redirect target when a credentialed call is rejected (401) mid-session is SHELL-AWARE, because
+// the two shells that share this client re-gate through different sign-in entries: the mobile PWA has
+// its own /m/signin enrollment screen, while the desktop Cockpit re-gates through the Gateway /login
+// cookie flow. Shared client-core must NOT hardcode either shell's route for the other (issue #1024),
+// so the target is INJECTED per shell at startup via configureUnauthorizedRedirect. The resolver is
+// given the current in-app location so a shell that carries the route forward (the desktop next=)
+// can build a round-trip target.
+export interface SignInLocation {
+  pathname: string;
+  search: string;
+}
+export type SignInRedirect = (current: SignInLocation) => string;
+
+// The desktop Cockpit's sign-in redirect: re-gate through the Gateway /login cookie flow, carrying the
+// current route in next= so the browser lands back where it was once the token cookie is set. This is
+// what the desktop shell installs at startup; it deliberately targets the Gateway login, NEVER the
+// mobile /m/signin route.
+export function gatewayLoginRedirect(current: SignInLocation): string {
+  return `/login?next=${encodeURIComponent(current.pathname + current.search)}`;
+}
+
+// The mobile PWA's sign-in redirect: its own /m/signin enrollment screen, absolute under the /m
+// basename so it works from any in-app route. This is what the mobile shell installs at startup, and it
+// is the default so an unconfigured client-core still serves the shell that historically owned it.
+export function mobileSignInRedirect(): string {
+  return "/m/signin";
+}
+
+let signInRedirect: SignInRedirect = mobileSignInRedirect;
+
+// Each shell installs its own sign-in redirect at startup (the mobile PWA -> mobileSignInRedirect, the
+// desktop Cockpit -> gatewayLoginRedirect), so a mid-session 401 re-gates through the entry that shell
+// actually uses instead of the mobile route baked into shared client-core (issue #1024).
+export function configureUnauthorizedRedirect(redirect: SignInRedirect): void {
+  signInRedirect = redirect;
+}
+
+// The configured sign-in target for the given current location. Exported so onUnauthorized has one
+// place to resolve it and the shell-aware behavior is unit-testable without a DOM.
+export function resolveSignInTarget(current: SignInLocation): string {
+  return signInRedirect(current);
+}
 
 // Called when the Gateway answers 401 to a credentialed call: the device key was revoked (from the
-// website's "Your devices") or is otherwise no longer valid. Forget it and send the user back to Sign
-// in, so a revoke on the account promptly ends the phone's access (the revoke round-trip, issue #908).
-// A hard navigation (not the router) guarantees the whole app re-gates from a clean state.
+// website's "Your devices") or is otherwise no longer valid. Forget it and send the user back to the
+// shell's own Sign in entry, so a revoke on the account promptly ends access (the revoke round-trip,
+// issue #908). A hard navigation (not the router) guarantees the whole app re-gates from a clean state.
 function onUnauthorized(): void {
   clearDeviceKey();
-  if (typeof window !== "undefined" && window.location.pathname !== SIGN_IN_PATH) {
-    window.location.assign(SIGN_IN_PATH);
+  if (typeof window === "undefined") return;
+  const target = resolveSignInTarget({
+    pathname: window.location.pathname,
+    search: window.location.search,
+  });
+  // Compare on the path only so a resolver that appends a query (the desktop next=) does not loop
+  // when the browser is already sitting on the sign-in entry.
+  const targetPath = target.split("?")[0];
+  if (window.location.pathname !== targetPath) {
+    window.location.assign(target);
   }
 }
 
