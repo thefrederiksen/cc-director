@@ -1,6 +1,8 @@
 # The Cockpit - Design (TARGET / PLANNED v1)
 
-**Status:** PLANNED
+**SUPERSEDED:** the Blazor Server design below is replaced by the shipped React rebuild. See [COCKPIT_REACT_REBUILD.md](COCKPIT_REACT_REBUILD.md) for the current, authoritative design. The topology here (one Gateway front door, direct-WebSocket terminal) still holds; only the view technology changed. Read this for history, not for the plan.
+
+**Status:** PLANNED (historical)
 **Date:** 2026-05-31
 **Audience:** Anyone building the Cockpit, or deciding where a session-driving feature should live going forward.
 
