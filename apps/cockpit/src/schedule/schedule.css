@@ -325,6 +325,17 @@
   border-color: var(--accent);
 }
 
+/* per-field validation guidance (issue #1027) */
+.sched-fld input.invalid {
+  border-color: var(--attention);
+}
+
+.sched-fld-err {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--attention);
+}
+
 /* ---- compact Director field + picker dialog (#495) ---- */
 .sched-dpick-field {
   display: flex;

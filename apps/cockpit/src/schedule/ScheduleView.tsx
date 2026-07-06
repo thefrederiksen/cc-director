@@ -50,6 +50,30 @@ interface FormState {
   preventOverlap: boolean;
 }
 
+// Per-field validation messages for the create/edit form. A field is present here only when it is
+// invalid, so an empty object means "minimally valid to submit" (issue #1027). We validate exactly
+// the fields the Gateway needs to run a job: a name, a target machine, a repository path, and a
+// schedule (a cron expression when recurring, or a run-at instant when one-off).
+interface FormErrors {
+  name?: string;
+  machine?: string;
+  repoPath?: string;
+  schedule?: string;
+}
+
+function validateForm(f: FormState): FormErrors {
+  const errors: FormErrors = {};
+  if (f.name.trim().length === 0) errors.name = "Enter a name so you can find this job in the list.";
+  if (f.machine.trim().length === 0) errors.machine = "Choose the machine this job runs on.";
+  if (f.repoPath.trim().length === 0) errors.repoPath = "Enter the repository path the session opens in.";
+  if (f.scheduleKind === "recurring") {
+    if (f.cron.trim().length === 0) errors.schedule = "Enter a 5-field cron expression, for example 0 0 * * *.";
+  } else {
+    if (f.runAt.trim().length === 0) errors.schedule = "Enter the local date and time to run once.";
+  }
+  return errors;
+}
+
 const EMPTY_FORM: FormState = {
   editingId: null,
   name: "",
@@ -199,7 +223,14 @@ export function ScheduleView() {
     };
   }, []);
 
+  // Live per-field validation of the open form. Empty object => minimally valid (issue #1027).
+  const formErrors = useMemo(() => validateForm(form), [form]);
+  const formValid = Object.keys(formErrors).length === 0;
+
   const save = useCallback(async () => {
+    // The Create/Save button is disabled while invalid, but guard here too so no code path can POST
+    // an empty job (issue #1027).
+    if (!formValid) return;
     setSaving(true);
     setFormError(null);
     try {
@@ -217,7 +248,7 @@ export function ScheduleView() {
     } finally {
       setSaving(false);
     }
-  }, [buildFromForm, form, refresh]);
+  }, [buildFromForm, form, formValid, refresh]);
 
   const runNow = useCallback(
     async (job: CronJob) => {
@@ -255,9 +286,12 @@ export function ScheduleView() {
     async (job: CronJob) => {
       setActionError(null);
       try {
-        // Preserve every field the toggle does not change (notify settings included) so flipping
-        // enabled never silently clears them (Blazor #622).
-        await updateCronJob(job.id, { ...job, id: "", enabled: !job.enabled });
+        // Send only the mutable job fields (issue #1027) - never echo back the Gateway's own
+        // computed fields (nextRunUtc / lastFiredUtc / lastStatus / createdUtc). This preserves
+        // every field the toggle does not change, notify settings included, so flipping enabled
+        // never silently clears them (Blazor #622), while keeping read-only scheduling state on the
+        // Gateway.
+        await updateCronJob(job.id, toMutableDto(job, { enabled: !job.enabled }));
         await refresh();
       } catch (err) {
         setActionError(`Toggle failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -443,10 +477,12 @@ export function ScheduleView() {
               <div className="sched-fld">
                 <label className="sched-fld-label">Name</label>
                 <input
+                  className={formErrors.name ? "invalid" : undefined}
                   value={form.name}
                   placeholder="e.g. Tonight - drain work list"
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                 />
+                {formErrors.name && <div className="sched-fld-err">{formErrors.name}</div>}
               </div>
 
               <div className="sched-fld">
@@ -466,16 +502,18 @@ export function ScheduleView() {
                     {form.machine.length === 0 ? "Choose..." : "Change"}
                   </button>
                 </div>
+                {formErrors.machine && <div className="sched-fld-err">{formErrors.machine}</div>}
               </div>
 
               <div className="sched-fld">
                 <label className="sched-fld-label">Repository path</label>
                 <input
-                  className="mono"
+                  className={`mono${formErrors.repoPath ? " invalid" : ""}`}
                   value={form.repoPath}
                   placeholder="C:\repos\devthrottle"
                   onChange={(e) => setForm((f) => ({ ...f, repoPath: e.target.value }))}
                 />
+                {formErrors.repoPath && <div className="sched-fld-err">{formErrors.repoPath}</div>}
               </div>
 
               <div className="sched-fld">
@@ -525,21 +563,23 @@ export function ScheduleView() {
                 <div className="sched-fld">
                   <label className="sched-fld-label">Cron expression (5-field)</label>
                   <input
-                    className="mono"
+                    className={`mono${formErrors.schedule ? " invalid" : ""}`}
                     value={form.cron}
                     placeholder="0 0 * * *"
                     onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
                   />
+                  {formErrors.schedule && <div className="sched-fld-err">{formErrors.schedule}</div>}
                 </div>
               ) : (
                 <div className="sched-fld">
                   <label className="sched-fld-label">Run at (local time)</label>
                   <input
-                    className="mono"
+                    className={`mono${formErrors.schedule ? " invalid" : ""}`}
                     value={form.runAt}
                     placeholder="2026-06-18T00:00:00"
                     onChange={(e) => setForm((f) => ({ ...f, runAt: e.target.value }))}
                   />
+                  {formErrors.schedule && <div className="sched-fld-err">{formErrors.schedule}</div>}
                 </div>
               )}
 
@@ -585,7 +625,12 @@ export function ScheduleView() {
               <button className="sched-btn" onClick={() => setShowForm(false)}>
                 Cancel
               </button>
-              <button className="sched-btn primary" disabled={saving} onClick={() => void save()}>
+              <button
+                className="sched-btn primary"
+                disabled={saving || !formValid}
+                title={formValid ? undefined : "Fill in the highlighted fields to continue"}
+                onClick={() => void save()}
+              >
                 {saving ? "Saving..." : form.editingId === null ? "Create job" : "Save"}
               </button>
             </div>
@@ -672,6 +717,33 @@ export function ScheduleView() {
       )}
     </div>
   );
+}
+
+// Reduce a full CronJob (as read back from the Gateway, carrying its computed nextRunUtc /
+// lastFiredUtc / lastStatus / createdUtc) to a clean create/update DTO of ONLY the mutable fields,
+// applying overrides last. The enable/disable toggle routes through this so a plain toggle never
+// echoes the Gateway's read-only scheduling state back to it (issue #1027) - the same clean shape
+// buildFromForm produces for the edit path.
+function toMutableDto(job: CronJob, overrides: Partial<CronJob>): CronJob {
+  return {
+    id: "",
+    name: job.name,
+    enabled: job.enabled,
+    scheduleKind: job.scheduleKind,
+    cronExpression: job.cronExpression ?? null,
+    runAt: job.runAt ?? null,
+    timeZoneId: job.timeZoneId,
+    target: { machine: job.target.machine },
+    action: {
+      repoPath: job.action.repoPath,
+      seed: job.action.seed,
+      workListName: job.action.workListName ?? null,
+    },
+    preventOverlap: job.preventOverlap,
+    notifyOn: job.notifyOn,
+    notifyWebhookUrl: job.notifyWebhookUrl ?? null,
+    ...overrides,
+  };
 }
 
 // ---- display helpers (faithful ports of the Blazor private helpers) ----
