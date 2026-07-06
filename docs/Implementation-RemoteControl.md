@@ -46,7 +46,7 @@ I will create SQL migration scripts for:
 - Row Level Security (RLS) policies
 - Indexes for performance
 
-**Output:** `cloud/supabase/migrations/001_initial_schema.sql`
+**Output:** `infra/supabase/migrations/001_initial_schema.sql`
 
 ### Step 1.4: Run Database Migration [USER]
 
@@ -58,7 +58,7 @@ I will create SQL migration scripts for:
 
 1. Go to https://vercel.com and sign up/login (use GitHub login)
 2. Import the cc_director repository
-3. Set root directory to `cloud/web` (we'll create this)
+3. Set root directory to `infra/web` (we'll create this)
 4. Add environment variables:
    - `NEXT_PUBLIC_SUPABASE_URL` = your Supabase project URL
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = your Supabase anon key
@@ -82,7 +82,7 @@ Build the web application that serves the remote control interface.
 Create Next.js project structure:
 
 ```
-cloud/
+infra/
   web/
     src/
       app/              # Next.js App Router pages
@@ -118,7 +118,7 @@ Using Vercel's Edge Runtime or Supabase Realtime:
 
 ### Step 2.5: Initial Deployment [BOTH]
 
-1. [CODE] I commit the cloud/web folder
+1. [CODE] I commit the infra/web folder
 2. [USER] Push to GitHub, Vercel auto-deploys
 3. [BOTH] Verify deployment works, fix any issues
 
@@ -275,7 +275,7 @@ Connect everything and ensure it works reliably.
 
 ```
 cc_director/
-  cloud/
+  infra/
     web/                    # Next.js web app (Vercel)
       src/
         app/
