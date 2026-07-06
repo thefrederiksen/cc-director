@@ -60,7 +60,10 @@ export async function getFleetDirectors(signal?: AbortSignal): Promise<FleetDire
   if (!res.ok) {
     throw new GatewayError(res.status, `GET /directors failed: ${res.status}`);
   }
-  return (await res.json()) as FleetDirector[];
+  // Contract is a JSON array; a non-array body must degrade to [] so the Directors table never
+  // throws "x.map is not a function" (same sibling-list guard as getRecordings, issue #1050).
+  const body = (await res.json()) as unknown;
+  return Array.isArray(body) ? (body as FleetDirector[]) : [];
 }
 
 // ===== Roster envelope (GET /sessions?envelope=true) =====
@@ -159,7 +162,10 @@ export async function getInterrupted(signal?: AbortSignal): Promise<InterruptedS
   if (!res.ok) {
     throw new GatewayError(res.status, `GET /interrupted failed: ${res.status}`);
   }
-  return (await res.json()) as InterruptedSession[];
+  // Contract is a JSON array; a non-array body must degrade to [] so the Fleet interrupted-cards
+  // grouping never throws "x.map is not a function" (sibling-list guard, issue #1050).
+  const body = (await res.json()) as unknown;
+  return Array.isArray(body) ? (body as InterruptedSession[]) : [];
 }
 
 // DELETE /interrupted/{deadDirectorId}/{deadPid}?via={reportedBy} - dismiss a WHOLE crash journal

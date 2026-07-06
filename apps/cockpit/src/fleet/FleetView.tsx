@@ -248,10 +248,12 @@ export function FleetView() {
                 </button>
               </div>
               <div className="fleet-cards">
-                {g.sessions.map((s) => {
+                {g.sessions.map((s, index) => {
                   const newSid = restored[s.sessionId];
+                  // Crash-journal sessionIds can be empty or duplicated; the map index makes the key
+                  // unique within this group so React never warns about duplicate keys (issue #1050).
                   return (
-                    <article key={s.sessionId} className="fint-card">
+                    <article key={`${s.sessionId}-${index}`} className="fint-card">
                       <div className="fleet-card-head">
                         <span className="fleet-dot fleet-dot-interrupted" title={`Director died ${relativeTime(g.diedAtUtc)} ago`} />
                         <span className={`fleet-cardtitle${(s.name ?? "").trim().length === 0 ? " fleet-unnamed" : ""}`}>
