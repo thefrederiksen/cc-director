@@ -83,10 +83,19 @@ export async function backgroundTranscribeAndSend(
     });
     if (outcome.terminal) {
       if (persisted) await deletePending(rec.id);
+    } else if (persisted) {
+      // The server did not confirm the turn - most often the session is parked on a prompt or
+      // permission dialog and would not accept the typed words - but the audio is saved durably and
+      // resumePendingDictations() re-drives it on the next app load. Tell the user their dictation is
+      // HELD and will retry, not silently lost, rather than surfacing a raw technical error (issue #1056).
+      hooks.onError?.(
+        "Couldn't send your dictation yet - the session may be busy or waiting on a prompt. " +
+          "It's saved and will retry the next time you open the app.",
+      );
+      hooks.onFailed?.();
     } else {
-      // The server did not confirm the turn; keep the durable record so resume-on-load retries it, and
-      // surface the soft error. (If there is no durable copy, this utterance is genuinely lost - the
-      // onError is then the signal, exactly as before.)
+      // No durable store in this context (rare), so this utterance really is lost - surface the raw error
+      // as before, so the failure is not silent.
       hooks.onError?.(outcome.error ?? "Dictation upload failed");
       hooks.onFailed?.();
     }
