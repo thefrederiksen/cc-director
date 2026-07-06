@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Outlet, useMatch } from "react-router-dom";
+import { Outlet, useMatch, useNavigate } from "react-router-dom";
 import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { SessionRoster, type RosterView } from "./SessionRoster";
+import { NewSessionDialog } from "./NewSessionDialog";
 
 // The Sessions experience (issue #972): the core driving loop - see every session, select one,
 // answer it. This layout route owns the fleet roster poll and the ordering-view state, renders the
@@ -31,7 +32,9 @@ export function SessionsView() {
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<RosterView>(initialView);
+  const [showNew, setShowNew] = useState(false);
   const loadedOnce = useRef(false);
+  const navigate = useNavigate();
 
   // The selected session id comes from the child route (/session/:sessionId). This layout route is an
   // ancestor of that route, so it reads the id with useMatch rather than useParams (which only exposes
@@ -72,6 +75,17 @@ export function SessionsView() {
     }
   }, []);
 
+  // A new session was created (issue #1023): refresh the roster immediately so the new row shows
+  // without waiting for the next poll tick, then open it in the detail region.
+  const onCreated = useCallback(
+    (sessionId: string) => {
+      setShowNew(false);
+      void load();
+      navigate(`/session/${encodeURIComponent(sessionId)}`);
+    },
+    [load, navigate],
+  );
+
   const context: SessionsOutletContext = { sessions };
 
   return (
@@ -82,10 +96,12 @@ export function SessionsView() {
         view={view}
         onView={onView}
         error={error}
+        onNewSession={() => setShowNew(true)}
       />
       <div className="sessions-detail">
         <Outlet context={context} />
       </div>
+      {showNew && <NewSessionDialog onClose={() => setShowNew(false)} onCreated={onCreated} />}
     </div>
   );
 }

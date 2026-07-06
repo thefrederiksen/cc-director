@@ -268,6 +268,214 @@ body {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* The "+ New session" action on the roster head (issue #1023) - the desktop Cockpit's only way to
+   start a session. Pushed to the right of the head so it never crowds the title/count. */
+.roster-newbtn {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.roster-newbtn:hover {
+  filter: brightness(1.08);
+}
+
+/* ---- New-session dialog (issue #1023): the dedicated machine/repo picker the roster opens. Shares
+   the modal look of the Schedule create dialog, on the shared navy tokens. ---- */
+.newsess-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.newsess-modal {
+  width: 480px;
+  max-width: 92vw;
+  max-height: 88vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+.newsess-head {
+  padding: 14px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.newsess-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.newsess-foot {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.newsess-step-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.newsess-status {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  padding: 2px 0 6px;
+  line-height: 1.5;
+}
+
+.newsess-list {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.newsess-pick {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.newsess-pick:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.newsess-pick:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.newsess-pick.sel {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.newsess-pick-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.newsess-pick-path {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.newsess-pick-check {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.newsess-manual-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 8px 0 4px;
+}
+
+.newsess-manual {
+  display: flex;
+}
+
+.newsess-input {
+  width: 100%;
+  background: var(--code-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
+
+.newsess-input.mono {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.newsess-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.newsess-error {
+  padding: 8px 10px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 6px;
+  color: var(--attention);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.newsess-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.newsess-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.newsess-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.newsess-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
 .roster-error {
   font-size: 12px;
   color: var(--attention);
