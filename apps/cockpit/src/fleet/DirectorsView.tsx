@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import {
   ENDPOINT_STATE_UNREACHABLE_BY_NAME,
@@ -114,7 +114,19 @@ export function DirectorsView() {
                   return (
                     <tr key={d.directorId} className="dtbl-rowlink" title="Director details"
                         onClick={() => navigate(`/directors/${encodeURIComponent(d.directorId)}`)}>
-                      <td><span className="dcell-name">{d.machineName}</span> <span className="ddim">{d.user}</span></td>
+                      {/* The machine name is a real in-row link so keyboard users can Tab to it and press
+                          Enter to open the Director detail; the row onClick stays for the mouse. stopPropagation
+                          avoids a double navigate when the link itself is clicked (issue #1032). */}
+                      <td>
+                        <Link
+                          className="dcell-namelink"
+                          to={`/directors/${encodeURIComponent(d.directorId)}`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {(d.machineName ?? "").trim().length > 0 ? d.machineName : d.directorId}
+                        </Link>{" "}
+                        <span className="ddim">{d.user}</span>
+                      </td>
                       <td className="dmono" title={d.directorId}>
                         {portLabel(d.controlEndpoint, d.tailnetEndpoint, d.directorId)} <span className="ddim">pid {d.pid}</span>
                       </td>

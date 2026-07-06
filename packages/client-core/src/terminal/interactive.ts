@@ -29,11 +29,14 @@
 //  - DOM renderer, NOT the canvas addon (the xterm default is the DOM renderer). It uses the
 //    platform's native text rasterization (ClearType on Windows), matching the desktop terminal; the
 //    canvas addon's greyscale-AA glyph atlas reads blurry next to it at fractional display scaling.
-//  - Bounded reconnect WITH a visible status line. A hung/failing socket must not retry forever with
-//    no on-screen feedback (indistinguishable from a healthy idle stream / blank pane): every attempt
-//    writes a dim status line, and after a run of consecutive failures it gives up and tells the user
-//    how to retry. The counter resets the moment real stream data arrives, so a long-lived session
-//    that drops occasionally is unaffected.
+//  - Bounded FAST reconnect WITH a visible status line, then a SLOW keepalive probe that never gives
+//    up. A hung/failing socket must not retry forever at full speed with no on-screen feedback
+//    (indistinguishable from a healthy idle stream / blank pane): every attempt writes a dim status
+//    line, and after a run of consecutive fast failures it announces the outage and drops to a slow
+//    keepalive probe (SLOW_RECONNECT_DELAY_MS). That probe keeps retrying quietly, so when the Gateway
+//    comes back the stream resumes on its own - no manual re-selection and no page reload (issue
+//    #1032). The counter resets the moment real stream data arrives, so a long-lived session that
+//    drops occasionally is unaffected and the next outage re-announces from scratch.
 //  - The {"type":"closed"} control frame is the Gateway reporting WHY the owning Director is
 //    unreachable; it is NOT proof of a live stream, so it must not reset the reconnect streak.
 
@@ -48,8 +51,12 @@ const FONT_SIZE = 14;
 const LINE_HEIGHT = 1.2;
 const SCROLLBACK = 5000;
 
-const RECONNECT_DELAY_MS = 1200; // ~1200ms between reconnect attempts
-const MAX_RECONNECT_ATTEMPTS = 30; // ~36s of dead-leg retries before announcing failure
+const RECONNECT_DELAY_MS = 1200; // ~1200ms between fast reconnect attempts
+const MAX_RECONNECT_ATTEMPTS = 30; // ~36s of fast dead-leg retries before dropping to the slow probe
+// After the fast cap is exhausted the engine does NOT give up: it keeps a slow keepalive probe so the
+// stream resumes on its own when the Gateway returns (issue #1032). 15s is slow enough to be
+// effectively idle on the network yet quick enough that recovery feels automatic.
+const SLOW_RECONNECT_DELAY_MS = 15000;
 
 // How many animation frames start() will wait for the host to be laid out (non-zero size) before it
 // opens the terminal anyway. ~30 frames is roughly half a second at 60fps - long enough to cover the
@@ -98,6 +105,10 @@ export class InteractiveTerminal {
   private lastRows = 0;
   private attempts = 0; // consecutive failed connect attempts; reset on the first live byte
   private gotFirstByte = false;
+  // Whether the "dropped to the slow keepalive probe" status line has already been written for the
+  // CURRENT outage. It is announced once when the fast cap is first crossed and cleared by markLive so
+  // the next fresh outage re-announces (issue #1032).
+  private announcedSlow = false;
 
   // Keystroke send serialization (issue #1021). Bytes from onData are appended here in the EXACT
   // order xterm emits them; a single pump drains this buffer one POST at a time, awaiting each send
@@ -303,6 +314,7 @@ export class InteractiveTerminal {
     if (this.gotFirstByte) return;
     this.gotFirstByte = true;
     this.attempts = 0;
+    this.announcedSlow = false; // a live stream ends the outage; the next one re-announces the slow probe
     if (this.term) {
       try {
         this.term.reset();
@@ -384,17 +396,23 @@ export class InteractiveTerminal {
       if (this.ws === sock) this.ws = null;
       if (!this.wantOpen || this.reconnectTimer !== null) return;
       this.attempts += 1;
-      if (this.attempts > MAX_RECONNECT_ATTEMPTS) {
+      // Past the fast cap we do NOT stop: drop to a slow keepalive probe so the stream resumes on its
+      // own when the Gateway returns - no manual re-selection, no page reload (issue #1032). Announce
+      // the transition once per outage; markLive clears the flag so a later outage re-announces.
+      const slow = this.attempts > MAX_RECONNECT_ATTEMPTS;
+      if (slow && !this.announcedSlow) {
+        this.announcedSlow = true;
         this.statusLine(
-          "stream via gateway " + wsHost + " is down - gave up after " + MAX_RECONNECT_ATTEMPTS +
-            " attempts (last close code " + ev.code + "). Re-select the session to retry.",
+          "stream via gateway " + wsHost + " is down after " + MAX_RECONNECT_ATTEMPTS +
+            " attempts (last close code " + ev.code + ") - now retrying every " +
+            Math.round(SLOW_RECONNECT_DELAY_MS / 1000) +
+            "s; it resumes automatically when the gateway returns.",
         );
-        return;
       }
       this.reconnectTimer = window.setTimeout(() => {
         this.reconnectTimer = null;
         if (this.wantOpen) this.openWs();
-      }, RECONNECT_DELAY_MS);
+      }, slow ? SLOW_RECONNECT_DELAY_MS : RECONNECT_DELAY_MS);
     };
 
     sock.onerror = () => {
