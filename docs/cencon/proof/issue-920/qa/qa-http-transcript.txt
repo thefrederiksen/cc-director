@@ -43,8 +43,8 @@ Harness (isolated from the user's running Gateway on 7878 / Cockpit on 7470):
        /_blazor/negotiate?negotiateVersion=1  : 200   (circuit connected)
        reconnect modal (#components-reconnect-modal) : not shown
   4. Roster rendered live over the connected circuit: "4 sessions", real rows
-       104 devthrottle_internal (Working), 101 devthrottle - enforce auth (Working),
-       103 devthrottle - transcription (Working), 105 devthrottle_internal - marketing (Working),
+       104 example-marketing (Working), 101 devthrottle - enforce auth (Working),
+       103 devthrottle - transcription (Working), 105 example-marketing (Working),
        under directors :7880 (v0.9.34) and :7881 (v1.0.1). The session count updated live
        (5 -> 4) across the circuit, proving live data, not a static shell.
   5. Stability re-check after 12s: still 0x 401, negotiate 200, no reconnect modal, roster intact.

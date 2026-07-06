@@ -32,5 +32,5 @@ Date: 2026-07-04T12:48:11Z
 
 === E. Cockpit roster rendered (DOM text via cc-playwright) ===
   '5 sessions', '2 need you'; live rows: 101 devthrottle - enforce auth (Working),
-  103 devthrottle - transcription (Working), 104 cc-consult - sport pools (WaitingForInput, needs you),
-  105 devthrottle_internal - marketing (WaitingForInput). errMatch=none.
+  103 devthrottle - transcription (Working), 104 example-work - sport pools (WaitingForInput, needs you),
+  105 example-marketing (WaitingForInput). errMatch=none.
