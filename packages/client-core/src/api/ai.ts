@@ -11,6 +11,7 @@ export type AiProviderId = "devthrottle" | "openai";
 export interface AiProviderSnapshot {
   provider: AiProviderId;
   wingmanModel: string;
+  wingmanFastModel: string;
   transcriptionModel: string;
   ttsModel: string;
   ttsVoice: string;
@@ -85,6 +86,10 @@ export async function testChat(model: string): Promise<ChatTestResult> {
 
 export function setWingmanModel(model: string): Promise<{ model: string }> {
   return putJson<{ model: string }>("/gateway/ai/wingman-model", { model });
+}
+
+export function setWingmanFastModel(model: string): Promise<{ model: string }> {
+  return putJson<{ model: string }>("/gateway/ai/wingman-fast-model", { model });
 }
 
 export function setTtsModel(model: string): Promise<{ model: string }> {

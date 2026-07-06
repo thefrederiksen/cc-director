@@ -52,7 +52,7 @@ public sealed class WingmanVoiceService
 
     /// <param name="ttsHttpClient">Optional HTTP client for the text-to-speech call (tests inject a stub
     /// over a fake handler, issue #939). A per-call 60-second client is created when null.</param>
-    public WingmanVoiceService(Func<CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, DirectorEndpointClient client, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null)
+    public WingmanVoiceService(Func<Core.Configuration.WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, KeyVault vault, DirectorEndpointClient client, string? persistPath = null, WingmanTrainingStore? training = null, Func<string>? instructionsProvider = null, HttpClient? ttsHttpClient = null)
     {
         _translator = new WingmanTranslator(brainProvider, instructionsProvider: instructionsProvider);
         _vault = vault;

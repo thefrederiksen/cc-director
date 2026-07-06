@@ -18,6 +18,7 @@ import {
   getAiModels,
   getAiProvider,
   setAiProvider,
+  setWingmanFastModel,
   setTtsModel,
   setTtsVoice,
   setWingmanModel,
@@ -282,6 +283,7 @@ function AiTab() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [testMsg, setTestMsg] = useState("");
+  const [fastTestMsg, setFastTestMsg] = useState("");
   const [sampleMsg, setSampleMsg] = useState("");
 
   // The OpenAI key panel state (shown when the OpenAI provider is selected). We never read the value
@@ -339,13 +341,14 @@ function AiTab() {
     setBusy(true);
     setMsg("Saving...");
     setTestMsg("");
+    setFastTestMsg("");
     try {
       setSnap(await setAiProvider(p));
       await loadModels();
       setMsg(
         p === "devthrottle"
-          ? "Using DevThrottle hosted AI - billed to your account credits."
-          : "Using OpenAI. Add your key below if you have not.",
+          ? "Using DevThrottle hosted AI. Models reset to the DevThrottle defaults."
+          : "Using OpenAI. Models reset to the OpenAI defaults. Add your key below if you have not.",
       );
     } catch (e) {
       setMsg(errText(e));
@@ -361,7 +364,7 @@ function AiTab() {
     try {
       await setWingmanModel(model);
       setSnap({ ...snap, wingmanModel: model });
-      setMsg("Wingman model set. Test it to confirm.");
+      setMsg("Thinking model set. Test it to confirm.");
     } catch (e) {
       setMsg(errText(e));
     } finally {
@@ -374,6 +377,29 @@ function AiTab() {
     setTestMsg("Testing " + snap.wingmanModel + "...");
     const r = await testChat(snap.wingmanModel);
     setTestMsg(r.ok ? `OK - replied "${r.reply}" in ${r.seconds}s.` : "Failed: " + r.error);
+    setBusy(false);
+  };
+
+  const chooseFastWingman = async (model: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    setFastTestMsg("");
+    try {
+      await setWingmanFastModel(model);
+      setSnap({ ...snap, wingmanFastModel: model });
+      setMsg("Fast model set. Test it to confirm.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runFastTest = async () => {
+    setBusy(true);
+    setFastTestMsg("Testing " + snap.wingmanFastModel + "...");
+    const r = await testChat(snap.wingmanFastModel);
+    setFastTestMsg(r.ok ? `OK - replied "${r.reply}" in ${r.seconds}s.` : "Failed: " + r.error);
     setBusy(false);
   };
 
@@ -478,7 +504,7 @@ function AiTab() {
       </div>
 
       <div className="settings-field">
-        <label htmlFor="settings-ai-model">Wingman model</label>
+        <label htmlFor="settings-ai-model">Thinking model</label>
         <select
           id="settings-ai-model"
           className="settings-select"
@@ -496,7 +522,34 @@ function AiTab() {
           <button type="button" className="settings-btn" disabled={busy} onClick={() => void runTest()}>
             Test
           </button>
-          <span className="settings-inline-msg">{testMsg}</span>
+          <span className="settings-inline-msg">
+            {testMsg || "Used for talk-to-the-wingman and product questions."}
+          </span>
+        </div>
+      </div>
+
+      <div className="settings-field">
+        <label htmlFor="settings-ai-fast-model">Fast model</label>
+        <select
+          id="settings-ai-fast-model"
+          className="settings-select"
+          value={snap.wingmanFastModel}
+          disabled={busy}
+          onChange={(e) => void chooseFastWingman(e.target.value)}
+        >
+          {ensureIds(snap.wingmanFastModel, chatModels).map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+        <div className="settings-actions">
+          <button type="button" className="settings-btn" disabled={busy} onClick={() => void runFastTest()}>
+            Test
+          </button>
+          <span className="settings-inline-msg">
+            {fastTestMsg || "Used for spoken turn summaries, menus, and choice mapping."}
+          </span>
         </div>
       </div>
 

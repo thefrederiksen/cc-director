@@ -152,6 +152,16 @@ public static class TranscriptionEndpointResolver
     public const string OpenAiWingmanModel = "gpt-5.5";
 
     /// <summary>
+    /// The DEFAULT fast wingman chat model per provider. Fast wingman calls are response-only tasks
+    /// like spoken turn summaries, menu detection, and choice mapping where latency matters more than
+    /// deeper reasoning.
+    /// </summary>
+    public const string DevThrottleWingmanFastModel = "Qwen/Qwen2.5-72B-Instruct";
+
+    /// <summary>The default OpenAI fast wingman chat model. See <see cref="DevThrottleWingmanFastModel"/>.</summary>
+    public const string OpenAiWingmanFastModel = "gpt-5.5-mini";
+
+    /// <summary>
     /// The DEFAULT text-to-speech model per provider. The catalogs differ (verified live): the
     /// DevThrottle proxy serves open TTS models like <c>hexgrad/Kokoro-82M</c> (it does NOT serve
     /// OpenAI's <c>tts-1</c>), OpenAI serves <c>tts-1</c>. The user can pick any speech model from the
@@ -189,6 +199,17 @@ public static class TranscriptionEndpointResolver
     {
         TranscriptionMode.Byo => new ProviderEndpoint(OpenAiBaseUrl, OpenAiKeyName, OpenAiWingmanModel),
         TranscriptionMode.DevThrottle => new ProviderEndpoint(DevThrottleBaseUrl, DevThrottleKeyName, DevThrottleWingmanModel),
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transcription mode"),
+    };
+
+    /// <summary>
+    /// Resolve the fast wingman chat-completions target for <paramref name="mode"/>. Same base URL and
+    /// key as <see cref="ResolveWingman"/>; only the default model differs.
+    /// </summary>
+    public static ProviderEndpoint ResolveWingmanFast(TranscriptionMode mode) => mode switch
+    {
+        TranscriptionMode.Byo => new ProviderEndpoint(OpenAiBaseUrl, OpenAiKeyName, OpenAiWingmanFastModel),
+        TranscriptionMode.DevThrottle => new ProviderEndpoint(DevThrottleBaseUrl, DevThrottleKeyName, DevThrottleWingmanFastModel),
         _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transcription mode"),
     };
 

@@ -268,8 +268,8 @@ internal static class SettingsEndpoints
         // The consolidated AI provider (the one switch that drives transcription + wingman + TTS).
         // A projection of transcription_mode: "devthrottle" (hosted, ours) or "openai" (bring-your-own
         // OpenAI key). GET returns the derived wingman + transcription models, the TTS voice, and the
-        // selectable voices. PUT sets transcription_mode AND the provider-default wingman model
-        // (brain_model) atomically, so one choice moves all three capabilities to the same provider.
+        // selectable voices. PUT sets transcription_mode AND the provider-default wingman models
+        // atomically, so one choice moves all capabilities to the same provider.
         app.MapGet("/gateway/ai-provider", () => Results.Json(AiProviderSnapshot()));
 
         app.MapPut("/gateway/ai-provider", async (HttpContext ctx) =>
@@ -288,6 +288,7 @@ internal static class SettingsEndpoints
                 // is not an OpenAI voice; zai-org/GLM-5.2 is not an OpenAI model), so a value saved for one
                 // provider would fail against the other. One switch moves all three cleanly.
                 var wingmanModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode).Model;
+                var wingmanFastModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingmanFast(mode).Model;
                 var ttsModel = Core.Configuration.TranscriptionEndpointResolver.DefaultTtsModel(mode);
                 var ttsVoice = Core.Configuration.TranscriptionEndpointResolver.DefaultTtsVoice(mode);
                 Core.Configuration.CcDirectorConfigService.MergePatch(
@@ -295,10 +296,11 @@ internal static class SettingsEndpoints
                     {
                         ["transcription_mode"] = mode.ToConfigString(),
                         ["brain_model"] = wingmanModel,
+                        ["brain_model_fast"] = wingmanFastModel,
                         ["tts_model"] = ttsModel,
                         ["tts_voice"] = ttsVoice,
                     });
-                FileLog.Write($"[SettingsEndpoints] ai_provider set: mode={mode.ToConfigString()}, wingmanModel={wingmanModel}, ttsModel={ttsModel}, ttsVoice={ttsVoice}");
+                FileLog.Write($"[SettingsEndpoints] ai_provider set: mode={mode.ToConfigString()}, wingmanModel={wingmanModel}, wingmanFastModel={wingmanFastModel}, ttsModel={ttsModel}, ttsVoice={ttsVoice}");
                 return Results.Json(AiProviderSnapshot());
             }
             catch (JsonException ex)
@@ -455,9 +457,10 @@ internal static class SettingsEndpoints
         return new
         {
             provider = ProviderString(mode),
-            // The saved wingman-model choice (falls forward to the provider default for a stale/unset
-            // value), so a model picked on the AI tab round-trips across a reload.
+            // The saved wingman-model choices fall forward to provider defaults for stale/unset values,
+            // so models picked on the AI tab round-trip across a reload.
             wingmanModel = Core.Configuration.WingmanModelConfig.Resolve(mode),
+            wingmanFastModel = Core.Configuration.WingmanModelConfig.ResolveFast(mode),
             transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
             ttsModel = Core.Configuration.TtsModelConfig.Resolve(mode),
             ttsVoice = Core.Configuration.TtsVoiceConfig.Resolve(mode),

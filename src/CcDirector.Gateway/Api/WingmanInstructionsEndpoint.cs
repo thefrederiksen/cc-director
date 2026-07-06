@@ -1,4 +1,5 @@
 using CcDirector.AgentBrain;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Wingman;
 using Microsoft.AspNetCore.Builder;
@@ -20,7 +21,7 @@ internal static class WingmanInstructionsEndpoint
     private const int MaxTestRecords = 5;
 
     public static void Map(IEndpointRouteBuilder app, WingmanInstructionsStore store,
-        WingmanTrainingStore training, Func<CancellationToken, Task<IAgentBrain>> brainProvider)
+        WingmanTrainingStore training, Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider)
     {
         var translator = new WingmanTranslator(brainProvider);
 

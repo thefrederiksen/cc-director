@@ -19,8 +19,9 @@ namespace CcDirector.Gateway.Api;
 ///
 ///   GET  /gateway/ai/models?kind=chat|speech -> { models:[ {id, description, voices[], defaultVoice} ] }
 ///   POST /gateway/ai/test-chat  { model }    -> { ok, reply, seconds } | { error }
-///   PUT  /gateway/ai/wingman-model { model } -> { model }
-///   PUT  /gateway/ai/tts-model     { model } -> { model }
+///   PUT  /gateway/ai/wingman-model      { model } -> { model }
+///   PUT  /gateway/ai/wingman-fast-model { model } -> { model }
+///   PUT  /gateway/ai/tts-model          { model } -> { model }
 ///
 /// DevThrottle serves a TYPED catalog (GET /models?type=chat|speech) where each speech model carries its
 /// own voices. OpenAI's /models is a flat, untyped list with no voices, so for OpenAI we return the known
@@ -94,7 +95,22 @@ internal static class AiModelsEndpoint
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
                 var model = body.Model.Trim();
                 WingmanModelConfig.Set(model);
-                FileLog.Write($"[AiModelsEndpoint] wingman model set: {model}");
+                FileLog.Write($"[AiModelsEndpoint] wingman thinking model set: {model}");
+                return Results.Json(new { model });
+            }
+            catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
+        });
+
+        app.MapPut("/gateway/ai/wingman-fast-model", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<ModelBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Model))
+                    return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
+                var model = body.Model.Trim();
+                WingmanModelConfig.SetFast(model);
+                FileLog.Write($"[AiModelsEndpoint] wingman fast model set: {model}");
                 return Results.Json(new { model });
             }
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }

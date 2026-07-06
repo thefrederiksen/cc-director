@@ -7,6 +7,7 @@ import {
   getAiModels,
   getAiProvider,
   setAiProvider,
+  setWingmanFastModel,
   setTtsModel,
   setTtsVoice,
   setWingmanModel,
@@ -27,6 +28,7 @@ export function AiSettings() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [testMsg, setTestMsg] = useState("");
+  const [fastTestMsg, setFastTestMsg] = useState("");
   const [sampleMsg, setSampleMsg] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -75,6 +77,7 @@ export function AiSettings() {
     setBusy(true);
     setMsg("Saving...");
     setTestMsg("");
+    setFastTestMsg("");
     try {
       setSnap(await setAiProvider(p));
       await loadModels();
@@ -93,7 +96,7 @@ export function AiSettings() {
     try {
       await setWingmanModel(model);
       setSnap({ ...snap, wingmanModel: model });
-      setMsg("Wingman model set. Test it to confirm.");
+      setMsg("Thinking model set. Test it to confirm.");
     } catch (e) {
       setMsg(errText(e));
     } finally {
@@ -106,6 +109,29 @@ export function AiSettings() {
     setTestMsg("Testing " + snap.wingmanModel + "...");
     const r = await testChat(snap.wingmanModel);
     setTestMsg(r.ok ? `OK - replied "${r.reply}" in ${r.seconds}s.` : "Failed: " + r.error);
+    setBusy(false);
+  };
+
+  const chooseFastWingman = async (model: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    setFastTestMsg("");
+    try {
+      await setWingmanFastModel(model);
+      setSnap({ ...snap, wingmanFastModel: model });
+      setMsg("Fast model set. Test it to confirm.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runFastTest = async () => {
+    setBusy(true);
+    setFastTestMsg("Testing " + snap.wingmanFastModel + "...");
+    const r = await testChat(snap.wingmanFastModel);
+    setFastTestMsg(r.ok ? `OK - replied "${r.reply}" in ${r.seconds}s.` : "Failed: " + r.error);
     setBusy(false);
   };
 
@@ -176,7 +202,7 @@ export function AiSettings() {
       </div>
 
       <div className="setting-block">
-        <label className="setting-label" htmlFor="ai-model">Wingman model</label>
+        <label className="setting-label" htmlFor="ai-model">Thinking model</label>
         <select id="ai-model" className="setting-select" value={snap.wingmanModel} disabled={busy} onChange={(e) => void chooseWingman(e.target.value)}>
           {ensure(snap.wingmanModel, chatModels).map((id) => (
             <option key={id} value={id}>{id}</option>
@@ -184,7 +210,20 @@ export function AiSettings() {
         </select>
         <div className="setting-actions">
           <button type="button" className="setting-btn" disabled={busy} onClick={() => void runTest()}>Test</button>
-          <span className="setting-msg">{testMsg}</span>
+          <span className="setting-msg">{testMsg || "Talk-to-the-wingman and product questions."}</span>
+        </div>
+      </div>
+
+      <div className="setting-block">
+        <label className="setting-label" htmlFor="ai-fast-model">Fast model</label>
+        <select id="ai-fast-model" className="setting-select" value={snap.wingmanFastModel} disabled={busy} onChange={(e) => void chooseFastWingman(e.target.value)}>
+          {ensure(snap.wingmanFastModel, chatModels).map((id) => (
+            <option key={id} value={id}>{id}</option>
+          ))}
+        </select>
+        <div className="setting-actions">
+          <button type="button" className="setting-btn" disabled={busy} onClick={() => void runFastTest()}>Test</button>
+          <span className="setting-msg">{fastTestMsg || "Spoken turn summaries and menus."}</span>
         </div>
       </div>
 

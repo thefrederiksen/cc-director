@@ -58,4 +58,39 @@ public sealed class WingmanModelConfigTests : IDisposable
         WingmanModelConfig.Set("zai-org/GLM-5.2");
         Assert.Equal("zai-org/GLM-5.2", CcDirectorConfigService.ReadRaw()["brain_model"]!.GetValue<string>());
     }
+
+    [Fact]
+    public void ResolveFast_Unset_UsesProviderFastDefault()
+    {
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
+        Assert.Equal("gpt-5.5-mini", WingmanModelConfig.ResolveFast(TranscriptionMode.Byo));
+    }
+
+    [Fact]
+    public void ResolveFast_StaleClaudeAlias_FallsForwardToProviderFastDefault()
+    {
+        WingmanModelConfig.SetFast("opus");
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
+    }
+
+    [Fact]
+    public void SetFast_PersistsToSeparateKey_AndDoesNotTouchThinking()
+    {
+        WingmanModelConfig.Set("zai-org/GLM-5.2");
+        WingmanModelConfig.SetFast("Qwen/Qwen2.5-72B-Instruct");
+
+        var raw = CcDirectorConfigService.ReadRaw();
+        Assert.Equal("zai-org/GLM-5.2", raw["brain_model"]!.GetValue<string>());
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", raw["brain_model_fast"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void Resolve_ByRole_DispatchesToThinkingOrFast()
+    {
+        WingmanModelConfig.Set("zai-org/GLM-5.2");
+        WingmanModelConfig.SetFast("Qwen/Qwen2.5-72B-Instruct");
+
+        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Thinking));
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Fast));
+    }
 }

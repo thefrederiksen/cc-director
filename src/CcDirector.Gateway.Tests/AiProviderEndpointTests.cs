@@ -60,6 +60,7 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         Assert.NotNull(obj);
         Assert.Equal("devthrottle", (string?)obj!["provider"]);
         Assert.Equal("zai-org/GLM-5.2", (string?)obj["wingmanModel"]);
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)obj["wingmanFastModel"]);
         Assert.Equal("whisper-large-v3", (string?)obj["transcriptionModel"]);
         Assert.Equal("af_bella", (string?)obj["ttsVoice"]);   // DevThrottle (Kokoro) default voice
         var voices = obj["voices"] as JsonArray;
@@ -76,16 +77,19 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         var echoed = await resp.Content.ReadFromJsonAsync<JsonObject>();
         Assert.Equal("openai", (string?)echoed!["provider"]);
         Assert.Equal("gpt-5.5", (string?)echoed["wingmanModel"]);
+        Assert.Equal("gpt-5.5-mini", (string?)echoed["wingmanFastModel"]);
 
         // Durable on disk: transcription_mode flips to byo AND the wingman model default is persisted.
         var onDisk = CcDirectorConfigService.ReadRaw();
         Assert.Equal("byo", (string?)onDisk["transcription_mode"]);
         Assert.Equal("gpt-5.5", (string?)onDisk["brain_model"]);
+        Assert.Equal("gpt-5.5-mini", (string?)onDisk["brain_model_fast"]);
 
         // The GET reflects the saved choice after a reload.
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.Equal("openai", (string?)obj!["provider"]);
         Assert.Equal("gpt-5.5", (string?)obj["wingmanModel"]);
+        Assert.Equal("gpt-5.5-mini", (string?)obj["wingmanFastModel"]);
     }
 
     [Fact]
@@ -98,6 +102,7 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         var onDisk = CcDirectorConfigService.ReadRaw();
         Assert.Equal("devthrottle", (string?)onDisk["transcription_mode"]);
         Assert.Equal("zai-org/GLM-5.2", (string?)onDisk["brain_model"]);
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)onDisk["brain_model_fast"]);
     }
 
     [Fact]

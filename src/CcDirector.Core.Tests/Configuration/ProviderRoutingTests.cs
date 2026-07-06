@@ -30,6 +30,24 @@ public sealed class ProviderRoutingTests
     }
 
     [Fact]
+    public void ResolveWingmanFast_DevThrottle_UsesProxyBaseAndFastModel()
+    {
+        var ep = TranscriptionEndpointResolver.ResolveWingmanFast(TranscriptionMode.DevThrottle);
+        Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
+        Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", ep.Model);
+    }
+
+    [Fact]
+    public void ResolveWingmanFast_Byo_UsesOpenAiBaseAndMiniModel()
+    {
+        var ep = TranscriptionEndpointResolver.ResolveWingmanFast(TranscriptionMode.Byo);
+        Assert.Equal(TranscriptionEndpointResolver.OpenAiBaseUrl, ep.BaseUrl);
+        Assert.Equal(TranscriptionEndpointResolver.OpenAiKeyName, ep.KeyName);
+        Assert.Equal("gpt-5.5-mini", ep.Model);
+    }
+
+    [Fact]
     public void ResolveTts_DevThrottle_UsesProxyBaseAndTtsModel()
     {
         var ep = TranscriptionEndpointResolver.ResolveTts(TranscriptionMode.DevThrottle);
