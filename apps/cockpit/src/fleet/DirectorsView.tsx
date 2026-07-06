@@ -104,7 +104,7 @@ export function DirectorsView() {
                   <th>Started</th>
                   <th>Last seen</th>
                   <th>Sessions</th>
-                  <th>Status</th>
+                  <th className="dcol-status">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -126,7 +126,7 @@ export function DirectorsView() {
                       </td>
                       <td className="ddim" title={d.lastSeen ?? undefined}>{relativeTime(d.lastSeen, { withAgo: true, now: nowRef.current })}</td>
                       <td>{sessionCount(d)}</td>
-                      <td>
+                      <td className="dcol-status">
                         {d.advertisedEndpointState === ENDPOINT_STATE_UNREACHABLE_BY_NAME ? (
                           <span className="dstat-err" title={endpointTooltip(d)}>UNREACHABLE BY NAME</span>
                         ) : err !== undefined ? (

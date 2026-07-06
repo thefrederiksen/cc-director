@@ -240,6 +240,10 @@
 /* ---- items table ---- */
 .lists-page .itable {
   width: 100%;
+  /* Fixed layout so a long item id (e.g. a pasted GitHub URL) can never widen the Id column and push
+     the Title/Status columns off-screen (issue #1026). Every column keeps its declared width and the
+     Id cell ellipsizes instead. */
+  table-layout: fixed;
   border-collapse: collapse;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -305,10 +309,18 @@
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
   font-weight: 600;
+  /* A stray long id truncates within its fixed-width column (full value in the cell title) rather
+     than overflowing and clipping Title/Status (issue #1026). */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .lists-page .ittl {
   font-weight: 600;
   color: var(--text);
+  /* Wrap long titles (including an unbroken string) inside the fixed Title column instead of forcing
+     the table wider (issue #1026). */
+  overflow-wrap: anywhere;
 }
 .lists-page .isubline {
   margin-top: 4px;
@@ -370,6 +382,23 @@
   background: transparent;
   color: var(--text-dim);
   border: 1px solid var(--border);
+}
+/* Resolving = not fetched yet (issue #1026). Distinct from the gray "unknown" failure badge: an accent
+   outline with a gentle pulse so the human reads it as "in progress", never as a genuine failure. */
+.lists-page .st.resolving {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  animation: lists-resolving-pulse 1.2s ease-in-out infinite;
+}
+@keyframes lists-resolving-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* ---- row actions ---- */

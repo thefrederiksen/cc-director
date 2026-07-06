@@ -28,7 +28,35 @@ function keyOf(item: WorkListItemRef): string {
   return `${item.source}/${item.id}`;
 }
 
-const RESOLVING: WorkItemInfo = { title: null, status: "unknown", detail: "resolving..." };
+// The sentinel shown for an item whose title + status have not been fetched yet. It carries the
+// distinct "resolving" status (issue #1026) so a not-yet-resolved row is never confused with a real
+// GitHub failure ("unknown"). Items populate one at a time as each resolve returns (see resolveInfo).
+const RESOLVING: WorkItemInfo = { title: null, status: "resolving", detail: "resolving..." };
+
+// A resolved item is re-resolved at most once per this window, so the 10s poll no longer re-fetches
+// every item's GitHub status on every tick (issue #1026) while still keeping the flow:* badge live.
+const RESOLVE_TTL_MS = 30000;
+
+// Parse the id the human typed for a GitHub item. Accepts a bare number ("262"), a "#262" form, or a
+// pasted GitHub issue/pull-request URL, and returns just the issue number. A link that is not a
+// GitHub issue/PR URL is rejected inline (issue #1026) rather than stored verbatim as a
+// permanently-unresolvable id. Non-github sources do not go through here (their ids are free-form,
+// e.g. a JIRA key "CCD-44").
+function parseGithubItemId(raw: string): { id: string } | { error: string } {
+  const s = raw.trim();
+  const bare = s.replace(/^#/, "").trim();
+  if (/^\d+$/.test(bare)) {
+    return { id: bare };
+  }
+  if (/github\.com/i.test(s) || /^https?:\/\//i.test(s)) {
+    const m = s.match(/github\.com\/[^/\s]+\/[^/\s]+\/(?:issues|pull)\/(\d+)/i);
+    if (m !== null) {
+      return { id: m[1] };
+    }
+    return { error: "That link is not a GitHub issue or pull-request URL. Paste an issue/PR URL, or just the number." };
+  }
+  return { error: "Enter a GitHub issue number (e.g. 262) or paste a GitHub issue/pull-request URL." };
+}
 
 export function ListsView() {
   const [lists, setLists] = useState<WorkList[]>([]);
@@ -53,6 +81,11 @@ export function ListsView() {
   const [newId, setNewId] = useState("");
   const [newArea, setNewArea] = useState("");
 
+  // When each item's status was last resolved, keyed by "source/id". Lets resolveInfo skip re-fetching
+  // an item that was resolved within RESOLVE_TTL_MS, so the 10s poll no longer re-resolves every item
+  // on every tick (issue #1026) - a genuinely new item still resolves immediately.
+  const resolvedAt = useRef<Record<string, number>>({});
+
   // drag-reorder
   const dragItem = useRef<WorkListItemRef | null>(null);
 
@@ -69,15 +102,37 @@ export function ListsView() {
   const resolveInfo = useCallback(async (fresh: WorkList[], signal?: AbortSignal) => {
     const refs = new Map<string, WorkListItemRef>();
     for (const l of fresh) for (const i of l.items) if (!refs.has(keyOf(i))) refs.set(keyOf(i), i);
-    const next: Record<string, WorkItemInfo> = {};
-    for (const [k, r] of refs) {
-      try {
-        next[k] = await resolveItemStatus(r.source, r.id, signal);
-      } catch {
-        next[k] = { title: null, status: "unknown", detail: null };
-      }
+
+    // Drop cache timestamps for items no longer on any list so the ref never grows unbounded.
+    for (const k of Object.keys(resolvedAt.current)) {
+      if (!refs.has(k)) delete resolvedAt.current[k];
     }
-    if (signal?.aborted !== true) setInfo(next);
+
+    // Only (re)resolve items that have never been resolved or whose cached status is older than the
+    // TTL. Each result is written to state on its own (parallel, incremental) so rows populate one at
+    // a time instead of all flipping together after the whole loop finishes (issue #1026).
+    const now = Date.now();
+    const due: WorkListItemRef[] = [];
+    for (const [k, r] of refs) {
+      const at = resolvedAt.current[k];
+      if (at === undefined || now - at >= RESOLVE_TTL_MS) due.push(r);
+    }
+
+    await Promise.all(
+      due.map(async (r) => {
+        const k = keyOf(r);
+        try {
+          const resolved = await resolveItemStatus(r.source, r.id, signal);
+          if (signal?.aborted === true) return;
+          resolvedAt.current[k] = Date.now();
+          setInfo((prev) => ({ ...prev, [k]: resolved }));
+        } catch {
+          if (signal?.aborted === true) return;
+          resolvedAt.current[k] = Date.now();
+          setInfo((prev) => ({ ...prev, [k]: { title: null, status: "unknown", detail: null } }));
+        }
+      }),
+    );
   }, []);
 
   const refresh = useCallback(
@@ -144,13 +199,27 @@ export function ListsView() {
   // ---- add item ----
   const addItem = async () => {
     if (selected === null || newId.trim().length === 0) return;
+
+    // For a GitHub item, accept a pasted issue/PR URL (or #262 / 262) and store just the number, so a
+    // full URL is never saved verbatim as a permanently-unresolvable id (issue #1026). A link that is
+    // not a GitHub issue/PR URL is rejected inline instead of being added.
+    let resolvedId = newId.trim();
+    if (newSource.toLowerCase() === "github") {
+      const parsed = parseGithubItemId(resolvedId);
+      if ("error" in parsed) {
+        setItemError(parsed.error);
+        return;
+      }
+      resolvedId = parsed.id;
+    }
+
     setAdding(true);
     setItemError(null);
     const listName = selected.name;
     try {
       const item: WorkListItemRef = {
         source: newSource,
-        id: newId.trim(),
+        id: resolvedId,
         area: newArea.trim().length === 0 ? null : newArea.trim(),
       };
       await appendWorkListItem(listName, item);
@@ -303,13 +372,13 @@ export function ListsView() {
                 <table className="itable">
                   <thead>
                     <tr>
-                      <th style={{ width: 30 }} />
-                      <th style={{ width: 42 }}>Pri</th>
-                      <th style={{ width: 54 }}>Src</th>
-                      <th style={{ width: 72 }}>Id</th>
+                      <th style={{ width: 24 }} />
+                      <th style={{ width: 34 }}>Pri</th>
+                      <th style={{ width: 44 }}>Src</th>
+                      <th style={{ width: 52 }}>Id</th>
                       <th>Title</th>
-                      <th style={{ width: 130 }}>Status</th>
-                      <th style={{ width: 76 }} />
+                      <th style={{ width: 100 }}>Status</th>
+                      <th style={{ width: 66 }} />
                     </tr>
                   </thead>
                   <tbody>
@@ -336,7 +405,9 @@ export function ListsView() {
                           <td>
                             <span className={`src ${srcClass(item.source)}`}>{srcLabel(item.source)}</span>
                           </td>
-                          <td className="idc">{displayId(item)}</td>
+                          <td className="idc" title={displayId(item)}>
+                            {displayId(item)}
+                          </td>
                           <td>
                             <div className="ittl">{it.title ?? "(title unavailable)"}</div>
                             {item.area && item.area.trim().length > 0 && (
@@ -543,6 +614,8 @@ function statusLabel(s: WorkItemStatus): string {
       return "NEEDS YOU";
     case "failed":
       return "FAILED";
+    case "resolving":
+      return "RESOLVING";
     default:
       return "UNKNOWN";
   }
@@ -560,6 +633,8 @@ function statusClass(s: WorkItemStatus): string {
       return "needs";
     case "failed":
       return "failed";
+    case "resolving":
+      return "resolving";
     default:
       return "unknown";
   }
@@ -577,6 +652,8 @@ function statusTooltip(s: WorkItemStatus): string {
       return "Needs you - flow:needs-human";
     case "failed":
       return "Failed";
+    case "resolving":
+      return "Resolving status from GitHub...";
     default:
       return "Status unavailable";
   }
