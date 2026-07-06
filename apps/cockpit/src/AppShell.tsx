@@ -21,16 +21,8 @@ const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
   { to: "/learn", label: "Learning" },
   { to: "/account", label: "Account" },
   { to: "/telemetry", label: "Telemetry" },
+  { to: "/settings", label: "Settings" },
   { to: "/about", label: "About" },
-];
-
-// Full-load destinations (issue #978): pages the Gateway still serves as static HTML rather than React
-// routes. Settings is the plain-HTML tool page (wwwroot/pages/settings.html) - re-homed into this rail
-// as a root-relative anchor that does a full document load (the same behavior the Blazor NavMenu used
-// with data-enhance-nav="false"), leaving the React app to land on the Gateway-served page. It is
-// root-relative to the Gateway front door, never a Director address.
-const EXTERNAL_ITEMS: ReadonlyArray<{ href: string; label: string }> = [
-  { href: "/settings", label: "Settings" },
 ];
 
 export function AppShell() {
@@ -48,14 +40,6 @@ export function AppShell() {
               >
                 {item.label}
               </NavLink>
-            </li>
-          ))}
-          {EXTERNAL_ITEMS.map((item) => (
-            <li key={item.href}>
-              {/* Full document load to a Gateway-served static page (leaves the React app). */}
-              <a className="nav-link" href={item.href}>
-                {item.label}
-              </a>
             </li>
           ))}
         </ul>

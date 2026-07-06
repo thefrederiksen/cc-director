@@ -1,0 +1,625 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import {
+  getGatewaySettings,
+  setAddressingMode,
+  setAutostart,
+  setTrainingCapture,
+  getVaultKeyNames,
+  setVaultKey,
+  OPENAI_KEY_NAME,
+  type AddressingMode,
+  type GatewaySettings,
+} from "@devthrottle/client-core/settings/settingsClient";
+import {
+  type AiModel,
+  type AiProviderId,
+  type AiProviderSnapshot,
+  getAiModels,
+  getAiProvider,
+  setAiProvider,
+  setTtsModel,
+  setTtsVoice,
+  setWingmanModel,
+  testChat,
+  ttsSample,
+} from "@devthrottle/client-core/api/ai";
+
+// The Cockpit Settings page (issue #1025, epic #967) - the React port of the retired Blazor
+// wwwroot/pages/settings.html. The left-rail "Settings" item used to be a dead full-load anchor to
+// /settings (nothing served it, so it fell through to the SPA "Not found"); this is the real page it now
+// routes to. It ports the two tabs the issue names: "This machine" (the Gateway connection: process
+// diagnostics, network addressing, startup, training capture) and "AI" (the one provider switch that
+// drives transcription + wingman + voice, plus the #497 bring-your-own OpenAI key panel).
+//
+// A pure client of existing Gateway endpoints, same-origin (root-relative URLs, never a Director
+// address). No secret ever reaches the page: the OpenAI key panel reads only the vault key NAMES to show
+// set/not-set and writes the key write-only (security rule DT-05). Responsive (CodingStyle.md): each tab
+// renders immediately with a loading line and loads asynchronously; on a failure it shows an explicit
+// error banner, never a fabricated value (the no-fallback rule).
+
+const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
+
+type TabId = "machine" | "ai";
+
+export function SettingsView() {
+  const [tab, setTab] = useState<TabId>("machine");
+  return (
+    <div className="page settings">
+      <div className="page-head">
+        <h1>Settings</h1>
+      </div>
+      <p className="settings-lede">Gateway and fleet configuration for this machine.</p>
+
+      <p className="settings-relocated">
+        Looking for something else? Your <Link to="/account">DevThrottle account</Link>,{" "}
+        <Link to="/telemetry">usage telemetry</Link>, and <Link to="/about">Gateway diagnostics</Link>{" "}
+        each have their own page.
+      </p>
+
+      <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "machine"}
+          className={tab === "machine" ? "settings-tab active" : "settings-tab"}
+          onClick={() => setTab("machine")}
+        >
+          This machine
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "ai"}
+          className={tab === "ai" ? "settings-tab active" : "settings-tab"}
+          onClick={() => setTab("ai")}
+        >
+          AI
+        </button>
+      </div>
+
+      {tab === "machine" ? <ThisMachineTab /> : <AiTab />}
+    </div>
+  );
+}
+
+// ---- "This machine" tab: Gateway connection + startup ---------------------------------------------
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-label">{label}</div>
+      <div className="settings-row-value">{value}</div>
+    </div>
+  );
+}
+
+function formatUptime(totalSeconds: number): string {
+  if (totalSeconds <= 0) return "just started";
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  return parts.join(" ");
+}
+
+function ThisMachineTab() {
+  const [settings, setSettings] = useState<GatewaySettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setError(null);
+      setSettings(await getGatewaySettings(signal));
+    } catch (e) {
+      if (signal?.aborted) return;
+      setError(errText(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+
+  const chooseAddressing = async (mode: AddressingMode) => {
+    if (settings === null || busy || mode === settings.addressingMode) return;
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      const applied = await setAddressingMode(mode);
+      setSettings({ ...settings, addressingMode: applied });
+      setMsg(
+        applied === "lan"
+          ? "LAN mode saved. Applies to this machine's Directors on their next restart."
+          : "Tailscale mode saved. Applies to this machine's Directors on their next restart.",
+      );
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleAutostart = async (enabled: boolean) => {
+    if (settings === null || busy) return;
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      const state = await setAutostart(enabled);
+      setSettings({ ...settings, autostart: state });
+      setMsg(state.enabled ? "The Gateway will start when you log in." : "Autostart turned off.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleTraining = async (enabled: boolean) => {
+    if (settings === null || busy) return;
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      const applied = await setTrainingCapture(enabled);
+      setSettings({ ...settings, wingmanTrainingCapture: applied });
+      setMsg(applied ? "Capturing wingman training data." : "Training capture turned off.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (error !== null) {
+    return <div className="settings-error">Could not load settings from the Gateway: {error}</div>;
+  }
+  if (settings === null) {
+    return <p className="settings-loading">Loading...</p>;
+  }
+
+  return (
+    <>
+      <section className="settings-card">
+        <h2 className="settings-h2">Gateway</h2>
+        <p className="settings-hint">The Gateway process serving this page and supervising the fleet.</p>
+        <Row label="State" value={settings.state} />
+        <Row label="Port" value={String(settings.port)} />
+        <Row label="Mode" value={settings.mode} />
+        <Row label="Cockpit" value={cockpitLabel(settings)} />
+        <Row label="Uptime" value={formatUptime(settings.uptimeSeconds)} />
+        <Row label="Version" value={settings.version} />
+        <Row label="Directors" value={String(settings.directors)} />
+      </section>
+
+      <section className="settings-card">
+        <h2 className="settings-h2">Network addressing</h2>
+        <p className="settings-hint">
+          How machines in the fleet address one another. Tailscale (default): each Director is reached
+          over its Tailscale front door. LAN: each Director is reached on its real LAN IP - use only on a
+          trusted network (LAN mode also turns on Director authentication). This is a per-machine setting
+          read at startup; it applies to this host&apos;s Directors on their next restart.
+        </p>
+        <div className="settings-field">
+          <label htmlFor="settings-addrmode">Mode</label>
+          <select
+            id="settings-addrmode"
+            className="settings-select"
+            value={settings.addressingMode}
+            disabled={busy}
+            onChange={(e) => void chooseAddressing(e.target.value === "lan" ? "lan" : "tailscale")}
+          >
+            <option value="tailscale">Tailscale (front door)</option>
+            <option value="lan">LAN (direct IP)</option>
+          </select>
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <h2 className="settings-h2">Startup</h2>
+        <p className="settings-hint">
+          Registers a per-user Run entry so the Gateway starts when you log in. The fleet only works
+          while you are logged in, so this is per-user, never a machine service.
+        </p>
+        <label className="settings-check">
+          <input
+            type="checkbox"
+            checked={settings.autostart.enabled === true}
+            disabled={busy || !settings.autostart.supported}
+            onChange={(e) => void toggleAutostart(e.target.checked)}
+          />
+          Start the Gateway when I log in
+        </label>
+        {!settings.autostart.supported && (
+          <p className="settings-hint settings-hint-inline">Not supported on this host (no tray).</p>
+        )}
+      </section>
+
+      <section className="settings-card">
+        <h2 className="settings-h2">
+          Training data <span className="settings-pill">improve the wingman</span>
+        </h2>
+        <p className="settings-hint">
+          When on, every wingman voice summary saves the session terminal plus the wingman&apos;s spoken
+          response to the Gateway machine - a labeled dataset for testing and improving the wingman.
+          Takes effect immediately, no restart.
+        </p>
+        <label className="settings-check">
+          <input
+            type="checkbox"
+            checked={settings.wingmanTrainingCapture}
+            disabled={busy}
+            onChange={(e) => void toggleTraining(e.target.checked)}
+          />
+          Capture wingman training data
+        </label>
+      </section>
+
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </>
+  );
+}
+
+function cockpitLabel(settings: GatewaySettings): string {
+  const state = settings.cockpit.up ? "up" : "down";
+  return `port ${settings.cockpit.port} (${state})`;
+}
+
+// ---- "AI" tab: the one provider switch + models + voice + the bring-your-own OpenAI key ------------
+
+function AiTab() {
+  const [snap, setSnap] = useState<AiProviderSnapshot | null>(null);
+  const [chatModels, setChatModels] = useState<AiModel[]>([]);
+  const [speechModels, setSpeechModels] = useState<AiModel[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [testMsg, setTestMsg] = useState("");
+  const [sampleMsg, setSampleMsg] = useState("");
+
+  // The OpenAI key panel state (shown when the OpenAI provider is selected). We never read the value
+  // back: `keyStored` comes from the vault key NAMES only, and the input is write-only.
+  const [keyStored, setKeyStored] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [keyMsg, setKeyMsg] = useState("");
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const loadModels = useCallback(async () => {
+    setChatModels(await getAiModels("chat"));
+    setSpeechModels(await getAiModels("speech"));
+  }, []);
+
+  const loadKeyState = useCallback(async () => {
+    try {
+      const names = await getVaultKeyNames();
+      setKeyStored(names.includes(OPENAI_KEY_NAME));
+    } catch {
+      // Key-state is a hint (set/not-set); a failure here must not blank the whole AI tab. Leave the
+      // last-known flag and let the Save action surface any real write error.
+      setKeyStored(false);
+    }
+  }, []);
+
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      setSnap(await getAiProvider());
+      await loadModels();
+      await loadKeyState();
+    } catch (e) {
+      setError(errText(e));
+    }
+  }, [loadModels, loadKeyState]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error !== null) {
+    return <div className="settings-error">Could not load AI settings: {error}</div>;
+  }
+  if (snap === null) {
+    return <p className="settings-loading">Loading...</p>;
+  }
+
+  const provider = snap.provider;
+  const currentSpeech = speechModels.find((m) => m.id === snap.ttsModel);
+  const voiceOptions = currentSpeech && currentSpeech.voices.length ? currentSpeech.voices : snap.voices;
+
+  const chooseProvider = async (p: AiProviderId) => {
+    if (busy || p === provider) return;
+    setBusy(true);
+    setMsg("Saving...");
+    setTestMsg("");
+    try {
+      setSnap(await setAiProvider(p));
+      await loadModels();
+      setMsg(
+        p === "devthrottle"
+          ? "Using DevThrottle hosted AI - billed to your account credits."
+          : "Using OpenAI. Add your key below if you have not.",
+      );
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chooseWingman = async (model: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    setTestMsg("");
+    try {
+      await setWingmanModel(model);
+      setSnap({ ...snap, wingmanModel: model });
+      setMsg("Wingman model set. Test it to confirm.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runTest = async () => {
+    setBusy(true);
+    setTestMsg("Testing " + snap.wingmanModel + "...");
+    const r = await testChat(snap.wingmanModel);
+    setTestMsg(r.ok ? `OK - replied "${r.reply}" in ${r.seconds}s.` : "Failed: " + r.error);
+    setBusy(false);
+  };
+
+  const chooseSpeech = async (model: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      await setTtsModel(model);
+      const sm = speechModels.find((m) => m.id === model);
+      const voices = sm && sm.voices.length ? sm.voices : snap.voices;
+      let voice = snap.ttsVoice;
+      if (voices.indexOf(voice) < 0) {
+        voice = sm && sm.defaultVoice && voices.indexOf(sm.defaultVoice) >= 0 ? sm.defaultVoice : voices[0] ?? voice;
+        if (voice) await setTtsVoice(voice);
+      }
+      setSnap({ ...snap, ttsModel: model, ttsVoice: voice });
+      setMsg("Speech model set.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chooseVoice = async (voice: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      await setTtsVoice(voice);
+      setSnap({ ...snap, ttsVoice: voice });
+      setMsg("Voice set to " + voice + ".");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const playSample = async () => {
+    setBusy(true);
+    setSampleMsg("Synthesizing...");
+    try {
+      const blob = await ttsSample(SAMPLE_TEXT, snap.ttsModel, snap.ttsVoice);
+      if (audioRef.current === null) audioRef.current = new Audio();
+      audioRef.current.src = URL.createObjectURL(blob);
+      audioRef.current.onended = () => setSampleMsg("");
+      setSampleMsg("Playing " + snap.ttsVoice + "...");
+      await audioRef.current.play();
+    } catch (e) {
+      setSampleMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveKey = async () => {
+    const value = keyInput.trim();
+    if (value.length === 0) {
+      setKeyMsg("Enter a key first.");
+      return;
+    }
+    setBusy(true);
+    setKeyMsg("Saving...");
+    try {
+      await setVaultKey(OPENAI_KEY_NAME, value);
+      setKeyInput("");
+      setKeyStored(true);
+      setKeyMsg("Key saved on this machine. DevThrottle never receives it.");
+    } catch (e) {
+      setKeyMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-card">
+      <h2 className="settings-h2">AI provider</h2>
+      <p className="settings-hint">
+        One choice for all AI in DevThrottle - who runs it, which models, and the spoken voice. Applies to
+        transcription, the wingman, and the spoken voice together.
+      </p>
+
+      <div className="settings-provider-cards">
+        <ProviderCard
+          id="devthrottle"
+          title="DevThrottle"
+          badge="Default"
+          desc="Hosted models on your DevThrottle account - nothing to set up. Billed to your account credits."
+          selected={provider === "devthrottle"}
+          disabled={busy}
+          onPick={chooseProvider}
+        />
+        <ProviderCard
+          id="openai"
+          title="OpenAI"
+          desc="Your own OpenAI API key. Stays on this machine and is never sent to DevThrottle."
+          selected={provider === "openai"}
+          disabled={busy}
+          onPick={chooseProvider}
+        />
+      </div>
+
+      <div className="settings-field">
+        <label htmlFor="settings-ai-model">Wingman model</label>
+        <select
+          id="settings-ai-model"
+          className="settings-select"
+          value={snap.wingmanModel}
+          disabled={busy}
+          onChange={(e) => void chooseWingman(e.target.value)}
+        >
+          {ensureIds(snap.wingmanModel, chatModels).map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+        <div className="settings-actions">
+          <button type="button" className="settings-btn" disabled={busy} onClick={() => void runTest()}>
+            Test
+          </button>
+          <span className="settings-inline-msg">{testMsg}</span>
+        </div>
+      </div>
+
+      <div className="settings-field">
+        <label htmlFor="settings-ai-ttsmodel">Speech model</label>
+        <select
+          id="settings-ai-ttsmodel"
+          className="settings-select"
+          value={snap.ttsModel}
+          disabled={busy}
+          onChange={(e) => void chooseSpeech(e.target.value)}
+        >
+          {ensureIds(snap.ttsModel, speechModels).map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="settings-field">
+        <label htmlFor="settings-ai-voice">Voice</label>
+        <select
+          id="settings-ai-voice"
+          className="settings-select"
+          value={snap.ttsVoice}
+          disabled={busy}
+          onChange={(e) => void chooseVoice(e.target.value)}
+        >
+          {ensureStrings(snap.ttsVoice, voiceOptions).map((v) => (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          ))}
+        </select>
+        <div className="settings-actions">
+          <button type="button" className="settings-btn" disabled={busy} onClick={() => void playSample()}>
+            Play sample
+          </button>
+          <span className="settings-inline-msg">{sampleMsg}</span>
+        </div>
+      </div>
+
+      <Row label="Transcription" value={snap.transcriptionModel} />
+
+      {provider === "openai" && (
+        <div className="settings-keypanel">
+          <div className="settings-keylabel">
+            OpenAI API key{" "}
+            <span className="settings-pill">{keyStored ? "stored" : "not set"}</span>
+          </div>
+          <div className="settings-actions settings-key-row">
+            <input
+              className="settings-input"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={keyStored ? "Enter a new key to replace it" : "sk-..."}
+              value={keyInput}
+              disabled={busy}
+              onChange={(e) => setKeyInput(e.target.value)}
+            />
+            <button type="button" className="settings-btn primary" disabled={busy} onClick={() => void saveKey()}>
+              Save key
+            </button>
+          </div>
+          <p className="settings-hint settings-hint-inline">
+            Stored locally on this machine only. DevThrottle never receives or stores your provider key.
+          </p>
+          {keyMsg !== "" && <div className="settings-inline-msg">{keyMsg}</div>}
+        </div>
+      )}
+
+      {provider === "devthrottle" && (
+        <p className="settings-hint settings-hint-inline">
+          Hosted AI runs on your DevThrottle account. <Link to="/account">Manage account</Link>.
+        </p>
+      )}
+
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </section>
+  );
+}
+
+function ProviderCard(props: {
+  id: AiProviderId;
+  title: string;
+  desc: string;
+  badge?: string;
+  selected: boolean;
+  disabled: boolean;
+  onPick: (id: AiProviderId) => void | Promise<void>;
+}) {
+  return (
+    <button
+      type="button"
+      className={"settings-provider-card" + (props.selected ? " selected" : "")}
+      disabled={props.disabled}
+      onClick={() => void props.onPick(props.id)}
+    >
+      <span className="settings-provider-title">
+        <span className={"settings-provider-radio" + (props.selected ? " on" : "")} aria-hidden="true" />
+        {props.title}
+        {props.badge && <span className="settings-provider-badge">{props.badge}</span>}
+      </span>
+      <span className="settings-provider-desc">{props.desc}</span>
+    </button>
+  );
+}
+
+// Build the option id list, guaranteeing the currently-saved id is present + first even when the catalog
+// failed to load or does not list it (so the <select> value always matches an option).
+function ensureIds(current: string, models: AiModel[]): string[] {
+  const ids = models.map((m) => m.id);
+  if (current && ids.indexOf(current) < 0) ids.unshift(current);
+  return ids;
+}
+
+function ensureStrings(current: string, values: string[]): string[] {
+  const out = values.slice();
+  if (current && out.indexOf(current) < 0) out.unshift(current);
+  return out;
+}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}

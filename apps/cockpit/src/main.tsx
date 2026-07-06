@@ -20,6 +20,7 @@ import { LearningView } from "./learning/LearningView";
 import { TelemetryView } from "./telemetry/TelemetryView";
 import { AccountView } from "./account/AccountView";
 import { AboutView } from "./about/AboutView";
+import { SettingsView } from "./settings/SettingsView";
 import { FeedbackView } from "./feedback/FeedbackView";
 import "./styles.css";
 import "./fleet/fleet.css";
@@ -33,6 +34,7 @@ import "./learning/learning.css";
 import "./telemetry/telemetry.css";
 import "./account/account.css";
 import "./about/about.css";
+import "./settings/settings.css";
 import "./feedback/feedback.css";
 
 // Mirror any injected per-machine token into the cc-gateway-token cookie at startup so the live
@@ -106,11 +108,16 @@ const router = createBrowserRouter(
         // out + Your devices), About.razor (Gateway diagnostics), and Feedback.razor (the Wingman
         // feedback corpus), each over the same Gateway REST surface. Following the Blazor nav, Account,
         // Telemetry, and About get a left-rail entry; Feedback is route-only (hidden from the default
-        // rail there too), reached by its direct route. The static /settings tool page is re-homed as a
-        // full-load link in the rail (AppShell), not a React route, so it stays served by the Gateway.
+        // rail there too), reached by its direct route.
         { path: "/telemetry", element: <TelemetryView /> },
         { path: "/account", element: <AccountView /> },
         { path: "/about", element: <AboutView /> },
+        // The Settings page (issue #1025): a real React port of the retired Blazor
+        // wwwroot/pages/settings.html (the "This machine" gateway-connection tab + the "AI"
+        // transcription/keys tab, incl. the #497 OpenAI key panel). The rail's Settings item used to be
+        // a dead full-load anchor to /settings (nothing served it, so it fell through to "Not found");
+        // it is now this route, reading/writing same-origin through the Gateway settings endpoints.
+        { path: "/settings", element: <SettingsView /> },
         { path: "/feedback", element: <FeedbackView /> },
         { path: "*", element: <PlaceholderPane title="Not found" /> },
       ],
