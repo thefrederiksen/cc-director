@@ -567,7 +567,7 @@ def build_spec(vehicles: VehicleList, defaults: dict[str, Any]) -> dict[str, Any
 
 def main() -> None:
     """Generate JSON spec from vehicle data. Optional arg: data directory path."""
-    default_dir = Path(r"C:\Personal\OneDrive\Documents\Gitte\New Car")
+    default_dir = Path.home() / "Documents" / "Car Comparison"
     data_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else default_dir
 
     vehicles, defaults = load_data(data_dir)

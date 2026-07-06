@@ -479,7 +479,7 @@ Once the Engine is working and validated:
 
 ## Dependent Tools Migration
 
-These external tools currently read from or write to `communications.db` at the old path (`C:\repos\cc-consult\tools\communication_manager\content\`). They must be updated to point at `engine.db` in `%LOCALAPPDATA%\cc-myvault\`.
+These external tools currently read from or write to `communications.db` at the old path (`C:\workspaces\legacy-comm-tools\content\`). They must be updated to point at `engine.db` in `%LOCALAPPDATA%\cc-myvault\`.
 
 ### 1. cc-comm-queue (WRITER -- queues new communications)
 
@@ -487,14 +487,14 @@ The `/write` skill calls this CLI to add emails and LinkedIn posts to the queue.
 
 **Files to change:**
 - `C:\repos\cc-director\src\cc-comm-queue\src\queue_manager.py` line 66: change `self.db_path = queue_path / "communications.db"` to `self.db_path = queue_path / "engine.db"`
-- `C:\repos\cc-director\src\cc_shared\config.py` line 173: change `CommManagerConfig.queue_path` default from `"C:/repos/cc-consult/tools/communication_manager/content"` to the cc-myvault directory
+- `C:\repos\cc-director\src\cc_shared\config.py` line 173: change `CommManagerConfig.queue_path` default from `"C:/workspaces/legacy-comm-tools/content"` to the cc-myvault directory
 
 ### 2. Communication Manager WPF App (REVIEWER -- approve/reject queue)
 
 The approval UI where communications are reviewed before sending.
 
 **Files to change:**
-- `C:\repos\cc-consult\tools\communication_manager\src\CommunicationManager\Services\DatabaseService.cs` line 22: change `"communications.db"` to `"engine.db"` and update the content path
+- `C:\workspaces\legacy-comm-tools\src\CommunicationManager\Services\DatabaseService.cs` line 22: change `"communications.db"` to `"engine.db"` and update the content path
 
 ### 3. /write Skill (ORCHESTRATOR -- no change needed)
 

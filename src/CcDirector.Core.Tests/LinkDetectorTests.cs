@@ -728,14 +728,14 @@ public class LinkDetectorTests
     {
         // The exact case from issue #252: the link must start at the 'f' of file (not the 'e' of
         // an inner e:), be a single Path link, and resolve to the local file.
-        string line = "file:///D:/ReposFred/cc-consult/marketing/marketing.html";
+        string line = "file:///D:/Workspaces/example-project/marketing/marketing.html";
         var matches = LinkDetector.FindAllLinkMatches(line, null, null);
 
         Assert.Single(matches);
         Assert.Equal(LinkDetector.LinkType.Path, matches[0].Type);
         Assert.Equal(0, matches[0].StartCol);                         // starts at 'f', not 'e'
         Assert.Equal(line.Length, matches[0].EndCol);                 // whole span highlighted
-        Assert.Equal(@"D:\ReposFred\cc-consult\marketing\marketing.html", matches[0].Text);
+        Assert.Equal(@"D:\Workspaces\example-project\marketing\marketing.html", matches[0].Text);
         Assert.DoesNotContain("e:///", matches[0].Text);              // the old broken target is gone
     }
 

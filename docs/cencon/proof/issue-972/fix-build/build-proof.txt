@@ -42,11 +42,11 @@ lint-exit=0
 
 === PROOF 3: Gateway BuildCockpitApp release target (dotnet build -p:RunCockpitBuild=true) ===
 This is the exact release path QA reported broken: npm ci -> npm run build --workspace @devthrottle/cockpit -> copy dist into wwwroot/c.
-  [BuildCockpitApp] building the React Cockpit (Debug) from D:\ReposFred\devthrottle-wt-972fix\src\CcDirector.Gateway\..\..\apps\cockpit\ via the workspace at D:\ReposFred\devthrottle-wt-972fix\src\CcDirector.Gateway\..\..\
+  [BuildCockpitApp] building the React Cockpit (Debug) from D:\workspaces\devthrottle-wt-972fix\src\CcDirector.Gateway\..\..\apps\cockpit\ via the workspace at D:\workspaces\devthrottle-wt-972fix\src\CcDirector.Gateway\..\..\
   > tsc --noEmit && vite build
   vite v6.0.3 building for production...
    built in 937ms
-  [BuildCockpitApp] staged 3 file(s) into D:\ReposFred\devthrottle-wt-972fix\src\CcDirector.Gateway\wwwroot\c
+  [BuildCockpitApp] staged 3 file(s) into D:\workspaces\devthrottle-wt-972fix\src\CcDirector.Gateway\wwwroot\c
 Build succeeded.
     0 Error(s)
 gateway-target-exit=0

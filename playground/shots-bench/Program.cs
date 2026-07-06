@@ -8,7 +8,9 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
 
-var realShots = args.Length > 0 ? args[0] : @"C:\Personal\OneDrive\Pictures\Screenshots";
+var realShots = args.Length > 0
+    ? args[0]
+    : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Pictures", "Screenshots");
 
 var root = Path.Combine(Path.GetTempPath(), "ccd-shots-bench-" + Guid.NewGuid().ToString("N"));
 Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", root);

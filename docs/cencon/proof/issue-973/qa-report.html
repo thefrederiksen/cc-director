@@ -26,7 +26,7 @@ Verified independently by the QA Agent (not trusting the Developer report). Part
 
 <h2>How this was verified</h2>
 <ul>
-  <li><strong>Isolation:</strong> all work done in a dedicated git worktree <code>D:\ReposFred\devthrottle-wt-973</code> on the PR branch; the shared primary tree was never touched.</li>
+  <li><strong>Isolation:</strong> all work done in a dedicated git worktree <code>D:\workspaces\devthrottle-wt-973</code> on the PR branch; the shared primary tree was never touched.</li>
   <li><strong>Build gate</strong> (the epic's known bounce point) run from the worktree, from a clean <code>npm ci</code>.</li>
   <li><strong>Functional</strong> verification: the <em>freshly built-from-source</em> React Cockpit (my own <code>vite</code> dev server) driven with Playwright, proxied to the <strong>live Gateway</strong> on this machine (<code>127.0.0.1:7878</code>) with <strong>real fleet sessions that have produced real turns</strong>. Each conditional render branch was additionally exercised deterministically by feeding the real React component DTO-shaped responses via route interception.</li>
 </ul>

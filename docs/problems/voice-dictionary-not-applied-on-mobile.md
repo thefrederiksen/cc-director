@@ -1,7 +1,7 @@
 # Problem: Voice dictionary edits do not reach the mobile/phone recording path until the Gateway restarts
 
 Reported: 2026-05-25
-Reporter: the maintainer (via assistant session in C:\repos\private)
+Reporter: the maintainer (via assistant session in a private workspace)
 Component: CcDirector.Gateway recording/transcription pipeline + dictation dictionary
 Severity: medium (functional - corrections never take effect on the path the user actually uses)
 

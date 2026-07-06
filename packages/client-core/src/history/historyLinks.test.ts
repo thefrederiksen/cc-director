@@ -173,10 +173,10 @@ describe("drive-letter boundary guard (issue #252)", () => {
 
 describe("file:// urls (issue #252)", () => {
   it("surfaces the whole span as a local Path link, not a broken e:/ path", () => {
-    const line = "file:///D:/ReposFred/cc-consult/marketing/marketing.html";
+    const line = "file:///D:/Workspaces/example-project/marketing/marketing.html";
     const result = links(line);
     expect(result).toEqual([
-      { text: "D:\\ReposFred\\cc-consult\\marketing\\marketing.html", isUrl: false },
+      { text: "D:\\Workspaces\\example-project\\marketing\\marketing.html", isUrl: false },
     ]);
     expect(result[0].text).not.toContain("e:\\\\");
   });
