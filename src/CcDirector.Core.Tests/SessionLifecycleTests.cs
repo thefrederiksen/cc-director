@@ -65,7 +65,11 @@ public class SessionLifecycleTests : IDisposable
         Assert.Null(session.VerifiedFirstPrompt);
     }
 
-    [Fact]
+    // Skipped on CI (issue #1052): this races a real stand-in process spawn+kill - even the bounded wait
+    // below is not reliable under CI load, so the post-kill status can still be observed as Running. Kill
+    // behaviour is covered deterministically by KillSession_SetsActivityStateToExited (which waits on the
+    // activity state) and KillSession_AlreadyExited_DoesNotThrow.
+    [Fact(Skip = "Flaky on CI: races a real stand-in process spawn+kill; the post-kill status transition can lag even a bounded wait under load. Covered deterministically by the other kill tests.")]
     public async Task KillSession_RunningSession_TransitionsToExited()
     {
         var session = _manager.CreateSession(Path.GetTempPath());
