@@ -11,13 +11,13 @@ Standalone test WPF application to experiment with ConPTY mode without risking t
 ## Running
 
 ```
-cd tests\ConPtyTest
+cd tools\harnesses\conpty-test
 run.bat
 ```
 
 Or:
 ```
-cd tests\ConPtyTest
+cd tools\harnesses\conpty-test
 dotnet run
 ```
 
@@ -41,7 +41,7 @@ Edit this to change the directory where claude starts.
 ## Files Structure
 
 ```
-tests\ConPtyTest\
+tools\harnesses\conpty-test\
   ConPty\           - ConPTY wrapper (NativeMethods, PseudoConsole, ProcessHost)
   Memory\           - CircularTerminalBuffer for output buffering
   Controls\         - TerminalControl WPF rendering
