@@ -11,14 +11,13 @@ live docs in `docs/` (for example `docs/VisualStyle.md` for the current design l
 ## What lives here
 
 - `handovers/` - session-to-session handover notes for work that has since landed
-  (the engine handover, the UI redesign handover, the GitHub releases handover, and the
-  communication and chat dispatch handovers).
+  (the UI redesign handover, the GitHub releases handover, and the communication and
+  chat dispatch handovers).
 - `plans/` - completed implementation plans (the Avalonia port, the ConPty integration,
   the voice mode plan, and the Mac support plan).
 - `trackers/` - progress trackers for finished efforts (the Avalonia migration tracker,
   the tool test tracker, and the LinkedIn enrichment tracker).
-- `specs/` - superseded design specifications (the WPF-era design spec, replaced by
-  `docs/VisualStyle.md`, and the Avalonia migration spec).
+- `specs/` - superseded design specifications, including the Avalonia migration spec.
 - `marketing/` - go-to-market and product-positioning brainstorms kept for their reusable
   positioning value (the early "CC Director" product overview and launch brainstorm, written
   before the DevThrottle rebrand). Dated, not maintained - the live product naming and feature
@@ -28,7 +27,9 @@ live docs in `docs/` (for example `docs/VisualStyle.md` for the current design l
 
 - These documents are frozen. Do not update them to match the current system. If a fact here
   is out of date, that is expected - the current truth lives in the live docs.
-- Do not delete them. They have historical value.
+- Delete obsolete archive files when they contain private names, personal paths,
+  credentials, or public-repo hygiene risks, or when they only duplicate superseded
+  implementation history.
 - Links inside these documents may point at paths that no longer exist; that is acceptable
   for a frozen record.
 

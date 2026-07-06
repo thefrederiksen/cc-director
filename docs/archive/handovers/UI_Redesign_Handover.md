@@ -8,7 +8,8 @@ CC Director is a WPF desktop application that manages multiple Claude Code CLI s
 
 We executed a complete UI redesign across 7 phases, transforming the app from a VS Code-inspired dark theme (hardcoded `#007ACC` blue, `#1E1E1E` backgrounds, system fonts) to a refined design system with tokenized colors, embedded fonts, custom window chrome, and consistent component styling.
 
-The approved design spec driving all changes: `docs/CC_Director_WPF_Design_Spec.md`
+The superseded WPF design spec was removed from the public archive; current design
+guidance lives in `docs/VisualStyle.md`.
 
 ### Phase 0: Style Guide (docs/VisualStyle.md)
 
@@ -121,7 +122,7 @@ Updated all 13 dialog XAML files and 1 UserControl to replace hardcoded hex colo
 ### Git Status
 - Branch: `main`
 - 22 modified files (not staged, not committed)
-- Several untracked directories: `Fonts/`, `Themes/`, `ViewModels/`, `docs/Screenshots/`, `docs/CC_Director_WPF_Design_Spec.md`
+- Several untracked directories: `Fonts/`, `Themes/`, `ViewModels/`, `docs/Screenshots/`
 - Nothing has been committed yet -- all changes are local
 
 ### Remaining Hardcoded Colors (Intentional)
@@ -243,7 +244,7 @@ src/CcDirector.Wpf/
 - **No fallback programming** -- Fix root causes, don't add try/catch workarounds.
 - **Enterprise logging required** -- Every public method must log entry/exit/errors via `FileLog.Write`.
 - **UI thread safety** -- Always use `Dispatcher.BeginInvoke()` for ObservableCollection changes.
-- **Design spec is the source of truth** -- `docs/CC_Director_WPF_Design_Spec.md` contains the complete pixel-accurate specification.
+- **Current style guide is the source of truth** -- `docs/VisualStyle.md` contains the current design guidance.
 - **VisualStyle.md is the style guide** -- `docs/VisualStyle.md` is the developer-facing guide derived from the spec.
 
 ---

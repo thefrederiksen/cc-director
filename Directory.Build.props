@@ -12,7 +12,7 @@
     Rules (see docs/architecture/VERSIONING.md):
       - Bump ONLY here, via scripts/new-release.ps1 (it commits + tags vX.Y.Z).
       - No .csproj may declare its own <Version> (it would silently override
-        this file). Exception: archived/.
+        this file).
       - UIs read the version from their assembly at runtime - never hardcode it.
   -->
   <PropertyGroup>
