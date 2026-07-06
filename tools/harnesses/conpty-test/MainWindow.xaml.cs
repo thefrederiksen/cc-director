@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -14,7 +15,7 @@ public partial class MainWindow : Window
     private int _activeSession = 0;
 
     // Working directory - defaults to repo root
-    private static readonly string WorkingDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    private static readonly string WorkingDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
 
     // UI elements for each session
     private Border[] _sessionBorders = null!;

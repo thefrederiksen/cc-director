@@ -233,6 +233,6 @@ src/CcDirector/Interop/EmbeddedConsoleHost.cs - Keep but wrap in EmbeddedBackend
 
 ## Notes
 
-- The test app (`tests/ConPtyTest/`) should be kept as a standalone sandbox for future experiments
+- The test app (`tools/harnesses/conpty-test/`) should be kept as a standalone sandbox for future experiments
 - Consider: Hook events work the same regardless of backend (named pipe communication is separate from terminal I/O)
 - The `--dangerously-skip-permissions` flag should be a user setting, not hardcoded

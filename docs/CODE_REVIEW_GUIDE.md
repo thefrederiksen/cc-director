@@ -186,7 +186,7 @@ cc-director.sln
 |   |
 |   +-- CcDirector.TestHarness/       # Integration testing
 |   +-- CcClick/                      # UI automation utility
-|   +-- ConPtyTest/                   # ConPTY testing
+|   +-- harnesses/conpty-test/         # ConPTY testing
 |   +-- ConsoleDiagnostic/            # Diagnostic utility
 |
 +-- docs/                             # Documentation
