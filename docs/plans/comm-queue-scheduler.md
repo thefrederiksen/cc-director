@@ -13,15 +13,15 @@ Approved items in the comm-queue (`%LOCALAPPDATA%/cc-director/config/comm-queue/
 - **Concurrent-safe.** The user routinely runs more than one `cc-director` Avalonia instance simultaneously. Only one instance can run the scheduler at any moment, and ownership must hand off automatically when the current owner exits.
 - **Machine-local.** Vault and comm-queue are per-machine. No cross-machine coordination needed or wanted.
 
-## Why not the existing `scheduler/` Python service
+## Why not the legacy Python service
 
-The repo already has a `cc_director` Python service at `scheduler/cc_director/` deployed via `nssm` (see `scheduler/deploy.bat`). It supports cron jobs and has a SQLite comm-queue dispatcher. **We are not using it** because:
+The repo previously had a `cc_director` Python service deployed via `nssm`. It supported cron jobs and had a SQLite comm-queue dispatcher. **We are not using it** because:
 
 - Requires a separate install step (Administrator + `nssm install`).
 - Runs as SYSTEM, which would attempt sends even when the user is signed out.
 - Adds a second always-on process to maintain.
 
-This document supersedes that path for the comm-queue use case. The Python service may still be useful for tasks that genuinely need to run when the user is away; comm-queue sends are not one of those tasks.
+This document supersedes that path for the comm-queue use case. The legacy Python service has since been removed; comm-queue sends run in-process with the Director.
 
 ## Design
 

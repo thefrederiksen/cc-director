@@ -2,13 +2,13 @@
 
 **Status:** Final Draft
 **Date:** 2026-02-28
-**Replaces:** Python scheduler (`scheduler/cc_director/`)
+**Replaces:** legacy Python scheduler (removed from the repo)
 
 ---
 
 ## Problem Statement
 
-The cc-director project currently has a separate Python background service (`cc_director_service`) that handles job scheduling and communication dispatch. This creates several problems:
+The cc-director project previously had a separate Python background service (`cc_director_service`) that handled job scheduling and communication dispatch. This created several problems:
 
 1. **Admin rights required** - Installing a Windows Service requires administrative access, making it unusable on company-managed laptops
 2. **Two technology stacks** - Python service + C#/.NET WPF app means two build systems, two sets of dependencies, two deployment stories
@@ -185,7 +185,7 @@ Uses the `Cronos` NuGet package for cron parsing (standard 5-field format).
 
 Two kinds of jobs:
 
-**Process jobs** (existing behavior) - Run an external command, capture stdout/stderr, record exit code. This is what the Python scheduler does today.
+**Process jobs** (existing behavior) - Run an external command, capture stdout/stderr, record exit code. This is what the legacy Python scheduler handled before removal.
 
 **In-process jobs** (new) - Implement `IJob` for jobs that run inside the Director process. No subprocess overhead, direct access to .NET APIs and ClaudeClient.
 
@@ -418,12 +418,12 @@ await _engineHost.StopAsync();
 
 ---
 
-## What Gets Removed
+## What Was Removed
 
-Once the Engine is working and validated:
+The Engine replaced the separate Python scheduler stack:
 
-1. **`scheduler/` directory** - The entire Python scheduler codebase
-2. **PyInstaller build** - `scheduler/build.ps1` and related
+1. **Python scheduler directory** - the entire legacy Python scheduler codebase
+2. **PyInstaller build** - the legacy scheduler build scripts
 3. **Python dependencies** - `croniter`, `fastapi`, `uvicorn`, `click`, etc.
 4. **`cc_director_service.exe`** - The compiled Python service executable
 5. **`cc_scheduler.exe`** - The CLI tool (replaced by Director UI)
@@ -468,7 +468,7 @@ Once the Engine is working and validated:
 
 ### Phase 5: Cleanup
 - Verify all Python scheduler functionality is covered
-- Remove `scheduler/` directory and all Python build scripts
+- Remove the legacy Python scheduler directory and build scripts
 - Update documentation
 
 ### Future Phases (Separate Work Items)
@@ -479,22 +479,22 @@ Once the Engine is working and validated:
 
 ## Dependent Tools Migration
 
-These external tools currently read from or write to `communications.db` at the old path (`C:\workspaces\legacy-comm-tools\content\`). They must be updated to point at `engine.db` in `%LOCALAPPDATA%\cc-myvault\`.
+These external tools previously read from or wrote to `communications.db` at the old legacy comm-tools content path. They must be updated to point at `engine.db` in `%LOCALAPPDATA%\cc-myvault\`.
 
 ### 1. cc-comm-queue (WRITER -- queues new communications)
 
 The `/write` skill calls this CLI to add emails and LinkedIn posts to the queue. It's the primary way communications enter the system.
 
 **Files to change:**
-- `C:\repos\cc-director\src\cc-comm-queue\src\queue_manager.py` line 66: change `self.db_path = queue_path / "communications.db"` to `self.db_path = queue_path / "engine.db"`
-- `C:\repos\cc-director\src\cc_shared\config.py` line 173: change `CommManagerConfig.queue_path` default from `"C:/workspaces/legacy-comm-tools/content"` to the cc-myvault directory
+- `src/cc-comm-queue/src/queue_manager.py`: change `self.db_path = queue_path / "communications.db"` to `self.db_path = queue_path / "engine.db"`
+- `src/cc_shared/config.py`: change `CommManagerConfig.queue_path` default from the legacy comm-tools content directory to the cc-myvault directory
 
 ### 2. Communication Manager WPF App (REVIEWER -- approve/reject queue)
 
 The approval UI where communications are reviewed before sending.
 
 **Files to change:**
-- `C:\workspaces\legacy-comm-tools\src\CommunicationManager\Services\DatabaseService.cs` line 22: change `"communications.db"` to `"engine.db"` and update the content path
+- `src/CommunicationManager/Services/DatabaseService.cs`: change `"communications.db"` to `"engine.db"` and update the content path
 
 ### 3. /write Skill (ORCHESTRATOR -- no change needed)
 
@@ -502,7 +502,7 @@ The skill at `~/.claude/skills/write/skill.md` calls `cc-comm-queue add ...` and
 
 ### 4. Python Scheduler Dispatcher (REPLACED -- deleted)
 
-The old dispatcher at `C:\repos\cc-director\scheduler\cc_director\` is entirely replaced by the C# Engine. No update needed -- it gets deleted in Phase 5.
+The old dispatcher was entirely replaced by the C# Engine. No update needed -- it was removed with the legacy Python scheduler.
 
 ---
 

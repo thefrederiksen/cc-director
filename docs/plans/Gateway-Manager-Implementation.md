@@ -49,7 +49,7 @@ The two are independent but designed to compose. The Gateway is the only piece t
 | `Session.SendTextAsync(text)` is the supported way to push a prompt + Enter into a session. | `src/CcDirector.Core/Sessions/Session.cs:261` |
 | `Session.ActivityState` (Idle / Working / WaitingForUser etc.) is already driven by hook events. | `src/CcDirector.Core/Sessions/Session.cs:79` |
 | Director has NO HTTP/Kestrel/WebSocket today. | No `WebApplication`, `Kestrel`, `HttpListener`, `WebSocketServer` in `src/` |
-| The Python scheduler (`scheduler/cc_director/gateway/`) DOES expose FastAPI on port 6060, but its scope is JOBS / CRON, not sessions. | `scheduler/cc_director/gateway/app.py` |
+| The retired Python scheduler exposed FastAPI on port 6060, but its scope was JOBS / CRON, not sessions. | Removed legacy scheduler |
 | Existing prior design at `docs/CC_Gateway_Design.md` predates the new PRD: it assumed one Director + named pipes + Discord-only. This plan replaces it. | - |
 
 Implication: We do not need to invent multi-Director coordination. The file-event directory pattern is the proven shared rendezvous and we extend it for discovery.
@@ -85,7 +85,7 @@ A reasonable observer must be able to say "the Gateway works" if all of these ar
 ### 3.3 What success is NOT
 
 - Not a cloud relay (that's the separate Remote Control PRD).
-- Not a replacement for the Python scheduler gateway on port 6060.
+- Not a replacement for the retired Python scheduler gateway on port 6060.
 - Not a Teams/Slack bot itself - those are external clients of the Gateway.
 - Not a rewrite of the Director UI. Manager is a new view alongside existing tabs.
 
@@ -537,7 +537,7 @@ A new test project `tests/Gateway.E2E.Tests/` runs T1-T11 in CI against a headle
 ## 11. Out of Scope
 
 - The cloud-based **Remote Control** PRD (separate work, separate doc).
-- The Python scheduler **Gateway_Dashboard** on port 6060 - different concern, stays as-is.
+- The retired Python scheduler **Gateway_Dashboard** on port 6060 - different concern, already removed from the repo.
 - Slack / Teams / Discord bot implementations themselves - they are clients of this Gateway.
 - Multi-machine federation (one Gateway talking to Directors on other PCs). Plausible in v2; for v1 the Gateway is strictly per-machine.
 
