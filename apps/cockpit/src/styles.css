@@ -20,7 +20,6 @@
   --needsyou-fyi-text: #e8dcc8;
 
   --rail-left-width: 220px;
-  --rail-right-width: 300px;
 }
 
 * {
@@ -42,11 +41,12 @@ body {
   height: 100vh;
 }
 
-/* The three-region desktop frame: left rail | main pane | right rail. Grid so the main pane takes
-   all remaining width and each rail keeps a fixed measure. */
+/* The two-region desktop frame: left rail | main pane. Grid so the main pane takes all remaining
+   width and the rail keeps a fixed measure. There is no static right rail (issue #1022) - the main
+   pane owns the full width and each routed page provides its own detail regions. */
 .shell {
   display: grid;
-  grid-template-columns: var(--rail-left-width) 1fr var(--rail-right-width);
+  grid-template-columns: var(--rail-left-width) 1fr;
   height: 100vh;
   min-height: 0;
 }
@@ -63,11 +63,6 @@ body {
   display: flex;
   flex-direction: column;
   padding: 16px 12px;
-}
-
-.rail-right {
-  border-left: 1px solid var(--border);
-  padding: 16px 14px;
 }
 
 .brand {
@@ -119,20 +114,6 @@ body {
   padding: 24px 28px;
 }
 
-.rail-title {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--text-dim);
-  margin-bottom: 12px;
-}
-
-.rail-empty {
-  font-size: 13px;
-  color: var(--text-dim);
-  line-height: 1.5;
-}
-
 .pane-title {
   margin: 0 0 8px;
   font-size: 22px;
@@ -177,10 +158,14 @@ body {
   color: var(--text);
 }
 
+/* The session-id status line in the terminal bar. min-width:0 lets it actually shrink inside the
+   flex bar so a long session id ellipsizes instead of overflowing the pane edge (issue #1022). */
 .term-bar-sid {
   font-size: 11px;
   color: var(--text-dim);
   font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -188,12 +173,18 @@ body {
 
 /* The xterm host. flex:1 so it takes all height under the bar; the exact-size PTY grid is anchored
    to the BOTTOM (justify-content: flex-end) so a PTY shorter than the pane keeps its live input box
-   at the bottom edge - and a PTY taller than the pane scrolls within xterm's own viewport. */
+   at the bottom edge - and a PTY taller than the pane scrolls within xterm's own viewport.
+
+   The engine mirrors the PTY grid EXACTLY (both cols and rows) to avoid TUI ghosting, so when the
+   PTY is wider than this host the grid overflows horizontally. overflow-x:auto makes that overflow
+   SCROLLABLE rather than silently clipped (issue #1022) - the full row is always reachable, never
+   cut off. overflow-y stays hidden because xterm owns vertical scrolling within its own viewport. */
 .term-host {
   flex: 1 1 auto;
   min-height: 0;
   background: #1e1e1e;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -1137,18 +1128,6 @@ body {
 
 .brief-open-term:hover {
   background: var(--needsyou-bg);
-}
-
-/* The seam to the mobile shell is around the tablet breakpoint: below it the right (awareness) rail
-   folds away so the frame stays usable on a small laptop without becoming a phone layout. */
-@media (max-width: 1024px) {
-  .shell {
-    grid-template-columns: var(--rail-left-width) 1fr;
-  }
-
-  .rail-right {
-    display: none;
-  }
 }
 
 /* Below a smaller width the session dock (queue + screenshots) folds away so the terminal and the

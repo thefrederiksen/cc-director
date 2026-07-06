@@ -1,10 +1,14 @@
 import { NavLink, Outlet } from "react-router-dom";
 
-// The desktop layout frame (epic #967): a three-region shell - a left rail (navigation), the main
-// pane (the routed page), and a right rail (awareness / detail region). This scaffold renders the
-// empty frame and routes between placeholder panes; the real panes are ported into these regions one
-// issue at a time. Desktop-first: the frame stays usable down to a small laptop, and the right rail
-// collapses around the tablet breakpoint (see styles.css), which is the seam to the mobile shell.
+// The desktop layout frame (epic #967): a two-region shell - a left rail (navigation) and the main
+// pane (the routed page). The main pane fills all remaining width. Desktop-first: the frame stays
+// usable down to a small laptop, which is the seam to the mobile shell.
+//
+// There is intentionally NO static right rail (issue #1022): an earlier port left a hardcoded
+// "Awareness" placeholder rail that shipped empty on every route, duplicated the real Awareness tab
+// on /session/:id, and stole ~300px of width from every page (which also worsened the terminal
+// clipping). Per-page detail regions (roster, dock, awareness) belong to the routed pages
+// themselves - see SessionsView - not to this frame.
 
 // The left-rail destinations. Each maps to a real routed page (the epic ported them in one at a time).
 const NAV_ITEMS: ReadonlyArray<{ to: string; label: string }> = [
@@ -61,11 +65,6 @@ export function AppShell() {
       <main className="main-pane" aria-label="Main">
         <Outlet />
       </main>
-
-      <aside className="rail rail-right" aria-label="Awareness">
-        <div className="rail-title">Awareness</div>
-        <div className="rail-empty">Turn rail and awareness panes land here.</div>
-      </aside>
     </div>
   );
 }
