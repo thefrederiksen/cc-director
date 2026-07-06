@@ -598,22 +598,18 @@ public sealed class GatewayHost : IAsyncDisposable
     public GatewayTurnBriefStore TurnBriefs => _turnBriefStore;
 
     /// <summary>
-    /// Build the wingman's brain for the CURRENTLY selected AI provider (the consolidated AI-provider
-    /// setting). The wingman is a stateless hosted chat-completions call - <c>glm-5.2</c> on the
-    /// DevThrottle inference proxy or <c>gpt-5.5</c> on OpenAI - not the warm <c>claude.exe</c> brain,
-    /// because that agent speaks the Anthropic protocol and cannot run those OpenAI-compatible models.
-    /// The provider and credential are read at CALL time, so a settings change is honored on the next
-    /// turn without a Gateway restart. The credential comes from the Gateway vault; when it is missing
-    /// (not signed in / no OpenAI key) the ask throws a clear, actionable error rather than a fallback.
+    /// Build the wingman's brain for the CURRENTLY selected AI provider and requested model role. The
+    /// wingman is a stateless hosted chat-completions call, not the warm <c>claude.exe</c> brain,
+    /// because that agent speaks the Anthropic protocol and cannot run these OpenAI-compatible models.
+    /// The provider, credential, and role-specific model are read at CALL time, so a settings change is
+    /// honored on the next turn without a Gateway restart.
     /// </summary>
-    private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(CancellationToken ct)
+    private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(Core.Configuration.WingmanModelRole role, CancellationToken ct)
     {
         var mode = Core.Configuration.TranscriptionModeConfig.Get();
         var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
         var key = _keyVault.Get(ep.KeyName) ?? "";
-        // The model is the user's saved choice (AI tab "Wingman model" picker) when set to a real hosted
-        // model, else the provider default (glm-5.2 / gpt-5.5) - never a stale Claude alias.
-        var model = Core.Configuration.WingmanModelConfig.Resolve(mode);
+        var model = Core.Configuration.WingmanModelConfig.Resolve(mode, role);
         CcDirector.AgentBrain.IAgentBrain brain =
             new Wingman.HostedInferenceBrain(ep.BaseUrl, key, model, log: FileLog.Write);
         return Task.FromResult(brain);

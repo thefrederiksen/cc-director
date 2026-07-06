@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using CcDirector.AgentBrain;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Drivers;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
@@ -101,7 +102,7 @@ public sealed class WingmanTranslator
     /// </summary>
     public const string DefaultInstructionsVersion = "3";
 
-    private readonly Func<CancellationToken, Task<IAgentBrain>> _brainProvider;
+    private readonly Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
     private readonly Func<string> _instructions;
 
@@ -113,7 +114,7 @@ public sealed class WingmanTranslator
     /// the ACTIVE wingman instructions at call time - the user's edited/versioned prompt when set,
     /// else the deployed <see cref="FidelityPrompt"/> default; omit it to always use the default.
     /// </summary>
-    public WingmanTranslator(Func<CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null)
+    public WingmanTranslator(Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider, Action<string>? log = null, Func<string>? instructionsProvider = null)
     {
         _brainProvider = brainProvider ?? throw new ArgumentNullException(nameof(brainProvider));
         _log = log ?? FileLog.Write;
@@ -168,7 +169,7 @@ public sealed class WingmanTranslator
 
         var prompt = BuildPrompt(instructions ?? FidelityPrompt, recentContext ?? "", latestReply);
 
-        var brain = await _brainProvider(ct);
+        var brain = await _brainProvider(WingmanModelRole.Fast, ct);
         AskResult ask;
         try
         {
@@ -208,7 +209,7 @@ public sealed class WingmanTranslator
         _log($"[WingmanTranslator] AskDirectAsync: userLen={userMessage.Length}");
         var prompt = BuildDirectPrompt(userMessage);
 
-        var brain = await _brainProvider(ct);
+        var brain = await _brainProvider(WingmanModelRole.Thinking, ct);
         AskResult ask;
         try
         {
@@ -243,7 +244,7 @@ public sealed class WingmanTranslator
         _log($"[WingmanTranslator] AskAboutDevThrottleAsync: questionLen={question.Length}");
         var prompt = BuildDevThrottlePrompt(question);
 
-        var brain = await _brainProvider(ct);
+        var brain = await _brainProvider(WingmanModelRole.Thinking, ct);
         AskResult ask;
         try
         {
@@ -304,7 +305,7 @@ public sealed class WingmanTranslator
         if (string.IsNullOrWhiteSpace(terminalText)) return new WingmanMenu { IsMenu = false };
         _log($"[WingmanTranslator] DetectMenuAsync: terminalLen={terminalText.Length}");
 
-        var brain = await _brainProvider(ct);
+        var brain = await _brainProvider(WingmanModelRole.Fast, ct);
         AskResult ask;
         try { ask = await brain.AskAsync(BuildMenuDetectPrompt(terminalText), ct); }
         finally { await brain.ClearAsync(CancellationToken.None); }
@@ -325,7 +326,7 @@ public sealed class WingmanTranslator
     {
         if (menu?.Options is null || menu.Options.Count == 0 || string.IsNullOrWhiteSpace(userText)) return -1;
 
-        var brain = await _brainProvider(ct);
+        var brain = await _brainProvider(WingmanModelRole.Fast, ct);
         AskResult ask;
         try { ask = await brain.AskAsync(BuildMenuMapPrompt(menu, userText), ct); }
         finally { await brain.ClearAsync(CancellationToken.None); }

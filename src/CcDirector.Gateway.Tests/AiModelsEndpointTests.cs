@@ -66,6 +66,18 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Put_wingman_fast_model_persists_and_snapshot_reflects_it()
+    {
+        var resp = await _http.PutAsJsonAsync("gateway/ai/wingman-fast-model", new { model = "qwen-fast" });
+        resp.EnsureSuccessStatusCode();
+        Assert.Equal("qwen-fast", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["model"]);
+
+        Assert.Equal("qwen-fast", (string?)CcDirectorConfigService.ReadRaw()["brain_model_fast"]);
+        var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
+        Assert.Equal("qwen-fast", (string?)snap!["wingmanFastModel"]);
+    }
+
+    [Fact]
     public async Task Put_tts_model_persists_and_snapshot_reflects_it()
     {
         var resp = await _http.PutAsJsonAsync("gateway/ai/tts-model", new { model = "kokoro" });
@@ -82,6 +94,7 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
     {
         var snap = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
         Assert.Equal("zai-org/GLM-5.2", (string?)snap!["wingmanModel"]);   // provider default when unset
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)snap["wingmanFastModel"]);
         Assert.Equal("hexgrad/Kokoro-82M", (string?)snap["ttsModel"]);
     }
 
@@ -98,6 +111,8 @@ public sealed class AiModelsEndpointTests : IAsyncLifetime
     {
         Assert.Equal(HttpStatusCode.BadRequest,
             (await _http.PutAsJsonAsync("gateway/ai/wingman-model", new { model = "   " })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await _http.PutAsJsonAsync("gateway/ai/wingman-fast-model", new { model = "   " })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest,
             (await _http.PutAsync("gateway/ai/tts-model", new StringContent("[1,2]", Encoding.UTF8, "application/json"))).StatusCode);
     }

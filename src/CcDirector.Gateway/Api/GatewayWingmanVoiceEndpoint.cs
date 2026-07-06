@@ -59,7 +59,7 @@ internal static class GatewayWingmanVoiceEndpoint
         IEndpointRouteBuilder app,
         DirectorRegistry registry,
         DirectorEndpointClient client,
-        Func<CancellationToken, Task<IAgentBrain>> brainProvider,
+        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brainProvider,
         KeyVault vault,
         WingmanVoiceService voice,
         Func<string>? instructionsProvider = null)

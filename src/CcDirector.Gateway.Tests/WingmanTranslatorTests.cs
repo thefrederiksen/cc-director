@@ -1,5 +1,6 @@
 using System.Text;
 using CcDirector.AgentBrain;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Drivers;
 using CcDirector.Gateway.Wingman;
 using Xunit;
@@ -61,7 +62,7 @@ public sealed class WingmanTranslatorTests
     }
 
     private static WingmanTranslator BuildTranslator(FakeBrain brain)
-        => new(_ => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        => new((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
 
     [Fact]
     public async Task TranslateAsync_ReturnsTheSpokenTranslation_FromBetweenTheMarkers()
@@ -74,6 +75,25 @@ public sealed class WingmanTranslatorTests
             "I patched the auth flow in `LoginService.cs` and the suite is green: 73/73.");
 
         Assert.Equal("The login bug is fixed. All seventy-three tests passed.", result.Spoken);
+    }
+
+    [Fact]
+    public async Task ModelRole_SummaryUsesFast_TalkToWingmanUsesThinking()
+    {
+        var brain = new FakeBrain(_ => "ok");
+        var roles = new List<WingmanModelRole>();
+        var translator = new WingmanTranslator(
+            (role, _) =>
+            {
+                roles.Add(role);
+                return Task.FromResult<IAgentBrain>(brain);
+            },
+            log: _ => { });
+
+        await translator.TranslateAsync("recent context", "the agent reply to translate");
+        await translator.AskDirectAsync("hey wingman, what is going on?");
+
+        Assert.Equal(new[] { WingmanModelRole.Fast, WingmanModelRole.Thinking }, roles);
     }
 
     [Fact]
@@ -93,7 +113,7 @@ public sealed class WingmanTranslatorTests
     public async Task TranslateAsync_ClearsTheContext_EvenWhenTheAskThrows()
     {
         var brain = new ThrowingBrain();
-        var translator = new WingmanTranslator(_ => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var translator = new WingmanTranslator((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => translator.TranslateAsync("q", "some reply"));
@@ -167,7 +187,7 @@ public sealed class WingmanTranslatorTests
         // reply IS the spoken answer (it was told to output only that), so we use it rather than
         // 502 - the reliability fix for the explain/voice-turn path.
         var brain = new NoMarkersBrain();   // returns "just some text with no markers at all"
-        var translator = new WingmanTranslator(_ => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+        var translator = new WingmanTranslator((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
         var result = await translator.TranslateAsync("q", "a reply");
         Assert.Equal("just some text with no markers at all", result.Spoken);
     }

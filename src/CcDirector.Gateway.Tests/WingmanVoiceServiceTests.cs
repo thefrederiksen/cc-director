@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.HostedAi;
 using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Discovery;
@@ -20,8 +21,8 @@ public sealed class WingmanVoiceServiceTests
     private static WingmanVoiceService NewService()
     {
         // The flag methods never touch the brain; a provider that throws proves that.
-        Func<CancellationToken, Task<IAgentBrain>> brain =
-            _ => throw new InvalidOperationException("brain must not be called for flag state");
+        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _) => throw new InvalidOperationException("brain must not be called for flag state");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
         return new WingmanVoiceService(brain, new KeyVault(vaultPath), new DirectorEndpointClient(), persistPath);
@@ -70,8 +71,8 @@ public sealed class WingmanVoiceServiceTests
     /// the same on-disk cache (the gateway-restart case). The empty vault means TtsAsync returns null.</summary>
     private static WingmanVoiceService ServiceAt(string persistPath)
     {
-        Func<CancellationToken, Task<IAgentBrain>> brain =
-            _ => throw new InvalidOperationException("brain must not be called");
+        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _) => throw new InvalidOperationException("brain must not be called");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         return new WingmanVoiceService(brain, new KeyVault(vaultPath), new DirectorEndpointClient(), persistPath);
     }
@@ -256,8 +257,8 @@ public sealed class WingmanVoiceServiceTests
     /// the stub ignores the URL, so the mapped state depends only on the response.</summary>
     private static WingmanVoiceService ServiceWithTts(HttpStatusCode status, string body, byte[]? audio = null)
     {
-        Func<CancellationToken, Task<IAgentBrain>> brain =
-            _ => throw new InvalidOperationException("brain must not be called for the store-spoken path");
+        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
         var vault = new KeyVault(vaultPath);
@@ -339,8 +340,8 @@ public sealed class WingmanVoiceServiceTests
 
     private static WingmanVoiceService ServiceWithHandler(HttpMessageHandler handler)
     {
-        Func<CancellationToken, Task<IAgentBrain>> brain =
-            _ => throw new InvalidOperationException("brain must not be called for the store-spoken path");
+        Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> brain =
+            (_, _) => throw new InvalidOperationException("brain must not be called for the store-spoken path");
         var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
         var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
         var vault = new KeyVault(vaultPath);
