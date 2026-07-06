@@ -10,11 +10,38 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 //   4. The first live byte resets the reconnect streak (markLive).
 //   5. Reconnect is BOUNDED - it gives up with a visible status line after the attempt cap.
 //   6. dispose() stops reconnecting and tears the terminal down.
+//   7. The xterm lifecycle is animation-frame safe (issue #1029): open() is deferred until the host is
+//      laid out, and dispose() is deferred one frame so xterm's own queued syncScrollArea frame never
+//      runs against a torn-down render service (the uncaught 'dimensions' TypeError).
+
+// ----- a drivable requestAnimationFrame queue --------------------------------------------------
+// The engine schedules the terminal bring-up and teardown on requestAnimationFrame (issue #1029), and
+// xterm itself (modelled by FakeTerminal below) queues an internal frame on reset()/open(). The tests
+// drive these frames explicitly with runFrames() so the exact "frame still pending at dispose" race is
+// reproducible. Callbacks run in registration order within a round; a callback that schedules another
+// frame runs in the NEXT round (as a real browser would run it on the next paint).
+let rafCallbacks: Map<number, () => void> = new Map();
+let rafSeq = 0;
+
+function runFrames(rounds = 20): void {
+  for (let r = 0; r < rounds && rafCallbacks.size > 0; r++) {
+    const batch = [...rafCallbacks.entries()]; // Map preserves insertion (registration) order
+    rafCallbacks.clear();
+    for (const [, cb] of batch) cb();
+  }
+}
 
 // ----- fakes for xterm + the Gateway client (hoisted so vi.mock factories may reference them) -----
 const hoisted = vi.hoisted(() => {
   const sendPrompt = vi.fn((_sid: string, _text: string, _appendEnter: boolean) => Promise.resolve());
   const ensureGatewayCookie = vi.fn();
+  // A faithful model of the xterm.js 5.5.0 lifecycle contract that matters for issue #1029:
+  //  - Viewport.reset() and Terminal.open() each queue an internal requestAnimationFrame(syncScrollArea)
+  //    whose handle xterm does NOT retain (so it cannot be cancelled).
+  //  - syncScrollArea reads the render service's `dimensions` (xterm: `this._renderer.value.dimensions`).
+  //  - dispose() tears the render service down, so a frame that fires AFTER dispose reads `dimensions`
+  //    off `undefined` and throws `TypeError: Cannot read properties of undefined (reading 'dimensions')`.
+  // The engine's fix must ensure that queued frame always flushes on a still-live terminal.
   class FakeTerminal {
     onDataCb: ((data: string) => void) | null = null;
     writes: string[] = [];
@@ -25,11 +52,22 @@ const hoisted = vi.hoisted(() => {
     scrollToBottomCount = 0;
     disposed = false;
     buffer = { active: { viewportY: 0, baseY: 0 } };
+    // The render service, torn down on dispose. `dimensions` reads through it, mirroring xterm's
+    // `get dimensions(){return this._renderer.value.dimensions}` - so it throws once disposed.
+    private renderValue: { dimensions: object } | undefined = { dimensions: {} };
     constructor(public options: unknown) {
       terminals.push(this);
     }
+    private get dimensions(): object {
+      return (this.renderValue as { dimensions: object }).dimensions;
+    }
+    // Mirrors xterm Viewport.syncScrollArea reading the render service dimensions.
+    private syncScrollArea(): void {
+      void this.dimensions;
+    }
     open(): void {
-      /* no DOM in the test */
+      // xterm's Terminal.open() queues a syncScrollArea frame it does not retain the handle for.
+      window.requestAnimationFrame(() => this.syncScrollArea());
     }
     onData(cb: (data: string) => void): void {
       this.onDataCb = cb;
@@ -39,6 +77,8 @@ const hoisted = vi.hoisted(() => {
     }
     reset(): void {
       this.resetCount += 1;
+      // xterm's Viewport.reset() queues an un-cancellable syncScrollArea frame - the #1029 hazard.
+      window.requestAnimationFrame(() => this.syncScrollArea());
     }
     resize(cols: number, rows: number): void {
       this.cols = cols;
@@ -50,6 +90,7 @@ const hoisted = vi.hoisted(() => {
     }
     dispose(): void {
       this.disposed = true;
+      this.renderValue = undefined; // render service torn down -> `dimensions` now throws
     }
   }
   const terminals: FakeTerminal[] = [];
@@ -97,6 +138,21 @@ import { InteractiveTerminal } from "./interactive";
 
 const SID = "sess-123";
 
+// A host element that reports a real (non-zero) layout, so the engine's deferred bring-up opens the
+// terminal on the first animation frame (issue #1029).
+function host(): HTMLElement {
+  return { clientWidth: 800, clientHeight: 600 } as unknown as HTMLElement;
+}
+
+// Construct, start, and run the bring-up frame so the terminal + first WebSocket exist. Returns the
+// engine instance; the FakeTerminal is hoisted.terminals[0] and the socket is FakeWebSocket.instances[0].
+function startTerminal(): InteractiveTerminal {
+  const t = new InteractiveTerminal(host(), SID);
+  t.start();
+  runFrames();
+  return t;
+}
+
 // Drain the microtask queue so the serialized keystroke pump (issue #1021) can advance between
 // awaited sends. Under fake timers this still flushes microtasks (Promise.resolve resolves without a
 // timer), which is all the default sendPrompt mock needs.
@@ -107,16 +163,27 @@ async function flush(times = 8): Promise<void> {
 beforeEach(() => {
   hoisted.terminals.length = 0;
   FakeWebSocket.instances.length = 0;
+  rafCallbacks = new Map();
+  rafSeq = 0;
   sendPrompt.mockReset();
   sendPrompt.mockImplementation((_sid: string, _text: string, _appendEnter: boolean) => Promise.resolve());
   ensureGatewayCookie.mockClear();
   vi.useFakeTimers();
   // Minimal window/global surface the engine touches. setTimeout/clearTimeout delegate to globalThis
-  // at CALL time so vitest's fake timers drive them.
+  // at CALL time so vitest's fake timers drive them; requestAnimationFrame/cancelAnimationFrame use the
+  // drivable queue above so tests step frames explicitly (issue #1029).
   (globalThis as unknown as { window: unknown }).window = {
     location: { protocol: "http:", host: "gateway.local:8080" },
     setTimeout: (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms),
     clearTimeout: (id: unknown) => globalThis.clearTimeout(id as ReturnType<typeof setTimeout>),
+    requestAnimationFrame: (fn: () => void) => {
+      const id = ++rafSeq;
+      rafCallbacks.set(id, fn);
+      return id;
+    },
+    cancelAnimationFrame: (id: number) => {
+      rafCallbacks.delete(id);
+    },
   };
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
 });
@@ -145,16 +212,14 @@ function reconnectOnce(): FakeWebSocket {
 
 describe("InteractiveTerminal typing", () => {
   it("forwards a keystroke as raw bytes with appendEnter:false", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
     term.onDataCb?.("a");
     expect(sendPrompt).toHaveBeenCalledWith(SID, "a", false);
   });
 
   it("forwards control keys (Esc, Ctrl+C) verbatim and in order", async () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
     term.onDataCb?.("\x1b"); // Esc
     term.onDataCb?.("\x03"); // Ctrl+C
@@ -166,8 +231,7 @@ describe("InteractiveTerminal typing", () => {
   });
 
   it("ignores an empty keystroke", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     hoisted.terminals[0].onDataCb?.("");
     expect(sendPrompt).not.toHaveBeenCalled();
   });
@@ -210,8 +274,7 @@ describe("InteractiveTerminal keystroke ordering (issue #1021)", () => {
 
   it("keeps a fast-typed 36-char string exactly in order at 0ms/key", async () => {
     const input = "abcdefghijklmnopqrstuvwxyz0123456789";
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
     const director = installReorderingDirector();
 
@@ -230,8 +293,7 @@ describe("InteractiveTerminal keystroke ordering (issue #1021)", () => {
   it("preserves order for a burst mixing typed text and control keys", async () => {
     // "ec" + Ctrl+C + "ho" + Esc + arrow-up + "x", all in one tick.
     const seq = ["e", "c", "\x03", "h", "o", "\x1b", "\x1b[A", "x"];
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
     const director = installReorderingDirector();
 
@@ -245,14 +307,12 @@ describe("InteractiveTerminal keystroke ordering (issue #1021)", () => {
 
 describe("InteractiveTerminal rendering", () => {
   it("opens the stream same-origin to the Gateway (root-relative path, no Director address)", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     expect(FakeWebSocket.instances[0].url).toBe("ws://gateway.local:8080/sessions/sess-123/stream");
   });
 
   it("mirrors the PTY grid exactly - both cols and rows from the size message", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
     FakeWebSocket.instances[0].emitString(JSON.stringify({ type: "size", cols: 137, rows: 51 }));
     expect(term.resizes[term.resizes.length - 1]).toEqual({ cols: 137, rows: 51 });
@@ -261,8 +321,7 @@ describe("InteractiveTerminal rendering", () => {
 
 describe("InteractiveTerminal closed control frame", () => {
   it("surfaces the reason and does NOT reset the reconnect streak", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
 
     // Two failed reconnect cycles -> the streak is at 2 (next attempt would be #3).
@@ -283,8 +342,7 @@ describe("InteractiveTerminal closed control frame", () => {
 
 describe("InteractiveTerminal reconnect", () => {
   it("the first live byte resets the reconnect streak", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
 
     reconnectOnce();
@@ -299,8 +357,7 @@ describe("InteractiveTerminal reconnect", () => {
   });
 
   it("is bounded - gives up with a visible status line after the attempt cap", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    startTerminal();
     const term = hoisted.terminals[0];
 
     // Drive well past the 30-attempt cap; each cycle closes then lets the timer reopen.
@@ -314,17 +371,71 @@ describe("InteractiveTerminal reconnect", () => {
 
 describe("InteractiveTerminal dispose", () => {
   it("stops reconnecting and disposes the terminal", () => {
-    const t = new InteractiveTerminal({} as unknown as HTMLElement, SID);
-    t.start();
+    const t = startTerminal();
     const term = hoisted.terminals[0];
     const socketsBefore = FakeWebSocket.instances.length;
 
     t.dispose();
+    // The xterm teardown is deferred one frame (issue #1029); run it so the terminal is disposed.
+    runFrames();
     expect(term.disposed).toBe(true);
 
     // A close after dispose must NOT schedule a reconnect (handler detached), so no new socket opens.
     FakeWebSocket.instances[socketsBefore - 1].triggerClose();
     vi.advanceTimersByTime(5000);
     expect(FakeWebSocket.instances.length).toBe(socketsBefore);
+  });
+});
+
+describe("InteractiveTerminal xterm lifecycle safety (issue #1029)", () => {
+  // The bug: xterm's reset()/open() queue an internal animation frame (syncScrollArea) that reads the
+  // render service's `dimensions`. If the terminal is disposed while that frame is still pending, the
+  // frame later runs against a torn-down render service and throws the uncaught
+  // `TypeError: Cannot read properties of undefined (reading 'dimensions')`. This fires on every mount
+  // and on every rapid session switch. The fix defers the teardown one frame so the queued frame
+  // always flushes on a still-live terminal.
+
+  it("does NOT throw when disposed while an xterm animation frame is still pending", () => {
+    const t = startTerminal();
+    const term = hoisted.terminals[0];
+    expect(term).toBeDefined();
+
+    // Queue a fresh xterm frame - exactly what reset()/markLive do on every reconnect and first byte -
+    // then dispose while it is STILL pending. This is the reproduced race.
+    term.reset();
+    t.dispose();
+
+    // Running the pending frames must not throw: the fix guarantees xterm's queued syncScrollArea runs
+    // BEFORE the deferred teardown, i.e. on a live terminal. With the old synchronous dispose the
+    // terminal was already torn down here, so the frame read `dimensions` off undefined and threw.
+    expect(() => runFrames()).not.toThrow();
+    expect(term.disposed).toBe(true);
+  });
+
+  it("survives a rapid mount / dispose / remount storm without throwing (StrictMode double-mount + A/B switching)", () => {
+    // Six back-to-back lifecycles in the same tick, mimicking React 18 StrictMode's throwaway
+    // double-mount and rapid A/B session switching. Each cycle opens (queuing xterm frames) and is torn
+    // down before its frames flush. None may throw when the frames finally run.
+    expect(() => {
+      for (let i = 0; i < 6; i++) {
+        const t = new InteractiveTerminal(host(), SID);
+        t.start();
+        runFrames(); // bring up + open/reset frames
+        hoisted.terminals[hoisted.terminals.length - 1].reset(); // queue a fresh frame
+        t.dispose(); // dispose with that frame pending
+      }
+      runFrames();
+    }).not.toThrow();
+  });
+
+  it("never opens a terminal if disposed before the host is laid out (StrictMode throwaway mount)", () => {
+    // A host that never gains a size, then disposed before any bring-up frame that opens it. No xterm
+    // terminal must ever be constructed - the pending bring-up frame is cancelled on dispose.
+    const zeroHost = { clientWidth: 0, clientHeight: 0 } as unknown as HTMLElement;
+    const t = new InteractiveTerminal(zeroHost, SID);
+    t.start();
+    t.dispose(); // cancels the pending bring-up before it ever opens
+    runFrames();
+    expect(hoisted.terminals.length).toBe(0);
   });
 });

@@ -51,6 +51,12 @@ const SCROLLBACK = 5000;
 const RECONNECT_DELAY_MS = 1200; // ~1200ms between reconnect attempts
 const MAX_RECONNECT_ATTEMPTS = 30; // ~36s of dead-leg retries before announcing failure
 
+// How many animation frames start() will wait for the host to be laid out (non-zero size) before it
+// opens the terminal anyway. ~30 frames is roughly half a second at 60fps - long enough to cover the
+// pane's first layout, short enough that a permanently-hidden host still opens instead of polling
+// forever (the deferred dispose keeps even that case free of the 'dimensions' error). See issue #1029.
+const BRING_UP_MAX_FRAMES = 30;
+
 // The stream URL is ALWAYS same-origin to the Gateway that served this page (never a Director's own
 // address - the Gateway resolves the owning Director and reverse-proxies the upgrade). Built from
 // window.location so no absolute URL is ever hard-coded (Gateway-only-ingress lint rule, #967). This
@@ -81,6 +87,11 @@ export class InteractiveTerminal {
   private term: Xterm | null = null;
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
+  // The pending animation frame that waits for the host to be laid out before opening the terminal.
+  // It is cancelled on dispose so a pane torn down before layout never opens a terminal. See
+  // start()/dispose() for the lifecycle bug this fixes (issue #1029).
+  private bringUpFrame: number | null = null;
+  private bringUpAttempts = 0;
   private wantOpen = true;
 
   private lastCols = 0;
@@ -100,6 +111,38 @@ export class InteractiveTerminal {
   }
 
   start(): void {
+    this.wantOpen = true;
+    this.bringUpAttempts = 0;
+    // Do NOT create/open xterm synchronously. xterm's first render reads the host element's pixel
+    // size, and Terminal.open()/Viewport.reset() each queue an internal requestAnimationFrame that
+    // reads the render service's `dimensions`. Under React 18 StrictMode the pane mounts, unmounts,
+    // and remounts within a single tick - so a synchronous open would spin up a terminal only to
+    // dispose it in the same tick, leaving that queued frame to fire against a torn-down render
+    // service (the 'dimensions' TypeError). Instead, wait one animation frame for the host to be laid
+    // out (non-zero size) and then open once; if this instance is disposed first, dispose() cancels
+    // the pending frame so the throwaway StrictMode mount never opens a terminal at all (issue #1029).
+    this.scheduleBringUp();
+  }
+
+  // Wait for the host element to be laid out (non-zero measured size) before opening the terminal,
+  // re-polling one animation frame at a time. Capped at BRING_UP_MAX_FRAMES so a host that never gets
+  // a size (e.g. a pane that stays hidden) still opens eventually instead of polling forever; the
+  // deferred dispose keeps that case free of the 'dimensions' error too (issue #1029).
+  private scheduleBringUp(): void {
+    this.bringUpFrame = window.requestAnimationFrame(() => {
+      this.bringUpFrame = null;
+      if (!this.wantOpen) return;
+      const laidOut = this.hostEl.clientWidth > 0 && this.hostEl.clientHeight > 0;
+      if (!laidOut && this.bringUpAttempts < BRING_UP_MAX_FRAMES) {
+        this.bringUpAttempts += 1;
+        this.scheduleBringUp();
+        return;
+      }
+      this.openTerminal();
+    });
+  }
+
+  private openTerminal(): void {
     const term = new Xterm({
       fontFamily: FONT_FAMILY,
       fontSize: FONT_SIZE,
@@ -176,6 +219,12 @@ export class InteractiveTerminal {
   dispose(): void {
     this.wantOpen = false;
     this.pendingInput = ""; // drop any keystrokes not yet sent; the pump exits on its next check
+    if (this.bringUpFrame !== null) {
+      // Disposed before the host was ever laid out (the StrictMode throwaway mount): cancel the
+      // pending open so no terminal is ever created for this instance.
+      window.cancelAnimationFrame(this.bringUpFrame);
+      this.bringUpFrame = null;
+    }
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -189,13 +238,27 @@ export class InteractiveTerminal {
       }
       this.ws = null;
     }
-    if (this.term) {
-      try {
-        this.term.dispose();
-      } catch {
-        /* already disposed */
-      }
-      this.term = null;
+    // Defer the xterm teardown by exactly one animation frame. xterm's Viewport.reset() and
+    // Terminal.open() each queue an internal requestAnimationFrame(syncScrollArea) whose handle xterm
+    // does NOT retain - so it cannot be cancelled, and syncScrollArea reads the render service's
+    // `dimensions`. Disposing synchronously tears the render service down while that frame is still
+    // queued, so when it later fires it reads `dimensions` off a disposed terminal and throws the
+    // uncaught `TypeError: Cannot read properties of undefined (reading 'dimensions')`. Animation-frame
+    // callbacks run in registration order, so a frame scheduled here always runs AFTER any xterm frame
+    // queued before it: the pending syncScrollArea flushes harmlessly on the still-live terminal, then
+    // this callback disposes it. this.term is nulled now so nothing else touches the terminal in the
+    // meantime (the WebSocket is already closed above), and start() is safe to call again on a fresh
+    // instance (issue #1029).
+    const term = this.term;
+    this.term = null;
+    if (term !== null) {
+      window.requestAnimationFrame(() => {
+        try {
+          term.dispose();
+        } catch {
+          /* already disposed */
+        }
+      });
     }
   }
 
