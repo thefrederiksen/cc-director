@@ -10,6 +10,10 @@ This document outlines the phased implementation of the CC Director Remote Contr
 
 **Repository:** Everything is open source in the cc_director repo.
 
+**Status note:** this is a historical plan. The checked-in Supabase migration
+prototype was removed because the current product does not use those
+`computers`, `sessions`, or `terminal_data` tables.
+
 ---
 
 ## Phase 1: Infrastructure Setup
@@ -46,7 +50,8 @@ I will create SQL migration scripts for:
 - Row Level Security (RLS) policies
 - Indexes for performance
 
-**Output:** `infra/supabase/migrations/001_initial_schema.sql`
+**Output:** migration prototype removed; regenerate from the current product
+schema if this plan is revived.
 
 ### Step 1.4: Run Database Migration [USER]
 
@@ -287,9 +292,6 @@ cc_director/
           SessionList.tsx
         lib/
           supabase.ts
-    supabase/
-      migrations/
-        001_initial_schema.sql
   src/
     CcDirector.Core/
       Cloud/
