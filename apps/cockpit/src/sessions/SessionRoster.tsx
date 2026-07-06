@@ -29,9 +29,11 @@ export interface SessionRosterProps {
   view: RosterView;
   onView: (view: RosterView) => void;
   error: string | null;
+  /** Open the "New session" dialog (issue #1023). */
+  onNewSession: () => void;
 }
 
-export function SessionRoster({ sessions, selectedId, view, onView, error }: SessionRosterProps) {
+export function SessionRoster({ sessions, selectedId, view, onView, error, onNewSession }: SessionRosterProps) {
   const total = sessions?.length ?? 0;
 
   return (
@@ -39,6 +41,11 @@ export function SessionRoster({ sessions, selectedId, view, onView, error }: Ses
       <div className="roster-head">
         <span className="roster-title">Sessions</span>
         <span className="roster-count">{total}</span>
+        {/* The only way to start a session from the desktop Cockpit (issue #1023). Opens the
+            dedicated machine/repo picker dialog. */}
+        <button type="button" className="roster-newbtn" onClick={onNewSession} title="Start a new session">
+          + New session
+        </button>
       </div>
 
       {/* The ordering toggle. "My order" is pressed by default; "Attention first" is the opt-in view. */}
