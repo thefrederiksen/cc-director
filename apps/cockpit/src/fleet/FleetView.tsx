@@ -16,8 +16,9 @@ import { relativeTime, repoBasename, humanizeState } from "./format";
 
 // The Fleet cards dashboard (issue #975) - the React port of the Blazor Fleet.razor. It lists every
 // session the Gateway roster aggregation returns, grouped by machine, with the one effective status
-// color, inline rename, and an Open-session deep link; above it, the Interrupted sessions recovery
-// panel (sessions lost to an unexpected Director shutdown, restorable or dismissable). It reads
+// color, inline rename, and an Open-session deep link; below it, the Interrupted sessions recovery
+// panel (sessions lost to an unexpected Director shutdown, restorable or dismissable) - live sessions
+// always come first, the dead ones sink to the bottom. It reads
 // same-origin from the Gateway (GET /sessions?envelope=true and GET /interrupted) through
 // client-core - never a Director address.
 //
@@ -217,6 +218,46 @@ export function FleetView() {
 
       {lastError !== null && <div className="fleet-error">{lastError}</div>}
 
+      {sessions === null && lastError === null && <div className="fleet-empty">Loading sessions...</div>}
+
+      {sessions !== null && list.length === 0 && machineErrors.length === 0 && (
+        <div className="fleet-empty">
+          <p>No sessions registered anywhere on the fleet.</p>
+          <p className="fleet-empty-sub">
+            A session will appear here when a Director starts one. Make sure the Director has{" "}
+            <code>gateway.url</code> configured if it is running on another machine.
+          </p>
+        </div>
+      )}
+
+      {groups.map((g) => (
+        <section key={g.name} className="fleet-group">
+          <div className="fleet-machine">
+            <span className="fleet-mname">{g.name}</span>
+            {g.user.length > 0 && <span className="fleet-muser"> &middot; {g.user}</span>}
+            <span className="fleet-mcount"> &middot; {g.sessions.length} session{g.sessions.length === 1 ? "" : "s"}</span>
+            {g.error !== null && <span className="fleet-munreachable"> &middot; unreachable: {g.error}</span>}
+          </div>
+
+          {g.sessions.length > 0 && (
+            <div className="fleet-cards">
+              {g.sessions.map((s) => (
+                <FleetCard
+                  key={s.sessionId}
+                  session={s}
+                  editing={editingSid === s.sessionId}
+                  editName={editName}
+                  onEditNameChange={setEditName}
+                  onBeginRename={() => beginRename(s)}
+                  onCommit={() => void commitRename(s)}
+                  onCancel={() => setEditingSid(null)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      ))}
+
       {intGroups.length > 0 && (
         <section className="fint-wrap">
           <div className="fint-banner">
@@ -300,46 +341,6 @@ export function FleetView() {
           ))}
         </section>
       )}
-
-      {sessions === null && lastError === null && <div className="fleet-empty">Loading sessions...</div>}
-
-      {sessions !== null && list.length === 0 && machineErrors.length === 0 && (
-        <div className="fleet-empty">
-          <p>No sessions registered anywhere on the fleet.</p>
-          <p className="fleet-empty-sub">
-            A session will appear here when a Director starts one. Make sure the Director has{" "}
-            <code>gateway.url</code> configured if it is running on another machine.
-          </p>
-        </div>
-      )}
-
-      {groups.map((g) => (
-        <section key={g.name} className="fleet-group">
-          <div className="fleet-machine">
-            <span className="fleet-mname">{g.name}</span>
-            {g.user.length > 0 && <span className="fleet-muser"> &middot; {g.user}</span>}
-            <span className="fleet-mcount"> &middot; {g.sessions.length} session{g.sessions.length === 1 ? "" : "s"}</span>
-            {g.error !== null && <span className="fleet-munreachable"> &middot; unreachable: {g.error}</span>}
-          </div>
-
-          {g.sessions.length > 0 && (
-            <div className="fleet-cards">
-              {g.sessions.map((s) => (
-                <FleetCard
-                  key={s.sessionId}
-                  session={s}
-                  editing={editingSid === s.sessionId}
-                  editName={editName}
-                  onEditNameChange={setEditName}
-                  onBeginRename={() => beginRename(s)}
-                  onCommit={() => void commitRename(s)}
-                  onCancel={() => setEditingSid(null)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      ))}
     </div>
   );
 }
