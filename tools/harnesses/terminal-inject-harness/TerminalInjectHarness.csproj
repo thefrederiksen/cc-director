@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WinExe avoids passing this harness's own console handle tree into child ConPty agents
+         when the harness is launched from another terminal agent. Reports are file-based. -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>TerminalInjectHarness</RootNamespace>
+    <AssemblyName>terminal-inject-harness</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\CcDirector.Core\CcDirector.Core.csproj" />
+    <ProjectReference Include="..\..\..\src\CcDirector.ControlApi\CcDirector.ControlApi.csproj" />
+    <ProjectReference Include="..\..\..\src\CcDirector.Gateway.Contracts\CcDirector.Gateway.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -182,6 +182,9 @@ internal sealed record RecordingEchoStep(
     public static RecordingEchoStep RepaintingPlaceholder(string placeholderText, TimeSpan delay) =>
         new(RecordingEchoMode.RepaintingPlaceholder, delay, placeholderText, null, true);
 
+    public static RecordingEchoStep CustomEcho(string echoText) =>
+        new(RecordingEchoMode.Delayed, TimeSpan.Zero, null, echoText, true);
+
     public static RecordingEchoStep SlashCorrupted(string text) =>
         new(RecordingEchoMode.SlashCorrupted, TimeSpan.Zero, null, "/" + text, false);
 }

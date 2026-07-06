@@ -130,7 +130,10 @@ public sealed class JwtAccessTokenValidatorAuthorizationTests : IDisposable
             expiresAtUtc: Now.AddHours(1),
             audience: ExpectedAudience,
             issuer: ExpectedIssuer);
-        var tampered = token[..^1] + (token[^1] == 'A' ? 'B' : 'A');
+        var parts = token.Split('.');
+        var signature = parts[2];
+        var tamperedSignature = (signature[0] == 'A' ? 'B' : 'A') + signature[1..];
+        var tampered = $"{parts[0]}.{parts[1]}.{tamperedSignature}";
 
         var result = validator.ValidateForAuthorization(tampered);
 

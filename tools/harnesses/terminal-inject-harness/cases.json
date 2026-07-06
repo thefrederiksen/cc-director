@@ -1,0 +1,12 @@
+[
+  {
+    "id": "tiny",
+    "description": "One-word token. Pass is transcript proof that the user turn was submitted.",
+    "requiresAssistantToken": false
+  },
+  {
+    "id": "sentence",
+    "description": "One sentence asking for an exact sentinel reply. Pass is assistant token or transcript proof.",
+    "requiresAssistantToken": true
+  }
+]

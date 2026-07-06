@@ -53,13 +53,14 @@ public static class TerminalSubmit
         var poll = pollInterval ?? TimeSpan.FromMilliseconds(50);
         var settle = enterSettleDelay ?? TimeSpan.FromMilliseconds(40);
         var needle = NormalizeForEcho(text);
+        var visibleTailNeedle = VisibleTailNeedle(needle);
 
         for (var attempt = 1; attempt <= 2; attempt++)
         {
             var cursor = buffer.TotalBytesWritten;
-            backend.Write(Encoding.UTF8.GetBytes(text));
+            await WriteTextAsync(backend, text);
 
-            if (needle.Length == 0 || await WaitForEchoAsync(buffer, cursor, needle, to, poll))
+            if (needle.Length == 0 || await WaitForEchoAsync(buffer, cursor, needle, visibleTailNeedle, to, poll))
             {
                 await Task.Delay(settle);
                 backend.Write(EnterByte);
@@ -74,23 +75,83 @@ public static class TerminalSubmit
 
         throw new InvalidOperationException(
             $"[{driverTag}] EchoVerifiedSubmit: the composer never echoed the typed text after 2 attempts - " +
-            "the TUI is not accepting input (a modal, a picker, or a composer still initializing).");
+            "the TUI is not accepting input (a modal, a picker, or a composer still initializing). " +
+            $"Terminal tail: {TailOf(buffer)}");
     }
 
     /// <summary>Poll the terminal byte stream until the typed text echoes back in the composer.</summary>
     private static async Task<bool> WaitForEchoAsync(
-        CircularTerminalBuffer buffer, long cursor, string needle, TimeSpan timeout, TimeSpan poll)
+        CircularTerminalBuffer buffer, long cursor, string needle, string? visibleTailNeedle, TimeSpan timeout, TimeSpan poll)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
             var (bytes, _) = buffer.GetWrittenSince(cursor);
             var hay = NormalizeForEcho(StripAnsi(Encoding.UTF8.GetString(bytes)));
-            if (hay.Contains(needle, StringComparison.Ordinal))
+            if (hay.Contains(needle, StringComparison.Ordinal)
+                || (visibleTailNeedle is not null && hay.Contains(visibleTailNeedle, StringComparison.Ordinal)))
                 return true;
             await Task.Delay(poll);
         }
         return false;
+    }
+
+    private static async Task WriteTextAsync(ISessionBackend backend, string text)
+    {
+        var bytes = Encoding.UTF8.GetBytes(text);
+        const int bulkThreshold = 48;
+        const int chunkSize = 16;
+        if (bytes.Length <= bulkThreshold)
+        {
+            backend.Write(bytes);
+            return;
+        }
+
+        for (var offset = 0; offset < bytes.Length; offset += chunkSize)
+        {
+            var count = Math.Min(chunkSize, bytes.Length - offset);
+            backend.Write(bytes.AsSpan(offset, count).ToArray());
+            await Task.Delay(TimeSpan.FromMilliseconds(10));
+        }
+    }
+
+    /// <summary>
+    /// Codex horizontally scrolls its composer for longer inputs, so the terminal byte stream can
+    /// repaint only the visible tail. A long fresh tail is still proof that this exact write reached
+    /// the composer because the search is scoped to bytes emitted after the write cursor.
+    /// </summary>
+    private static string? VisibleTailNeedle(string needle)
+    {
+        const int tailLength = 16;
+        return needle.Length > tailLength ? needle[^tailLength..] : null;
+    }
+
+    private static string TailOf(CircularTerminalBuffer buffer)
+    {
+        var text = NormalizeWhitespace(StripAnsi(Encoding.UTF8.GetString(buffer.DumpAll())));
+        const int maxChars = 500;
+        return text.Length <= maxChars ? text : text[^maxChars..];
+    }
+
+    private static string NormalizeWhitespace(string value)
+    {
+        var sb = new StringBuilder(value.Length);
+        var previousWasWhitespace = false;
+        foreach (var c in value)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!previousWasWhitespace)
+                    sb.Append(' ');
+                previousWasWhitespace = true;
+                continue;
+            }
+
+            sb.Append(c);
+            previousWasWhitespace = false;
+        }
+
+        return sb.ToString().Trim();
     }
 
     /// <summary>Drop ANSI escape sequences (CSI / OSC / two-byte) from a terminal chunk.</summary>
