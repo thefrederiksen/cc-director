@@ -192,6 +192,40 @@ public sealed class WingmanTranslatorTests
         Assert.Equal("just some text with no markers at all", result.Spoken);
     }
 
+    [Fact]
+    public async Task TranslateAsync_RaggedOpeningMarker_IsStrippedNotSpoken()
+    {
+        // The real leak users saw: the model emitted "===DEVTHROTTLE-ANSWER-BEGIN==" (two trailing
+        // equals instead of three). An exact-string match missed it and the ragged marker was
+        // spoken/shown at the front of the answer. The tolerant matcher must strip it clean.
+        var raggedOpen = SessionAskRunner.AnswerBeginMarker.TrimEnd('=') + "==";      // "...BEGIN=="
+        var raggedClose = "==" + SessionAskRunner.AnswerEndMarker.TrimStart('=');     // "==...END==="
+        var brain = new FixedReplyBrain($"{raggedOpen}\nThe session started fine.\n{raggedClose}");
+        var translator = new WingmanTranslator((_, _) => Task.FromResult<IAgentBrain>(brain), log: _ => { });
+
+        var result = await translator.TranslateAsync("q", "a reply");
+
+        Assert.Equal("The session started fine.", result.Spoken);
+        Assert.DoesNotContain("=", result.Spoken);
+        Assert.DoesNotContain("DEVTHROTTLE-ANSWER", result.Spoken);
+    }
+
+    /// <summary>A brain that returns a fixed, test-supplied reply verbatim (raw markers included).</summary>
+    private sealed class FixedReplyBrain : IAgentBrain
+    {
+        private readonly string _reply;
+        public FixedReplyBrain(string reply) => _reply = reply;
+        public string? SessionId => "fixed";
+        public Task<AskResult> AskAsync(string prompt, CancellationToken ct = default)
+            => Task.FromResult(new AskResult { Text = _reply });
+        public Task CancelAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<ClearResult> ClearAsync(CancellationToken ct = default) => Task.FromResult(new ClearResult());
+        public Task RestartAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task KillAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<BrainHealth> GetHealthAsync(CancellationToken ct = default) => Task.FromResult(new BrainHealth());
+        public void Dispose() { }
+    }
+
     private sealed class NoMarkersBrain : IAgentBrain
     {
         public string? SessionId => "nomarkers";
