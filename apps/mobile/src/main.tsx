@@ -39,15 +39,16 @@ function GatedLayout() {
   return <Outlet />;
 }
 
-// Mirror the injected per-machine token into the cc-gateway-token cookie at startup so the live
+// Mirror the enrolled per-device key into the cc-gateway-token cookie at startup so the live
 // terminal WebSocket (which cannot carry an Authorization header) authenticates same-origin to the
-// Gateway. The cookie exposes nothing the page does not already hold (window.__GW_TOKEN__).
+// Gateway. The key is already in this origin's storage, so the cookie exposes nothing new; this is a
+// no-op before the phone has enrolled. (No token is injected into the page - issue #908.)
 ensureGatewayCookie();
 
 // Re-gate a mid-session 401 (a revoked device key) through THIS shell's own /m/signin enrollment
 // screen. This is the mobile default in shared client-core, but each shell installs its own redirect
-// so the desktop Cockpit can install the Gateway /login flow instead (issue #1024); installing it here
-// explicitly keeps the mobile shell self-documenting about its own re-gate entry.
+// so the desktop Cockpit can install its own /signin flow instead (issues #1024/#1088); installing it
+// here explicitly keeps the mobile shell self-documenting about its own re-gate entry.
 configureUnauthorizedRedirect(mobileSignInRedirect);
 
 // If the user already granted notification permission on a previous visit, silently refresh the push

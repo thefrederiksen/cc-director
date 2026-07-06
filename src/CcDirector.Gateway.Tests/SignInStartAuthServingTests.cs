@@ -86,17 +86,18 @@ public sealed class SignInStartAuthServingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task AccountStatus_browser_navigation_without_a_credential_is_redirected_to_login()
+    public async Task AccountStatus_browser_navigation_without_a_credential_is_redirected_to_signin()
     {
-        // A browser request (Accept: text/html) to the gated /account/status is bounced to the raw-token
-        // wall exactly as before - proof the front door did not accidentally open the /account data surface.
+        // A browser request (Accept: text/html) to the gated /account/status is bounced to the shared
+        // sign-in flow (/signin since issue #1088; formerly the raw-token /login wall) - proof the front
+        // door did not accidentally open the /account data surface.
         using var req = new HttpRequestMessage(HttpMethod.Get, "/account/status");
         req.Headers.Accept.ParseAdd("text/html");
         using var res = await _http.SendAsync(req);
 
         Assert.Equal(HttpStatusCode.Found, res.StatusCode);
         Assert.NotNull(res.Headers.Location);
-        Assert.StartsWith("/login", res.Headers.Location!.OriginalString);
+        Assert.StartsWith("/signin", res.Headers.Location.OriginalString);
     }
 
     [Fact]

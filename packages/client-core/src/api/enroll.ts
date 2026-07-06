@@ -1,8 +1,11 @@
-// The enrollment call (issue #908): hand the Gateway the per-device key the phone received from
-// devthrottle.com, and receive back the LOCAL device key the Gateway issues and validates offline.
-// This is the only place the cloud-issued key is used; from then on the app authenticates with the
-// local key returned here. POST /m/enroll is under /m/, so it is reachable before the phone holds any
-// credential (it carries its own authorization: the account-scoped device key in the body).
+// The enrollment call (issue #908, shared by the desktop Cockpit since issue #1088): hand the Gateway
+// the per-device key this device received from devthrottle.com, and receive back the LOCAL device key
+// the Gateway issues and validates offline. This is the only place the cloud-issued key is used; from
+// then on the app authenticates with the local key returned here. POST /m/enroll is under /m/, so it
+// is reachable before the device holds any credential (it carries its own authorization: the
+// account-scoped device key in the body). Both shells enroll through this ONE generalized endpoint -
+// the platform field tells the Gateway what kind of device this is (android/ios -> phone, anything
+// else, for example "browser" -> browser).
 import { GatewayError } from "./client";
 
 /**

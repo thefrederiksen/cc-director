@@ -25,6 +25,13 @@ public sealed class AuthMiddlewareTests
         return ctx;
     }
 
+    private static HttpContext WithRawCookieHeader(string value)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Headers["Cookie"] = value;
+        return ctx;
+    }
+
     private static HttpContext WithBearer(string value)
     {
         var ctx = new DefaultHttpContext();
@@ -52,6 +59,27 @@ public sealed class AuthMiddlewareTests
     {
         var devices = TempRegistry();
         Assert.False(AuthMiddleware.HasValidToken(WithCookie("not-a-real-key"), SharedToken, devices));
+    }
+
+    [Fact]
+    public void Duplicate_cookie_values_accept_a_later_valid_device_key()
+    {
+        var devices = TempRegistry();
+        var key = devices.Register("browser-1088", "Chrome on Windows", "browser", "browser").DeviceKey;
+        var ctx = WithRawCookieHeader($"{AuthMiddleware.CookieName}=stale-login-cookie; {AuthMiddleware.CookieName}={key}");
+
+        Assert.True(AuthMiddleware.HasValidToken(ctx, SharedToken, devices));
+    }
+
+    [Fact]
+    public void Duplicate_cookie_values_accept_a_later_encoded_valid_device_key()
+    {
+        var devices = TempRegistry();
+        var key = devices.Register("browser-encoded-1088", "Chrome on Windows", "browser", "browser").DeviceKey;
+        var encoded = Uri.EscapeDataString(key);
+        var ctx = WithRawCookieHeader($"{AuthMiddleware.CookieName}=stale-login-cookie; other=1; {AuthMiddleware.CookieName}={encoded}");
+
+        Assert.True(AuthMiddleware.HasValidToken(ctx, SharedToken, devices));
     }
 
     [Fact]

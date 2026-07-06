@@ -1,17 +1,23 @@
-// The device-enrollment callback (issue #908), served at /m/device-callback. devthrottle.com redirects
-// the phone here after sign-in with the per-device key in the URL FRAGMENT (never the query, so it is
-// not sent to any server). This screen reads that key, exchanges it at the Gateway (POST /m/enroll) for
-// a LOCAL device key, stores the local key, and enters the app. The account session never reaches here.
+// The shared device-enrollment callback (issue #908, generalized for the desktop Cockpit in issue
+// #1088), served at the installed profile's callback path (/m/device-callback for the phone,
+// /device-callback for the Cockpit). devthrottle.com redirects the browser here after sign-in with the
+// per-device key in the URL FRAGMENT (never the query, so it is not sent to any server - issue #1082).
+// This screen reads that key, exchanges it at the Gateway (POST /m/enroll) for a LOCAL device key,
+// stores the local key through the shared device-key store, mirrors it into the cc-gateway-token
+// cookie (so the terminal WebSocket and hard navigations authenticate immediately), and enters the app
+// on the originally-requested route. The account session never reaches here.
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getInstallId, setDeviceKey } from "./deviceKey";
-import { takeEnrollState, detectPlatform, deviceName } from "./enrollRequest";
+import { enrollmentProfile, takeEnrollState, takeEnrollNext } from "./enrollRequest";
 import { enrollDevice } from "../api/enroll";
+import { ensureGatewayCookie } from "../api/client";
 
 type Phase = "working" | "denied" | "error";
 
 export function DeviceCallback() {
   const navigate = useNavigate();
+  const profile = enrollmentProfile();
   const [phase, setPhase] = useState<Phase>("working");
   const [message, setMessage] = useState("");
   // Guards the enroll to exactly once (survives React StrictMode's dev double-mount).
@@ -49,12 +55,17 @@ export function DeviceCallback() {
       }
 
       try {
-        const localKey = await enrollDevice(deviceKey, getInstallId(), deviceName(), detectPlatform());
+        const localKey = await enrollDevice(deviceKey, getInstallId(), profile.deviceName(), profile.platform());
         if (cancelled) return;
         setDeviceKey(localKey);
-        // Strip the key from the URL before entering the app, then go to the roster.
-        window.history.replaceState(null, "", "/m/");
-        navigate("/", { replace: true });
+        // Mirror the fresh key into the cc-gateway-token cookie right away, so the terminal WebSocket
+        // and any hard navigation authenticate without waiting for the next full page load.
+        ensureGatewayCookie();
+        // Land on the originally-requested route when one was remembered (issue #1088), otherwise the
+        // shell's default. Strip the key from the URL/history first, then hand the route to the router.
+        const landing = takeEnrollNext() ?? profile.defaultLanding;
+        window.history.replaceState(null, "", profile.basename + landing);
+        navigate(landing, { replace: true });
       } catch (err) {
         if (cancelled) return;
         setPhase("error");
@@ -63,7 +74,8 @@ export function DeviceCallback() {
     })();
 
     return () => { cancelled = true; };
-  }, [navigate]);
+    // The profile is module-level configuration installed once at shell startup, not reactive state.
+  }, [navigate, profile]);
 
   const container = { maxWidth: 420, margin: "0 auto", padding: "2.5rem 1.25rem", textAlign: "center" as const };
 
@@ -71,7 +83,7 @@ export function DeviceCallback() {
     return (
       <div style={container}>
         <h1>Connecting…</h1>
-        <p style={{ opacity: 0.8 }}>Finishing sign-in and connecting this phone to your account.</p>
+        <p style={{ opacity: 0.8 }}>Finishing sign-in and connecting this {profile.deviceLabel} to your account.</p>
       </div>
     );
   }
@@ -82,7 +94,7 @@ export function DeviceCallback() {
       <p style={{ opacity: 0.8, marginBottom: "1.5rem" }}>{message}</p>
       <button
         type="button"
-        onClick={() => navigate("/signin", { replace: true })}
+        onClick={() => navigate(profile.signInPath, { replace: true })}
         style={{ padding: "0.8rem 1.25rem", fontSize: "1rem", fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer" }}
       >
         Try again

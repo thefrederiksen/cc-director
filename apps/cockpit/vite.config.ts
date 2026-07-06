@@ -37,6 +37,9 @@ const devProxy = proxyTarget
       "/dictation": { target: proxyTarget, changeOrigin: true },
       "/turnbriefs": { target: proxyTarget, changeOrigin: true },
       "/vault": { target: proxyTarget, changeOrigin: true },
+      // Device enrollment (issue #1088): the shared client-core callback exchanges the cloud device
+      // key at the Gateway's POST /m/enroll, so the enrollment flow works under `npm run dev` too.
+      "/m": { target: proxyTarget, changeOrigin: true },
     }
   : undefined;
 

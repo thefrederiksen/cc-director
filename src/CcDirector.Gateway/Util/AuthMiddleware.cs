@@ -11,32 +11,60 @@ namespace CcDirector.Gateway.Util;
 /// Public, no auth:    /healthz, /login, /logout, /favicon.ico, /devices/register, the credential-free
 ///                     cloud sign-in start front door /account/sign-in-start (issue #1076, GET + POST -
 ///                     it reads/returns no credential and no account data), the mobile app
-///                     shell /m + everything under /m/ (which includes the mobile enroll path
-///                     POST /m/enroll - it carries its own account-scoped authorization), and the
-///                     JSON /cockpit endpoint (a program GET, NOT a browser navigation - see below).
+///                     shell /m + everything under /m/ (which includes the enroll path
+///                     POST /m/enroll - it carries its own account-scoped authorization), the desktop
+///                     Cockpit sign-in surface /signin + /device-callback and the shell's static
+///                     assets under /assets/ (issue #1088 - see below), and the JSON /cockpit endpoint
+///                     (a program GET, NOT a browser navigation - see below).
 /// Authenticated:      every other route (Bearer header OR cc-gateway-token cookie OR, per
 ///                     issue #469, a per-device key issued at enrollment).
 ///
 /// This public set is deliberately the ONLY way in without a credential once the host-wide gate is on
-/// by default (issue #917): the enroll/pairing entry points carry their own authorization and the login
-/// surface must be reachable to obtain one, while every data endpoint stays credential-gated.
+/// by default (issue #917): the enroll/pairing entry points carry their own authorization and the
+/// sign-in surface must be reachable to obtain one, while every data endpoint stays credential-gated.
 ///
 /// Issue #920 - the /cockpit split: /cockpit is a dual-use path. The JSON API form (a program GET with
 /// no "Accept: text/html", e.g. the desktop app's Open Cockpit / Learn buttons resolving the front-door
 /// URL) stays public so a same-machine caller with no credential still works. But a BROWSER navigation
-/// to /cockpit ("Accept: text/html") is the Blazor SHELL, whose /_blazor circuit and /_framework assets
-/// are credential-gated: serving that shell to an unauthenticated browser produced a dead Cockpit whose
-/// circuit 401s. So a browser navigation to /cockpit is NOT public - it falls through to the gate and,
-/// having no cookie, is redirected to /login first; after sign-in the shell loads WITH the
-/// cc-gateway-token cookie and its assets authenticate (200). The gate on /_blazor and session data is
-/// unchanged (never weakened).
+/// to /cockpit ("Accept: text/html") is the Cockpit SHELL, whose data endpoints are credential-gated:
+/// serving it as public would misclassify a person's navigation. It falls through to the gate and,
+/// with no credential, is driven to the sign-in flow like every other page navigation.
 ///
-/// Browser requests (Accept: text/html) get a 302 redirect to /login.
+/// Issue #1088 - browser device enrollment is the front door: a signed-out BROWSER navigation
+/// (Accept: text/html) is redirected to /signin (the React Cockpit's shared client-core sign-in
+/// screen, the exact flow the phone uses), carrying the originally-requested route in next=. The
+/// raw-token /login wall is no longer the front door (it remains reachable as break-glass, #1077).
+/// For that sign-in screen to render before ANY credential exists, three surfaces are public, exactly
+/// as /m always has been for the phone: /signin and /device-callback (extensionless client routes the
+/// SPA fallback serves the shell for; the callback receives the cloud device key in the URL FRAGMENT,
+/// which never reaches this server) and the Vite-hashed static assets under /assets/ (JavaScript/CSS
+/// of the shell - they carry no secret and no data; every data endpoint stays credential-gated).
+///
+/// Browser requests (Accept: text/html) get a 302 redirect to /signin.
 /// Non-browser requests get a 401 with JSON body.
 /// </summary>
 internal static class AuthMiddleware
 {
     public const string CookieName = "cc-gateway-token";
+
+    /// <summary>
+    /// The desktop Cockpit's sign-in route (issue #1088): the shared client-core enrollment screen a
+    /// signed-out browser navigation is redirected to. Must match the route in apps/cockpit/src/main.tsx.
+    /// </summary>
+    public const string CockpitSignInPath = "/signin";
+
+    /// <summary>
+    /// The desktop Cockpit's device-enrollment callback route (issue #1088): where devthrottle.com hands
+    /// the cloud device key back in the URL fragment. Must match apps/cockpit/src/main.tsx and the
+    /// client-core COCKPIT_DEVICE_CALLBACK_PATH.
+    /// </summary>
+    public const string CockpitDeviceCallbackPath = "/device-callback";
+
+    /// <summary>
+    /// The React shells' Vite-hashed static assets prefix (issue #1088). Public so the sign-in screen
+    /// can render before any credential exists - static JavaScript/CSS only, no secrets, no data.
+    /// </summary>
+    public const string CockpitAssetsPrefix = "/assets/";
 
     private static readonly HashSet<string> PublicPaths = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -64,6 +92,14 @@ internal static class AuthMiddleware
         // exact-match: every other /account/* DATA endpoint and the authenticated POST /account/sign-in
         // stay gated (AccountSignInCallbackEndpoint).
         AccountSignInCallbackEndpoint.Path,
+        // Issue #1088 (epic #1069): the desktop Cockpit's device-enrollment surface - the exact
+        // browser analog of the phone's public /m shell. /signin renders the shared client-core Sign
+        // in screen (a signed-out browser must reach it to obtain a credential); /device-callback is
+        // where devthrottle.com hands the cloud device key back IN THE URL FRAGMENT (the fragment
+        // never reaches this server, so the route itself carries no secret). Both are extensionless
+        // client-side routes the SPA fallback serves the React shell for; neither returns any data.
+        CockpitSignInPath,
+        CockpitDeviceCallbackPath,
     };
 
     public static async Task Run(HttpContext ctx, RequireToken cfg, Func<Task> next)
@@ -96,17 +132,30 @@ internal static class AuthMiddleware
             return;
         }
 
+        // Issue #1088: the desktop Cockpit shell's static assets (Vite's content-hashed JavaScript/CSS
+        // under /assets/) are public, exactly like the /m assets above - the /signin screen cannot
+        // render before any credential exists unless its script and styles load. The files carry no
+        // secret and no data; every data endpoint stays credential-gated below.
+        if (path.StartsWith(CockpitAssetsPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            await next();
+            return;
+        }
+
         if (HasValidToken(ctx, cfg.Token, cfg.Devices))
         {
             await next();
             return;
         }
 
-        // Unauthorized
+        // Unauthorized. A person's browser navigation (Accept: text/html) is driven to the shared
+        // sign-in flow - the Cockpit's /signin enrollment screen - carrying the originally-requested
+        // route in next= so the browser lands back on that exact route after enrollment (issue #1088).
+        // Never to the raw-token /login wall (that is break-glass only, issue #1077).
         var accept = ctx.Request.Headers["Accept"].ToString();
         if (accept.Contains("text/html", StringComparison.OrdinalIgnoreCase))
         {
-            ctx.Response.Redirect($"/login?next={Uri.EscapeDataString(ctx.Request.Path + ctx.Request.QueryString)}");
+            ctx.Response.Redirect($"{CockpitSignInPath}?next={Uri.EscapeDataString(ctx.Request.Path + ctx.Request.QueryString)}");
             return;
         }
 
@@ -151,7 +200,12 @@ internal static class AuthMiddleware
         // authenticates via this cookie. It accepts the shared machine token OR, per issue #908, an
         // active per-device key - so a phone that enrolled with its own device key (and mirrors that key
         // into the cookie) can open the stream, exactly as it can call the Bearer-authenticated endpoints.
-        if (ctx.Request.Cookies.TryGetValue(CookieName, out var cookieValue))
+        //
+        // Issue #1088: tolerate duplicate cc-gateway-token cookies. A browser can temporarily send both
+        // a stale HttpOnly raw-token cookie from /login and a fresh device-key cookie from enrollment.
+        // Request.Cookies exposes one value, which may be the stale one; scan the raw Cookie header and
+        // accept if ANY cc-gateway-token value is valid.
+        foreach (var cookieValue in CookieValues(ctx, CookieName))
         {
             if (string.Equals(cookieValue, token, StringComparison.Ordinal))
                 return true;
@@ -160,6 +214,47 @@ internal static class AuthMiddleware
         }
 
         return false;
+    }
+
+    private static IEnumerable<string> CookieValues(HttpContext ctx, string name)
+    {
+        var sawRawCookieHeader = false;
+        foreach (var header in ctx.Request.Headers.Cookie)
+        {
+            if (header is null) continue;
+            sawRawCookieHeader = true;
+            foreach (var part in header.Split(';'))
+            {
+                var trimmed = part.Trim();
+                if (trimmed.Length == 0) continue;
+
+                var equals = trimmed.IndexOf('=');
+                var cookieName = equals < 0 ? trimmed : trimmed[..equals].Trim();
+                if (!string.Equals(cookieName, name, StringComparison.Ordinal))
+                    continue;
+
+                var value = equals < 0 ? "" : trimmed[(equals + 1)..].Trim();
+                if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+                    value = value[1..^1];
+                yield return UnescapeCookieValue(value);
+            }
+        }
+
+        // Normal ASP.NET cookie parsing path for callers/tests that populate Request.Cookies directly.
+        if (!sawRawCookieHeader && ctx.Request.Cookies.TryGetValue(name, out var parsed))
+            yield return parsed;
+    }
+
+    private static string UnescapeCookieValue(string value)
+    {
+        try
+        {
+            return Uri.UnescapeDataString(value);
+        }
+        catch
+        {
+            return value;
+        }
     }
 
     public sealed class RequireToken

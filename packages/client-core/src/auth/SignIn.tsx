@@ -1,23 +1,39 @@
-// The mobile Sign in screen (issue #908). Shown by the auth gate whenever the phone has no device
-// key. Tapping "Sign in" sends the phone to devthrottle.com's /m-activate page, where the person signs
-// in with any provider (Google / GitHub / email) and approves this phone; the site hands the phone's
-// per-device key back to /m/device-callback, which enrolls it with the Gateway.
+// The shared Sign in screen (issue #908, generalized for the desktop Cockpit in issue #1088). Shown
+// by a shell's auth gate whenever this device has no device key. Pressing "Sign in" sends the browser
+// to devthrottle.com's /m-activate page, where the person signs in with any provider
+// (Google / GitHub / email) and approves this device; the site hands the per-device key back - in the
+// URL FRAGMENT only (issue #1082) - to this shell's callback route, which enrolls it with the Gateway.
+//
+// Both shells render this one screen: the phone (auth gate at /m/signin) and the desktop Cockpit
+// (auth gate + the Gateway's signed-out redirect at /signin). Everything shell-specific - the
+// callback path, the platform, the device label - comes from the installed EnrollmentShellProfile.
+// The desktop gate carries the originally-requested route in ?next=; it is remembered here so the
+// callback can land the browser back on that exact route after the round trip.
 import { getInstallId } from "./deviceKey";
-import { SITE_BASE, DEVICE_CALLBACK_PATH, detectPlatform, deviceName, newEnrollState } from "./enrollRequest";
+import { SITE_BASE, enrollmentProfile, newEnrollState, rememberEnrollNext } from "./enrollRequest";
 
 export function SignIn() {
+  const profile = enrollmentProfile();
+
   function start() {
     const installId = getInstallId();
     const state = newEnrollState();
+
+    // Preserve the originally-requested route (?next=) across the round trip (issue #1088). The
+    // value is validated to an in-app path; devthrottle.com only ever returns to the fixed callback
+    // path, so this is remembered locally beside the anti-forgery state.
+    const next = new URLSearchParams(window.location.search).get("next");
+    rememberEnrollNext(next);
+
     // The site returns here, to this Gateway's own origin. buildMobileCallbackUrl on the site only ever
     // attaches the device key (never the account session), so this callback carries no account secret.
-    const redirectUri = window.location.origin + DEVICE_CALLBACK_PATH;
+    const redirectUri = window.location.origin + profile.callbackPath;
 
     const url = new URL("/m-activate", SITE_BASE);
     url.searchParams.set("redirect_uri", redirectUri);
-    url.searchParams.set("name", deviceName());
+    url.searchParams.set("name", profile.deviceName());
     url.searchParams.set("install_id", installId);
-    url.searchParams.set("platform", detectPlatform());
+    url.searchParams.set("platform", profile.platform());
     url.searchParams.set("state", state);
 
     window.location.assign(url.toString());
@@ -27,7 +43,7 @@ export function SignIn() {
     <div className="signin-screen" style={{ maxWidth: 420, margin: "0 auto", padding: "2rem 1.25rem", textAlign: "center" }}>
       <h1 style={{ marginBottom: "0.5rem" }}>DevThrottle</h1>
       <p style={{ opacity: 0.8, marginBottom: "1.5rem" }}>
-        Sign in to connect this phone to your account. You will sign in on devthrottle.com and approve
+        Sign in to connect this {profile.deviceLabel} to your account. You will sign in on devthrottle.com and approve
         this device; it stays signed in until you remove it from your account.
       </p>
       <button

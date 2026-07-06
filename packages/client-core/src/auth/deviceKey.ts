@@ -1,10 +1,12 @@
-// The mobile app's own credential store (issue #908). The app no longer receives the master token
-// from the page (the shell carries no secret). Instead it holds a per-device key it obtained by
-// signing in on devthrottle.com and enrolling with the Gateway (POST /m/enroll). That key lives here,
-// in localStorage, scoped to this origin (the Gateway), and is sent as the Bearer on every API call.
+// The shared per-device credential store (issue #908 for the phone, issue #1088 for the desktop
+// Cockpit). The app never receives a master token from the page (the shell carries no secret).
+// Instead it holds the per-device key it obtained by signing in on devthrottle.com and enrolling with
+// the Gateway (POST /m/enroll). That key lives here, in localStorage, scoped to this origin (the
+// Gateway), and is sent as the Bearer on every API call. Both shells share this one store: a browser
+// enrolled through either shell is enrolled for the origin.
 //
 // A stable install id is generated once and persisted. It is the SAME value the app sends to
-// devthrottle.com (install_id, when it registers the phone) and to the Gateway (deviceId, at enroll),
+// devthrottle.com (install_id, when it registers the device) and to the Gateway (deviceId, at enroll),
 // so the Gateway's local device record maps to the same cloud roster row - which is what lets a revoke
 // on the website propagate down and drop the local key.
 

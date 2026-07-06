@@ -7,13 +7,16 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Issue #920 (security epic #916, Phase 2), carried through the epic #967 cutover (issue #979): the
-/// Cockpit must authenticate under the enforced Gateway auth gate (#917). /cockpit is a dual-use path -
-/// the JSON API form stays public so the desktop app's Open Cockpit / Learn buttons can resolve the
-/// front-door URL with no credential, but a BROWSER navigation to /cockpit (Accept: text/html) is the
-/// React Cockpit shell whose data endpoints are gated. So a browser navigation to /cockpit is driven to
-/// /login first; after sign-in the cookie carries to the shell so its API calls authenticate. This boots
-/// a Gateway with auth ON and proves each half without weakening the gate on session data.
+/// Issue #920 (security epic #916, Phase 2), carried through the epic #967 cutover (issue #979) and
+/// the #1088 front-door change: the Cockpit must authenticate under the enforced Gateway auth gate
+/// (#917). /cockpit is a dual-use path - the JSON API form stays public so the desktop app's Open
+/// Cockpit / Learn buttons can resolve the front-door URL with no credential, but a BROWSER navigation
+/// to /cockpit (Accept: text/html) is the React Cockpit shell whose data endpoints are gated. Since
+/// issue #1088 a signed-out browser navigation is driven to /signin (the shared client-core
+/// device-enrollment flow - the same flow the phone uses), never to the raw-token /login wall; the
+/// sign-in surface (/signin, /device-callback) and the shell's static /assets are public exactly like
+/// the phone's /m shell, while every data endpoint stays credential-gated. This boots a Gateway with
+/// auth ON over real HTTP and proves each half without weakening the gate on session data.
 /// </summary>
 public sealed class CockpitAuthServingTests : IAsyncLifetime
 {
@@ -49,17 +52,61 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Cockpit_browser_navigation_without_cookie_is_redirected_to_login()
+    public async Task Cockpit_browser_navigation_without_a_credential_is_redirected_to_the_shared_signin()
     {
-        // A person opening the Cockpit in a browser announces Accept: text/html. With no cc-gateway-token
-        // cookie the gate must drive them to /login rather than hand back a dead shell.
+        // A person opening the Cockpit in a browser announces Accept: text/html. With no credential the
+        // gate must drive them to the shared /signin enrollment flow (issue #1088) - never to the
+        // raw-token /login wall - rather than hand back a dead shell.
         using var req = new HttpRequestMessage(HttpMethod.Get, "/cockpit");
         req.Headers.Accept.ParseAdd("text/html");
         using var res = await _http.SendAsync(req);
 
         Assert.Equal(HttpStatusCode.Found, res.StatusCode);
         Assert.NotNull(res.Headers.Location);
-        Assert.StartsWith("/login", res.Headers.Location!.OriginalString);
+        var location = res.Headers.Location.OriginalString;
+        Assert.StartsWith("/signin?next=", location);
+        Assert.DoesNotContain("/login", location);
+    }
+
+    [Fact]
+    public async Task Root_and_deep_route_browser_navigations_without_a_credential_redirect_to_signin_with_next()
+    {
+        // Acceptance criterion 1 (issue #1088), over real HTTP: the Cockpit root AND a deeper Cockpit
+        // route both 302 to the shared sign-in flow, carrying the originally-requested route in next=.
+        using var rootReq = new HttpRequestMessage(HttpMethod.Get, "/");
+        rootReq.Headers.Accept.ParseAdd("text/html");
+        using var rootRes = await _http.SendAsync(rootReq);
+        Assert.Equal(HttpStatusCode.Found, rootRes.StatusCode);
+        Assert.NotNull(rootRes.Headers.Location);
+        Assert.Equal("/signin?next=%2F", rootRes.Headers.Location.OriginalString);
+
+        using var deepReq = new HttpRequestMessage(HttpMethod.Get, "/fleet?tab=map");
+        deepReq.Headers.Accept.ParseAdd("text/html");
+        using var deepRes = await _http.SendAsync(deepReq);
+        Assert.Equal(HttpStatusCode.Found, deepRes.StatusCode);
+        Assert.NotNull(deepRes.Headers.Location);
+        Assert.Equal("/signin?next=" + Uri.EscapeDataString("/fleet?tab=map"), deepRes.Headers.Location.OriginalString);
+    }
+
+    [Fact]
+    public async Task Signin_and_device_callback_are_public_and_never_auth_gated()
+    {
+        // The sign-in surface must be reachable with NO credential (an unenrolled browser needs it to
+        // obtain one), exactly like the phone's /m shell. Whether the React bundle is staged into this
+        // build decides 200 vs the 404 "not built" notice; EITHER proves the request was not auth-gated.
+        foreach (var path in new[] { "/signin", "/device-callback" })
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, path);
+            req.Headers.Accept.ParseAdd("text/html");
+            using var res = await _http.SendAsync(req);
+
+            Assert.NotEqual(HttpStatusCode.Redirect, res.StatusCode);
+            Assert.NotEqual(HttpStatusCode.Found, res.StatusCode);
+            Assert.NotEqual(HttpStatusCode.Unauthorized, res.StatusCode);
+            Assert.True(
+                res.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound,
+                $"{path} must be served (200) or absent (404), never auth-gated; got {(int)res.StatusCode} {res.StatusCode}");
+        }
     }
 
     [Fact]
@@ -90,12 +137,25 @@ public sealed class CockpitAuthServingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Non_public_asset_path_without_a_credential_still_401s()
+    public async Task Shell_assets_are_public_and_never_auth_gated()
     {
-        // The gate must NOT be weakened: an arbitrary non-public path (a fetch for a Cockpit asset)
-        // carrying no Accept: text/html and no credential gets the JSON 401, never a redirect and never
-        // a pass-through. The cookie present after sign-in is what lets the browser load the shell assets.
+        // Issue #1088: the shell's static assets under /assets/ are public (the /m analog) so the
+        // /signin screen can render before any credential exists. They are static hashed
+        // JavaScript/CSS with no secret and no data. A missing file answers 404 in this Debug host
+        // (no React bundle staged); what must NEVER happen is a 401 or a login redirect.
         using var res = await _http.GetAsync("/assets/index-abc123.js");
+        Assert.NotEqual(HttpStatusCode.Unauthorized, res.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Redirect, res.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Found, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Non_public_data_path_without_a_credential_still_401s()
+    {
+        // The gate must NOT be weakened by the public sign-in surface: an arbitrary non-public path
+        // carrying no Accept: text/html and no credential gets the JSON 401, never a redirect and
+        // never a pass-through.
+        using var res = await _http.GetAsync("/wingman/queue");
         Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
     }
 
