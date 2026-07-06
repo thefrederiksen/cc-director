@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { ensureGatewayCookie, configureUnauthorizedRedirect, gatewayLoginRedirect } from "@devthrottle/client-core/api/client";
 import { AppShell } from "./AppShell";
-import { PlaceholderPane } from "./panes/PlaceholderPane";
+import { NotFound } from "./panes/NotFound";
 import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
 import { SessionDetail } from "./sessions/SessionDetail";
 import { SessionRedirect } from "./sessions/SessionRedirect";
@@ -119,10 +119,22 @@ const router = createBrowserRouter(
         // it is now this route, reading/writing same-origin through the Gateway settings endpoints.
         { path: "/settings", element: <SettingsView /> },
         { path: "/feedback", element: <FeedbackView /> },
-        { path: "*", element: <PlaceholderPane title="Not found" /> },
+        { path: "*", element: <NotFound /> },
       ],
     },
   ],
+  {
+    // Opt in to the React Router v7 behaviours now so the transition is a no-op and the six
+    // per-page future-flag console warnings (one per unset flag) are silenced. v7_startTransition
+    // is a RouterProvider flag (set on <RouterProvider> below); the rest are data-router flags.
+    future: {
+      v7_fetcherPersist: true,
+      v7_normalizeFormMethod: true,
+      v7_partialHydration: true,
+      v7_relativeSplatPath: true,
+      v7_skipActionErrorRevalidation: true,
+    },
+  }
 );
 
 const rootElement = document.getElementById("root");
@@ -132,6 +144,6 @@ if (rootElement === null) {
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <RouterProvider router={router} />
+    <RouterProvider router={router} future={{ v7_startTransition: true }} />
   </React.StrictMode>
 );

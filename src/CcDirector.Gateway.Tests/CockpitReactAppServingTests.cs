@@ -106,6 +106,19 @@ public sealed class CockpitReactAppServingTests : IAsyncLifetime
         Assert.Contains(ShellMarker, await resp.Content.ReadAsStringAsync());
     }
 
+    [Fact]
+    public async Task Missing_hashed_asset_returns_404_not_the_shell()
+    {
+        // A torn/stale deploy - index.html referencing a hash that is not on disk, or an old client
+        // asking for a purged hash - must fail loudly with 404, never 200 text/html. Serving the shell
+        // for a missing script leaves the browser parsing "<" as JavaScript and white-screening in
+        // silence (issue #1031). The SPA fallback is only for extensionless client-side routes.
+        var resp = await _http.GetAsync("assets/index-does-not-exist.js");
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.DoesNotContain(ShellMarker, await resp.Content.ReadAsStringAsync());
+    }
+
     private static int FreePort()
     {
         using var l = new TcpListener(IPAddress.Loopback, 0);
