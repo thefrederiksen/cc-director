@@ -1,4 +1,4 @@
-import { Marked } from "marked";
+import { Marked, type Tokens } from "marked";
 
 // Renders History-bubble bodies as Markdown, the mobile twin of
 // src/CcDirector.Cockpit/Services/HistoryMarkdown.cs. The desktop uses Markdig with
@@ -18,6 +18,27 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// The only URL schemes a Markdown link may carry. marked 14's cleanUrl only runs encodeURI - it does
+// NOT block dangerous schemes, so a reply could otherwise emit a live <a href="javascript:..."> or a
+// data:text/html link. We allowlist the three safe schemes and neutralize everything else (issue #1030).
+const SAFE_SCHEMES = new Set(["http", "https", "mailto"]);
+
+// Return the safe, marked-cleaned href, or null when the scheme is not allowlisted. A URL with NO
+// scheme (a relative path, a #fragment, or a //protocol-relative link) is always safe. Control and
+// whitespace characters are stripped before the scheme test so an obfuscated scheme (for example
+// "java\tscript:") cannot slip past the allowlist while the browser would still act on it.
+function sanitizeHref(href: string): string | null {
+  const stripped = href.replace(/[\u0000-\u0020]/g, "");
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(stripped);
+  if (scheme && !SAFE_SCHEMES.has(scheme[1].toLowerCase())) return null;
+  try {
+    // Mirror marked's own cleanUrl so an accepted URL renders exactly as marked would emit it.
+    return encodeURI(href).replace(/%25/g, "%");
+  } catch {
+    return null;
+  }
+}
+
 // A configured marked instance. GFM gives autolinked URLs, tables, and fenced code; overriding the
 // `html` renderer to escape its token is how we DISABLE raw HTML (marked passes it through by
 // default). Code and codespans are already escaped by marked's built-in renderer.
@@ -28,6 +49,16 @@ md.use({
     // <script>, <img>, etc. show as literal text instead of executing - the DisableHtml behavior.
     html(token: { text: string }): string {
       return escapeHtml(token.text);
+    },
+    // Allowlist link schemes. When the href is unsafe (javascript:, data:, ...), drop the anchor and
+    // render only its inert text so a click can do nothing. Safe links render as marked's default
+    // would (this.parser.parseInline preserves any inline markup inside the link text).
+    link(token: Tokens.Link): string {
+      const text = this.parser.parseInline(token.tokens);
+      const href = sanitizeHref(token.href);
+      if (href === null) return text;
+      const title = token.title ? ` title="${escapeHtml(token.title)}"` : "";
+      return `<a href="${escapeHtml(href)}"${title}>${text}</a>`;
     },
   },
 });

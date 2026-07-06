@@ -47,6 +47,14 @@ interface BriefPaneProps {
 const TAIL_LINES = 8;
 const TAIL_POLL_MS = 2000;
 
+// A brand-new session has no transcript to brief yet: the Director returns "no_session_id" before the
+// session links to a transcript, and "no_jsonl" once it links but before its first turn writes the
+// .jsonl file. Both are the normal "just started" state - not an error - and the Director's error text
+// for them is a raw absolute file path we must never surface (issue #1030).
+function isJustStarted(status: string | undefined): boolean {
+  return status === "no_session_id" || status === "no_jsonl";
+}
+
 export function BriefPane({ sessionId, activityState, briefingState, onOpenTerminal }: BriefPaneProps) {
   const [brief, setBrief] = useState<BriefResponse | null>(null);
   const [summary, setSummary] = useState<SessionSummaryDto | null>(null);
@@ -96,7 +104,10 @@ export function BriefPane({ sessionId, activityState, briefingState, onOpenTermi
         setSummary(s);
         if (s === null) {
           setError("This Director does not know the session (or predates the summary endpoint).");
-        } else if (s.status !== "ok") {
+        } else if (s.status !== "ok" && !isJustStarted(s.status)) {
+          // A "just started" status (no_session_id / no_jsonl) is a normal new-session state, not an
+          // error - the render shows a friendly message for it and never surfaces s.error, which is a
+          // raw absolute .jsonl path (issue #1030).
           setError(`Transcript not readable: ${s.error ?? s.status}`);
         }
       } else {
@@ -185,17 +196,29 @@ export function BriefPane({ sessionId, activityState, briefingState, onOpenTermi
     );
   }
 
+  // A brand-new session (no_session_id / no_jsonl, from either the brief or the degraded summary tier)
+  // gets a friendly "just started" state - never the raw error, which is an absolute .jsonl path.
+  if (isJustStarted(brief?.status) || (brief === null && isJustStarted(summary?.status))) {
+    return (
+      <div className="brief">
+        <div className="brief-status">
+          <div className="blabel">THIS SESSION JUST STARTED</div>
+          <div className="brief-muted">
+            There is nothing to brief yet - this session has not taken a turn.
+          </div>
+          <div className="brief-error-hint">The Terminal tab always works.</div>
+        </div>
+      </div>
+    );
+  }
+
   if (brief !== null && brief.status !== "ok") {
     return (
       <div className="brief">
         <div className="brief-status">
           <div className="blabel">BRIEF UNAVAILABLE ({brief.status})</div>
           <div className="brief-muted">{brief.error ?? "The transcript is not readable yet."}</div>
-          <div className="brief-error-hint">
-            {brief.status === "no_session_id"
-              ? "This session has not linked to a transcript yet - usually it just started. The Terminal tab always works."
-              : "Use the Terminal tab to see this session."}
-          </div>
+          <div className="brief-error-hint">Use the Terminal tab to see this session.</div>
         </div>
       </div>
     );
@@ -256,8 +279,8 @@ export function BriefPane({ sessionId, activityState, briefingState, onOpenTermi
             NEEDS YOU
             <span className="brief-verbatim-tag">
               {brief?.needsYouSource === "model"
-                ? "condenser tier - the agent's words"
-                : "condenser tier - reply's final paragraph"}
+                ? "in the agent's own words"
+                : "from the reply's last paragraph"}
             </span>
           </div>
           <div className="brief-needsyou urgency-review">{needsYou}</div>
