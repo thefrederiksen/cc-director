@@ -12,6 +12,7 @@ import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
 import { SessionDetail } from "./sessions/SessionDetail";
 import { SessionRedirect } from "./sessions/SessionRedirect";
 import { FleetView } from "./fleet/FleetView";
+import { FleetMapView } from "./fleet/FleetMapView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
@@ -28,6 +29,7 @@ import { SettingsView } from "./settings/SettingsView";
 import { FeedbackView } from "./feedback/FeedbackView";
 import "./styles.css";
 import "./fleet/fleet.css";
+import "./fleet/fleetmap.css";
 import "./schedule/schedule.css";
 import "./wingman/wingman.css";
 import "./lists/lists.css";
@@ -117,6 +119,10 @@ const router = createBrowserRouter(
             // table, and the standalone Director-detail page. Ported one-to-one from the Blazor
             // Fleet.razor / Directors.razor / DirectorDetail.razor over the same Gateway REST surface.
             { path: "/fleet", element: <FleetView /> },
+            // The Fleet Map (issue #1109): the spatial node-canvas view of the same roster the Fleet
+            // page lists, pivotable by machine / repository / agent, with a Wingman narration overlay.
+            // Reads the same GET /sessions envelope through client-core.
+            { path: "/fleet-map", element: <FleetMapView /> },
             { path: "/directors", element: <DirectorsView /> },
             { path: "/directors/:directorId", element: <DirectorDetailView /> },
             // The Schedule + Wingman-pipeline pages (issue #976): one-to-one ports of the Blazor

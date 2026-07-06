@@ -1,0 +1,583 @@
+/* Fleet Map (issue #1109): the spatial node-canvas view of the fleet. A root node branches down to
+   lane panels of terminal-window session cards, joined by SVG elbow connectors. Every color is a token
+   from the app theme (src/styles.css :root) or a status hex from the shared ordering palette applied
+   inline in the component - nothing hard-codes a color here. Renders as normal scrolling content in
+   the padded main pane. */
+
+.fmap {
+  max-width: 1500px;
+}
+
+/* ---- header ---- */
+.fmap-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.fmap-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.fmap-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.fmap-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  opacity: 0.6;
+}
+
+.fmap-stat-blue {
+  color: var(--accent);
+}
+
+.fmap-stat-red {
+  color: var(--attention);
+}
+
+.fmap-controls {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+/* pivot switch */
+.fmap-pivot {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.fmap-pivot-btn {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.fmap-pivot-btn:last-child {
+  border-right: none;
+}
+
+.fmap-pivot-btn:hover {
+  color: var(--text);
+}
+
+.fmap-pivot-btn.on {
+  color: #fff;
+  background: var(--accent);
+  font-weight: 600;
+}
+
+.fmap-pivot-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* wingman toggle */
+.fmap-wm {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.fmap-wm.on {
+  color: var(--text);
+}
+
+.fmap-wm input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.fmap-wm-sw {
+  width: 38px;
+  height: 21px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  position: relative;
+  transition: background 150ms, border-color 150ms;
+  flex: 0 0 auto;
+}
+
+.fmap-wm-sw::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 150ms, background 150ms;
+}
+
+.fmap-wm.on .fmap-wm-sw {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: var(--accent);
+}
+
+.fmap-wm.on .fmap-wm-sw::after {
+  transform: translateX(17px);
+  background: var(--accent);
+}
+
+.fmap-wm:focus-within .fmap-wm-sw {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- states ---- */
+.fmap-error {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 8px;
+  color: var(--attention);
+  font-size: 13px;
+}
+
+.fmap-warn {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 8px;
+  color: var(--warn);
+  font-size: 13px;
+}
+
+.fmap-empty {
+  margin-top: 24px;
+  padding: 28px;
+  text-align: center;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.fmap-empty-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---- canvas ---- */
+.fmap-canvas-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    radial-gradient(1000px 480px at 80% -10%, rgba(59, 130, 246, 0.08), transparent 60%),
+    var(--code-bg);
+}
+
+.fmap-canvas {
+  position: relative;
+  min-height: 420px;
+  padding: 28px 30px 40px;
+  /* faint console grid */
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+}
+
+.fmap-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+}
+
+.fmap-wires path {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.fmap-canvas-inner {
+  position: relative;
+  z-index: 2;
+}
+
+/* root node */
+.fmap-root {
+  width: max-content;
+  margin: 0 auto 42px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.18), rgba(59, 130, 246, 0.05));
+  padding: 11px 20px;
+  text-align: center;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.06);
+}
+
+.fmap-root-k {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.fmap-root-t {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text);
+  margin-top: 2px;
+}
+
+.fmap-root-s {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+/* lanes row */
+.fmap-lanes {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-wrap: nowrap;
+}
+
+.fmap-lane {
+  flex: 0 0 auto;
+  width: 272px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 44px -34px rgba(0, 0, 0, 0.9);
+}
+
+.fmap-lane-head {
+  position: relative;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+  background: var(--surface-2);
+  border-radius: 12px 12px 0 0;
+}
+
+.fmap-lane-k {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.fmap-lane-t {
+  display: block;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+  margin-top: 3px;
+  word-break: break-word;
+}
+
+.fmap-lane-sub {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.fmap-lane-agg {
+  display: inline-flex;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.fmap-lane-aggdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.fmap-lane-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+/* director sub-group (machine pivot) */
+.fmap-dgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.fmap-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.fmap-subhead::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* team cluster */
+.fmap-team {
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 9px;
+  background: rgba(59, 130, 246, 0.05);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.fmap-team-cap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.fmap-team-tag {
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* session node card */
+.fmap-card {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  padding: 10px 11px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 130ms, transform 130ms, box-shadow 130ms;
+}
+
+.fmap-card:hover {
+  border-color: var(--text-dim);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px -18px rgba(0, 0, 0, 0.9);
+}
+
+.fmap-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.fmap-card.needs {
+  border-color: rgba(241, 76, 76, 0.55);
+  box-shadow: 0 0 0 1px rgba(241, 76, 76, 0.12);
+}
+
+.fmap-card.lead {
+  border-left: 2px solid var(--accent);
+}
+
+.fmap-card.worker {
+  margin-left: 12px;
+}
+
+.fmap-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fmap-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.fmap-dot.working {
+  animation: fmap-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes fmap-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(59, 130, 246, 0);
+  }
+}
+
+.fmap-card-name {
+  font-size: 12.5px;
+  color: var(--text);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmap-card-name.unnamed {
+  color: var(--text-dim);
+  font-style: italic;
+  font-weight: 500;
+}
+
+.fmap-agent {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: capitalize;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.fmap-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 7px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.fmap-card-tag {
+  display: inline-flex;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmap-card-tag-k {
+  color: var(--text);
+  opacity: 0.85;
+}
+
+.fmap-card-state {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  margin-top: 7px;
+  font-weight: 600;
+}
+
+.fmap-card-idle {
+  color: var(--text-dim);
+  font-weight: 400;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+/* wingman rail line - shown only when narration is on */
+.fmap-rail {
+  display: none;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.fmap-canvas-scroll.wm .fmap-rail {
+  display: block;
+}
+
+/* When narration is on, the terse one-line state is redundant with the richer rail line. */
+.fmap-canvas-scroll.wm .fmap-card-state {
+  margin-top: 6px;
+}
+
+.fmap-rail-k {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+
+/* ---- legend ---- */
+.fmap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 0 2px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.fmap-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fmap-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fmap-dot.working {
+    animation: none;
+  }
+  .fmap-card {
+    transition: none;
+  }
+}

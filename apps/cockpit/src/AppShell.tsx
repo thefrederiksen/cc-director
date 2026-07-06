@@ -19,6 +19,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 const NAV_ITEMS: ReadonlyArray<{ to: string; label: string; subtree?: string }> = [
   { to: "/", label: "Sessions", subtree: "/session" },
   { to: "/fleet", label: "Fleet" },
+  { to: "/fleet-map", label: "Fleet Map" },
   { to: "/directors", label: "Directors" },
   { to: "/schedule", label: "Schedule" },
   { to: "/lists", label: "Lists" },
