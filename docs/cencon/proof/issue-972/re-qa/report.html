@@ -44,7 +44,7 @@ functional source - so the emitted bundle is identical to the one the first QA p
 The core select -&gt; terminal -&gt; Send path was nonetheless re-proven live.</p>
 <table>
 <tr><th>Criterion</th><th>Expected</th><th>Actual</th><th>Result</th></tr>
-<tr><td>Rail lists the fleet with correct state + DEFAULT "My order" ordering (attention-first opt-in only)</td><td>Both sessions listed; My order default; Attention first not automatic</td><td>Roster shows 100 qa972-alpha + 101 qa972-bravo, green "ready" dots, machine SOREN_NORTH. "My order" aria-pressed=true, "Attention first" aria-pressed=false by default.</td><td class="pass">PASS</td></tr>
+<tr><td>Rail lists the fleet with correct state + DEFAULT "My order" ordering (attention-first opt-in only)</td><td>Both sessions listed; My order default; Attention first not automatic</td><td>Roster shows 100 qa972-alpha + 101 qa972-bravo, green "ready" dots, machine MACHINE-A. "My order" aria-pressed=true, "Attention first" aria-pressed=false by default.</td><td class="pass">PASS</td></tr>
 <tr><td>Selecting a session drives the terminal + reply bar</td><td>Route to /c/session/{sid}; terminal + action bar + composer mount</td><td>Clicking qa972-alpha routed to /c/session/88e18a9f...; live terminal rendered, action bar (Stop, Interrupt, Clear context, History) + composer + Send/Queue/Attach mounted.</td><td class="pass">PASS</td></tr>
 <tr><td>Send acts on a real session through the Gateway</td><td>Composer Send delivers the prompt to the real session's terminal</td><td>Typed <code>echo QA972_LIVE_MARKER_7788</code>, clicked Send; the Director's session buffer (GET /sessions/{sid}/buffer) shows the marker landed in the real session's terminal input.</td><td class="pass">PASS</td></tr>
 </table>

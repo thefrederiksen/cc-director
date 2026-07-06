@@ -24,7 +24,7 @@
 [PASS] GET /lists (Accept: application/json) -> 200 application/json {"lists":[]}
 [PASS] GET /sessions (Accept: application/json) -> 200 application/json []
 [PASS] GET /directors (Accept: application/json) -> 200 application/json []
-[PASS] GET /cockpit (Accept: application/json) -> 200 application/json {"url":"https://soren-north.taildb08ed.t
+[PASS] GET /cockpit (Accept: application/json) -> 200 application/json {"url":"https://machine-a.example-tailnet.ts.net
 
 == 3. Nested API paths under non-dual-use pages stay JSON even for a browser (Accept: text/html) ==
 [PASS] GET /exes/list (Accept: text/html) stays API -> 200 application/json

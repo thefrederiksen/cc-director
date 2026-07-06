@@ -122,7 +122,7 @@ public sealed class GatewayConfig
     /// <summary>
     /// True when <paramref name="url"/> addresses THIS machine's own Gateway: loopback, "localhost",
     /// this machine's name, or its Tailscale MagicDNS name. Tailscale lowercases the hostname and turns
-    /// '_' into '-' (SOREN_NORTH -> soren-north), so the first DNS label is compared against the
+    /// '_' into '-' (MACHINE_A -> machine-a), so the first DNS label is compared against the
     /// normalized machine name. Used to scope the empty-token same-machine credential resolution to a
     /// local Gateway so a remote Workstation never presents this machine's token to a different Gateway.
     /// Pure and side-effect free so it is unit-tested directly.

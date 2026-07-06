@@ -48,13 +48,13 @@ browser with Playwright. Every screenshot below was produced by this QA run.</p>
   <tr>
     <td>b</td><td>Opens a dialog listing real Directors + repos and creates a real session via <code>POST /directors/{id}/sessions</code>.</td>
     <td>Dialog shows the live GET /directors machines; creating issues the real POST and returns a session.</td>
-    <td>Dialog listed the live isolated Director "SOREN_NORTH" (auto-selected). Entering a valid repo path and clicking "Create session" issued <code>POST /directors/{id}/sessions</code>; the Gateway health then reported <code>sessions:1</code> and the app navigated to <code>/session/356b1abf-...</code> (qa-02, qa-04).</td>
+    <td>Dialog listed the live isolated Director "MACHINE-A" (auto-selected). Entering a valid repo path and clicking "Create session" issued <code>POST /directors/{id}/sessions</code>; the Gateway health then reported <code>sessions:1</code> and the app navigated to <code>/session/356b1abf-...</code> (qa-02, qa-04).</td>
     <td class="pass">PASS</td>
   </tr>
   <tr>
     <td>c</td><td>New session appears in the roster and is drivable (terminal renders + you can type).</td>
     <td>Roster row appears; terminal renders live agent output; keystrokes reach the agent.</td>
-    <td>Roster showed "100 testrepo / 356b, ready, SOREN_NORTH". The Terminal tab rendered the live Claude Code agent booting in the repo (trust prompt). Focusing the terminal input and pressing ArrowDown moved the agent's selection cursor from option 1 to option 2 - keystrokes are delivered (qa-04, qa-05).</td>
+    <td>Roster showed "100 testrepo / 356b, ready, MACHINE-A". The Terminal tab rendered the live Claude Code agent booting in the repo (trust prompt). Focusing the terminal input and pressing ArrowDown moved the agent's selection cursor from option 1 to option 2 - keystrokes are delivered (qa-04, qa-05).</td>
     <td class="pass">PASS</td>
   </tr>
   <tr>

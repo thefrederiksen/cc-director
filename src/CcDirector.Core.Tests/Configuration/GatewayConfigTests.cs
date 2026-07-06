@@ -67,11 +67,11 @@ public sealed class GatewayConfigTests : IDisposable
     {
         // Tailscale lowercases the hostname and turns '_' into '-'.
         var normalized = Environment.MachineName.ToLowerInvariant().Replace('_', '-');
-        Assert.True(GatewayConfig.IsLocalGatewayHost($"http://{normalized}.taildb08ed.ts.net:7878"));
+        Assert.True(GatewayConfig.IsLocalGatewayHost($"http://{normalized}.example-tailnet.ts.net:7878"));
     }
 
     [Theory]
-    [InlineData("http://some-other-host.taildb08ed.ts.net:7878")]
+    [InlineData("http://some-other-host.example-tailnet.ts.net:7878")]
     [InlineData("http://192.168.1.50:7878")]
     [InlineData("")]
     [InlineData("not a url")]
@@ -100,7 +100,7 @@ public sealed class GatewayConfigTests : IDisposable
         // A stale/foreign gateway-token.txt must never be presented to a DIFFERENT Gateway.
         SeedGatewayTokenFile(LocalToken);
         SeedConfig("""
-        { "gateway": { "url": "http://some-other-host.taildb08ed.ts.net:7878", "token": "" } }
+        { "gateway": { "url": "http://some-other-host.example-tailnet.ts.net:7878", "token": "" } }
         """);
 
         var cfg = GatewayConfig.Load();

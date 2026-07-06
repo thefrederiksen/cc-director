@@ -32,7 +32,7 @@ is clean. That is a release-blocking regression, so the issue does not pass.</p>
 <tr><th>#</th><th>Criterion</th><th>Expected</th><th>Actual (through real Gateway)</th><th>Result</th></tr>
 <tr><td>1</td><td>Rail lists every session across the fleet with correct state and the default ordering</td>
 <td>Fleet-wide roster; default = manual "My order" (attention-first opt-in only)</td>
-<td>4 fleet sessions across SOREN_NORTH + SORENLAPTOP with per-session status dots (qa-alpha "needs you" red, qa-bravo "ready" green, cockpit/sign-exe "working" blue). "My order" button aria-pressed=true by default; "Attention first" aria-pressed=false. Toggling groups into needs-you/active/on-hold buckets. See gw-01-roster-fleet.png</td>
+<td>4 fleet sessions across MACHINE-A + MACHINE-B with per-session status dots (qa-alpha "needs you" red, qa-bravo "ready" green, cockpit/sign-exe "working" blue). "My order" button aria-pressed=true by default; "Attention first" aria-pressed=false. Toggling groups into needs-you/active/on-hold buckets. See gw-01-roster-fleet.png</td>
 <td class="pass">PASS</td></tr>
 <tr><td>2</td><td>Selecting a session drives the terminal pane and the reply bar</td>
 <td>Row click -> /session/{sid}; terminal + action bar + composer render</td>
