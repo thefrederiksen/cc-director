@@ -486,6 +486,21 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// Renders a request's query string for the access / exception log, REDACTING the query of the sign-in
+    /// callback path (epic #1069, issue #1080). That path is the reachable front-door callback the cloud
+    /// sign-in page redirects the browser back to, and it carries the handed-back access/refresh token in
+    /// its query - so logging it verbatim (as every other request's query is logged) would write credential
+    /// material to the gateway log, violating security rule DT-05. Every other path keeps its query
+    /// unchanged so a remote-side problem stays traceable after the fact.
+    /// </summary>
+    private static string SafeQueryForLog(PathString path, QueryString query)
+    {
+        if (string.Equals(path.Value, Api.AccountSignInCallbackEndpoint.Path, StringComparison.OrdinalIgnoreCase))
+            return query.HasValue ? "?[redacted: sign-in callback credential, DT-05]" : "";
+        return query.Value ?? "";
+    }
+
+    /// <summary>
     /// Resolves this device's platform string for cloud device registration (issue #857): a short, stable
     /// operating-system label sent as the device's <c>platform</c>. The Gateway credential service is
     /// Windows-only today, so this is "windows" in practice, but the label is computed (not hard-coded) so
@@ -746,7 +761,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 // Log full detail server-side; return a generic body so we never leak
                 // an exception type or message to a remote client.
                 Console.Error.WriteLine($"[GatewayHost] pipeline exception: {ex}");
-                FileLog.Write($"[GatewayHost] unhandled exception: {ctx.Request.Method} {ctx.Request.Path}{ctx.Request.QueryString}: {ex}");
+                FileLog.Write($"[GatewayHost] unhandled exception: {ctx.Request.Method} {ctx.Request.Path}{SafeQueryForLog(ctx.Request.Path, ctx.Request.QueryString)}: {ex}");
                 if (!ctx.Response.HasStarted)
                 {
                     ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
@@ -764,7 +779,7 @@ public sealed class GatewayHost : IAsyncDisposable
                     && !path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
                 {
                     var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "?";
-                    FileLog.Write($"[GatewayHost] {ctx.Request.Method} {path}{ctx.Request.QueryString} -> {ctx.Response.StatusCode} ({sw.ElapsedMilliseconds}ms) client={client} host={ctx.Request.Host}");
+                    FileLog.Write($"[GatewayHost] {ctx.Request.Method} {path}{SafeQueryForLog(ctx.Request.Path, ctx.Request.QueryString)} -> {ctx.Response.StatusCode} ({sw.ElapsedMilliseconds}ms) client={client} host={ctx.Request.Host}");
                 }
             }
         });
@@ -1005,6 +1020,18 @@ public sealed class GatewayHost : IAsyncDisposable
         // browser loopback flow (SignIn) as the authenticated endpoint above (security rule DT-05). Every
         // other /account/* data endpoint stays gated (the allow-list is exact-match).
         AccountSignInStartEndpoint.Map(_app, SignIn);
+
+        // The reachable front-door sign-in CALLBACK (epic #1069, issue #1080): GET /account/sign-in-callback.
+        // This is the routable address the cloud sign-in page redirects the user's OWN browser back to after
+        // sign-in - the remote-capable counterpart to the host-local loopback listener. It completes remote
+        // sign-in: a person reaching the Gateway front door from ANOTHER machine over Tailscale is redirected
+        // by the sign-in START to the cloud page carrying THIS callback as the redirect_uri, and the cloud
+        // completion redirects the browser back here with the token pair, which the Gateway stores. Public
+        // (allow-listed) because the browser completing sign-in has no Gateway credential yet; the captured
+        // token never leaves the Gateway and is never logged (security rule DT-05 - the access logger below
+        // redacts this path's query so the handed-back credential never reaches the gateway log). On a host
+        // with no sign-in flow (SignIn null) it reports an explicit "not available" result.
+        AccountSignInCallbackEndpoint.Map(_app, SignIn);
 
         // Transcription routing (issue #506): the Gateway serves the WHOLE routing target
         // (mode + base URL + model + key) for its configured transcription mode, so a connected

@@ -126,6 +126,41 @@ public sealed class GatewaySignInService
     }
 
     /// <summary>
+    /// Completes a sign-in whose credential was handed back to the Gateway's REACHABLE front-door callback
+    /// by the user's own browser (epic #1069, issue #1080) - the remote-capable counterpart to
+    /// <see cref="RunSignInAsync"/>, which captures the credential host-locally on the loopback listener.
+    /// The token pair arrives from the cloud sign-in completion's redirect back to
+    /// <see cref="RemoteSignInRouting.CallbackPath"/>; this stores it through the same Gateway credential
+    /// service the loopback flow stores through and fires the same post-sign-in device-registration hook, so
+    /// a remote sign-in and a host-local sign-in leave the Gateway in the identical signed-in state.
+    ///
+    /// No fallback: a callback missing either token is failed loud with a user-safe reason rather than
+    /// storing a half-credential. Security (DT-05): neither token is ever written to the log on any path -
+    /// only the outcome is logged.
+    /// </summary>
+    /// <param name="accessToken">The access token handed back on the callback. Required.</param>
+    /// <param name="refreshToken">The refresh token handed back on the callback. Required.</param>
+    /// <param name="ct">Cancels the best-effort post-sign-in hook.</param>
+    /// <returns>Success once the credential is stored, or a user-safe failure when the hand-back was incomplete.</returns>
+    public FirstRunLoginResult CompleteBrowserSignIn(string? accessToken, string? refreshToken, CancellationToken ct = default)
+    {
+        FileLog.Write("[GatewaySignInService] CompleteBrowserSignIn: capturing the credential handed back to the front-door callback");
+
+        if (string.IsNullOrWhiteSpace(accessToken) || string.IsNullOrWhiteSpace(refreshToken))
+        {
+            FileLog.Write("[GatewaySignInService] CompleteBrowserSignIn: callback arrived without both tokens -> failing loud (no half-credential stored)");
+            return FirstRunLoginResult.Failure(
+                "Sign-in did not complete: the credential was missing. Please return to your browser and sign in again.");
+        }
+
+        _account.StoreTokens(new DevThrottleTokens(accessToken, refreshToken));
+        FileLog.Write("[GatewaySignInService] CompleteBrowserSignIn: credential captured and stored through the Gateway credential service");
+
+        FireOnSignedInBestEffort(ct);
+        return FirstRunLoginResult.Success();
+    }
+
+    /// <summary>
     /// Fires the post-sign-in hook (issue #857: register this Gateway as a device) fully detached on the
     /// thread pool with its own boundary try/catch, so a slow or failed registration can never block or
     /// fail the user's sign-in - the Gateway stays signed in either way. A no-op when no hook is wired.

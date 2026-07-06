@@ -3,6 +3,7 @@ using CcDirector.Core.Account;
 using CcDirector.Gateway.Account;
 using CcDirector.Gateway.Api;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -158,6 +159,103 @@ public sealed class AccountSignInStartEndpointTests
             Assert.DoesNotContain(jwt, body, StringComparison.Ordinal);
             Assert.DoesNotContain(refreshToken, body, StringComparison.Ordinal);
             Assert.DoesNotContain("token", body, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            http.Dispose();
+            await app.DisposeAsync();
+        }
+    }
+
+    // ---- Issue #1080: remote-vs-same-machine callback selection ----
+
+    // A counting browser opener: proves that the REMOTE path opens NO browser on the host, and gives the
+    // same-machine path a browser to open without launching a real one.
+    private sealed class RecordingBrowserOpener
+    {
+        private int _count;
+        public int Count => Volatile.Read(ref _count);
+        public Task Open(string url) { Interlocked.Increment(ref _count); return Task.CompletedTask; }
+    }
+
+    // Boots the start endpoint behind middleware that stamps the requester's remote address and host, so the
+    // remote-vs-same-machine decision (which reads ctx.Connection.RemoteIpAddress / ctx.Request.Host) can be
+    // exercised over a loopback test socket.
+    private static async Task<(WebApplication app, HttpClient http)> StartWithRequestOverrideAsync(
+        GatewaySignInService? signIn, IPAddress remoteIp, string host)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var app = builder.Build();
+        app.Urls.Add("http://127.0.0.1:0");
+
+        app.Use(async (ctx, next) =>
+        {
+            ctx.Connection.RemoteIpAddress = remoteIp;
+            ctx.Request.Host = new HostString(host);
+            await next();
+        });
+
+        AccountSignInStartEndpoint.Map(app, signIn);
+        await app.StartAsync();
+
+        var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+        {
+            BaseAddress = new Uri(app.Urls.First()),
+        };
+        return (app, http);
+    }
+
+    // Acceptance criteria 1-3: a REMOTE requester is redirected to the cloud sign-in page carrying the
+    // Gateway's reachable front-door callback as redirect_uri (NOT 127.0.0.1), and NO browser opens on the host.
+    [Fact]
+    public async Task Post_Start_RemoteRequester_RedirectsToCloudWithFrontDoorCallback_NoHostBrowser()
+    {
+        const string frontDoorHost = "gw.example-tailnet.ts.net";
+        var opener = new RecordingBrowserOpener();
+        var signIn = new GatewaySignInService(MakeAccount(seed: null), openBrowser: opener.Open);
+
+        var (app, http) = await StartWithRequestOverrideAsync(signIn, IPAddress.Parse("100.86.144.11"), frontDoorHost);
+        try
+        {
+            var resp = await http.PostAsync(AccountSignInStartEndpoint.Path, content: null);
+
+            // The remote browser is redirected (302), not handed a "look at the host" status page.
+            Assert.Equal(HttpStatusCode.Found, resp.StatusCode);
+            var location = resp.Headers.Location?.ToString() ?? "";
+            Assert.StartsWith(FirstRunLoginCoordinator.ResolveSignInBaseUrl(), location, StringComparison.Ordinal);
+
+            // redirect_uri is the reachable front-door callback, never a loopback URL (criterion 3).
+            var expectedCallback = Uri.EscapeDataString($"http://{frontDoorHost}{RemoteSignInRouting.CallbackPath}");
+            Assert.Contains($"redirect_uri={expectedCallback}", location, StringComparison.Ordinal);
+            Assert.DoesNotContain("127.0.0.1", location, StringComparison.Ordinal);
+
+            // Criterion 2: no browser was opened on the Gateway host for the remote case.
+            Assert.Equal(0, opener.Count);
+        }
+        finally
+        {
+            http.Dispose();
+            await app.DisposeAsync();
+        }
+    }
+
+    // The same-machine (loopback) requester keeps the host-local flow: a status page, NOT a redirect.
+    [Fact]
+    public async Task Post_Start_SameMachineRequester_KeepsHostLocalFlow_NoRedirect()
+    {
+        var opener = new RecordingBrowserOpener();
+        var signIn = new GatewaySignInService(MakeAccount(seed: null), openBrowser: opener.Open);
+
+        var (app, http) = await StartWithRequestOverrideAsync(signIn, IPAddress.Loopback, "127.0.0.1:7879");
+        try
+        {
+            var resp = await http.PostAsync(AccountSignInStartEndpoint.Path, content: null);
+
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.Null(resp.Headers.Location);
+            var body = await resp.Content.ReadAsStringAsync();
+            Assert.Contains("Sign-in started", body, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
