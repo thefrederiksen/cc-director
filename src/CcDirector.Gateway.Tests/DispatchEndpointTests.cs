@@ -26,6 +26,8 @@ public sealed class DispatchEndpointTests : IAsyncLifetime
 
     private readonly string _instancesDir;
     private readonly string _dbPath;
+    private readonly string _root;
+    private readonly string? _prevRoot;
     private readonly List<IReadOnlyList<string>> _sends = new();
 
     private ControlApiHost _host = null!; // Initialized in InitializeAsync
@@ -38,6 +40,17 @@ public sealed class DispatchEndpointTests : IAsyncLifetime
         var unique = Guid.NewGuid().ToString("N");
         _instancesDir = Path.Combine(Path.GetTempPath(), "ccd-dispatch-endpoint-test-" + unique);
         _dbPath = Path.Combine(Path.GetTempPath(), "ccd-dispatch-endpoint-db-" + unique + ".db");
+
+        // Isolate the machine-global director root (issue #1055): with auth enabled the host resolves
+        // its accepted token from GatewayConfig.Load().Token. On a fleet machine whose config.json
+        // carries a gateway.token, the host would accept that fleet token while this test presents the
+        // local token file token (DirectorAuth.LoadOrCreateToken) - a mismatch that 401s every call and
+        // reds the whole class. Redirecting CC_DIRECTOR_ROOT to a fresh temp dir gives an empty config
+        // (no fleet token), so host and client both use the same isolated token. Hermetic and
+        // deterministic regardless of the machine's real config.
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-dispatch-root-" + unique);
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
     }
 
     public async Task InitializeAsync()
@@ -70,8 +83,10 @@ public sealed class DispatchEndpointTests : IAsyncLifetime
         _sm.Dispose();
         _dispatcher?.Dispose();
         SqliteConnection.ClearAllPools();
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { File.Delete(_dbPath); } catch (IOException) { /* best effort temp cleanup */ }
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, recursive: true); } catch (IOException) { /* best effort */ }
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch (IOException) { /* best effort */ }
     }
 
     // ===== Fixture =====
