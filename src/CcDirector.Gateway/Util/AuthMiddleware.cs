@@ -1,3 +1,4 @@
+using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Cockpit;
 using CcDirector.Gateway.Pairing;
 using Microsoft.AspNetCore.Http;
@@ -7,7 +8,9 @@ namespace CcDirector.Gateway.Util;
 /// <summary>
 /// Bearer-or-cookie auth for the Gateway.
 ///
-/// Public, no auth:    /healthz, /login, /logout, /favicon.ico, /devices/register, the mobile app
+/// Public, no auth:    /healthz, /login, /logout, /favicon.ico, /devices/register, the credential-free
+///                     cloud sign-in start front door /account/sign-in-start (issue #1076, GET + POST -
+///                     it reads/returns no credential and no account data), the mobile app
 ///                     shell /m + everything under /m/ (which includes the mobile enroll path
 ///                     POST /m/enroll - it carries its own account-scoped authorization), and the
 ///                     JSON /cockpit endpoint (a program GET, NOT a browser navigation - see below).
@@ -46,6 +49,13 @@ internal static class AuthMiddleware
         // device with no credential yet can reach it. The endpoint itself rejects a wrong/expired/
         // used code, so opening the route does not weaken the trust model.
         "/devices/register",
+        // Issue #1076 (epic #1069): the credential-free cloud sign-in START front door. A signed-out
+        // browser must reach this to BEGIN cloud sign-in, so it cannot sit behind the raw-token wall
+        // (that is the deadlock the epic breaks). It is exact-match, so ONLY /account/sign-in-start is
+        // public; every other /account/* DATA endpoint (status, logout, devices, credits) and the
+        // authenticated POST /account/sign-in stay gated. The entry point reads/echoes no credential and
+        // returns no account data (AccountSignInStartEndpoint).
+        AccountSignInStartEndpoint.Path,
     };
 
     public static async Task Run(HttpContext ctx, RequireToken cfg, Func<Task> next)

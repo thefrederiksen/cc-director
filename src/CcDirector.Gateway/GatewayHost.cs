@@ -997,6 +997,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // middleware above, exactly like the other /account routes.
         AccountSignInEndpoint.Map(_app, SignIn);
 
+        // The credential-free cloud sign-in START front door (epic #1069, issue #1076): GET + POST
+        // /account/sign-in-start. Unlike POST /account/sign-in above, this pair is on the public-paths
+        // allow-list (AuthMiddleware) so a SIGNED-OUT browser with no Gateway token can reach it to BEGIN
+        // cloud sign-in - breaking the deadlock where cloud sign-in sat behind the raw gateway-token wall.
+        // It reads/echoes no credential and returns no account data; the POST reuses the same host-local
+        // browser loopback flow (SignIn) as the authenticated endpoint above (security rule DT-05). Every
+        // other /account/* data endpoint stays gated (the allow-list is exact-match).
+        AccountSignInStartEndpoint.Map(_app, SignIn);
+
         // Transcription routing (issue #506): the Gateway serves the WHOLE routing target
         // (mode + base URL + model + key) for its configured transcription mode, so a connected
         // Director stops hardcoding the URL/mode. Composes URL+key server-side from the one pure
