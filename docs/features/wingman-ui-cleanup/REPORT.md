@@ -115,4 +115,4 @@ Cases covered: identical lists, empty-to-populated, pure append (with correct in
 - `src/CcDirector.Avalonia/Voice/DesktopTtsPlayer.cs` - `SpeakAsync` returns success so the dialog can report failures
 - `src/CcDirector.Avalonia/Helpers/MarkdownHtmlRenderer.cs` - fully-qualify `Markdig.Markdown` (namespace collision with the new package)
 - `src/CcDirector.Avalonia.Tests/` - new test project for `CleanViewDiff`
-- `playground/wingman-render-harness/` - the headless render harness that produced these screenshots
+- `tools/harnesses/wingman-render-harness/` - the headless render harness that produced these screenshots

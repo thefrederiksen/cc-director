@@ -8,7 +8,7 @@
 
 - [COCKPIT_DESIGN.md](COCKPIT_DESIGN.md) - architecture, topology, hosting
 - `src/CcDirector.Cockpit/` - the live code this plan continues
-- `playground/wingman-briefing/` - the prototype the design formalizes
+- `tools/harnesses/wingman-briefing/` - the prototype the design formalizes
 
 ---
 

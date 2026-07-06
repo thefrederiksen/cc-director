@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CcDirector.HostedAgent\CcDirector.HostedAgent.csproj" />
+    <ProjectReference Include="..\..\..\src\CcDirector.HostedAgent\CcDirector.HostedAgent.csproj" />
   </ItemGroup>
 
 </Project>

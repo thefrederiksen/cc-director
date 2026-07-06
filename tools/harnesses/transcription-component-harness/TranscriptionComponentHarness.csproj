@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CcDirector.Avalonia\CcDirector.Avalonia.csproj" />
+    <ProjectReference Include="..\..\..\src\CcDirector.Avalonia\CcDirector.Avalonia.csproj" />
   </ItemGroup>
 
 </Project>

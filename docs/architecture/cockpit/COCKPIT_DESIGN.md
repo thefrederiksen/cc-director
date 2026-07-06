@@ -12,7 +12,7 @@
 - [../gateway/GATEWAY_DIRECTOR_ARCHITECTURE.md](../gateway/GATEWAY_DIRECTOR_ARCHITECTURE.md) - CURRENT Gateway/Director split this builds on
 - [../gateway/GATEWAY_SESSION_VIEW_PLAN.md](../gateway/GATEWAY_SESSION_VIEW_PLAN.md) - the shipped fleet-wide `GET /sessions` aggregation the Cockpit consumes
 - [../wingman/SESSION_VIEW_MERGE_PLAN.md](../wingman/SESSION_VIEW_MERGE_PLAN.md) - the wingman/agent-feed view the Cockpit replaces
-- `playground/wingman-briefing/PLAN-v1-cockpit.md` + `cockpit.html` - the working prototype this doc formalizes
+- `tools/harnesses/wingman-briefing/PLAN-v1-cockpit.md` + `cockpit.html` - the working prototype this doc formalizes
 
 ---
 
@@ -69,7 +69,7 @@ So: **one call to the Gateway to find sessions; direct calls to each Director to
 
 Blazor Server means the app's C# logic runs server-side under Kestrel, and the **browser is the client**, connected over SignalR. So the Cockpit is **one web app, hosted once** (next to the Gateway - see section 7), that you open in a browser. There is no native wrapper and no per-OS shell: Kestrel is cross-platform .NET, so it just serves the page.
 
-- The **C# server** is where the smarts live - `WingmanService` (opus briefing), `SummaryBuilder` (the turn rail), `RecapGenerator` - reused directly from `CcDirector.Core`. This is the concrete meaning of "dumb runners": the enrichment the external harness (`playground/wingman-briefing/`) does today from outside the Director becomes a permanent, built-in part of the Cockpit.
+- The **C# server** is where the smarts live - `WingmanService` (opus briefing), `SummaryBuilder` (the turn rail), `RecapGenerator` - reused directly from `CcDirector.Core`. This is the concrete meaning of "dumb runners": the enrichment the external harness (`tools/harnesses/wingman-briefing/`) does today from outside the Director becomes a permanent, built-in part of the Cockpit.
 - The **browser** renders the page (xterm.js terminal + the panels) and talks to the C# server over SignalR.
 
 We chose Blazor Server precisely so that smart layer is **C# we share with the rest of the stack** instead of re-implemented in JavaScript. The terminal is the one thing that deliberately bypasses the SignalR channel - the browser's xterm.js opens a WebSocket straight to the Director (section 4.2), not through the C# render channel, so the terminal stays fast.
@@ -151,5 +151,5 @@ The PTY lives only on the Director and is reached by a direct WebSocket. The Coc
 
 | Date | Author | Change |
 |---|---|---|
-| 2026-05-31 | claude (cc-director assistant) | Initial PLANNED design. Locks Blazor Server, desktop-first, the phone-book + direct-dial topology, smarts-in-Cockpit. Formalizes the `playground/wingman-briefing` prototype. |
+| 2026-05-31 | claude (cc-director assistant) | Initial PLANNED design. Locks Blazor Server, desktop-first, the phone-book + direct-dial topology, smarts-in-Cockpit. Formalizes the `tools/harnesses/wingman-briefing` prototype. |
 | 2026-05-31 | claude (cc-director assistant) | **Hosting corrected.** One Cockpit, hosted by Kestrel on the always-on box next to the Gateway, browser-accessed over the tailnet. Removed the wrong per-machine native-shell (WebView2/Photino) model. Gateway becomes a Windows service; Cockpit is never a service. |

@@ -337,7 +337,7 @@
 <li><a href="../gateway/GATEWAY_DIRECTOR_ARCHITECTURE.md">../gateway/GATEWAY_DIRECTOR_ARCHITECTURE.md</a> - CURRENT Gateway/Director split this builds on</li>
 <li><a href="../gateway/GATEWAY_SESSION_VIEW_PLAN.md">../gateway/GATEWAY_SESSION_VIEW_PLAN.md</a> - the shipped fleet-wide <code>GET /sessions</code> aggregation the Cockpit consumes</li>
 <li><a href="../wingman/SESSION_VIEW_MERGE_PLAN.md">../wingman/SESSION_VIEW_MERGE_PLAN.md</a> - the wingman/agent-feed view the Cockpit replaces</li>
-<li><code>playground/wingman-briefing/PLAN-v1-cockpit.md</code> + <code>cockpit.html</code> - the working prototype this doc formalizes</li>
+<li><code>tools/harnesses/wingman-briefing/PLAN-v1-cockpit.md</code> + <code>cockpit.html</code> - the working prototype this doc formalizes</li>
 </ul>
 <hr/>
 <h2>Topology at a glance</h2>
@@ -375,7 +375,7 @@
 <h2>5. "Why is there a Cockpit <em>server</em>?" (the Blazor Server model)</h2>
 <p>Blazor Server means the app's C# logic runs server-side under Kestrel, and the <strong>browser is the client</strong>, connected over SignalR. So the Cockpit is <strong>one web app, hosted once</strong> (next to the Gateway - see section 7), that you open in a browser. There is no native wrapper and no per-OS shell: Kestrel is cross-platform .NET, so it just serves the page.</p>
 <ul>
-<li>The <strong>C# server</strong> is where the smarts live - <code>WingmanService</code> (opus briefing), <code>SummaryBuilder</code> (the turn rail), <code>RecapGenerator</code> - reused directly from <code>CcDirector.Core</code>. This is the concrete meaning of "dumb runners": the enrichment the external harness (<code>playground/wingman-briefing/</code>) does today from outside the Director becomes a permanent, built-in part of the Cockpit.</li>
+<li>The <strong>C# server</strong> is where the smarts live - <code>WingmanService</code> (opus briefing), <code>SummaryBuilder</code> (the turn rail), <code>RecapGenerator</code> - reused directly from <code>CcDirector.Core</code>. This is the concrete meaning of "dumb runners": the enrichment the external harness (<code>tools/harnesses/wingman-briefing/</code>) does today from outside the Director becomes a permanent, built-in part of the Cockpit.</li>
 <li>The <strong>browser</strong> renders the page (xterm.js terminal + the panels) and talks to the C# server over SignalR.</li>
 </ul>
 <p>We chose Blazor Server precisely so that smart layer is <strong>C# we share with the rest of the stack</strong> instead of re-implemented in JavaScript. The terminal is the one thing that deliberately bypasses the SignalR channel - the browser's xterm.js opens a WebSocket straight to the Director (section 4.2), not through the C# render channel, so the terminal stays fast.</p>
@@ -453,7 +453,7 @@
 <tr>
 <td>2026-05-31</td>
 <td>claude (cc-director assistant)</td>
-<td>Initial PLANNED design. Locks Blazor Server, desktop-first, the phone-book + direct-dial topology, smarts-in-Cockpit. Formalizes the <code>playground/wingman-briefing</code> prototype.</td>
+<td>Initial PLANNED design. Locks Blazor Server, desktop-first, the phone-book + direct-dial topology, smarts-in-Cockpit. Formalizes the <code>tools/harnesses/wingman-briefing</code> prototype.</td>
 </tr>
 <tr>
 <td>2026-05-31</td>

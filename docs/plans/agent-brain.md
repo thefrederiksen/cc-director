@@ -1,6 +1,6 @@
 # Agent Brain - reusable C# client for a warm headless Claude session
 
-Issue #172 follow-up. The Python harness (playground/headless-brain/) proved the
+Issue #172 follow-up. The Python harness (tools/harnesses/headless-brain/) proved the
 mechanism; this plan productizes it in C#: a reusable library any of our C#
 programs can call, plus a desktop control panel to exercise every operation by
 hand, plus a screenshot-backed QA pass.

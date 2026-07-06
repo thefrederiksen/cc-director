@@ -22,7 +22,7 @@ The Cockpit is the single UI for driving every Claude session on the tailnet: it
 
 - `../gateway/` - the Gateway/Director split the Cockpit builds on (and the shipped fleet-wide `GET /sessions` it consumes)
 - `../wingman/SESSION_VIEW_MERGE_PLAN.md` - the wingman/agent-feed view the Cockpit replaces
-- `playground/wingman-briefing/` - the working prototype (cockpit.html + server.py + PLAN-v1-cockpit.md)
+- `tools/harnesses/wingman-briefing/` - the working prototype (cockpit.html + server.py + PLAN-v1-cockpit.md)
 
 ## Re-rendering the diagram
 

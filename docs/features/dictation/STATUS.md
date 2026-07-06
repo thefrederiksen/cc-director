@@ -111,7 +111,7 @@ TranscriptResult result = await session.StopAsync();
 
 ### Console harness
 
-`playground/dictation-harness/` builds to `cc-dictate-harness.exe`. Usage:
+`tools/harnesses/dictation-harness/` builds to `cc-dictate-harness.exe`. Usage:
 
 ```
 cc-dictate-harness                          # uses Phase 0 clip2 by default
@@ -173,7 +173,7 @@ The browser-facing surface is in place:
 1. Make sure `cc-director.exe` is running (it owns port 7879).
 2. Optional: drop a dictionary at
    `%LOCALAPPDATA%/cc-director/dictation/dictionary.yaml`. A reasonable
-   starter exists at `playground/dictation-harness/sample-dictionary.yaml`
+   starter exists at `tools/harnesses/dictation-harness/sample-dictionary.yaml`
    you can copy.
 3. Open `http://localhost:7879/dictate.html` in a browser.
 4. Click "Start recording", grant microphone permission, speak.

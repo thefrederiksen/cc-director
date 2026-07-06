@@ -2,7 +2,7 @@
 
 Date: 2026-06-05. Slot-5 Director (cc-director5.exe, launched via the
 cc-director-launch scheduled task), Control API on port 7886. Session:
-ClaudeCode / ConPty in playground/headless-brain/sandbox, wingman disabled.
+ClaudeCode / ConPty in tools/harnesses/headless-brain/sandbox, wingman disabled.
 Claude Code v2.1.165, Opus 4.8 (1M), Claude Max subscription.
 
 ## Verdict: Approach A works

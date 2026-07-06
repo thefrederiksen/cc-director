@@ -54,13 +54,13 @@ The opening "sent" survived; under the old code those 6 frames were lost.
 
 ## 3. Harness - one-command, eyes-on validation
 
-`playground/dictation-harness` drives the real desktop streaming path and prints
+`tools/harnesses/dictation-harness` drives the real desktop streaming path and prints
 a report. Requires ffmpeg + `OPENAI_API_KEY`.
 
 ```
-dotnet run --project playground/dictation-harness -- <audio-file> --stream
+dotnet run --project tools/harnesses/dictation-harness -- <audio-file> --stream
 # or, with the bundled phase0 sample:
-dotnet run --project playground/dictation-harness -- --stream
+dotnet run --project tools/harnesses/dictation-harness -- --stream
 ```
 
 It prints `primed frames` (audio captured before connect), a `no audio lost:
