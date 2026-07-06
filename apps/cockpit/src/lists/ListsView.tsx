@@ -379,7 +379,11 @@ export function ListsView() {
                       <th style={{ width: 52 }}>Id</th>
                       <th>Title</th>
                       <th style={{ width: 100 }}>Status</th>
-                      <th style={{ width: 66 }} />
+                      {/* Wide enough for the three 24px action buttons + their 3px gaps + cell
+                          padding (~103px total). With table-layout:fixed a narrower column let the
+                          nowrap actions spill past the column edge, which read as ~25px of internal
+                          horizontal overflow on the table (issue #1050). */}
+                      <th style={{ width: 108 }} />
                     </tr>
                   </thead>
                   <tbody>

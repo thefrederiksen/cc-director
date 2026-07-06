@@ -54,8 +54,11 @@ export async function getRecordings(signal?: AbortSignal): Promise<RecordingList
     signal,
   });
   if (!res.ok) throw await gatewayErrorFrom(res, "GET /ingest/recordings");
-  const body = (await res.json()) as RecordingListItem[] | null;
-  return body ?? [];
+  // The endpoint contract is a JSON array, but a malformed/unexpected body (object, null, string)
+  // must never reach the caller as a non-array - TranscriptsView does body.map() and would throw
+  // "r.map is not a function". Guard so a non-array degrades to an empty list (issue #1050).
+  const body = (await res.json()) as unknown;
+  return Array.isArray(body) ? (body as RecordingListItem[]) : [];
 }
 
 // GET /ingest/recording/{id}/transcript - the cleaned transcript text; null on 404 (none stored) or a
