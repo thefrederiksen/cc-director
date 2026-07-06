@@ -56,6 +56,14 @@ internal static class AuthMiddleware
         // authenticated POST /account/sign-in stay gated. The entry point reads/echoes no credential and
         // returns no account data (AccountSignInStartEndpoint).
         AccountSignInStartEndpoint.Path,
+        // Issue #1080 (epic #1069): the reachable front-door sign-in CALLBACK the cloud sign-in page
+        // redirects the user's OWN browser back to, so a person on ANOTHER machine completes sign-in in
+        // their own browser instead of on the host loopback. The browser completing sign-in has no Gateway
+        // credential yet (it carries the cloud-issued token it hands back, not a Gateway token), so - like
+        // the START front door and device enrollment - it must be reachable without a Gateway token. Still
+        // exact-match: every other /account/* DATA endpoint and the authenticated POST /account/sign-in
+        // stay gated (AccountSignInCallbackEndpoint).
+        AccountSignInCallbackEndpoint.Path,
     };
 
     public static async Task Run(HttpContext ctx, RequireToken cfg, Func<Task> next)

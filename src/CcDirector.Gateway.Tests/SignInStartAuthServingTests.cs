@@ -61,6 +61,22 @@ public sealed class SignInStartAuthServingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SignInCallback_without_a_gateway_token_is_served_not_redirected_to_login()
+    {
+        // Issue #1080: the reachable front-door callback the cloud sign-in page redirects the user's own
+        // browser back to must be public - the browser completing sign-in has no Gateway token yet. With no
+        // credential in the query it renders a "did not complete" status page (200), never a 401 and never a
+        // bounce to the raw-token wall /login. (No token is supplied, so nothing is stored.)
+        using var req = new HttpRequestMessage(HttpMethod.Get, AccountSignInCallbackEndpoint.Path);
+        req.Headers.Accept.ParseAdd("text/html");
+        using var res = await _http.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Found, res.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, res.StatusCode);
+    }
+
+    [Fact]
     public async Task AccountStatus_without_a_credential_still_401s()
     {
         // The public allow-list is exact-match: only /account/sign-in-start opened. The sibling

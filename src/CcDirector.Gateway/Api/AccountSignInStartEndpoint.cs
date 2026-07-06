@@ -164,11 +164,16 @@ internal static class AccountSignInStartEndpoint
             return Results.Content(FrontDoorHtml, "text/html; charset=utf-8");
         });
 
-        // POST: begin the sign-in. Reuses the EXISTING host-local browser loopback flow (issue #637),
-        // detached exactly like the authenticated POST /account/sign-in (#853) so the request never blocks
-        // on the person finishing in the browser. The single-flight guard in the service makes a duplicate
-        // start a harmless no-op.
-        app.MapPost(Path, () =>
+        // POST: begin the sign-in. The callback target is chosen by whether the request is same-machine or
+        // remote (epic #1069, issue #1080), so a person reaching the front door from ANOTHER machine over
+        // Tailscale can complete sign-in in their OWN browser instead of on the host loopback:
+        //   - REMOTE  (a routable requester): redirect THIS browser to the cloud sign-in page carrying the
+        //     Gateway's reachable front-door callback as the redirect_uri. No browser opens on the host.
+        //   - SAME-MACHINE (a loopback requester, e.g. a person at the Gateway PC): keep the existing
+        //     host-local browser loopback flow (issue #637), detached exactly like the authenticated POST
+        //     /account/sign-in (#853), where the loopback still earns its place.
+        // The single-flight guard in the service makes a duplicate same-machine start a harmless no-op.
+        app.MapPost(Path, (HttpContext ctx) =>
         {
             // No sign-in flow on this host: report it explicitly instead of fabricating a started state.
             if (signIn is null)
@@ -184,7 +189,33 @@ internal static class AccountSignInStartEndpoint
                 return StatusResult("This Gateway is already signed in to DevThrottle.");
             }
 
-            FileLog.Write("[AccountSignInStartEndpoint] POST /account/sign-in-start: starting the browser loopback sign-in in the background (no credential required)");
+            // Remote requester: complete in the user's own browser via a redirect through the front door.
+            // The remote address already reflects X-Forwarded-For (the Gateway runs UseForwardedHeaders), so
+            // a tailnet client behind the Tailscale Serve front door presents its routable address here.
+            if (RemoteSignInRouting.IsRemoteRequest(ctx.Connection.RemoteIpAddress))
+            {
+                // The reachable front-door base is the scheme+host the browser actually used to reach the
+                // Gateway (forwarded-header aware), so the redirect_uri is routable back here - never a
+                // loopback URL. When the request carries no host the Gateway has no reachable
+                // address to complete a remote sign-in, so we surface that clearly rather than fall back to
+                // the loopback the remote browser cannot reach (no-fallback rule).
+                var host = ctx.Request.Host.Value;
+                if (string.IsNullOrWhiteSpace(host))
+                {
+                    FileLog.Write("[AccountSignInStartEndpoint] POST /account/sign-in-start: remote request carries no host -> no reachable front-door address for remote sign-in");
+                    return StatusResult(
+                        "This Gateway does not have a reachable address to complete sign-in from another device. Sign in from the Gateway host, or reach it through its Tailscale address.");
+                }
+
+                var signInUrl = RemoteSignInRouting.BuildRemoteSignInUrl(ctx.Request.Scheme, host);
+                // The sign-in URL carries only the redirect_uri (a callback address), never a credential, so
+                // logging it in full is safe and gives the token-free outbound-URL evidence (DT-05 upheld).
+                FileLog.Write($"[AccountSignInStartEndpoint] POST /account/sign-in-start: remote sign-in -> redirecting the browser to the cloud sign-in page (front-door callback, no host browser opened): {signInUrl}");
+                return Results.Redirect(signInUrl);
+            }
+
+            // Same-machine requester: keep the host-local browser loopback flow.
+            FileLog.Write("[AccountSignInStartEndpoint] POST /account/sign-in-start: same-machine sign-in -> starting the host-local browser loopback flow in the background");
             _ = Task.Run(async () =>
             {
                 var result = await signIn.RunSignInAsync().ConfigureAwait(false);
