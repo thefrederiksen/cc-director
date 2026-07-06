@@ -37,7 +37,7 @@ You are picking this up cold. Here is the contract:
 3. **You self-test.** No human in the loop until you report done. The tests in each phase are written so YOU can verify them and ONLY proceed when they pass.
 4. **When everything in the phase passes, report back to the user with a single message** stating: which phase finished, what the self-test produced (e.g. log of raw/cleaned voice pairs), and whether you are proceeding to the next phase or stopping.
 5. **The whole goal is done when Phase 1 ships and the user has confirmed.** Phases 2-7 are future work. Phase 1 is tonight.
-6. **Critical safety:** do NOT kill any running `cc-director*` or `voice-test-host*` processes. The user runs many directors in parallel. Use `local_builds\_local_build_avalonia<N>.bat` slots 3 or 4 to build into a non-conflicting binary, or use `tools\voice-test-host\` for headless testing.
+6. **Critical safety:** do NOT kill any running `cc-director*` or `voice-test-host*` processes. The user runs many directors in parallel. Use `scripts\local-build\_local_build<N>.bat` slots 3 or 4 to build into a non-conflicting binary, or use `tools\voice-test-host\` for headless testing.
 
 ---
 

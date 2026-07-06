@@ -3,7 +3,7 @@
 # package-mac-app.sh — Wrap a self-contained CC Director binary in a *distributable*
 # macOS .app bundle, ad-hoc code-sign it, and zip it for a GitHub Release.
 #
-# Unlike local_builds/mac/make-app-bundle.sh (which bakes in absolute paths to a
+# Unlike scripts/local-build/mac/make-app-bundle.sh (which bakes in absolute paths to a
 # dev's binary and ~/.dotnet for local use), this produces a RELOCATABLE bundle:
 # the self-contained binary lives INSIDE Contents/MacOS, so the .app can be moved
 # to any machine with no .NET runtime installed.
@@ -13,7 +13,7 @@
 #     identity but is not Developer-ID / notarized.
 #   - The auto-updater strips the Gatekeeper quarantine flag on install, so after
 #     the first launch there are no warnings. The very first download still needs
-#     a one-time right-click -> Open (documented in local_builds/mac/README.md).
+#     a one-time right-click -> Open (documented in scripts/local-build/mac/README.md).
 #
 # Usage:
 #   scripts/package-mac-app.sh --binary <path-to-self-contained-binary> --out <output-dir>
@@ -102,7 +102,7 @@ SRC_SETTINGS="$(dirname "$BINARY")/appsettings.json"
 ICNS_OUT="$APP/Contents/Resources/AppIcon.icns"
 ICON_KEY=""
 PREBUILT_ICNS="$REPO_ROOT/local_builds/mac/AppIcon.icns"
-SRC_SVG="$REPO_ROOT/local_builds/mac/AppIcon.svg"
+SRC_SVG="$REPO_ROOT/scripts/local-build/mac/AppIcon.svg"
 SRC_ICO="$REPO_ROOT/src/CcDirector.Avalonia/app.ico"
 if   [[ -f "$PREBUILT_ICNS" ]]; then cp -f "$PREBUILT_ICNS" "$ICNS_OUT"
 elif [[ -f "$SRC_SVG" ]];       then _make_icns "$SRC_SVG" "$ICNS_OUT" || true

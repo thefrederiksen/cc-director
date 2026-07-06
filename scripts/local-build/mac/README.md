@@ -1,9 +1,6 @@
 # CC Director on macOS — build & launch
 
-This directory (`local_builds/mac/`) is the **build output + launcher tooling** for
-running CC Director on a Mac. It's the macOS counterpart of the Windows
-`local_builds/_local_build_avalonia*.bat` flow. Only the cross-platform **Avalonia**
-UI is built here — the WPF project is Windows-only.
+This directory (`scripts/local-build/mac/`) holds the tracked macOS build helper scripts and app icon source. Generated binaries and app bundles still land under `local_builds/mac/`. It is the macOS counterpart of the Windows `scripts/local-build/_local_build*.bat` flow. Only the cross-platform **Avalonia** UI is built here; the WPF project is Windows-only.
 
 The model: **one stable "main" app you keep in the Dock, plus four numbered test
 slots** you build on demand while developing (run several at once to compare versions).
@@ -72,8 +69,8 @@ pops a dialog telling you the build command.
 | `scripts/mac-setup.sh` | One-time bootstrap: create all 5 app icons, build main, pin main to the Dock. |
 | `scripts/mac-rebuild.sh <main\|1\|2\|3\|4\|all\|apps>` | The everyday command. Builds a target and refreshes its `.app`. `main` also re-pins the Dock; `apps` (re)creates the bundles without building. |
 | `scripts/local-build-mac.sh` | The underlying build (clean → build Core → single-file publish → copy here). Called by the above; use directly for flags like `--self-contained`, `--rid osx-x64`, `--configuration Debug`. |
-| `local_builds/mac/make-app-bundle.sh --target <main\|1\|2\|3\|4>` | Wraps a built binary in a `.app` bundle installed to `/Applications`. Called by `mac-rebuild.sh`. |
-| `local_builds/mac/run.sh [--slot N]` | Launch a built binary straight from the terminal (sets `DOTNET_ROOT`). For quick checks; prefer the Dock/`.app` for real use (see below). |
+| `scripts/local-build/mac/make-app-bundle.sh --target <main\|1\|2\|3\|4>` | Wraps a built binary in a `.app` bundle installed to `/Applications`. Called by `mac-rebuild.sh`. |
+| `scripts/local-build/mac/run.sh [--slot N]` | Launch a built binary straight from the terminal (sets `DOTNET_ROOT`). For quick checks; prefer the Dock/`.app` for real use (see below). |
 
 `APPS_DIR` env var overrides the install location (default `/Applications`), e.g.
 `APPS_DIR=~/Applications scripts/mac-rebuild.sh main`.
@@ -144,7 +141,7 @@ Notes:
 
 ## The app icon
 
-- Source: `local_builds/mac/AppIcon.svg` — a dark macOS "squircle" with a **CC**
+- Source: `scripts/local-build/mac/AppIcon.svg` — a dark macOS "squircle" with a **CC**
   monogram and a blue terminal underline/cursor (brand accent `#007ACC`).
 - The bundle script renders it to `AppIcon.icns` using macOS's built-in `qlmanage`
   (no extra tooling). If the SVG is missing it falls back to the Avalonia `app.ico`.

@@ -20,9 +20,9 @@
 # place is picked up automatically — no need to re-make the bundle after a build.
 #
 # Usage:
-#   local_builds/mac/make-app-bundle.sh --target main
-#   local_builds/mac/make-app-bundle.sh --target 2
-#   APPS_DIR=~/Applications local_builds/mac/make-app-bundle.sh --target main
+#   scripts/local-build/mac/make-app-bundle.sh --target main
+#   scripts/local-build/mac/make-app-bundle.sh --target 2
+#   APPS_DIR=~/Applications scripts/local-build/mac/make-app-bundle.sh --target main
 #
 set -euo pipefail
 
@@ -64,8 +64,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_DIR="$SCRIPT_DIR"                                  # where the binaries live
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+BIN_DIR="$REPO_ROOT/local_builds/mac"                  # where the binaries live
 APPS_DIR="${APPS_DIR:-/Applications}"                  # override for testing
 
 # Map target -> app display name, binary name, bundle id, and rebuild hint.
@@ -124,7 +124,7 @@ esac
 # App icon: build AppIcon.icns once from the Avalonia app.ico, then reuse it for
 # every bundle. Missing icon -> bundle still works, just shows the generic icon.
 ICNS="$BIN_DIR/AppIcon.icns"
-SRC_SVG="$BIN_DIR/AppIcon.svg"                              # preferred (vector)
+SRC_SVG="$SCRIPT_DIR/AppIcon.svg"                           # preferred (vector)
 SRC_ICO="$REPO_ROOT/src/CcDirector.Avalonia/app.ico"        # fallback (raster)
 if [[ ! -f "$ICNS" ]]; then
     if   [[ -f "$SRC_SVG" ]]; then _make_icns "$SRC_SVG" "$ICNS" || echo "WARN: could not build app icon from SVG; using generic" >&2
