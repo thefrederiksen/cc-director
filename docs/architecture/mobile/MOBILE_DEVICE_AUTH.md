@@ -10,6 +10,14 @@ This document specifies how the mobile Progressive Web App (served at `/m`) auth
 and registers the phone as its own revocable device, replacing the current model in which the app is
 handed the master Gateway token from a public page.
 
+> **Generalized to the desktop Cockpit (issue #1088, epic #1069).** The flow specified here is no
+> longer phone-only: the desktop Cockpit browser (served at the site root) enrolls through the SAME
+> shared `client-core` sign-in/callback screens and the SAME `POST /m/enroll` seam, with platform
+> `browser` (recorded device type `browser` instead of `phone`) and its own callback route
+> `/device-callback`. A signed-out browser navigation to any Cockpit route is redirected to `/signin`
+> (this flow), never to the raw-token `login.html` wall. Cross-repo note (#1081): the devthrottle.com
+> activation page must accept the non-phone platform and the Cockpit callback path.
+
 ---
 
 ## 1. The problem (today's model)

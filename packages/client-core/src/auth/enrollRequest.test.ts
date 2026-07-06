@@ -1,0 +1,121 @@
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import {
+  MOBILE_ENROLLMENT_PROFILE,
+  COCKPIT_ENROLLMENT_PROFILE,
+  configureEnrollment,
+  enrollmentProfile,
+  desktopDeviceName,
+  desktopPlatform,
+  safeInternalPath,
+  rememberEnrollNext,
+  takeEnrollNext,
+} from "./enrollRequest";
+
+// The shell-agnostic enrollment profile (issue #1088). The mobile profile must stay the DEFAULT and
+// byte-compatible with the pre-#1088 phone behavior (the phone flow is the proven reference); the
+// desktop Cockpit installs its own profile at startup. The next-route helpers preserve the
+// originally-requested Cockpit route across the devthrottle.com round trip, and must refuse anything
+// that could send the browser off this origin.
+
+// A minimal in-memory sessionStorage so the storage-backed helpers run under the node test
+// environment (no jsdom in this workspace; the helpers only need getItem/setItem/removeItem).
+function stubSessionStorage(): void {
+  const store = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+  });
+}
+
+describe("enrollment shell profile", () => {
+  afterEach(() => configureEnrollment(MOBILE_ENROLLMENT_PROFILE));
+
+  it("defaults to the mobile profile (the phone behavior must not regress)", () => {
+    const profile = enrollmentProfile();
+    expect(profile).toBe(MOBILE_ENROLLMENT_PROFILE);
+    expect(profile.callbackPath).toBe("/m/device-callback");
+    expect(profile.deviceLabel).toBe("phone");
+    expect(profile.basename).toBe("/m");
+    expect(profile.defaultLanding).toBe("/");
+  });
+
+  it("the desktop Cockpit profile targets the Cockpit callback with a non-phone platform", () => {
+    configureEnrollment(COCKPIT_ENROLLMENT_PROFILE);
+    const profile = enrollmentProfile();
+    expect(profile.callbackPath).toBe("/device-callback");
+    expect(profile.platform()).toBe("browser");
+    expect(profile.deviceLabel).toBe("device");
+    expect(profile.basename).toBe("");
+    // Both shells share the /signin route name inside their own routers.
+    expect(profile.signInPath).toBe("/signin");
+  });
+});
+
+describe("desktop device identity", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("platform is the non-phone 'browser' identifier", () => {
+    expect(desktopPlatform()).toBe("browser");
+  });
+
+  it("device name is human-recognizable: browser + operating system from the user agent", () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
+    });
+    expect(desktopDeviceName()).toBe("Edge on Windows");
+  });
+
+  it("falls back to a generic label when the user agent is unknown", () => {
+    vi.stubGlobal("navigator", { userAgent: "SomethingUnrecognizable/1.0" });
+    expect(desktopDeviceName()).toBe("Browser on desktop");
+  });
+});
+
+describe("safeInternalPath", () => {
+  it("accepts a root-relative in-app path with a query", () => {
+    expect(safeInternalPath("/fleet?tab=map")).toBe("/fleet?tab=map");
+    expect(safeInternalPath("/")).toBe("/");
+  });
+
+  it("rejects anything that could leave the origin", () => {
+    expect(safeInternalPath("//evil.example/phish")).toBeNull();
+    expect(safeInternalPath("https://evil.example")).toBeNull();
+    expect(safeInternalPath("fleet")).toBeNull();
+    expect(safeInternalPath("")).toBeNull();
+    expect(safeInternalPath(null)).toBeNull();
+  });
+});
+
+describe("next-route preservation across the round trip", () => {
+  beforeEach(() => stubSessionStorage());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("remembers a safe route and hands it back exactly once", () => {
+    rememberEnrollNext("/directors/abc?x=1");
+    expect(takeEnrollNext()).toBe("/directors/abc?x=1");
+    // Consumed: a second read lands on the shell default.
+    expect(takeEnrollNext()).toBeNull();
+  });
+
+  it("stores nothing for an unsafe or missing route", () => {
+    rememberEnrollNext("//evil.example");
+    expect(takeEnrollNext()).toBeNull();
+    rememberEnrollNext(null);
+    expect(takeEnrollNext()).toBeNull();
+  });
+
+  it("an unsafe remembered route clears any previously remembered one", () => {
+    rememberEnrollNext("/fleet");
+    rememberEnrollNext("//evil.example");
+    expect(takeEnrollNext()).toBeNull();
+  });
+
+  it("returns null (the shell default) when storage is unavailable", () => {
+    vi.unstubAllGlobals();
+    // No sessionStorage in the node environment: the helpers must degrade, never throw.
+    rememberEnrollNext("/fleet");
+    expect(takeEnrollNext()).toBeNull();
+  });
+});
