@@ -197,7 +197,7 @@ cc-director.sln
 +-- local_builds/
 |   +-- cc-director.exe               # Local build output
 |
-+-- images/                           # Screenshots for README
++-- docs/assets/images/               # Screenshots for README
 +-- CLAUDE.md                         # Project instructions for Claude
 +-- README.md                         # Project overview
 ```

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/devthrottle-logo.png" alt="DevThrottle" width="420">
+  <img src="docs/assets/images/devthrottle-logo.png" alt="DevThrottle" width="420">
 </p>
 
 <h1 align="center">DevThrottle</h1>
@@ -11,7 +11,7 @@ Run a whole fleet of coding agents at once -- each on its own repo -- from one W
   <a href="https://devthrottle.com"><img src="https://img.shields.io/badge/Get%20DevThrottle-devthrottle.com-2EA44F?style=for-the-badge" alt="Get DevThrottle at devthrottle.com"></a>
 </p>
 
-![DevThrottle](images/cc-director-main.png)
+![DevThrottle](docs/assets/images/cc-director-main.png)
 
 Your job stopped being typing code -- it's watching agents work. DevThrottle is where you watch them: the open source orchestration tool for command-line coding agents.
 
