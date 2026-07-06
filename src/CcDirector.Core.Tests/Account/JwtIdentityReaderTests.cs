@@ -48,4 +48,35 @@ public sealed class JwtIdentityReaderTests
     {
         Assert.Null(JwtIdentityReader.Read("not-a-jwt"));
     }
+
+    // Issue #1079: the subject (sub) claim is read from the cached access token's payload.
+    [Fact]
+    public void ReadSubject_TokenWithSubjectClaim_ReturnsSubject()
+    {
+        var token = TestJwt.Create(Expiry); // TestJwt sets sub = "test-user"
+
+        Assert.Equal("test-user", JwtIdentityReader.ReadSubject(token));
+    }
+
+    // A non-JSON-Web-Token string yields no subject (not a fabricated one).
+    [Fact]
+    public void ReadSubject_MalformedToken_ReturnsNull()
+    {
+        Assert.Null(JwtIdentityReader.ReadSubject("not-a-jwt"));
+    }
+
+    // A well-formed token whose payload carries no subject claim yields null.
+    [Fact]
+    public void ReadSubject_TokenWithoutSubjectClaim_ReturnsNull()
+    {
+        var header = Base64Url("{\"alg\":\"none\",\"typ\":\"JWT\"}");
+        var payload = Base64Url("{\"email\":\"user@example.com\"}");
+        var token = $"{header}.{payload}.signature";
+
+        Assert.Null(JwtIdentityReader.ReadSubject(token));
+    }
+
+    private static string Base64Url(string json) =>
+        Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
