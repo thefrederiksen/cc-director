@@ -13,17 +13,23 @@ import {
 // failure it shows an explicit error (the no-fallback rule), never a fabricated "off" state.
 export function TelemetryView() {
   const [consent, setConsent] = useState<TelemetryConsent | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Load and save failures are DISTINCT states (issue #1028): a failed load leaves us with no value to
+  // show, so it replaces the card; a failed SAVE must keep the toggle on screen so the user can retry
+  // in place. Sharing one `error` between them made a save failure blank the whole card with a
+  // mislabeled "could not load" banner.
+  const [loadError, setLoadError] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      setError(null);
+      setLoadError(false);
       setConsent(await getTelemetryConsent(signal));
-    } catch (err) {
+    } catch {
       if (signal?.aborted) return;
-      setError(err instanceof Error ? err.message : "Failed to load the telemetry setting");
+      // The message is fixed friendly copy with a Retry button below - never the raw endpoint string.
+      setLoadError(true);
     }
   }, []);
 
@@ -37,12 +43,14 @@ export function TelemetryView() {
     if (busy || consent === null) return;
     setBusy(true); // immediate visual feedback: the button flips to "Saving..." before the call
     setSaved(false);
-    setError(null);
+    setSaveError(false);
     try {
       setConsent(await setTelemetryConsent(!consent.enabled));
       setSaved(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save the telemetry setting");
+    } catch {
+      // Keep the toggle visible; surface an inline "couldn't save" notice with a retry (not a
+      // page-level load-error banner that would hide the control).
+      setSaveError(true);
     } finally {
       setBusy(false);
     }
@@ -58,8 +66,11 @@ export function TelemetryView() {
         across every Director. The always-on sign-in and startup events are not affected by it.
       </p>
 
-      {error !== null ? (
-        <div className="tel-error">Could not load the telemetry setting from the Gateway: {error}</div>
+      {loadError ? (
+        <div className="tel-error">
+          <span>Could not load the telemetry setting from the Gateway.</span>
+          <button className="tel-retry" onClick={() => void load()}>Retry</button>
+        </div>
       ) : consent === null ? (
         <p className="tel-loading">Loading...</p>
       ) : (
@@ -82,6 +93,18 @@ export function TelemetryView() {
               </button>
               <span className="tel-note">Applies to the whole fleet immediately.</span>
             </div>
+
+            {saveError && (
+              <div className="tel-saveerror" role="alert">
+                <span>
+                  Couldn't save the change - the Gateway did not apply it. The setting is unchanged; try
+                  again.
+                </span>
+                <button className="tel-retry" onClick={() => void toggle()} disabled={busy}>
+                  {busy ? "Saving..." : "Try again"}
+                </button>
+              </div>
+            )}
           </div>
 
           {saved && (

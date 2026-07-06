@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { SessionDto } from "@devthrottle/client-core/api/client";
+import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import {
   ENDPOINT_STATE_UNREACHABLE_BY_NAME,
   getFleetDirectors,
@@ -43,7 +43,7 @@ export function DirectorsView() {
       setLastRefresh(new Date());
     } catch (err) {
       if (signal?.aborted === true) return;
-      setLastError(err instanceof Error ? err.message : "Failed to fetch directors");
+      setLastError(gatewayErrorMessage(err));
     }
   }, []);
 
@@ -83,7 +83,7 @@ export function DirectorsView() {
         </span>
       </header>
 
-      {lastError !== null && <div className="dpage-error">Gateway error: {lastError}</div>}
+      {lastError !== null && <div className="dpage-error">{lastError}</div>}
 
       {directors.length === 0 && lastError === null && lastRefresh !== null ? (
         <div className="dtbl-empty">
