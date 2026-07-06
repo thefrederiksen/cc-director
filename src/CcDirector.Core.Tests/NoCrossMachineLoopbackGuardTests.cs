@@ -75,6 +75,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Avalonia/Controls/DirectorView/DirectorView.axaml.cs"] = "Embedded local Director view.",
         ["src/CcDirector.Avalonia/ExpandedEditorDialog.axaml.cs"] = "Local references.",
         ["src/CcDirector.Avalonia/WorkflowRecorderWindow.axaml.cs"] = "Local browser-automation references.",
+        ["src/CcDirector.Avalonia/HostedAi/DesktopHostedAiCta.cs"] = "Doc comments only: both loopback mentions state the desktop NEVER opens a localhost URL (it resolves the Cockpit front-door first), documenting the no-loopback policy.",
         ["src/CcDirector.Avalonia/Voice/SpeakService.cs"] = "Local voice service references.",
         ["src/CcDirector.Avalonia/Voice/SpeakDialog.axaml.cs"] = "Local voice dialog references.",
         ["src/CcDirector.Avalonia/Voice/BatchDictationRecorder.cs"] = "Doc comment notes the batch path has no localhost WebSocket roundtrip.",

@@ -537,9 +537,31 @@ public sealed class ControlApiHostEphemeralFallbackTests : IDisposable
 /// assigned numbers are unique and within the 100-999 range.
 /// </summary>
 [Collection("DirectorRoot")]
-public sealed class SessionNumberBackfillTests
+public sealed class SessionNumberBackfillTests : IDisposable
 {
     private sealed record BackfillResult(int Assigned);
+
+    private readonly string _root;
+    private readonly string? _prevRoot;
+
+    public SessionNumberBackfillTests()
+    {
+        // Isolate the machine-global director root (issue #1055): BackfillEndpoint_RequiresBearerToken_
+        // WhenAuthEnabled starts an auth-enabled host, which resolves its accepted token from
+        // GatewayConfig.Load().Token. On a fleet machine whose config.json carries a gateway.token, the
+        // host would accept that fleet token while the test presents the local token file token - a
+        // mismatch that 401s the authed call and fails the test. A fresh temp root gives an empty config
+        // (no fleet token) so host and client share the same token, deterministically.
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-backfill-root-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
+    }
 
     [Fact]
     public async Task StartAsync_NumbersTrackedSessionsThatLackANumber()

@@ -13,9 +13,14 @@ namespace CcDirector.Gateway.Tests;
 /// itself with "Accept: text/html", which no API client sends, so the Gateway serves those
 /// navigations the React Cockpit shell (issue #979) and serves JSON to everything else.
 ///
-/// In a Debug test build the React bundle is not built into the host (wwwroot/c is release-gated),
-/// so the shell path answers 404 with the "not built" notice. That 404 is still the observable proof
-/// the request took the shell path rather than the JSON endpoint (which answers 200 application/json).
+/// The observable proof a browser navigation took the SHELL path (not the JSON endpoint) is that the
+/// response is NOT application/json. Its exact shape depends on whether the React bundle is staged into
+/// this host (wwwroot/c, release-gated): with the bundle present the shell answers 200 text/html; with
+/// it absent the shell answers 404 text/plain "React Cockpit not built". A test host built in Release
+/// (or with BuildCockpit=true) HAS the bundle; a routine Debug host does not - so these tests key the
+/// shell-path assertion on <see cref="CockpitReactApp.WebRoot"/> being present (the same state the
+/// production router reads) instead of hard-coding one environment's answer. This makes the test
+/// deterministic on any machine/config while still proving the real routing fork (issue #1055).
 /// </summary>
 public sealed class BrowserPageRoutesTests : IAsyncLifetime
 {
@@ -106,17 +111,9 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
 
         var resp = await _http.SendAsync(req);
 
-        // The navigation took the React-shell path, not the JSON endpoint - the response is NEVER
-        // application/json. Whether the shell is actually built depends on the host: an unbuilt Debug host
-        // answers 404 with the "React Cockpit not built" text/plain notice; a host where the shell WAS
-        // built (CI builds wwwroot/c before the tests) serves the shell index (200 text/html). Assert the
-        // invariant that holds either way (issue #1048 follow-up: the old assertion assumed the shell was
-        // never built and broke when CI started building it).
-        Assert.NotEqual("application/json", resp.Content.Headers.ContentType?.MediaType);
-        if (resp.StatusCode == HttpStatusCode.NotFound)
-            Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
-        else
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        // The navigation took the React-shell path, not the JSON endpoint (which answers 200
+        // application/json). The shell's exact response depends on whether the bundle is staged here.
+        await AssertServedCockpitShellAsync(resp);
     }
 
     [Theory]
@@ -143,14 +140,8 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
 
         var resp = await _http.SendAsync(req);
 
-        // The navigation took the React-shell path, not the API (which would answer JSON). Whether the
-        // shell is built depends on the host (see Browser_navigation_is_served_the_cockpit_shell): assert
-        // the build-state-independent invariant - it is never JSON, and if unbuilt it is the notice.
-        Assert.NotEqual("application/json", resp.Content.Headers.ContentType?.MediaType);
-        if (resp.StatusCode == HttpStatusCode.NotFound)
-            Assert.Contains("React Cockpit not built", await resp.Content.ReadAsStringAsync());
-        else
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        // The navigation took the React-shell path, not the API (which would answer JSON).
+        await AssertServedCockpitShellAsync(resp);
     }
 
     [Fact]
@@ -164,6 +155,39 @@ public sealed class BrowserPageRoutesTests : IAsyncLifetime
         // The turn-brief API endpoint answered (JSON), never the Cockpit interstitial.
         Assert.NotEqual(HttpStatusCode.ServiceUnavailable, resp.StatusCode);
         Assert.Equal("application/json", resp.Content.Headers.ContentType?.MediaType);
+    }
+
+    /// <summary>
+    /// Assert a browser navigation to a dual-use path was served the React SHELL, not the JSON API
+    /// endpoint - deterministically, regardless of whether this host has the React bundle staged.
+    /// The environment-independent invariant is "never application/json"; the concrete shape is keyed on
+    /// the same <see cref="CockpitReactApp.WebRoot"/> presence the production router reads, so the test
+    /// passes on a Debug host (bundle absent -> 404 "not built") and a Release host (bundle present ->
+    /// 200 text/html shell) alike (issue #1055).
+    /// </summary>
+    private static async Task AssertServedCockpitShellAsync(HttpResponseMessage resp)
+    {
+        var mediaType = resp.Content.Headers.ContentType?.MediaType;
+        var body = await resp.Content.ReadAsStringAsync();
+
+        // Invariant in every environment: a browser navigation is NEVER served the JSON endpoint.
+        Assert.NotEqual("application/json", mediaType);
+
+        var bundlePresent = Directory.Exists(CockpitReactApp.WebRoot)
+                            && File.Exists(Path.Combine(CockpitReactApp.WebRoot, "index.html"));
+        if (bundlePresent)
+        {
+            // Release host: the shell document is served.
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.Equal("text/html", mediaType);
+        }
+        else
+        {
+            // Debug host: the shell path answers the "not built" notice - still NOT the JSON endpoint.
+            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+            Assert.Equal("text/plain", mediaType);
+            Assert.Contains("React Cockpit not built", body);
+        }
     }
 
     private static int FreePort()

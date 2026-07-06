@@ -61,13 +61,25 @@ internal sealed class ExecuteActionTestBackend : ISessionBackend
 public sealed class ExecuteActionEndpointTests : IAsyncLifetime
 {
     private readonly string _instancesDir;
+    private readonly string _root;
+    private readonly string? _prevRoot;
     private ControlApiHost _host = null!;
     private SessionManager _sm = null!;
     private HttpClient _client = null!;
 
     public ExecuteActionEndpointTests()
     {
-        _instancesDir = Path.Combine(Path.GetTempPath(), "ccd-exec-action-test-" + Guid.NewGuid().ToString("N"));
+        var unique = Guid.NewGuid().ToString("N");
+        _instancesDir = Path.Combine(Path.GetTempPath(), "ccd-exec-action-test-" + unique);
+
+        // Isolate the machine-global director root (issue #1055): with auth enabled the host resolves
+        // its accepted token from GatewayConfig.Load().Token. On a fleet machine whose config.json
+        // carries a gateway.token, the host would accept that fleet token while this test presents the
+        // local token file token - a mismatch that 401s every call and reds the whole class. A fresh
+        // temp root gives an empty config (no fleet token) so host and client share the same token.
+        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        _root = Path.Combine(Path.GetTempPath(), "ccd-exec-action-root-" + unique);
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
     }
 
     public async Task InitializeAsync()
@@ -86,7 +98,9 @@ public sealed class ExecuteActionEndpointTests : IAsyncLifetime
         _client.Dispose();
         await _host.StopAsync();
         _sm.Dispose();
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, recursive: true); } catch { /* best effort */ }
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
     private (Session session, ExecuteActionTestBackend backend) NewSession()
