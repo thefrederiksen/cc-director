@@ -17,8 +17,8 @@ Create a new GitHub issue based on the user's input. The input may include scree
    - Read any text description or title provided in `$ARGUMENTS`
    - If the user has provided screenshot paths or image paths, read them using the Read tool to understand their content
    - Common screenshot locations to check if referenced:
-     - `C:\Users\sfrederiksen\Pictures\Screenshots`
-     - `C:\Personal\OneDrive\Pictures\Screenshots`
+     - `%USERPROFILE%\Pictures\Screenshots`
+     - `%OneDrive%\Pictures\Screenshots`
    - If no title is provided, derive one from the description/images
 
 2. **Collect additional information if needed:**

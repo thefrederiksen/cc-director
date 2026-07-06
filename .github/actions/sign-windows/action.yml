@@ -3,9 +3,7 @@
 # publisher "Center Consulting Inc." instead of "Unknown Publisher".
 #
 # Full runbook (Azure setup steps, the verified certificate chain, client-secret
-# rotation, and the deferred macOS-signing plan) lives in the PRIVATE repo:
-#   thefrederiksen/devthrottle_internal -> docs/signing/signing.md
-# It is kept out of this public repo because it contains internal business detail.
+# rotation, and the deferred macOS-signing plan) lives outside this public repo.
 # The quick reference below is enough to operate the signing from here.
 #
 # ---------------------------------------------------------------------------
