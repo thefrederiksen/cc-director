@@ -13,7 +13,7 @@ Fix every item in `docs/reviews/shipped-tools-review-consolidated.md` (32 candid
 ### Package A - Document tools  (owns: tools/cc-pdf, tools/cc-html, tools/cc-word, tools/cc_shared)
 - #9 cc-word: real inline rendering (bold/italic/links/inline-code) + images + nested lists.
 - #10 cc-pdf: apply --page-size and --margin via a dynamic @page rule.
-- #11 cc-pdf: find Edge/Brave + shutil.which + env override; use %LOCALAPPDATA%.
+- #11 cc-pdf: find Edge + shutil.which + env override; use %LOCALAPPDATA%.
 - #29 + L-asset: --quiet/--force/--no-clobber; warn on missing/unreadable images (no silent skip).
 - L2 pdf temp user-data-dir; L3 pygments wire-or-drop; L4 cc-word dead CSS; L16 title escaping + cc-html image-name key collision.
 - Fold in: ASCII output, add --json where a read command lacks it, consistent --quiet.
@@ -39,7 +39,7 @@ Fix every item in `docs/reviews/shipped-tools-review-consolidated.md` (32 candid
 - #19 WAL + busy_timeout on both DBs; L6/L7 vault docs; L8 double-metaphone; L9 semantic error logging; L13 queue nits.
 
 ### Package D - Browser  (owns: tools/cc-playwright)
-- #17 browser discovery: env override + shutil.which + Edge/Chrome/Brave + macOS paths + clear error.
+- #17 browser discovery: env override + shutil.which + Edge/Chrome + macOS paths + clear error.
 - #30 snapshot --full implement-or-remove; stop graceful-then-force; real Windows lock pre-check.
 - L1 unicode ellipsis in LINKEDIN_POSTING.md; screenshot default -> configured screenshots location.
 

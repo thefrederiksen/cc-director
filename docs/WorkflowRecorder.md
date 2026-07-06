@@ -32,7 +32,7 @@ The Workflow Recorder solves this by capturing actions as they happen in the bro
                                                               | (in-memory)
                                                               |
                                                         +------------------+
-                                                        | Brave browser    |
+                                                        | Chrome browser   |
                                                         | (right 80%      |
                                                         |  screen)         |
                                                         +------------------+
@@ -63,11 +63,11 @@ Two changes to `tools/cc-browser/src/daemon.mjs`:
 2. Click the **Workflow** button on a connection card
 3. A confirmation dialog appears:
    - Explains the recorder needs exclusive browser control
-   - Asks the user to close all existing Brave windows
+   - Asks the user to close all existing browser windows
 4. Click **Start**:
    - If the connection is currently open, it is closed first
    - The **recorder window** opens on the left 20% of the screen
-   - A **fresh Brave instance** launches on the right 80%
+   - A **fresh browser instance** launches on the right 80%
    - The browser is positioned via Chromium flags and reinforced via Win32 `SetWindowPos`
 5. Click **Record** in the recorder panel
 6. Interact with the browser -- navigate, click, type
@@ -145,7 +145,7 @@ Replay sends actions to the daemon's `POST /batch` endpoint with `stopOnError: t
 | `tools/cc-browser/src/chrome-launch.mjs` | Add windowPosition/windowSize Chromium flags |
 | `src/CcDirector.Core/Storage/CcStorage.cs` | Add `ConnectionWorkflows()` path method |
 | `src/CcDirector.Wpf/Controls/ConnectionsView.xaml` | Add Workflow button to connection cards |
-| `src/CcDirector.Wpf/Controls/ConnectionsView.xaml.cs` | Workflow click handler, OpenConnectionPositioned, RepositionBrowserWindow, Brave paths in FindChromePath, Win32 SetWindowPos |
+| `src/CcDirector.Wpf/Controls/ConnectionsView.xaml.cs` | Workflow click handler, OpenConnectionPositioned, RepositionBrowserWindow, browser paths in FindChromePath, Win32 SetWindowPos |
 | `src/CcDirector.Wpf/WorkflowConfirmDialog.xaml(.cs)` | Confirmation dialog before starting |
 | `src/CcDirector.Wpf/WorkflowRecorderWindow.xaml(.cs)` | Recorder panel: Record/Stop/Save/Load/Replay |
 
@@ -156,4 +156,4 @@ Replay sends actions to the daemon's `POST /batch` endpoint with `stopOnError: t
 - **Recording captures cc-browser daemon commands only** -- Direct keyboard/mouse interaction in the browser (without going through the daemon) is not recorded. The extension relays actions to the daemon, which logs them.
 - **Replay timing** -- Replayed actions execute as fast as the browser allows; original timing between actions is not preserved.
 - **Single monitor** -- The 80/20 split assumes a single primary monitor.
-- **Brave required** -- Chrome stable (130+) blocks `--load-extension`, so Brave is the preferred browser.
+- **Extension loading** -- Chrome stable (130+) blocks `--load-extension`, so the recorder needs a Chromium build that still allows loading unpacked extensions (such as Chrome for Testing or Chromium).

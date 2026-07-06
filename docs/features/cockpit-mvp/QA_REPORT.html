@@ -314,7 +314,7 @@
         <strong>Date:</strong> 2026-05-31
         <strong>Cockpit under test:</strong> source build of <code>src/CcDirector.Cockpit</code> (run with <code>ASPNETCORE_ENVIRONMENT=Development</code>), served at <code>http://localhost:7471</code>, pointed at the live Gateway <code>http://127.0.0.1:7878</code>.
         <strong>Driven against:</strong> a real Director on the final build (Slot 1, <code>cc-director1.exe</code>, control API <code>7884</code>, director id <code>c99a103c</code>), advertising the real tailnet endpoint <code>https://machine-a.tail0123.ts.net:7884</code>. Interactive checks ran against a dedicated throwaway QA session (<code>721e6993</code>, repo <code>C:\repos\cc-director-qa-scratch</code>) so no live working session was disturbed.
-        <strong>Browser:</strong> a separate, isolated cc-playwright Brave instance (connection <code>cockpit-qa</code>) so the user's own browser was never touched.</p>
+        <strong>Browser:</strong> a separate, isolated cc-playwright Chrome instance (connection <code>cockpit-qa</code>) so the user's own browser was never touched.</p>
 <hr/>
 <h2>Summary table</h2>
 <table>

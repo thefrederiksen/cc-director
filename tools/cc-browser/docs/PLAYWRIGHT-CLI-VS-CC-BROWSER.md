@@ -58,7 +58,7 @@ cc-browser exists because many high-value sites aggressively detect and block au
 
 cc-browser defeats detection by:
 
-1. Using real Chrome/Brave browser profiles (not Playwright's bundled Chromium)
+1. Using real Chrome/Edge browser profiles (not Playwright's bundled Chromium)
 2. Running headed with full GPU rendering and browser fingerprinting intact
 3. Injecting human-like delays with random jitter on all interactions
 4. Maintaining persistent cookies and login state across sessions

@@ -6,7 +6,7 @@ Browser automation CLI - trusted-event sibling to cc-browser.
 
 `cc-browser` uses Chrome's extension `chrome.debugger` API for CDP, which produces events with `isTrusted: false`. React forms that validate `event.isTrusted === true` (Luma signin/registration, most react-hook-form sites, Stripe checkout) silently reject every fill, click, and submit. The result: cc-browser navigates and reads fine, but cannot complete real form workflows.
 
-`cc-playwright` launches Brave with `--remote-debugging-port` and connects via Playwright's `connect_over_cdp()`. CDP events sent this way ARE marked `isTrusted: true` by Chrome.
+`cc-playwright` launches a Chromium browser (Chrome or Edge) with `--remote-debugging-port` and connects via Playwright's `connect_over_cdp()`. CDP events sent this way ARE marked `isTrusted: true` by Chrome.
 
 ## Install
 
@@ -19,7 +19,7 @@ The `cc-playwright` executable is installed to `~/.local/bin/`.
 ## Usage
 
 ```bash
-# Launch Brave (once per session)
+# Launch the browser (once per session)
 cc-playwright start
 
 # Navigate, fill, click - all use trusted events
@@ -46,7 +46,7 @@ cc-playwright stop
 
 ## Named connections
 
-Multiple Brave instances can run side by side, each pinned to a named connection. The `--connection / -c` flag (or `CC_PLAYWRIGHT_CONNECTION` env var) selects which one. Each connection has its own auto-allocated port, profile directory, and state file.
+Multiple browser instances can run side by side, each pinned to a named connection. The `--connection / -c` flag (or `CC_PLAYWRIGHT_CONNECTION` env var) selects which one. Each connection has its own auto-allocated port, profile directory, and state file.
 
 ```bash
 cc-playwright --connection linkedin start
@@ -62,8 +62,8 @@ The implicit `default` connection uses cc-playwright's own profile at `%LOCALAPP
 
 | Command | Purpose |
 |---|---|
-| `start [--profile] [--port] [--url]` | Launch Brave with auto-allocated debug port |
-| `stop` | Kill this connection's Brave instance |
+| `start [--profile] [--port] [--url]` | Launch the browser with auto-allocated debug port |
+| `stop` | Kill this connection's browser instance |
 | `status` | Show running state for the current connection |
 | `list` | List all connections and their running state |
 | `navigate --url URL` | Navigate (waits for domcontentloaded) |
@@ -90,15 +90,15 @@ Global flag: `--connection / -c <name>` (default: `default`).
 |---|---|
 | Reading page state | Filling form fields |
 | Navigating, clicking simple links | Submitting React forms (Luma, Stripe, etc.) |
-| Reusing your real Brave session (cookies, history) | Need trusted-event input |
+| Reusing your real browser session (cookies, history) | Need trusted-event input |
 | Sites that detect Playwright (rare on real React apps) | Auth flows (signin, OTP) |
 
-You can run both simultaneously - they use different Brave instances. Named cc-playwright connections share cookies with the matching cc-browser connection through the shared profile directory.
+You can run both simultaneously - they use different browser instances. Named cc-playwright connections share cookies with the matching cc-browser connection through the shared profile directory.
 
 ## Known limitations
 
 - Each command spawns a fresh Playwright connection (~100-200ms overhead). For tight loops, write a Python script that connects via `playwright.chromium.connect_over_cdp(f"http://localhost:{port}")` using the port from `state/<name>.json`.
-- The default profile is separate from your real Brave; sign in once per site. Named connections sharing cc-director profiles inherit cc-browser's existing cookies.
+- The default profile is separate from your real browser; sign in once per site. Named connections sharing cc-director profiles inherit cc-browser's existing cookies.
 - Custom-styled radios/checkboxes that hide the native input element may fail Playwright's actionability checks. Click the visible label (`label[for="..."]`) instead.
 - Some sites with extreme bot detection (LinkedIn, Reddit) still detect Playwright via `navigator.webdriver` and behavioral fingerprinting. Use cc-browser with native messaging there.
 

@@ -41,13 +41,6 @@ public static class PrerequisiteChecker
             },
             new PrerequisiteInfo
             {
-                Name = "Brave Browser",
-                Description = "Optional browser engine for cc-browser (Chrome stable blocks extensions); add it later if needed",
-                IsRequired = false,
-                InstallUrl = "https://brave.com/download/"
-            },
-            new PrerequisiteInfo
-            {
                 Name = "Tailscale",
                 Description = "Optional: remote access (a Gateway/Cockpit on another machine reaches this Director over the tailnet); local-only use works without it",
                 IsRequired = false,
@@ -89,9 +82,6 @@ public static class PrerequisiteChecker
                     break;
                 case "Node.js":
                     CheckNode(item);
-                    break;
-                case "Brave Browser":
-                    CheckBrave(item);
                     break;
                 case "Tailscale":
                     CheckTailscale(item);
@@ -251,47 +241,6 @@ public static class PrerequisiteChecker
         }
 
         SetupLog.Write($"[PrerequisiteChecker] Node.js: version={item.Version}, found={item.IsFound}");
-    }
-
-    private static readonly string[] BravePaths =
-    [
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-            "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-    ];
-
-    private static void CheckBrave(PrerequisiteInfo item)
-    {
-        foreach (var path in BravePaths)
-        {
-            if (File.Exists(path))
-            {
-                try
-                {
-                    var versionInfo = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
-                    item.Version = $"Brave {versionInfo.ProductVersion}";
-                    item.Status = "Found";
-                    item.IsFound = true;
-                    SetupLog.Write($"[PrerequisiteChecker] Brave: found at {path}, version={item.Version}");
-                    return;
-                }
-                catch
-                {
-                    item.Version = "";
-                    item.Status = "Found";
-                    item.IsFound = true;
-                    SetupLog.Write($"[PrerequisiteChecker] Brave: found at {path}, no version info");
-                    return;
-                }
-            }
-        }
-
-        item.Status = "Not found";
-        item.IsFound = false;
-        SetupLog.Write("[PrerequisiteChecker] Brave: not found at any known location");
     }
 
     /// <summary>

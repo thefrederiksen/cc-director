@@ -134,17 +134,17 @@
   +------------------+         |
                                |    +----------------------------+
   +------------------+         |    |    cc-browser DAEMON        |     +----------------+
-  | CC Director #2   |         +--->|    (Node.js process)        |     |  Brave/Chrome  |
+  | CC Director #2   |         +--->|    (Node.js process)        |     |  Chrome/Edge   |
   | (WPF process)    +---------+--->|                             +---->|  upwork        |
   +------------------+         |    |    HTTP  :9280              |     +----------------+
                                |    |    WS    :9280/ws           |
   +------------------+         |    |                             |     +----------------+
-  | cc-browser CLI   +---------+--->|    daemon.lock file         +---->|  Brave/Chrome  |
+  | cc-browser CLI   +---------+--->|    daemon.lock file         +---->|  Chrome/Edge   |
   | (any terminal)   |         |    |    stores port + PID        |     |  linkedin      |
   +------------------+         |    |                             |     +----------------+
                                |    |                             |
   +------------------+         |    |                             |     +----------------+
-  | Claude Code      +---------+    |                             +---->|  Brave/Chrome  |
+  | Claude Code      +---------+    |                             +---->|  Chrome/Edge   |
   | (via cc-browser) |              +----------------------------+     |  reddit        |
   +------------------+                                                 +----------------+
 </pre>

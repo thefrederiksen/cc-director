@@ -16,12 +16,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Chrome Executable Detection (ported from cc-browser-archived/src/chrome.mjs)
 // ---------------------------------------------------------------------------
 
-// Brave is preferred because Chrome stable blocks --load-extension.
-// Brave is Chromium-based (open source) and supports --load-extension.
+// Chrome is preferred, with Edge as the Chromium fallback.
 const WINDOWS_CHROME_PATHS = [
-  process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
-  process.env['ProgramFiles'] && join(process.env['ProgramFiles'], 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
-  process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
   process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
   process.env['ProgramFiles'] && join(process.env['ProgramFiles'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
   process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
@@ -31,13 +27,11 @@ const WINDOWS_CHROME_PATHS = [
 ].filter(Boolean);
 
 const MACOS_CHROME_PATHS = [
-  '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
 ];
 
 const LINUX_CHROME_PATHS = [
-  '/usr/bin/brave-browser',
   '/usr/bin/google-chrome',
   '/usr/bin/google-chrome-stable',
   '/usr/bin/chromium',
@@ -53,13 +47,12 @@ export function findChromeExecutable(preferredBrowser = null) {
   else if (platform === 'darwin') candidates = MACOS_CHROME_PATHS;
   else candidates = LINUX_CHROME_PATHS;
 
-  // "chrome" is treated as "auto" (use default priority order: Brave > Chrome > Edge).
-  // Only "edge" or "brave" are treated as explicit overrides.
+  // "chrome" is treated as "auto" (use default priority order: Chrome > Edge).
+  // Only "edge" is treated as an explicit override.
   if (preferredBrowser && preferredBrowser.toLowerCase() !== 'chrome') {
     const pref = preferredBrowser.toLowerCase();
     const patterns = {
       edge: ['msedge.exe', 'microsoft edge', 'microsoft-edge'],
-      brave: ['brave.exe', 'brave browser', 'brave-browser'],
     };
 
     const match = patterns[pref];
@@ -78,8 +71,7 @@ export function findChromeExecutable(preferredBrowser = null) {
 
   for (const path of candidates) {
     if (path && existsSync(path)) {
-      const kind = path.toLowerCase().includes('edge') ? 'edge'
-        : path.toLowerCase().includes('brave') ? 'brave' : 'chrome';
+      const kind = path.toLowerCase().includes('edge') ? 'edge' : 'chrome';
       return { path, kind };
     }
   }
@@ -98,8 +90,7 @@ export function listAvailableBrowsers() {
   const available = [];
   for (const path of candidates) {
     if (path && existsSync(path)) {
-      const kind = path.toLowerCase().includes('edge') ? 'edge'
-        : path.toLowerCase().includes('brave') ? 'brave' : 'chrome';
+      const kind = path.toLowerCase().includes('edge') ? 'edge' : 'chrome';
       available.push({ kind, path });
     }
   }
@@ -220,7 +211,7 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
   // Find Chrome executable
   const detected = findChromeExecutable(preferredBrowser);
   if (!detected) {
-    throw new Error('Chrome/Edge/Brave not found. Install Chrome or specify a browser.');
+    throw new Error('Chrome/Edge not found. Install Chrome or specify a browser.');
   }
 
   const { path: chromePath, kind: browserKind } = detected;
@@ -243,8 +234,8 @@ export async function launchChromeForConnection(name, profileDir, opts = {}) {
   }
 
   // Build launch args - NO --enable-automation
-  // NOTE: --load-extension is blocked on Chrome stable (Chrome 130+).
-  // We use Brave (Chromium-based, open source) which supports --load-extension.
+  // NOTE: --load-extension may be blocked on some Chrome stable channels (Chrome 130+);
+  // a Chromium browser (Chrome, Edge, or Chromium) that supports --load-extension is required.
   // --remote-debugging-port enables CDP for Input.insertText (reliable paste without OS focus)
   const debugPort = 9222 + Math.floor(Math.random() * 100);
   const args = [
@@ -385,7 +376,7 @@ export async function killChromeForConnection(profileDir) {
       const escapedDir = profileDir.replace(/'/g, "''");
       const ps = [
         `$pids = Get-CimInstance Win32_Process |`,
-        `  Where-Object { $_.Name -match '(brave|chrome|msedge)\\.exe' -and $_.CommandLine -match [regex]::Escape('${escapedDir}') } |`,
+        `  Where-Object { $_.Name -match '(chrome|msedge)\\.exe' -and $_.CommandLine -match [regex]::Escape('${escapedDir}') } |`,
         `  Select-Object -ExpandProperty ProcessId;`,
         `if ($pids) { $pids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`,
       ].join(' ');

@@ -981,7 +981,7 @@ RECORD & REPLAY:
 
 OPTIONS:
   --port <port>       Daemon port (default: from workspace.json)
-  --browser <name>    Browser: chrome, edge, brave
+  --browser <name>    Browser: chrome, edge
   --workspace <name>  Named workspace
 
 EXAMPLES:

@@ -259,7 +259,7 @@ The tool binding in the connection config tells linkedin which connection to use
   "url": "https://linkedin.com", // Primary site URL
   "toolBinding": "linkedin", // Optional: which cc-tool uses this connection
   "createdAt": "2026-03-04T10:00:00Z",
-  "browser": "chrome",          // Browser kind (chrome, edge, brave)
+  "browser": "chrome",          // Browser kind (chrome, edge)
   "profileDir": null,           // null = isolated profile (default), or system profile name
   "daemonPort": 9280,           // Which daemon manages this connection
   "extensionPort": null,        // WebSocket port assigned to this connection's native host

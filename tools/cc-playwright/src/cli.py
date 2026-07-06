@@ -2,7 +2,7 @@
 
 Drop-in replacement for cc-browser's command surface where reliable form fills,
 trusted clicks, and dropdown selection are required. Uses Playwright Python
-against a Chromium-family browser (Brave, Chrome, Edge, or Chromium) launched
+against a Chromium-family browser (Chrome, Edge, or Chromium) launched
 with --remote-debugging-port, which produces isTrusted=true events that React
 forms accept.
 
@@ -53,8 +53,6 @@ BROWSER_ENV_VAR = "CC_PLAYWRIGHT_BROWSER"
 # Names looked up on PATH via shutil.which (covers Linux package names and any
 # browser already exposed on PATH on Windows or macOS).
 BROWSER_WHICH_NAMES = [
-    "brave",
-    "brave-browser",
     "chrome",
     "google-chrome",
     "google-chrome-stable",
@@ -65,17 +63,14 @@ BROWSER_WHICH_NAMES = [
 ]
 
 # Common fixed install locations, Windows first (primary platform) then macOS
-# (secondary target). Brave is preferred, then Chrome, then Edge.
+# (secondary target). Chrome is preferred, then Edge.
 WINDOWS_BROWSER_PATHS = [
-    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-    r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
 ]
 MACOS_BROWSER_PATHS = [
-    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -90,7 +85,7 @@ def _state_file(connection: str) -> Path:
 
 def _migrate_legacy_state_if_needed() -> None:
     """One-time: copy legacy state.json to state/default.json so existing
-    cc-playwright Brave instances launched by older clients keep working."""
+    cc-playwright browser instances launched by older clients keep working."""
     if LEGACY_STATE_FILE.exists() and not _state_file(DEFAULT_CONNECTION).exists():
         try:
             CONNECTIONS_STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -183,7 +178,7 @@ def _find_browser(override: str | None = None) -> str:
       1. --browser-path argument (override)
       2. CC_PLAYWRIGHT_BROWSER environment variable
       3. shutil.which() lookup for common browser names on PATH
-      4. common fixed install paths for Brave, Chrome, and Edge
+      4. common fixed install paths for Chrome and Edge
          (Windows primary, macOS secondary)
 
     A bad explicit override fails immediately with a clear ASCII message; an
@@ -214,7 +209,7 @@ def _find_browser(override: str | None = None) -> str:
             return p
 
     raise SystemExit(
-        "No Chromium-family browser found (looked for Brave, Chrome, and Edge "
+        "No Chromium-family browser found (looked for Chrome and Edge "
         "on PATH and in common install locations). Install one, or point "
         f"cc-playwright at a browser with --browser-path or the "
         f"{BROWSER_ENV_VAR} environment variable."
@@ -234,7 +229,7 @@ def _browser_command_lines() -> list[str]:
             [
                 "powershell", "-NoProfile", "-Command",
                 "Get-CimInstance Win32_Process -Filter "
-                "\"Name='brave.exe' or Name='chrome.exe' or Name='msedge.exe' "
+                "\"Name='chrome.exe' or Name='msedge.exe' "
                 "or Name='chromium.exe'\" "
                 "| Select-Object -ExpandProperty CommandLine",
             ],
@@ -394,7 +389,7 @@ def _looks_locked(profile_dir: Path) -> bool:
     """Best-effort detect that another browser instance has the profile open."""
     if not profile_dir.exists():
         return False
-    # Brave/Chrome on POSIX leaves a SingletonLock symlink. Presence is a strong
+    # Chrome on POSIX leaves a SingletonLock symlink. Presence is a strong
     # positive signal.
     for marker in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
         if (profile_dir / marker).exists():
@@ -463,7 +458,7 @@ def _select_pinned_page(ctx, state: dict):
 
 def _prune_to_single_tab(port: int, target_url: str | None) -> dict:
     """Close every tab except one matching target_url. Used after start to
-    cancel Brave's session-restore (which would otherwise drag old tabs in
+    cancel the browser's session-restore (which would otherwise drag old tabs in
     every launch and confuse multi-tab automation).
 
     If target_url is given: keep one tab whose host matches; if no tab
@@ -655,7 +650,6 @@ def cmd_start(args: argparse.Namespace) -> None:
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
-        "--disable-features=BraveRewards,BraveWallet,BraveAds",
     ]
     if args.url:
         cmd.append(args.url)
@@ -698,13 +692,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     }
     _save_state(connection, new_state)
 
-    # Cancel Brave's session-restore: close every tab except the one matching
+    # Cancel the browser's session-restore: close every tab except the one matching
     # --url (or, if no --url, just keep the most recently focused tab). Without
     # this, every restart accumulates stale tabs from previous sessions and
     # confuses tab-pinning. Best-effort -- failures here don't fail the start.
     prune_info = {"closed": 0, "kept_url": None}
     try:
-        # Small grace period so Brave finishes opening session-restore tabs
+        # Small grace period so the browser finishes opening session-restore tabs
         # before we prune them.
         time.sleep(1.5)
         prune_info = _prune_to_single_tab(port, args.url)
@@ -1026,7 +1020,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
 
 
 def cmd_close_tabs(args: argparse.Namespace) -> None:
-    """Close every tab in this connection except one. Useful when Brave's
+    """Close every tab in this connection except one. Useful when the browser's
     session-restore brings back stale tabs you want gone."""
     state = _load_state(args.connection)
     pid = state.get("pid")
@@ -1092,7 +1086,7 @@ def main() -> None:
     s.add_argument("--browser-path", help=(
         "Path to the browser executable to launch. Overrides the "
         f"{BROWSER_ENV_VAR} environment variable and auto-discovery. "
-        "Accepts any Chromium-family browser (Brave, Chrome, Edge)."
+        "Accepts any Chromium-family browser (Chrome, Edge)."
     ))
     s.set_defaults(func=cmd_start)
 

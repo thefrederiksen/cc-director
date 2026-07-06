@@ -22,7 +22,7 @@ import cli  # noqa: E402
 # --------------------------------------------------------------------------
 
 def test_find_browser_uses_browser_path_override(tmp_path):
-    exe = tmp_path / "my-brave.exe"
+    exe = tmp_path / "my-chrome.exe"
     exe.write_text("x", encoding="utf-8")
     assert cli._find_browser(str(exe)) == str(exe)
 
@@ -51,8 +51,8 @@ def test_find_browser_bad_env_var_raises(tmp_path, monkeypatch):
 def test_find_browser_falls_back_to_which(monkeypatch):
     monkeypatch.delenv(cli.BROWSER_ENV_VAR, raising=False)
     monkeypatch.setattr(cli.shutil, "which",
-                        lambda name: "/usr/bin/brave" if name == "brave" else None)
-    assert cli._find_browser(None) == "/usr/bin/brave"
+                        lambda name: "/usr/bin/chrome" if name == "chrome" else None)
+    assert cli._find_browser(None) == "/usr/bin/chrome"
 
 
 def test_find_browser_not_found_names_overrides(monkeypatch):
@@ -170,7 +170,7 @@ def test_cmd_stop_reports_method(monkeypatch, capsys):
 def test_dir_locked_detects_running_browser(tmp_path, monkeypatch):
     profile = tmp_path / "linkedin"
     profile.mkdir()
-    cmdline = f'brave.exe --user-data-dir={profile} --remote-debugging-port=9333'
+    cmdline = f'chrome.exe --user-data-dir={profile} --remote-debugging-port=9333'
     monkeypatch.setattr(cli, "_browser_command_lines", lambda: [cmdline])
     assert cli._dir_locked_by_running_browser(profile) is True
 
@@ -178,7 +178,7 @@ def test_dir_locked_detects_running_browser(tmp_path, monkeypatch):
 def test_dir_locked_ignores_other_dirs(tmp_path, monkeypatch):
     profile = tmp_path / "linkedin"
     profile.mkdir()
-    other = f'brave.exe --user-data-dir={tmp_path / "other"} --foo'
+    other = f'chrome.exe --user-data-dir={tmp_path / "other"} --foo'
     monkeypatch.setattr(cli, "_browser_command_lines", lambda: [other])
     assert cli._dir_locked_by_running_browser(profile) is False
 
@@ -421,8 +421,8 @@ def test_cmd_start_pid_reuse_does_not_report_already_running(monkeypatch, capsys
 
 
 # --------------------------------------------------------------------------
-# Review2 L6/L7: messaging and the Windows lock pre-check no longer hardcode
-# "Brave" and the CIM filter now includes chromium.exe.
+# Review2 L6/L7: messaging and the Windows lock pre-check do not hardcode a
+# single browser name, and the CIM filter now includes chromium.exe.
 # --------------------------------------------------------------------------
 
 def test_browser_command_lines_filter_includes_chromium(monkeypatch):
@@ -441,8 +441,8 @@ def test_browser_command_lines_filter_includes_chromium(monkeypatch):
     cli._browser_command_lines()
     joined = " ".join(captured["cmd"])
     assert "chromium.exe" in joined
-    # The previously-listed images are still covered.
-    for name in ("brave.exe", "chrome.exe", "msedge.exe"):
+    # The other Chromium-family images are still covered.
+    for name in ("chrome.exe", "msedge.exe"):
         assert name in joined
 
 
@@ -463,7 +463,7 @@ def test_start_help_does_not_crash(monkeypatch, capsys):
     assert "%LOCALAPPDATA%" in out
 
 
-def test_connect_error_message_does_not_say_brave(monkeypatch):
+def test_connect_error_message_names_the_port(monkeypatch):
     # State says running so we reach the connect attempt, which fails.
     monkeypatch.setattr(cli, "_load_state",
                         lambda conn: {"pid": 1, "port": 9999})
@@ -488,5 +488,4 @@ def test_connect_error_message_does_not_say_brave(monkeypatch):
     with pytest.raises(SystemExit) as ex:
         cli._connect("work")
     msg = str(ex.value)
-    assert "Brave" not in msg
     assert "9999" in msg

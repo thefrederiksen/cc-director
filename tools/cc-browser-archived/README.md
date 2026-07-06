@@ -14,7 +14,7 @@ cc-browser CLI (Node.js)
 cc-browser Daemon (keeps browser connection warm)
      | CDP (localhost:9222)
      v
-Chrome/Edge/Brave
+Chrome/Edge
 ```
 
 ## Why This Exists

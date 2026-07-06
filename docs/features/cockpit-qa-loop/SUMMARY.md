@@ -3,7 +3,7 @@
 **App version:** 0.3.5 (build `990dba3`, branch `main`) + uncommitted Cockpit fixes from this loop
 **Run:** 2026-05-31 ~22:45 -> 23:40 local (autonomous overnight QA loop, 5 iterations)
 **Tested against:** Cockpit on `http://localhost:7471` (Development) -> Gateway `127.0.0.1:7878` -> Slot-1 final-build Director `c99a103c` (`7884`) and the older Director `39aad623` (`7879`).
-**Method:** real Claude sessions in a throwaway scratch repo, driven through a separate Brave via `cc-playwright` (connection `cockpit-qa`). No user sessions were modified; the two scratch sessions created for testing were killed at the end.
+**Method:** real Claude sessions in a throwaway scratch repo, driven through a separate Chrome via `cc-playwright` (connection `cockpit-qa`). No user sessions were modified; the two scratch sessions created for testing were killed at the end.
 
 ---
 

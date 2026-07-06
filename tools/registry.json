@@ -87,7 +87,7 @@
       "description": "Playwright-backed browser CLI - trusted-event sibling to cc-browser for React form fills, signin/OTP flows, and dropdown selection",
       "built": true,
       "ship": true,
-      "requirements": ["Python 3.10+", "Playwright", "Brave (Chromium)"]
+      "requirements": ["Python 3.10+", "Playwright", "Chrome or Edge (Chromium)"]
     },
     {
       "name": "cc-reddit",

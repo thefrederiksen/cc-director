@@ -4,7 +4,7 @@ DevThrottle runs on Windows and macOS (Apple Silicon) and requires a few prerequ
 
 ## Prerequisites
 
-The DevThrottle **Setup** app checks for these on its Prerequisites screen. Four are required; Brave is optional. Each tool below has a setup section with the exact install command and how to confirm it is on your `PATH`.
+The DevThrottle **Setup** app checks for these on its Prerequisites screen. Four are required; Tailscale is optional. Each tool below has a setup section with the exact install command and how to confirm it is on your `PATH`.
 
 | Tool | Required? | Minimum |
 |------|-----------|---------|
@@ -12,7 +12,6 @@ The DevThrottle **Setup** app checks for these on its Prerequisites screen. Four
 | [Claude Code](#claude-code) | Required | latest |
 | [Python](#python) | Required | 3.11+ |
 | [Node.js](#nodejs) | Required | 20+ |
-| [Brave Browser](#brave-browser-optional) | Optional | latest |
 | [Tailscale](#tailscale-optional--remote-access) | Optional | latest |
 
 > **Just installed one of these and Setup still says "Not found"?** See [If a tool is not detected after installing it](#if-a-tool-is-not-detected-after-installing-it).
@@ -54,12 +53,6 @@ Node.js 20 or higher (MCP servers and browser tools).
 - **macOS:** `brew install node` (or download from nodejs.org).
 
 Confirm: `node --version` prints `v20+`.
-
-### Brave Browser (optional)
-
-Brave is the browser engine for `cc-browser` and related tools (Chrome stable blocks the extensions they rely on). **It is optional** -- if you have Claude Code, Python, and Node.js, Setup lets you install without it. You can add Brave later and the browser tools will pick it up.
-
-- Download from [brave.com/download](https://brave.com/download/).
 
 ### Tailscale (optional -- remote access)
 

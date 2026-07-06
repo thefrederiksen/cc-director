@@ -41,14 +41,6 @@ public static class PrerequisiteChecker
                 InstallUrl = "https://nodejs.org/",
                 DocsUrl = $"{DocsBase}#nodejs"
             },
-            new PrerequisiteInfo
-            {
-                Name = "Brave Browser",
-                Description = "Optional browser engine for cc-browser (Chrome stable blocks extensions)",
-                IsRequired = false,
-                InstallUrl = "https://brave.com/download/",
-                DocsUrl = $"{DocsBase}#brave-browser-optional"
-            },
         ];
     }
 
@@ -80,9 +72,6 @@ public static class PrerequisiteChecker
                     break;
                 case "Node.js":
                     CheckNode(item);
-                    break;
-                case "Brave Browser":
-                    CheckBrave(item);
                     break;
             }
         }
@@ -205,81 +194,6 @@ public static class PrerequisiteChecker
         }
 
         SetupLog.Write($"[PrerequisiteChecker] Node.js: version={item.Version}, found={item.IsFound}");
-    }
-
-    private static void CheckBrave(PrerequisiteInfo item)
-    {
-        var paths = GetBravePaths();
-
-        foreach (var path in paths)
-        {
-            if (File.Exists(path))
-            {
-                if (IsWindows)
-                {
-                    try
-                    {
-                        var versionInfo = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
-                        item.Version = $"Brave {versionInfo.ProductVersion}";
-                    }
-                    catch
-                    {
-                        item.Version = "";
-                    }
-                }
-                else
-                {
-                    item.Version = "Brave (installed)";
-                }
-
-                item.Status = "Found";
-                item.IsFound = true;
-                SetupLog.Write($"[PrerequisiteChecker] Brave: found at {path}");
-                return;
-            }
-        }
-
-        // On macOS, also check if the app bundle exists
-        if (IsMacOS && Directory.Exists("/Applications/Brave Browser.app"))
-        {
-            item.Version = "Brave (installed)";
-            item.Status = "Found";
-            item.IsFound = true;
-            SetupLog.Write("[PrerequisiteChecker] Brave: found at /Applications/Brave Browser.app");
-            return;
-        }
-
-        item.Status = "Not found";
-        item.IsFound = false;
-        SetupLog.Write("[PrerequisiteChecker] Brave: not found at any known location");
-    }
-
-    private static string[] GetBravePaths()
-    {
-        if (IsWindows)
-        {
-            return
-            [
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                    "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                    "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-            ];
-        }
-
-        if (IsMacOS)
-        {
-            return
-            [
-                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    "Applications", "Brave Browser.app", "Contents", "MacOS", "Brave Browser"),
-            ];
-        }
-
-        return [];
     }
 
     /// <summary>

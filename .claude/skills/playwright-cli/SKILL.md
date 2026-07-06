@@ -43,7 +43,7 @@ This is 90,000+ tokens cheaper than Playwright MCP for the same task.
 
 ### Why cc-browser Still Exists
 
-cc-browser uses real Chrome/Brave profiles with human-like delays to defeat bot detection.
+cc-browser uses real Chrome/Edge profiles with human-like delays to defeat bot detection.
 Playwright CLI's bundled Chromium is trivially detectable by anti-bot systems -- its browser
 fingerprint, WebDriver flags, and automation markers will get you blocked immediately.
 

@@ -213,7 +213,7 @@ const commandHelp = {
 
   Options:
     --port <port>       Daemon HTTP port (default: from workspace.json or 9280)
-    --browser <name>    Browser: chrome, edge, brave
+    --browser <name>    Browser: chrome, edge
     --workspace <name>  Named workspace for isolated sessions
 
   Examples:
@@ -257,7 +257,7 @@ const commandHelp = {
   Launch a browser instance and connect to it.
 
   Options:
-    --browser <name>        Browser: chrome, edge, brave
+    --browser <name>        Browser: chrome, edge
     --workspace <name>      Named workspace (persists logins, isolated sessions)
     --incognito             Launch in incognito mode (temp profile, no saved data)
     --profileDir <dir>      Use existing system Chrome profile (e.g., "Default", "Profile 1")
@@ -848,7 +848,7 @@ HELP:
 OPTIONS:
   --port <port>       Daemon port (default: 9280)
   --cdpPort <port>    Chrome CDP port (default: 9222)
-  --browser <name>    Browser to use: chrome, edge, brave
+  --browser <name>    Browser to use: chrome, edge
   --workspace <name>  Named workspace for isolated sessions (persists logins)
   --no-indicator      Hide the automation info bar (shown by default)
   --tab <targetId>    Target specific tab

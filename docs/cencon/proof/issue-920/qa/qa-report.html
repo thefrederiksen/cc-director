@@ -37,7 +37,7 @@
 <ul>
   <li>Gateway: isolated dev console host on <code>127.0.0.1:7936</code>, auth gate <strong>ON by default</strong> (no <code>CC_GATEWAY_NO_AUTH</code>/<code>CC_GATEWAY_AUTH</code> override), <code>CC_GATEWAY_NO_TAILSCALE=1</code>, isolated <code>CC_DIRECTOR_ROOT</code>. Two real Director instance files copied in so live sessions aggregated (directors <code>:7880</code> and <code>:7881</code>).</li>
   <li>Cockpit: published build, run on <code>127.0.0.1:7937</code>, <code>Cockpit__GatewayUrl=http://127.0.0.1:7936</code>.</li>
-  <li>Browser: cc-playwright (Brave, trusted CDP events), connection <code>cockpit920</code>.</li>
+  <li>Browser: cc-playwright (Chrome, trusted CDP events), connection <code>cockpit920</code>.</li>
   <li>HTTP status codes measured with a no-auto-redirect <code>HttpClient</code>; in-browser statuses read from <code>PerformanceResourceTiming.responseStatus</code>.</li>
 </ul>
 

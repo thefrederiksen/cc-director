@@ -24,7 +24,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 
 export function computeExtensionId(extensionPath) {
-  // Chrome/Brave compute unpacked extension IDs by:
+  // Chromium browsers compute unpacked extension IDs by:
   //   1. resolve() the absolute path (keep original case, keep backslashes on Windows)
   //   2. SHA-256 hash the UTF-16LE encoded bytes
   //   3. Take first 32 hex chars, map each hex digit (0-f) to (a-p)
@@ -67,7 +67,6 @@ function createHostManifest(extensionId, nativeHostPath) {
 // Windows Registry
 // ---------------------------------------------------------------------------
 
-const BRAVE_REG_KEY = 'HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\com.cc_browser.bridge';
 const CHROME_REG_KEY = 'HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.cc_browser.bridge';
 const EDGE_REG_KEY = 'HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.cc_browser.bridge';
 
@@ -214,10 +213,10 @@ export function ensureInstalled(opts = {}) {
     return true;
   }
 
-  // Register for all Chromium-based browsers (Brave is primary)
+  // Register for all Chromium-based browsers (Chrome is primary)
   let allUpToDate = !needsWrite;
 
-  for (const regKey of [BRAVE_REG_KEY, CHROME_REG_KEY, EDGE_REG_KEY]) {
+  for (const regKey of [CHROME_REG_KEY, EDGE_REG_KEY]) {
     const current = readRegistryValue(regKey);
     if (current !== manifestPath) {
       registerNativeHost(regKey, manifestPath);
