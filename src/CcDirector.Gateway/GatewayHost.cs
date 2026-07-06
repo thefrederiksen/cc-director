@@ -864,7 +864,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #330: doorbell event-vocabulary pings land in the per-director event ring.
             directorEvents: DirectorEvents,
             // Issue #376: async voice-turn submit/poll rides the host-owned job store.
-            turnJobs: TurnJobs);
+            turnJobs: TurnJobs,
+            // Issue #1045: pass the per-device-key registry so the voice-turn routes' own token
+            // check (issue #369) accepts a phone's enrolled device key, not just the shared token.
+            devices: Devices);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and

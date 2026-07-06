@@ -191,6 +191,38 @@ public sealed class GatewayVoiceTurnAsyncTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Accepted, resp.StatusCode);
     }
 
+    [Fact]
+    public async Task Submit_PerDeviceKey_IsAccepted_NotOnlyTheSharedToken()
+    {
+        // Issue #1045 (regression): a phone enrolled with its OWN per-device key - the #908 path that
+        // no longer injects the shared machine token - must authenticate to the voice-turn routes,
+        // exactly as it does on every globally-gated route. Before the fix these routes called the
+        // device-key-blind two-argument HasValidToken(ctx, token) and 401'd every per-device key
+        // ("41 error"), making the async voice-turn feature unusable from an enrolled phone.
+        var sid = AdoptQuickIdleSession();
+        var deviceKey = _gateway.Devices.Register("phone-1045", "PHONE").DeviceKey;
+
+        using var phone = NewAnonymousClient(bearer: deviceKey);
+        var resp = await phone.PostAsJsonAsync($"sessions/{sid}/voice-turn/submit", new { text = "What is 2 + 2?" });
+
+        Assert.Equal(HttpStatusCode.Accepted, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Audio_PerDeviceKey_IsAccepted()
+    {
+        // The audio-fetch route is token-gated on the same check; prove a per-device key reaches the
+        // bytes (200) rather than being rejected at the gate (401), so a phone can play its reply.
+        var (sid, turnId, audio) = SeedReplyWithAudio();
+        var deviceKey = _gateway.Devices.Register("phone-1045-audio", "PHONE").DeviceKey;
+
+        using var phone = NewAnonymousClient(bearer: deviceKey);
+        var resp = await phone.GetAsync($"sessions/{sid}/voice-turn/{turnId}/audio");
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(audio, await resp.Content.ReadAsByteArrayAsync());
+    }
+
     // ===== Ask Wingman about DevThrottle (issue #472) =====
 
     [Fact]

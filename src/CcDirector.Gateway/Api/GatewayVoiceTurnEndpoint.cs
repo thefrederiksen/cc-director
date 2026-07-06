@@ -42,6 +42,12 @@ namespace CcDirector.Gateway.Api;
 /// - the same Bearer-or-cookie check every other protected route uses - enforced HERE so the
 /// gate holds even in production mode, where the global auth middleware is off
 /// (the tray Gateway runs authEnabled=false). Missing/wrong token -> 401.
+///
+/// Issue #1045: the token check is passed the per-device-key registry so a phone enrolled with its
+/// own device key (the #908 path that no longer injects the master token) authenticates here exactly
+/// as it does on every globally-gated route. Before this, these routes used the device-key-blind
+/// two-argument overload and 401'd every per-device key - the async voice-turn feature was unusable
+/// from an enrolled phone. That overload is now deleted, so the registry can never be omitted again.
 /// </summary>
 internal static class GatewayVoiceTurnEndpoint
 {
@@ -50,7 +56,7 @@ internal static class GatewayVoiceTurnEndpoint
     private static readonly TimeSpan DirectorTurnTimeout = TimeSpan.FromMinutes(5);
 
     public static void Map(IEndpointRouteBuilder app, GatewayTurnJobStore store, DirectorRegistry registry,
-        DirectorEndpointClient client, SessionOwnerCache? owners, string token,
+        DirectorEndpointClient client, SessionOwnerCache? owners, string token, Pairing.DeviceRegistry? devices,
         VoiceUploadStore? uploads = null, VoiceTurnArchive? archive = null)
     {
         // Disk-backed singletons captured by the route closures: the resumable upload staging and
@@ -66,7 +72,7 @@ internal static class GatewayVoiceTurnEndpoint
             // Issue #369: token-gated even when the global AuthMiddleware is off (the
             // production tray Gateway runs authEnabled=false). Same mechanism as every
             // other protected Gateway route - Bearer header or the gateway cookie.
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
             {
                 FileLog.Write($"[GatewayVoiceTurn] submit sid={sid}: missing or invalid token from {ctx.Connection.RemoteIpAddress} -> 401");
                 return Results.Json(new { error = "missing or invalid token" },
@@ -117,7 +123,7 @@ internal static class GatewayVoiceTurnEndpoint
 
         app.MapPost("/sessions/{sid}/voice-turn/upload", (string sid, HttpContext ctx) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
@@ -133,7 +139,7 @@ internal static class GatewayVoiceTurnEndpoint
         app.MapPut("/sessions/{sid}/voice-turn/upload/{uploadId}/chunk/{index:int}",
             async (string sid, string uploadId, int index, HttpContext ctx) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
             if (!uploads.Exists(uploadId))
                 return Results.Json(new { error = "unknown upload id (register it first)" }, statusCode: StatusCodes.Status404NotFound);
@@ -157,7 +163,7 @@ internal static class GatewayVoiceTurnEndpoint
         app.MapPost("/sessions/{sid}/voice-turn/upload/{uploadId}/complete",
             async (string sid, string uploadId, VoiceTurnCompleteRequest? req, HttpContext ctx) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
             if (!Guid.TryParse(sid, out _))
                 return Results.Json(new { error = "invalid session id format" }, statusCode: StatusCodes.Status400BadRequest);
@@ -218,7 +224,7 @@ internal static class GatewayVoiceTurnEndpoint
         app.MapGet("/sessions/{sid}/voice-turn/{turnId}", (string sid, string turnId, HttpContext ctx) =>
         {
             // Issue #369: same token gate as the submit route above.
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
             {
                 FileLog.Write($"[GatewayVoiceTurn] poll sid={sid} turnId={turnId}: missing or invalid token from {ctx.Connection.RemoteIpAddress} -> 401");
                 return Results.Json(new { error = "missing or invalid token" },
@@ -291,7 +297,7 @@ internal static class GatewayVoiceTurnEndpoint
         // Gateway restart - the artifact that "sits in the session". 404 once neither has it.
         app.MapGet("/sessions/{sid}/voice-turn/{turnId}/audio", (string sid, string turnId, HttpContext ctx) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
             {
                 FileLog.Write($"[GatewayVoiceTurn] audio sid={sid} turnId={turnId}: missing or invalid token from {ctx.Connection.RemoteIpAddress} -> 401");
                 return Results.Json(new { error = "missing or invalid token" },
@@ -341,7 +347,7 @@ internal static class GatewayVoiceTurnEndpoint
         // The session's completed voice turns, newest first (read from the durable archive).
         app.MapGet("/sessions/{sid}/voice-turns", (string sid, HttpContext ctx, string? since) =>
         {
-            if (!AuthMiddleware.HasValidToken(ctx, token))
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
                 return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
 
             DateTime? sinceUtc = null;
