@@ -53,13 +53,16 @@ internal static class GatewayEndpoints
         Func<string, List<TurnBriefDto>>? briefHistoryFor = null,
         SessionOwnerCache? owners = null,
         Gateway.Events.DirectorEventLog? directorEvents = null,
-        Voice.GatewayTurnJobStore? turnJobs = null)
+        Voice.GatewayTurnJobStore? turnJobs = null,
+        Pairing.DeviceRegistry? devices = null)
     {
         // Issue #376: async voice-turn submit/poll (the phone's reconnect-resilient voice
         // interface). Mapped first for readability; route precedence (literal segments win
         // over the catch-all session forwarder) does the actual dispatch.
+        // Issue #1045: the device registry is passed through so the voice-turn routes' own token
+        // check accepts a phone's per-device key, not only the shared machine token.
         if (turnJobs is not null)
-            GatewayVoiceTurnEndpoint.Map(app, turnJobs, registry, client, owners, token);
+            GatewayVoiceTurnEndpoint.Map(app, turnJobs, registry, client, owners, token, devices);
 
         // Issue #469 closed the secret-embedding phone-pairing QR endpoints (/pair/qr.png and
         // /pair/payload) that put the shared fleet token directly in a QR/link - a full compromise

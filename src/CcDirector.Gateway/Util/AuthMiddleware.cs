@@ -102,13 +102,14 @@ internal static class AuthMiddleware
     /// ordinal compare against the per-machine gateway token). Used by the global middleware
     /// above and by endpoints that must stay token-gated even when the global middleware is
     /// off (issue #369: the voice-turn submit/poll surface in production mode).
-    /// </summary>
-    public static bool HasValidToken(HttpContext ctx, string token) => HasValidToken(ctx, token, null);
-
-    /// <summary>
-    /// As <see cref="HasValidToken(HttpContext, string)"/> but, per issue #469, ALSO accepts a
-    /// Bearer that matches an active per-device key in the <paramref name="devices"/> registry, so
-    /// an enrolled Director authenticates with its own unique key rather than the shared token.
+    ///
+    /// Per issue #469/#908, this ALSO accepts a Bearer or cookie that matches an active per-device
+    /// key in the <paramref name="devices"/> registry, so an enrolled device (phone or Director)
+    /// authenticates with its own unique key rather than the shared token. Every caller must pass
+    /// the registry: issue #1045 deleted the device-key-blind two-argument overload because a route
+    /// that omitted the registry silently 401'd every per-device key (it bit voice-turn). Pass
+    /// <c>null</c> for <paramref name="devices"/> ONLY when per-device-key auth is genuinely
+    /// inapplicable (there is no registry on this host).
     /// </summary>
     public static bool HasValidToken(HttpContext ctx, string token, DeviceRegistry? devices)
     {
