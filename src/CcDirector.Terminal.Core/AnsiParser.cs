@@ -338,6 +338,12 @@ public class AnsiParser
     public bool InSynchronizedUpdate => _inSynchronizedUpdate;
 
     /// <summary>
+    /// Whether the application has requested bracketed paste mode (?2004). Input producers may
+    /// wrap pasted blocks in ESC[200~ ... ESC[201~ only while this is true.
+    /// </summary>
+    public bool BracketedPasteEnabled => _bracketedPaste;
+
+    /// <summary>
     /// Whether the application has requested mouse reporting (?1000 normal,
     /// ?1002 button-event, or ?1003 any-event). When true, wheel events should
     /// be forwarded to the application as mouse-wheel reports.
