@@ -189,33 +189,39 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stop the microphone, then transcribe the whole captured clip exactly once
-    /// through the shared batch pipeline (the user-selected method), applying the
-    /// dictionary corrector only. Returns the raw transcript, the corrected
-    /// transcript, and how many dictionary words were corrected.
-    ///
-    /// Enforces the completeness gate (issue #586): a turn that captured no audio
-    /// fails loud with <see cref="NoAudioCapturedException"/> rather than producing
-    /// a partial/empty transcript. Transcription failures throw so the caller
-    /// surfaces them - a missing transcript is a real failure, not papered over.
+    /// Stop the microphone, drain NAudio's final buffered audio, and return the whole captured clip as
+    /// a WAV blob WITHOUT transcribing it. This is the durable-dictation split (issue #1130): the
+    /// fire-and-forget Send saves these bytes to disk the instant Send is pressed, then transcribes the
+    /// saved copy - so a failed or slow transcription can never lose the recording. Enforces the same
+    /// completeness gate as <see cref="TranscribeAsync"/> (an empty capture throws
+    /// <see cref="NoAudioCapturedException"/>), so an interrupted turn with no audio is never persisted.
+    /// The recorder is consumed (stopped) here; call this OR <see cref="TranscribeAsync"/>, once.
     /// </summary>
-    public async Task<DictationResult> TranscribeAsync(CancellationToken ct = default)
+    public async Task<CapturedAudio> StopAndGetWavAsync()
+    {
+        FileLog.Write("[BatchDictationRecorder] StopAndGetWavAsync");
+        var (pcm, _, _) = await StopAndSnapshotAsync();
+        var wav = WavWriter.WrapPcm16(
+            pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
+        return new CapturedAudio(wav, _recordingStopwatch?.ElapsedMilliseconds ?? 0);
+    }
+
+    /// <summary>
+    /// Stop the mic, WAIT for NAudio to flush its final buffered audio, then snapshot the whole-turn PCM.
+    /// Shared by <see cref="TranscribeAsync"/> and <see cref="StopAndGetWavAsync"/> so both paths capture
+    /// the identical bytes. WaveInEvent keeps capturing for up to one buffer after the stop and delivers
+    /// the trailing words via AppendChunk on its worker thread, then raises RecordingStopped; StopAsync
+    /// completes on that event, so the whole tail of speech is appended before the snapshot. Detaching
+    /// the handler BEFORE the drain (the old order) discarded that tail and clipped the end of speech.
+    /// Enforces the completeness gate (issue #586): an empty capture throws <see cref="NoAudioCapturedException"/>.
+    /// </summary>
+    private async Task<(byte[] Pcm, CaptureHealth? Health, string Device)> StopAndSnapshotAsync()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(BatchDictationRecorder));
         if (!_started) throw new InvalidOperationException("BatchDictationRecorder not started");
         if (_stopped) throw new InvalidOperationException("BatchDictationRecorder already stopped");
         _stopped = true;
 
-        FileLog.Write("[BatchDictationRecorder] TranscribeAsync");
-
-        // Stop the mic and WAIT for NAudio to flush its final buffered audio before
-        // snapshotting. WaveInEvent keeps capturing for up to one buffer after the
-        // stop and delivers the trailing words via AppendChunk on its worker thread,
-        // then raises RecordingStopped; StopAsync completes on that event, so the
-        // whole tail of speech is appended to _audio before the snapshot below.
-        // Detaching the handler BEFORE the drain (the old order) discarded that tail
-        // and clipped the end of the user's speech. Only after the drain do we detach,
-        // so no genuinely-late chunk can race the snapshot; the lock guards it anyway.
         var device = _mic?.Description ?? MicDevices.DescribeDevice(_micDeviceNumber);
         CaptureHealth? captureHealth = null;
         if (_mic is not null)
@@ -240,9 +246,28 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         // device the user must check.
         if (pcm.Length == 0)
         {
-            FileLog.Write("[BatchDictationRecorder] TranscribeAsync: no audio captured; refusing to transcribe (completeness gate)");
+            FileLog.Write("[BatchDictationRecorder] no audio captured; refusing (completeness gate)");
             throw new NoAudioCapturedException(device);
         }
+
+        return (pcm, captureHealth, device);
+    }
+
+    /// <summary>
+    /// Stop the microphone, then transcribe the whole captured clip exactly once
+    /// through the shared batch pipeline (the user-selected method), applying the
+    /// dictionary corrector only. Returns the raw transcript, the corrected
+    /// transcript, and how many dictionary words were corrected.
+    ///
+    /// Enforces the completeness gate (issue #586): a turn that captured no audio
+    /// fails loud with <see cref="NoAudioCapturedException"/> rather than producing
+    /// a partial/empty transcript. Transcription failures throw so the caller
+    /// surfaces them - a missing transcript is a real failure, not papered over.
+    /// </summary>
+    public async Task<DictationResult> TranscribeAsync(CancellationToken ct = default)
+    {
+        FileLog.Write("[BatchDictationRecorder] TranscribeAsync");
+        var (pcm, captureHealth, device) = await StopAndSnapshotAsync();
 
         // Test seam: hand the snapshotted PCM to the injected stub instead of the real
         // network pipeline. The empty-audio gate above still runs first, so the stub
@@ -368,6 +393,13 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
 /// byte-for-byte whenever no dictionary term matched.
 /// </summary>
 public sealed record DictationResult(string RawTranscript, string CleanedTranscript, int DictionaryWordsCorrected);
+
+/// <summary>
+/// The whole captured dictation clip as an uploadable WAV blob plus how long it was recorded
+/// (issue #1130). Returned by <see cref="BatchDictationRecorder.StopAndGetWavAsync"/> so the durable
+/// fire-and-forget Send can persist the bytes to disk before transcribing them.
+/// </summary>
+public sealed record CapturedAudio(byte[] Wav, long RecordingMs);
 
 /// <summary>
 /// Minimal RIFF/WAV container writer for raw PCM16. The desktop mic delivers raw
