@@ -47,8 +47,14 @@ internal static class TerminalInjectHarnessApp
                 foreach (var route in matrix.Routes)
                 foreach (var testCase in matrix.Cases)
                 {
-                    report.Results.Add(HarnessResult.Skipped(
-                        agentKind, testCase.Id, route, strategy, "tool_missing", probe.SkipReason ?? "Tool is not installed."));
+                    var runs = RunPolicy.GetRunCount(options, agentKind, testCase, route, strategy);
+                    for (var run = 1; run <= runs; run++)
+                    {
+                        var skipped = HarnessResult.Skipped(
+                            agentKind, testCase.Id, route, strategy, "tool_missing", probe.SkipReason ?? "Tool is not installed.");
+                        skipped.Run = run;
+                        report.Results.Add(skipped);
+                    }
                 }
                 continue;
             }
@@ -60,7 +66,8 @@ internal static class TerminalInjectHarnessApp
             foreach (var route in matrix.Routes)
             foreach (var testCase in matrix.Cases)
             {
-                for (var run = 1; run <= options.Runs; run++)
+                var runs = RunPolicy.GetRunCount(options, probe.AgentKind, testCase, route, strategy);
+                for (var run = 1; run <= runs; run++)
                 {
                     var result = await RunOneAsync(context, options, probe, testCase, route, strategy, run);
                     report.Results.Add(result);
@@ -101,6 +108,8 @@ internal static class TerminalInjectHarnessApp
         var repositoryPath = context.RepositoryFor(probe.AgentKind, runId);
 
         Session? session = null;
+        long bufferCursor = 0;
+        var sentAtUtc = DateTimeOffset.UtcNow;
         try
         {
             session = context.SessionManager.CreateSession(
@@ -114,8 +123,8 @@ internal static class TerminalInjectHarnessApp
             await LiveSessionRunner.WaitForReadyAsync(session, options.StartupTimeout);
 
             var transcriptBefore = TranscriptProof.Snapshot(session);
-            var bufferCursor = session.Buffer?.TotalBytesWritten ?? 0;
-            var sentAtUtc = DateTimeOffset.UtcNow;
+            bufferCursor = session.Buffer?.TotalBytesWritten ?? 0;
+            sentAtUtc = DateTimeOffset.UtcNow;
             var bracketedPasteMode = session.BracketedPasteEnabled;
 
             var strategyGate = await RouteDriver.SendAsync(context, session, route, strategy, prompt, options.TurnTimeout);
@@ -189,8 +198,12 @@ internal static class TerminalInjectHarnessApp
         }
         catch (Exception ex)
         {
+            var proof = session is null || bufferCursor <= 0
+                ? SubmitVerifier.ClassifyHarnessException(ex)
+                : SubmitVerifier.ClassifySendFailure(session, prompt, bufferCursor, ex);
+
             if (session is not null)
-                WriteRunArtifacts(session, runDirectory, prompt, SubmitProof.HarnessError(ex.Message), 0);
+                WriteRunArtifacts(session, runDirectory, prompt, proof, bufferCursor);
 
             return new HarnessResult
             {
@@ -200,17 +213,22 @@ internal static class TerminalInjectHarnessApp
                 Strategy = FormatStrategy(strategy),
                 Run = run,
                 Status = HarnessStatus.Fail,
-                FailureClass = "harness_error",
-                Message = ex.Message,
+                FailureClass = proof.FailureClass,
+                Message = proof.Message,
                 SentText = prompt,
                 ExpectedToken = token,
                 ExpectedFragments = promptCase.ExpectedFragments,
+                TokenObserved = proof.TokenObserved,
+                ContentFragmentsObserved = proof.ContentFragmentsObserved,
+                TurnStarted = proof.TurnStarted,
+                ParkedComposer = proof.FailureClass == "parked_composer",
                 BracketedPasteModeObserved = session?.BracketedPasteEnabled,
+                BufferCursor = bufferCursor,
                 SessionId = session?.Id.ToString(),
                 RepositoryPath = repositoryPath,
                 AgentExecutablePath = probe.ResolvedPath,
                 AgentVersion = probe.Version,
-                StartedAtUtc = DateTimeOffset.UtcNow,
+                StartedAtUtc = sentAtUtc,
                 FinishedAtUtc = DateTimeOffset.UtcNow,
                 ArtifactDirectory = Path.GetFullPath(runDirectory),
             };
@@ -703,6 +721,50 @@ internal static class SubmitVerifier
             message: "No transcript or token proof before timeout.");
     }
 
+    internal static SubmitProof ClassifySendFailure(Session session, string prompt, long bufferCursor, Exception exception)
+    {
+        var timeoutProof = ClassifyTimeout(session, prompt, bufferCursor);
+        if (timeoutProof.FailureClass == "parked_composer")
+        {
+            timeoutProof.Message += " Send path error: " + exception.Message;
+            return timeoutProof;
+        }
+
+        if (session.Status is SessionStatus.Exited or SessionStatus.Failed)
+        {
+            return SubmitProof.Failed(
+                "session_exited_mid_turn",
+                tokenObserved: false,
+                turnStarted: timeoutProof.TurnStarted,
+                message: $"Session exited during submit: status={session.Status}, exitCode={session.ExitCode}. Send path error: {exception.Message}");
+        }
+
+        if (exception is HttpRequestException || exception is InvalidOperationException)
+        {
+            return SubmitProof.Failed(
+                "submit_route_error",
+                tokenObserved: timeoutProof.TokenObserved,
+                turnStarted: timeoutProof.TurnStarted,
+                message: "Submit route returned an error before token proof. " + exception.Message);
+        }
+
+        return SubmitProof.HarnessError(exception.Message);
+    }
+
+    internal static SubmitProof ClassifyHarnessException(Exception exception)
+    {
+        if (exception is TimeoutException)
+            return SubmitProof.Failed("startup_timeout", tokenObserved: false, turnStarted: false, exception.Message);
+
+        if (exception is InvalidOperationException
+            && exception.Message.Contains("Session exited before ready", StringComparison.OrdinalIgnoreCase))
+        {
+            return SubmitProof.Failed("startup_failed", tokenObserved: false, turnStarted: false, exception.Message);
+        }
+
+        return SubmitProof.HarnessError(exception.Message);
+    }
+
     private static int CountTokenSince(Session session, long bufferCursor, string token)
     {
         var (bytes, _) = session.Buffer?.GetWrittenSince(bufferCursor) ?? (Array.Empty<byte>(), 0);
@@ -840,7 +902,7 @@ internal static class MatrixBuilder
     internal static HarnessMatrix Build(HarnessOptions options)
     {
         var agents = options.AgentFilter is null
-            ? new[] { AgentKind.ClaudeCode, AgentKind.Codex }
+            ? AgentPluginRegistry.BuiltIns.Select(plugin => plugin.Kind).ToArray()
             : new[] { options.AgentFilter.Value };
         var routes = options.RouteFilter is null
             ? new[] { HarnessRoute.Direct, HarnessRoute.Rest, HarnessRoute.Fleet, HarnessRoute.Voice }
@@ -855,6 +917,32 @@ internal static class MatrixBuilder
             .Where(c => options.CaseFilters.Count == 0 || options.CaseFilters.Contains(c.Id, StringComparer.OrdinalIgnoreCase))
             .ToArray();
         return new HarnessMatrix(agents, routes, strategies, cases);
+    }
+}
+
+internal static class RunPolicy
+{
+    private const int Phase4BroadRuns = 5;
+    private const int Phase4DeepRuns = 25;
+
+    internal static int GetRunCount(
+        HarnessOptions options,
+        AgentKind agentKind,
+        HarnessCase testCase,
+        HarnessRoute route,
+        SubmitStrategy strategy)
+    {
+        if (!options.FocusedPhase4RunCounts || strategy != SubmitStrategy.Current)
+            return options.Runs;
+
+        if (agentKind == AgentKind.Codex && route is HarnessRoute.Rest or HarnessRoute.Fleet)
+            return Phase4DeepRuns;
+
+        if (agentKind == AgentKind.ClaudeCode
+            && testCase.Id is "large-line" or "multiline")
+            return Phase4DeepRuns;
+
+        return Phase4BroadRuns;
     }
 }
 
@@ -892,6 +980,13 @@ internal static class ResultWriter
             sb.AppendLine($"<tr><td>{Html(summary.Agent)}</td><td>{Html(summary.Case)}</td><td>{Html(summary.Strategy)}</td><td>{summary.PassCount}</td><td>{summary.FailCount}</td><td>{summary.SkipCount}</td><td>{summary.ApplicableCount}</td><td>{summary.SuccessRate:P0}</td></tr>");
         }
         sb.AppendLine("</table>");
+        sb.AppendLine("<h2>Flake-rate matrix</h2><table><tr><th>Agent</th><th>Case</th><th>Route</th><th>Strategy</th><th>Runs</th><th>Pass</th><th>Fail</th><th>Skip</th><th>Success rate</th><th>Gate</th><th>Failure classes</th></tr>");
+        foreach (var summary in report.CombinationSummaries)
+        {
+            var gateClass = summary.GatePassed ? "pass" : "fail";
+            sb.AppendLine($"<tr><td>{Html(summary.Agent)}</td><td>{Html(summary.Case)}</td><td>{Html(summary.Route)}</td><td>{Html(summary.Strategy)}</td><td>{summary.TotalRuns}</td><td>{summary.PassCount}</td><td>{summary.FailCount}</td><td>{summary.SkipCount}</td><td>{summary.SuccessRate:P0}</td><td class=\"{gateClass}\">{(summary.GatePassed ? "pass" : "fail")}</td><td>{Html(string.Join(", ", summary.FailureClasses))}</td></tr>");
+        }
+        sb.AppendLine("</table>");
         sb.AppendLine("<h2>Results</h2><table><tr><th>Status</th><th>Agent</th><th>Case</th><th>Route</th><th>Strategy</th><th>Run</th><th>Failure class</th><th>Evidence</th><th>Artifacts</th></tr>");
         foreach (var result in report.Results)
         {
@@ -911,6 +1006,7 @@ internal static class ReportSummarizer
     internal static void Populate(HarnessReport report)
     {
         report.StrategySummaries.Clear();
+        report.CombinationSummaries.Clear();
         var grouped = report.Results
             .Where(r => r.Case is "medium-line" or "large-line" or "multiline")
             .GroupBy(r => new { r.Agent, r.Case, r.Strategy })
@@ -936,6 +1032,43 @@ internal static class ReportSummarizer
                 SuccessRate = applicable == 0 ? 0 : (double)pass / applicable,
             });
         }
+
+        var combinations = report.Results
+            .Where(r => r.Case != "forced-parked")
+            .GroupBy(r => new { r.Agent, r.Case, r.Route, r.Strategy })
+            .OrderBy(g => g.Key.Agent)
+            .ThenBy(g => g.Key.Case)
+            .ThenBy(g => g.Key.Route)
+            .ThenBy(g => g.Key.Strategy);
+
+        foreach (var group in combinations)
+        {
+            var pass = group.Count(r => r.Status == HarnessStatus.Pass);
+            var fail = group.Count(r => r.Status == HarnessStatus.Fail);
+            var skip = group.Count(r => r.Status == HarnessStatus.Skip);
+            var applicable = pass + fail;
+            var failureClasses = group
+                .Where(r => r.Status == HarnessStatus.Fail && !string.IsNullOrWhiteSpace(r.FailureClass))
+                .Select(r => r.FailureClass!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            report.CombinationSummaries.Add(new CombinationSummary
+            {
+                Agent = group.Key.Agent,
+                Case = group.Key.Case,
+                Route = group.Key.Route,
+                Strategy = group.Key.Strategy,
+                TotalRuns = group.Count(),
+                PassCount = pass,
+                FailCount = fail,
+                SkipCount = skip,
+                SuccessRate = applicable == 0 ? 0 : (double)pass / applicable,
+                GatePassed = fail == 0,
+                FailureClasses = failureClasses,
+            });
+        }
     }
 }
 
@@ -952,6 +1085,7 @@ internal sealed record HarnessOptions
     internal TimeSpan TurnTimeout { get; private init; } = TimeSpan.FromSeconds(180);
     internal bool IncludeForcedParkedCase { get; private init; } = true;
     internal bool AllowFailures { get; private init; }
+    internal bool FocusedPhase4RunCounts { get; private init; }
 
     internal static HarnessOptions Parse(string[] args)
     {
@@ -979,6 +1113,7 @@ internal sealed record HarnessOptions
                 "--startup-timeout" => options with { StartupTimeout = TimeSpan.FromSeconds(Math.Max(5, int.Parse(Next()))) },
                 "--no-forced-parked" => options with { IncludeForcedParkedCase = false },
                 "--allow-failures" => options with { AllowFailures = true },
+                "--focused-phase4" => options with { FocusedPhase4RunCounts = true },
                 _ => throw new ArgumentException($"Unknown argument: {arg}"),
             };
         }
@@ -1025,6 +1160,10 @@ internal sealed record HarnessCase(string Id, bool RequiresAssistantToken)
         new("medium-line", true),
         new("large-line", true),
         new("multiline", true),
+        new("leading-slash", true),
+        new("special-ascii", true),
+        new("unicode-data", true),
+        new("fleet-framed", true),
     ];
 
     internal PromptCase BuildPrompt(string token)
@@ -1034,6 +1173,41 @@ internal sealed record HarnessCase(string Id, bool RequiresAssistantToken)
 
         if (Id.Equals("sentence", StringComparison.OrdinalIgnoreCase))
             return new PromptCase($"Reply {token}", [token], MinimumTerminalFragmentCount: 2);
+
+        if (Id.Equals("leading-slash", StringComparison.OrdinalIgnoreCase))
+        {
+            var promptText = $"/not-a-real-command Do not modify files. This is data, not a command. Reply with {token} only.";
+            return new PromptCase(promptText, [token], MinimumTerminalFragmentCount: 2);
+        }
+
+        if (Id.Equals("special-ascii", StringComparison.OrdinalIgnoreCase))
+        {
+            var marker = $"ASCII{Guid.NewGuid():N}"[..24].ToUpperInvariant();
+            var promptText = "Do not modify files. Read these literal ASCII characters as data: "
+                + "slashes=/\\/ quotes='\" backticks=``` brackets=[]{} parens=() percent=% amp=& at=@ pipe=| "
+                + $"MARKER={marker}. Reply with {token} and {marker} only.";
+            return new PromptCase(promptText, [token, marker], MinimumTerminalFragmentCount: 2);
+        }
+
+        if (Id.Equals("unicode-data", StringComparison.OrdinalIgnoreCase))
+        {
+            var marker = $"UNICODE{Guid.NewGuid():N}"[..24].ToUpperInvariant();
+            var unicodePayload = string.Concat(
+                "\u03B1\u03B2\u03B3 ",
+                "\u041F\u0440\u0438\u0432\u0435\u0442 ",
+                "\u3053\u3093\u306B\u3061\u306F ",
+                "\uD83D\uDE80");
+            var promptText = $"Do not modify files. Treat this UTF-8 payload as data: {unicodePayload}. MARKER={marker}. Reply with {token} and {marker} only.";
+            return new PromptCase(promptText, [token, marker], MinimumTerminalFragmentCount: 2);
+        }
+
+        if (Id.Equals("fleet-framed", StringComparison.OrdinalIgnoreCase))
+        {
+            var marker = $"FLEET{Guid.NewGuid():N}"[..24].ToUpperInvariant();
+            var body = $"Do not modify files. Read this framed fleet-style message and reply with {token} and {marker} only.";
+            var promptText = BuildFleetFramedPayload(body + $" MARKER={marker}");
+            return new PromptCase(promptText, [token, marker], MinimumTerminalFragmentCount: 2);
+        }
 
         var markerPrefix = Id.Replace("-", "", StringComparison.OrdinalIgnoreCase).ToUpperInvariant();
         var middle = $"{markerPrefix}MID{Guid.NewGuid():N}"[..28].ToUpperInvariant();
@@ -1079,6 +1253,12 @@ internal sealed record HarnessCase(string Id, bool RequiresAssistantToken)
             $"line four has END_MARKER={end}",
             $"PAYLOAD_END TOKEN={token}",
         ]);
+
+    private static string BuildFleetFramedPayload(string text)
+    {
+        var oneLine = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+        return $"Message [message from terminal-inject-harness ({Environment.MachineName}), id phase4] {oneLine}  (to reply: cc-devthrottle message send phase4 \"<your reply>\")";
+    }
 }
 
 internal sealed record PromptCase(string Text, IReadOnlyList<string> ExpectedFragments, int MinimumTerminalFragmentCount);
@@ -1134,6 +1314,7 @@ internal sealed class HarnessReport
     public List<AgentProbeResult> AgentProbes { get; } = new();
     public List<HarnessResult> Results { get; } = new();
     public List<StrategySummary> StrategySummaries { get; } = new();
+    public List<CombinationSummary> CombinationSummaries { get; } = new();
 }
 
 internal sealed class StrategySummary
@@ -1146,6 +1327,21 @@ internal sealed class StrategySummary
     public int SkipCount { get; set; }
     public int ApplicableCount { get; set; }
     public double SuccessRate { get; set; }
+}
+
+internal sealed class CombinationSummary
+{
+    public string Agent { get; set; } = "";
+    public string Case { get; set; } = "";
+    public string Route { get; set; } = "";
+    public string Strategy { get; set; } = "";
+    public int TotalRuns { get; set; }
+    public int PassCount { get; set; }
+    public int FailCount { get; set; }
+    public int SkipCount { get; set; }
+    public double SuccessRate { get; set; }
+    public bool GatePassed { get; set; }
+    public IReadOnlyList<string> FailureClasses { get; set; } = [];
 }
 
 internal sealed class HarnessResult
