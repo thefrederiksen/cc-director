@@ -61,13 +61,14 @@ public sealed class PendingDictationSweeper
     /// honoring the in-flight guard. Returns the delivery result, or null if the clip was already being
     /// delivered by another caller.
     /// </summary>
-    public async Task<DictationDeliveryResult?> TryDeliverAsync(PendingDictation pending, Func<string, Task> submit, CancellationToken ct = default)
+    public async Task<DictationDeliveryResult?> TryDeliverAsync(
+        PendingDictation pending, Func<string, Task> submit, Func<bool>? isSessionReady = null, CancellationToken ct = default)
     {
         if (pending is null) throw new ArgumentNullException(nameof(pending));
         if (!Claim(pending.Id)) return null;
         try
         {
-            return await _delivery.DeliverAsync(pending, submit, ct);
+            return await _delivery.DeliverAsync(pending, submit, isSessionReady, ct);
         }
         finally
         {
@@ -79,9 +80,15 @@ public sealed class PendingDictationSweeper
     /// One full sweep: prune stale clips, then attempt delivery for every Pending clip whose session is
     /// currently present. <paramref name="resolveSubmit"/> maps a saved clip's SessionId to a submit
     /// delegate, or null when that session is not currently loaded (the clip is left for a later sweep).
+    /// <paramref name="isSessionReady"/> reports whether that session's composer is idle at the prompt
+    /// right now; a loaded-but-busy session defers WITHOUT being typed into (issue #1135). When null,
+    /// every loaded session is treated as ready (the pre-#1135 behavior).
     /// Returns a tally the caller turns into the held notice.
     /// </summary>
-    public async Task<SweepReport> SweepAsync(Func<string, Func<string, Task>?> resolveSubmit, CancellationToken ct = default)
+    public async Task<SweepReport> SweepAsync(
+        Func<string, Func<string, Task>?> resolveSubmit,
+        Func<string, bool>? isSessionReady = null,
+        CancellationToken ct = default)
     {
         if (resolveSubmit is null) throw new ArgumentNullException(nameof(resolveSubmit));
 
@@ -107,7 +114,8 @@ public sealed class PendingDictationSweeper
                 continue;
             }
 
-            var result = await TryDeliverAsync(record, submit, ct);
+            var ready = isSessionReady is null ? (Func<bool>?)null : () => isSessionReady(record.SessionId);
+            var result = await TryDeliverAsync(record, submit, ready, ct);
             if (result is null)
             {
                 report.AlreadyInFlight++;
@@ -119,7 +127,8 @@ public sealed class PendingDictationSweeper
 
         FileLog.Write($"[PendingDictationSweeper] sweep: delivered={report.Delivered}, willRetry={report.HeldWillRetry}, "
             + $"needsCredits={report.NeedsCredits}, needsConfig={report.NeedsConfiguration}, permanent={report.PermanentError}, "
-            + $"waitingForSession={report.WaitingForSession}, parked={report.ParkedNeedingAttention}, pruned={report.Pruned}");
+            + $"deferredBusy={report.DeferredSessionBusy}, waitingForSession={report.WaitingForSession}, "
+            + $"parked={report.ParkedNeedingAttention}, pruned={report.Pruned}");
         return report;
     }
 
@@ -146,12 +155,13 @@ public sealed class SweepReport
     public int WaitingForSession { get; set; }
     public int ParkedNeedingAttention { get; set; }
     public int AlreadyInFlight { get; set; }
+    public int DeferredSessionBusy { get; set; }
     public int Pruned { get; set; }
 
     /// <summary>Clips still saved on disk after this sweep that the user should know are held - anything
     /// not delivered this pass and not a transient no-op. Drives whether the held notice is shown.</summary>
     public int StillHeld => HeldWillRetry + NeedsCredits + NeedsConfiguration + PermanentError
-                            + WaitingForSession + ParkedNeedingAttention + AlreadyInFlight;
+                            + WaitingForSession + ParkedNeedingAttention + AlreadyInFlight + DeferredSessionBusy;
 
     public void Tally(DictationDeliveryOutcome outcome)
     {
@@ -163,6 +173,7 @@ public sealed class SweepReport
             case DictationDeliveryOutcome.NeedsConfiguration: NeedsConfiguration++; break;
             case DictationDeliveryOutcome.PermanentError: PermanentError++; break;
             case DictationDeliveryOutcome.LostNoAudio: LostNoAudio++; break;
+            case DictationDeliveryOutcome.DeferredSessionBusy: DeferredSessionBusy++; break;
         }
     }
 }

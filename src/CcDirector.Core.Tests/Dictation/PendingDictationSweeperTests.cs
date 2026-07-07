@@ -156,6 +156,52 @@ public sealed class PendingDictationSweeperTests : IDisposable
     }
 
     [Fact]
+    public async Task SweepAsync_DefersClipWhoseSessionIsBusy_KeepsIt_NeverTypesIntoTheComposer()
+    {
+        // issue #1135: the session is loaded but not idle at its prompt. The clip must be deferred, not
+        // typed in, so a failed-echo submit can never pile up duplicate copies.
+        _store.Save("busy", "", SampleWav);
+        var sweeper = new PendingDictationSweeper(_store, Delivery(FakeTranscriber.Returning("hi")));
+        var submitted = new List<string>();
+
+        var report = await sweeper.SweepAsync(Present(submitted, "busy"), isSessionReady: _ => false);
+
+        Assert.Equal(0, report.Delivered);
+        Assert.Equal(1, report.DeferredSessionBusy);
+        Assert.Empty(submitted);              // never typed into a busy composer
+        Assert.Single(_store.LoadAll());      // kept for a later sweep
+        Assert.True(report.StillHeld > 0);
+    }
+
+    [Fact]
+    public async Task SweepAsync_DeliversWhenSessionIsReady()
+    {
+        _store.Save("ready", "", SampleWav);
+        var sweeper = new PendingDictationSweeper(_store, Delivery(FakeTranscriber.Returning("hi")));
+        var submitted = new List<string>();
+
+        var report = await sweeper.SweepAsync(Present(submitted, "ready"), isSessionReady: _ => true);
+
+        Assert.Equal(1, report.Delivered);
+        Assert.Equal(new[] { "hi" }, submitted);
+        Assert.Empty(_store.LoadAll());
+    }
+
+    [Fact]
+    public async Task SweepAsync_NullReadiness_DeliversEveryPresentClip_AsBefore()
+    {
+        // Backward-compatible: with no readiness predicate every loaded session is treated as ready.
+        _store.Save("present", "", SampleWav);
+        var sweeper = new PendingDictationSweeper(_store, Delivery(FakeTranscriber.Returning("hi")));
+        var submitted = new List<string>();
+
+        var report = await sweeper.SweepAsync(Present(submitted, "present"));
+
+        Assert.Equal(1, report.Delivered);
+        Assert.Equal(new[] { "hi" }, submitted);
+    }
+
+    [Fact]
     public async Task SweepAsync_MixedBatch_DeliversPresentAndHoldsAbsent()
     {
         _store.Save("present", "", SampleWav);

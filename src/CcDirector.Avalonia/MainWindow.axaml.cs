@@ -3153,14 +3153,24 @@ public partial class MainWindow : Window
         if (sweeper is null) return;
         try
         {
-            await Task.Run(() => sweeper.SweepAsync(sessionId =>
-            {
-                if (!Guid.TryParse(sessionId, out var gid)) return null;
-                var session = _sessionManager?.GetSession(gid);
-                if (session is null) return null;
-                return text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
-                    () => SubmitDictatedTextAsync(session, text));
-            }));
+            await Task.Run(() => sweeper.SweepAsync(
+                resolveSubmit: sessionId =>
+                {
+                    if (!Guid.TryParse(sessionId, out var gid)) return null;
+                    var session = _sessionManager?.GetSession(gid);
+                    if (session is null) return null;
+                    return text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
+                        () => SubmitDictatedTextAsync(session, text));
+                },
+                isSessionReady: sessionId =>
+                {
+                    // Only deliver into a session idle at its prompt (issue #1135): typing a dictation
+                    // into a Working, streaming composer is what piled up duplicate copies of the sentence.
+                    if (!Guid.TryParse(sessionId, out var gid)) return false;
+                    var session = _sessionManager?.GetSession(gid);
+                    return session is not null
+                        && global::CcDirector.Core.Dictation.DictationReadiness.IsReadyForDelivery(session.ActivityState);
+                }));
         }
         catch (Exception ex)
         {
@@ -3244,7 +3254,7 @@ public partial class MainWindow : Window
         var noun = total == 1 ? "dictation is" : "dictations are";
         var message = parked == total
             ? $"{total} {noun} saved and waiting - transcription needs your attention (add credits or set a key). They will be sent automatically once resolved; you will not lose them."
-            : $"{total} {noun} saved and being sent automatically - the transcription service was slow. You will not lose them.";
+            : $"{total} {noun} saved and being sent automatically as soon as the session is ready for input. You will not lose them.";
         ShowNotification(message);
         _heldNoticeShown = true;
     }
