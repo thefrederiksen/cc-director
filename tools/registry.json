@@ -173,9 +173,10 @@
       "name": "cc-image",
       "category": "media",
       "type": "python",
-      "description": "Image generation, analysis, and OCR using OpenAI",
+      "description": "Image analysis, OCR, and batch folder cataloging via the DevThrottle API vision model",
       "built": true,
-      "requirements": ["OPENAI_API_KEY"]
+      "ship": true,
+      "requirements": ["DEVTHROTTLE_API_KEY"]
     },
     {
       "name": "cc-voice",
