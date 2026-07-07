@@ -1273,6 +1273,20 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// True when the terminal application has requested bracketed paste mode (DEC private mode
+    /// ?2004). This is read-only parser state; submit strategies can use it as a gate before
+    /// sending bracketed paste delimiters.
+    /// </summary>
+    public bool BracketedPasteEnabled
+    {
+        get
+        {
+            lock (_htmlParserLock)
+                return _htmlParser?.BracketedPasteEnabled ?? false;
+        }
+    }
+
+    /// <summary>
     /// Like <see cref="SnapshotScreenRows"/> but also returns the live cursor cell
     /// (0-based grid row/col). The grid text and the cursor are captured under the
     /// same lock so they describe the same frame. This lets callers tell text the

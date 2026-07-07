@@ -8,5 +8,20 @@
     "id": "sentence",
     "description": "One sentence asking for an exact sentinel reply. Pass is assistant token or transcript proof.",
     "requiresAssistantToken": true
+  },
+  {
+    "id": "medium-line",
+    "description": "About five hundred characters on one line, with middle and end markers the agent must report.",
+    "requiresAssistantToken": true
+  },
+  {
+    "id": "large-line",
+    "description": "Over one thousand characters on one line, with middle and end markers the agent must report.",
+    "requiresAssistantToken": true
+  },
+  {
+    "id": "multiline",
+    "description": "Seven-line payload with middle and end markers the agent must report.",
+    "requiresAssistantToken": true
   }
 ]
