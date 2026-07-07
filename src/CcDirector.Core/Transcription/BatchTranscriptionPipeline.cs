@@ -245,8 +245,12 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         if ((int)resp.StatusCode == 402)
             throw new InsufficientCreditsException(ParseErrorCode(body), $"Transcription returned 402: {Truncate(body, 400)}");
 
+        // Any other non-success status becomes a typed failure carrying the status code, so the durable
+        // dictation retry loop (issue #1130) can tell a transient 5xx/429 (retry) from a permanent 4xx
+        // (do not retry). The message format is unchanged, and the type still derives from
+        // InvalidOperationException so existing catches keep working.
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Transcription returned {(int)resp.StatusCode}: {Truncate(body, 400)}");
+            throw new TranscriptionFailedException((int)resp.StatusCode, $"Transcription returned {(int)resp.StatusCode}: {Truncate(body, 400)}");
 
         using var doc = JsonDocument.Parse(body);
         if (!doc.RootElement.TryGetProperty("text", out var textProp))

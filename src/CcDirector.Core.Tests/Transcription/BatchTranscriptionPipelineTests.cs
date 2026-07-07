@@ -150,13 +150,19 @@ public sealed class BatchTranscriptionPipelineTests
     }
 
     [Fact]
-    public async Task TranscribeRawAsync_500_StillThrowsGenericInvalidOperation_NotOutOfCredits()
+    public async Task TranscribeRawAsync_500_ThrowsTypedTranscriptionFailure_NotOutOfCredits()
     {
-        // A non-402 provider failure must NOT be mistaken for out-of-credits.
+        // A non-402 provider failure must NOT be mistaken for out-of-credits. It now carries the status
+        // code so the durable dictation retry loop (issue #1130) can classify it - a 500 is transient.
+        // The typed exception still derives from InvalidOperationException, so pre-#1130 catches work.
         using var pipeline = new BatchTranscriptionPipeline(new HttpClient(new StatusHandler(HttpStatusCode.InternalServerError, "boom")));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var ex = await Assert.ThrowsAsync<TranscriptionFailedException>(() =>
             pipeline.TranscribeRawAsync(new byte[] { 1, 2, 3 }, "utterance.webm", DevThrottle()));
+        Assert.Equal(500, ex.StatusCode);
+        Assert.True(ex.IsTransient);
+        Assert.IsAssignableFrom<InvalidOperationException>(ex);
+        Assert.IsNotType<InsufficientCreditsException>(ex);
     }
 
     // ----- Acceptance criterion: a dictionary hit is swapped and reported -----
