@@ -90,9 +90,13 @@ public static class BackgroundDictationSend
                 return;
             }
 
-            // 3. Deliver the saved clip once now. If it does not deliver, it stays saved and the sweeper
-            //    retries it automatically - so this attempt failing is a HELD clip, never a lost one.
-            var result = await sweeper.TryDeliverAsync(pending, submit);
+            // 3. Deliver the saved clip once now, but only if the target session is idle at its prompt.
+            //    Typing a dictation into a busy, streaming composer is what let a failed-echo submit
+            //    pile up duplicate copies of the sentence (issue #1135); if the session is busy now the
+            //    clip stays saved and the background sweep delivers it the moment it is ready. If it does
+            //    not deliver, it stays saved and the sweeper retries automatically - a HELD clip, never lost.
+            var result = await sweeper.TryDeliverAsync(
+                pending, submit, isSessionReady: () => DictationReadiness.IsReadyForDelivery(target.ActivityState));
             if (result is not null)
             {
                 FileLog.Write($"[BackgroundDictationSend] immediate attempt for session {target.Id}: {result.Outcome}");

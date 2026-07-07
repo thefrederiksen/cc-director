@@ -185,6 +185,45 @@ public sealed class DictationDeliveryServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task DeliverAsync_SessionNotReady_Defers_WithoutTranscribingSubmittingOrBumpingAttempt()
+    {
+        // issue #1135: a session that is busy working must not be typed into. The clip is deferred
+        // BEFORE any transcription cost, the composer is never touched, and the attempt count is not
+        // bumped - so it is not treated as a failure and nothing accumulates in the composer.
+        var rec = _store.Save("s", "", SampleWav);
+        var transcriber = FakeTranscriber.Returning("hello");
+        var svc = new DictationDeliveryService(transcriber, _store);
+        var submitCalls = 0;
+
+        var result = await svc.DeliverAsync(
+            rec, _ => { submitCalls++; return Task.CompletedTask; }, isSessionReady: () => false);
+
+        Assert.Equal(DictationDeliveryOutcome.DeferredSessionBusy, result.Outcome);
+        Assert.False(result.Delivered);
+        Assert.Equal(0, submitCalls);            // never typed into the busy composer
+        Assert.Equal(0, transcriber.Calls);      // deferred before paying to transcribe
+        var kept = _store.LoadAll();
+        Assert.Single(kept);                     // clip kept for a later sweep
+        Assert.Equal(PendingDictationStatus.Pending, kept[0].Status);
+        Assert.Equal(0, kept[0].AttemptCount);   // a deferral is not a failed attempt
+    }
+
+    [Fact]
+    public async Task DeliverAsync_SessionReady_DeliversNormally()
+    {
+        var rec = _store.Save("s", "", SampleWav);
+        var svc = new DictationDeliveryService(FakeTranscriber.Returning("hello"), _store);
+        var submitted = new List<string>();
+
+        var result = await svc.DeliverAsync(
+            rec, t => { submitted.Add(t); return Task.CompletedTask; }, isSessionReady: () => true);
+
+        Assert.Equal(DictationDeliveryOutcome.Delivered, result.Outcome);
+        Assert.Equal(new[] { "hello" }, submitted);
+        Assert.Empty(_store.LoadAll());          // delivered => deleted
+    }
+
+    [Fact]
     public async Task DeliverAsync_AudioMissing_ReportsLostNoAudio_NeverSilent()
     {
         var rec = _store.Save("s", "", SampleWav);

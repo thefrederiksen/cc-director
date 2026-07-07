@@ -41,10 +41,24 @@ public sealed class DictationDeliveryService
     /// clip, not a lost one. (An empty transcript is still a delivered outcome: the audio was silence,
     /// the turn is a no-op the submit delegate guards, and keeping the clip would retry silence forever.)
     /// </summary>
-    public async Task<DictationDeliveryResult> DeliverAsync(PendingDictation pending, Func<string, Task> submit, CancellationToken ct = default)
+    public async Task<DictationDeliveryResult> DeliverAsync(
+        PendingDictation pending, Func<string, Task> submit, Func<bool>? isSessionReady = null, CancellationToken ct = default)
     {
         if (pending is null) throw new ArgumentNullException(nameof(pending));
         if (submit is null) throw new ArgumentNullException(nameof(submit));
+
+        // Readiness gate (issue #1135): only type a dictation into a session whose composer is idle at
+        // the prompt. Typing while the agent is Working (streaming output) makes the echo-verified submit
+        // false-negative and throw AFTER the text has already landed in the composer; the durable retry
+        // loop then re-types the same words on the next sweep, piling up duplicate copies of the one
+        // sentence. Deferring here - before any transcription or attempt bump - leaves the clip Pending
+        // and untouched, so a later sweep delivers it the moment the session returns to the prompt. The
+        // clip is durable on disk, so deferring loses nothing.
+        if (isSessionReady is not null && !isSessionReady())
+        {
+            FileLog.Write($"[DictationDeliveryService] deferred id={pending.Id}: session not ready for input");
+            return new DictationDeliveryResult(DictationDeliveryOutcome.DeferredSessionBusy, pending, null);
+        }
 
         byte[] audio;
         try
@@ -156,6 +170,12 @@ public enum DictationDeliveryOutcome
     /// <summary>The saved audio could not be read back (disk error / removed). Nothing to deliver -
     /// reported, not silent.</summary>
     LostNoAudio,
+
+    /// <summary>The target session was not idle at its prompt (Working, on a permission prompt, or
+    /// starting), so the clip was deferred WITHOUT transcribing, submitting, or bumping its attempt
+    /// count (issue #1135). Audio kept, status left Pending; a later sweep delivers it once the session
+    /// returns to the prompt. Not a failure - the words were never at risk.</summary>
+    DeferredSessionBusy,
 }
 
 /// <summary>The result of one delivery attempt: how it ended, the (updated) record, and any error text.</summary>
