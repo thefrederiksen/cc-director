@@ -48,6 +48,12 @@ internal static class GatewayDictationEndpoint
     private sealed record CompleteEntry(DateTime At, Lazy<Task<DictationOutcome>> Task);
     private static readonly ConcurrentDictionary<string, CompleteEntry> _completes = new();
 
+    // uploadId -> sessionId, captured at register so the chunk handler (which only has the uploadId)
+    // can refresh the session's orange "Transcribing..." heartbeat as chunks stream in (issue #1126).
+    // Pruned when the upload reaches a terminal completion; a leaked entry for a never-completed upload
+    // is a single guid-pair and is bounded by real abandoned-upload volume.
+    private static readonly ConcurrentDictionary<string, string> _uploadSids = new();
+
     public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client,
         SessionOwnerCache? owners, string token, GatewayTranscriptionService transcription,
         TranscribingSessions transcribingSessions, VoiceUploadStore uploads, Pairing.DeviceRegistry devices)
@@ -64,6 +70,7 @@ internal static class GatewayDictationEndpoint
             // upload id, so a resumed upload after a tab death maps back to the same staging dir.
             var key = ctx.Request.Headers["Idempotency-Key"].ToString();
             var uploadId = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
+            _uploadSids[uploadId] = sid;
             try { transcribingSessions.Begin(sid); } catch { /* the orange mark is a nicety */ }
             FileLog.Write($"[GatewayDictation] upload registered sid={sid} uploadId={uploadId}");
             return Results.Json(new { upload_id = uploadId });
@@ -82,6 +89,10 @@ internal static class GatewayDictationEndpoint
             try
             {
                 await uploads.StoreChunkAsync(uploadId, index, ms.ToArray(), string.IsNullOrEmpty(sha) ? null : sha, ctx.RequestAborted);
+                // Heartbeat: a stored chunk is progress, so keep the orange mark alive past its idle
+                // backstop for a slow upload that streams over more than the idle window (issue #1126).
+                if (_uploadSids.TryGetValue(uploadId, out var chunkSid))
+                    transcribingSessions.Refresh(chunkSid);
                 return Results.Json(new { ok = true, index });
             }
             catch (Exception ex)
@@ -99,10 +110,14 @@ internal static class GatewayDictationEndpoint
                 return Results.Json(new { error = "sessionId (guid) and totalChunks (>0) are required" },
                     statusCode: StatusCodes.Status400BadRequest);
 
+            // A completion attempt is progress - keep the orange mark alive across the server-side
+            // transcribe so a slow transcribe cannot let it age out mid-flight (issue #1126).
+            transcribingSessions.Refresh(req.SessionId!);
+
             var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
                 DateTime.UtcNow,
-                new Lazy<Task<DictationOutcome>>(() => RunCompleteAsync(
-                    id, req, uploads, registry, client, owners, transcription, transcribingSessions))));
+                new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
+                    id, req, uploads, registry, client, owners, transcription))));
 
             DictationOutcome outcome;
             try
@@ -114,30 +129,25 @@ internal static class GatewayDictationEndpoint
                 _completes.TryRemove(uploadId, out _); // transient: let a retry re-run
                 return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
             }
+
+            // The Gateway OWNS the orange "Transcribing..." mark, so it clears it here - OUTSIDE the
+            // single-flight cache - on EVERY terminal outcome (issue #1048, extended by #1126). Doing the
+            // clear here, not inside the cached RunCompleteCoreAsync, means a RESENT completion for an
+            // already-finished upload id (which returns the cached outcome WITHOUT re-running the core, so
+            // the old in-core clear never fired again) still clears the mark. The ONLY outcome we keep the
+            // mark for is an incomplete upload: more chunks are still coming and the client completes again
+            // on the same upload id, so the session is genuinely still transcribing.
+            if (!outcome.IsIncomplete)
+            {
+                EndTranscribing(transcribingSessions, req.SessionId!);
+                _uploadSids.TryRemove(uploadId, out _);
+            }
             // Only a truly terminal outcome (submitted / moved-on) is kept for idempotent dedupe; anything
             // retryable (transient error, incomplete upload, out-of-credits) is dropped so the next
             // complete re-runs the real work.
             if (!outcome.Terminal) _completes.TryRemove(uploadId, out _);
             return outcome.ToResult();
         });
-    }
-
-    private static async Task<DictationOutcome> RunCompleteAsync(
-        string uploadId, DictationCompleteRequest req, VoiceUploadStore uploads, DirectorRegistry registry,
-        DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription,
-        TranscribingSessions transcribingSessions)
-    {
-        var outcome = await RunCompleteCoreAsync(uploadId, req, uploads, registry, client, owners, transcription);
-        // The Gateway OWNS the orange "Transcribing..." mark, so it clears it on EVERY terminal outcome -
-        // not just the happy paths (issue #1048). Before this fix an error return (no key, empty audio, a
-        // transcription failure, out-of-credits, the session gone, a submit REFUSED because the session is
-        // parked on a modal, or an unexpected exception) left the mark set and leaned on the 20-minute
-        // MaxAge backstop to clear it - which is exactly what wedged sessions orange for up to 20 minutes.
-        // The ONLY outcome we keep the mark for is an incomplete upload: more chunks are still coming and
-        // the client completes again on the same upload id, so the session is genuinely still transcribing.
-        if (!outcome.IsIncomplete)
-            EndTranscribing(transcribingSessions, req.SessionId!);
-        return outcome;
     }
 
     private static async Task<DictationOutcome> RunCompleteCoreAsync(

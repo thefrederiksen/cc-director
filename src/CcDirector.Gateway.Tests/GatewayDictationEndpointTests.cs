@@ -9,11 +9,15 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// The durable server-owned dictation complete handler (issue #1006) clears the orange
 /// "Transcribing..." mark on EVERY terminal outcome, not just the happy paths (issue #1048). The
-/// clear is driven by <see cref="DictationOutcome.IsIncomplete"/>: the wrapper clears the mark unless
-/// the outcome is an incomplete upload (more chunks still coming). These tests lock that contract, the
-/// exact thing that was broken - previously an error return (no key, empty audio, a transcription
-/// failure, out-of-credits, the session gone, or a submit refused because the session was parked on a
-/// modal) left the mark set and leaned on the 20-minute MaxAge backstop, wedging the session orange.
+/// clear is driven by <see cref="DictationOutcome.IsIncomplete"/>: the handler clears the mark unless
+/// the outcome is an incomplete upload (more chunks still coming). Issue #1126 moved that clear OUTSIDE
+/// the single-flight completion cache so a resent completion for an already-finished upload id (which
+/// returns the cached outcome without re-running the core) still clears the mark, and shortened the
+/// backstop from a fixed 20-minute age to a short idle window. These tests lock the terminal-vs-incomplete
+/// contract that decides whether the mark is cleared - the exact thing that was originally broken:
+/// previously an error return (no key, empty audio, a transcription failure, out-of-credits, the session
+/// gone, or a submit refused because the session was parked on a modal) left the mark set and leaned on
+/// the backstop, wedging the session orange.
 /// </summary>
 public sealed class GatewayDictationEndpointTests
 {
