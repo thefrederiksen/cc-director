@@ -79,7 +79,12 @@ public sealed class ProcessHost : IDisposable
             {
                 StartupInfo = new STARTUPINFO
                 {
-                    cb = Marshal.SizeOf<STARTUPINFOEX>()
+                    cb = Marshal.SizeOf<STARTUPINFOEX>(),
+                    // When Director is launched with redirected stdio, Windows may copy those
+                    // redirected parent handles into a ConPTY child unless std handles are
+                    // explicitly controlled. Null STARTF_USESTDHANDLES forces the child to bind to
+                    // the pseudoconsole instead of seeing non-terminal stdin/stdout.
+                    dwFlags = STARTF_USESTDHANDLES
                 },
                 lpAttributeList = attributeList
             };
@@ -142,11 +147,15 @@ public sealed class ProcessHost : IDisposable
             var value = entry.Value as string;
             if (key is null || value is null)
                 continue;
-            // Strip all Claude Code environment variables to prevent
-            // nested detection and session ID conflicts
+            // Strip parent-agent environment variables to prevent nested
+            // detection and session/thread ID conflicts when Director is
+            // itself being driven from a terminal agent.
             if (key.Equals("CLAUDECODE", StringComparison.OrdinalIgnoreCase))
                 continue;
             if (key.StartsWith("CLAUDE_CODE_", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (key.StartsWith("CODEX_", StringComparison.OrdinalIgnoreCase)
+                && !key.Equals("CODEX_HOME", StringComparison.OrdinalIgnoreCase))
                 continue;
             if (key.Equals("GIT_EDITOR", StringComparison.OrdinalIgnoreCase))
                 continue;

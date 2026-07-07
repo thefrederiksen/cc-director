@@ -1,5 +1,6 @@
 using System.Text;
 using CcDirector.Core.ConPty;
+using CcDirector.Core.Drivers;
 using CcDirector.Core.Input;
 using CcDirector.Core.Memory;
 using CcDirector.Core.Utilities;
@@ -24,6 +25,7 @@ public sealed class ConPtyBackend : ISessionBackend
     public bool IsRunning => _processHost != null && !HasExited;
     public bool HasExited => _processHost == null || _status.StartsWith("Exited");
     public CircularTerminalBuffer? Buffer => _buffer;
+    public string WorkingDirectory => _workingDir;
 
     public event Action<string>? StatusChanged;
     public event Action<int>? ProcessExited;
@@ -73,67 +75,7 @@ public sealed class ConPtyBackend : ISessionBackend
     public async Task SendTextAsync(string text)
     {
         if (_disposed || _processHost == null) return;
-
-        // Strip a single trailing submit newline before evaluating "is this multi-line / large?".
-        // Callers (MainWindow, REST API, Quick Actions) sometimes append "\n" as a submit
-        // signal -- we don't want that to trip the multi-line heuristic and punt short
-        // prompts through a temp file. The backend sends CR explicitly below.
-        var textForCheck = text.TrimEnd('\r', '\n');
-
-        string textToSend;
-        if (LargeInputHandler.IsLargeInput(textForCheck) && !string.IsNullOrEmpty(_workingDir))
-        {
-            // Write to temp file and send @relative/path forward-slash form.
-            // Claude's @-reference parser treats backslashes as escapes, so a Windows
-            // path with backslashes (D:\Repo\.temp\file.txt) was rejected silently and
-            // the prompt never submitted. Make the path relative to the working dir
-            // when possible and force forward slashes.
-            var tempPath = LargeInputHandler.CreateTempFile(textForCheck, _workingDir);
-            var relRef = MakeAtReference(tempPath, _workingDir);
-            textToSend = $"@{relRef}";
-            FileLog.Write($"[ConPtyBackend] Large input ({textForCheck.Length} chars), using temp file reference: {textToSend}");
-        }
-        else
-        {
-            textToSend = textForCheck;
-        }
-
-        var textBytes = Encoding.UTF8.GetBytes(textToSend);
-        _processHost.Write(textBytes);
-
-        // Brief delay so TUI processes text before Enter
-        await Task.Delay(50);
-
-        // Send Enter (carriage return)
-        _processHost.Write(new byte[] { 0x0D });
-
-        // @-reference Enters are unreliable (autocomplete popup / claude's startup window
-        // drops them) and a parked prompt looks like an idle session (issue #212). Watch
-        // for submission evidence (the TUI streams after a real submit) and keep nudging
-        // while it stays dead; an extra Enter after a real submit is a no-op.
-        if (textToSend.StartsWith('@'))
-            await AtReferenceSubmitVerifier.EnsureSubmittedAsync(_buffer, Write, textToSend);
-    }
-
-    /// <summary>
-    /// Build a Claude-friendly @-reference target. Uses a relative path (relative to
-    /// the session's working directory) when the temp file is inside that subtree, and
-    /// always forces forward slashes so claude's tokenizer doesn't escape backslashes.
-    /// </summary>
-    private static string MakeAtReference(string absoluteTempPath, string workingDir)
-    {
-        var p = absoluteTempPath;
-        if (!string.IsNullOrEmpty(workingDir))
-        {
-            try
-            {
-                var rel = Path.GetRelativePath(workingDir, absoluteTempPath);
-                if (!rel.StartsWith("..", StringComparison.Ordinal))
-                    p = rel;
-            }
-            catch { /* fall through, use the absolute path */ }
-        }
-        return p.Replace('\\', '/');
+        await TerminalSubmit.SharedSubmitAsync(this, text, "ConPtyBackend");
     }
 
     public Task SendEnterAsync()

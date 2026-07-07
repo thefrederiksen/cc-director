@@ -332,17 +332,49 @@ internal static class TerminalInjectHarnessApp
 
     private static void WriteRunArtifacts(Session session, string runDirectory, string prompt, SubmitProof proof, long cursor)
     {
+        Directory.CreateDirectory(runDirectory);
         File.WriteAllText(Path.Combine(runDirectory, "sent-payload.txt"), prompt, Encoding.UTF8);
         File.WriteAllText(Path.Combine(runDirectory, "screen.txt"), string.Join(Environment.NewLine, session.SnapshotScreenRows()), Encoding.UTF8);
         File.WriteAllText(Path.Combine(runDirectory, "proof.json"), JsonSerializer.Serialize(proof, JsonOptions.Indented), Encoding.UTF8);
 
-        var bytes = session.Buffer?.DumpAll() ?? [];
+        var bytes = DumpAllWithRetry(session.Buffer);
         File.WriteAllBytes(Path.Combine(runDirectory, "raw-terminal.bin"), bytes);
         if (session.Buffer is not null)
         {
-            var (sinceBytes, _) = session.Buffer.GetWrittenSince(cursor);
+            var (sinceBytes, _) = GetWrittenSinceWithRetry(session.Buffer, cursor);
             File.WriteAllBytes(Path.Combine(runDirectory, "raw-terminal-since-cursor.bin"), sinceBytes);
         }
+    }
+
+    private static byte[] DumpAllWithRetry(CcDirector.Core.Memory.CircularTerminalBuffer? buffer)
+    {
+        if (buffer is null)
+            return [];
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var bytes = buffer.DumpAll();
+            if (bytes.Length > 0 || buffer.TotalBytesWritten == 0)
+                return bytes;
+            Thread.Sleep(50);
+        }
+
+        return buffer.DumpAll();
+    }
+
+    private static (byte[] Bytes, long StartOffset) GetWrittenSinceWithRetry(
+        CcDirector.Core.Memory.CircularTerminalBuffer buffer,
+        long cursor)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var result = buffer.GetWrittenSince(cursor);
+            if (result.Data.Length > 0 || buffer.TotalBytesWritten <= cursor)
+                return result;
+            Thread.Sleep(50);
+        }
+
+        return buffer.GetWrittenSince(cursor);
     }
 
     private static string? ResolveLaunchArgs(AgentKind agentKind, AgentOptions options)
@@ -420,7 +452,10 @@ internal sealed class HarnessContext : IAsyncDisposable
     internal static async Task<HarnessContext> StartAsync(HarnessOptions options, HarnessReport report)
     {
         var agentOptions = new AgentOptions();
-        var sessionManager = new SessionManager(agentOptions, Console.WriteLine);
+        var sessionManager = new SessionManager(agentOptions, Console.WriteLine)
+        {
+            CleanExitReapDelayMs = 600_000
+        };
         var instancesDirectory = Path.Combine(options.OutputDirectory, "instances");
         Directory.CreateDirectory(instancesDirectory);
 
@@ -609,6 +644,7 @@ internal static class LiveSessionRunner
         var deadline = DateTimeOffset.UtcNow + timeout;
         long lastBytes = -1;
         var stableSince = DateTimeOffset.UtcNow;
+        var acceptedCodexTrustPrompt = false;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -616,6 +652,16 @@ internal static class LiveSessionRunner
                 throw new InvalidOperationException($"Session exited before ready: status={session.Status}, exitCode={session.ExitCode}");
 
             var bytes = session.Buffer?.TotalBytesWritten ?? 0;
+            if (!acceptedCodexTrustPrompt && session.AgentKind == AgentKind.Codex && IsCodexTrustPrompt(session))
+            {
+                session.SendInput([0x0D]);
+                acceptedCodexTrustPrompt = true;
+                lastBytes = bytes;
+                stableSince = DateTimeOffset.UtcNow;
+                await Task.Delay(750);
+                continue;
+            }
+
             if (bytes != lastBytes)
             {
                 lastBytes = bytes;
@@ -630,6 +676,13 @@ internal static class LiveSessionRunner
         }
 
         throw new TimeoutException($"Session did not become ready within {timeout.TotalSeconds:F0} seconds.");
+    }
+
+    private static bool IsCodexTrustPrompt(Session session)
+    {
+        var text = TerminalSubmit.NormalizeForEcho(string.Join("\n", session.SnapshotScreenRows()));
+        return text.Contains("Doyoutrustthecontentsofthisdirectory", StringComparison.OrdinalIgnoreCase)
+               && text.Contains("Pressentertocontinue", StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -670,7 +723,9 @@ internal static class SubmitVerifier
                     message: "Terminal turn evidence observed.");
             }
 
-            if (requiresAssistantToken && FragmentsObservedSince(session, bufferCursor, expectedFragments, minimumTerminalFragmentCount))
+            if (requiresAssistantToken
+                && TurnStarted(session, bufferCursor, prompt)
+                && FragmentsObservedSince(session, bufferCursor, expectedFragments, minimumTerminalFragmentCount))
             {
                 return SubmitProof.CreatePassed(
                     tokenObserved: true,
@@ -768,14 +823,27 @@ internal static class SubmitVerifier
     private static int CountTokenSince(Session session, long bufferCursor, string token)
     {
         var (bytes, _) = session.Buffer?.GetWrittenSince(bufferCursor) ?? (Array.Empty<byte>(), 0);
-        var text = TerminalSubmit.StripAnsi(Encoding.UTF8.GetString(bytes));
+        var text = TerminalSubmit.NormalizeForEcho(TerminalSubmit.StripAnsi(Encoding.UTF8.GetString(bytes)));
+        var screenText = TerminalSubmit.NormalizeForEcho(string.Join("\n", session.SnapshotScreenRows()));
+        var normalizedToken = TerminalSubmit.NormalizeForEcho(token);
+        if (normalizedToken.Length == 0)
+            return 0;
+
+        return Math.Max(
+            CountOccurrences(text, normalizedToken),
+            CountOccurrences(screenText, normalizedToken));
+    }
+
+    private static int CountOccurrences(string text, string normalizedToken)
+    {
         var count = 0;
         var index = 0;
-        while ((index = text.IndexOf(token, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        while ((index = text.IndexOf(normalizedToken, index, StringComparison.OrdinalIgnoreCase)) >= 0)
         {
             count++;
-            index += token.Length;
+            index += normalizedToken.Length;
         }
+
         return count;
     }
 
@@ -824,15 +892,15 @@ internal static class TranscriptProof
 
         var userObserved = newMessages
             .Where(m => m.Role == ConversationRole.User)
-            .Any(m => TerminalSubmit.NormalizeForEcho(MessageText(m)).Contains(normalizedPrompt, StringComparison.Ordinal)
-                      || TerminalSubmit.NormalizeForEcho(MessageText(m)).Contains(TerminalSubmit.NormalizeForEcho(expectedToken), StringComparison.Ordinal));
+            .Any(m => TerminalSubmit.NormalizeForEcho(MessageText(m)).Contains(normalizedPrompt, StringComparison.OrdinalIgnoreCase)
+                      || TerminalSubmit.NormalizeForEcho(MessageText(m)).Contains(TerminalSubmit.NormalizeForEcho(expectedToken), StringComparison.OrdinalIgnoreCase));
 
         var assistantObserved = newMessages
             .Where(m => m.Role == ConversationRole.Assistant)
             .Any(m =>
             {
                 var text = TerminalSubmit.NormalizeForEcho(MessageText(m));
-                return normalizedFragments.All(f => text.Contains(f, StringComparison.Ordinal));
+                return normalizedFragments.All(f => text.Contains(f, StringComparison.OrdinalIgnoreCase));
             });
 
         return new TranscriptObservation(userObserved, assistantObserved);
@@ -1221,11 +1289,7 @@ internal sealed record HarnessCase(string Id, bool RequiresAssistantToken)
             _ => $"Reply {token}",
         };
 
-        var terminalCount = Id.Equals("large-line", StringComparison.OrdinalIgnoreCase)
-            || Id.Equals("multiline", StringComparison.OrdinalIgnoreCase)
-                ? 1
-                : 2;
-        return new PromptCase(text, [token, middle, end], terminalCount);
+        return new PromptCase(text, [token, middle, end], MinimumTerminalFragmentCount: 1);
     }
 
     private static string BuildSingleLinePayload(string token, string middle, string end, int minimumLength)

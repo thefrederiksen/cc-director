@@ -65,7 +65,7 @@ public class AgentToolCatalogTests
         var fullAccess = codex.Presets.FirstOrDefault(p => p.Name == AgentToolCatalog.CodexFullAccessPresetName);
         Assert.NotNull(fullAccess);
         Assert.Equal(AgentToolCatalog.CodexFullAccessArg, fullAccess.Arguments);
-        Assert.Equal("--sandbox danger-full-access --ask-for-approval never", AgentToolCatalog.CodexFullAccessArg);
+        Assert.Equal("--dangerously-bypass-approvals-and-sandbox", AgentToolCatalog.CodexFullAccessArg);
     }
 
     [Fact]

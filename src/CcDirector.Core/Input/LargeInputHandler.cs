@@ -63,4 +63,29 @@ public static class LargeInputHandler
 
         return filepath;
     }
+
+    /// <summary>
+    /// Build an agent-friendly @-reference target. Uses a relative path when the temp file is under
+    /// the working directory, and always forces forward slashes so Windows backslashes are not
+    /// interpreted as escapes by agent TUIs.
+    /// </summary>
+    public static string MakeAtReference(string absoluteTempPath, string workingDir)
+    {
+        var path = absoluteTempPath;
+        if (!string.IsNullOrEmpty(workingDir))
+        {
+            try
+            {
+                var relative = Path.GetRelativePath(workingDir, absoluteTempPath);
+                if (!relative.StartsWith("..", StringComparison.Ordinal))
+                    path = relative;
+            }
+            catch
+            {
+                // Fall through to the absolute path.
+            }
+        }
+
+        return path.Replace('\\', '/');
+    }
 }

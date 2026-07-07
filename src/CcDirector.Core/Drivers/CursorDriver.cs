@@ -58,13 +58,8 @@ public sealed class CursorDriver : IAgentDriver
         throw new NotSupportedException(
             "[CursorDriver] Launch specs are owned by the Director's CursorAgent path.");
 
-    public Task SubmitAsync(ISessionBackend backend, string text)
-    {
-        ArgumentNullException.ThrowIfNull(backend);
-        // Blind submit: cursor-agent's composer echo layout is unverified, so no echo gate
-        // yet (same conservative contract as GenericDriver).
-        return backend.SendTextAsync(text);
-    }
+    public Task SubmitAsync(ISessionBackend backend, string text) =>
+        TerminalSubmit.SharedSubmitAsync(backend, text, "CursorDriver");
 
     public Task CancelAsync(ISessionBackend backend) =>
         throw new NotSupportedException(
