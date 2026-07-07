@@ -60,6 +60,33 @@ public sealed class DictationDeliveryServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task DeliverAsync_InsertsDictationAtCaretInsideTypedText_SoRetriesNeverDropTheTypedPart()
+    {
+        // The user had typed "start end" with the caret between the words, then dictated "middle".
+        var rec = _store.Save("s", "", SampleWav, before: "start", after: "end");
+        var svc = new DictationDeliveryService(FakeTranscriber.Returning("middle"), _store);
+        var submitted = new List<string>();
+
+        var result = await svc.DeliverAsync(rec, t => { submitted.Add(t); return Task.CompletedTask; });
+
+        Assert.Equal(DictationDeliveryOutcome.Delivered, result.Outcome);
+        Assert.Equal(new[] { "start middle end" }, submitted);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_WithPrefixAndTypedText_ComposesInOrder()
+    {
+        // Earlier paused segment "one", this segment "two", typed suffix "tail" after the caret.
+        var rec = _store.Save("s", "one", SampleWav, before: "", after: "tail");
+        var svc = new DictationDeliveryService(FakeTranscriber.Returning("two"), _store);
+        var submitted = new List<string>();
+
+        await svc.DeliverAsync(rec, t => { submitted.Add(t); return Task.CompletedTask; });
+
+        Assert.Equal(new[] { "one two tail" }, submitted);
+    }
+
+    [Fact]
     public async Task DeliverAsync_EmptyTranscript_IsDelivered_AndClipRemoved_SoSilenceIsNotRetriedForever()
     {
         var rec = _store.Save("s", "", SampleWav);
