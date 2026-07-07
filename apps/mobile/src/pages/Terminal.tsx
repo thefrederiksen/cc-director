@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import "@xterm/xterm/css/xterm.css";
 import { listSessions } from "@devthrottle/client-core/api/client";
 import { TerminalMirror } from "@devthrottle/client-core/terminal/stream";
+import { DictationStatusStrip } from "../components/DictationStatusStrip";
 import { SessionControls } from "../components/SessionControls";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
@@ -89,6 +90,10 @@ export function Terminal() {
       </div>
 
       {error !== null && <div className="banner banner-error" role="alert">{error}</div>}
+
+      {/* Live dictation status - always visible (even with the Keys panel hidden) so a Speak Send is
+          never silent: progress while it runs, a sticky red failure with Retry if it dies (#1139). */}
+      <DictationStatusStrip sessionId={sessionId} />
 
       {/* The terminal fills all remaining space. .term-wrap is the only scroll container (vertical
           scrollback + horizontal pan); the Fit and A-/A+ controls float over its corners. */}

@@ -11,6 +11,7 @@ import {
 import { cleanForReading } from "@devthrottle/client-core/history/historyText";
 import { markdownToHtml } from "@devthrottle/client-core/history/historyMarkdown";
 import { extractLinks, type HistoryLink } from "@devthrottle/client-core/history/historyLinks";
+import { DictationStatusStrip } from "../components/DictationStatusStrip";
 import { SessionControls } from "../components/SessionControls";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
@@ -269,6 +270,9 @@ export function Chat() {
       </div>
 
       {error !== null && <div className="banner banner-error" role="alert">{error}</div>}
+
+      {/* Live dictation status so a Speak Send from Chat is never silent (#1139). */}
+      <DictationStatusStrip sessionId={sessionId} />
 
       <div className="chat-stage">
         {loadFailed && bubbles.length === 0 ? (

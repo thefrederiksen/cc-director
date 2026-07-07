@@ -12,6 +12,7 @@ import {
 } from "@devthrottle/client-core/api/client";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
+import { DictationStatusStrip } from "../components/DictationStatusStrip";
 import { SessionManageBar } from "../components/SessionManageBar";
 import { ViewTabs } from "../components/ViewTabs";
 import { ensureClip, getClipState, getVoiceMeta, saveVoiceMeta, stopPlayback, useVoiceClips } from "../voice/clips";
@@ -450,6 +451,9 @@ export function VoiceMode() {
       <ViewTabs sessionId={sessionId} active="voice" />
 
       <SessionManageBar sessionId={sessionId} />
+
+      {/* Live dictation status so a spoken reply Send is never silent (#1139). */}
+      <DictationStatusStrip sessionId={sessionId} />
 
       {/* The clip element is always mounted (hidden) so auto-play works in any state; the visible
           play controls live in the speaking state below. */}
