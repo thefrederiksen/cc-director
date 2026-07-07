@@ -63,25 +63,25 @@ public sealed class TranscribingSessionsTests
     }
 
     [Fact]
-    public void IsTranscribing_WithinMaxAge_StaysTrue()
+    public void IsTranscribing_WithinIdleTimeout_StaysTrue()
     {
         var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
         var store = new TranscribingSessions(() => now);
         store.Begin("sid-1");
 
-        now = now.Add(TranscribingSessions.MaxAge); // exactly at the cap is still live
+        now = now.Add(TranscribingSessions.IdleTimeout); // exactly at the cap is still live
 
         Assert.True(store.IsTranscribing("sid-1"));
     }
 
     [Fact]
-    public void IsTranscribing_PastMaxAge_ExpiresAndClears()
+    public void IsTranscribing_PastIdleTimeout_ExpiresAndClears()
     {
         var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
         var store = new TranscribingSessions(() => now);
         store.Begin("sid-1");
 
-        now = now.Add(TranscribingSessions.MaxAge).AddSeconds(1); // just past the cap
+        now = now.Add(TranscribingSessions.IdleTimeout).AddSeconds(1); // just past the cap
 
         Assert.False(store.IsTranscribing("sid-1"));
         // The stale mark is removed, so a later read is still false even if the clock rewinds.
@@ -95,11 +95,52 @@ public sealed class TranscribingSessionsTests
         var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
         var store = new TranscribingSessions(() => now);
         store.Begin("sid-1");
-        now = now.Add(TranscribingSessions.MaxAge).AddMinutes(5);
+        now = now.Add(TranscribingSessions.IdleTimeout).AddMinutes(5);
         Assert.False(store.IsTranscribing("sid-1")); // expired
 
         store.Begin("sid-1"); // a fresh Send re-marks with the current time
 
         Assert.True(store.IsTranscribing("sid-1"));
+    }
+
+    [Fact]
+    public void Refresh_KeepsAnActiveMarkAlivePastTheIdleWindow()
+    {
+        // A slow upload that streams progress just under the idle window on each step must never be cut
+        // short: each Refresh restarts the idle clock, so the mark survives well past IdleTimeout in
+        // total as long as progress keeps arriving (issue #1126).
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var store = new TranscribingSessions(() => now);
+        store.Begin("sid-1");
+
+        for (var step = 0; step < 5; step++)
+        {
+            now = now.Add(TranscribingSessions.IdleTimeout).Subtract(TimeSpan.FromSeconds(1)); // just shy of idle
+            store.Refresh("sid-1");
+        }
+
+        Assert.True(store.IsTranscribing("sid-1")); // still live after 5x the idle window of active upload
+    }
+
+    [Fact]
+    public void Refresh_DoesNotResurrectAClearedMark()
+    {
+        var store = new TranscribingSessions();
+        store.Begin("sid-1");
+        store.End("sid-1");
+
+        store.Refresh("sid-1"); // must not re-mark a session that was already cleared
+
+        Assert.False(store.IsTranscribing("sid-1"));
+    }
+
+    [Fact]
+    public void Refresh_UnknownSession_IsNoOp()
+    {
+        var store = new TranscribingSessions();
+
+        store.Refresh("never-began"); // must not throw or create a mark
+
+        Assert.False(store.IsTranscribing("never-began"));
     }
 }
