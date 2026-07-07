@@ -13,12 +13,16 @@ try:
     from . import __version__
     from .manipulation import image_info, resize, convert
     from .vision import describe, extract_text
-    from .generation import generate_to_file
+    from .generation import generate_to_file, GenerationNotAvailableError
+    from .devthrottle import DevThrottleConfigError
+    from .batch import catalog_folder, ImageRecord
 except ImportError:
     from src import __version__
     from src.manipulation import image_info, resize, convert
     from src.vision import describe, extract_text
-    from src.generation import generate_to_file
+    from src.generation import generate_to_file, GenerationNotAvailableError
+    from src.devthrottle import DevThrottleConfigError
+    from src.batch import catalog_folder, ImageRecord
 
 app = typer.Typer(
     name="cc-image",
@@ -118,23 +122,52 @@ def convert_cmd(
         raise typer.Exit(1)
 
 
+ENGINE_DISPLAY = {
+    "devthrottle": "DevThrottle",
+    "openai": "OpenAI",
+    "claude_code": "Claude Code",
+}
+
+
 @app.command("describe")
 def describe_cmd(
-    image: Path = typer.Argument(..., help="Image to analyze", exists=True),
+    path: Path = typer.Argument(..., help="Image file OR folder (with --recursive)", exists=True),
     engine: str = typer.Option(
-        "claude_code",
+        "devthrottle",
         "--engine", "-e",
-        help="LLM engine: claude_code (default) or openai",
+        help="AI engine: devthrottle (default), openai, or claude_code",
+    ),
+    recursive: bool = typer.Option(
+        False, "--recursive", "-r",
+        help="Treat the path as a folder and describe every image in it (batch mode)",
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o",
+        help="Batch results file (JSON + CSV written alongside). Default: <folder>/cc-image-catalog",
+    ),
+    fmt: str = typer.Option(
+        "both", "--format", "-f",
+        help="Batch output format: json, csv, or both",
+    ),
+    workers: int = typer.Option(
+        4, "--workers", "-w",
+        help="Batch concurrency (parallel images)",
     ),
 ):
-    """Get AI description of an image."""
+    """Get an AI description of an image, or catalog a whole folder with --recursive."""
+    if path.is_dir() or recursive:
+        _describe_folder(path, output, fmt, workers)
+        return
+
     try:
-        engine_display = "Claude Code" if engine == "claude_code" else "OpenAI"
-        console.print(f"[blue]Analyzing image with {engine_display}...[/blue]")
-        result = describe(image, engine=engine)
+        console.print(f"[blue]Analyzing image with {ENGINE_DISPLAY.get(engine, engine)}...[/blue]")
+        result = describe(path, engine=engine)
         console.print(f"\n{result}")
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except DevThrottleConfigError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
         raise typer.Exit(1)
     except RuntimeError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -144,23 +177,74 @@ def describe_cmd(
         raise typer.Exit(1)
 
 
+def _describe_folder(folder: Path, output: Optional[Path], fmt: str, workers: int) -> None:
+    """Batch mode: catalog every image in a folder to JSON/CSV with resume support."""
+    if not folder.is_dir():
+        console.print(f"[red]Error:[/red] --recursive expects a folder, got: {folder}")
+        raise typer.Exit(1)
+
+    fmt = fmt.lower()
+    if fmt not in ("json", "csv", "both"):
+        console.print("[red]Error:[/red] --format must be one of: json, csv, both")
+        raise typer.Exit(1)
+    write_json = fmt in ("json", "both")
+    write_csv = fmt in ("csv", "both")
+
+    output = output or (folder / "cc-image-catalog")
+
+    def on_progress(done: int, total: int, record: ImageRecord) -> None:
+        name = Path(record.path).name
+        if record.error:
+            console.print(f"[yellow][{done}/{total}][/yellow] [red]FAILED[/red] {name}: {record.error}")
+        else:
+            preview = record.description.replace("\n", " ")[:70]
+            console.print(f"[green][{done}/{total}][/green] {name}: {preview}")
+
+    try:
+        console.print(f"[blue]Cataloging images in[/blue] {folder} [blue](recursive)...[/blue]")
+        result = catalog_folder(
+            folder,
+            output_path=output,
+            recursive=True,
+            workers=workers,
+            write_json=write_json,
+            write_csv=write_csv,
+            on_progress=on_progress,
+        )
+    except DevThrottleConfigError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        raise typer.Exit(1)
+    except (NotADirectoryError, OSError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[green]Done.[/green] {result.total} images "
+        f"({result.processed} described, {result.skipped} skipped, {result.failed} failed)."
+    )
+    for out in result.output_paths:
+        console.print(f"[cyan]Wrote:[/cyan] {out}")
+
+
 @app.command("ocr")
 def ocr_cmd(
     image: Path = typer.Argument(..., help="Image with text", exists=True),
     engine: str = typer.Option(
-        "claude_code",
+        "devthrottle",
         "--engine", "-e",
-        help="LLM engine: claude_code (default) or openai",
+        help="AI engine: devthrottle (default), openai, or claude_code",
     ),
 ):
-    """Extract text from image (OCR)."""
+    """Extract text from an image (OCR)."""
     try:
-        engine_display = "Claude Code" if engine == "claude_code" else "OpenAI"
-        console.print(f"[blue]Extracting text with {engine_display}...[/blue]")
+        console.print(f"[blue]Extracting text with {ENGINE_DISPLAY.get(engine, engine)}...[/blue]")
         result = extract_text(image, engine=engine)
         console.print(f"\n{result}")
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except DevThrottleConfigError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
         raise typer.Exit(1)
     except RuntimeError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -177,11 +261,14 @@ def generate_cmd(
     size: str = typer.Option("1024x1024", "-s", "--size", help="Size: 1024x1024, 1024x1792, 1792x1024"),
     quality: str = typer.Option("standard", "-q", "--quality", help="Quality: standard, hd"),
 ):
-    """Generate image with DALL-E."""
+    """Generate an image from a prompt (DEFERRED - DevThrottle images endpoint not built yet)."""
     try:
         console.print(f"[blue]Generating:[/blue] {prompt[:50]}...")
         result = generate_to_file(prompt, output, size=size, quality=quality)
         console.print(f"[green]Generated:[/green] {result}")
+    except GenerationNotAvailableError as e:
+        console.print(f"[yellow]Not available yet:[/yellow] {e}")
+        raise typer.Exit(2)
     except RuntimeError as e:
         console.print(f"[red]API error:[/red] {e}")
         raise typer.Exit(1)
