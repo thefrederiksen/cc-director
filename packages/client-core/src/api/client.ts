@@ -10,6 +10,7 @@ import type { components } from "./schema";
 import type { SessionHistoryDto } from "../history/types";
 import { planUploadChunks } from "./chunking";
 import { getDeviceKey, clearDeviceKey } from "../auth/deviceKey";
+import { publishDictationStatus } from "../dictation/status";
 
 export type SessionDto = components["schemas"]["SessionDto"];
 
@@ -848,16 +849,25 @@ export async function uploadDictationToSession(
   args: DictationUploadArgs,
   signal?: AbortSignal,
 ): Promise<DictationSubmitResult> {
-  const fail = (error: string): DictationSubmitResult => ({ terminal: false, submitted: false, movedOn: false, transcript: "", error });
+  // Live status is published at every step so the on-screen strip and the roster badge show exactly
+  // where the send is (owner rule after #1139: never a silent dictation). A failure is published as a
+  // sticky, retryable status rather than only returned, so it cannot be lost if the caller is gone.
+  const sid = args.sessionId;
+  const uploadId = args.uploadId;
+  const failed = (error: string, retryable = true): DictationSubmitResult => {
+    publishDictationStatus({ sessionId: sid, uploadId, phase: "failed", error, retryable });
+    return { terminal: false, submitted: false, movedOn: false, transcript: "", error };
+  };
 
   // 1. Register (idempotent: the same id re-opens the same staging after a resume).
+  publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded: 0, total: 1 });
   const reg = await fetch(`/dictation/upload`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", "Idempotency-Key": args.uploadId, ...authHeaders() },
     body: JSON.stringify({ sessionId: args.sessionId, baselineBufferBytes: args.baselineBufferBytes }),
     signal,
   });
-  if (!reg.ok) return fail(`register failed: ${reg.status}`);
+  if (!reg.ok) return failed(`Couldn't start the upload (server said ${reg.status}).`);
   const regBody = (await reg.json().catch(() => ({}))) as { upload_id?: string };
   const id = encodeURIComponent(regBody.upload_id ?? args.uploadId);
 
@@ -865,6 +875,8 @@ export async function uploadDictationToSession(
   //    chunk instead of restarting the whole clip.
   const bytes = new Uint8Array(await args.audio.arrayBuffer());
   const ranges = planUploadChunks(bytes.length, MAX_UPLOAD_CHUNK_BYTES);
+  publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded: 0, total: ranges.length });
+  let uploaded = 0;
   for (const range of ranges) {
     const part = bytes.subarray(range.start, range.end);
     const sha = await sha256Hex(part);
@@ -885,7 +897,9 @@ export async function uploadDictationToSession(
       }
       if (!ok && attempt < CHUNK_RETRIES - 1) await uploadBackoff(400 * (attempt + 1), signal);
     }
-    if (!ok) return fail(lastErr);
+    if (!ok) return failed(`Upload interrupted (${lastErr}).`);
+    uploaded += 1;
+    publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded, total: ranges.length });
   }
 
   // 3. Complete: the server assembles, transcribes, and injects the turn.
@@ -908,6 +922,9 @@ export async function uploadDictationToSession(
       signal,
     });
 
+  // The server now assembles, transcribes, and injects inside this one request, so from the client's
+  // side "complete in flight" is the transcribing phase.
+  publishDictationStatus({ sessionId: sid, uploadId, phase: "transcribing" });
   let comp = await complete();
   if (comp.status === 409) {
     // Some chunks did not land; re-send exactly those, then complete once more.
@@ -926,10 +943,32 @@ export async function uploadDictationToSession(
     comp = await complete();
   }
 
-  if (comp.status === 402) throw creditsErrorFrom(await comp.json().catch(() => ({})));
+  if (comp.status === 402) {
+    // Out of credits is a hard failure a plain retry will not fix - mark it non-retryable so the strip
+    // offers "Add credits" rather than a pointless Retry, then throw so the caller's credits UI fires.
+    publishDictationStatus({ sessionId: sid, uploadId, phase: "failed", retryable: false, error: "Out of transcription credits." });
+    throw creditsErrorFrom(await comp.json().catch(() => ({})));
+  }
   const body = (await comp.json().catch(() => ({}))) as { submitted?: boolean; movedOn?: boolean; transcript?: string; error?: string };
-  if (!comp.ok) return fail(body.error ?? `complete: ${comp.status}`);
+  if (!comp.ok) {
+    // The transcription-provider failures (the #1139 502/504 wrapping upstream_timeout) land here. The
+    // audio is saved durably, so this is a HELD-and-will-retry state, not a loss - say so, and keep it
+    // sticky on screen and on the roster until it retries or the user dismisses it.
+    return failed(providerFailureMessage(body.error, comp.status));
+  }
+  publishDictationStatus({ sessionId: sid, uploadId, phase: "done" });
   return { terminal: true, submitted: Boolean(body.submitted), movedOn: Boolean(body.movedOn), transcript: body.transcript ?? "" };
+}
+
+// Turn a raw transcription-provider error into a short, honest, human sentence for the status strip.
+// The audio is durable at this point, so every one of these is a "held, will retry" state.
+function providerFailureMessage(serverError: string | undefined, status: number): string {
+  const raw = (serverError ?? "").toLowerCase();
+  if (raw.includes("upstream_timeout") || raw.includes("did not respond") || status === 504)
+    return "The transcription service timed out. Your recording is saved and will retry.";
+  if (raw.includes("upstream_unavailable") || status === 503)
+    return "The transcription service is temporarily unavailable. Your recording is saved and will retry.";
+  return `Transcription didn't go through (${serverError ?? status}). Your recording is saved and will retry.`;
 }
 
 function extForMime(mime: string | undefined): string {

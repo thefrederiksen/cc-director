@@ -1,5 +1,6 @@
 import { uploadDictationToSession } from "../api/client";
-import { deletePending, prunePending, savePending, type PendingDictation } from "./pendingStore";
+import { deletePending, getPending, prunePending, savePending, type PendingDictation } from "./pendingStore";
+import { clearDictationStatus, publishDictationStatus } from "./status";
 
 // The durable Send pipeline for the mobile Speak dialog (issue #1006). The instant the user hits Send
 // the dialog hands the recorded audio here and closes; we persist the raw audio locally (IndexedDB)
@@ -60,6 +61,10 @@ export async function backgroundTranscribeAndSend(
     baselineBufferBytes: hooks.baselineBufferBytes ?? 0,
     createdAt: Date.now(),
   };
+
+  // Show the very first step (before any network work) so the status strip appears the instant Send is
+  // pressed and the screen is never quiet. uploadDictationToSession publishes every step after this.
+  publishDictationStatus({ sessionId, uploadId: rec.id, phase: "saving" });
 
   // Save the audio the instant Send is pressed - even if this tab dies right now, it is not lost.
   let persisted = false;
@@ -129,9 +134,49 @@ export async function resumePendingDictations(): Promise<void> {
         resumed: true,
       });
       if (outcome.terminal) await deletePending(rec.id);
-      // Non-terminal: keep it for the next load.
+      // Non-terminal: keep it for the next load. uploadDictationToSession has already published the
+      // failed status, so the roster badge shows it is held.
     } catch {
       // Credits/network still down: keep the record; the next launch retries until the TTL prunes it.
     }
+  }
+}
+
+// Re-drive ONE failed dictation on demand - the Retry button on the status strip. Re-uploads the exact
+// durable clip by its upload id (idempotent on the server, so a clip that actually landed is deduped,
+// not double-submitted). uploadDictationToSession republishes the live status, so Retry lights the
+// strip up again from "uploading" through to "done" or a fresh failure. Returns true when the turn was
+// finally submitted. If the durable record is gone (already sent, or pruned past the TTL) the stale
+// status is cleared so a dead failure banner cannot linger.
+export async function retryPendingDictation(uploadId: string): Promise<boolean> {
+  let rec: PendingDictation | null;
+  try {
+    rec = await getPending(uploadId);
+  } catch {
+    return false;
+  }
+  if (rec === null) {
+    clearDictationStatus(uploadId);
+    return false;
+  }
+  try {
+    const outcome = await uploadDictationToSession({
+      sessionId: rec.sessionId,
+      uploadId: rec.id,
+      audio: rec.blob,
+      before: rec.before,
+      after: rec.after,
+      prefix: rec.prefix,
+      baselineBufferBytes: rec.baselineBufferBytes,
+      resumed: true,
+    });
+    if (outcome.terminal) {
+      await deletePending(rec.id);
+      return true;
+    }
+    return false;
+  } catch {
+    // The status is already published as failed by uploadDictationToSession; keep the durable record.
+    return false;
   }
 }

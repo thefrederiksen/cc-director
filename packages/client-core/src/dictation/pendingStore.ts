@@ -84,6 +84,17 @@ export async function listPending(): Promise<PendingDictation[]> {
   return all.sort((a, b) => a.createdAt - b.createdAt);
 }
 
+/** One pending record by id, or null when it is gone (already sent, pruned, or no durable store).
+ *  Used by the Retry action on a failed dictation to re-drive that exact clip. */
+export async function getPending(id: string): Promise<PendingDictation | null> {
+  if (!hasIndexedDb()) return null;
+  const rec = await tx<PendingDictation | undefined>(
+    "readonly",
+    (s) => s.get(id) as IDBRequest<PendingDictation | undefined>,
+  );
+  return rec ?? null;
+}
+
 /** Remove a record once the server has confirmed the turn (submitted or dropped as stale). */
 export async function deletePending(id: string): Promise<void> {
   if (!hasIndexedDb()) return;

@@ -1878,3 +1878,90 @@ a.banner-btn {
   color: var(--text-dim);
   line-height: 1.35;
 }
+
+/* ===== Dictation live-status strip + roster badge (#1139 follow-up: never a silent Send) ===== */
+/* A thin, non-blocking bar under the screen header showing where a dictation Send is. It never
+   blocks the screen (the user can keep working or leave; the roster badge carries the same status). */
+.dictate-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 12px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.dictate-strip-text { flex: 1 1 auto; min-width: 0; }
+
+.dictate-strip-busy { color: var(--text); }
+.dictate-strip-done {
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.dictate-strip-failed {
+  color: #ffb4b4;
+  background: rgba(241, 76, 76, 0.12);
+  border-color: rgba(241, 76, 76, 0.45);
+}
+
+.dictate-strip-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  text-align: center;
+  line-height: 18px;
+  font-weight: 700;
+  font-size: 12px;
+}
+.dictate-strip-done .dictate-strip-icon { background: rgba(16, 185, 129, 0.25); }
+.dictate-strip-failed .dictate-strip-icon { background: rgba(241, 76, 76, 0.3); }
+
+/* Small inline spinner for the strip's in-flight state (reuses the voice-spin keyframes). */
+.dictate-strip-spin {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(59, 130, 246, 0.25);
+  border-top-color: var(--accent);
+  animation: voice-spin 0.9s linear infinite;
+}
+
+.dictate-strip-btn {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent);
+  border: none;
+}
+.dictate-strip-btn:disabled { opacity: 0.6; }
+.dictate-strip-dismiss {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+/* The roster row badge: same status, compact, on its own line under the meta line. */
+.row-dictate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.row-dictate-busy { color: var(--text-dim); }
+.row-dictate-failed { color: #ffb4b4; }
+.row-dictate-busy .row-spin {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}

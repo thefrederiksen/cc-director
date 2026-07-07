@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
+import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "../voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
@@ -185,6 +186,10 @@ function SessionRow({ session }: { session: SessionDto }) {
             {repo && <span className="row-repo">{repo}</span>}
             {attention && session.needsYouSince && <WaitingTime since={String(session.needsYouSince)} />}
           </span>
+          {/* A dictation started on this session's screen keeps showing here once the user walks back
+              to the roster (#1139): in-flight while it uploads/transcribes, a sticky red pill if it
+              failed - so a dropped transcription is visible from the list, never silent. */}
+          <DictationRowBadge sessionId={session.sessionId} />
         </span>
         <VoiceIndicator session={session} />
       </Link>
@@ -240,6 +245,24 @@ function VoiceIndicator({ session }: { session: SessionDto }) {
   }
 
   return null;
+}
+
+// The per-row dictation status pill (#1139 follow-up). Reads the same shared store the on-screen
+// status strip reads, so a Speak Send shows on the roster too: a muted "Transcribing..." while it is
+// in flight, and a persistent red "Dictation failed" when it died (which the Gateway's own orange
+// mark cannot show - that just clears on failure). A just-"done" send shows nothing here; the brief
+// "Sent" acknowledgement belongs on the session screen, not as roster noise.
+function DictationRowBadge({ sessionId }: { sessionId: string | undefined }) {
+  const status = useDictationStatusFor(sessionId);
+  if (!status || status.phase === "done") return null;
+  if (status.phase === "failed") {
+    return <span className="row-dictate row-dictate-failed">Dictation failed - tap to retry</span>;
+  }
+  return (
+    <span className="row-dictate row-dictate-busy">
+      <span className="row-spin" aria-hidden="true" /> Transcribing...
+    </span>
+  );
 }
 
 // Issue #844: the live elapsed-waiting label for a needs-you card, right-aligned on the status
