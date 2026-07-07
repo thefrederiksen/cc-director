@@ -873,6 +873,7 @@
                                     Click="WingmanTabButton_Click" />
                             <Button x:Name="HistoryTabButton"
                                     Content="History"
+                                    IsVisible="False"
                                     Background="Transparent"
                                     Foreground="#888888"
                                     Padding="12,4"

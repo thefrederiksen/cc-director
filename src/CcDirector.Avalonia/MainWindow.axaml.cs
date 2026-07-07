@@ -188,20 +188,21 @@ public partial class MainWindow : Window
         BtnHandover.IsVisible = alpha;
         FileLog.Write($"[MainWindow] ApplyAlphaFeatureVisibility: alphaFeatures={alpha}");
 
-        // The Wingman tab and "Open Wingman" button are alpha-gated for the v1 default install
-        // (issue 559); the Voice tab is shown in v1 regardless of alpha mode. Re-evaluate them
-        // here so a live alpha toggle (AlphaMode.Changed) shows or hides them without a restart.
+        // The Voice tab, the History tab, the Wingman tab, and the "Open Wingman" button are all
+        // alpha-gated for the v1 default install (they are not polished enough to ship on by
+        // default). Re-evaluate them here so a live alpha toggle (AlphaMode.Changed) shows or
+        // hides them without a restart.
         ApplyVoiceWingmanTabVisibility();
     }
 
     /// <summary>
-    /// Single source of truth for the visibility of the Voice tab, the Wingman tab, and the
-    /// "Open Wingman" button. The Voice tab ships in v1 and only requires an active session.
-    /// Alpha mode remains a hard gate for the Wingman tab and the "Open Wingman" button: when it
-    /// is off they are hidden regardless of the per-session Wingman state; when it is on, the
-    /// Wingman tab additionally requires the session's Wingman experience to be enabled. When the
-    /// Voice or Wingman tab gets hidden out from under the active tab, fall back to Terminal so
-    /// the session view is never stuck on a hidden tab.
+    /// Single source of truth for the visibility of the Voice tab, the History tab, the Wingman
+    /// tab, and the "Open Wingman" button. All four are alpha-gated: when alpha mode is off they
+    /// are hidden regardless of the per-session state. When alpha mode is on the Voice and History
+    /// tabs require only an active session, while the Wingman tab and "Open Wingman" button
+    /// additionally require the session's Wingman experience to be enabled. When a tab gets hidden
+    /// out from under the active tab, fall back to Terminal so the session view is never stuck on a
+    /// hidden tab.
     /// </summary>
     private void ApplyVoiceWingmanTabVisibility()
     {
@@ -209,22 +210,27 @@ public partial class MainWindow : Window
         var hasSession = _activeSession is not null;
 
         var openWingmanVisible = alpha && hasSession;
-        // Voice mode is a v1 feature (no longer alpha-gated); it only needs an active session.
-        var voiceVisible = hasSession;
+        // Voice and History are alpha-gated: they only appear when alpha mode is on and there is
+        // an active session to show.
+        var voiceVisible = alpha && hasSession;
+        var historyVisible = alpha && hasSession;
         var wingmanVisible = alpha && hasSession && _activeSession is not null
             && _activeSession.Session.WingmanEnabled;
 
         TabBarOpenWingmanButton.IsVisible = openWingmanVisible;
         VoiceTabButton.IsVisible = voiceVisible;
+        HistoryTabButton.IsVisible = historyVisible;
         WingmanTabButton.IsVisible = wingmanVisible;
 
         // Never leave the view on a tab whose button just disappeared.
         if (!voiceVisible && string.Equals(_activeLeftTab, "Voice", StringComparison.Ordinal))
             SwitchLeftTab("Terminal");
+        if (!historyVisible && string.Equals(_activeLeftTab, "History", StringComparison.Ordinal))
+            SwitchLeftTab("Terminal");
         if (!wingmanVisible && string.Equals(_activeLeftTab, "Wingman", StringComparison.Ordinal))
             SwitchLeftTab("Terminal");
 
-        FileLog.Write($"[MainWindow] ApplyVoiceWingmanTabVisibility: alpha={alpha}, hasSession={hasSession}, voice={voiceVisible}, wingman={wingmanVisible}, openWingman={openWingmanVisible}");
+        FileLog.Write($"[MainWindow] ApplyVoiceWingmanTabVisibility: alpha={alpha}, hasSession={hasSession}, voice={voiceVisible}, history={historyVisible}, wingman={wingmanVisible}, openWingman={openWingmanVisible}");
     }
 
     private void MainWindow_Activated(object? sender, EventArgs e)
@@ -2951,10 +2957,10 @@ public partial class MainWindow : Window
                 ShowNotification("Dictation not available: AgentOptions not loaded.");
                 return;
             }
-            if (string.IsNullOrWhiteSpace(options.ResolveOpenAiKey()))
+            if (string.IsNullOrWhiteSpace(options.ResolveLocalTranscriptionKey()))
             {
-                FileLog.Write("[MainWindow] BtnSpeak_Click: no OpenAI key configured");
-                ShowNotification("Dictation needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.");
+                FileLog.Write("[MainWindow] BtnSpeak_Click: no DevThrottle key configured");
+                ShowNotification("Dictation needs a DevThrottle account. Sign in on the Cockpit Account page.");
                 return;
             }
             FileLog.Write("[MainWindow] BtnSpeak_Click: opening SpeakDialog");
@@ -4523,9 +4529,9 @@ public partial class MainWindow : Window
         try
         {
             var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-            if (options is null || string.IsNullOrWhiteSpace(options.ResolveOpenAiKey()))
+            if (options is null || string.IsNullOrWhiteSpace(options.ResolveLocalTranscriptionKey()))
             {
-                ShowNotification("Dictation needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.");
+                ShowNotification("Dictation needs a DevThrottle account. Sign in on the Cockpit Account page.");
                 return;
             }
             var dlg = new global::CcDirector.Avalonia.Voice.SpeakDialog(options);
