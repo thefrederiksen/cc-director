@@ -1,5 +1,6 @@
 using CcDirector.Core.Agents;
 using CcDirector.Core.Drivers;
+using System.Text;
 using Xunit;
 
 namespace CcDirector.Core.Tests.Drivers;
@@ -47,14 +48,17 @@ public sealed class CopilotDriverTests
     }
 
     [Fact]
-    public async Task Submit_IsBlind()
+    public async Task Submit_WritesTextAndEnter()
     {
         var driver = new CopilotDriver();
         var backend = new RecordingSessionBackend();
 
         await driver.SubmitAsync(backend, "do the thing");
 
-        Assert.Contains("do the thing", backend.SentTexts);
+        Assert.Equal(2, backend.WrittenBytes.Count);
+        Assert.Equal(Encoding.UTF8.GetBytes("do the thing"), backend.WrittenBytes[0]);
+        Assert.Equal(new byte[] { 0x0D }, backend.WrittenBytes[1]);
+        Assert.Empty(backend.SentTexts);
     }
 
     [Fact]

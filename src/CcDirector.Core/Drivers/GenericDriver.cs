@@ -63,13 +63,8 @@ public sealed class GenericDriver : IAgentDriver
             $"[GenericDriver] Launch specs for {Kind} are owned by the Director's IAgent path; " +
             "hosting requires a verified driver.");
 
-    public Task SubmitAsync(ISessionBackend backend, string text)
-    {
-        ArgumentNullException.ThrowIfNull(backend);
-        // Pre-driver behavior, byte for byte: the backend's typing semantics, no echo
-        // verification (echo layouts are tool-specific and unverified for this CLI).
-        return backend.SendTextAsync(text);
-    }
+    public Task SubmitAsync(ISessionBackend backend, string text) =>
+        TerminalSubmit.SharedSubmitAsync(backend, text, $"GenericDriver:{Kind}");
 
     public Task CancelAsync(ISessionBackend backend)
     {

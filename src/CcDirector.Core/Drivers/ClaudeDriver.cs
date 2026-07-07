@@ -27,21 +27,15 @@ public sealed class ClaudeDriver : IAgentDriver
     public const string DefaultArgs = "--dangerously-skip-permissions";
 
     private static readonly byte[] EscapeByte = [0x1B];
-    private static readonly byte[] EnterByte = [0x0D];
     private static readonly byte[] CtrlC = [0x03];
 
     private readonly ITranscriptReader _transcripts;
-    private readonly TimeSpan _echoTimeout;
-    private readonly TimeSpan _echoPollInterval;
-
     public ClaudeDriver(
         ITranscriptReader? transcripts = null,
         TimeSpan? echoTimeout = null,
         TimeSpan? echoPollInterval = null)
     {
         _transcripts = transcripts ?? new ClaudeTranscriptReader();
-        _echoTimeout = echoTimeout ?? TimeSpan.FromSeconds(3);
-        _echoPollInterval = echoPollInterval ?? TimeSpan.FromMilliseconds(50);
     }
 
     public AgentKind Kind => AgentKind.ClaudeCode;
@@ -161,88 +155,8 @@ public sealed class ClaudeDriver : IAgentDriver
     /// unchanged (production-proven by the Director; its echo is the @-reference,
     /// which the backend owns).
     /// </summary>
-    public async Task SubmitAsync(ISessionBackend backend, string text)
-    {
-        ArgumentNullException.ThrowIfNull(backend);
-
-        if (LargeInputHandler.IsLargeInput(text.TrimEnd('\r', '\n')))
-        {
-            await backend.SendTextAsync(text);
-            return;
-        }
-
-        var buffer = backend.Buffer
-            ?? throw new InvalidOperationException(
-                "[ClaudeDriver] SubmitAsync requires a buffering backend (echo verification reads the terminal stream)");
-
-        for (var attempt = 1; attempt <= 2; attempt++)
-        {
-            var cursor = buffer.TotalBytesWritten;
-            backend.Write(Encoding.UTF8.GetBytes(text));
-
-            var verdict = await WaitForEchoAsync(buffer, cursor, text);
-            if (verdict == EchoVerdict.Match)
-            {
-                backend.Write(EnterByte);
-                return;
-            }
-
-            FileLog.Write($"[ClaudeDriver] SubmitAsync: echo {verdict} on attempt {attempt} " +
-                          $"(len={text.Length}) - clearing the composer and retyping");
-            backend.Write(EscapeByte);                  // Esc clears claude's composer
-            await Task.Delay(TimeSpan.FromMilliseconds(300));
-        }
-
-        throw new InvalidOperationException(
-            "[ClaudeDriver] SubmitAsync: the composer echo never matched the typed text after 2 attempts - " +
-            "the TUI is not accepting input sanely (a modal like the trust-folder prompt, a picker, or a " +
-            $"dead composer). Terminal tail: {TailOf(buffer)}");
-    }
-
-    /// <summary>The terminal's recent output (ANSI-stripped, whitespace-compressed) for
-    /// diagnosable exceptions - shows WHAT the TUI was displaying instead of a composer.</summary>
-    private static string TailOf(Memory.CircularTerminalBuffer buffer)
-    {
-        var text = StripAnsi(Encoding.UTF8.GetString(buffer.DumpAll()));
-        var compact = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
-        return compact.Length <= 400 ? compact : compact[^400..];
-    }
-
-    private enum EchoVerdict
-    {
-        Match,
-        Missing,
-        SlashCorrupted,
-    }
-
-    private async Task<EchoVerdict> WaitForEchoAsync(
-        Memory.CircularTerminalBuffer buffer, long cursor, string text)
-    {
-        // Compare in a normalized space that survives the TUI's wrapping and styling:
-        // ANSI sequences stripped, then only letters/digits/slash kept. Slash stays in
-        // the alphabet so a corrupting "/" right before the prompt is detectable.
-        var needle = NormalizeForEcho(text);
-        if (needle.Length == 0)
-            return EchoVerdict.Match; // nothing comparable to verify (e.g. punctuation-only)
-
-        var deadline = DateTime.UtcNow + _echoTimeout;
-        var verdict = EchoVerdict.Missing;
-        while (DateTime.UtcNow < deadline)
-        {
-            var (bytes, _) = buffer.GetWrittenSince(cursor);
-            var hay = NormalizeForEcho(StripAnsi(Encoding.UTF8.GetString(bytes)));
-            var idx = hay.LastIndexOf(needle, StringComparison.Ordinal);
-            if (idx >= 0)
-            {
-                if (idx > 0 && hay[idx - 1] == '/' && !text.StartsWith('/'))
-                    verdict = EchoVerdict.SlashCorrupted;   // keep polling: a repaint may settle clean
-                else
-                    return EchoVerdict.Match;
-            }
-            await Task.Delay(_echoPollInterval);
-        }
-        return verdict;
-    }
+    public Task SubmitAsync(ISessionBackend backend, string text) =>
+        TerminalSubmit.SharedSubmitAsync(backend, text, "ClaudeDriver");
 
     /// <summary>Drop ANSI escape sequences from a terminal chunk (delegates to the shared helper).</summary>
     public static string StripAnsi(string raw) => TerminalSubmit.StripAnsi(raw);

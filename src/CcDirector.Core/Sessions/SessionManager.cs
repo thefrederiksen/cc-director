@@ -162,7 +162,7 @@ public sealed class SessionManager : IDisposable
     /// terminal output flushes, the clean exit is briefly visible, and any explicit
     /// DELETE racing the same exit settles first.
     /// </summary>
-    internal int CleanExitReapDelayMs { get; set; } = 3000;
+    public int CleanExitReapDelayMs { get; set; } = 3000;
 
     /// <summary>
     /// Whether a process exit should reap (auto-remove) the session. Reap only local
@@ -382,6 +382,14 @@ public sealed class SessionManager : IDisposable
                     envVars["COPILOT_GITHUB_TOKEN"] = copilotToken;
                     _log?.Invoke("Injected COPILOT_GITHUB_TOKEN into the GitHub Copilot session environment.");
                 }
+            }
+
+            if (agent.Kind == AgentKind.OpenCode)
+            {
+                envVars["NO_UPDATE_NOTIFIER"] = "1";
+                envVars["OPENCODE_DISABLE_AUTOUPDATE"] = "1";
+                envVars["OPENCODE_DISABLE_UPDATE_CHECK"] = "1";
+                envVars["OPENCODE_DISABLE_AUTO_UPDATE"] = "1";
             }
 
             // For Claude, install the session-pointer hooks and pass them via --settings so the

@@ -64,7 +64,7 @@ public sealed class CodexDriver : IAgentDriver
     /// full explanation and the shared implementation live in <see cref="TerminalSubmit"/>.
     /// </summary>
     public Task SubmitAsync(ISessionBackend backend, string text) =>
-        TerminalSubmit.EchoVerifiedSubmitAsync(backend, text, "CodexDriver");
+        TerminalSubmit.SharedSubmitAsync(backend, text, "CodexDriver");
 
     public Task CancelAsync(ISessionBackend backend)
     {

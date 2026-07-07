@@ -23,6 +23,9 @@ public interface ISessionBackend : IDisposable
     /// <summary>The terminal buffer for output. May be null for backends that don't buffer (Embedded).</summary>
     CircularTerminalBuffer? Buffer { get; }
 
+    /// <summary>The process working directory, when the backend has one.</summary>
+    string WorkingDirectory => string.Empty;
+
     /// <summary>Fires when the status changes.</summary>
     event Action<string>? StatusChanged;
 

@@ -110,13 +110,8 @@ public sealed class CopilotDriver : IAgentDriver
         return new AgentLaunchSpec(args, preassignedSessionId);
     }
 
-    public Task SubmitAsync(ISessionBackend backend, string text)
-    {
-        ArgumentNullException.ThrowIfNull(backend);
-        // Blind submit: Copilot's composer echo layout is unverified, so no echo gate yet
-        // (same conservative contract as GenericDriver/CursorDriver).
-        return backend.SendTextAsync(text);
-    }
+    public Task SubmitAsync(ISessionBackend backend, string text) =>
+        TerminalSubmit.SharedSubmitAsync(backend, text, "CopilotDriver", requireEcho: false);
 
     public Task CancelAsync(ISessionBackend backend) =>
         throw new NotSupportedException(

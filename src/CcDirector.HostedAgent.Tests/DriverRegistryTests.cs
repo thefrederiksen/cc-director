@@ -152,6 +152,12 @@ public class DriverRegistryTests
     {
         var backend = new FakeBackend();
         backend.Start("x", "", ".", 80, 24);
+        backend.OnRawWrite = bytes =>
+        {
+            var text = System.Text.Encoding.UTF8.GetString(bytes);
+            if (text == "hello")
+                backend.EmitOutput(text);
+        };
         var driver = new GenericDriver(AgentKind.Gemini);
 
         await driver.CancelAsync(backend);
@@ -160,7 +166,9 @@ public class DriverRegistryTests
 
         Assert.Equal(new byte[] { 0x1B }, backend.RawWrites[0]);
         Assert.Equal(new byte[] { 0x03 }, backend.RawWrites[1]);
-        Assert.Contains("hello", backend.SentTexts);   // blind submit, no echo gate
+        Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(backend.RawWrites[2]));
+        Assert.Equal(new byte[] { 0x0D }, backend.RawWrites[3]);
+        Assert.Empty(backend.SentTexts);
     }
 
     [Fact]
@@ -194,10 +202,19 @@ public class DriverRegistryTests
     {
         var backend = new FakeBackend();
         backend.Start("x", "", ".", 80, 24);
+        backend.OnRawWrite = bytes =>
+        {
+            var text = System.Text.Encoding.UTF8.GetString(bytes);
+            if (text == "do the thing")
+                backend.EmitOutput(text);
+        };
 
         await new CursorDriver().SubmitAsync(backend, "do the thing");
 
-        Assert.Contains("do the thing", backend.SentTexts);
+        Assert.Equal(2, backend.RawWrites.Count);
+        Assert.Equal("do the thing", System.Text.Encoding.UTF8.GetString(backend.RawWrites[0]));
+        Assert.Equal(new byte[] { 0x0D }, backend.RawWrites[1]);
+        Assert.Empty(backend.SentTexts);
     }
 
     [Fact]
