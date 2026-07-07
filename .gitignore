@@ -149,3 +149,8 @@ mcps/
 # the binary fixtures do not belong in git history.
 mobile/repro-terminal.*
 mobile/public/fixtures/
+
+# Terminal-injection flake-test proof output (issue #1119 QA runs) and any other
+# ad-hoc test-run scratch written to the repo root. Regenerable from a live session;
+# thousands of per-run capture files, never part of the codebase.
+artifacts/
