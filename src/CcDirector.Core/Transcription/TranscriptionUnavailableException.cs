@@ -8,7 +8,7 @@ namespace CcDirector.Core.Transcription;
 /// call that will keep failing, and keeps the recorded audio saved so it delivers once a method exists.
 ///
 /// Carries the mode-appropriate <see cref="Message"/> from
-/// <see cref="Configuration.OpenAiKeyResolver.UnavailableMessage"/> so the user is told exactly where
+/// <see cref="Configuration.TranscriptionKeyResolver.UnavailableMessage"/> so the user is told exactly where
 /// to set the key.
 /// </summary>
 public sealed class TranscriptionUnavailableException : Exception

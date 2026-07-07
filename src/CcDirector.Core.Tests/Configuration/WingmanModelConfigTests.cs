@@ -4,9 +4,9 @@ using Xunit;
 namespace CcDirector.Core.Tests.Configuration;
 
 /// <summary>
-/// <see cref="WingmanModelConfig"/> resolves the hosted wingman chat model per provider: a real saved id
-/// is honored; an unset or stale Claude-alias value falls forward to the provider default (glm-5.2 /
-/// gpt-5.5) so the wingman never calls the proxy with a model it cannot run.
+/// <see cref="WingmanModelConfig"/> resolves the hosted wingman chat model: a real saved id is honored;
+/// an unset or stale Claude-alias value falls forward to the DevThrottle default (glm-5.2) so the wingman
+/// never calls the proxy with a model it cannot run.
 /// </summary>
 [Collection("CcStorageRoot")]
 public sealed class WingmanModelConfigTests : IDisposable
@@ -30,8 +30,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     [Fact]
     public void Resolve_Unset_UsesProviderDefault()
     {
-        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("gpt-5.5", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve());
     }
 
     [Theory]
@@ -41,15 +40,14 @@ public sealed class WingmanModelConfigTests : IDisposable
     public void Resolve_StaleClaudeAlias_FallsForwardToProviderDefault(string alias)
     {
         WingmanModelConfig.Set(alias);   // a legacy warm-brain value the hosted proxy cannot run
-        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
+        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve());
     }
 
     [Fact]
     public void Resolve_RealHostedModel_IsHonored()
     {
         WingmanModelConfig.Set("kimi-k2");
-        Assert.Equal("kimi-k2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("kimi-k2", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("kimi-k2", WingmanModelConfig.Resolve());
     }
 
     [Fact]
@@ -62,15 +60,14 @@ public sealed class WingmanModelConfigTests : IDisposable
     [Fact]
     public void ResolveFast_Unset_UsesProviderFastDefault()
     {
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
-        Assert.Equal("gpt-5.5-mini", WingmanModelConfig.ResolveFast(TranscriptionMode.Byo));
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast());
     }
 
     [Fact]
     public void ResolveFast_StaleClaudeAlias_FallsForwardToProviderFastDefault()
     {
         WingmanModelConfig.SetFast("opus");
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast());
     }
 
     [Fact]
@@ -90,7 +87,7 @@ public sealed class WingmanModelConfigTests : IDisposable
         WingmanModelConfig.Set("zai-org/GLM-5.2");
         WingmanModelConfig.SetFast("Qwen/Qwen2.5-72B-Instruct");
 
-        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Thinking));
-        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle, WingmanModelRole.Fast));
+        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(WingmanModelRole.Thinking));
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.Resolve(WingmanModelRole.Fast));
     }
 }

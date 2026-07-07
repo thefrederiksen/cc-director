@@ -207,22 +207,9 @@ public sealed class BriefBuilderTests
         Assert.Equal(reply, got);
     }
 
-    // ===== TryCreate degrade =====
-
-    [Fact]
-    public void TryCreate_NoApiKey_ReturnsNull()
-    {
-        var prior = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        try
-        {
-            Environment.SetEnvironmentVariable("OPENAI_API_KEY", null);
-            Assert.Null(BriefBuilder.TryCreate());
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("OPENAI_API_KEY", prior);
-        }
-    }
+    // The "no credential -> null condenser" degrade path is now the DevThrottle routing resolver's
+    // contract (TranscriptionKeyResolverEndpointTests), since BriefBuilder.TryCreateAsync resolves the
+    // key/URL through it rather than reading an OPENAI_API_KEY environment variable.
 }
 
 /// <summary>Cache staleness: an entry is only current for its exact turn count.</summary>

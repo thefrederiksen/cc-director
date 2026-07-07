@@ -14,32 +14,31 @@ namespace CcDirector.Core.Voice;
 ///
 /// Pipeline:
 ///   1. Audio blob in (webm/opus, mp3, wav, m4a ...).
-///   2. The shared <see cref="BatchTranscriptionPipeline"/> transcribes the whole clip ONCE using
-///      the Gateway-selected method, then applies the validated dictionary corrector only.
+///   2. The audio is uploaded to the Gateway transcription job protocol; the Gateway transcribes
+///      the whole clip ONCE and applies the validated dictionary corrector only.
 ///   3. Regex/keyword intent parser maps the transcript -> a structured command.
 ///   4. Executor runs the command against SessionManager and returns a spoken-style reply.
 ///
-/// Transcription method (base URL + key + model) comes entirely from the Gateway routing resolver
-/// (<see cref="OpenAiKeyResolver.ResolveEndpointAsync"/>): there is NO hardcoded whisper-1 /
-/// api.openai.com endpoint here, and the only post-transcription transform is the dictionary
-/// corrector - the free-text language-model cleanup was removed (issue #587). Intent parsing is
-/// deliberately small and extensible. v1 supports six intents:
+/// The Director never resolves providers or calls a speech provider. Intent parsing is deliberately
+/// small and extensible. v1 supports six intents:
 ///   ListSessions, ListWaiting, DescribeSession, OpenSession, SendToSession, InterruptSession.
 /// Anything else returns Status="unknown_command" with a helpful reply.
 /// </summary>
 public sealed class VoiceService
 {
     private readonly SessionManager _sessionManager;
-    private readonly AgentOptions _options;
 
     public VoiceService(SessionManager sessionManager, AgentOptions options)
     {
         _sessionManager = sessionManager;
-        _options = options;
     }
 
-    /// <summary>True when an OpenAI key is configured (env var or appsettings).</summary>
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
+    /// <summary>True when a Gateway URL is configured; transcription now runs only through Gateway jobs.</summary>
+    public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
+    {
+        await Task.CompletedTask;
+        return new GatewayTranscriptionJobClient().IsConfigured;
+    }
 
     /// <summary>
     /// End-to-end: audio in, response out. Caller passes the upload stream
@@ -49,23 +48,30 @@ public sealed class VoiceService
     public async Task<VoiceCommandResponse> HandleAsync(
         Stream audio, string fileName, CancellationToken ct = default)
     {
-        var resolver = new OpenAiKeyResolver();
-        var routing = await resolver.ResolveEndpointAsync(ct);
-        if (routing is null)
-        {
-            FileLog.Write("[VoiceService] HandleAsync: no transcription routing available");
-            return new VoiceCommandResponse
-            {
-                Status = "no_key",
-                ReplyText = resolver.UnavailableMessage,
-                Error = "transcription routing unavailable",
-            };
-        }
-
         BatchTranscriptionResult transcription;
         try
         {
-            transcription = await TranscribeAndCorrectAsync(audio, fileName, routing, ct);
+            transcription = await TranscribeAndCorrectAsync(audio, fileName, ct);
+        }
+        catch (TranscriptionUnavailableException ex)
+        {
+            FileLog.Write($"[VoiceService] Transcribe unavailable: {ex.Message}");
+            return new VoiceCommandResponse
+            {
+                Status = "no_key",
+                ReplyText = ex.Message,
+                Error = ex.Message,
+            };
+        }
+        catch (InsufficientCreditsException credits)
+        {
+            FileLog.Write($"[VoiceService] Transcribe OUT OF CREDITS: {credits.Code}");
+            return new VoiceCommandResponse
+            {
+                Status = credits.Code,
+                ReplyText = credits.Message,
+                Error = credits.Message,
+            };
         }
         catch (Exception ex)
         {
@@ -108,7 +114,7 @@ public sealed class VoiceService
     }
 
     /// <summary>
-    /// Transcribe an already-assembled audio blob through the ONE shared batch pipeline, returning
+    /// Transcribe an already-assembled audio blob through the Gateway job protocol, returning
     /// the raw transcript and the dictionary-corrected text. Used by the resumable /voice/utterance
     /// path, which reassembles the chunked upload into one blob and then needs the transcribe+correct
     /// half of <see cref="HandleAsync"/> WITHOUT the command intent parsing. The only text change is
@@ -119,21 +125,15 @@ public sealed class VoiceService
     public async Task<VoiceCommandResponse> TranscribeAndCleanAsync(
         Stream audio, string fileName, string repoPath, CancellationToken ct = default)
     {
-        var routing = await new OpenAiKeyResolver().ResolveEndpointAsync(ct);
-        if (routing is null)
-        {
-            FileLog.Write("[VoiceService] TranscribeAndCleanAsync: no transcription routing available");
-            return new VoiceCommandResponse
-            {
-                Status = "no_key",
-                Error = "transcription routing unavailable",
-            };
-        }
-
         BatchTranscriptionResult transcription;
         try
         {
-            transcription = await TranscribeAndCorrectAsync(audio, fileName, routing, ct);
+            transcription = await TranscribeAndCorrectAsync(audio, fileName, ct);
+        }
+        catch (TranscriptionUnavailableException ex)
+        {
+            FileLog.Write($"[VoiceService] TranscribeAndCleanAsync unavailable: {ex.Message}");
+            return new VoiceCommandResponse { Status = "no_key", Error = ex.Message };
         }
         catch (InsufficientCreditsException credits)
         {
@@ -160,22 +160,44 @@ public sealed class VoiceService
     }
 
     /// <summary>
-    /// Run the ONE shared batch pipeline: whole-audio batch transcription via the resolved method,
-    /// then the validated dictionary corrector only. Resolves the live dictionary per call via
-    /// <see cref="DictionaryResolver"/> (#253) so a Cockpit edit takes effect on the next utterance.
+    /// Upload the complete audio to the Gateway transcription job protocol. The Gateway owns provider
+    /// routing, retries, dictionary correction, and provenance.
     /// </summary>
     private async Task<BatchTranscriptionResult> TranscribeAndCorrectAsync(
-        Stream audio, string fileName, ResolvedTranscription routing, CancellationToken ct)
+        Stream audio, string fileName, CancellationToken ct)
     {
         using var buffer = new MemoryStream();
         await audio.CopyToAsync(buffer, ct);
         var audioBytes = buffer.ToArray();
 
-        var dictionary = await new DictionaryResolver(_options).ResolveAsync(ct);
-        using var pipeline = new BatchTranscriptionPipeline(cleanupModel: _options.DictationCleanupModel);
-        var result = await pipeline.TranscribeAsync(audioBytes, fileName, routing, dictionary, "default", ct);
-        FileLog.Write($"[VoiceService] dictionary correction: applied={result.DictionaryApplied} changed={result.ChangedWords.Count} reason=\"{result.Reason}\"");
-        return result;
+        var result = await new GatewayTranscriptionJobClient().TranscribeAsync(
+            audioBytes,
+            fileName,
+            ContentTypeFor(fileName),
+            applyCorrection: true,
+            ct);
+        FileLog.Write($"[VoiceService] gateway transcription: job={result.JobId} applied={result.DictionaryApplied} reason=\"{result.CleanupReason}\"");
+        return new BatchTranscriptionResult(
+            result.RawTranscript,
+            result.CleanedTranscript,
+            result.DictionaryApplied,
+            Array.Empty<TranscriptEdit>(),
+            result.CleanupReason);
+    }
+
+    private static string ContentTypeFor(string fileName)
+    {
+        var ext = Path.GetExtension(fileName ?? "").ToLowerInvariant();
+        return ext switch
+        {
+            ".webm" => "audio/webm",
+            ".m4a" or ".mp4" => "audio/mp4",
+            ".ogg" => "audio/ogg",
+            ".wav" => "audio/wav",
+            ".mp3" => "audio/mpeg",
+            ".flac" => "audio/flac",
+            _ => "application/octet-stream",
+        };
     }
 
     // ====== Execute the parsed command =================================================

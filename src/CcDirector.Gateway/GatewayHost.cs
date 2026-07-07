@@ -515,31 +515,6 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// One-time bootstrap of the central vault from the user environment (option A). If the vault
-    /// does not yet carry OPENAI_API_KEY, seed it from the environment (process, then User scope on
-    /// Windows). Never clobbers an existing vault value (the Cockpit is the live rotation surface).
-    /// Key name matches <see cref="Core.Configuration.OpenAiKeyResolver.KeyName"/>.
-    /// </summary>
-    private void SeedKeyVaultFromEnvironment()
-    {
-        const string keyName = "OPENAI_API_KEY";
-        var fromEnv = Environment.GetEnvironmentVariable(keyName);
-        if (string.IsNullOrWhiteSpace(fromEnv) && OperatingSystem.IsWindows())
-            fromEnv = Environment.GetEnvironmentVariable(keyName, EnvironmentVariableTarget.User);
-
-        if (string.IsNullOrWhiteSpace(fromEnv))
-        {
-            FileLog.Write($"[GatewayHost] no {keyName} in the environment to seed the vault from");
-            return;
-        }
-
-        var seeded = _keyVault.SetIfAbsent(keyName, fromEnv.Trim());
-        FileLog.Write(seeded
-            ? $"[GatewayHost] seeded vault {keyName} from the user environment (one-time bootstrap)"
-            : $"[GatewayHost] vault already has {keyName}; left as-is (vault is the source of truth)");
-    }
-
-    /// <summary>
     /// Pre-build voice for voice sessions that are idle and missing it, so the session list shows
     /// them "voice ready" BEFORE the person enters - including after a gateway restart (the voice-
     /// session set is persisted). Gentle: at most a few per cycle, idle sessions only (a working
@@ -606,10 +581,9 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     private Task<CcDirector.AgentBrain.IAgentBrain> WingmanBrainAsync(Core.Configuration.WingmanModelRole role, CancellationToken ct)
     {
-        var mode = Core.Configuration.TranscriptionModeConfig.Get();
-        var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode);
+        var ep = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman();
         var key = _keyVault.Get(ep.KeyName) ?? "";
-        var model = Core.Configuration.WingmanModelConfig.Resolve(mode, role);
+        var model = Core.Configuration.WingmanModelConfig.Resolve(role);
         CcDirector.AgentBrain.IAgentBrain brain =
             new Wingman.HostedInferenceBrain(ep.BaseUrl, key, model, log: FileLog.Write);
         return Task.FromResult(brain);
@@ -618,13 +592,6 @@ public sealed class GatewayHost : IAsyncDisposable
     public async Task StartAsync()
     {
         FileLog.Write($"[GatewayHost] StartAsync: port={Port}");
-
-        // Option A bootstrap (docs/install/INSTALLATION.md section 4): a Gateway install guarantees
-        // OPENAI_API_KEY is in the user environment. Seed the central vault from it ONCE here so the
-        // Cockpit shows the key as set and Directors can pull it immediately. The vault is the live
-        // source of truth thereafter - rotating the key in the Cockpit overwrites this seed, and we
-        // never clobber an existing vault value (SetIfAbsent).
-        SeedKeyVaultFromEnvironment();
 
         // Issue #881: an install that was already signed in before this shipped won't fire the
         // post-sign-in hook again, so ensure the hosted transcription key here too - detached and
@@ -1041,6 +1008,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // Whisper, or the resolved OpenAI-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
         TranscriptionBatchEndpoint.Map(_app, _keyVault);
+        TranscriptionJobEndpoint.Map(_app, _keyVault);
 
         // Named work lists (issue #273, child of #270): an ordered list of structured item refs
         // { source, id, area? } + a single-consumer claim, the object the product skill writes to,

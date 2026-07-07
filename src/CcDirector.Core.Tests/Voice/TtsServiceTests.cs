@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Voice;
 using Xunit;
@@ -25,8 +26,15 @@ public sealed class TtsServiceTests
     private static readonly byte[] Mp3A = { 1, 2, 3, 4 };
     private static readonly byte[] Mp3B = { 9, 8, 7 };
 
-    private static AgentOptions OptionsWithKey() =>
-        new() { OpenAiKey = "sk-test-key" };
+    private static TranscriptionKeyResolver ResolverWithKey()
+    {
+        var vault = new KeyVault(Path.Combine(Path.GetTempPath(), "ccd-ttstest-" + Guid.NewGuid().ToString("N") + ".dat"));
+        vault.Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_test_key");
+        return new TranscriptionKeyResolver(() => new GatewayConfig(), localVault: vault);
+    }
+
+    private static TtsService ServiceWith(ScriptedHandler handler)
+        => new(new AgentOptions(), handler, ResolverWithKey());
 
     // ===== test double =====================================================
 
@@ -101,7 +109,7 @@ public sealed class TtsServiceTests
         // Proves the per-request timeout is what ends the stalled call AND that a
         // timeout is treated as transient (retried), not propagated.
         var handler = new ScriptedHandler(ScriptedHandler.Kind.Stall, ScriptedHandler.Kind.Ok);
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var result = await svc.GenerateAsync("Hello world.", null, null);
 
@@ -118,7 +126,7 @@ public sealed class TtsServiceTests
     {
         // A 5xx on the first attempt is transient; the second attempt returns audio.
         var handler = new ScriptedHandler(ScriptedHandler.Kind.ServerError, ScriptedHandler.Kind.Ok);
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var result = await svc.GenerateAsync("Hello world.", null, null);
 
@@ -132,7 +140,7 @@ public sealed class TtsServiceTests
     {
         // An empty body (the exact "audio_bytes=0" symptom) is transient and retried.
         var handler = new ScriptedHandler(ScriptedHandler.Kind.Empty, ScriptedHandler.Kind.Ok);
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var result = await svc.GenerateAsync("Hello world.", null, null);
 
@@ -149,7 +157,7 @@ public sealed class TtsServiceTests
         // assertion: it returns fast (well under the old 180 s), proving no chunk
         // can block the turn.
         var handler = new ScriptedHandler(ScriptedHandler.Kind.ServerError, ScriptedHandler.Kind.ServerError);
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var sw = Stopwatch.StartNew();
         var result = await svc.GenerateAsync("Hello world.", null, null);
@@ -166,7 +174,7 @@ public sealed class TtsServiceTests
         // A 4xx is a permanent request error - it must NOT be retried (would waste
         // a call and delay the text-only fallback).
         var handler = new ScriptedHandler(ScriptedHandler.Kind.ClientError);
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var result = await svc.GenerateAsync("Hello world.", null, null);
 
@@ -181,7 +189,7 @@ public sealed class TtsServiceTests
         // single retry also stalls, and the call returns an error - it never
         // waits the old 180 s ceiling.
         var handler = new ScriptedHandler(ScriptedHandler.Kind.Stall);
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var sw = Stopwatch.StartNew();
         var result = await svc.GenerateAsync("Hello world.", null, null);
@@ -197,7 +205,7 @@ public sealed class TtsServiceTests
     public async Task GenerateAsync_SingleChunk_ReturnsBytesUnchanged()
     {
         var handler = new ScriptedHandler(ScriptedHandler.Kind.Ok) { OkBytes = Mp3A };
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var result = await svc.GenerateAsync("Short reply.", null, null);
 
@@ -217,7 +225,7 @@ public sealed class TtsServiceTests
         Assert.True(expectedChunks >= 2, "test text must split into at least 2 chunks");
 
         var handler = new ScriptedHandler(ScriptedHandler.Kind.Ok) { OkBytes = Mp3B };
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var result = await svc.GenerateAsync(text, null, null);
 
@@ -251,7 +259,7 @@ public sealed class TtsServiceTests
     public async Task GenerateAsync_EmptyText_ReturnsError_WithoutCallingOpenAi()
     {
         var handler = new ScriptedHandler(ScriptedHandler.Kind.Ok);
-        var svc = new TtsService(OptionsWithKey(), handler);
+        var svc = ServiceWith(handler);
 
         var result = await svc.GenerateAsync("", null, null);
 

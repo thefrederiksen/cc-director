@@ -247,9 +247,8 @@
       "name": "cc-comm-queue",
       "category": "data-utilities",
       "type": "python",
-      "description": "Communication Manager approval queue CLI",
+      "description": "Communication Manager approval queue CLI (RETIRED - no longer shipped)",
       "built": true,
-      "ship": true,
       "requirements": []
     },
     {

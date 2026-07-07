@@ -83,14 +83,17 @@ public sealed class VoiceConversation
     {
         ClientLog.Write($"[VoiceConversation] SpeakTurn: session={session.DisplayName}, forceWingman={forceWingman}");
 
-        // Route to the wingman when the user tapped Ask Wingman. The wingman is
-        // read-only and answers immediately from the session - no agent turn - so it
-        // keeps the Director-direct transcribe-then-ask path.
+        // Route to the wingman when the user tapped Ask Wingman. Transcription still
+        // goes through the Gateway job protocol; only the read-only wingman question
+        // is sent directly to the owning Director.
         if (forceWingman)
         {
+            if (string.IsNullOrWhiteSpace(_gatewayBaseUrl))
+                throw new InvalidOperationException(
+                    "gateway URL is not configured - set the Gateway address in settings to transcribe voice");
             onUpdate?.Invoke(new TurnUpdate("transcribing", "Transcribing..."));
             var t = await _client.TranscribeUtteranceAsync(
-                session.TailnetEndpoint, session.SessionId, audio.Bytes, audio.Mime, ct);
+                _gatewayBaseUrl, session.SessionId, audio.Bytes, audio.Mime, ct);
             if (string.IsNullOrWhiteSpace(t.Text))
                 throw new InvalidOperationException("nothing was transcribed from the recording");
             onUpdate?.Invoke(new TurnUpdate("transcript", t.Text));
@@ -273,9 +276,12 @@ public sealed class VoiceConversation
     {
         ClientLog.Write($"[VoiceConversation] DeliverToSession: session={session.DisplayName}, forceWingman={forceWingman}");
         onUpdate?.Invoke(new TurnUpdate("transcribing", "Transcribing..."));
+        if (string.IsNullOrWhiteSpace(_gatewayBaseUrl))
+            throw new InvalidOperationException(
+                "gateway URL is not configured - set the Gateway address in settings to transcribe voice");
 
         var t = await _client.TranscribeUtteranceAsync(
-            session.TailnetEndpoint, session.SessionId, audio.Bytes, audio.Mime, ct);
+            _gatewayBaseUrl, session.SessionId, audio.Bytes, audio.Mime, ct);
         if (string.IsNullOrWhiteSpace(t.Text))
             throw new InvalidOperationException("nothing was transcribed from the recording");
         var transcript = t.Text;

@@ -10,7 +10,7 @@ namespace CcDirector.Core.Tests.Dictation;
 /// Proves the #253 contract: a gateway-attached Director pulls the shared glossary from the
 /// Gateway (gateway-wins-when-connected), caches it locally for offline use, and a standalone or
 /// gateway-unreachable Director still dictates from its local cache. Mirrors the two-mode design
-/// the OpenAiKeyResolver established. No real network or Gateway: the HTTP leg is stubbed and the
+/// the TranscriptionKeyResolver established. No real network or Gateway: the HTTP leg is stubbed and the
 /// cache path is a temp file, so the real %LOCALAPPDATA% dictionary is never touched.
 /// </summary>
 public sealed class DictionaryResolverTests : IDisposable

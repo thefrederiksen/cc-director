@@ -79,22 +79,11 @@ public sealed class DesktopVoiceModeBatchProofTests
         }
     }
 
-    private static ResolvedTranscription Byo() => new()
-    {
-        BaseUrl = TranscriptionEndpointResolver.OpenAiBaseUrl,
-        ApiKey = "sk-byo-key",
-        Transport = TranscriptionTransport.Batch,
-        Model = TranscriptionEndpointResolver.OpenAiModel,
-        Mode = TranscriptionMode.Byo,
-    };
-
     private static ResolvedTranscription DevThrottle() => new()
     {
         BaseUrl = TranscriptionEndpointResolver.DevThrottleBaseUrl,
         ApiKey = "dt-managed-key",
-        Transport = TranscriptionTransport.Batch,
         Model = TranscriptionEndpointResolver.DevThrottleModel,
-        Mode = TranscriptionMode.DevThrottle,
     };
 
     // A short, well-formed 24kHz/mono/16-bit WAV clip - the exact shape the desktop recorder
@@ -107,26 +96,18 @@ public sealed class DesktopVoiceModeBatchProofTests
     }
 
     [Fact]
-    public async Task SelectedMethod_GovernsTheBaseUrlHit()
+    public async Task ResolvedMethod_GovernsTheBaseUrlHit()
     {
-        // Arrange - the same whole-clip WAV, transcribed twice with two different selected methods.
-        var byoHandler = new CountingHandler(transcript: "open the pi session");
+        // Arrange - the whole-clip WAV, transcribed with the resolved DevThrottle routing.
         var dtHandler = new CountingHandler(transcript: "open the pi session");
-        using var byoPipe = new BatchTranscriptionPipeline(new HttpClient(byoHandler));
         using var dtPipe = new BatchTranscriptionPipeline(new HttpClient(dtHandler));
 
-        // Act - one transcription per selected method, exactly as the recorder's TranscribeAsync does.
-        await byoPipe.TranscribeAsync(SampleWavClip(), "dictation.wav", Byo(), DictationDictionary.Empty);
+        // Act - one transcription, exactly as the recorder's TranscribeAsync does.
         await dtPipe.TranscribeAsync(SampleWavClip(), "dictation.wav", DevThrottle(), DictationDictionary.Empty);
 
-        // Assert - the transcription POST went to the base URL of the SELECTED method, not a fixed one.
-        Assert.Contains(byoHandler.Urls,
-            u => u.Contains(TranscriptionEndpointResolver.OpenAiBaseUrl + "/audio/transcriptions"));
+        // Assert - the transcription POST went to the resolved routing's base URL (the DevThrottle proxy).
         Assert.Contains(dtHandler.Urls,
             u => u.Contains(TranscriptionEndpointResolver.DevThrottleBaseUrl + "/audio/transcriptions"));
-        // The BYO run never crossed onto the DevThrottle URL and vice versa.
-        Assert.DoesNotContain(byoHandler.Urls, u => u.Contains(TranscriptionEndpointResolver.DevThrottleBaseUrl));
-        Assert.DoesNotContain(dtHandler.Urls, u => u.Contains(TranscriptionEndpointResolver.OpenAiBaseUrl));
     }
 
     [Fact]
@@ -138,7 +119,7 @@ public sealed class DesktopVoiceModeBatchProofTests
 
         // Act - one whole-audio transcription, exactly as BatchDictationRecorder.TranscribeAsync does.
         var result = await pipeline.TranscribeAsync(
-            SampleWavClip(), "dictation.wav", Byo(), DictationDictionary.Empty);
+            SampleWavClip(), "dictation.wav", DevThrottle(), DictationDictionary.Empty);
 
         // Assert - exactly ONE batch transcription POST for the whole turn (no per-partial calls).
         Assert.Equal(1, handler.TranscriptionPosts);
@@ -162,7 +143,7 @@ public sealed class DesktopVoiceModeBatchProofTests
         // Act - empty dictionary, so the only possible text change (a dictionary swap) cannot happen,
         // and there is NO free-text cleanup.
         var result = await pipeline.TranscribeAsync(
-            SampleWavClip(), "dictation.wav", Byo(), DictationDictionary.Empty);
+            SampleWavClip(), "dictation.wav", DevThrottle(), DictationDictionary.Empty);
 
         // Assert - the corrected transcript is byte-identical to the raw transcription.
         Assert.Equal(raw, result.RawTranscript);
@@ -197,7 +178,7 @@ public sealed class DesktopVoiceModeBatchProofTests
 
         // Act
         var result = await pipeline.TranscribeAsync(
-            SampleWavClip(), "dictation.wav", Byo(), dictionary, "default");
+            SampleWavClip(), "dictation.wav", DevThrottle(), dictionary, "default");
 
         // Assert - the ONLY change is the dictionary term; everything around it is identical.
         Assert.Equal(raw, result.RawTranscript);
@@ -249,7 +230,7 @@ public sealed class DesktopVoiceModeBatchProofTests
         using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
 
         var result = await pipeline.TranscribeAsync(
-            SampleWavClip(), "dictation.wav", Byo(), DictationDictionary.Empty);
+            SampleWavClip(), "dictation.wav", DevThrottle(), DictationDictionary.Empty);
 
         // The transcript VoiceView would raise on AskAgentRequested AND on AskWingmanRequested is this
         // exact string (it reads result.CleanedTranscript before choosing a branch). No dictionary

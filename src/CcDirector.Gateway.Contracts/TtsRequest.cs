@@ -14,7 +14,7 @@ public sealed class TtsRequest
     public string? Voice { get; set; }
 
     /// <summary>OpenAI TTS model.  Optional.  Defaults to <c>Voice.TtsModel</c>
-    /// ("tts-1" or "tts-1-hd").</summary>
+    /// (a DevThrottle proxy speech model).</summary>
     public string? Model { get; set; }
 }
 

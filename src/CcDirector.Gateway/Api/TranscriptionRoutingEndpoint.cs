@@ -13,13 +13,12 @@ namespace CcDirector.Gateway.Api;
 /// base URL + mode locally (compile-time constants). Now the Gateway composes the full pair
 /// server-side and a Director asks for it in one call:
 ///
-///   GET /transcription/routing -> { mode, baseUrl, model, key } | 404 (no key set for the mode)
+///   GET /transcription/routing -> { mode, baseUrl, model, key } | 404 (no key set)
 ///
-/// The Gateway already owns the mode (Cockpit Settings &gt; Transcription, #497) and the keys (its
-/// vault), so it pairs URL+key here. The security invariant is now enforced SERVER-SIDE: the pair
-/// is composed from the one pure <see cref="TranscriptionEndpointResolver"/>, so the bring-your-own
-/// OpenAI key is only ever returned with the OpenAI base URL and is NEVER returned alongside the
-/// devthrottle.com URL (and vice versa). Inherits the host-wide token middleware like every other
+/// The Gateway owns the keys (its vault), so it pairs URL+key here from the one pure
+/// <see cref="TranscriptionEndpointResolver"/> (always the DevThrottle proxy). The <c>mode</c> and
+/// <c>transport</c> fields are constant ("devthrottle" / "batch") and kept only for wire compatibility
+/// with older Directors that still parse them. Inherits the host-wide token middleware like every other
 /// Gateway route.
 /// </summary>
 internal static class TranscriptionRoutingEndpoint
@@ -35,27 +34,24 @@ internal static class TranscriptionRoutingEndpoint
             // message instead of silently using a baked-in URL (issue #506, no-fallback rule).
             ctx.Response.Headers["X-Transcription-Routing"] = "1";
 
-            // Resolve the Gateway's configured mode -> (baseUrl, key, transport, model) through the
-            // SINGLE transcription owner (issue #839), the same resolve-mode-and-key path every batch
-            // caller uses. Composing URL+key here is what makes the never-cross invariant a
-            // server-side guarantee; the transport (issue #513) lets the Director honor the provider's
-            // wire (batch for DevThrottle/Groq, realtime for BYO).
+            // Resolve the DevThrottle routing -> (baseUrl, key, model) through the SINGLE transcription
+            // owner (issue #839), the same resolve-and-key path every batch caller uses.
             var routing = new Transcription.GatewayTranscriptionService(vault).Resolve();
             var endpoint = routing.Endpoint;
 
             if (routing.Key is null)
             {
-                // No silent default: the Gateway reachable but the key for this mode is not set yet.
-                // The Director reports transcription unavailable for the mode (never a baked-in URL).
-                FileLog.Write($"[TranscriptionRoutingEndpoint] GET /transcription/routing: mode={endpoint.Mode.ToConfigString()}, no key for {endpoint.RequireKeyName()}");
-                return Results.NotFound(new { error = "no key set for the current transcription mode", mode = endpoint.Mode.ToConfigString() });
+                // No silent default: the Gateway reachable but the DevThrottle key is not set yet.
+                // The Director reports transcription unavailable (never a baked-in URL).
+                FileLog.Write($"[TranscriptionRoutingEndpoint] GET /transcription/routing: no key for {endpoint.RequireKeyName()}");
+                return Results.NotFound(new { error = "no DevThrottle key set", mode = "devthrottle" });
             }
 
-            FileLog.Write($"[TranscriptionRoutingEndpoint] GET /transcription/routing: mode={endpoint.Mode.ToConfigString()}, transport={endpoint.Transport.ToConfigString()}, baseUrl={endpoint.BaseUrl}, model={endpoint.Model}");
+            FileLog.Write($"[TranscriptionRoutingEndpoint] GET /transcription/routing: baseUrl={endpoint.BaseUrl}, model={endpoint.Model}");
             return Results.Json(new
             {
-                mode = endpoint.Mode.ToConfigString(),
-                transport = endpoint.Transport.ToConfigString(),
+                mode = "devthrottle",
+                transport = "batch",
                 baseUrl = endpoint.BaseUrl,
                 model = endpoint.Model,
                 key = routing.Key,

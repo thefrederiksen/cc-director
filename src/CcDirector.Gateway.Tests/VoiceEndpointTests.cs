@@ -13,16 +13,14 @@ namespace CcDirector.Gateway.Tests;
 /// Integration tests for the Director's voice endpoints  (POST /voice/command,
 /// GET /voice/status).  These spin up a real ControlApiHost on an ephemeral
 /// loopback port so we exercise multipart parsing, JSON routing, and the
-/// VoiceService end-to-end up to (but not including) the actual Whisper call.
+/// VoiceService end-to-end up to (but not including) the actual Gateway transcription upload.
 ///
-/// We deliberately do NOT exercise Whisper itself - that requires a live OpenAI
-/// key and we want these tests to run offline. Instead we verify that:
-///   - /voice/status correctly reports availability based on the resolved key
-///   - /voice/command returns the structured "no_key" response when no key is set
+/// We deliberately do NOT exercise the Gateway provider itself. Instead we verify that:
+///   - /voice/status correctly reports availability based on Gateway configuration
+///   - /voice/command returns the structured "no_key" response when no Gateway is configured
 ///   - /voice/command returns BadRequest when no audio file is uploaded
 ///
-/// We force the no-key path by clearing both the AgentOptions field and the
-/// OPENAI_API_KEY env var for the duration of each test.
+/// We force the no-Gateway path by isolating CC_DIRECTOR_ROOT for the duration of each test.
 /// </summary>
 public sealed class VoiceEndpointTests : IAsyncLifetime
 {
@@ -49,7 +47,7 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
         Directory.CreateDirectory(_tempRoot);
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _tempRoot);
 
-        _sm = new SessionManager(new AgentOptions { OpenAiKey = null });
+        _sm = new SessionManager(new AgentOptions());
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
         var port = await _host.StartAsync();
         _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
@@ -89,15 +87,20 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task VoiceStatus_reports_available_when_options_key_set()
+    public async Task VoiceStatus_reports_available_when_gateway_configured()
     {
-        // Rebuild the host with a key set in AgentOptions.
-        // We don't actually call Whisper - just verify the availability flag flips.
+        // Seed only the Gateway URL. Status is a wiring/readiness check; it does not call the
+        // Gateway or require a local provider key.
         await _host.StopAsync();
         _sm.Dispose();
 
-        var opts = new AgentOptions { OpenAiKey = "sk-test-not-a-real-key" };
-        _sm = new SessionManager(opts);
+        var configPath = CcDirector.Core.Storage.CcStorage.ConfigJson();
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        await File.WriteAllTextAsync(configPath, """
+        { "gateway": { "url": "http://127.0.0.1:7878", "token": "" } }
+        """);
+
+        _sm = new SessionManager(new AgentOptions());
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
         var port = await _host.StartAsync();
         _client.Dispose();
@@ -127,9 +130,7 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
         var body = await resp.Content.ReadFromJsonAsync<VoiceCommandResponse>();
         Assert.NotNull(body);
         Assert.Equal("no_key", body!.Status);
-        // Issue #887: the default mode is now DevThrottle (hosted), so the unavailable message guides
-        // the user to their DevThrottle account rather than to an OpenAI key.
-        Assert.Contains("DevThrottle", body.ReplyText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Gateway URL is not configured", body.ReplyText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

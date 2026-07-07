@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -37,8 +38,12 @@ public sealed class VoiceUtteranceService
         _options = options;
     }
 
-    /// <summary>True when an OpenAI key is configured.</summary>
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
+    /// <summary>True when the Director is configured to upload transcription audio to the Gateway.</summary>
+    public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
+    {
+        await Task.CompletedTask;
+        return new GatewayTranscriptionJobClient().IsConfigured;
+    }
 
     /// <summary>
     /// Begin a new utterance. If the caller supplies an id it must be a GUID (we use

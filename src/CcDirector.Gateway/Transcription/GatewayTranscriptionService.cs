@@ -9,21 +9,18 @@ namespace CcDirector.Gateway.Transcription;
 
 /// <summary>
 /// The single Gateway owner of speech-to-text (issue #839). Every module that needs audio turned
-/// into text goes through this one service: it resolves the configured transcription mode and the
-/// key, runs the OpenAI-compatible batch endpoint for the mode (DevThrottle hosted or bring-your-own
-/// OpenAI), and optionally applies the validated dictionary correction. No caller resolves the mode,
-/// reads the key, picks a provider, or talks to OpenAI on its own.
+/// into text goes through this one service: it resolves the DevThrottle routing target and the key,
+/// runs the OpenAI-compatible batch endpoint on the DevThrottle proxy, and optionally applies the
+/// validated dictionary correction. No caller reads the key or talks to the provider on its own.
 ///
-/// This collapses the three hand-kept-in-step resolvers that previously each did "figure out the
-/// mode, then read the key" - the phone Notes worker (<c>ResolveSelectedMethod</c>), the Settings
-/// "Test it" endpoint, and the Gateway wingman-voice batch paths - into ONE place
-/// (<see cref="Resolve"/>). The HTTP face of this service is <c>POST /transcription</c>
+/// This collapses the resolvers that previously each did "figure out the routing, then read the key" -
+/// the phone Notes worker, the Settings "Test it" endpoint, and the Gateway wingman-voice batch paths -
+/// into ONE place (<see cref="Resolve"/>). The HTTP face of this service is <c>POST /transcription</c>
 /// (<see cref="Api.TranscriptionBatchEndpoint"/>).
 ///
 /// The key lives in exactly one store: the Gateway vault file (<see cref="KeyVault"/>). There is no
-/// second config.json copy. The bring-your-own OpenAI key is only ever paired with the OpenAI base
-/// URL because the (URL, key, transport, model) tuple is composed from the one pure
-/// <see cref="TranscriptionEndpointResolver"/> - it is never crossed onto the DevThrottle URL.
+/// second config.json copy. The (URL, key, model) tuple is composed from the one pure
+/// <see cref="TranscriptionEndpointResolver"/>.
 ///
 /// Transcription integrity (CodingStyle section 16): the only post-transcription transform is the
 /// validated dictionary corrector (<see cref="CleanupOrchestrator"/> / <see cref="TranscriptEditEngine"/>)
@@ -34,7 +31,6 @@ public sealed class GatewayTranscriptionService
 {
     private readonly KeyVault _vault;
     private readonly Func<DictationDictionary> _dictionaryProvider;
-    private readonly Func<TranscriptionMode> _modeProvider;
     private readonly HttpClient? _http;
     private readonly string _cleanupModel;
 
@@ -42,9 +38,6 @@ public sealed class GatewayTranscriptionService
     /// <param name="dictionaryProvider">Supplies the live dictation dictionary the corrector uses;
     /// invoked fresh per cleanup so a glossary edit takes effect on the next transcription. Defaults
     /// to loading the shared dictionary file from disk.</param>
-    /// <param name="modeProvider">Supplies the current transcription mode; invoked fresh per resolve
-    /// so a mode change in the Cockpit takes effect with no restart. Defaults to
-    /// <see cref="TranscriptionModeConfig.Get"/>.</param>
     /// <param name="http">Optional shared HttpClient for the remote batch transcription and the
     /// dictionary-corrector POST (tests inject a stub). The pipeline creates and owns one when null.</param>
     /// <param name="cleanupModel">The chat model the dictionary corrector uses to PROPOSE edits
@@ -52,28 +45,26 @@ public sealed class GatewayTranscriptionService
     public GatewayTranscriptionService(
         KeyVault vault,
         Func<DictationDictionary>? dictionaryProvider = null,
-        Func<TranscriptionMode>? modeProvider = null,
         HttpClient? http = null,
         string? cleanupModel = null)
     {
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _dictionaryProvider = dictionaryProvider ?? (() => DictionaryLoader.LoadFromDisk(DictionaryPath()));
-        _modeProvider = modeProvider ?? TranscriptionModeConfig.Get;
         _http = http;
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
     }
 
     /// <summary>
-    /// THE one place that turns the configured mode into a routing target plus the key. The mode
-    /// carries the vault key when present, or null when no key is set for that mode (the caller then
-    /// reports it unavailable - never a baked-in URL, no-fallback rule).
+    /// THE one place that turns the DevThrottle routing target into a routing target plus the key. The
+    /// routing carries the vault key when present, or null when no key is set (the caller then reports
+    /// it unavailable - never a baked-in URL, no-fallback rule).
     /// </summary>
     public GatewayTranscriptionRouting Resolve()
     {
-        var endpoint = TranscriptionEndpointResolver.Resolve(_modeProvider());
+        var endpoint = TranscriptionEndpointResolver.Resolve();
         var key = _vault.Get(endpoint.RequireKeyName());
         var hasKey = !string.IsNullOrWhiteSpace(key);
-        FileLog.Write($"[GatewayTranscriptionService] Resolve: mode={endpoint.Mode.ToConfigString()}, model={endpoint.Model}, hasKey={hasKey}");
+        FileLog.Write($"[GatewayTranscriptionService] Resolve: model={endpoint.Model}, hasKey={hasKey}");
         return new GatewayTranscriptionRouting { Endpoint = endpoint, Key = hasKey ? key : null };
     }
 
@@ -96,7 +87,7 @@ public sealed class GatewayTranscriptionService
         if (audio is null) throw new ArgumentNullException(nameof(audio));
 
         var routing = Resolve();
-        var mode = routing.Mode.ToConfigString();
+        var mode = "devthrottle";
 
         if (audio.Length == 0)
             return GatewayTranscriptionResult.NoAudio(mode, routing.Endpoint.Model);
@@ -180,7 +171,7 @@ public sealed class GatewayTranscriptionService
     {
         var name = string.IsNullOrWhiteSpace(fileName) ? "audio." + ExtensionFor(contentType) : fileName;
         using var pipeline = new BatchTranscriptionPipeline(httpClient: _http, cleanupModel: _cleanupModel);
-        FileLog.Write($"[GatewayTranscriptionService] transcribe remote: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Endpoint.Model}");
+        FileLog.Write($"[GatewayTranscriptionService] transcribe remote: bytes={audio.Length}, model={routing.Endpoint.Model}");
         return await pipeline.TranscribeRawAsync(audio, name, routing.ToResolved(), ct);
     }
 
@@ -250,14 +241,11 @@ public sealed class GatewayTranscriptionService
 /// </summary>
 public sealed record GatewayTranscriptionRouting
 {
-    /// <summary>The pure routing target (base URL, key name, transport, model) for the mode.</summary>
+    /// <summary>The pure routing target (base URL, key name, model).</summary>
     public required TranscriptionEndpoint Endpoint { get; init; }
 
-    /// <summary>The vault key for the mode, or null when no key is set.</summary>
+    /// <summary>The vault key, or null when no key is set.</summary>
     public string? Key { get; init; }
-
-    /// <summary>The configured transcription mode.</summary>
-    public TranscriptionMode Mode => Endpoint.Mode;
 
     /// <summary>
     /// Compose the <see cref="ResolvedTranscription"/> the remote batch pipeline consumes. Throws when
@@ -266,14 +254,12 @@ public sealed record GatewayTranscriptionRouting
     public ResolvedTranscription ToResolved()
     {
         if (string.IsNullOrWhiteSpace(Key))
-            throw new InvalidOperationException($"no key set for transcription mode {Mode.ToConfigString()}");
+            throw new InvalidOperationException("no DevThrottle key set for transcription");
         return new ResolvedTranscription
         {
             BaseUrl = Endpoint.RequireBaseUrl(),
             ApiKey = Key,
-            Transport = Endpoint.Transport,
             Model = Endpoint.Model,
-            Mode = Mode,
         };
     }
 }

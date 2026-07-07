@@ -4,12 +4,11 @@ namespace CcDirector.Core.Audio;
 
 /// <summary>
 /// The ONE place that wraps raw PCM in a minimal RIFF/WAV container. Transcription
-/// APIs (OpenAI and the OpenAI-compatible proxies) reject raw PCM without a
+/// APIs reject raw PCM without a
 /// container header, so every batch surface that captures raw PCM - the desktop
 /// mic (<c>BatchDictationRecorder</c>), the browser dictation endpoint
-/// (<c>DictationEndpoint</c>), and the in-session batch provider
-/// (<c>OpenAiTranscriptionProvider</c>) - wraps it here rather than each carrying
-/// its own copy of the byte layout.
+/// (<c>DictationEndpoint</c>), and Gateway voice endpoints - wraps it here rather
+/// than each carrying its own copy of the byte layout.
 /// </summary>
 public static class PcmWav
 {

@@ -23,9 +23,9 @@ namespace CcDirector.Core.Dictation;
 /// canonical dictionary term. Anything the model returns that is not a valid
 /// edit document ships the raw transcript untouched.
 ///
-/// Defaults to <c>gpt-4o-mini</c>; callers specify the model
-/// (<c>gpt-4.1-nano</c> in production - ~1 second latency, fractional-cent
-/// cost). temperature is 0 so detection is as stable as the model can be.
+/// Defaults to the DevThrottle proxy fast model; callers pass the model resolved
+/// from the DevThrottle routing. temperature is 0 so detection is as stable as the
+/// model can be.
 ///
 /// Fails open: on any error (network failure, bad response, invalid edit
 /// document) the returned <see cref="CleanupOutcome"/> carries the raw
@@ -33,9 +33,9 @@ namespace CcDirector.Core.Dictation;
 /// </summary>
 public sealed class CleanupOrchestrator : IDisposable
 {
-    /// <summary>Default OpenAI-compatible base URL (the bring-your-own-key path).</summary>
-    public const string DefaultBaseUrl = "https://api.openai.com/v1";
-    public const string DefaultModel = "gpt-4o-mini";
+    /// <summary>Default OpenAI-compatible base URL (the DevThrottle managed proxy).</summary>
+    public const string DefaultBaseUrl = Configuration.TranscriptionEndpointResolver.DevThrottleBaseUrl;
+    public const string DefaultModel = Configuration.TranscriptionEndpointResolver.DevThrottleWingmanFastModel;
     public static readonly TimeSpan HttpTimeout = TimeSpan.FromSeconds(60);
 
     private readonly HttpClient _http;
@@ -44,8 +44,8 @@ public sealed class CleanupOrchestrator : IDisposable
     private readonly string _model;
     private readonly string _chatCompletionsEndpoint;
 
-    /// <param name="apiKey">OpenAI API key. Reads <c>OPENAI_API_KEY</c> env var if blank.</param>
-    /// <param name="model">Chat model. Defaults to <c>gpt-4o-mini</c>.</param>
+    /// <param name="apiKey">The DevThrottle API key (required; from the resolved transcription routing).</param>
+    /// <param name="model">Chat model. Defaults to the DevThrottle proxy fast model.</param>
     /// <param name="httpClient">Optional shared HttpClient. Provider creates and owns one if null.</param>
     /// <param name="baseUrl">OpenAI-compatible base URL (issue #497). Defaults to <see cref="DefaultBaseUrl"/>.</param>
     public CleanupOrchestrator(
@@ -307,13 +307,10 @@ public sealed class CleanupOrchestrator : IDisposable
 
     private static string ResolveApiKey(string? explicitKey)
     {
-        if (!string.IsNullOrWhiteSpace(explicitKey))
-            return explicitKey.Trim();
-        var env = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(env))
+        if (string.IsNullOrWhiteSpace(explicitKey))
             throw new InvalidOperationException(
-                "OpenAI API key not provided and OPENAI_API_KEY environment variable is not set.");
-        return env.Trim();
+                "A DevThrottle API key must be provided to the cleanup orchestrator (from the resolved transcription routing).");
+        return explicitKey.Trim();
     }
 
     private static string Truncate(string s, int max)

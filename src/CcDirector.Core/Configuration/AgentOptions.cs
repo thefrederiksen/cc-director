@@ -107,29 +107,17 @@ public class AgentOptions
     public string? ChatSessionRepoPath { get; set; }
 
     /// <summary>
-    /// OpenAI TTS voice for the voice mode.  Defaults to "onyx" - OpenAI's deep,
-    /// natural male voice.  Both the web voice page and the Android client POST
-    /// /tts with no voice override, so this single default is the voice every
-    /// client speaks with.  Valid values: alloy, echo, fable, onyx, nova, shimmer.
+    /// TTS voice for the voice mode.  Defaults to Kokoro's "af_bella".  Both the web
+    /// voice page and the mobile client POST /tts with no voice override, so this
+    /// single default is the voice every client speaks with. The live voice list comes
+    /// from the DevThrottle proxy's speech-model catalog.
     /// </summary>
-    public string TtsVoice { get; set; } = "onyx";
+    public string TtsVoice { get; set; } = "af_bella";
 
     /// <summary>
-    /// OpenAI TTS model for Phase 3 of the voice mode.  Defaults to "tts-1".
-    /// Use "tts-1-hd" for higher quality at 2x cost.
+    /// TTS model for Phase 3 of the voice mode.  Defaults to "hexgrad/Kokoro-82M".
     /// </summary>
-    public string TtsModel { get; set; } = "tts-1";
-
-    /// <summary>
-    /// OpenAI API key for the desktop voice / text-to-speech availability checks
-    /// (<see cref="ResolveOpenAiKey"/>). Issue #839 removed the config.json
-    /// Voice.OpenAiKey loading, so this is no longer populated from config and is
-    /// NOT the transcription key store - transcription reads the key vault only
-    /// (<see cref="OpenAiKeyResolver"/> / the Gateway transcription service). The
-    /// OPENAI_API_KEY environment variable remains as the documented seed.
-    /// Never sent to browsers.
-    /// </summary>
-    public string? OpenAiKey { get; set; }
+    public string TtsModel { get; set; } = "hexgrad/Kokoro-82M";
 
     /// <summary>
     /// Path to the user-editable dictation dictionary YAML. If null, resolves
@@ -140,24 +128,11 @@ public class AgentOptions
     public string? DictationDictionaryPath { get; set; }
 
     /// <summary>
-    /// OpenAI chat model used by the dictation library's CleanupOrchestrator.
-    /// Defaults to <c>gpt-4.1-nano</c> — the smallest/fastest gpt-4.1 tier,
-    /// purpose-built for high-throughput follow-instructions tasks like
-    /// transcript cleanup. Override to <c>gpt-4o-mini</c> for slightly higher
-    /// quality at noticeably higher latency, or to <c>gpt-4o</c> for the
-    /// best quality at substantially higher latency and cost.
+    /// Chat model used by the dictation library's CleanupOrchestrator to propose
+    /// dictionary corrections. Defaults to the DevThrottle proxy fast model; the
+    /// user can override it with any model the proxy serves.
     /// </summary>
-    public string DictationCleanupModel { get; set; } = "gpt-4.1-nano";
-
-    /// <summary>
-    /// OpenAI transcription model used by the dictation live preview
-    /// (<see cref="Dictation.LivePreviewTranscriber"/>), which re-transcribes
-    /// the growing clip while the user is still talking so the dialog shows
-    /// the words as they are spoken. Defaults to <c>gpt-4o-mini-transcribe</c>:
-    /// the preview re-runs every few seconds, so the cheap/fast tier is the
-    /// right default. The FINAL transcript does not use this model.
-    /// </summary>
-    public string DictationPreviewModel { get; set; } = "gpt-4o-mini-transcribe";
+    public string DictationCleanupModel { get; set; } = TranscriptionEndpointResolver.DevThrottleWingmanFastModel;
 
     /// <summary>
     /// Resolve the effective dictation dictionary path. Always returns a
@@ -172,21 +147,15 @@ public class AgentOptions
     }
 
     /// <summary>
-    /// Resolve the effective OpenAI key for the desktop voice / text-to-speech availability checks:
-    /// the in-process <see cref="OpenAiKey"/> when set, then the OPENAI_API_KEY environment variable.
-    /// Returns null if neither is set.
-    ///
-    /// Issue #839: this is NOT the transcription key path. Transcription reads the key vault only
-    /// (<see cref="OpenAiKeyResolver"/> and the Gateway transcription service); the config.json
-    /// Voice.OpenAiKey loading was removed, so in production <see cref="OpenAiKey"/> is unset and the
-    /// environment variable (the documented vault seed) is what this returns.
+    /// Resolve a locally-available DevThrottle key for the desktop voice / text-to-speech availability
+    /// checks (the local key vault, <see cref="TranscriptionEndpointResolver.DevThrottleKeyName"/>).
+    /// Returns null when none is set. This is the standalone/local view; a Gateway-attached Director
+    /// resolves the key remotely through <see cref="TranscriptionKeyResolver"/>.
     /// </summary>
-    public string? ResolveOpenAiKey()
+    public string? ResolveLocalTranscriptionKey()
     {
-        if (!string.IsNullOrWhiteSpace(OpenAiKey))
-            return OpenAiKey.Trim();
-        var env = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        return string.IsNullOrWhiteSpace(env) ? null : env.Trim();
+        var local = new CcDirector.Core.KeyVault().Get(TranscriptionEndpointResolver.DevThrottleKeyName);
+        return string.IsNullOrWhiteSpace(local) ? null : local.Trim();
     }
 
     /// <summary>

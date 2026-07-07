@@ -73,22 +73,18 @@ public sealed class BatchTranscriptionPipelineTests
             });
     }
 
-    private static ResolvedTranscription Byo() => new()
+    private static ResolvedTranscription DevThrottleAlternateKey() => new()
     {
-        BaseUrl = TranscriptionEndpointResolver.OpenAiBaseUrl,
-        ApiKey = "sk-byo-key",
-        Transport = TranscriptionTransport.Batch,
-        Model = TranscriptionEndpointResolver.OpenAiModel,
-        Mode = TranscriptionMode.Byo,
+        BaseUrl = TranscriptionEndpointResolver.DevThrottleBaseUrl,
+        ApiKey = "dt_live_alternate_key",
+        Model = TranscriptionEndpointResolver.DevThrottleModel,
     };
 
     private static ResolvedTranscription DevThrottle() => new()
     {
         BaseUrl = TranscriptionEndpointResolver.DevThrottleBaseUrl,
         ApiKey = "dt_live_devthrottle_key",
-        Transport = TranscriptionTransport.Batch,
         Model = TranscriptionEndpointResolver.DevThrottleModel,
-        Mode = TranscriptionMode.DevThrottle,
     };
 
     private static DictationDictionary DictWith(params string[] vocab) => new(
@@ -113,7 +109,7 @@ public sealed class BatchTranscriptionPipelineTests
         using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
 
         var result = await pipeline.TranscribeAsync(
-            new byte[] { 1, 2, 3 }, "utterance.webm", Byo(), DictationDictionary.Empty);
+            new byte[] { 1, 2, 3 }, "utterance.webm", DevThrottleAlternateKey(), DictationDictionary.Empty);
 
         Assert.Equal(raw, result.RawTranscript);
         // Byte-identical to the raw transcription, proving no rewrite happened (Assert.Equal on
@@ -178,7 +174,7 @@ public sealed class BatchTranscriptionPipelineTests
         using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
 
         var result = await pipeline.TranscribeAsync(
-            new byte[] { 1, 2, 3 }, "utterance.webm", Byo(),
+            new byte[] { 1, 2, 3 }, "utterance.webm", DevThrottleAlternateKey(),
             DictWithMistranscription("cc-director", "See Director"));
 
         Assert.Equal(raw, result.RawTranscript);
@@ -193,19 +189,18 @@ public sealed class BatchTranscriptionPipelineTests
     // ----- Acceptance criterion: each method routes to the right URL with the right key -----
 
     [Fact]
-    public async Task TranscribeAsync_ByoMode_RoutesToOpenAiUrlWithOpenAiKey()
+    public async Task TranscribeAsync_ResolvedDevThrottleRoute_UsesResolvedDevThrottleKey()
     {
         var handler = new RecordingHandler("hello", "{\"edits\": []}");
         using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
 
-        await pipeline.TranscribeAsync(new byte[] { 1 }, "a.webm", Byo(), DictationDictionary.Empty);
+        await pipeline.TranscribeAsync(new byte[] { 1 }, "a.webm", DevThrottleAlternateKey(), DictationDictionary.Empty);
 
         var transcribe = handler.Requests.Single(r => r.Url.EndsWith("/audio/transcriptions", StringComparison.Ordinal));
-        Assert.StartsWith(TranscriptionEndpointResolver.OpenAiBaseUrl, transcribe.Url);
+        Assert.StartsWith(TranscriptionEndpointResolver.DevThrottleBaseUrl, transcribe.Url);
         Assert.Equal("Bearer", transcribe.AuthScheme);
-        Assert.Equal("sk-byo-key", transcribe.AuthValue);
-        // The bring-your-own OpenAI key must NEVER reach the devthrottle.com URL.
-        Assert.DoesNotContain(handler.Requests, r => r.Url.Contains("devthrottle.com", StringComparison.Ordinal));
+        Assert.Equal("dt_live_alternate_key", transcribe.AuthValue);
+        Assert.DoesNotContain(handler.Requests, r => r.Url.Contains("api.openai.com", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -249,7 +244,7 @@ public sealed class BatchTranscriptionPipelineTests
     {
         using var pipeline = new BatchTranscriptionPipeline(new HttpClient(new RecordingHandler("x", "{\"edits\": []}")));
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            pipeline.TranscribeAsync(Array.Empty<byte>(), "a.webm", Byo(), DictationDictionary.Empty));
+            pipeline.TranscribeAsync(Array.Empty<byte>(), "a.webm", DevThrottleAlternateKey(), DictationDictionary.Empty));
     }
 
     private sealed class BodyCapturingHandler : HttpMessageHandler

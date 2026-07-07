@@ -12,8 +12,7 @@ namespace CcDirector.Gateway.Wingman;
 /// The wingman as a STATELESS, hosted chat-completions call (the account-first hosted-AI direction).
 /// Unlike the warm <c>claude.exe</c> brain, this makes one OpenAI-compatible
 /// <c>POST {base}/chat/completions</c> per ask - to the DevThrottle inference proxy
-/// (<c>https://devthrottle.com/api/v1</c>, model <c>glm-5.2</c>) or to OpenAI directly
-/// (model <c>gpt-5.5</c>), depending on the selected AI provider. The base URL, credential name, and
+/// (<c>https://devthrottle.com/api/v1</c>, model <c>glm-5.2</c>). The base URL, credential name, and
 /// model all come from the one routing spot
 /// (<see cref="Core.Configuration.TranscriptionEndpointResolver.ResolveWingman"/>).
 ///
@@ -39,7 +38,7 @@ public sealed class HostedInferenceBrain : IAgentBrain
 
     /// <param name="baseUrl">The provider's OpenAI-compatible <c>/v1</c> base URL.</param>
     /// <param name="apiKey">The credential to present as the Bearer token. Must be non-empty.</param>
-    /// <param name="model">The chat model id (e.g. <c>glm-5.2</c> or <c>gpt-5.5</c>).</param>
+    /// <param name="model">The chat model id (e.g. <c>glm-5.2</c>).</param>
     /// <param name="http">HTTP client (tests inject a stub over a fake handler); a shared 3-minute client when null.</param>
     /// <param name="log">Log sink; <see cref="FileLog.Write"/> when null.</param>
     public HostedInferenceBrain(string baseUrl, string apiKey, string model, HttpClient? http = null, Action<string>? log = null)
@@ -65,8 +64,7 @@ public sealed class HostedInferenceBrain : IAgentBrain
     {
         if (string.IsNullOrWhiteSpace(_apiKey))
             throw new InvalidOperationException(
-                "[HostedInferenceBrain] No API key for the selected AI provider. Sign in to DevThrottle " +
-                "(or add your OpenAI key) so the wingman can reach the model.");
+                "[HostedInferenceBrain] No DevThrottle API key. Sign in to DevThrottle so the wingman can reach the model.");
 
         var payload = JsonSerializer.Serialize(new
         {

@@ -17,28 +17,19 @@ namespace CcDirector.Gateway.HostedAi;
 public static class GatewayHostedAi
 {
     /// <summary>
-    /// Build a <see cref="HostedAiReadiness"/> that reads the bring-your-own key from
-    /// <paramref name="vault"/> and the DevThrottle account balance through
+    /// Build a <see cref="HostedAiReadiness"/> that reads the DevThrottle account balance through
     /// <paramref name="credits"/> using the token <paramref name="account"/> holds.
     /// </summary>
-    /// <param name="vault">The Gateway key vault (the single store for the OpenAI/DevThrottle keys).</param>
     /// <param name="account">The Gateway-hosted account credential service, or null on a host without one
-    /// (then the balance is always unknown and DevThrottle mode reports Ready - the runtime 402 gates it).</param>
+    /// (then the balance is always unknown and readiness reports Ready - the runtime 402 gates it).</param>
     /// <param name="credits">The cloud credits client (the injectable cloud-egress seam).</param>
-    /// <param name="modeProvider">Supplies the current transcription mode; defaults to
-    /// <see cref="TranscriptionModeConfig.Get"/> so a Cockpit mode change takes effect with no restart.</param>
     public static HostedAiReadiness CreateReadiness(
-        KeyVault vault,
         DevThrottleAccountService? account,
-        AccountCreditsClient credits,
-        Func<TranscriptionMode>? modeProvider = null)
+        AccountCreditsClient credits)
     {
-        if (vault is null) throw new ArgumentNullException(nameof(vault));
         if (credits is null) throw new ArgumentNullException(nameof(credits));
 
         return new HostedAiReadiness(
-            modeProvider ?? TranscriptionModeConfig.Get,
-            name => vault.Get(name),
             ct => ReadBalanceMicrosAsync(account, credits, ct));
     }
 

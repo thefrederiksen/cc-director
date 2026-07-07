@@ -31,7 +31,7 @@ public static class DesktopHostedAiGate
         // Ready (the runtime 402 stays the authoritative gate), so the feature is never blocked on a slow
         // read - only on a definitive out-of-credits / no-key answer, which returns fast.
         var credits = new GatewayAccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(2) });
-        var readiness = DirectorHostedAiReadiness.Create(new OpenAiKeyResolver(), credits);
+        var readiness = DirectorHostedAiReadiness.Create(credits);
         return readiness.CheckAsync(ct);
     }
 

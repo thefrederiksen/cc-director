@@ -48,9 +48,9 @@ internal static class RecordingEndpoints
     public static void Map(IEndpointRouteBuilder app)
     {
         // Lazily built on FIRST USE, not at host startup: constructing the service resolves
-        // the OpenAI API key (the transcriber needs it), and the Gateway must boot on machines
+        // the DevThrottle key (the transcriber needs it), and the Gateway must boot on machines
         // without that key. A missing key then fails the individual recording request loudly
-        // (500 with the explicit "OPENAI_API_KEY ... not set" message) instead of preventing
+        // (500 with an explicit "no DevThrottle key" message) instead of preventing
         // the entire Gateway host from starting.
         var lazyService = new Lazy<RecordingIngestService>(BuildService);
 

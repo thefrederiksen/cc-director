@@ -33,8 +33,8 @@ public sealed record SpeakDictationResult(SpeakAction Action, string Text);
 ///
 /// Transcription happens INSIDE the dialog via an injected delegate, so the dialog can
 /// show and edit the transcript without knowing anything about the session/Director. The
-/// delegate is the only thing the host wires in (it calls the Director's /voice/utterance
-/// transcribe path). Always completes with a <see cref="SpeakDictationResult"/>.
+/// delegate is the only thing the host wires in (it uploads to the Gateway transcription
+/// job protocol). Always completes with a <see cref="SpeakDictationResult"/>.
 /// </summary>
 public partial class SpeakIntoTextboxDialog : ContentPage
 {

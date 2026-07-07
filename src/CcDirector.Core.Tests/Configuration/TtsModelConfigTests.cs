@@ -35,8 +35,7 @@ public sealed class TtsModelConfigTests : IDisposable
     [Fact]
     public void Resolve_NoConfig_UsesProviderDefault()
     {
-        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("tts-1", TtsModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve());
     }
 
     [Fact]
@@ -44,7 +43,7 @@ public sealed class TtsModelConfigTests : IDisposable
     {
         TtsModelConfig.Set("hexgrad/Kokoro-82M");
         Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Get());
-        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve(TranscriptionMode.DevThrottle));
+        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve());
         Assert.True(File.Exists(CcStorage.ConfigJson()));
     }
 

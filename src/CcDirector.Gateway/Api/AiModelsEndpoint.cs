@@ -37,21 +37,20 @@ internal static class AiModelsEndpoint
         app.MapGet("/gateway/ai/models", async (string? kind, CancellationToken ct) =>
         {
             var k = string.Equals(kind, "speech", StringComparison.OrdinalIgnoreCase) ? "speech" : "chat";
-            var mode = TranscriptionModeConfig.Get();
-            var ep = TranscriptionEndpointResolver.ResolveTts(mode);   // base URL + key name (same per provider)
+            var ep = TranscriptionEndpointResolver.ResolveTts();   // base URL + key name
             var key = vault.Get(ep.KeyName);
             if (string.IsNullOrWhiteSpace(key))
-                return Results.Json(new { error = ProviderKeyMissingMessage(mode) },
+                return Results.Json(new { error = ProviderKeyMissingMessage() },
                     statusCode: StatusCodes.Status503ServiceUnavailable);
 
             try
             {
-                var models = await ListModelsAsync(ep.BaseUrl, key!, mode, k, ct);
+                var models = await ListModelsAsync(ep.BaseUrl, key!, k, ct);
                 return Results.Json(new { models });
             }
             catch (Exception ex)
             {
-                FileLog.Write($"[AiModelsEndpoint] list models FAILED ({mode.ToConfigString()}, {k}): {ex.Message}");
+                FileLog.Write($"[AiModelsEndpoint] list models FAILED ({k}): {ex.Message}");
                 return Results.Json(new { error = "could not list models: " + ex.Message },
                     statusCode: StatusCodes.Status502BadGateway);
             }
@@ -65,11 +64,10 @@ internal static class AiModelsEndpoint
                 if (body is null || string.IsNullOrWhiteSpace(body.Model))
                     return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
 
-                var mode = TranscriptionModeConfig.Get();
-                var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
+                var ep = TranscriptionEndpointResolver.ResolveWingman();
                 var key = vault.Get(ep.KeyName);
                 if (string.IsNullOrWhiteSpace(key))
-                    return Results.Json(new { ok = false, error = ProviderKeyMissingMessage(mode) },
+                    return Results.Json(new { ok = false, error = ProviderKeyMissingMessage() },
                         statusCode: StatusCodes.Status503ServiceUnavailable);
 
                 // One real round-trip to the chosen model - the same path the wingman uses - so the user
@@ -132,23 +130,16 @@ internal static class AiModelsEndpoint
         });
     }
 
-    private static string ProviderKeyMissingMessage(TranscriptionMode mode) =>
-        mode == TranscriptionMode.DevThrottle
-            ? "not signed in to DevThrottle - sign in on the Account tab"
-            : "no OpenAI key configured - add it on the AI tab";
+    private static string ProviderKeyMissingMessage() =>
+        "not signed in to DevThrottle - sign in on the Account tab";
 
     /// <summary>
-    /// List the provider's models for a kind. DevThrottle: GET /models?type=chat|speech (typed catalog,
-    /// speech models carry voices). OpenAI: flat /models - so return the known speech set for speech, and
-    /// filter to chat-shaped ids for chat.
+    /// List the DevThrottle proxy's models for a kind: GET /models?type=chat|speech (typed catalog,
+    /// speech models carry voices).
     /// </summary>
-    private static async Task<List<ModelDto>> ListModelsAsync(string baseUrl, string key, TranscriptionMode mode, string kind, CancellationToken ct)
+    private static async Task<List<ModelDto>> ListModelsAsync(string baseUrl, string key, string kind, CancellationToken ct)
     {
-        if (mode == TranscriptionMode.Byo && kind == "speech")
-            return OpenAiSpeechModels();
-
-        var typeParam = mode == TranscriptionMode.DevThrottle ? "?type=" + kind : "";
-        var url = baseUrl.TrimEnd('/') + "/models" + typeParam;
+        var url = baseUrl.TrimEnd('/') + "/models?type=" + kind;
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         using var resp = await Http.SendAsync(req, ct);
@@ -165,7 +156,6 @@ internal static class AiModelsEndpoint
         {
             var id = item.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String ? idEl.GetString() : null;
             if (string.IsNullOrWhiteSpace(id)) continue;
-            if (mode == TranscriptionMode.Byo && kind == "chat" && !LooksLikeChat(id!)) continue;
 
             var voices = new List<string>();
             if (item.TryGetProperty("voices", out var v) && v.ValueKind == JsonValueKind.Array)
@@ -177,24 +167,6 @@ internal static class AiModelsEndpoint
             list.Add(new ModelDto(id!, desc ?? "", voices, defVoice));
         }
         return list;
-    }
-
-    private static bool LooksLikeChat(string id) =>
-        id.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("o1", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("o3", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("o4", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("chatgpt", StringComparison.OrdinalIgnoreCase);
-
-    private static List<ModelDto> OpenAiSpeechModels()
-    {
-        var voices = TtsVoiceConfig.OpenAiVoices.ToList();
-        return new List<ModelDto>
-        {
-            new("tts-1", "Fast", voices, "nova"),
-            new("tts-1-hd", "Higher quality", voices, "nova"),
-            new("gpt-4o-mini-tts", "GPT-4o mini speech", voices, "nova"),
-        };
     }
 
     private sealed record ModelBody(string? Model);

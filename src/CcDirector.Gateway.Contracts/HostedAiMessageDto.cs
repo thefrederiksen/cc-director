@@ -9,7 +9,7 @@ namespace CcDirector.Gateway.Contracts;
 /// </summary>
 public sealed class HostedAiMessageDto
 {
-    /// <summary>The readiness state name: "NeedsCredits", "CapReached", or "NeedsKey".</summary>
+    /// <summary>The readiness state name: "NeedsCredits" or "CapReached".</summary>
     public string State { get; set; } = "";
 
     /// <summary>The user-facing sentence to show.</summary>

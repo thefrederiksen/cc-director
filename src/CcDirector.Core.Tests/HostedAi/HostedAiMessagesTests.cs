@@ -43,16 +43,6 @@ public sealed class HostedAiMessagesTests
         Assert.EndsWith("/account/billing", m.CtaUrl);
     }
 
-    [Fact]
-    public void NeedsKey_OpenSettings_NoUrl()
-    {
-        var m = HostedAiMessages.For(HostedAiState.NeedsKey);
-        Assert.NotEmpty(m.Text);
-        Assert.Equal("Open Settings", m.CtaLabel);
-        Assert.Equal(HostedAiCtaAction.OpenSettings, m.CtaAction);
-        Assert.Null(m.CtaUrl); // Settings is surface-local, not a web address
-    }
-
     [Theory]
     [InlineData(HostedAiState.NeedsCredits)]
     [InlineData(HostedAiState.CapReached)]
@@ -62,14 +52,6 @@ public sealed class HostedAiMessagesTests
         var violations = HostedAiCopyRules.FindViolations(m.Text);
         Assert.True(HostedAiCopyRules.IsClean(m.Text),
             $"hosted copy for {state} must name no provider / no 'free credits' / no tier words, found: {string.Join(", ", violations)}");
-    }
-
-    [Fact]
-    public void NeedsKeyCopy_MayNameOpenAi()
-    {
-        // The bring-your-own state is EXEMPT from the provider-name rule - it is the user's own key.
-        var m = HostedAiMessages.For(HostedAiState.NeedsKey);
-        Assert.Contains("OpenAI", m.Text);
     }
 
     [Theory]

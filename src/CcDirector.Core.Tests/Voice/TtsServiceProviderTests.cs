@@ -54,7 +54,7 @@ public sealed class TtsServiceProviderTests : IDisposable
         var vault = new KeyVault(Path.Combine(_root, "vault.dat"));
         vault.Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_testkey");
 
-        var resolver = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.DevThrottle, http: null, localVault: vault);
+        var resolver = new TranscriptionKeyResolver(() => new GatewayConfig(), http: null, localVault: vault);
         var handler = new CapturingHandler();
         var svc = new TtsService(new AgentOptions(), handler, resolver);
 
@@ -70,32 +70,11 @@ public sealed class TtsServiceProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task GenerateAsync_OpenAiProvider_PostsToOpenAiWithOpenAiKeyAndConfiguredVoice()
-    {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        TtsVoiceConfig.Set("shimmer");
-        var vault = new KeyVault(Path.Combine(_root, "vault.dat"));
-        vault.Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-testkey");
-
-        var resolver = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.Byo, http: null, localVault: vault);
-        var handler = new CapturingHandler();
-        var svc = new TtsService(new AgentOptions(), handler, resolver);
-
-        var result = await svc.GenerateAsync("Hi.", null, null);
-
-        Assert.True(result.Success);
-        Assert.Equal("https://api.openai.com/v1/audio/speech", handler.Request!.RequestUri!.ToString());
-        Assert.Equal("sk-testkey", handler.Request.Headers.Authorization!.Parameter);
-        using var doc = JsonDocument.Parse(handler.Body!);
-        Assert.Equal("shimmer", doc.RootElement.GetProperty("voice").GetString());
-    }
-
-    [Fact]
     public async Task GenerateAsync_DevThrottleProvider_NoKey_ReturnsNoKey()
     {
-        // Signed-out / no account key: a clear no_key result, never a wrong-provider fallback.
+        // Signed-out / no account key: a clear no_key result.
         var vault = new KeyVault(Path.Combine(_root, "vault.dat"));
-        var resolver = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.DevThrottle, http: null, localVault: vault);
+        var resolver = new TranscriptionKeyResolver(() => new GatewayConfig(), http: null, localVault: vault);
         var svc = new TtsService(new AgentOptions(), new CapturingHandler(), resolver);
 
         var result = await svc.GenerateAsync("Hello.", null, null);

@@ -711,21 +711,13 @@ export async function killSession(sessionId: string, signal?: AbortSignal): Prom
   }
 }
 
-// Dictation transcription (issue #817). Speech-to-text for the Speak dialog goes through the
-// EXISTING resilient batch-upload flow the Gateway exposes for the phone (register -> chunk ->
-// complete): the same record-then-ship-then-transcribe shape the native mobile app uses, resumable
-// on a poor phone network because each landed chunk stays landed. The Gateway transcribes the
-// reassembled clip with whatever transcription mode the machine is set to (Local Whisper in
-// process, or a remote OpenAI-compatible endpoint) and returns the transcript already run through
-// the SAME dictionary-correction engine every surface uses - so we prefer/return that cleaned text.
+// Dictation transcription (issue #817). Speech-to-text for the Speak dialog uses the unified
+// Gateway transcription job protocol: register -> chunk -> complete. Clients capture and preserve
+// audio; the Gateway owns provider selection, transcription, correction, status, retries, and
+// provenance.
 //
-// The Director's own /voice/utterance flow is NOT proxied through the Gateway; this /wingman/
-// utterance flow is the Gateway-native equivalent and is reachable by the mobile app same-origin
-// with the Bearer, so no backend change is needed.
-// The optional client-measured capture-health sent with the complete call (issue #863), so the
-// Gateway can persist the audio-loss deficit (recording wall-clock vs decoded audio duration) into
-// the same dictation session log every other surface writes. Diagnostics only - omitting it changes
-// nothing about the transcription.
+// The optional client-measured capture-health fields are kept on the complete call for diagnostics.
+// Older Gateway builds may ignore them; they do not change the transcription contract.
 export interface UtteranceCaptureHealth {
   recordedMs: number;
   decodedSeconds: number;
@@ -744,39 +736,45 @@ export async function transcribeUtterance(
   signal?: AbortSignal,
   onProgress?: (uploadedChunks: number, totalChunks: number) => void,
 ): Promise<string> {
-  // 1. Register the upload (mints an id the chunk + complete calls address).
-  const reg = await fetch(`/wingman/utterance/upload`, {
+  // 1. Register the job (mints an id the chunk + complete calls address).
+  const reg = await fetch(`/transcription/upload`, {
     method: "POST",
-    headers: { Accept: "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
+    body: JSON.stringify({
+      action: "return_transcript",
+      contentType: "audio/wav",
+      extension: "wav",
+      applyCorrection: true,
+    }),
     signal,
   });
   if (!reg.ok) {
-    throw new GatewayError(reg.status, `POST wingman/utterance/upload failed: ${reg.status}`);
+    throw new GatewayError(reg.status, `POST transcription/upload failed: ${reg.status}`);
   }
-  const regBody = (await reg.json()) as { upload_id?: string };
-  const uploadId = regBody.upload_id;
-  if (!uploadId) {
-    throw new GatewayError(reg.status, "transcription register returned no upload id");
+  const regBody = (await reg.json()) as { jobId?: string; upload_id?: string };
+  const jobId = regBody.jobId ?? regBody.upload_id;
+  if (!jobId) {
+    throw new GatewayError(reg.status, "transcription register returned no job id");
   }
 
   // 2. Upload the WAV in bounded chunks so a long recording never exceeds the Gateway request-body
   //    limit. Each chunk carries its own SHA256, so the server rejects corruption and treats a
   //    retried chunk as a free no-op; the server reassembles the chunks in order before transcribing.
   const bytes = new Uint8Array(await wav.arrayBuffer());
-  const id = encodeURIComponent(uploadId);
+  const id = encodeURIComponent(jobId);
   const ranges = planUploadChunks(bytes.length, MAX_UPLOAD_CHUNK_BYTES);
   onProgress?.(0, ranges.length);
   for (const range of ranges) {
     const part = bytes.subarray(range.start, range.end);
     const sha = await sha256Hex(part);
-    const put = await fetch(`/wingman/utterance/${id}/chunk/${range.index}`, {
+    const put = await fetch(`/transcription/${id}/chunk/${range.index}`, {
       method: "PUT",
       headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
       body: part,
       signal,
     });
     if (!put.ok) {
-      throw new GatewayError(put.status, `PUT wingman/utterance chunk ${range.index} failed: ${put.status}`);
+      throw new GatewayError(put.status, `PUT transcription chunk ${range.index} failed: ${put.status}`);
     }
     onProgress?.(range.index + 1, ranges.length);
   }
@@ -784,26 +782,32 @@ export async function transcribeUtterance(
   // 3. Complete with the real chunk count -> the server reassembles all chunks, transcribes the clip
   //    (the pipeline itself splits the reassembled audio into bounded transcription requests), applies
   //    the dictionary correction, and returns the cleaned transcript.
-  const comp = await fetch(`/wingman/utterance/${id}/complete`, {
+  const comp = await fetch(`/transcription/${id}/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({
       totalChunks: ranges.length,
       mime: "audio/wav",
       ext: "wav",
+      applyCorrection: true,
       clientRecordedMs: health?.recordedMs,
       clientDecodedSeconds: health?.decodedSeconds,
       clientSourceBytes: health?.sourceBytes,
     }),
     signal,
   });
-  const compBody = (await comp.json().catch(() => ({}))) as { transcript?: string; error?: string };
+  const compBody = (await comp.json().catch(() => ({}))) as {
+    transcript?: string;
+    cleanedTranscript?: string;
+    rawTranscript?: string;
+    error?: string;
+  };
   if (!comp.ok) {
     // Out of credits / cap (issue #942): a typed CreditsError carrying the shared message + call-to-action.
     if (comp.status === 402) throw creditsErrorFrom(compBody);
     throw new GatewayError(comp.status, compBody.error ?? `transcription failed: ${comp.status}`);
   }
-  return (compBody.transcript ?? "").trim();
+  return (compBody.transcript ?? compBody.cleanedTranscript ?? compBody.rawTranscript ?? "").trim();
 }
 
 // Hex SHA256 of the upload bytes via the Web Crypto API (available in any secure context, which a

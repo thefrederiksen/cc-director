@@ -1824,61 +1824,6 @@ a.banner-btn {
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   color: var(--text);
 }
-.provider-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.provider-card {
-  text-align: left;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 12px;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.provider-card.selected {
-  border-color: var(--accent);
-  background: #172038;
-}
-.provider-card-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-.provider-radio {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 2px solid #667;
-  flex: 0 0 auto;
-}
-.provider-radio.on {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 3px var(--accent);
-}
-.provider-badge {
-  margin-left: auto;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #22c55e;
-  background: #12351f;
-  border-radius: 6px;
-  padding: 1px 6px;
-}
-.provider-card-desc {
-  font-size: 11.5px;
-  color: var(--text-dim);
-  line-height: 1.35;
-}
-
 /* ===== Dictation live-status strip + roster badge (#1139 follow-up: never a silent Send) ===== */
 /* A thin, non-blocking bar under the screen header showing where a dictation Send is. It never
    blocks the screen (the user can keep working or leave; the roster badge carries the same status). */

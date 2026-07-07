@@ -14,7 +14,7 @@ namespace CcDirector.Core.Claude;
 /// Two halves:
 ///  - <see cref="Extract"/>: pure, testable extraction from the parsed JSONL widget stream
 ///    (first/last user prompt, full last assistant reply).
-///  - <see cref="CondenseAsync"/>: a direct OpenAI chat call (the CleanupOrchestrator pattern,
+///  - <see cref="CondenseAsync"/>: a direct DevThrottle chat call (the CleanupOrchestrator pattern,
 ///    NOT a claude --print side-spawn - issue #142 proved the cold-spawn latency kills
 ///    per-flip UX) that produces the DID bullets and extracts the NEEDS-YOU sentence(s).
 ///
@@ -25,10 +25,9 @@ namespace CcDirector.Core.Claude;
 /// </summary>
 public sealed class BriefBuilder : IDisposable
 {
-    /// <summary>Default condenser model. Mini-tier: nano mangles structured extraction.</summary>
-    public const string DefaultModel = "gpt-4.1-mini";
+    /// <summary>Default condenser model - a DevThrottle-proxy-served chat model.</summary>
+    public const string DefaultModel = Configuration.TranscriptionEndpointResolver.DevThrottleWingmanFastModel;
 
-    private const string ChatCompletionsEndpoint = "https://api.openai.com/v1/chat/completions";
     private static readonly TimeSpan HttpTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>Max reply characters fed to the condenser (tail-biased: the ask is at the end).</summary>
@@ -44,12 +43,15 @@ public sealed class BriefBuilder : IDisposable
     private readonly string _model;
 
     /// <summary>Model identity string reported in <c>BriefResponse.Condenser</c>.</summary>
-    public string CondenserId => $"openai:{_model}";
+    public string CondenserId => $"devthrottle:{_model}";
 
-    private BriefBuilder(string apiKey, string model, HttpClient? httpClient)
+    private readonly string _chatCompletionsEndpoint;
+
+    private BriefBuilder(string apiKey, string baseUrl, string model, HttpClient? httpClient)
     {
         _apiKey = apiKey;
         _model = model;
+        _chatCompletionsEndpoint = baseUrl.TrimEnd('/') + "/chat/completions";
         if (httpClient is null)
         {
             _http = new HttpClient { Timeout = HttpTimeout };
@@ -62,19 +64,23 @@ public sealed class BriefBuilder : IDisposable
     }
 
     /// <summary>
-    /// Create a condenser, or null when no OpenAI key is available. A null condenser is the
-    /// EXPLICIT degrade path: the brief endpoint still serves the raw extraction and reports
-    /// <c>Condenser = "unavailable"</c> - visible, never silent.
+    /// Create a condenser, or null when no DevThrottle routing is available (signed out / no key). A
+    /// null condenser is the EXPLICIT degrade path: the brief endpoint still serves the raw extraction
+    /// and reports <c>Condenser = "unavailable"</c> - visible, never silent. The base URL, key, and
+    /// model come from the same DevThrottle routing every other hosted call uses
+    /// (<see cref="Configuration.TranscriptionKeyResolver"/>).
     /// </summary>
-    public static BriefBuilder? TryCreate(string model = DefaultModel, HttpClient? httpClient = null)
+    public static async Task<BriefBuilder?> TryCreateAsync(
+        string model = DefaultModel, HttpClient? httpClient = null, CancellationToken ct = default)
     {
-        var key = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(key))
+        var routing = await new Configuration.TranscriptionKeyResolver().ResolveEndpointAsync(ct);
+        if (routing is null)
         {
-            FileLog.Write("[BriefBuilder] TryCreate: OPENAI_API_KEY not set; condenser unavailable");
+            FileLog.Write("[BriefBuilder] TryCreateAsync: no DevThrottle routing; condenser unavailable");
             return null;
         }
-        return new BriefBuilder(key.Trim(), string.IsNullOrWhiteSpace(model) ? DefaultModel : model, httpClient);
+        return new BriefBuilder(
+            routing.ApiKey, routing.BaseUrl, string.IsNullOrWhiteSpace(model) ? DefaultModel : model, httpClient);
     }
 
     // ====================================================================
@@ -283,7 +289,7 @@ public sealed class BriefBuilder : IDisposable
             response_format = new { type = "json_object" },
         };
 
-        using var req = new HttpRequestMessage(HttpMethod.Post, ChatCompletionsEndpoint);
+        using var req = new HttpRequestMessage(HttpMethod.Post, _chatCompletionsEndpoint);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         req.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 

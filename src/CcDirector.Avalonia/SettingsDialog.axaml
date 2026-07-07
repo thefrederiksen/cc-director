@@ -362,15 +362,7 @@
                                           IsCheckedChanged="AlphaCheck_Changed"
                                           ToolTip.Tip="Default: off. Shows untested features - no guarantees they work." />
                                 <TextBlock Classes="hint" Margin="24,0,0,0"
-                                           Text="When enabled you get: unverified coding agents, session handover, FIFO voice mode, GitHub remote sessions, Assistant/Coach quick-launch, and the wake-word test below. Claude Code and Pi have verified drivers and are always available." />
-
-                                <StackPanel x:Name="AlphaVoicePanel" Spacing="6" Margin="24,8,0,0" IsVisible="False">
-                                    <TextBlock Text="Voice wake-word test" Foreground="#CCCCCC" FontSize="12" FontWeight="SemiBold" />
-                                    <TextBlock Classes="hint" Text="Sandbox for tuning the hands-free wake-word grammar: say &quot;wingman&quot; to start, dictate, then &quot;wingman send&quot; or &quot;wingman cancel&quot;. Emits to an on-screen box only, never to a live session." />
-                                    <Button x:Name="WakeWordTestButton" Classes="dialogButton"
-                                            Content="Open Wake-Word Test" Width="170" HorizontalAlignment="Left"
-                                            Click="BtnWakeWordTest_Click" />
-                                </StackPanel>
+                                           Text="When enabled you get: unverified coding agents, session handover, FIFO voice mode, GitHub remote sessions, and Assistant/Coach quick-launch. Claude Code and Pi have verified drivers and are always available." />
                             </StackPanel>
                         </Border>
 

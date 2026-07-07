@@ -386,7 +386,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         // GatewayConfig.Load (not the snapshot above) so the resolver re-reads config.json on every
         // dictation: a Director that booted standalone and later had a gateway.url added self-heals
         // into Gateway mode without a restart.
-        var openAiKeyResolver = new Core.Configuration.OpenAiKeyResolver(
+        var transcriptionKeyResolver = new Core.Configuration.TranscriptionKeyResolver(
             Core.Configuration.GatewayConfig.Load);
         // Dictation glossary resolution mirrors the key resolver (#253): the Gateway's shared
         // dictionary when attached, the local cache when standalone. GatewayConfig.Load (not the
@@ -394,7 +394,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         // into Gateway mode without a restart.
         var dictionaryResolver = new Core.Dictation.DictionaryResolver(
             _sessionManager.Options, Core.Configuration.GatewayConfig.Load);
-        DictationEndpoint.Map(_app, _sessionManager.Options, openAiKeyResolver, dictionaryResolver);
+        DictationEndpoint.Map(_app, _sessionManager.Options, transcriptionKeyResolver, dictionaryResolver);
         TerminalStreamEndpoint.Map(_app, _sessionManager);
         SessionUsageEndpoint.Map(_app, _sessionManager);
         // GET /sessions/{sid}/context (issue #799): the always-visible "how full is the window"

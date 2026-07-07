@@ -180,11 +180,9 @@ public sealed class TranscriptionIntegrityTests
 
     private static ResolvedTranscription Byo() => new()
     {
-        BaseUrl = TranscriptionEndpointResolver.OpenAiBaseUrl,
+        BaseUrl = TranscriptionEndpointResolver.DevThrottleBaseUrl,
         ApiKey = "sk-byo-key",
-        Transport = TranscriptionTransport.Batch,
-        Model = TranscriptionEndpointResolver.OpenAiModel,
-        Mode = TranscriptionMode.Byo,
+        Model = TranscriptionEndpointResolver.DevThrottleModel,
     };
 
     private static DictationDictionary DictWith(params string[] vocab) => new(

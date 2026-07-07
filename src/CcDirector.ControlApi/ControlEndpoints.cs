@@ -1208,7 +1208,7 @@ internal static class ControlEndpoints
                     var cached = BriefCache.TryGetCurrent(guid, extract.TurnCount);
                     if (cached is null)
                     {
-                        using var condenser = BriefBuilder.TryCreate();
+                        using var condenser = await BriefBuilder.TryCreateAsync(ct: ctx.RequestAborted);
                         if (condenser is not null)
                         {
                             var c = await condenser.CondenseAsync(
@@ -1486,21 +1486,21 @@ internal static class ControlEndpoints
         // GET /voice/status - reports whether voice mode is enabled (key configured).
         // The browser uses this on page load to hide / disable the Voice button when
         // no key is present, instead of letting the user try and get an error mid-record.
-        app.MapGet("/voice/status", () =>
+        app.MapGet("/voice/status", async () =>
         {
             var svc = new VoiceService(sessionManager, sessionManager.Options);
-            return Results.Json(new { available = svc.IsAvailable });
+            return Results.Json(new { available = await svc.IsAvailableAsync() });
         });
 
         // ===== REST: Resumable voice utterance upload (spotty-network safe) =========
         // Same origin as the Voice tab. Flow: register -> chunk(idempotent) -> complete.
         // Built for the car: each chunk that lands stays landed, so a dropped connection
         // resumes at the next missing chunk instead of re-sending the whole clip.
-        app.MapPost("/voice/utterance", (VoiceUtteranceRegisterRequest? req) =>
+        app.MapPost("/voice/utterance", async (VoiceUtteranceRegisterRequest? req) =>
         {
             var svc = new VoiceUtteranceService(sessionManager, sessionManager.Options);
-            if (!svc.IsAvailable)
-                return Results.Json(new { status = "no_key", error = "OpenAI API key missing" });
+            if (!await svc.IsAvailableAsync())
+                return Results.Json(new { status = "no_key", error = "DevThrottle account key missing" });
             var id = svc.Register(req?.UtteranceId);
             return Results.Json(new { utteranceId = id });
         });
@@ -1675,7 +1675,7 @@ internal static class ControlEndpoints
 
             // Provider-aware (the consolidated AI provider switch): the resolver picks the DevThrottle
             // account key or the OpenAI key for the selected provider, and the base URL + voice follow.
-            var svc = new TtsService(sessionManager.Options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
+            var svc = new TtsService(sessionManager.Options, new Core.Configuration.TranscriptionKeyResolver(Core.Configuration.GatewayConfig.Load));
             var result = await svc.GenerateAsync(req.Text, req.Voice, req.Model, ctx.RequestAborted);
             if (!result.Success || result.AudioBytes is null)
             {
@@ -1692,7 +1692,7 @@ internal static class ControlEndpoints
                 {
                     "no_key" => StatusCodes.Status503ServiceUnavailable,
                     "empty_text" => StatusCodes.Status400BadRequest,
-                    "openai_failed" => StatusCodes.Status502BadGateway,
+                    "tts_failed" => StatusCodes.Status502BadGateway,
                     _ => StatusCodes.Status500InternalServerError,
                 };
                 return Results.Json(
@@ -1704,13 +1704,12 @@ internal static class ControlEndpoints
 
         app.MapGet("/tts/status", async () =>
         {
-            var svc = new TtsService(sessionManager.Options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
-            var mode = Core.Configuration.TranscriptionModeConfig.Get();
+            var svc = new TtsService(sessionManager.Options, new Core.Configuration.TranscriptionKeyResolver(Core.Configuration.GatewayConfig.Load));
             return Results.Json(new
             {
                 available = await svc.IsAvailableAsync(),
-                voice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
-                model = Core.Configuration.TtsModelConfig.Resolve(mode),
+                voice = Core.Configuration.TtsVoiceConfig.Resolve(),
+                model = Core.Configuration.TtsModelConfig.Resolve(),
             });
         });
 

@@ -66,29 +66,8 @@ public sealed class TranscriptionRoutingEndpointTests : IAsyncLifetime
     private void SeedVault(string name, string value) => new KeyVault(_vaultPath).Set(name, value);
 
     [Fact]
-    public async Task Routing_ByoMode_ComposesOpenAiPair()
-    {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        SeedVault(TranscriptionEndpointResolver.OpenAiKeyName, "sk-byo-123");
-
-        var resp = await _http.GetAsync("/transcription/routing");
-        resp.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        var root = doc.RootElement;
-
-        Assert.Equal("byo", root.GetProperty("mode").GetString());
-        // Issue #513: BYO carries the realtime transport + the OpenAI model.
-        Assert.Equal("realtime", root.GetProperty("transport").GetString());
-        Assert.Equal(TranscriptionEndpointResolver.OpenAiBaseUrl, root.GetProperty("baseUrl").GetString());
-        Assert.Equal(TranscriptionEndpointResolver.OpenAiModel, root.GetProperty("model").GetString());
-        Assert.Equal("gpt-4o-transcribe", root.GetProperty("model").GetString());
-        Assert.Equal("sk-byo-123", root.GetProperty("key").GetString());
-    }
-
-    [Fact]
     public async Task Routing_DevThrottleMode_ComposesDevThrottlePair()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
         SeedVault(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_xyz");
 
         var resp = await _http.GetAsync("/transcription/routing");
@@ -106,30 +85,8 @@ public sealed class TranscriptionRoutingEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Routing_ByoMode_NeverPairsByoKeyWithDevThrottleUrl()
-    {
-        // The product's hard rule, now enforced server-side: the user's own OpenAI key is only ever
-        // paired with the OpenAI URL. Seed BOTH keys so a wrong cross-pairing would be observable.
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        SeedVault(TranscriptionEndpointResolver.OpenAiKeyName, "sk-secret-byo");
-        SeedVault(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_other");
-
-        var resp = await _http.GetAsync("/transcription/routing");
-        resp.EnsureSuccessStatusCode();
-        var body = await resp.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
-
-        Assert.DoesNotContain("devthrottle.com", root.GetProperty("baseUrl").GetString());
-        Assert.Equal("sk-secret-byo", root.GetProperty("key").GetString());
-        // The DevThrottle key must not leak into a BYO response at all.
-        Assert.DoesNotContain("dt_live_other", body);
-    }
-
-    [Fact]
     public async Task Routing_KeyNotSet_Returns404_WithMarkerHeader()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
         // No key seeded.
         var resp = await _http.GetAsync("/transcription/routing");
 
@@ -144,7 +101,6 @@ public sealed class TranscriptionRoutingEndpointTests : IAsyncLifetime
         // Issue #887: DevThrottle is the default hosted mode and is key-gated like BYO. With no
         // account key set it returns 404 with the marker header (never a baked-in URL), so the Director
         // reports it unavailable and prompts to add credits.
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
         // No key seeded.
         var resp = await _http.GetAsync("/transcription/routing");
 

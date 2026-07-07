@@ -1,7 +1,10 @@
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using CcDirector.Core.Audio;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
-using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Avalonia.Voice;
@@ -37,15 +40,18 @@ namespace CcDirector.Avalonia.Voice;
 /// with no dictionary term comes back byte-identical to the raw transcription.
 ///
 /// No browser, no WebSocket, no localhost hop, no realtime socket. The shared C#
-/// pipeline runs in the same process as the Avalonia UI. This is deliberately a
-/// SEPARATE class from <see cref="SpeakService"/> (which still serves the
-/// continuous-listening wake-word and voice-command surfaces); dictation no longer
-/// shares the streaming orchestrator.
+/// pipeline runs in the same process as the Avalonia UI.
 /// </summary>
 public sealed class BatchDictationRecorder : IAsyncDisposable
 {
+    private const int MaxGatewayUploadChunkBytes = 5_000_000;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
     private readonly AgentOptions _options;
-    private readonly OpenAiKeyResolver _keyResolver;
     private readonly DictionaryResolver _dictionaryResolver;
     private readonly int _micDeviceNumber;
 
@@ -65,7 +71,7 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
 
     // The whole-turn PCM16 accumulator. Every captured chunk is appended here in
     // capture order; nothing leaves the machine until TranscribeAsync wraps the
-    // whole buffer in one WAV blob and sends it through the shared batch pipeline.
+    // whole buffer in one WAV blob and uploads it to the Gateway transcription job.
     private readonly MemoryStream _audio = new();
     private readonly object _audioLock = new();
 
@@ -109,10 +115,6 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     public BatchDictationRecorder(AgentOptions options, int micDeviceNumber = MicDevices.DefaultDeviceNumber)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        // Resolve the OpenAI key + transcription method by mode: Gateway vault when attached to a
-        // Gateway, the local key vault when standalone (issue #839: the vault is the single key
-        // store). The user-selected method (base URL, key, model) governs every transcription path.
-        _keyResolver = new OpenAiKeyResolver();
         // Resolve the dictation dictionary the same way: the Gateway's shared glossary when
         // attached, the local cache when standalone (#253). A Cockpit edit reaches this Director.
         _dictionaryResolver = new DictionaryResolver(options);
@@ -133,7 +135,6 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         int micDeviceNumber = MicDevices.DefaultDeviceNumber)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _keyResolver = new OpenAiKeyResolver();
         _dictionaryResolver = new DictionaryResolver(options);
         _micDeviceNumber = micDeviceNumber;
         _audioSourceFactory = audioSourceFactory ?? throw new ArgumentNullException(nameof(audioSourceFactory));
@@ -275,30 +276,23 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         if (_transcribeOverride is not null)
             return await _transcribeOverride(pcm, device, ct);
 
-        // Resolve the user-selected transcription method (base URL, key, model). No
-        // routing means dictation is unavailable; surface the mode-appropriate message.
-        var routing = await _keyResolver.ResolveEndpointAsync(ct);
-        if (routing is null)
-            throw new InvalidOperationException(_keyResolver.UnavailableMessage);
-
         // Pull the latest glossary from the Gateway when connected (refreshing the
         // local cache as a side effect, #253); falls back to the local cache offline.
         var dictionary = await _dictionaryResolver.ResolveAsync(ct);
 
-        // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the
-        // shared batch pipeline. The dictionary corrector is the only text transform.
+        // Wrap the whole captured PCM in one WAV blob and upload it to the Gateway
+        // transcription job protocol. The desktop client never calls a provider or
+        // local transcription pipeline directly.
         var wav = WavWriter.WrapPcm16(
             pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
-        using var pipeline = new BatchTranscriptionPipeline(cleanupModel: _options.DictationCleanupModel);
-        var progress = new Progress<TranscriptionProgress>(p => OnTranscriptionProgress?.Invoke(p.CompletedParts, p.TotalParts));
-        var batch = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, _profile, ct, progress);
+        var batch = await TranscribeThroughGatewayAsync(wav, ct);
         stopWatch.Stop();
 
         FileLog.Write($"[BatchDictationRecorder] transcribed: rawLen={batch.RawTranscript.Length}, "
             + $"correctedLen={batch.CorrectedTranscript.Length}, dictionaryApplied={batch.DictionaryApplied}, "
-            + $"changed={batch.ChangedWords.Count}, method={routing.Mode.ToConfigString()}, model={routing.Model}");
+            + $"changed={batch.DictionaryWordsCorrected}, provider=gateway");
 
         // Capture-health line (issue #863): a byte deficit paired with large callback GAPS
         // (and small handler self-time) points upstream - the audio was under-delivered
@@ -327,7 +321,7 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
             RawTranscript: batch.RawTranscript,
             CleanedTranscript: batch.CorrectedTranscript,
             CleanupApplied: batch.DictionaryApplied,
-            CleanupReason: batch.Reason,
+            CleanupReason: "gateway-transcription-job-v1",
             CleanupModel: _options.DictationCleanupModel,
             RemoteIp: null,
             ClientError: null,
@@ -344,8 +338,94 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         return new DictationResult(
             RawTranscript: batch.RawTranscript,
             CleanedTranscript: batch.CorrectedTranscript,
-            DictionaryWordsCorrected: batch.ChangedWords.Count);
+            DictionaryWordsCorrected: batch.DictionaryWordsCorrected);
     }
+
+    private async Task<GatewayDictationBatchResult> TranscribeThroughGatewayAsync(byte[] wav, CancellationToken ct)
+    {
+        var gateway = GatewayConfig.Load();
+        if (!gateway.IsEnabled)
+            throw new InvalidOperationException(
+                "Gateway URL is not configured. Desktop transcription must go through the Gateway transcription protocol.");
+
+        using var http = new HttpClient { BaseAddress = new Uri(gateway.Url.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
+        if (!string.IsNullOrWhiteSpace(gateway.Token))
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gateway.Token);
+
+        var jobId = Guid.NewGuid().ToString("N");
+        using var reg = await http.PostAsync("transcription/upload",
+            JsonBody(new
+            {
+                JobId = jobId,
+                Action = "return_transcript",
+                ContentType = "audio/wav",
+                Extension = "wav",
+                ApplyCorrection = true,
+            }), ct);
+        var regBody = await reg.Content.ReadAsStringAsync(ct);
+        if (!reg.IsSuccessStatusCode)
+            throw new HttpRequestException($"Gateway transcription register failed: {(int)reg.StatusCode} {regBody}");
+        var registered = JsonSerializer.Deserialize<TranscriptionRegisterResponse>(regBody, JsonOptions);
+        var id = registered?.JobId ?? registered?.UploadId ?? jobId;
+
+        var chunks = PlanChunks(wav.Length, MaxGatewayUploadChunkBytes).ToArray();
+        OnTranscriptionProgress?.Invoke(0, Math.Max(chunks.Length, 1));
+        foreach (var chunk in chunks)
+        {
+            using var content = new ByteArrayContent(wav, chunk.Start, chunk.Length);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            using var put = new HttpRequestMessage(HttpMethod.Put, $"transcription/{Uri.EscapeDataString(id)}/chunk/{chunk.Index}")
+            {
+                Content = content,
+            };
+            put.Headers.TryAddWithoutValidation("X-Chunk-Sha256", Sha256Hex(wav, chunk.Start, chunk.Length));
+            using var putResp = await http.SendAsync(put, ct);
+            if (!putResp.IsSuccessStatusCode)
+            {
+                var body = await putResp.Content.ReadAsStringAsync(ct);
+                throw new HttpRequestException($"Gateway transcription chunk {chunk.Index} failed: {(int)putResp.StatusCode} {body}");
+            }
+            OnTranscriptionProgress?.Invoke(chunk.Index + 1, chunks.Length);
+        }
+
+        using var complete = await http.PostAsync($"transcription/{Uri.EscapeDataString(id)}/complete",
+            JsonBody(new { TotalChunks = chunks.Length, Mime = "audio/wav", Ext = "wav", ApplyCorrection = true }), ct);
+        var completeBody = await complete.Content.ReadAsStringAsync(ct);
+        if (!complete.IsSuccessStatusCode)
+            throw new HttpRequestException($"Gateway transcription complete failed: {(int)complete.StatusCode} {completeBody}");
+
+        var result = JsonSerializer.Deserialize<TranscriptionCompleteResponse>(completeBody, JsonOptions)
+                     ?? throw new InvalidOperationException("Gateway transcription complete returned no body");
+        var raw = result.RawTranscript ?? result.Transcript ?? "";
+        var corrected = result.CleanedTranscript ?? result.Transcript ?? raw;
+        return new GatewayDictationBatchResult(
+            RawTranscript: raw,
+            CorrectedTranscript: corrected,
+            DictionaryApplied: result.DictionaryApplied,
+            DictionaryWordsCorrected: 0);
+    }
+
+    private static StringContent JsonBody(object body)
+        => new(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+
+    private static IEnumerable<UploadChunk> PlanChunks(int totalBytes, int maxChunkBytes)
+    {
+        if (totalBytes <= 0)
+        {
+            yield return new UploadChunk(0, 0, 0);
+            yield break;
+        }
+
+        var index = 0;
+        for (var start = 0; start < totalBytes; start += maxChunkBytes)
+        {
+            var length = Math.Min(maxChunkBytes, totalBytes - start);
+            yield return new UploadChunk(index++, start, length);
+        }
+    }
+
+    private static string Sha256Hex(byte[] bytes, int offset, int count)
+        => Convert.ToHexString(SHA256.HashData(bytes.AsSpan(offset, count))).ToLowerInvariant();
 
     /// <summary>Append one captured PCM16 chunk to the whole-turn buffer. Runs on NAudio's thread.</summary>
     private void AppendChunk(byte[] chunk)
@@ -384,6 +464,28 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         _audio.Dispose();
         await ValueTask.CompletedTask;
     }
+}
+
+internal sealed record UploadChunk(int Index, int Start, int Length);
+
+internal sealed record GatewayDictationBatchResult(
+    string RawTranscript,
+    string CorrectedTranscript,
+    bool DictionaryApplied,
+    int DictionaryWordsCorrected);
+
+internal sealed class TranscriptionRegisterResponse
+{
+    public string? JobId { get; set; }
+    public string? UploadId { get; set; }
+}
+
+internal sealed class TranscriptionCompleteResponse
+{
+    public string? Transcript { get; set; }
+    public string? RawTranscript { get; set; }
+    public string? CleanedTranscript { get; set; }
+    public bool DictionaryApplied { get; set; }
 }
 
 /// <summary>

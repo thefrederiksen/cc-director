@@ -78,20 +78,18 @@ public sealed class TranscriptionBatchEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Transcription_NoKeyForRemoteMode_Returns409_WithMode()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
         // No key seeded for the BYO mode.
         var resp = await _http.PostAsync("/transcription", Audio(new byte[] { 1, 2, 3 }));
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.Equal("byo", doc.RootElement.GetProperty("mode").GetString());
+        Assert.Equal("devthrottle", doc.RootElement.GetProperty("mode").GetString());
     }
 
     [Fact]
     public async Task Transcription_KeySetButNoAudio_Returns400()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        SeedVault(TranscriptionEndpointResolver.OpenAiKeyName, "sk-byo-123");
+        SeedVault(TranscriptionEndpointResolver.DevThrottleKeyName, "sk-byo-123");
 
         // Key is present, so we get past the 409, but the body is empty -> 400 before any provider call.
         var resp = await _http.PostAsync("/transcription", Audio(Array.Empty<byte>()));

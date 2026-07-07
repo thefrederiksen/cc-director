@@ -13,7 +13,7 @@ namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// Issue #506 PROOF: an end-to-end, live-socket demonstration that a single long-lived
-/// <see cref="OpenAiKeyResolver"/> (a stand-in for a connected Director) picks up a Gateway-side
+/// <see cref="TranscriptionKeyResolver"/> (a stand-in for a connected Director) picks up a Gateway-side
 /// transcription-mode/URL change with NO restart and NO rebuild, and that the bring-your-own key
 /// is never paired with the devthrottle.com URL. Boots the production
 /// <see cref="TranscriptionRoutingEndpoint"/> on a real Kestrel port over the production
@@ -63,39 +63,33 @@ public sealed class Issue506RoutingProofTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GatewayModeChange_IsPickedUpByConnectedDirector_NoRestart()
+    public async Task GatewayRoutingChange_IsPickedUpByConnectedDirector_NoRestart()
     {
         // The connected Director: ONE resolver instance, created once, never reconstructed. Its
         // gateway config points at our live Gateway. This is the "no Director rebuild or restart".
         var gateway = new GatewayConfig { Url = _baseUrl };
-        var resolver = new OpenAiKeyResolver(() => gateway);
+        var resolver = new TranscriptionKeyResolver(() => gateway);
 
-        // Gateway-side state: seed both keys, start in BYO mode.
-        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-proof-byo");
+        // Gateway-side state: seed the DevThrottle key.
         new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_proof");
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
 
         var before = await resolver.ResolveEndpointAsync();
         Assert.NotNull(before);
-        _out.WriteLine($"[1] Gateway mode=byo -> Director resolved baseUrl={before.BaseUrl}, model={before.Model}, mode={before.Mode}, keyPrefix={before.ApiKey[..3]}");
-        Assert.Equal(TranscriptionEndpointResolver.OpenAiBaseUrl, before.BaseUrl);
-        Assert.Equal(TranscriptionMode.Byo, before.Mode);
-        Assert.StartsWith("sk-", before.ApiKey);
-        // BYO key is NEVER paired with the devthrottle URL.
-        Assert.DoesNotContain("devthrottle.com", before.BaseUrl);
+        _out.WriteLine($"[1] Director resolved baseUrl={before.BaseUrl}, model={before.Model}, keyPrefix={before.ApiKey[..3]}");
+        Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, before.BaseUrl);
+        Assert.StartsWith("dt_", before.ApiKey);
 
-        // Flip the Gateway's mode. NOTHING about the Director is touched - same resolver instance.
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        // Rotate the key server-side. NOTHING about the Director is touched - same resolver instance.
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_rotated");
         resolver.InvalidateCache();
 
         var after = await resolver.ResolveEndpointAsync();
         Assert.NotNull(after);
-        _out.WriteLine($"[2] Gateway mode=devthrottle -> SAME Director resolved baseUrl={after.BaseUrl}, model={after.Model}, mode={after.Mode}, keyPrefix={after.ApiKey[..3]}");
+        _out.WriteLine($"[2] SAME Director resolved baseUrl={after.BaseUrl}, model={after.Model}, keyPrefix={after.ApiKey[..3]}");
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, after.BaseUrl);
-        Assert.Equal(TranscriptionMode.DevThrottle, after.Mode);
-        Assert.StartsWith("dt_", after.ApiKey);
+        Assert.Equal("dt_live_rotated", after.ApiKey);
 
-        _out.WriteLine("[PROOF] One long-lived Director resolver followed the Gateway's mode/URL change with no restart and no rebuild.");
+        _out.WriteLine("[PROOF] One long-lived Director resolver followed the Gateway's routing change with no restart and no rebuild.");
     }
 
     private static int AllocateFreePort()

@@ -5,15 +5,11 @@ import {
   setAddressingMode,
   setAutostart,
   setTrainingCapture,
-  getVaultKeyNames,
-  setVaultKey,
-  OPENAI_KEY_NAME,
   type AddressingMode,
   type GatewaySettings,
 } from "@devthrottle/client-core/settings/settingsClient";
 import {
   type AiModel,
-  type AiProviderId,
   type AiProviderSnapshot,
   getAiModels,
   getAiProvider,
@@ -31,14 +27,14 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 // wwwroot/pages/settings.html. The left-rail "Settings" item used to be a dead full-load anchor to
 // /settings (nothing served it, so it fell through to the SPA "Not found"); this is the real page it now
 // routes to. It ports the two tabs the issue names: "This machine" (the Gateway connection: process
-// diagnostics, network addressing, startup, training capture) and "AI" (the one provider switch that
-// drives transcription + wingman + voice, plus the #497 bring-your-own OpenAI key panel).
+// diagnostics, network addressing, startup, training capture) and "AI" (the models that drive
+// transcription + wingman + voice). All AI is DevThrottle-hosted: the bring-your-own OpenAI provider
+// choice and its key panel were removed, so the AI tab only picks the DevThrottle models and voice.
 //
 // A pure client of existing Gateway endpoints, same-origin (root-relative URLs, never a Director
-// address). No secret ever reaches the page: the OpenAI key panel reads only the vault key NAMES to show
-// set/not-set and writes the key write-only (security rule DT-05). Responsive (CodingStyle.md): each tab
-// renders immediately with a loading line and loads asynchronously; on a failure it shows an explicit
-// error banner, never a fabricated value (the no-fallback rule).
+// address). Responsive (CodingStyle.md): each tab renders immediately with a loading line and loads
+// asynchronously; on a failure it shows an explicit error banner, never a fabricated value (the
+// no-fallback rule).
 
 const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 
@@ -273,7 +269,7 @@ function cockpitLabel(settings: GatewaySettings): string {
   return `port ${settings.cockpit.port} (${state})`;
 }
 
-// ---- "AI" tab: the one provider switch + models + voice + the bring-your-own OpenAI key ------------
+// ---- "AI" tab: the DevThrottle-hosted models + voice (no provider choice) --------------------------
 
 function AiTab() {
   const [snap, setSnap] = useState<AiProviderSnapshot | null>(null);
@@ -286,12 +282,6 @@ function AiTab() {
   const [fastTestMsg, setFastTestMsg] = useState("");
   const [sampleMsg, setSampleMsg] = useState("");
 
-  // The OpenAI key panel state (shown when the OpenAI provider is selected). We never read the value
-  // back: `keyStored` comes from the vault key NAMES only, and the input is write-only.
-  const [keyStored, setKeyStored] = useState(false);
-  const [keyInput, setKeyInput] = useState("");
-  const [keyMsg, setKeyMsg] = useState("");
-
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const loadModels = useCallback(async () => {
@@ -299,27 +289,20 @@ function AiTab() {
     setSpeechModels(await getAiModels("speech"));
   }, []);
 
-  const loadKeyState = useCallback(async () => {
-    try {
-      const names = await getVaultKeyNames();
-      setKeyStored(names.includes(OPENAI_KEY_NAME));
-    } catch {
-      // Key-state is a hint (set/not-set); a failure here must not blank the whole AI tab. Leave the
-      // last-known flag and let the Save action surface any real write error.
-      setKeyStored(false);
-    }
-  }, []);
-
   const load = useCallback(async () => {
     try {
       setError(null);
-      setSnap(await getAiProvider());
+      let s = await getAiProvider();
+      // Bring-your-own OpenAI was removed - all AI is DevThrottle-hosted. Migrate any machine still on
+      // the OpenAI provider back to DevThrottle so its models, voice, and transcription match the only
+      // provider the UI now offers.
+      if (s.provider !== "devthrottle") s = await setAiProvider("devthrottle");
+      setSnap(s);
       await loadModels();
-      await loadKeyState();
     } catch (e) {
       setError(errText(e));
     }
-  }, [loadModels, loadKeyState]);
+  }, [loadModels]);
 
   useEffect(() => {
     void load();
@@ -332,30 +315,8 @@ function AiTab() {
     return <p className="settings-loading">Loading...</p>;
   }
 
-  const provider = snap.provider;
   const currentSpeech = speechModels.find((m) => m.id === snap.ttsModel);
   const voiceOptions = currentSpeech && currentSpeech.voices.length ? currentSpeech.voices : snap.voices;
-
-  const chooseProvider = async (p: AiProviderId) => {
-    if (busy || p === provider) return;
-    setBusy(true);
-    setMsg("Saving...");
-    setTestMsg("");
-    setFastTestMsg("");
-    try {
-      setSnap(await setAiProvider(p));
-      await loadModels();
-      setMsg(
-        p === "devthrottle"
-          ? "Using DevThrottle hosted AI. Models reset to the DevThrottle defaults."
-          : "Using OpenAI. Models reset to the OpenAI defaults. Add your key below if you have not.",
-      );
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const chooseWingman = async (model: string) => {
     setBusy(true);
@@ -455,53 +416,13 @@ function AiTab() {
     }
   };
 
-  const saveKey = async () => {
-    const value = keyInput.trim();
-    if (value.length === 0) {
-      setKeyMsg("Enter a key first.");
-      return;
-    }
-    setBusy(true);
-    setKeyMsg("Saving...");
-    try {
-      await setVaultKey(OPENAI_KEY_NAME, value);
-      setKeyInput("");
-      setKeyStored(true);
-      setKeyMsg("Key saved on this machine. DevThrottle never receives it.");
-    } catch (e) {
-      setKeyMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <section className="settings-card">
       <h2 className="settings-h2">AI provider</h2>
       <p className="settings-hint">
-        One choice for all AI in DevThrottle - who runs it, which models, and the spoken voice. Applies to
-        transcription, the wingman, and the spoken voice together.
+        DevThrottle runs all AI in the app - transcription, the wingman, and the spoken voice - on hosted
+        models billed to your DevThrottle account. Choose which models to use below.
       </p>
-
-      <div className="settings-provider-cards">
-        <ProviderCard
-          id="devthrottle"
-          title="DevThrottle"
-          badge="Default"
-          desc="Hosted models on your DevThrottle account - nothing to set up. Billed to your account credits."
-          selected={provider === "devthrottle"}
-          disabled={busy}
-          onPick={chooseProvider}
-        />
-        <ProviderCard
-          id="openai"
-          title="OpenAI"
-          desc="Your own OpenAI API key. Stays on this machine and is never sent to DevThrottle."
-          selected={provider === "openai"}
-          disabled={busy}
-          onPick={chooseProvider}
-        />
-      </div>
 
       <div className="settings-field">
         <label htmlFor="settings-ai-model">Thinking model</label>
@@ -595,68 +516,12 @@ function AiTab() {
 
       <Row label="Transcription" value={snap.transcriptionModel} />
 
-      {provider === "openai" && (
-        <div className="settings-keypanel">
-          <div className="settings-keylabel">
-            OpenAI API key{" "}
-            <span className="settings-pill">{keyStored ? "stored" : "not set"}</span>
-          </div>
-          <div className="settings-actions settings-key-row">
-            <input
-              className="settings-input"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={keyStored ? "Enter a new key to replace it" : "sk-..."}
-              value={keyInput}
-              disabled={busy}
-              onChange={(e) => setKeyInput(e.target.value)}
-            />
-            <button type="button" className="settings-btn primary" disabled={busy} onClick={() => void saveKey()}>
-              Save key
-            </button>
-          </div>
-          <p className="settings-hint settings-hint-inline">
-            Stored locally on this machine only. DevThrottle never receives or stores your provider key.
-          </p>
-          {keyMsg !== "" && <div className="settings-inline-msg">{keyMsg}</div>}
-        </div>
-      )}
-
-      {provider === "devthrottle" && (
-        <p className="settings-hint settings-hint-inline">
-          Hosted AI runs on your DevThrottle account. <Link to="/account">Manage account</Link>.
-        </p>
-      )}
+      <p className="settings-hint settings-hint-inline">
+        Hosted AI runs on your DevThrottle account. <Link to="/account">Manage account</Link>.
+      </p>
 
       {msg !== "" && <div className="settings-msg">{msg}</div>}
     </section>
-  );
-}
-
-function ProviderCard(props: {
-  id: AiProviderId;
-  title: string;
-  desc: string;
-  badge?: string;
-  selected: boolean;
-  disabled: boolean;
-  onPick: (id: AiProviderId) => void | Promise<void>;
-}) {
-  return (
-    <button
-      type="button"
-      className={"settings-provider-card" + (props.selected ? " selected" : "")}
-      disabled={props.disabled}
-      onClick={() => void props.onPick(props.id)}
-    >
-      <span className="settings-provider-title">
-        <span className={"settings-provider-radio" + (props.selected ? " on" : "")} aria-hidden="true" />
-        {props.title}
-        {props.badge && <span className="settings-provider-badge">{props.badge}</span>}
-      </span>
-      <span className="settings-provider-desc">{props.desc}</span>
-    </button>
   );
 }
 

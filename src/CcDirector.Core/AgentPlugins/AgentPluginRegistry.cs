@@ -118,10 +118,8 @@ public static class AgentPluginRegistry
         ChatSessionRepoPath = source.ChatSessionRepoPath,
         TtsVoice = source.TtsVoice,
         TtsModel = source.TtsModel,
-        OpenAiKey = source.OpenAiKey,
         DictationDictionaryPath = source.DictationDictionaryPath,
         DictationCleanupModel = source.DictationCleanupModel,
-        DictationPreviewModel = source.DictationPreviewModel,
     };
 
     private sealed class PluginBackedAgent : IAgent

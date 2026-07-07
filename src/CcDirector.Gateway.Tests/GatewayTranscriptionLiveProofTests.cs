@@ -15,7 +15,7 @@ namespace CcDirector.Gateway.Tests;
 /// through the whole host pipeline (routing + the single <c>GatewayTranscriptionService</c>).
 ///
 /// This proves the consolidation on a running instance, not just in a unit harness:
-///   * with no key for the current remote mode, the endpoint answers 409 with the mode - the exact
+///   * with no key for the current DevThrottle route, the endpoint answers 409 with the mode - the exact
 ///     "no key set" condition that made a recorded note fail even when a key was present; and
 ///   * the routing endpoint a connected Director consumes resolves through the SAME single owner.
 /// Tailscale is disabled via TestEnvironment so it never touches a running Gateway.
@@ -65,11 +65,8 @@ public sealed class GatewayTranscriptionLiveProofTests : IAsyncLifetime
     [Fact]
     public async Task PostTranscription_RemoteModeNoKey_Returns409_ThroughRealHost()
     {
-        // DevThrottle mode: its key (DEVTHROTTLE_API_KEY) is never seeded from the environment (only
-        // OPENAI_API_KEY is), so the no-key 409 gate is deterministic regardless of the host machine's
-        // OPENAI_API_KEY. This is the exact "no key set for the current transcription mode" condition
-        // the single endpoint now answers consistently for every batch caller.
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        // DevThrottle mode with no seeded account key. This is the exact "no key set for the current
+        // transcription route" condition the single endpoint now answers consistently for every caller.
 
         using var content = new ByteArrayContent(new byte[] { 1, 2, 3 });
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/webm");
@@ -85,16 +82,15 @@ public sealed class GatewayTranscriptionLiveProofTests : IAsyncLifetime
     {
         // The single owner reads the key from the vault: set it via the vault HTTP surface, then the
         // routing endpoint (what a connected Director consumes) composes URL + key server-side.
-        await _http.PutAsJsonAsync("vault/keys/OPENAI_API_KEY", new { value = "sk-live-proof" });
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
+        await _http.PutAsJsonAsync("vault/keys/DEVTHROTTLE_API_KEY", new { value = "dt_live-proof" });
 
         var resp = await _http.GetAsync("transcription/routing");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.Equal("byo", doc.RootElement.GetProperty("mode").GetString());
-        Assert.Equal("https://api.openai.com/v1", doc.RootElement.GetProperty("baseUrl").GetString());
-        Assert.Equal("sk-live-proof", doc.RootElement.GetProperty("key").GetString());
+        Assert.Equal("devthrottle", doc.RootElement.GetProperty("mode").GetString());
+        Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, doc.RootElement.GetProperty("baseUrl").GetString());
+        Assert.Equal("dt_live-proof", doc.RootElement.GetProperty("key").GetString());
     }
 
     private static int AllocateFreePort()

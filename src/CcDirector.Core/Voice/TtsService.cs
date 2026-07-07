@@ -9,45 +9,40 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Voice;
 
 /// <summary>
-/// Phase 3 of the voice mode.  Wraps OpenAI's /v1/audio/speech endpoint so the
-/// Director can produce natural-sounding TTS audio for the voice tab to play.
+/// Phase 3 of the voice mode.  Produces natural-sounding TTS audio for the voice
+/// tab to play, POSTing to the DevThrottle proxy's OpenAI-compatible
+/// <c>/audio/speech</c> endpoint. The base URL, key, voice, and model are resolved
+/// through the same routing the transcription path uses
+/// (<see cref="TranscriptionKeyResolver"/> + <see cref="TtsVoiceConfig"/> /
+/// <see cref="TtsModelConfig"/>).
 ///
-/// The OpenAI key resolution + the model/voice defaults all live in
-/// <see cref="AgentOptions"/>; this service is a thin HTTP wrapper.
-///
-/// LONG TEXT HANDLING: OpenAI tts-1 caps each call at 4096 input chars.  For
-/// replies longer than that we chunk at sentence boundaries (max
-/// <see cref="MaxChunkChars"/> per chunk), call OpenAI in parallel for each
+/// LONG TEXT HANDLING: for long replies we chunk at sentence boundaries (max
+/// <see cref="MaxChunkChars"/> per chunk), call the provider in parallel for each
 /// chunk, and concatenate the returned MP3 byte streams.  MP3 is frame-based,
 /// so byte concatenation produces a single valid stream that plays end-to-end.
-/// Effective input limit is therefore bounded only by OpenAI's per-minute
-/// quota, not by the per-call 4096 cap.
 ///
-/// RESILIENCE (issue #389): a single stalled OpenAI request used to hang the
-/// whole voice turn on the shared <c>HttpClient.Timeout</c> of 180 s, then
-/// return empty audio.  To keep the voice experience snappy this service now
-/// applies a short PER-REQUEST timeout (<see cref="PerRequestTimeout"/>) per
-/// chunk via a linked <see cref="CancellationTokenSource"/> + CancelAfter,
-/// retries a transient single-chunk failure once, and caps the whole reply at
-/// an overall budget (<see cref="OverallBudget"/>).  When TTS ultimately fails
-/// the caller is told promptly (text-only fallback already happens upstream),
-/// and the elapsed time + failing chunk index + reason are logged.
+/// RESILIENCE (issue #389): a single stalled request used to hang the whole voice
+/// turn on the shared <c>HttpClient.Timeout</c> of 180 s, then return empty audio.
+/// To keep the voice experience snappy this service now applies a short PER-REQUEST
+/// timeout (<see cref="PerRequestTimeout"/>) per chunk via a linked
+/// <see cref="CancellationTokenSource"/> + CancelAfter, retries a transient
+/// single-chunk failure once, and caps the whole reply at an overall budget
+/// (<see cref="OverallBudget"/>).  When TTS ultimately fails the caller is told
+/// promptly (text-only fallback already happens upstream), and the elapsed time +
+/// failing chunk index + reason are logged.
 /// </summary>
 public sealed class TtsService
 {
-    public const string Endpoint = "https://api.openai.com/v1/audio/speech";
-    // Per-chunk size.  Well under OpenAI's documented 4096-char per-call limit.
-    // We use a smaller chunk on purpose: OpenAI tts-1 latency scales roughly
+    // Per-chunk size.  We use a smaller chunk on purpose: TTS latency scales roughly
     // linearly with input length, and several smaller calls running in parallel
-    // finish faster than fewer big ones.  Empirically a 3400-char call takes
-    // ~20-25 s; an 800-char call takes ~3-5 s.
+    // finish faster than fewer big ones.
     public const int MaxChunkChars = 800;
     // Kept for backwards compatibility with callers that read it.
     public const int MaxTextChars = MaxChunkChars;
 
-    // Per-request timeout for a single OpenAI /v1/audio/speech call.  An ~800-char
-    // chunk normally returns in ~3-5 s, so 30 s is generous headroom while still
-    // failing ~6x faster than the old 180 s ceiling.  Issue #389.
+    // Per-request timeout for a single /audio/speech call.  An ~800-char chunk
+    // normally returns in ~3-5 s, so 30 s is generous headroom while still failing
+    // ~6x faster than the old 180 s ceiling.  Issue #389.
     public static readonly TimeSpan PerRequestTimeout = TimeSpan.FromSeconds(30);
 
     // Hard ceiling for generating the audio for one whole reply (all chunks,
@@ -57,19 +52,16 @@ public sealed class TtsService
 
     private readonly AgentOptions _options;
     private readonly HttpMessageHandler? _handler;
-    private readonly OpenAiKeyResolver? _keyResolver;
+    private readonly TranscriptionKeyResolver _keyResolver;
 
-    /// <param name="options">Chunking + the legacy OpenAI key/voice/model defaults.</param>
-    /// <param name="keyResolver">When supplied (the consolidated AI-provider path), the base URL, key,
-    /// voice, and model are resolved for the SELECTED provider - the DevThrottle proxy or OpenAI - the
-    /// same routing the transcription path uses, plus the chosen voice (<see cref="TtsVoiceConfig"/>).
-    /// When null the legacy OpenAI-only path is used (unchanged), so existing standalone callers and the
-    /// resilience tests are unaffected.</param>
-    public TtsService(AgentOptions options, OpenAiKeyResolver? keyResolver = null)
+    /// <param name="options">Chunking defaults.</param>
+    /// <param name="keyResolver">Resolves the DevThrottle base URL + key the same way the transcription
+    /// path does; the voice and model come from <see cref="TtsVoiceConfig"/> / <see cref="TtsModelConfig"/>.</param>
+    public TtsService(AgentOptions options, TranscriptionKeyResolver keyResolver)
     {
         _options = options;
         _handler = null;
-        _keyResolver = keyResolver;
+        _keyResolver = keyResolver ?? throw new ArgumentNullException(nameof(keyResolver));
     }
 
     /// <summary>
@@ -78,54 +70,34 @@ public sealed class TtsService
     /// and retry behaviour are unit-testable without hitting the network.  The
     /// handler is owned by the caller and is NOT disposed by this service.
     /// </summary>
-    public TtsService(AgentOptions options, HttpMessageHandler handler, OpenAiKeyResolver? keyResolver = null)
+    public TtsService(AgentOptions options, HttpMessageHandler handler, TranscriptionKeyResolver keyResolver)
     {
         _options = options;
         _handler = handler;
-        _keyResolver = keyResolver;
+        _keyResolver = keyResolver ?? throw new ArgumentNullException(nameof(keyResolver));
     }
 
-    /// <summary>True when an OpenAI key is configured (legacy OpenAI-only check). Prefer
-    /// <see cref="IsAvailableAsync"/>, which is provider-aware (a DevThrottle account key counts too).</summary>
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
-
     /// <summary>
-    /// True when a credential is configured for the SELECTED provider (the consolidated AI-provider
-    /// path). Uses the injected key resolver when present - so a DevThrottle account key counts, not only
-    /// an OpenAI key - and falls back to the legacy OpenAI check when no resolver was supplied.
+    /// True when a DevThrottle credential is available (the account is signed in / a key is set).
     /// </summary>
     public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        if (_keyResolver is not null)
-            return !string.IsNullOrWhiteSpace(await _keyResolver.ResolveAsync(ct));
-        return !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
+        return !string.IsNullOrWhiteSpace(await _keyResolver.ResolveAsync(ct));
     }
 
     /// <summary>The resolved text-to-speech target for one call: where to POST, the credential, the
-    /// voice, and the model - resolved per provider when a key resolver is present, else the legacy
-    /// OpenAI defaults.</summary>
+    /// voice, and the model.</summary>
     private sealed record TtsTarget(string Endpoint, string Key, string Voice, string Model, string KeyMissingMessage);
 
     private async Task<TtsTarget> ResolveTargetAsync(string? voiceOverride, string? modelOverride, CancellationToken ct)
     {
-        if (_keyResolver is not null)
-        {
-            var mode = TranscriptionModeConfig.Get();
-            var ep = TranscriptionEndpointResolver.ResolveTts(mode);
-            var key = await _keyResolver.ResolveAsync(ct) ?? "";
-            var voice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : TtsVoiceConfig.Resolve(mode);
-            var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : TtsModelConfig.Resolve(mode);
-            var missing = mode == TranscriptionMode.DevThrottle
-                ? "DevThrottle account key missing - sign in to DevThrottle"
-                : "OpenAI API key missing";
-            return new TtsTarget(ep.BaseUrl.TrimEnd('/') + "/audio/speech", key, voice, model, missing);
-        }
-
-        // Legacy OpenAI-only path (no resolver): unchanged behaviour for standalone OpenAI callers/tests.
-        var legacyKey = _options.ResolveOpenAiKey() ?? "";
-        var legacyVoice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : _options.TtsVoice;
-        var legacyModel = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : _options.TtsModel;
-        return new TtsTarget(Endpoint, legacyKey, legacyVoice, legacyModel, "OpenAI API key missing");
+        var ep = TranscriptionEndpointResolver.ResolveTts();
+        var key = await _keyResolver.ResolveAsync(ct) ?? "";
+        var voice = !string.IsNullOrWhiteSpace(voiceOverride) ? voiceOverride!.Trim() : TtsVoiceConfig.Resolve();
+        var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride!.Trim() : TtsModelConfig.Resolve();
+        return new TtsTarget(
+            ep.BaseUrl.TrimEnd('/') + "/audio/speech", key, voice, model,
+            "DevThrottle account key missing - sign in to DevThrottle");
     }
 
     /// <summary>
@@ -178,7 +150,7 @@ public sealed class TtsService
                     return single;
                 }
 
-                // Multi-chunk: fire all in parallel.  OpenAI's tts-1 latency is
+                // Multi-chunk: fire all in parallel.  Per-chunk latency is
                 // ~2 s per chunk, so 10 chunks in parallel is ~2-3 s wall-clock
                 // (vs ~20 s sequential).  If any chunk fails (after its single
                 // retry), propagate the first error - partial audio is worse
@@ -234,7 +206,7 @@ public sealed class TtsService
     }
 
     /// <summary>
-    /// Build the <see cref="HttpClient"/> used for the OpenAI calls.  Uses the
+    /// Build the <see cref="HttpClient"/> used for the TTS calls.  Uses the
     /// injected handler when present (the unit-test seam) and never relies on a
     /// short <c>HttpClient.Timeout</c> - cancellation is driven entirely by the
     /// per-request and overall-budget tokens (issue #389).
@@ -253,7 +225,7 @@ public sealed class TtsService
     }
 
     /// <summary>
-    /// One OpenAI chunk with a short per-request timeout and a single retry on a
+    /// One chunk with a short per-request timeout and a single retry on a
     /// transient failure (timeout, 5xx, or empty body).  Issue #389: turn 1 in
     /// the bug report would very likely have succeeded on a second attempt.
     /// </summary>
@@ -269,7 +241,7 @@ public sealed class TtsService
     }
 
     /// <summary>
-    /// One OpenAI /v1/audio/speech call with a per-request deadline.  Returns raw
+    /// One /audio/speech call with a per-request deadline.  Returns raw
     /// MP3 bytes on success; on a transient failure (per-request timeout, 5xx, or
     /// empty body) the result is flagged <see cref="TtsResult.Transient"/> so the
     /// caller can retry once.  A 4xx is permanent (not retried).
@@ -296,24 +268,24 @@ public sealed class TtsService
             {
                 var body = await resp.Content.ReadAsStringAsync(requestCts.Token);
                 var status = (int)resp.StatusCode;
-                FileLog.Write($"[TtsService] chunk {chunkIndex} attempt {attempt} OpenAI returned {status}: {Truncate(body, 400)}");
+                FileLog.Write($"[TtsService] chunk {chunkIndex} attempt {attempt} provider returned {status}: {Truncate(body, 400)}");
                 // Out of credits / monthly cap (issue #940): carry the machine-readable code as the
                 // status so the desktop player maps it to the ONE shared state and surfaces the
-                // add-credits message, instead of swallowing a generic "openai_failed" silently. Not
+                // add-credits message, instead of swallowing a generic "tts_failed" silently. Not
                 // transient - retrying an out-of-credits call is pointless.
                 if (status == 402)
                     return TtsResult.Error(HostedAiErrorMapper.ParseErrorCode(body), $"text-to-speech returned 402: {Truncate(body, 300)}", transient: false);
                 // 5xx is transient (server-side, worth a retry); other 4xx is a
                 // permanent request error and must not be retried.
                 var transient = status >= 500;
-                return TtsResult.Error("openai_failed", $"OpenAI returned {status}: {Truncate(body, 300)}", transient);
+                return TtsResult.Error("tts_failed", $"provider returned {status}: {Truncate(body, 300)}", transient);
             }
 
             var bytes = await resp.Content.ReadAsByteArrayAsync(requestCts.Token);
             if (bytes.Length == 0)
             {
-                FileLog.Write($"[TtsService] chunk {chunkIndex} attempt {attempt} OpenAI returned empty audio");
-                return TtsResult.Error("openai_failed", "OpenAI returned empty audio", transient: true);
+                FileLog.Write($"[TtsService] chunk {chunkIndex} attempt {attempt} provider returned empty audio");
+                return TtsResult.Error("tts_failed", "provider returned empty audio", transient: true);
             }
 
             return TtsResult.Ok(bytes, "audio/mpeg");

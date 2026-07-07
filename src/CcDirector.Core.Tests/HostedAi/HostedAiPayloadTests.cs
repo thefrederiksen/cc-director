@@ -15,7 +15,6 @@ public sealed class HostedAiPayloadTests
     [Theory]
     [InlineData(HostedAiState.NeedsCredits, "NeedsCredits", "OpenBilling")]
     [InlineData(HostedAiState.CapReached, "CapReached", "OpenBilling")]
-    [InlineData(HostedAiState.NeedsKey, "NeedsKey", "OpenSettings")]
     public void For_CarriesSharedCopy_AndErrorMirrorsText(HostedAiState state, string expectedState, string expectedAction)
     {
         var p = HostedAiPayload.For(state);

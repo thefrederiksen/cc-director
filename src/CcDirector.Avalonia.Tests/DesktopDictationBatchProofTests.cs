@@ -60,13 +60,11 @@ public sealed class DesktopDictationBatchProofTests
         }
     }
 
-    private static ResolvedTranscription Byo() => new()
+    private static ResolvedTranscription Routing() => new()
     {
-        BaseUrl = TranscriptionEndpointResolver.OpenAiBaseUrl,
-        ApiKey = "sk-byo-key",
-        Transport = TranscriptionTransport.Batch,
-        Model = TranscriptionEndpointResolver.OpenAiModel,
-        Mode = TranscriptionMode.Byo,
+        BaseUrl = TranscriptionEndpointResolver.DevThrottleBaseUrl,
+        ApiKey = "dt-managed-key",
+        Model = TranscriptionEndpointResolver.DevThrottleModel,
     };
 
     // A short, well-formed 24kHz/mono/16-bit WAV clip - the exact shape BatchDictationRecorder
@@ -87,7 +85,7 @@ public sealed class DesktopDictationBatchProofTests
 
         // Act - one whole-audio transcription, exactly as BatchDictationRecorder.TranscribeAsync does.
         var result = await pipeline.TranscribeAsync(
-            SampleWavClip(), "dictation.wav", Byo(), DictationDictionary.Empty);
+            SampleWavClip(), "dictation.wav", Routing(), DictationDictionary.Empty);
 
         // Assert - exactly ONE batch transcription POST for the whole turn.
         Assert.Equal(1, handler.TranscriptionPosts);
@@ -110,7 +108,7 @@ public sealed class DesktopDictationBatchProofTests
 
         // Act - empty dictionary, so the only possible text change (a dictionary swap) cannot happen.
         var result = await pipeline.TranscribeAsync(
-            SampleWavClip(), "dictation.wav", Byo(), DictationDictionary.Empty);
+            SampleWavClip(), "dictation.wav", Routing(), DictationDictionary.Empty);
 
         // Assert - the corrected transcript is byte-identical to the raw transcription.
         Assert.Equal(raw, result.RawTranscript);

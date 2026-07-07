@@ -5,11 +5,10 @@ namespace CcDirector.Core.Configuration;
 
 /// <summary>
 /// The text-to-speech MODEL used for spoken wingman output, persisted in config.json as the top-level
-/// string "tts_model". The model list is DYNAMIC and provider-specific - the AI provider hands it back
-/// from its <c>GET /models?type=speech</c> catalog (OpenAI: tts-1/tts-1-hd; the DevThrottle proxy:
-/// hexgrad/Kokoro-82M, Chatterbox) - so this stores whatever id the user picked from that live list, and
-/// the DEFAULT is provider-aware (<see cref="Resolve"/>). Read at synthesis time, so a change applies on
-/// the next spoken summary.
+/// string "tts_model". The model list is DYNAMIC - the DevThrottle proxy hands it back from its
+/// <c>GET /models?type=speech</c> catalog (hexgrad/Kokoro-82M, Chatterbox) - so this stores whatever id
+/// the user picked from that live list, and the DEFAULT is <c>hexgrad/Kokoro-82M</c>
+/// (<see cref="Resolve"/>). Read at synthesis time, so a change applies on the next spoken summary.
 /// </summary>
 public static class TtsModelConfig
 {
@@ -29,12 +28,11 @@ public static class TtsModelConfig
             "config.json key 'tts_model' must be a string (a speech model id). Fix the value or remove the key.");
     }
 
-    /// <summary>The effective speech model for <paramref name="mode"/>: the saved value when set, else the
-    /// provider default (Kokoro for DevThrottle, tts-1 for OpenAI).</summary>
-    public static string Resolve(TranscriptionMode mode)
+    /// <summary>The effective speech model: the saved value when set, else the default (Kokoro).</summary>
+    public static string Resolve()
     {
         var saved = Get();
-        return saved.Length > 0 ? saved : TranscriptionEndpointResolver.DefaultTtsModel(mode);
+        return saved.Length > 0 ? saved : TranscriptionEndpointResolver.DefaultTtsModel();
     }
 
     /// <summary>Persist the model (any non-empty id; the catalog is dynamic, so there is no allow-list).</summary>

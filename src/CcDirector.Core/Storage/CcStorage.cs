@@ -116,6 +116,13 @@ public static class CcStorage
     public static string DictationUploads() => Ensure(Path.Combine(Base(), "dictation-uploads"));
 
     /// <summary>
+    /// Resumable upload staging for the unified Gateway transcription job protocol:
+    /// base/transcription-uploads/&lt;jobId&gt;/. This is the target upload inbox for every surface
+    /// that needs audio transcribed. Owned by the Gateway.
+    /// </summary>
+    public static string TranscriptionUploads() => Ensure(Path.Combine(Base(), "transcription-uploads"));
+
+    /// <summary>
     /// Durable pending-dictation store for the DESKTOP fire-and-forget Send (issue #1130):
     /// base/pending-dictations/. The instant Send is pressed the recorded audio is written here as
     /// &lt;id&gt;.wav with a &lt;id&gt;.json sidecar (target session, prefix text, attempt count, last error),

@@ -131,19 +131,3 @@ export async function setTrainingCapture(enabled: boolean, signal?: AbortSignal)
   const body = await putJson<{ enabled?: boolean }>("/gateway/wingman/training-capture", "PUT /gateway/wingman/training-capture", { enabled }, signal);
   return Boolean(body.enabled);
 }
-
-/** The vault key name the OpenAI provider key is stored under (matches OpenAiKeyResolver.KeyName). */
-export const OPENAI_KEY_NAME = "OPENAI_API_KEY";
-
-// GET /vault/keys - the vault's key NAMES only (never values). Used to show whether a given key is set
-// without ever reading the secret into the page (security rule DT-05). Throws on transport failure.
-export async function getVaultKeyNames(signal?: AbortSignal): Promise<string[]> {
-  const body = await getJson<{ names?: string[] }>("/vault/keys", "GET /vault/keys", signal);
-  return Array.isArray(body.names) ? body.names : [];
-}
-
-// PUT /vault/keys/{name} { value } - store a key write-only. The value only ever travels browser ->
-// Gateway; it is never read back into the page. Throws on a non-2xx with the Gateway's message.
-export async function setVaultKey(name: string, value: string, signal?: AbortSignal): Promise<void> {
-  await putJson<{ set?: boolean }>(`/vault/keys/${encodeURIComponent(name)}`, `PUT /vault/keys/${name}`, { value }, signal);
-}

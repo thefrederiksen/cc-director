@@ -72,7 +72,7 @@ public readonly record struct CaptureHealth(
 
 /// <summary>
 /// Mic capture wrapper around NAudio's WaveInEvent, configured for the
-/// format the OpenAI Realtime transcription API expects: 24 kHz, 16-bit,
+/// format the transcription pipeline expects: 24 kHz, 16-bit,
 /// mono PCM. Fires <see cref="OnAudioChunk"/> for every buffer the
 /// driver delivers, on NAudio's background thread.
 ///

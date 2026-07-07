@@ -30,7 +30,7 @@ public sealed class WingmanVoiceService
 
     /// <summary>The outcome of one text-to-speech synthesis (issue #939): the audio bytes on success,
     /// or the shared <see cref="HostedAiState"/> when hosted AI is unavailable (out of credits, cap
-    /// reached, or - in bring-your-own mode - no key) so the caller can surface it instead of a silent
+    /// reached) so the caller can surface it instead of a silent
     /// null. Both null means a generic provider error (logged, no shared state).</summary>
     private sealed record TtsResult(byte[]? Audio, HostedAiState? Unavailable);
 
@@ -318,24 +318,22 @@ public sealed class WingmanVoiceService
     /// Synthesize the spoken summary to audio through the SAME provider seam the <c>/wingman/tts</c>
     /// endpoint uses (issue #939): the configured mode's base URL + key + model + the user's chosen
     /// voice (<see cref="TtsVoiceConfig"/> / <see cref="TtsModelConfig"/>). This replaced a hardcoded
-    /// OpenAI <c>tts-1</c>/<c>nova</c> call - so a DevThrottle-mode user now hears their configured
+    /// hardcoded <c>tts-1</c>/<c>nova</c> call - so the user now hears their configured
     /// voice and hosted narration works without a bring-your-own key. An out-of-credits / cap / no-key
     /// condition is returned as a typed <see cref="HostedAiState"/> instead of a silent null, so the
     /// caller can surface the consistent unavailable state.
     /// </summary>
     private async Task<TtsResult> TtsAsync(string text, CancellationToken ct)
     {
-        var mode = TranscriptionModeConfig.Get();
-        var tts = TranscriptionEndpointResolver.ResolveTts(mode);
+        var tts = TranscriptionEndpointResolver.ResolveTts();
         var key = _vault.Get(tts.KeyName);
         if (string.IsNullOrWhiteSpace(key))
-            // No key for the mode: bring-your-own means the user must add their OpenAI key; the hosted
-            // mode with no key is a sign-in gap (outside the credits/key gate), left silent as before.
-            return new TtsResult(null, mode == TranscriptionMode.Byo ? HostedAiState.NeedsKey : (HostedAiState?)null);
+            // No DevThrottle key: a sign-in gap (outside the credits/key gate), left silent as before.
+            return new TtsResult(null, (HostedAiState?)null);
 
         var input = text.Length > 4000 ? text[..4000] : text;
-        var voice = TtsVoiceConfig.Resolve(mode);
-        var model = TtsModelConfig.Resolve(mode);
+        var voice = TtsVoiceConfig.Resolve();
+        var model = TtsModelConfig.Resolve();
         var url = tts.BaseUrl.TrimEnd('/') + "/audio/speech";
         // Reuse the injected client (tests) or a per-call one; auth goes on the request, not the shared
         // client's default headers, so a shared client is safe under concurrent turn-ends. The effective
@@ -348,7 +346,7 @@ public sealed class WingmanVoiceService
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);
-                FileLog.Write($"[WingmanVoiceService] tts {mode.ToConfigString()} {(int)resp.StatusCode}");
+                FileLog.Write($"[WingmanVoiceService] tts devthrottle {(int)resp.StatusCode}");
                 // Out of credits / monthly cap (402): map by code to the shared state so the caller
                 // records the consistent unavailable state instead of a silent null (issue #939).
                 if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)

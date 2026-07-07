@@ -1,7 +1,7 @@
 namespace CcDirector.Core.Dictation;
 
 /// <summary>
-/// Thrown by <see cref="DictationPipeline.StopAsync"/> when the microphone
+/// Thrown by capture-first dictation paths when the microphone
 /// produced ZERO bytes of audio for the entire recording.
 ///
 /// WHY THIS EXISTS

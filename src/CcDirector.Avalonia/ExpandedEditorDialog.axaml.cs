@@ -320,10 +320,10 @@ public partial class ExpandedEditorDialog : Window
                 return;
             }
             var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-            if (options is null || string.IsNullOrWhiteSpace(options.ResolveOpenAiKey()))
+            if (options is null || string.IsNullOrWhiteSpace(options.ResolveLocalTranscriptionKey()))
             {
-                FileLog.Write("[ExpandedEditorDialog] DictateButton_Click: no OpenAI key configured");
-                HeaderText.Text = "Dictation needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.";
+                FileLog.Write("[ExpandedEditorDialog] DictateButton_Click: no DevThrottle key configured");
+                HeaderText.Text = "Dictation needs a DevThrottle account. Sign in on the Cockpit Account page.";
                 return;
             }
 

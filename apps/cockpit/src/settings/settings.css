@@ -154,8 +154,7 @@
   color: var(--text-dim);
   font-size: 13px;
 }
-.settings-select,
-.settings-input {
+.settings-select {
   flex: 1;
   min-width: 220px;
   background: var(--code-bg);
@@ -165,16 +164,11 @@
   padding: 8px 12px;
   font-size: 13px;
 }
-.settings-input {
-  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
-}
-.settings-select:focus,
-.settings-input:focus {
+.settings-select:focus {
   outline: none;
   border-color: var(--accent);
 }
-.settings-select:disabled,
-.settings-input:disabled {
+.settings-select:disabled {
   opacity: 0.5;
 }
 
@@ -184,9 +178,6 @@
   gap: 10px;
   flex-wrap: wrap;
   width: 100%;
-}
-.settings-key-row {
-  margin-top: 4px;
 }
 .settings-inline-msg {
   color: var(--text-dim);
@@ -226,103 +217,9 @@
   opacity: 0.5;
   cursor: default;
 }
-.settings-btn.primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-  font-weight: 600;
-}
-.settings-btn.primary:hover:not(:disabled) {
-  color: #fff;
-  filter: brightness(1.1);
-}
 
 .settings-msg {
   color: var(--text-dim);
   font-size: 12.5px;
   margin-top: 4px;
-}
-
-/* ---- AI provider cards ---- */
-.settings-provider-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin: 6px 0 18px;
-}
-.settings-provider-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  text-align: left;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  cursor: pointer;
-}
-.settings-provider-card:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.settings-provider-card:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.settings-provider-card.selected {
-  border-color: var(--accent);
-  background: rgba(59, 130, 246, 0.12);
-}
-.settings-provider-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-.settings-provider-radio {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--text-dim);
-  flex: 0 0 auto;
-}
-.settings-provider-radio.on {
-  border-color: var(--accent);
-  background:
-    radial-gradient(circle, var(--accent) 0 45%, transparent 46%);
-}
-.settings-provider-badge {
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #06210f;
-  background: #22c55e;
-  border-radius: 7px;
-  padding: 1px 7px;
-}
-.settings-provider-desc {
-  font-size: 12.5px;
-  color: var(--text-dim);
-  line-height: 1.4;
-}
-
-/* ---- OpenAI key panel ---- */
-.settings-keypanel {
-  border-top: 1px solid var(--border);
-  padding-top: 16px;
-  margin-top: 12px;
-}
-.settings-keylabel {
-  font-size: 13px;
-  color: var(--text);
-  margin-bottom: 8px;
-  font-weight: 500;
-}
-
-@media (max-width: 560px) {
-  .settings-provider-cards {
-    grid-template-columns: 1fr;
-  }
 }

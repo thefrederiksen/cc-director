@@ -44,7 +44,7 @@ public sealed class VoiceTurnEndpointTests : IAsyncLifetime
         _originalEnv = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         Environment.SetEnvironmentVariable("OPENAI_API_KEY", null);
 
-        _sm = new SessionManager(new AgentOptions { OpenAiKey = null });
+        _sm = new SessionManager(new AgentOptions());
         _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
         var port = await _host.StartAsync();
         _client = new HttpClient

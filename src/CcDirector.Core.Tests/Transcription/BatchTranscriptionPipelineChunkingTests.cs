@@ -60,9 +60,7 @@ public sealed class BatchTranscriptionPipelineChunkingTests
     {
         BaseUrl = TranscriptionEndpointResolver.DevThrottleBaseUrl,
         ApiKey = "dt_live_key",
-        Transport = TranscriptionTransport.Batch,
         Model = TranscriptionEndpointResolver.DevThrottleModel,
-        Mode = TranscriptionMode.DevThrottle,
     };
 
     private static byte[] LongWav()

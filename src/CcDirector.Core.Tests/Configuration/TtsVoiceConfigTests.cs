@@ -36,8 +36,7 @@ public sealed class TtsVoiceConfigTests : IDisposable
     [Fact]
     public void Resolve_NoConfig_UsesProviderDefault()
     {
-        Assert.Equal("af_bella", TtsVoiceConfig.Resolve(TranscriptionMode.DevThrottle));   // Kokoro default
-        Assert.Equal("nova", TtsVoiceConfig.Resolve(TranscriptionMode.Byo));               // OpenAI default
+        Assert.Equal("af_bella", TtsVoiceConfig.Resolve());   // Kokoro default
     }
 
     [Theory]
@@ -47,10 +46,10 @@ public sealed class TtsVoiceConfigTests : IDisposable
     [InlineData("bf_emma")]
     public void SetThenResolve_AnyVoiceIsAcceptedAndHonored(string voice)
     {
-        // Any non-empty id - no fixed allow-list (Kokoro voices are not OpenAI voices).
+        // Any non-empty id - no fixed allow-list (the catalog is dynamic).
         TtsVoiceConfig.Set(voice);
         Assert.Equal(voice, TtsVoiceConfig.Get());
-        Assert.Equal(voice, TtsVoiceConfig.Resolve(TranscriptionMode.DevThrottle));
+        Assert.Equal(voice, TtsVoiceConfig.Resolve());
         Assert.True(File.Exists(CcStorage.ConfigJson()));
     }
 
@@ -74,12 +73,5 @@ public sealed class TtsVoiceConfigTests : IDisposable
         var raw = CcDirectorConfigService.ReadRaw();
         Assert.Equal("af_nova", raw["tts_voice"]!.GetValue<string>());
         Assert.Equal("devthrottle", raw["transcription_mode"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public void OpenAiVoices_IsTheFallbackSet()
-    {
-        Assert.Contains("nova", TtsVoiceConfig.OpenAiVoices);
-        Assert.Contains("shimmer", TtsVoiceConfig.OpenAiVoices);
     }
 }

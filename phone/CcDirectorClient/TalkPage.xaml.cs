@@ -1430,9 +1430,10 @@ public partial class TalkPage : ContentPage
         // transcribe one captured segment. The dialog returns the final text.
         var session = _selected;
         var client = new DirectorVoiceClient(TokenEntry.Text ?? "");
+        var gatewayBase = (ServerEntry.Text ?? "").Trim();
         Func<UtteranceAudio, CancellationToken, Task<string>> transcribe = async (audio, ct) =>
             (await client.TranscribeUtteranceAsync(
-                session.TailnetEndpoint, session.SessionId, audio.Bytes, audio.Mime, ct)).Text;
+                gatewayBase, session.SessionId, audio.Bytes, audio.Mime, ct)).Text;
 
         SpeakDictationResult dictation;
         try
@@ -1560,9 +1561,10 @@ public partial class TalkPage : ContentPage
         // the final text.
         var session = _selected;
         var client = new DirectorVoiceClient(TokenEntry.Text ?? "");
+        var gatewayBase = (ServerEntry.Text ?? "").Trim();
         Func<UtteranceAudio, CancellationToken, Task<string>> transcribe = async (audio, ct) =>
             (await client.TranscribeUtteranceAsync(
-                session.TailnetEndpoint, session.SessionId, audio.Bytes, audio.Mime, ct)).Text;
+                gatewayBase, session.SessionId, audio.Bytes, audio.Mime, ct)).Text;
 
         SpeakDictationResult dictation;
         try

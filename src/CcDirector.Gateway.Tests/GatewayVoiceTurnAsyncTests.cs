@@ -60,7 +60,7 @@ public sealed class GatewayVoiceTurnAsyncTests : IAsyncLifetime
         _originalRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _storageRoot);
 
-        _sm = new SessionManager(new AgentOptions { OpenAiKey = null });
+        _sm = new SessionManager(new AgentOptions());
         _director = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true,
             instancesDirectory: _instancesDir);
         await _director.StartAsync();

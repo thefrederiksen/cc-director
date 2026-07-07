@@ -25,10 +25,9 @@ namespace CcDirector.ControlApi;
 /// the WebSocket as it speaks. NO text is produced while talking: there is no
 /// streaming/partial transcription and no realtime socket. When the client sends
 /// <c>stop</c> the server wraps the WHOLE captured clip in one WAV blob and runs
-/// it through the ONE shared <see cref="BatchTranscriptionPipeline"/> (issue #587)
-/// - the exact pipeline the desktop uses - which transcribes once and applies the
-/// validated dictionary corrector only. This is what gives every surface the same
-/// whole-clip quality instead of the lightly-reworded realtime transcript.
+/// it to the Gateway transcription job protocol, which transcribes once and applies
+/// the validated dictionary corrector only. This is what gives every surface the same
+/// whole-clip quality through one Gateway-owned path.
 ///
 /// Pause/Resume is a CLIENT concern: the client opens a fresh <c>/dictate</c>
 /// connection per recording segment and accumulates the cleaned segments itself,
@@ -67,7 +66,7 @@ internal static class DictationEndpoint
     private const int CaptureChannels = 1;
     private const int CaptureBitsPerSample = 16;
 
-    public static void Map(IEndpointRouteBuilder app, AgentOptions options, OpenAiKeyResolver keyResolver, DictionaryResolver dictionaryResolver)
+    public static void Map(IEndpointRouteBuilder app, AgentOptions options, TranscriptionKeyResolver keyResolver, DictionaryResolver dictionaryResolver)
     {
         app.MapGet("/dictate.html", () =>
         {
@@ -114,7 +113,7 @@ internal static class DictationEndpoint
         });
     }
 
-    private static async Task ServeSessionAsync(WebSocket ws, AgentOptions options, OpenAiKeyResolver keyResolver, DictionaryResolver dictionaryResolver, string? remoteIp, CancellationToken ct)
+    private static async Task ServeSessionAsync(WebSocket ws, AgentOptions options, TranscriptionKeyResolver keyResolver, DictionaryResolver dictionaryResolver, string? remoteIp, CancellationToken ct)
     {
         await SendJsonAsync(ws, new { type = "ready" }, ct);
 
@@ -135,20 +134,13 @@ internal static class DictationEndpoint
 
         var profile = TryReadString(startMsg, "profile", out var p) && !string.IsNullOrWhiteSpace(p) ? p : "default";
 
-        // Resolve the transcription routing target for this Director's mode (issue #497):
-        //   - BYO        -> the user's own OpenAI key against api.openai.com.
-        //   - DevThrottle -> a dt_ key against devthrottle.com's OpenAI-compatible managed proxy.
-        // The key comes from the Gateway vault when attached, the local Settings > Voice key when
-        // standalone (BYO only). No key -> dictation is unavailable; tell the user where to set one
-        // rather than failing with a raw error. The BYO OpenAI key is only ever paired with the
-        // OpenAI base URL - it is never sent to devthrottle.com. Whichever mode resolves, the SAME
-        // whole-clip batch POST is used (BatchTranscriptionPipeline), so there is no realtime socket.
-        var routing = await keyResolver.ResolveEndpointAsync(ct);
-        if (routing is null)
+        var gatewayClient = new GatewayTranscriptionJobClient();
+        if (!gatewayClient.IsConfigured)
         {
-            FileLog.Write($"[DictationEndpoint] no transcription key available (usesGateway={keyResolver.UsesGateway})");
-            await TrySendErrorAsync(ws, keyResolver.UnavailableMessage, ct);
-            await TryCloseAsync(ws, WebSocketCloseStatus.PolicyViolation, "no api key");
+            const string message = "Gateway URL is not configured. Browser dictation now transcribes only through the Gateway.";
+            FileLog.Write($"[DictationEndpoint] {message}");
+            await TrySendErrorAsync(ws, message, ct);
+            await TryCloseAsync(ws, WebSocketCloseStatus.PolicyViolation, "gateway not configured");
             return;
         }
 
@@ -176,7 +168,7 @@ internal static class DictationEndpoint
 
         FileLog.Write($"[DictationEndpoint] session started: sid={sessionId} profile={profile} "
                       + $"vocab={dictionary.Vocabulary.Count} patterns={dictionary.CommonMistranscriptions.Count} "
-                      + $"mode={routing.Mode.ToConfigString()} model={routing.Model} baseUrl={routing.BaseUrl}");
+                      + "transcription=gateway-job");
 
         // Accumulate the whole segment's PCM16 locally. Nothing leaves the machine until an explicit
         // 'stop' wraps it in one WAV and sends it through the shared batch pipeline. This is the same
@@ -271,8 +263,7 @@ internal static class DictationEndpoint
             return;
         }
 
-        // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the shared batch
-        // pipeline (the same one the desktop uses). The dictionary corrector is the only text transform.
+        // Wrap the whole captured PCM in one WAV blob and upload it to the Gateway transcription job.
         var wav = PcmWav.Wrap(pcmBytes, CaptureSampleRate, CaptureChannels, CaptureBitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -280,23 +271,18 @@ internal static class DictationEndpoint
         string? clientError = null;
         try
         {
-            using var pipeline = new BatchTranscriptionPipeline(cleanupModel: options.DictationCleanupModel);
-
-            // Per-part progress for a long recording. The pipeline splits an oversized clip into several
-            // bounded requests and reports as each finishes; forward that to the browser as a "progress"
-            // frame so the overlay shows "part N of M" instead of a silent wait. The pipeline reports
-            // strictly between its awaited POSTs (never concurrently with the frames sent here), and
-            // Kestrel has no synchronization context, so a blocking send inside Report keeps the frames
-            // strictly ordered without racing the "transcribing"/"final" frames. Best-effort: a failed
-            // progress frame must never fail the transcription.
-            var progress = new SynchronousProgress<TranscriptionProgress>(p =>
-            {
-                if (p.TotalParts <= 1) return;
-                try { SendJsonAsync(ws, new { type = "progress", done = p.CompletedParts, total = p.TotalParts }, ct).GetAwaiter().GetResult(); }
-                catch (Exception ex) { FileLog.Write($"[DictationEndpoint] progress frame failed: {ex.Message}"); }
-            });
-
-            transcript = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, profile, ct, progress);
+            var gatewayResult = await gatewayClient.TranscribeAsync(
+                wav,
+                "dictation.wav",
+                "audio/wav",
+                applyCorrection: true,
+                ct);
+            transcript = new BatchTranscriptionResult(
+                gatewayResult.RawTranscript,
+                gatewayResult.CleanedTranscript,
+                gatewayResult.DictionaryApplied,
+                Array.Empty<TranscriptEdit>(),
+                gatewayResult.CleanupReason);
         }
         catch (InsufficientCreditsException credits)
         {
@@ -307,6 +293,12 @@ internal static class DictationEndpoint
             FileLog.Write($"[DictationEndpoint] sid={sessionId} OUT OF CREDITS: {credits.Code}");
             clientError = payload.Text;
             await SendJsonAsync(ws, new { type = "error", message = payload.Text, hostedAi = payload }, ct);
+        }
+        catch (TranscriptionUnavailableException ex)
+        {
+            FileLog.Write($"[DictationEndpoint] sid={sessionId} transcription unavailable: {ex.Message}");
+            clientError = ex.Message;
+            await TrySendErrorAsync(ws, clientError, ct);
         }
         catch (Exception ex)
         {

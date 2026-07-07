@@ -29,8 +29,8 @@ public sealed record BufferSlice(string Text, long NewCursor);
 /// uses), using the Director's Tailnet base URL taken from the roster.
 /// Director-side concerns, kept apart:
 ///
-///   1. <see cref="TranscribeUtteranceAsync"/> - upload the recorded audio and
-///      get the transcript back (POST /voice/utterance -> PUT chunk -> POST complete).
+///   1. <see cref="TranscribeUtteranceAsync"/> - upload the recorded audio to the
+///      Gateway transcription job protocol and get the corrected transcript back.
 ///   2. <see cref="SendChatAsync"/> / <see cref="PollChatAsync"/> - send the
 ///      transcript to the session and follow the turn to completion (POST /chat).
 ///   3. <see cref="GetOrCreateRecapAsync"/> - the conductor's spoken recap.
@@ -76,27 +76,35 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
     /// longer infers it.
     /// </summary>
     public async Task<TranscribeResult> TranscribeUtteranceAsync(
-        string directorBase, string sessionId, byte[] audio, string mime, CancellationToken ct = default)
+        string gatewayBase, string sessionId, byte[] audio, string mime, CancellationToken ct = default)
     {
-        var b = directorBase.TrimEnd('/');
+        var b = gatewayBase.TrimEnd('/');
         ClientLog.Write($"[DirectorVoiceClient] TranscribeUtterance: base={b}, sid={sessionId}, bytes={audio.Length}, mime={mime}");
         using var http = NewClient();
 
-        // Register with a client-minted GUID (server requires a GUID-shaped id).
-        var utteranceId = Guid.NewGuid().ToString("N");
-        var regResp = await http.PostAsync($"{b}/voice/utterance",
-            JsonBody(new { UtteranceId = utteranceId }), ct);
+        // Register with a client-minted GUID so a retry can be idempotent.
+        var jobId = Guid.NewGuid().ToString("N");
+        var ext = ExtensionFor(mime);
+        var regResp = await http.PostAsync($"{b}/transcription/upload",
+            JsonBody(new
+            {
+                JobId = jobId,
+                Action = "return_transcript",
+                ContentType = mime,
+                Extension = ext,
+                ApplyCorrection = true,
+            }), ct);
         regResp.EnsureSuccessStatusCode();
         var regJson = await regResp.Content.ReadAsStringAsync(ct);
         var reg = JsonSerializer.Deserialize<RegisterResp>(regJson, Json);
-        if (reg is null || string.IsNullOrWhiteSpace(reg.UtteranceId))
-            throw new InvalidOperationException("voice/utterance register returned no id");
-        var id = reg.UtteranceId!;
+        var id = reg?.JobId ?? reg?.UploadId;
+        if (string.IsNullOrWhiteSpace(id))
+            throw new InvalidOperationException("transcription register returned no job id");
 
         // Upload the whole clip as chunk 0 (push-to-talk is one short utterance).
         using var content = new ByteArrayContent(audio);
         content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        using var put = new HttpRequestMessage(HttpMethod.Put, $"{b}/voice/utterance/{id}/chunk/0")
+        using var put = new HttpRequestMessage(HttpMethod.Put, $"{b}/transcription/{id}/chunk/0")
         {
             Content = content,
         };
@@ -104,9 +112,9 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
         var putResp = await http.SendAsync(put, ct);
         putResp.EnsureSuccessStatusCode();
 
-        // Complete -> server reassembles and transcribes the one chunk.
-        var compResp = await http.PostAsync($"{b}/voice/utterance/{id}/complete",
-            JsonBody(new { TotalChunks = 1, Mime = mime, SessionId = sessionId }), ct);
+        // Complete -> Gateway reassembles, transcribes, corrects, and returns the transcript.
+        var compResp = await http.PostAsync($"{b}/transcription/{id}/complete",
+            JsonBody(new { TotalChunks = 1, Mime = mime, Ext = ext, ApplyCorrection = true }), ct);
         var compBody = await compResp.Content.ReadAsStringAsync(ct);
         if (!compResp.IsSuccessStatusCode)
         {
@@ -114,17 +122,21 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
             // call-to-action so the UI shows the add-credits prompt, not a raw "complete failed: 402".
             var credits = HostedAiUnavailableException.TryFrom((int)compResp.StatusCode, compBody);
             if (credits is not null) throw credits;
-            throw new HttpRequestException($"voice/utterance complete failed: {(int)compResp.StatusCode} {compBody}");
+            throw new HttpRequestException($"transcription complete failed: {(int)compResp.StatusCode} {compBody}");
         }
 
         var comp = JsonSerializer.Deserialize<CompleteResp>(compBody, Json)
-                   ?? throw new InvalidOperationException("voice/utterance complete returned no body");
-        if (!string.Equals(comp.Status, "ok", StringComparison.OrdinalIgnoreCase))
+                   ?? throw new InvalidOperationException("transcription complete returned no body");
+        if (!string.IsNullOrWhiteSpace(comp.Status)
+            && !string.Equals(comp.Status, "ok", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(comp.Status, "complete", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"transcription status={comp.Status}: {comp.Error}");
 
         // The cleaned transcript is what the web voice UI forwards to /chat; fall
         // back to the raw transcript only when the cleanup step produced nothing.
-        var text = !string.IsNullOrWhiteSpace(comp.CleanedTranscript) ? comp.CleanedTranscript! : comp.Transcript;
+        var text = !string.IsNullOrWhiteSpace(comp.CleanedTranscript)
+            ? comp.CleanedTranscript!
+            : (!string.IsNullOrWhiteSpace(comp.Transcript) ? comp.Transcript : comp.RawTranscript);
         ClientLog.Write($"[DirectorVoiceClient] TranscribeUtterance OK: chars={text?.Length ?? 0}");
         return new TranscribeResult((text ?? "").Trim());
     }
@@ -653,6 +665,19 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
     private static string Sha256Hex(byte[] bytes)
         => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
+    private static string ExtensionFor(string mime)
+        => mime.Trim().ToLowerInvariant() switch
+        {
+            "audio/mp4" => "m4a",
+            "audio/mpeg" => "mp3",
+            "audio/mp3" => "mp3",
+            "audio/webm" => "webm",
+            "audio/ogg" => "ogg",
+            "audio/wav" => "wav",
+            "audio/x-wav" => "wav",
+            _ => "bin",
+        };
+
     private sealed class BufferResp
     {
         public string? Text { get; set; }
@@ -675,10 +700,15 @@ public sealed class DirectorVoiceClient : IVoiceTurnChannel
         public bool IsError { get; set; }
         public bool IsPending { get; set; }
     }
-    private sealed class RegisterResp { public string? UtteranceId { get; set; } }
+    private sealed class RegisterResp
+    {
+        public string? JobId { get; set; }
+        public string? UploadId { get; set; }
+    }
     private sealed class CompleteResp
     {
         public string? Transcript { get; set; }
+        public string? RawTranscript { get; set; }
         public string? CleanedTranscript { get; set; }
         public string? Status { get; set; }
         public string? Error { get; set; }

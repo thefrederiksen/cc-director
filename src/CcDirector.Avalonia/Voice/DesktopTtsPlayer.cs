@@ -30,7 +30,7 @@ public sealed class DesktopTtsPlayer : IDisposable
     // Resolves the text-to-speech credential for the SELECTED AI provider (DevThrottle account key or
     // OpenAI key), the same resolver dictation uses - Gateway vault when attached, local vault when
     // standalone. Passed to TtsService so desktop speech honours the one AI provider switch + voice.
-    private readonly OpenAiKeyResolver _keyResolver = new();
+    private readonly TranscriptionKeyResolver _keyResolver = new();
 
     public DesktopTtsPlayer(AgentOptions options)
     {

@@ -61,7 +61,6 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
         // Issue #885: a 402 insufficient_credits from the hosted service becomes a distinct
         // OutOfCredits result (not a generic provider error), carrying the machine-readable code so
         // the endpoint returns 402 and the client shows the add-credits state.
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
         new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
 
         var body = "{\"error\":{\"code\":\"insufficient_credits\",\"message\":\"no credits\"}}";
@@ -75,49 +74,19 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     }
 
     [Fact]
-    public void Resolve_ByoMode_NoKey_ReportsRemoteWithNoKey()
+    public void Resolve_NoKey_ReportsNoKey()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-
-        var routing = Service().Resolve();
-
-        Assert.Null(routing.Key);
-        Assert.Equal(TranscriptionMode.Byo, routing.Mode);
-    }
-
-    [Fact]
-    public void Resolve_ByoMode_WithKey_ComposesOpenAiTarget()
-    {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-byo-123");
-
-        var routing = Service().Resolve();
-
-        Assert.Equal("sk-byo-123", routing.Key);
-        var resolved = routing.ToResolved();
-        Assert.Equal(TranscriptionEndpointResolver.OpenAiBaseUrl, resolved.BaseUrl);
-        Assert.Equal("sk-byo-123", resolved.ApiKey);
-        Assert.Equal(TranscriptionTransport.Realtime, resolved.Transport);
-    }
-
-    [Fact]
-    public void Resolve_DevThrottleMode_NoKey_ReportsNoKey()
-    {
-        // Issue #887: DevThrottle is the default hosted mode. With no key set, the routing carries no
+        // Issue #887: DevThrottle is the only hosted provider. With no key set, the routing carries no
         // key (the caller reports it unavailable) and has no remote target to compose.
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
-
         var routing = Service().Resolve();
 
         Assert.Null(routing.Key);
-        Assert.Equal(TranscriptionMode.DevThrottle, routing.Mode);
         Assert.Throws<InvalidOperationException>(() => routing.ToResolved());
     }
 
     [Fact]
-    public void Resolve_DevThrottleMode_WithKey_ComposesDevThrottleTarget()
+    public void Resolve_WithKey_ComposesDevThrottleTarget()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
         new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
 
         var routing = Service().Resolve();
@@ -126,14 +95,13 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
         var resolved = routing.ToResolved();
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, resolved.BaseUrl);
         Assert.Equal("dt_live_abc", resolved.ApiKey);
-        Assert.Equal(TranscriptionTransport.Batch, resolved.Transport);
+        Assert.Equal("whisper-large-v3", resolved.Model);
     }
 
     [Fact]
     public async Task TranscribeAsync_NoAudio_ReturnsNoAudioOutcome()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-byo-123");
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "sk-byo-123");
 
         var result = await Service().TranscribeAsync(Array.Empty<byte>(), "audio.webm", "audio/webm", applyCorrection: false, CancellationToken.None);
 
@@ -144,22 +112,18 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     [Fact]
     public async Task TranscribeAsync_RemoteModeNoKey_ReturnsNoKeyOutcome_WithMode()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
         // No key seeded.
-
         var result = await Service().TranscribeAsync(new byte[] { 1, 2, 3 }, "audio.webm", "audio/webm", applyCorrection: false, CancellationToken.None);
 
         Assert.Equal(TranscriptionOutcome.NoKey, result.Outcome);
-        Assert.Equal("byo", result.Mode);
+        Assert.Equal("devthrottle", result.Mode);
         Assert.Null(result.Text);
     }
 
     [Fact]
     public async Task TranscribeSegmentRawAsync_RemoteModeNoKey_Throws()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
         // No key seeded for DevThrottle.
-
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => Service().TranscribeSegmentRawAsync(new byte[] { 1, 2, 3 }, "audio.webm", "audio/webm", CancellationToken.None));
     }

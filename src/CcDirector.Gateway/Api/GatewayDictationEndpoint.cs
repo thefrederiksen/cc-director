@@ -157,11 +157,11 @@ internal static class GatewayDictationEndpoint
         var sid = req.SessionId!;
         try
         {
-            // The configured mode's key must be present before we pay the reassembly + transcribe cost.
+            // The DevThrottle key must be present before we pay the reassembly + transcribe cost.
             var routing = transcription.Resolve();
             if (routing.Key is null)
                 return DictationOutcome.Error(StatusCodes.Status503ServiceUnavailable,
-                    $"no key configured for transcription mode {routing.Mode}");
+                    "no DevThrottle key configured for transcription");
 
             var assembled = await uploads.AssembleAsync(uploadId, req.TotalChunks);
             if (assembled.Status == "unknown_upload")

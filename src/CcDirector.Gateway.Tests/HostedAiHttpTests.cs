@@ -14,7 +14,6 @@ public sealed class HostedAiHttpTests
     [Theory]
     [InlineData(HostedAiState.NeedsCredits, "NeedsCredits", "OpenBilling")]
     [InlineData(HostedAiState.CapReached, "CapReached", "OpenBilling")]
-    [InlineData(HostedAiState.NeedsKey, "NeedsKey", "OpenSettings")]
     public void Dto_CarriesSharedCopyForState(HostedAiState state, string expectedState, string expectedAction)
     {
         var dto = HostedAiHttp.Dto(state);

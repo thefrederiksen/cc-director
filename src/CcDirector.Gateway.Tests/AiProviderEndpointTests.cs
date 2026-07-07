@@ -63,44 +63,29 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)obj["wingmanFastModel"]);
         Assert.Equal("whisper-large-v3", (string?)obj["transcriptionModel"]);
         Assert.Equal("af_bella", (string?)obj["ttsVoice"]);   // DevThrottle (Kokoro) default voice
+        // Voices come from the live DevThrottle speech-model catalog, so the snapshot list is empty.
         var voices = obj["voices"] as JsonArray;
         Assert.NotNull(voices);
-        Assert.Contains(voices!, v => (string?)v == "nova");   // OpenAI voice fallback set
+        Assert.Empty(voices!);
     }
 
     [Fact]
-    public async Task Put_ai_provider_openai_sets_mode_byo_and_gpt55_and_round_trips()
+    public async Task Put_ai_provider_openai_is_rejected()
     {
+        // Bring-your-own OpenAI was removed - the only provider is DevThrottle.
         var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "openai" });
-        resp.EnsureSuccessStatusCode();
-
-        var echoed = await resp.Content.ReadFromJsonAsync<JsonObject>();
-        Assert.Equal("openai", (string?)echoed!["provider"]);
-        Assert.Equal("gpt-5.5", (string?)echoed["wingmanModel"]);
-        Assert.Equal("gpt-5.5-mini", (string?)echoed["wingmanFastModel"]);
-
-        // Durable on disk: transcription_mode flips to byo AND the wingman model default is persisted.
-        var onDisk = CcDirectorConfigService.ReadRaw();
-        Assert.Equal("byo", (string?)onDisk["transcription_mode"]);
-        Assert.Equal("gpt-5.5", (string?)onDisk["brain_model"]);
-        Assert.Equal("gpt-5.5-mini", (string?)onDisk["brain_model_fast"]);
-
-        // The GET reflects the saved choice after a reload.
-        var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
-        Assert.Equal("openai", (string?)obj!["provider"]);
-        Assert.Equal("gpt-5.5", (string?)obj["wingmanModel"]);
-        Assert.Equal("gpt-5.5-mini", (string?)obj["wingmanFastModel"]);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        // Nothing written.
+        Assert.Null(CcDirectorConfigService.ReadRaw()["transcription_mode"]);
     }
 
     [Fact]
-    public async Task Put_ai_provider_back_to_devthrottle_restores_glm()
+    public async Task Put_ai_provider_devthrottle_sets_glm_defaults()
     {
-        await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "openai" });
         var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "devthrottle" });
         resp.EnsureSuccessStatusCode();
 
         var onDisk = CcDirectorConfigService.ReadRaw();
-        Assert.Equal("devthrottle", (string?)onDisk["transcription_mode"]);
         Assert.Equal("zai-org/GLM-5.2", (string?)onDisk["brain_model"]);
         Assert.Equal("Qwen/Qwen2.5-72B-Instruct", (string?)onDisk["brain_model_fast"]);
     }
@@ -122,22 +107,23 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
             ["gateway"] = new JsonObject { ["url"] = "http://gw.example:7878" },
         });
 
-        var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "openai" });
+        var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "devthrottle" });
         resp.EnsureSuccessStatusCode();
 
         var onDisk = CcDirectorConfigService.ReadRaw();
         Assert.Equal("http://gw.example:7878", (string?)onDisk["gateway"]!["url"]);
-        Assert.Equal("byo", (string?)onDisk["transcription_mode"]);
+        Assert.Equal("zai-org/GLM-5.2", (string?)onDisk["brain_model"]);
     }
 
     [Fact]
-    public async Task Get_tts_voice_defaults_to_provider_default_with_fallback_set()
+    public async Task Get_tts_voice_defaults_to_provider_default()
     {
         var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/tts-voice");
         Assert.Equal("af_bella", (string?)obj!["voice"]);   // DevThrottle (Kokoro) default
+        // Voices come from the live DevThrottle catalog, so the fallback list is empty.
         var voices = obj["voices"] as JsonArray;
         Assert.NotNull(voices);
-        Assert.Contains(voices!, v => (string?)v == "shimmer");   // OpenAI fallback set
+        Assert.Empty(voices!);
     }
 
     [Fact]

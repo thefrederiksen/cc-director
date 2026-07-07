@@ -20,7 +20,7 @@ namespace CcDirector.Core.Transcription;
 ///      <c>POST {baseUrl}/audio/transcriptions</c> that BOTH OpenAI and the DevThrottle/Groq proxy
 ///      implement. The base URL, key, and model come entirely from the caller's
 ///      <see cref="ResolvedTranscription"/> (produced by the Gateway routing resolver,
-///      <see cref="OpenAiKeyResolver.ResolveEndpointAsync"/>), so the user-selected method governs
+///      <see cref="TranscriptionKeyResolver.ResolveEndpointAsync"/>), so the user-selected method governs
 ///      every path and the bring-your-own OpenAI key is never crossed onto the devthrottle.com URL.
 ///   3. Dictionary corrector ONLY. The raw transcript runs through the validated dictionary
 ///      corrector (<see cref="CleanupOrchestrator"/> + <see cref="TranscriptEditEngine"/>): the
@@ -39,7 +39,7 @@ public sealed class BatchTranscriptionPipeline : IDisposable
 {
     /// <summary>
     /// HTTP timeout for the batch transcription POST. Whole-clip uploads can be several seconds for
-    /// longer recordings; this matches <c>OpenAiTranscriptionProvider</c>'s batch timeout. The timeout
+    /// longer recordings. The timeout
     /// is per request, so a recording split into several parts gets the full budget for each part.
     /// </summary>
     public static readonly TimeSpan TranscribeTimeout = TimeSpan.FromSeconds(120);
@@ -108,7 +108,7 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         if (audio.Length == 0)
             throw new ArgumentException("audio blob is empty; the Audio Completeness Gate must run before transcription", nameof(audio));
 
-        FileLog.Write($"[BatchTranscriptionPipeline] TranscribeAsync: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Model}");
+        FileLog.Write($"[BatchTranscriptionPipeline] TranscribeAsync: bytes={audio.Length}, model={routing.Model}");
 
         var raw = await TranscribeBatchAsync(audio, fileName, routing, ct, progress);
         FileLog.Write($"[BatchTranscriptionPipeline] raw transcript len={raw.Length}");
@@ -146,7 +146,7 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         if (audio.Length == 0)
             throw new ArgumentException("audio blob is empty; the Audio Completeness Gate must run before transcription", nameof(audio));
 
-        FileLog.Write($"[BatchTranscriptionPipeline] TranscribeRawAsync: bytes={audio.Length}, mode={routing.Mode.ToConfigString()}, model={routing.Model}");
+        FileLog.Write($"[BatchTranscriptionPipeline] TranscribeRawAsync: bytes={audio.Length}, model={routing.Model}");
         return await TranscribeBatchAsync(audio, fileName, routing, ct, progress);
     }
 

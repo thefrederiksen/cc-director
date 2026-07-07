@@ -11,12 +11,9 @@ namespace CcDirector.Core.Voice;
 ///   "... wingman send"     -> commit the captured prompt
 ///   "... wingman cancel"   -> discard the captured prompt
 ///
-/// The engine consumes the CUMULATIVE transcript the way
-/// <c>OpenAiRealtimeProvider.OnPartial</c> delivers it (one growing string per
-/// listen session), classifies the control phrases as delimiters, and raises
-/// <see cref="OnEvent"/>. It knows nothing about microphones or Avalonia, so it
-/// is unit-tested with scripted strings and reused unchanged by the desktop test
-/// dialog (and later the phone / session view).
+/// The engine consumes a cumulative transcript (one growing string per listen
+/// session), classifies the control phrases as delimiters, and raises
+/// <see cref="OnEvent"/>. It knows nothing about microphones or UI surfaces.
 ///
 /// STREAMING DISAMBIGUATION
 /// ------------------------
