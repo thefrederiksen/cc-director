@@ -300,9 +300,9 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
         Assert.Equal("our-id", minter.RevokedId);
     }
 
-    // ----- Revoke failure keeps the local key so it is reused, not orphaned (issue #1136) -----
+    // ----- Sign-out always clears the local key (no account binding -> must not be reused, issue #1136) -----
 
-    /// <summary>A minter whose RevokeAsync always fails, so we can assert the local key is kept.</summary>
+    /// <summary>A minter whose RevokeAsync always fails, so we can assert the local key is still cleared.</summary>
     private sealed class RevokeFailingMinter : IInferenceKeyMinter
     {
         private readonly MintedInferenceKey _minted;
@@ -318,39 +318,22 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
     }
 
     [Fact]
-    public async Task RevokeMintedKeyAsync_CloudRevokeFails_KeepsLocalKeyAndId()
+    public async Task RevokeMintedKeyAsync_CloudRevokeFails_StillClearsLocalKey()
     {
+        // Even when the cloud revoke fails, the local key MUST be cleared: it has no account binding, so
+        // leaving it would let the next account signed in on this machine reuse it (issue #1136). The
+        // residual cloud key can be revoked from the website.
         var vault = new KeyVault(_vaultPath);
-        var minter = new RevokeFailingMinter("dt_live_kept", "kept-id");
+        var minter = new RevokeFailingMinter("dt_live_x", "the-id");
         var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
         await sut.EnsureAsync(); // mints + records the id
 
         var revoked = await sut.RevokeMintedKeyAsync();
 
-        Assert.False(revoked);
+        Assert.True(revoked);
         Assert.Equal(1, minter.RevokeCalls);
-        // The key is kept (not orphaned) so the next start reuses it instead of minting a replacement.
         var reread = new KeyVault(_vaultPath);
-        Assert.Equal("dt_live_kept", reread.Get(TranscriptionEndpointResolver.DevThrottleKeyName));
-        Assert.Equal("kept-id", reread.Get(TranscriptionKeyAutoProvisioner.InferenceKeyIdVaultName));
-    }
-
-    [Fact]
-    public async Task RevokeMintedKeyAsync_NoAccessToken_KeepsLocalKey_WithoutRevoking()
-    {
-        var vault = new KeyVault(_vaultPath);
-        var minter = new FakeMinter("dt_live_kept", id: "kept-id");
-        // Sign in to mint, then simulate the token being gone at sign-out time.
-        string? token = "the.jwt";
-        var sut = new TranscriptionKeyAutoProvisioner(vault, () => token, minter);
-        await sut.EnsureAsync();
-        token = null;
-
-        var revoked = await sut.RevokeMintedKeyAsync();
-
-        Assert.False(revoked);
-        Assert.Equal(0, minter.RevokeCalls);
-        // No token means no revoke could be attempted, so the key is kept rather than orphaned.
-        Assert.Equal("dt_live_kept", new KeyVault(_vaultPath).Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+        Assert.Null(reread.Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+        Assert.Null(reread.Get(TranscriptionKeyAutoProvisioner.InferenceKeyIdVaultName));
     }
 }

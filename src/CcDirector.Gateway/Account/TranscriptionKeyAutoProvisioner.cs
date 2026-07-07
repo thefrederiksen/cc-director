@@ -109,10 +109,19 @@ public sealed class TranscriptionKeyAutoProvisioner
 
             // A key appeared between our re-read and the store (a concurrent manual save, or another Gateway
             // process on the same account). We hold a freshly minted key that nothing will use, so revoke it
-            // now rather than leave it as a live orphan on the account (issue #1136). Best-effort.
-            FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: a key appeared first -> revoking the key we just minted to avoid an orphan");
+            // now rather than leave it as a live orphan on the account (issue #1136). The revoke uses the SAME
+            // account token that minted it, so there is no cross-account concern. Best-effort.
             if (!string.IsNullOrWhiteSpace(minted.Id))
+            {
+                FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: a key appeared first -> revoking the key we just minted to avoid an orphan");
                 await _minter.RevokeAsync(accessToken, minted.Id!, ct);
+            }
+            else
+            {
+                // No id means we cannot revoke it; the just-minted key may remain on the account. Log it so
+                // the orphan is visible rather than silent.
+                FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: a key appeared first but the mint returned no id -> cannot revoke the just-minted key (it may remain on the account)");
+            }
             return false;
         }
         finally
@@ -126,10 +135,13 @@ public sealed class TranscriptionKeyAutoProvisioner
     /// signed-out install leaves no live key behind. A MANUALLY-pasted key (no recorded id) is left
     /// untouched - it is the user's own key, not ours to revoke. Best-effort: any failure is logged and
     /// swallowed so sign-out never fails; call it BEFORE the credential is cleared (it needs the JWT).
-    /// The local key is cleared ONLY when the cloud revoke actually succeeded (or the key was already
-    /// gone). If the revoke could not be attempted or failed, the local key is KEPT so the next start
-    /// reuses it rather than minting a replacement and orphaning the still-live cloud key (issue #1136).
-    /// Returns true only when an auto-minted key was revoked and cleared.
+    ///
+    /// The local key is ALWAYS cleared here (whether or not the cloud revoke succeeded): the stored key
+    /// carries no account binding, so leaving it would let the NEXT account signed in on this machine
+    /// reuse it (spending the wrong account's credits) and would keep a live credential on a signed-out
+    /// machine. If the cloud revoke itself failed, the still-live cloud key can be revoked from the
+    /// website; that residual orphan is the lesser evil versus cross-account reuse. Returns true when an
+    /// auto-minted key was found and cleared.
     /// </summary>
     public async Task<bool> RevokeMintedKeyAsync(CancellationToken ct = default)
     {
@@ -141,31 +153,21 @@ public sealed class TranscriptionKeyAutoProvisioner
         }
 
         var accessToken = _accessTokenProvider();
-        if (string.IsNullOrWhiteSpace(accessToken))
+        if (!string.IsNullOrWhiteSpace(accessToken))
         {
-            // No token to authenticate the revoke. Do NOT clear the local key: clearing it would make the
-            // next sign-in mint a fresh key while this still-live cloud key becomes an unreachable orphan
-            // (issue #1136). Keeping it means the next start reuses this same key and no orphan is created;
-            // a later sign-out (with a token) can still revoke it.
-            FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: no access token to revoke with -> keeping the local key so the next start reuses it (no orphan)");
-            return false;
+            var revoked = await _minter.RevokeAsync(accessToken, keyId!, ct);
+            FileLog.Write($"[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: cloud revoke result={revoked}");
+        }
+        else
+        {
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: no access token to revoke with (clearing locally anyway)");
         }
 
-        var revoked = await _minter.RevokeAsync(accessToken, keyId!, ct);
-        if (!revoked)
-        {
-            // The cloud revoke failed and the key is still live. Clearing the local copy now would orphan
-            // it (the next sign-in mints a replacement). Keep both local entries so the next start reuses
-            // the same key instead of minting a new one (issue #1136).
-            FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: cloud revoke failed -> keeping the local key so the next start reuses it (no orphan)");
-            return false;
-        }
-
-        // The revoke succeeded (RevokeAsync also reports success for an already-gone 404): the key is no
-        // longer live, so clear the local copies and a signed-out install holds no key.
+        // Clear the local copies regardless of the cloud outcome: the stored key has no account binding, so
+        // it must not remain on this machine to be reused by whoever signs in next (issue #1136). If the
+        // cloud revoke failed, that key can still be revoked from the website.
         _vault.Delete(TranscriptionEndpointResolver.DevThrottleKeyName);
         _vault.Delete(InferenceKeyIdVaultName);
-        FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: cloud revoke succeeded -> cleared the local key and id");
         return true;
     }
 }
