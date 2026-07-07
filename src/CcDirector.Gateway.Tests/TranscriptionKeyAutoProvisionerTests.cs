@@ -219,4 +219,138 @@ public sealed class TranscriptionKeyAutoProvisionerTests : IDisposable
         Assert.Equal(1, minter.Calls);
         Assert.Null(new KeyVault(_vaultPath).Get(TranscriptionEndpointResolver.DevThrottleKeyName));
     }
+
+    // ----- Concurrency: one key per process, never a same-second burst (issue #1136) -----
+
+    /// <summary>A minter that mints a UNIQUE key per call (so a leaked second mint is visible as a second
+    /// distinct key), counts calls atomically, and delays inside MintAsync so concurrent callers overlap
+    /// in the check-then-mint window that the fix closes.</summary>
+    private sealed class UniqueSlowMinter : IInferenceKeyMinter
+    {
+        private int _calls;
+        private readonly TimeSpan _delay;
+        public int Calls => Volatile.Read(ref _calls);
+        public int RevokeCalls;
+        public UniqueSlowMinter(TimeSpan delay) { _delay = delay; }
+        public async Task<MintedInferenceKey?> MintAsync(string accessToken, string label, CancellationToken ct = default)
+        {
+            var n = Interlocked.Increment(ref _calls);
+            await Task.Delay(_delay, ct);
+            return new MintedInferenceKey($"dt_live_unique_{n}", $"id-{n}");
+        }
+        public Task<bool> RevokeAsync(string accessToken, string keyId, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref RevokeCalls);
+            return Task.FromResult(true);
+        }
+    }
+
+    [Fact]
+    public async Task EnsureAsync_ConcurrentCalls_MintsExactlyOnce()
+    {
+        var vault = new KeyVault(_vaultPath);
+        var minter = new UniqueSlowMinter(TimeSpan.FromMilliseconds(50));
+        var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
+
+        // Fire the ensure from several callers at once (the sign-in hook and the startup task racing).
+        var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => sut.EnsureAsync()));
+
+        // Exactly one mint, exactly one caller stored a key, and the vault holds a single stored key.
+        Assert.Equal(1, minter.Calls);
+        Assert.Equal(1, results.Count(stored => stored));
+        Assert.Equal("dt_live_unique_1", new KeyVault(_vaultPath).Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+    }
+
+    /// <summary>A minter that stores a COMPETING key into the vault during MintAsync, simulating another
+    /// Gateway process that stored first. The store then loses the SetIfAbsent race, so the just-minted
+    /// key must be revoked to avoid an orphan.</summary>
+    private sealed class RaceLosingMinter : IInferenceKeyMinter
+    {
+        private readonly KeyVault _vault;
+        public int RevokeCalls { get; private set; }
+        public string? RevokedId { get; private set; }
+        public RaceLosingMinter(KeyVault vault) { _vault = vault; }
+        public Task<MintedInferenceKey?> MintAsync(string accessToken, string label, CancellationToken ct = default)
+        {
+            // A competitor stores its own key while we are minting.
+            _vault.SetIfAbsent(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_competitor");
+            return Task.FromResult<MintedInferenceKey?>(new MintedInferenceKey("dt_live_ours", "our-id"));
+        }
+        public Task<bool> RevokeAsync(string accessToken, string keyId, CancellationToken ct = default)
+        {
+            RevokeCalls++;
+            RevokedId = keyId;
+            return Task.FromResult(true);
+        }
+    }
+
+    [Fact]
+    public async Task EnsureAsync_LostStoreRace_RevokesTheJustMintedKey()
+    {
+        var vault = new KeyVault(_vaultPath);
+        var minter = new RaceLosingMinter(vault);
+        var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
+
+        var stored = await sut.EnsureAsync();
+
+        Assert.False(stored);
+        // The competitor's key is what remains; ours was revoked rather than left as an orphan.
+        Assert.Equal("dt_live_competitor", new KeyVault(_vaultPath).Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+        Assert.Equal(1, minter.RevokeCalls);
+        Assert.Equal("our-id", minter.RevokedId);
+    }
+
+    // ----- Revoke failure keeps the local key so it is reused, not orphaned (issue #1136) -----
+
+    /// <summary>A minter whose RevokeAsync always fails, so we can assert the local key is kept.</summary>
+    private sealed class RevokeFailingMinter : IInferenceKeyMinter
+    {
+        private readonly MintedInferenceKey _minted;
+        public int RevokeCalls { get; private set; }
+        public RevokeFailingMinter(string key, string id) { _minted = new MintedInferenceKey(key, id); }
+        public Task<MintedInferenceKey?> MintAsync(string accessToken, string label, CancellationToken ct = default)
+            => Task.FromResult<MintedInferenceKey?>(_minted);
+        public Task<bool> RevokeAsync(string accessToken, string keyId, CancellationToken ct = default)
+        {
+            RevokeCalls++;
+            return Task.FromResult(false);
+        }
+    }
+
+    [Fact]
+    public async Task RevokeMintedKeyAsync_CloudRevokeFails_KeepsLocalKeyAndId()
+    {
+        var vault = new KeyVault(_vaultPath);
+        var minter = new RevokeFailingMinter("dt_live_kept", "kept-id");
+        var sut = new TranscriptionKeyAutoProvisioner(vault, () => "the.jwt", minter);
+        await sut.EnsureAsync(); // mints + records the id
+
+        var revoked = await sut.RevokeMintedKeyAsync();
+
+        Assert.False(revoked);
+        Assert.Equal(1, minter.RevokeCalls);
+        // The key is kept (not orphaned) so the next start reuses it instead of minting a replacement.
+        var reread = new KeyVault(_vaultPath);
+        Assert.Equal("dt_live_kept", reread.Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+        Assert.Equal("kept-id", reread.Get(TranscriptionKeyAutoProvisioner.InferenceKeyIdVaultName));
+    }
+
+    [Fact]
+    public async Task RevokeMintedKeyAsync_NoAccessToken_KeepsLocalKey_WithoutRevoking()
+    {
+        var vault = new KeyVault(_vaultPath);
+        var minter = new FakeMinter("dt_live_kept", id: "kept-id");
+        // Sign in to mint, then simulate the token being gone at sign-out time.
+        string? token = "the.jwt";
+        var sut = new TranscriptionKeyAutoProvisioner(vault, () => token, minter);
+        await sut.EnsureAsync();
+        token = null;
+
+        var revoked = await sut.RevokeMintedKeyAsync();
+
+        Assert.False(revoked);
+        Assert.Equal(0, minter.RevokeCalls);
+        // No token means no revoke could be attempted, so the key is kept rather than orphaned.
+        Assert.Equal("dt_live_kept", new KeyVault(_vaultPath).Get(TranscriptionEndpointResolver.DevThrottleKeyName));
+    }
 }

@@ -35,6 +35,17 @@ public sealed class TranscriptionKeyAutoProvisioner
     private readonly IInferenceKeyMinter _minter;
     private readonly string _label;
 
+    /// <summary>
+    /// Serializes provisioning within this process. <see cref="EnsureAsync"/> is fired from BOTH the
+    /// post-sign-in hook and a detached startup task, and those race on a fresh sign-in during startup.
+    /// Without this gate the check-then-mint window lets every concurrent caller find an empty vault and
+    /// mint its own key, so one Gateway leaks several live keys in the same second (issue #1136). The gate
+    /// plus a re-read of the vault after acquiring it collapse the concurrent callers to exactly one mint.
+    /// Never disposed: the provisioner lives for the whole process and this semaphore allocates no
+    /// unmanaged handle unless its wait handle is used (it is not).
+    /// </summary>
+    private readonly SemaphoreSlim _ensureGate = new(1, 1);
+
     /// <param name="vault">The Gateway key vault - where the transcription owner reads the hosted key.</param>
     /// <param name="accessTokenProvider">Supplies the signed-in account JWT (or null when not signed in);
     /// invoked fresh each call so it always reflects the current credential.</param>
@@ -56,37 +67,58 @@ public sealed class TranscriptionKeyAutoProvisioner
     /// </summary>
     public async Task<bool> EnsureAsync(CancellationToken ct = default)
     {
-        var existing = _vault.Get(TranscriptionEndpointResolver.DevThrottleKeyName);
-        if (!string.IsNullOrWhiteSpace(existing))
+        // Serialize the whole check-then-mint sequence so concurrent callers (the sign-in hook and the
+        // startup task) mint at most one key between them (issue #1136).
+        await _ensureGate.WaitAsync(ct);
+        try
         {
-            FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: a DevThrottle key is already stored -> nothing to mint");
+            var existing = _vault.Get(TranscriptionEndpointResolver.DevThrottleKeyName);
+            if (!string.IsNullOrWhiteSpace(existing))
+            {
+                FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: a DevThrottle key is already stored -> nothing to mint");
+                return false;
+            }
+
+            var accessToken = _accessTokenProvider();
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: not signed in (no access token) -> cannot mint yet");
+                return false;
+            }
+
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: no DevThrottle key stored and signed in -> minting an inference key");
+            var minted = await _minter.MintAsync(accessToken, _label, ct);
+            if (minted is null || string.IsNullOrWhiteSpace(minted.Key))
+            {
+                FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: mint returned no key -> leaving unset (user sees the add-credits/manual state)");
+                return false;
+            }
+
+            // SetIfAbsent (not Set) guards a race with a concurrent manual save or another Gateway process
+            // sharing this account - the first writer wins and we never clobber a key that appeared meanwhile.
+            var stored = _vault.SetIfAbsent(TranscriptionEndpointResolver.DevThrottleKeyName, minted.Key);
+            if (stored)
+            {
+                if (!string.IsNullOrWhiteSpace(minted.Id))
+                    // Record the id so sign-out can revoke THIS auto-minted key (a manual key has no id and
+                    // is never revoked). Set (not SetIfAbsent) because the id belongs to the key we stored.
+                    _vault.Set(InferenceKeyIdVaultName, minted.Id!);
+                FileLog.Write($"[TranscriptionKeyAutoProvisioner] EnsureAsync: minted inference key stored, id recorded={!string.IsNullOrWhiteSpace(minted.Id)}");
+                return true;
+            }
+
+            // A key appeared between our re-read and the store (a concurrent manual save, or another Gateway
+            // process on the same account). We hold a freshly minted key that nothing will use, so revoke it
+            // now rather than leave it as a live orphan on the account (issue #1136). Best-effort.
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: a key appeared first -> revoking the key we just minted to avoid an orphan");
+            if (!string.IsNullOrWhiteSpace(minted.Id))
+                await _minter.RevokeAsync(accessToken, minted.Id!, ct);
             return false;
         }
-
-        var accessToken = _accessTokenProvider();
-        if (string.IsNullOrWhiteSpace(accessToken))
+        finally
         {
-            FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: not signed in (no access token) -> cannot mint yet");
-            return false;
+            _ensureGate.Release();
         }
-
-        FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: no DevThrottle key stored and signed in -> minting an inference key");
-        var minted = await _minter.MintAsync(accessToken, _label, ct);
-        if (minted is null || string.IsNullOrWhiteSpace(minted.Key))
-        {
-            FileLog.Write("[TranscriptionKeyAutoProvisioner] EnsureAsync: mint returned no key -> leaving unset (user sees the add-credits/manual state)");
-            return false;
-        }
-
-        // SetIfAbsent (not Set) guards a race with a concurrent manual save or a second provisioning
-        // pass - the first writer wins and we never clobber a key that appeared meanwhile.
-        var stored = _vault.SetIfAbsent(TranscriptionEndpointResolver.DevThrottleKeyName, minted.Key);
-        if (stored && !string.IsNullOrWhiteSpace(minted.Id))
-            // Record the id so sign-out can revoke THIS auto-minted key (a manual key has no id and is
-            // never revoked). Set (not SetIfAbsent) because the id belongs to the key we just stored.
-            _vault.Set(InferenceKeyIdVaultName, minted.Id!);
-        FileLog.Write($"[TranscriptionKeyAutoProvisioner] EnsureAsync: minted inference key {(stored ? "stored" : "not stored - a key appeared first")}, id recorded={stored && !string.IsNullOrWhiteSpace(minted.Id)}");
-        return stored;
     }
 
     /// <summary>
@@ -94,7 +126,10 @@ public sealed class TranscriptionKeyAutoProvisioner
     /// signed-out install leaves no live key behind. A MANUALLY-pasted key (no recorded id) is left
     /// untouched - it is the user's own key, not ours to revoke. Best-effort: any failure is logged and
     /// swallowed so sign-out never fails; call it BEFORE the credential is cleared (it needs the JWT).
-    /// Returns true when an auto-minted key was revoked and cleared.
+    /// The local key is cleared ONLY when the cloud revoke actually succeeded (or the key was already
+    /// gone). If the revoke could not be attempted or failed, the local key is KEPT so the next start
+    /// reuses it rather than minting a replacement and orphaning the still-live cloud key (issue #1136).
+    /// Returns true only when an auto-minted key was revoked and cleared.
     /// </summary>
     public async Task<bool> RevokeMintedKeyAsync(CancellationToken ct = default)
     {
@@ -106,21 +141,31 @@ public sealed class TranscriptionKeyAutoProvisioner
         }
 
         var accessToken = _accessTokenProvider();
-        if (!string.IsNullOrWhiteSpace(accessToken))
+        if (string.IsNullOrWhiteSpace(accessToken))
         {
-            var revoked = await _minter.RevokeAsync(accessToken, keyId!, ct);
-            FileLog.Write($"[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: cloud revoke result={revoked}");
-        }
-        else
-        {
-            FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: no access token to revoke with (clearing locally anyway)");
+            // No token to authenticate the revoke. Do NOT clear the local key: clearing it would make the
+            // next sign-in mint a fresh key while this still-live cloud key becomes an unreachable orphan
+            // (issue #1136). Keeping it means the next start reuses this same key and no orphan is created;
+            // a later sign-out (with a token) can still revoke it.
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: no access token to revoke with -> keeping the local key so the next start reuses it (no orphan)");
+            return false;
         }
 
-        // Clear the local copies regardless of the cloud outcome: the key is being signed out, so it must
-        // not remain as this machine's transcription credential. The cloud key, if the revoke failed, can
-        // still be revoked from the website.
+        var revoked = await _minter.RevokeAsync(accessToken, keyId!, ct);
+        if (!revoked)
+        {
+            // The cloud revoke failed and the key is still live. Clearing the local copy now would orphan
+            // it (the next sign-in mints a replacement). Keep both local entries so the next start reuses
+            // the same key instead of minting a new one (issue #1136).
+            FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: cloud revoke failed -> keeping the local key so the next start reuses it (no orphan)");
+            return false;
+        }
+
+        // The revoke succeeded (RevokeAsync also reports success for an already-gone 404): the key is no
+        // longer live, so clear the local copies and a signed-out install holds no key.
         _vault.Delete(TranscriptionEndpointResolver.DevThrottleKeyName);
         _vault.Delete(InferenceKeyIdVaultName);
+        FileLog.Write("[TranscriptionKeyAutoProvisioner] RevokeMintedKeyAsync: cloud revoke succeeded -> cleared the local key and id");
         return true;
     }
 }
