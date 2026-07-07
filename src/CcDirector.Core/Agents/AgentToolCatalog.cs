@@ -67,8 +67,8 @@ public static class AgentToolCatalog
     /// <summary>The name of the Codex opt-in full-access preset.</summary>
     public const string CodexFullAccessPresetName = "Full access";
 
-    /// <summary>The exact Codex flags for full filesystem and network access with no approval prompts.</summary>
-    public const string CodexFullAccessArg = "--sandbox danger-full-access --ask-for-approval never";
+    /// <summary>The exact Codex flag for full filesystem/network access with no confirmation prompts.</summary>
+    public const string CodexFullAccessArg = "--dangerously-bypass-approvals-and-sandbox";
 
     /// <summary>
     /// The exact Cursor flag the automatic preset adds (and the standard preset omits).

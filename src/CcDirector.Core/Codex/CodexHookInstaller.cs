@@ -20,14 +20,14 @@ namespace CcDirector.Core.Codex;
 /// </summary>
 public static class CodexHookInstaller
 {
-    // PowerShell: read (and discard) the hook event JSON on stdin, fetch the preamble the Director
-    // owns, and print it as additionalContext. Must never block or fail the session - swallows all
-    // errors and exits 0. Codex re-fires SessionStart on /clear and /compact, so the preamble is
-    // re-injected automatically with no extra wiring.
+    // PowerShell: fetch the preamble the Director owns and print it as additionalContext. The hook
+    // does not need the event payload, so it deliberately does not read stdin; Codex 0.142+ can
+    // fail interactive startup if a hook command consumes or probes the terminal stdin. Must never
+    // block or fail the session - swallows all errors and exits 0. Codex re-fires SessionStart on
+    // /clear and /compact, so the preamble is re-injected automatically with no extra wiring.
     private const string ScriptContent =
         "$ErrorActionPreference = 'SilentlyContinue'\r\n" +
         "try {\r\n" +
-        "    $null = [Console]::In.ReadToEnd()\r\n" +
         "    $api = $env:CC_DIRECTOR_API\r\n" +
         "    $sid = $env:CC_SESSION_ID\r\n" +
         "    if ($api -and $sid) {\r\n" +

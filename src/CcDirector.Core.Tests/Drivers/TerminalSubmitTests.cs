@@ -167,24 +167,26 @@ public sealed class TerminalSubmitTests
     }
 
     [Fact]
-    public async Task GenericDriverSubmit_WithheldEchoBlindPath_WritesEnterAndLeavesComposerParked()
+    public async Task GenericDriverSubmit_WithheldEcho_ThrowsWithoutEnter()
     {
         var backend = new RecordingSessionBackend
         {
             Buffer = new CircularTerminalBuffer(),
-            SimulateBlindSubmitPath = true,
-            BlindSubmitDelay = TimeSpan.FromMilliseconds(10),
         };
-        backend.EchoScript.UseDefault(RecordingEchoStep.Delayed(TimeSpan.FromMilliseconds(200)));
+        backend.EchoScript.UseDefault(RecordingEchoStep.Withheld());
 
-        await new GenericDriver(AgentKind.Gemini).SubmitAsync(backend, "blind prompt");
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => TerminalSubmit.EchoVerifiedSubmitAsync(
+                backend,
+                "generic prompt",
+                "Test",
+                echoTimeout: TimeSpan.FromMilliseconds(20),
+                pollInterval: TimeSpan.FromMilliseconds(5),
+                enterSettleDelay: TimeSpan.FromMilliseconds(1)));
 
-        Assert.Equal(["blind prompt"], backend.SentTexts);
-        Assert.Equal(2, backend.WrittenBytes.Count);
-        Assert.Equal(Encoding.UTF8.GetBytes("blind prompt"), backend.WrittenBytes[0]);
-        Assert.Equal(new byte[] { 0x0D }, backend.WrittenBytes[1]);
-        Assert.Equal(1, backend.LostEnterCount);
-        Assert.Equal("blind prompt", backend.ParkedComposerText);
+        Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(backend.SentTexts);
+        Assert.Equal(0, backend.EnterCount);
         Assert.Empty(backend.SubmittedTexts);
     }
 
@@ -199,7 +201,7 @@ public sealed class TerminalSubmitTests
         var error = await Assert.ThrowsAsync<InvalidOperationException>(
             () => driver.SubmitAsync(backend, "write this"));
 
-        Assert.Contains("never matched", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(4, backend.WrittenBytes.Count);
         Assert.Equal(Encoding.UTF8.GetBytes("write this"), backend.WrittenBytes[0]);
         Assert.Equal(new byte[] { 0x1B }, backend.WrittenBytes[1]);
@@ -210,13 +212,16 @@ public sealed class TerminalSubmitTests
     }
 
     [Fact]
-    public async Task EchoVerifiedSubmit_NoBuffer_FallsBackToBlindSendText()
+    public async Task EchoVerifiedSubmit_NoBuffer_WritesTextAndEnter()
     {
         var backend = new RecordingSessionBackend(); // Buffer is null
 
         await TerminalSubmit.EchoVerifiedSubmitAsync(backend, "hi", "Test");
 
-        Assert.Equal("hi", Assert.Single(backend.SentTexts));
+        Assert.Empty(backend.SentTexts);
+        Assert.Equal(2, backend.WrittenBytes.Count);
+        Assert.Equal(Encoding.UTF8.GetBytes("hi"), backend.WrittenBytes[0]);
+        Assert.Equal(new byte[] { 0x0D }, backend.WrittenBytes[1]);
     }
 
     [Fact]

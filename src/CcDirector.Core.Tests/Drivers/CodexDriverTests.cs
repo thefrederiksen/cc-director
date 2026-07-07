@@ -65,14 +65,17 @@ public sealed class CodexDriverTests
     }
 
     [Fact]
-    public async Task SubmitAsync_NoBufferBackend_FallsBackToBlindSendText()
+    public async Task SubmitAsync_NoBufferBackend_WritesTextAndEnter()
     {
-        // No buffer (non-PTY transport): nothing to echo-verify against, so use SendTextAsync.
+        // No buffer: nothing to echo-verify against, so the shared submit writes raw text then Enter.
         var backend = new RecordingSessionBackend();
 
         await new CodexDriver().SubmitAsync(backend, "hello");
 
-        Assert.Equal("hello", Assert.Single(backend.SentTexts));
+        Assert.Equal(2, backend.WrittenBytes.Count);
+        Assert.Equal(Encoding.UTF8.GetBytes("hello"), backend.WrittenBytes[0]);
+        Assert.Equal(new byte[] { 0x0D }, backend.WrittenBytes[1]);
+        Assert.Empty(backend.SentTexts);
     }
 
     [Fact]

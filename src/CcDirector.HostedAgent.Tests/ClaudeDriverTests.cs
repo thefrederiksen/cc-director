@@ -140,7 +140,7 @@ public class ClaudeDriverTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => FastDriver().SubmitAsync(backend, "hello"));
-        Assert.Contains("echo never matched", ex.Message);
+        Assert.Contains("composer never echoed", ex.Message);
     }
 
     [Fact]
@@ -148,11 +148,19 @@ public class ClaudeDriverTests
     {
         var backend = new FakeBackend();
         backend.Start("x", "", ".", 80, 24);
+        backend.OnRawWrite = bytes =>
+        {
+            var text = System.Text.Encoding.UTF8.GetString(bytes);
+            if (text == "line one\nline two")
+                backend.EmitOutput(text);
+        };
 
         await FastDriver().SubmitAsync(backend, "line one\nline two");
 
-        Assert.Contains("line one\nline two", backend.SentTexts);
-        Assert.Empty(backend.RawWrites);
+        Assert.Equal(2, backend.RawWrites.Count);
+        Assert.Equal("line one\nline two", System.Text.Encoding.UTF8.GetString(backend.RawWrites[0]));
+        Assert.Equal(new byte[] { 0x0D }, backend.RawWrites[1]);
+        Assert.Empty(backend.SentTexts);
     }
 
     [Fact]

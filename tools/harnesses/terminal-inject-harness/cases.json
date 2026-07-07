@@ -23,5 +23,25 @@
     "id": "multiline",
     "description": "Seven-line payload with middle and end markers the agent must report.",
     "requiresAssistantToken": true
+  },
+  {
+    "id": "leading-slash",
+    "description": "Starts with a slash-command-shaped token that must be treated as data.",
+    "requiresAssistantToken": true
+  },
+  {
+    "id": "special-ascii",
+    "description": "ASCII punctuation payload with slashes, quotes, backticks, brackets, percent, ampersand, at, and pipe.",
+    "requiresAssistantToken": true
+  },
+  {
+    "id": "unicode-data",
+    "description": "UTF-8 payload with non-ASCII data and ASCII markers for verification.",
+    "requiresAssistantToken": true
+  },
+  {
+    "id": "fleet-framed",
+    "description": "Fleet-message-shaped single-line payload with sender framing and reply hint.",
+    "requiresAssistantToken": true
   }
 ]

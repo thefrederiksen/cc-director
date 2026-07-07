@@ -1,8 +1,8 @@
 # Terminal Inject Harness
 
-Live proof harness for terminal injection reliability issues #1117 and #1118.
+Live proof harness for terminal injection reliability issues #1117 through #1119.
 
-This tool launches real Claude Code and Codex sessions in disposable repositories, injects
+This tool launches real installed built-in agent sessions in disposable repositories, injects
 sentinel prompt cases through direct, REST, fleet, and voice-turn routes, and writes:
 
 - `summary.json`
@@ -25,6 +25,7 @@ Useful filters:
 dotnet run --project tools/harnesses/terminal-inject-harness -- --agent ClaudeCode --case sentence --route direct
 dotnet run --project tools/harnesses/terminal-inject-harness -- --agent Codex --route rest --timeout 180
 dotnet run --project tools/harnesses/terminal-inject-harness -- --case medium-line,large-line,multiline --submit-strategy all --allow-failures
+dotnet run --project tools/harnesses/terminal-inject-harness -- --focused-phase4 --submit-strategy current --allow-failures --out docs/cencon/proof/issue-1119
 ```
 
 Submit strategies:
@@ -35,6 +36,15 @@ Submit strategies:
 
 Use `--allow-failures` for comparison runs where failing cells are expected evidence rather than a
 failed harness execution.
+
+Phase 4:
+
+- By default the harness probes every built-in agent plugin and records missing tools as skipped
+  with a reason.
+- `--focused-phase4` applies the issue #1119 run-count policy: 5 runs for the broad matrix and 25
+  runs for Codex REST/fleet plus Claude Code large-line/multiline combinations.
+- The report includes a flake-rate matrix grouped by agent, case, route, and strategy. A combination
+  only passes the gate at 100% success.
 
 The harness uses a throwaway repository under the output directory unless `--repo` is supplied.
 Do not point `--repo` at the devthrottle working tree.

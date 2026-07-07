@@ -1413,24 +1413,29 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
-    /// Send text + Enter via the session's agent driver. For Claude this is the
-    /// ECHO-VERIFIED submit (type, verify the composer echo, then Enter - the fix for
-    /// the composer race where a stray "/" turned prompts into bogus slash commands);
-    /// unverified CLIs keep the pre-driver blind submit, byte for byte.
+    /// Send text + Enter through the shared terminal submit protocol. ConPTY sessions use one
+    /// echo-verified implementation for every agent and route, with bracketed paste for large or
+    /// multi-line blocks when the TUI has requested mode 2004; non-PTY transports keep their
+    /// backend-specific whole-turn semantics.
     /// </summary>
     public async Task SendTextAsync(string text)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
 
         FileLog.Write($"[Session] SendTextAsync: session={Id}, driver={Driver.Kind}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
-        // The driver's submit protocol targets the interactive TUI in a pseudoterminal
-        // (it reads the composer ECHO from the terminal byte stream). Non-PTY
-        // transports (Pipe/Studio's stream-json, Embedded, GitHub remote) have no TUI
-        // echo and own their submit semantics - they keep their backend path.
         if (BackendType is SessionBackendType.ConPty)
-            await Driver.SubmitAsync(_backend, text);
+        {
+            await Drivers.TerminalSubmit.SharedSubmitAsync(
+                _backend,
+                text,
+                Driver.Kind.ToString(),
+                BracketedPasteEnabled,
+                requireEcho: Driver.Kind != Agents.AgentKind.Copilot);
+        }
         else
+        {
             await _backend.SendTextAsync(text);
+        }
         IsBrandNew = false;
         // A SendTextAsync is always a submitted turn -- the user is driving this
         // session again, so clear any stale Hold deferral (issue #470). The OnHold

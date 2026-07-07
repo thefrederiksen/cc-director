@@ -197,7 +197,7 @@
                             <StackPanel x:Name="CustomPanel" Spacing="6" IsVisible="False">
                                 <TextBlock Classes="fieldLabel" Text="Command-line arguments (used verbatim - Director adds nothing)" />
                                 <TextBox x:Name="ArgsOverrideBox" Classes="settingsInput"
-                                         Watermark="e.g. --sandbox danger-full-access --ask-for-approval never"
+                                         Watermark="e.g. --dangerously-bypass-approvals-and-sandbox"
                                          TextChanged="ArgsOverrideBox_Changed"
                                          ToolTip.Tip="The exact arguments to launch with. No preset and no model flag are added." />
                                 <TextBlock Classes="hint" Text="The model picker and preset controls are off in this mode - include every flag yourself." />
