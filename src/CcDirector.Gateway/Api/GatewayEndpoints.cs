@@ -508,9 +508,8 @@ internal static class GatewayEndpoints
                     // Issue #553: surface the two voice readiness booleans the color rule and the /m
                     // client read directly. VoiceGenerating = the wingman is producing this session's
                     // spoken summary now; VoiceAudioReady = the gateway has fetchable, playable audio
-                    // (the SINGLE truthful "there is voice you can play right now" signal). These hold
-                    // a voice-mode waiting session yellow until audio exists, then let it go red - see
-                    // SessionOrdering.IsVoicePreparing (the color fold reads these next refresh).
+                    // (the SINGLE truthful "there is voice you can play right now" signal). VoiceGenerating
+                    // is the only "preparing voice" hold; VoiceAudioReady controls playback affordances.
                     if (voiceGeneratingFor is not null)
                         s.VoiceGenerating = voiceGeneratingFor(s.SessionId);
                     if (voiceAudioReadyFor is not null)
@@ -527,6 +526,17 @@ internal static class GatewayEndpoints
                     // (a transcribing session is not "needs you") when the clock reads the final color.
                     if (transcribingFor is not null)
                         s.Transcribing = transcribingFor(s.SessionId);
+                    // Authoritative presentation state for browser clients. The raw fields above remain
+                    // for diagnostics and backward compatibility, but the Gateway owns the fold so the
+                    // phone/Cockpit do not need a second state machine that can drift from C#.
+                    var effectiveColor = SessionOrdering.EffectiveColor(s);
+                    s.EffectiveColor = effectiveColor;
+                    s.TriageBucket = SessionOrdering.Classify(s) switch
+                    {
+                        SessionOrdering.TriageBucket.NeedsYou => "needsYou",
+                        SessionOrdering.TriageBucket.OnHold => "onHold",
+                        _ => "active",
+                    };
                     // Issue #218: stamp NeedsYouSince AFTER the briefing/rail fields above, so the
                     // EffectiveColor fold sees this refresh's final BriefingState/RailLine/OnHold -
                     // a session still being briefed/explained is effective yellow/orange (not red)
@@ -534,7 +544,7 @@ internal static class GatewayEndpoints
                     // timestamp on first red, holds it while red, and clears it when it leaves red.
                     if (needsYouStampFor is not null)
                     {
-                        var isRed = string.Equals(SessionOrdering.EffectiveColor(s), "red", StringComparison.OrdinalIgnoreCase);
+                        var isRed = string.Equals(effectiveColor, "red", StringComparison.OrdinalIgnoreCase);
                         s.NeedsYouSince = needsYouStampFor(s.SessionId, isRed);
                     }
                     // Issue #335: ViewUrl - use the Director-supplied value when present (it carries

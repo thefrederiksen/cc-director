@@ -5,6 +5,10 @@
 import type { SessionDto } from "../api/client";
 
 export type TriageBucket = "needsYou" | "active" | "onHold";
+type GatewayStampedSession = SessionDto & {
+  effectiveColor?: string | null;
+  triageBucket?: TriageBucket | string | null;
+};
 
 // The stable "desktop order": honor the owning Director's SortOrder (the user-controlled,
 // drag-to-reorder, persisted order), then CreatedAt as a deterministic tie-break.
@@ -26,13 +30,20 @@ function isBriefing(s: SessionDto): boolean {
   return s.briefingState === "Briefing" && (s.statusColor ?? "").toLowerCase() === "red";
 }
 
+// Hold yellow ("preparing voice") only while the wingman is ACTIVELY generating this turn's
+// spoken summary, so the roster does not flash red mid-generation; once generation ends the
+// session shows its real color (red/needs-you, with the play triangle when audio is ready).
+// This used to also hold yellow whenever audio was not yet ready (|| !voiceAudioReady), but a
+// text-to-speech failure (a DevThrottle/DeepInfra 504 or timeout) produces no audio, which left
+// the session stuck yellow/orange forever while it actually needed the user (the "stuck orange,
+// says needs you" report, 2026-07-08). Gating on voiceGenerating alone gives a terminal exit.
 function isVoicePreparing(s: SessionDto): boolean {
   if (!s.voiceMode) return false;
   if ((s.statusColor ?? "").toLowerCase() !== "red") return false;
   const state = s.assessedState ?? s.activityState ?? "";
   const waiting = state === "WaitingForInput" || state === "WaitingForPerm";
   if (!waiting) return false;
-  return Boolean(s.voiceGenerating) || !s.voiceAudioReady;
+  return Boolean(s.voiceGenerating);
 }
 
 // The ONE effective status color every client renders and triages on (issue #196): on-hold
@@ -40,6 +51,8 @@ function isVoicePreparing(s: SessionDto): boolean {
 // a user-requested explain is orange, the wingman reading a finished turn is yellow,
 // a voice-mode session preparing audio is yellow - otherwise the raw Director status color.
 export function effectiveColor(s: SessionDto): string {
+  const stamped = (s as GatewayStampedSession).effectiveColor;
+  if (stamped && stamped.trim().length > 0) return stamped;
   if (s.onHold) return "grey";
   if (s.transcribing) return "orange";
   if (isExplaining(s)) return "orange";
@@ -65,6 +78,8 @@ export function isWorking(s: SessionDto): boolean {
 // Classify a session for triage. On-hold takes precedence over color (the user deferred it);
 // otherwise an effective-red session "needs you", everything else is active.
 export function classify(s: SessionDto): TriageBucket {
+  const stamped = (s as GatewayStampedSession).triageBucket;
+  if (stamped === "needsYou" || stamped === "active" || stamped === "onHold") return stamped;
   if (s.onHold) return "onHold";
   return effectiveColor(s) === "red" ? "needsYou" : "active";
 }

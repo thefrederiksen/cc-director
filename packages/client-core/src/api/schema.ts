@@ -5271,6 +5271,8 @@ export interface components {
             railLine?: null | string;
             /** Format: date-time */
             needsYouSince?: null | string;
+            effectiveColor?: null | string;
+            triageBucket?: null | string;
             backendType?: string;
             driverCapabilities?: string[];
             /** Format: date-time */

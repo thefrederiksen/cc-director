@@ -301,7 +301,14 @@ public sealed class WingmanVoiceService
             {
                 var t = await _translator.TranslateAsync(recentContext, lastReply, ct);
                 await StoreSpokenAsync(sid, t.Spoken, lastReply, ct);
-                FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={t.Spoken.Length}");
+                // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
+                // text-to-speech synthesis actually returned audio. Logging "voice ready"
+                // unconditionally (the old behavior) hid every failed synthesis behind a success
+                // line, which made a text-to-speech outage look like it was working in the log.
+                if (HasVoice(sid))
+                    FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={t.Spoken.Length}");
+                else
+                    FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={t.Spoken.Length}");
                 // Training capture (no-op unless the setting is on); fire-and-forget so it never
                 // delays the turn. CancellationToken.None so a captured turn is not lost on shutdown.
                 _ = _training.CaptureAsync(_client, endpoint, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
