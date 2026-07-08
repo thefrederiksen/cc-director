@@ -138,7 +138,10 @@ public class ClaudeDriverTests
         backend.Start("x", "", ".", 80, 24);
         // No echo is ever emitted - the TUI is swallowing input.
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        // The driver throws the specific ComposerNotAcceptingInputException (a subclass of
+        // InvalidOperationException) since #1152; xUnit's ThrowsAsync matches the type exactly, so
+        // assert the exact thrown type rather than the base type.
+        var ex = await Assert.ThrowsAsync<ComposerNotAcceptingInputException>(
             () => FastDriver().SubmitAsync(backend, "hello"));
         Assert.Contains("composer never echoed", ex.Message);
     }
