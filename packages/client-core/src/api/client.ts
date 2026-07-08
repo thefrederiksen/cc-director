@@ -954,21 +954,51 @@ export async function uploadDictationToSession(
     // The transcription-provider failures (the #1139 502/504 wrapping upstream_timeout) land here. The
     // audio is saved durably, so this is a HELD-and-will-retry state, not a loss - say so, and keep it
     // sticky on screen and on the roster until it retries or the user dismisses it.
-    return failed(providerFailureMessage(body.error, comp.status));
+    return failed(transcriptionFailureMessage(body.error, comp.status));
   }
   publishDictationStatus({ sessionId: sid, uploadId, phase: "done" });
   return { terminal: true, submitted: Boolean(body.submitted), movedOn: Boolean(body.movedOn), transcript: body.transcript ?? "" };
 }
 
-// Turn a raw transcription-provider error into a short, honest, human sentence for the status strip.
-// The audio is durable at this point, so every one of these is a "held, will retry" state.
-function providerFailureMessage(serverError: string | undefined, status: number): string {
+// Turn a raw dictation-complete failure (any non-OK response from POST /dictation/{id}/complete) into a
+// short, honest, plain-English sentence for the status strip and the error banner. The recorded audio is
+// durable at this point, so the transcription-service faults are all "held, will retry" states.
+//
+// This is the SINGLE place a dictation failure is turned into user-facing words. It never surfaces the
+// raw server JSON/text at the user (the bug this fixes: a server-side outage used to reach the user as a
+// raw "Transcription returned 502: {...}" dump), and every known server-side condition gets its own
+// specific line so the user is told WHAT went wrong - a transcription-service outage, a busy session, no
+// method configured - not merely that "transcription failed" (issue #1139 follow-up).
+export function transcriptionFailureMessage(serverError: string | undefined, status: number): string {
   const raw = (serverError ?? "").toLowerCase();
-  if (raw.includes("upstream_timeout") || raw.includes("did not respond") || status === 504)
+
+  // The session the dictation was headed for is gone (exited / not found).
+  if (status === 404 || status === 410 || raw.includes("session not found") || raw.includes("session has exited"))
+    return "That session is no longer available, so your dictation couldn't be delivered.";
+
+  // No transcription method is configured on the Gateway (no key for the selected mode). A plain retry
+  // will not fix it, so point at Settings rather than promising a retry.
+  if (raw.includes("no key configured") || raw.includes("no key set"))
+    return "No transcription method is set up. Open Settings > Transcription and choose one.";
+
+  // The upstream speech-to-text provider took too long to respond.
+  if (status === 504 || raw.includes("upstream_timeout") || raw.includes("timed out") || raw.includes("did not respond"))
     return "The transcription service timed out. Your recording is saved and will retry.";
-  if (raw.includes("upstream_unavailable") || status === 503)
+
+  // The upstream speech-to-text provider is down / circuit-broken ("temporarily unavailable after
+  // repeated failures"). The Gateway wraps the proxy's 503/504 as a 502 whose body carries this code.
+  if (status === 503 || raw.includes("upstream_unavailable") || raw.includes("temporarily unavailable"))
     return "The transcription service is temporarily unavailable. Your recording is saved and will retry.";
-  return `Transcription didn't go through (${serverError ?? status}). Your recording is saved and will retry.`;
+
+  // The transcript was produced but could not be delivered into the session (parked on a prompt or a
+  // permission dialog and refusing typed input).
+  if (raw.includes("submit to session failed"))
+    return "Couldn't deliver your dictation to the session - it may be busy or waiting on a prompt. It's saved and will retry.";
+
+  // Any other server-side transcription fault - the provider itself returned an error ("openai
+  // transcription failed" / upstream_error), an empty assembly, some other 5xx. A real backend problem,
+  // not the user's audio: say so plainly instead of dumping the raw server response.
+  return "The transcription service had a problem and couldn't process your recording. Your recording is saved and will retry.";
 }
 
 function extForMime(mime: string | undefined): string {
