@@ -22,7 +22,9 @@ const NAV_ITEMS: ReadonlyArray<{ to: string; label: string; subtree?: string }> 
   { to: "/fleet-map", label: "Fleet Map" },
   { to: "/directors", label: "Directors" },
   { to: "/schedule", label: "Schedule" },
-  { to: "/lists", label: "Lists" },
+  // "Lists" (work lists) is hidden from the rail for now - GitHub issues already are the queue, so
+  // the named-priority-list feature is unnecessary. The /lists route is left registered (so any
+  // bookmarked URL still resolves) pending a decision on removing the feature entirely.
   { to: "/dictionary", label: "Dictionary" },
   { to: "/learn", label: "Learning" },
   { to: "/account", label: "Account" },

@@ -80,7 +80,10 @@ const EMPTY_FORM: FormState = {
   name: "",
   machine: "",
   repoPath: "",
-  actionKind: "worklist",
+  // New jobs default to the skill / prompt action. The "work list" action is hidden for now (the
+  // named-work-list feature is being retired - GitHub issues are the queue), so no new work-list-
+  // backed schedule can be created; see the hidden "What to run" selector below.
+  actionKind: "seed",
   workListName: "",
   seed: "",
   scheduleKind: "oneOff",
@@ -480,7 +483,7 @@ export function ScheduleView() {
                 <input
                   className={formErrors.name ? "invalid" : undefined}
                   value={form.name}
-                  placeholder="e.g. Tonight - drain work list"
+                  placeholder="e.g. Nightly issue sweep"
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                 />
                 {formErrors.name && <div className="sched-fld-err">{formErrors.name}</div>}
@@ -517,16 +520,11 @@ export function ScheduleView() {
                 {formErrors.repoPath && <div className="sched-fld-err">{formErrors.repoPath}</div>}
               </div>
 
-              <div className="sched-fld">
-                <label className="sched-fld-label">What to run</label>
-                <select
-                  value={form.actionKind}
-                  onChange={(e) => setForm((f) => ({ ...f, actionKind: e.target.value as "worklist" | "seed" }))}
-                >
-                  <option value="worklist">Run a named work list</option>
-                  <option value="seed">Run a skill / prompt</option>
-                </select>
-              </div>
+              {/* The "What to run" selector is hidden for now: the named-work-list feature is being
+                  retired (GitHub issues are the queue), so a new job can only be a skill / prompt.
+                  The action defaults to "seed" (see EMPTY_FORM). An existing work-list job still loads
+                  its actionKind and renders its field below (no data loss), it just cannot be newly
+                  chosen. Restore this <select> to bring the work-list action back. */}
 
               {form.actionKind === "worklist" ? (
                 <div className="sched-fld">
