@@ -174,6 +174,43 @@ public sealed class WingmanTranslatorTests
     }
 
     [Fact]
+    public async Task TranslateAsync_PromptBansMarkdownSoTtsDoesNotVoiceTheMarks()
+    {
+        // The real defect: the agent reply is Markdown (**bold**, ## headings, "1." lists) and that
+        // string was fed straight to text-to-speech, so the voice read "star star" / "hashtag" out
+        // loud. The fix is prompt-only (fix the model output at the source, not with a regex strip):
+        // the fidelity contract must explicitly forbid Markdown. Guard the rule so it cannot silently
+        // regress.
+        var brain = new FakeBrain(_ => "ok");
+        var translator = BuildTranslator(brain);
+
+        await translator.TranslateAsync("q", "**BPMN Studio** is option 1. ## Root cause: the panel path.");
+
+        var prompt = Assert.Single(brain.Asks);
+        Assert.Contains("NO MARKDOWN", prompt);
+        Assert.Contains("asterisks", prompt);          // the exact characters from the bug report
+        Assert.Contains("star star BPMN Studio star star", prompt); // the concrete failure example
+    }
+
+    [Fact]
+    public void BuildDirectPrompt_BansMarkdownForTheEar()
+    {
+        // The "hey wingman" path is also spoken, so its prompt carries the same no-Markdown rule.
+        var prompt = WingmanTranslator.BuildDirectPrompt("what is going on?");
+        Assert.Contains("NO Markdown", prompt);
+        Assert.Contains("what is going on?", prompt);
+    }
+
+    [Fact]
+    public void BuildDevThrottlePrompt_BansMarkdownBecauseTheAnswerIsShownRawAndMaySpeak()
+    {
+        // The Learning-page answer is rendered as raw text (no Markdown renderer) and may be read
+        // aloud, so formatting marks would show/voice literally. The prompt must forbid them.
+        var prompt = WingmanTranslator.BuildDevThrottlePrompt("How do I start a session?");
+        Assert.Contains("NO Markdown", prompt);
+    }
+
+    [Fact]
     public async Task TranslateAsync_EmptyReply_ThrowsBecauseThereIsNothingToTranslate()
     {
         var translator = BuildTranslator(new FakeBrain(_ => "x"));

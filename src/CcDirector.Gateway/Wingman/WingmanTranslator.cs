@@ -89,6 +89,13 @@ public sealed class WingmanTranslator
           cause"; a function like "SweepStale()" becomes "the sweep-stale method". Say what the
           path, URL, heading, or symbol IS and what it DOES - keep the technical meaning, drop
           the punctuation. Never spell out the literal characters.
+        - OUTPUT PLAIN SPOKEN PROSE ONLY - NO MARKDOWN. This is read aloud, so it must contain
+          no formatting characters at all: no asterisks for bold or italics, no hash-mark
+          headings, no numbered or bulleted lists, no backticks, no underscores. Write in
+          flowing sentences. When you need to enumerate, say it in words inside a sentence
+          ("first ... second ... third ..."), never as a "1." / "2." list or a "- " bullet.
+          A person hearing "star star BPMN Studio star star" or "hashtag Root cause" is exactly
+          the failure to avoid - say the words, drop the marks.
         - The reply may be in ANY language or script. Non-Latin characters are valid
           content, never corruption. Translate faithfully in the same language; never
           refuse or say the text cannot be read.
@@ -100,7 +107,7 @@ public sealed class WingmanTranslator
     /// instructions is shown that the recommended default changed and can switch to it. The content
     /// hash is the real identity; this is the human-facing label.
     /// </summary>
-    public const string DefaultInstructionsVersion = "3";
+    public const string DefaultInstructionsVersion = "4";
 
     private readonly Func<WingmanModelRole, CancellationToken, Task<IAgentBrain>> _brainProvider;
     private readonly Action<string> _log;
@@ -295,7 +302,10 @@ public sealed class WingmanTranslator
         sb.Append("question is not about DevThrottle, say so plainly and point them back to product help.\n");
         sb.Append("- If you are not sure of a specific detail, say so rather than inventing it; never ");
         sb.Append("guess at a feature that may not exist.\n");
-        sb.Append("- Keep it readable on screen: a short paragraph or a few short points, not an essay.\n\n");
+        sb.Append("- Keep it short and readable: a short paragraph, not an essay. Write plain prose only ");
+        sb.Append("- NO Markdown (no asterisks, hash-mark headings, numbered or bulleted lists, or ");
+        sb.Append("backticks); the answer is shown as raw text and may be read aloud, so formatting ");
+        sb.Append("marks show up literally. Enumerate in words inside a sentence, never as a \"1.\" list.\n\n");
         sb.Append("The person asked:\n");
         sb.Append(question.Trim());
         sb.Append("\n\n");
@@ -469,6 +479,9 @@ public sealed class WingmanTranslator
         sb.Append("You are the wingman, talking directly to a person in a spoken back-and-forth ");
         sb.Append("(not relaying a coding session). Answer their message helpfully and briefly, in ");
         sb.Append("words that are natural to hear out loud - no code, paths, or symbols read aloud. ");
+        sb.Append("Output plain spoken prose only - NO Markdown: no asterisks, hash-mark headings, ");
+        sb.Append("numbered or bulleted lists, or backticks. Write in flowing sentences; enumerate ");
+        sb.Append("in words (\"first ... second ...\"), never as a \"1.\" list. ");
         sb.Append("You do NOT edit files or run commands yourself; if the request needs real code ");
         sb.Append("work, say so plainly and suggest sending it to the working session.\n\n");
         sb.Append("The person said:\n");
