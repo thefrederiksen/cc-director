@@ -1,68 +1,49 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, effectiveColor } from "./ordering";
+import { classify, dotColor, effectiveColor, inBucket } from "./ordering";
 
-// A minimal voice-mode session for the color rule. Only the fields the rule reads are set;
-// the rest of SessionDto is irrelevant here so we cast a partial.
-function voice(opts: {
-  color: string;
-  activityState: string;
-  generating: boolean;
-  audioReady: boolean;
-  voiceMode?: boolean;
-}): SessionDto {
+function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
-    sessionId: "v",
-    statusColor: opts.color,
-    activityState: opts.activityState,
-    voiceMode: opts.voiceMode ?? true,
-    voiceGenerating: opts.generating,
-    voiceAudioReady: opts.audioReady,
+    sessionId: "s1",
+    createdAt: "2026-07-08T00:00:00Z",
+    sortOrder: 0,
+    ...fields,
   } as unknown as SessionDto;
 }
 
-describe("effectiveColor voice-mode preparing rule (mirrors C# SessionOrdering)", () => {
-  it("uses the Gateway-stamped effective color and triage bucket when present", () => {
-    const s = {
-      ...voice({ color: "red", activityState: "WaitingForInput", generating: false, audioReady: false }),
-      effectiveColor: "orange",
-      triageBucket: "active",
-    } as unknown as SessionDto;
+describe("Gateway-stamped session presentation state", () => {
+  it("uses effectiveColor and triageBucket from /sessions", () => {
+    const s = session({ effectiveColor: "yellow", triageBucket: "active" });
 
-    expect(effectiveColor(s)).toBe("orange");
+    expect(effectiveColor(s)).toBe("yellow");
     expect(classify(s)).toBe("active");
   });
 
-  it("holds yellow while the wingman is actively generating this turn's voice", () => {
-    expect(effectiveColor(voice({ color: "red", activityState: "WaitingForInput", generating: true, audioReady: false })))
-      .toBe("yellow");
+  it("fails loudly when effectiveColor is missing", () => {
+    expect(() => effectiveColor(session({ triageBucket: "active" })))
+      .toThrow("Gateway /sessions missing effectiveColor");
   });
 
-  it("stays yellow while generating even if a stale clip is cached", () => {
-    expect(effectiveColor(voice({ color: "red", activityState: "WaitingForPerm", generating: true, audioReady: true })))
-      .toBe("yellow");
+  it("fails loudly when triageBucket is missing", () => {
+    expect(() => classify(session({ effectiveColor: "red" })))
+      .toThrow("Gateway /sessions missing triageBucket");
   });
 
-  it("is red once audio is ready and nothing is generating", () => {
-    expect(effectiveColor(voice({ color: "red", activityState: "WaitingForInput", generating: false, audioReady: true })))
-      .toBe("red");
+  it("fails loudly when triageBucket is invalid", () => {
+    expect(() => classify(session({ effectiveColor: "red", triageBucket: "waiting" } as Partial<SessionDto>)))
+      .toThrow("invalid triageBucket");
   });
 
-  it("regression 2026-07-08: text-to-speech failure (no audio, not generating) resolves to red, NOT a stuck yellow wedge", () => {
-    // A DeepInfra 504/timeout produces no audio, so the turn ends with audioReady=false and
-    // nothing generating. This must become red "needs you" rather than the old permanent yellow.
-    const s = voice({ color: "red", activityState: "WaitingForInput", generating: false, audioReady: false });
-    expect(effectiveColor(s)).toBe("red");
-    expect(classify(s)).toBe("needsYou");
+  it("filters by the Gateway-stamped bucket", () => {
+    const sessions = [
+      session({ sessionId: "a", effectiveColor: "red", triageBucket: "needsYou", sortOrder: 2 }),
+      session({ sessionId: "b", effectiveColor: "blue", triageBucket: "active", sortOrder: 1 }),
+    ];
+
+    expect(inBucket(sessions, "needsYou").map((s) => s.sessionId)).toEqual(["a"]);
   });
 
-  it("leaves a working (blue) voice session untouched", () => {
-    expect(effectiveColor(voice({ color: "blue", activityState: "Working", generating: true, audioReady: false })))
-      .toBe("blue");
-  });
-
-  it("does not apply the voice rule to a non-voice session", () => {
-    expect(effectiveColor(voice({ color: "red", activityState: "WaitingForInput", generating: true, audioReady: false, voiceMode: false })))
-      .toBe("red");
+  it("fails loudly on unknown Gateway colors", () => {
+    expect(() => dotColor("chartreuse")).toThrow("Unknown Gateway effectiveColor");
   });
 });

@@ -1,7 +1,6 @@
-// Client-side triage + ordering for the roster. A faithful port of the C# SessionOrdering
-// policy (src/CcDirector.Gateway.Contracts/SessionOrdering.cs) so the mobile roster groups and
-// orders sessions exactly like the desktop Cockpit Mobile page does. Kept as pure functions so
-// it is unit-testable and shared by the Home page.
+// Client-side ordering helpers for the roster. Presentation state is Gateway-owned: /sessions must
+// provide effectiveColor and triageBucket. The browser shell is deliberately dumb and fails loudly
+// if that contract is broken instead of reconstructing the Gateway state machine in TypeScript.
 import type { SessionDto } from "../api/client";
 
 export type TriageBucket = "needsYou" | "active" | "onHold";
@@ -22,43 +21,18 @@ export function inDesktopOrder(sessions: SessionDto[]): SessionDto[] {
   });
 }
 
-function isExplaining(s: SessionDto): boolean {
-  return s.briefingState === "Explaining";
+function requireGatewayField(value: string | null | undefined, field: string, sid: string | undefined): string {
+  const text = value?.trim();
+  if (!text) {
+    throw new Error(`Gateway /sessions missing ${field} for session ${sid ?? "(unknown)"}. Redeploy Gateway and mobile together.`);
+  }
+  return text;
 }
 
-function isBriefing(s: SessionDto): boolean {
-  return s.briefingState === "Briefing" && (s.statusColor ?? "").toLowerCase() === "red";
-}
-
-// Hold yellow ("preparing voice") only while the wingman is ACTIVELY generating this turn's
-// spoken summary, so the roster does not flash red mid-generation; once generation ends the
-// session shows its real color (red/needs-you, with the play triangle when audio is ready).
-// This used to also hold yellow whenever audio was not yet ready (|| !voiceAudioReady), but a
-// text-to-speech failure (a DevThrottle/DeepInfra 504 or timeout) produces no audio, which left
-// the session stuck yellow/orange forever while it actually needed the user (the "stuck orange,
-// says needs you" report, 2026-07-08). Gating on voiceGenerating alone gives a terminal exit.
-function isVoicePreparing(s: SessionDto): boolean {
-  if (!s.voiceMode) return false;
-  if ((s.statusColor ?? "").toLowerCase() !== "red") return false;
-  const state = s.assessedState ?? s.activityState ?? "";
-  const waiting = state === "WaitingForInput" || state === "WaitingForPerm";
-  if (!waiting) return false;
-  return Boolean(s.voiceGenerating);
-}
-
-// The ONE effective status color every client renders and triages on (issue #196): on-hold
-// greys out, a session whose dictated utterance is being transcribed in the background is orange,
-// a user-requested explain is orange, the wingman reading a finished turn is yellow,
-// a voice-mode session preparing audio is yellow - otherwise the raw Director status color.
+// The ONE effective status color every client renders and triages on. It is stamped by the Gateway
+// after folding on-hold, transcribing, explaining, briefing, and voice-generation state.
 export function effectiveColor(s: SessionDto): string {
-  const stamped = (s as GatewayStampedSession).effectiveColor;
-  if (stamped && stamped.trim().length > 0) return stamped;
-  if (s.onHold) return "grey";
-  if (s.transcribing) return "orange";
-  if (isExplaining(s)) return "orange";
-  if (isBriefing(s)) return "yellow";
-  if (isVoicePreparing(s)) return "yellow";
-  return s.statusColor ?? "unknown";
+  return requireGatewayField((s as GatewayStampedSession).effectiveColor, "effectiveColor", s.sessionId);
 }
 
 // True while the agent is actively running a turn - the "working" state. Blue is the authoritative
@@ -75,13 +49,11 @@ export function isWorking(s: SessionDto): boolean {
   return state === "Working";
 }
 
-// Classify a session for triage. On-hold takes precedence over color (the user deferred it);
-// otherwise an effective-red session "needs you", everything else is active.
+// Classify a session for triage. The Gateway owns this fold; the client consumes the stamped bucket.
 export function classify(s: SessionDto): TriageBucket {
-  const stamped = (s as GatewayStampedSession).triageBucket;
+  const stamped = requireGatewayField((s as GatewayStampedSession).triageBucket, "triageBucket", s.sessionId);
   if (stamped === "needsYou" || stamped === "active" || stamped === "onHold") return stamped;
-  if (s.onHold) return "onHold";
-  return effectiveColor(s) === "red" ? "needsYou" : "active";
+  throw new Error(`Gateway /sessions returned invalid triageBucket '${stamped}' for session ${s.sessionId ?? "(unknown)"}.`);
 }
 
 export function inBucket(sessions: SessionDto[], bucket: TriageBucket): SessionDto[] {
@@ -103,7 +75,9 @@ const COLORS: Record<string, string> = {
 };
 
 export function dotColor(color: string): string {
-  return COLORS[color] ?? "#6B7280";
+  const value = COLORS[color];
+  if (!value) throw new Error(`Unknown Gateway effectiveColor '${color}'.`);
+  return value;
 }
 
 // One short context line per row: the on-hold note, else the latest status reason, else the

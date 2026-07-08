@@ -137,16 +137,16 @@ public sealed class SessionDto
     /// Gateway-owned presentation color after all overlays are folded in
     /// (<see cref="SessionOrdering.EffectiveColor"/>): on-hold, transcribing, explaining,
     /// briefing, and voice-generation state. Stamped by the Gateway aggregator so browser
-    /// clients do not need to reimplement the session state machine. Empty/null on
-    /// Director-local responses and older Gateways; clients may fall back to deriving it.
+    /// clients do not reimplement the session state machine. Required on Gateway /sessions
+    /// responses; Director-local responses may leave it null.
     /// </summary>
     public string? EffectiveColor { get; set; }
 
     /// <summary>
     /// Gateway-owned triage bucket after the same effective-color fold:
     /// "needsYou" | "active" | "onHold". Stamped by the Gateway aggregator as the
-    /// authoritative grouping value for mobile/Cockpit rosters. Empty/null on
-    /// Director-local responses and older Gateways; clients may fall back to deriving it.
+    /// authoritative grouping value for mobile/Cockpit rosters. Required on Gateway /sessions
+    /// responses; Director-local responses may leave it null.
     /// </summary>
     public string? TriageBucket { get; set; }
 
