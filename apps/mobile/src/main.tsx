@@ -15,6 +15,7 @@ import { ensurePushSubscribed } from "./push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
+import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
 import "./styles.css";
 
 // The auth gate (issue #908): every real screen requires an enrolled device key. Without one, the
@@ -59,22 +60,31 @@ void ensurePushSubscribed();
 // The app is served under /m, so the router is rooted there. A hard navigation to a deep link
 // (e.g. /m/session/<id>) is served the injected index.html by the Gateway and the router then
 // resolves it client-side.
+// All routes hang off a root layout that carries the errorElement, so a no-route match (the symptom
+// of a stale service-worker shell whose router lacks the navigated route, issue #1155) is caught by
+// RouteRecoveryBoundary and self-healed instead of dead-ending on React Router's raw 404.
 const router = createBrowserRouter(
   [
-    // Ungated: reachable before the phone has enrolled.
-    { path: "/signin", element: <SignIn /> },
-    { path: "/device-callback", element: <DeviceCallback /> },
-    // Gated: everything real requires an enrolled device key.
     {
-      element: <RequireDeviceKey />,
+      element: <RootLayout />,
+      errorElement: <RouteRecoveryBoundary />,
       children: [
-        { path: "/", element: <Home /> },
-        { path: "/settings", element: <AiSettings /> },
-        { path: "/new", element: <NewSession /> },
-        { path: "/session/:sessionId", element: <Chat /> },
-        { path: "/session/:sessionId/chat", element: <Chat /> },
-        { path: "/session/:sessionId/terminal", element: <Terminal /> },
-        { path: "/session/:sessionId/voice", element: <VoiceMode /> },
+        // Ungated: reachable before the phone has enrolled.
+        { path: "/signin", element: <SignIn /> },
+        { path: "/device-callback", element: <DeviceCallback /> },
+        // Gated: everything real requires an enrolled device key.
+        {
+          element: <RequireDeviceKey />,
+          children: [
+            { path: "/", element: <Home /> },
+            { path: "/settings", element: <AiSettings /> },
+            { path: "/new", element: <NewSession /> },
+            { path: "/session/:sessionId", element: <Chat /> },
+            { path: "/session/:sessionId/chat", element: <Chat /> },
+            { path: "/session/:sessionId/terminal", element: <Terminal /> },
+            { path: "/session/:sessionId/voice", element: <VoiceMode /> },
+          ],
+        },
       ],
     },
   ],
