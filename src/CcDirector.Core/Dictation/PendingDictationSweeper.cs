@@ -36,17 +36,19 @@ public sealed class PendingDictationSweeper
     }
 
     /// <summary>
-    /// Promote every parked (<see cref="PendingDictationStatus.NeedsAttention"/>) clip back to
-    /// <see cref="PendingDictationStatus.Pending"/> so the next sweep retries it. Called once at launch:
-    /// a clip parked for "out of credits" or "no key" gets a fresh chance in case the user has since
-    /// fixed it. Returns how many were promoted.
+    /// Promote every parked clip back to <see cref="PendingDictationStatus.Pending"/> so the next sweep
+    /// retries it. Called once at launch: a clip parked for "out of credits" or "no key"
+    /// (<see cref="PendingDictationStatus.NeedsAttention"/>) gets a fresh chance in case the user has
+    /// since fixed it, and a clip parked because the session's composer would not take it
+    /// (<see cref="PendingDictationStatus.ComposerBlocked"/>) gets one more probe now that the session
+    /// has been recreated fresh. Returns how many were promoted.
     /// </summary>
     public int PromoteParkedToPending()
     {
         var promoted = 0;
         foreach (var record in _store.LoadAll())
         {
-            if (record.Status == PendingDictationStatus.NeedsAttention)
+            if (record.Status is PendingDictationStatus.NeedsAttention or PendingDictationStatus.ComposerBlocked)
             {
                 _store.WriteSidecar(record with { Status = PendingDictationStatus.Pending });
                 promoted++;
@@ -127,8 +129,8 @@ public sealed class PendingDictationSweeper
 
         FileLog.Write($"[PendingDictationSweeper] sweep: delivered={report.Delivered}, willRetry={report.HeldWillRetry}, "
             + $"needsCredits={report.NeedsCredits}, needsConfig={report.NeedsConfiguration}, permanent={report.PermanentError}, "
-            + $"deferredBusy={report.DeferredSessionBusy}, waitingForSession={report.WaitingForSession}, "
-            + $"parked={report.ParkedNeedingAttention}, pruned={report.Pruned}");
+            + $"composerNotReady={report.ComposerNotReady}, deferredBusy={report.DeferredSessionBusy}, "
+            + $"waitingForSession={report.WaitingForSession}, parked={report.ParkedNeedingAttention}, pruned={report.Pruned}");
         return report;
     }
 
@@ -151,6 +153,7 @@ public sealed class SweepReport
     public int NeedsCredits { get; set; }
     public int NeedsConfiguration { get; set; }
     public int PermanentError { get; set; }
+    public int ComposerNotReady { get; set; }
     public int LostNoAudio { get; set; }
     public int WaitingForSession { get; set; }
     public int ParkedNeedingAttention { get; set; }
@@ -161,7 +164,8 @@ public sealed class SweepReport
     /// <summary>Clips still saved on disk after this sweep that the user should know are held - anything
     /// not delivered this pass and not a transient no-op. Drives whether the held notice is shown.</summary>
     public int StillHeld => HeldWillRetry + NeedsCredits + NeedsConfiguration + PermanentError
-                            + WaitingForSession + ParkedNeedingAttention + AlreadyInFlight + DeferredSessionBusy;
+                            + ComposerNotReady + WaitingForSession + ParkedNeedingAttention
+                            + AlreadyInFlight + DeferredSessionBusy;
 
     public void Tally(DictationDeliveryOutcome outcome)
     {
@@ -172,6 +176,7 @@ public sealed class SweepReport
             case DictationDeliveryOutcome.NeedsCredits: NeedsCredits++; break;
             case DictationDeliveryOutcome.NeedsConfiguration: NeedsConfiguration++; break;
             case DictationDeliveryOutcome.PermanentError: PermanentError++; break;
+            case DictationDeliveryOutcome.ComposerNotReady: ComposerNotReady++; break;
             case DictationDeliveryOutcome.LostNoAudio: LostNoAudio++; break;
             case DictationDeliveryOutcome.DeferredSessionBusy: DeferredSessionBusy++; break;
         }

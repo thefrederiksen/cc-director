@@ -163,7 +163,7 @@ public static class TerminalSubmit
             return;
         }
 
-        throw new InvalidOperationException(
+        throw new ComposerNotAcceptingInputException(
             $"[{driverTag}] EchoVerifiedSubmit: the composer never echoed the typed text after 2 attempts - " +
             "the TUI is not accepting input (a modal, a picker, or a composer still initializing). " +
             $"Terminal tail: {TailOf(buffer)}");

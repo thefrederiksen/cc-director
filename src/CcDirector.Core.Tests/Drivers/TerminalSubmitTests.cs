@@ -105,7 +105,7 @@ public sealed class TerminalSubmitTests
         var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
         backend.EchoScript.UseDefault(RecordingEchoStep.CustomEcho("world"));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        var error = await Assert.ThrowsAsync<ComposerNotAcceptingInputException>(
             () => TerminalSubmit.EchoVerifiedSubmitAsync(
                 backend,
                 "hello world",
@@ -147,7 +147,7 @@ public sealed class TerminalSubmitTests
         var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
         backend.EchoScript.UseDefault(RecordingEchoStep.Withheld());
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        var error = await Assert.ThrowsAsync<ComposerNotAcceptingInputException>(
             () => TerminalSubmit.EchoVerifiedSubmitAsync(
                 backend,
                 "never echoed",
@@ -175,7 +175,7 @@ public sealed class TerminalSubmitTests
         };
         backend.EchoScript.UseDefault(RecordingEchoStep.Withheld());
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        var error = await Assert.ThrowsAsync<ComposerNotAcceptingInputException>(
             () => TerminalSubmit.EchoVerifiedSubmitAsync(
                 backend,
                 "generic prompt",
@@ -198,7 +198,7 @@ public sealed class TerminalSubmitTests
         backend.EchoScript.Enqueue(RecordingEchoStep.SlashCorrupted("write this"));
         var driver = new ClaudeDriver(new EmptyTranscriptReader(), TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(5));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        var error = await Assert.ThrowsAsync<ComposerNotAcceptingInputException>(
             () => driver.SubmitAsync(backend, "write this"));
 
         Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
