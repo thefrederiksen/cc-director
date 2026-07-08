@@ -91,7 +91,7 @@ internal static class GatewayWingmanVoiceEndpoint
         {
             var audio = voice.GetAudio(sid);
             return audio is { Length: > 0 }
-                ? Results.Bytes(audio, "audio/mpeg", enableRangeProcessing: true)
+                ? Results.Bytes(audio, voice.GetAudioContentType(sid) ?? "audio/mpeg", enableRangeProcessing: true)
                 : Results.Json(new { error = "no voice ready for this session" }, statusCode: StatusCodes.Status404NotFound);
         });
 

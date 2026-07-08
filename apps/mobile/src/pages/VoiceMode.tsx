@@ -454,11 +454,12 @@ export function VoiceMode() {
     && enableNote.length === 0;
   const working = voiceOn && !speaking && !audioUnavailable;
   const narrative = voice?.spoken ?? "";
+  const title = session?.number ? `${session.number} ${name ?? "Session"}` : name ?? "Session";
 
   return (
     <div className="terminal-screen">
       <header className="app-bar">
-        <h1 className="term-title">{name ?? "Session"}</h1>
+        <h1 className="term-title">{title}</h1>
       </header>
 
       <ViewTabs sessionId={sessionId} active="voice" />

@@ -433,14 +433,89 @@ public sealed class DirectorEndpointClient : IDisposable
         try
         {
             var resp = await _http.GetAsync($"{endpoint}/sessions/{sessionId}/turns", ct);
-            if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadFromJsonAsync<TurnsResponse>(cancellationToken: ct);
+            TurnsResponse? turns = null;
+            if (resp.IsSuccessStatusCode)
+                turns = await resp.Content.ReadFromJsonAsync<TurnsResponse>(cancellationToken: ct);
+
+            if (HasSpeakableAgentText(turns))
+                return turns;
+
+            var historyTurns = await GetHistoryTurnsAsync(endpoint, sessionId, ct);
+            return historyTurns ?? turns;
         }
         catch (Exception ex)
         {
             FileLog.Write($"[DirectorEndpointClient] GetTurnsAsync FAILED: endpoint={endpoint}, sid={sessionId}, error={ex.Message}");
             return null;
         }
+    }
+
+    private async Task<TurnsResponse?> GetHistoryTurnsAsync(string endpoint, string sessionId, CancellationToken ct)
+    {
+        try
+        {
+            var resp = await _http.GetAsync($"{endpoint}/sessions/{sessionId}/history", ct);
+            if (!resp.IsSuccessStatusCode) return null;
+            var history = await resp.Content.ReadFromJsonAsync<SessionHistoryDto>(cancellationToken: ct);
+            if (history is null || !history.IsSupported) return null;
+
+            var widgets = BuildTurnWidgetsFromHistory(history);
+            if (widgets.Count == 0) return null;
+
+            return new TurnsResponse
+            {
+                SessionId = sessionId,
+                Status = history.Status,
+                Error = history.Error,
+                LineCount = history.Messages.Count,
+                Widgets = widgets,
+            };
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorEndpointClient] GetHistoryTurnsAsync FAILED: endpoint={endpoint}, sid={sessionId}, error={ex.Message}");
+            return null;
+        }
+    }
+
+    private static bool HasSpeakableAgentText(TurnsResponse? turns)
+        => turns?.Widgets.Any(w => string.Equals(w.Kind, "Text", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(w.Content)) == true;
+
+    private static List<TurnWidgetDto> BuildTurnWidgetsFromHistory(SessionHistoryDto history)
+    {
+        var widgets = new List<TurnWidgetDto>();
+        foreach (var message in history.Messages)
+        {
+            var assistant = string.Equals(message.Role, "Assistant", StringComparison.OrdinalIgnoreCase);
+            foreach (var part in message.Parts)
+            {
+                var text = part.Text?.Trim();
+                if (string.IsNullOrEmpty(text)) continue;
+                widgets.Add(part.Kind switch
+                {
+                    "Text" when assistant => new TurnWidgetDto { Kind = "Text", Header = "Agent", Content = text },
+                    "Text" => new TurnWidgetDto { Kind = "UserMessage", Header = "You", Content = text },
+                    "Thinking" => new TurnWidgetDto { Kind = "Thinking", Header = "Thinking", Content = text },
+                    "ToolUse" => new TurnWidgetDto
+                    {
+                        Kind = "GenericTool",
+                        Header = part.ToolName ?? "Tool",
+                        Content = text,
+                        ToolUseId = part.ToolId ?? "",
+                    },
+                    "ToolResult" => new TurnWidgetDto
+                    {
+                        Kind = "GenericTool",
+                        Header = "Tool result",
+                        Content = text,
+                        ToolUseId = part.ToolId ?? "",
+                    },
+                    _ => new TurnWidgetDto { Kind = part.Kind, Header = part.Kind, Content = text },
+                });
+            }
+        }
+
+        return widgets;
     }
 
     public async Task<(bool ok, PromptResponse? body, string? error)> PostPromptAsync(string endpoint, string sessionId, PromptRequest req, CancellationToken ct = default)

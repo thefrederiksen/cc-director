@@ -8,6 +8,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.History;
 using CcDirector.Core.Network;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
@@ -1057,6 +1058,23 @@ internal static class ControlEndpoints
                 SessionId = sid,
                 ClaudeSessionId = session.ClaudeSessionId,
             };
+
+            if (session.AgentKind != AgentKind.ClaudeCode)
+            {
+                if (!SessionHistoryReader.IsSupported(session))
+                {
+                    resp.Status = "unsupported";
+                    resp.Error = $"Agent {session.AgentKind} does not expose conversation history.";
+                    return Results.Json(resp);
+                }
+
+                var history = SessionHistoryReader.Read(session);
+                resp.JsonlPath = SessionHistoryReader.ResolveTranscriptPath(session);
+                resp.LineCount = history.Messages.Count;
+                resp.Widgets = BuildTurnWidgetsFromHistory(history);
+                resp.Status = "ok";
+                return Results.Json(resp);
+            }
 
             if (string.IsNullOrEmpty(session.ClaudeSessionId))
             {
@@ -3319,6 +3337,68 @@ internal static class ControlEndpoints
         var resolution = resolver();
         var tailnetEndpoint = resolution.IsResolved ? resolution.Endpoint : "";
         return (machineName, user, tailnetEndpoint);
+    }
+
+    /// <summary>
+    /// Convert the agent-agnostic conversation history into the legacy turn widget shape consumed by
+    /// the Gateway Wingman voice path. Assistant text must stay Kind="Text": that is the contract
+    /// WingmanTranslator uses to find the latest reply to summarize and speak.
+    /// </summary>
+    private static List<TurnWidgetDto> BuildTurnWidgetsFromHistory(ConversationHistory history)
+    {
+        var widgets = new List<TurnWidgetDto>();
+        foreach (var message in history.Messages)
+        {
+            foreach (var part in message.Parts)
+            {
+                var text = part.Text?.Trim();
+                if (string.IsNullOrEmpty(text)) continue;
+
+                widgets.Add(part.Kind switch
+                {
+                    ConversationPartKind.Text when message.Role == ConversationRole.Assistant => new TurnWidgetDto
+                    {
+                        Kind = "Text",
+                        Header = "Agent",
+                        Content = text,
+                    },
+                    ConversationPartKind.Text => new TurnWidgetDto
+                    {
+                        Kind = "UserMessage",
+                        Header = "You",
+                        Content = text,
+                    },
+                    ConversationPartKind.Thinking => new TurnWidgetDto
+                    {
+                        Kind = "Thinking",
+                        Header = "Thinking",
+                        Content = text,
+                    },
+                    ConversationPartKind.ToolUse => new TurnWidgetDto
+                    {
+                        Kind = "GenericTool",
+                        Header = part.ToolName ?? "Tool",
+                        Content = text,
+                        ToolUseId = part.ToolId ?? "",
+                    },
+                    ConversationPartKind.ToolResult => new TurnWidgetDto
+                    {
+                        Kind = "GenericTool",
+                        Header = "Tool result",
+                        Content = text,
+                        ToolUseId = part.ToolId ?? "",
+                    },
+                    _ => new TurnWidgetDto
+                    {
+                        Kind = part.Kind.ToString(),
+                        Header = part.Kind.ToString(),
+                        Content = text,
+                    },
+                });
+            }
+        }
+
+        return widgets;
     }
 
     /// <summary>

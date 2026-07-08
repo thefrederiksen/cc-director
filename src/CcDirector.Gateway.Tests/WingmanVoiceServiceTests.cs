@@ -119,7 +119,7 @@ public sealed class WingmanVoiceServiceTests
         {
             var svc = ServiceAt(persistPath);
             var audio = new byte[] { 1, 2, 3, 4, 5 };
-            svc.StoreReadyAudioForTest("sid-1", "spoken text", "reply text", audio);
+            svc.StoreReadyAudioForTest("sid-1", "spoken text", "reply text", audio, "audio/wav");
             Assert.True(svc.HasVoice("sid-1"));
 
             // Simulate a gateway restart: a brand-new service over the same path.
@@ -133,6 +133,31 @@ public sealed class WingmanVoiceServiceTests
             Assert.NotNull(ready);
             Assert.Equal("spoken text", ready.Spoken);
             Assert.Equal("reply text", ready.Reply);
+            Assert.Equal("audio/wav", ready.ContentType);
+        }
+        finally { Cleanup(persistPath); }
+    }
+
+    [Fact]
+    public void ReadyAudio_ReloadsLegacyWavCacheWithDetectedContentType()
+    {
+        // Older cache metadata had no content type. Kokoro can return WAV bytes, so reload must detect
+        // RIFF instead of serving those bytes as audio/mpeg.
+        var persistPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var dir = Path.GetDirectoryName(persistPath)!;
+            var audioDir = Path.Combine(dir, "voice-audio");
+            Directory.CreateDirectory(audioDir);
+            File.WriteAllBytes(Path.Combine(audioDir, "sid-1.mp3"), new byte[] { (byte)'R', (byte)'I', (byte)'F', (byte)'F', 1, 2, 3 });
+            File.WriteAllText(Path.Combine(audioDir, "sid-1.json"),
+                "{\"Spoken\":\"spoken\",\"Reply\":\"reply\",\"AtUtc\":\"2026-01-01T00:00:00Z\"}");
+
+            var reloaded = ServiceAt(persistPath);
+
+            var ready = reloaded.Get("sid-1");
+            Assert.NotNull(ready);
+            Assert.Equal("audio/wav", ready.ContentType);
         }
         finally { Cleanup(persistPath); }
     }
