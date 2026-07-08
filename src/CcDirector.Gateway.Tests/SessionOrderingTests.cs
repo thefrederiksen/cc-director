@@ -178,10 +178,13 @@ public sealed class SessionOrderingTests
     };
 
     [Fact]
-    public void EffectiveColor_VoiceWaiting_NoAudio_IsYellow()
+    public void EffectiveColor_VoiceWaiting_NoAudio_NotGenerating_IsRed_NotStuckYellow()
     {
-        // Voice mode, waiting for the user, no playable audio yet -> hold yellow, not red.
-        Assert.Equal("yellow", SessionOrdering.EffectiveColor(
+        // Regression (2026-07-08): a text-to-speech failure (DeepInfra 504/timeout) produces no
+        // audio, so a voice-mode waiting session ends with audioReady=false and nothing generating.
+        // This must resolve to red "needs you" - NOT the old permanent yellow/orange wedge that had
+        // no exit when audio never arrived. The hold is now gated on VoiceGenerating alone.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
             Voice("red", "WaitingForInput", generating: false, audioReady: false)));
     }
 
@@ -219,10 +222,20 @@ public sealed class SessionOrderingTests
     }
 
     [Fact]
-    public void Classify_VoiceWaitingNoAudio_IsActive_NotNeedsYou()
+    public void Classify_VoiceWaiting_StillGenerating_IsActive_NotNeedsYou()
     {
-        // While voice is still preparing the session must not sit in NEEDS YOU.
+        // While voice is ACTIVELY generating the session must not sit in NEEDS YOU (it is preparing).
         Assert.Equal(SessionOrdering.TriageBucket.Active, SessionOrdering.Classify(
+            Voice("red", "WaitingForInput", generating: true, audioReady: false)));
+    }
+
+    [Fact]
+    public void Classify_VoiceWaiting_NoAudio_NotGenerating_IsNeedsYou()
+    {
+        // Regression (2026-07-08): once generation has ended with no audio (text-to-speech failed),
+        // the session genuinely needs the user - it must surface in NEEDS YOU, not hide in Active
+        // behind a stuck "preparing voice" state forever.
+        Assert.Equal(SessionOrdering.TriageBucket.NeedsYou, SessionOrdering.Classify(
             Voice("red", "WaitingForInput", generating: false, audioReady: false)));
     }
 

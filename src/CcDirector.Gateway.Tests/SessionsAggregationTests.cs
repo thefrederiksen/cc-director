@@ -99,6 +99,32 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         Assert.Contains(sessions, s => s.SessionId == "b1" && s.MachineName == "MACHINE_B");
     }
 
+    [Fact]
+    public async Task Aggregator_stamps_authoritative_effective_color_and_triage_bucket()
+    {
+        var red = Sample("red1", "ClaudeCode", "repo", "WaitingForInput", "red");
+        var briefing = Sample("brief1", "ClaudeCode", "repo", "WaitingForInput", "red");
+        briefing.BriefingState = "Briefing";
+        var parked = Sample("hold1", "ClaudeCode", "repo", "WaitingForInput", "red");
+        parked.OnHold = true;
+        var fake = await StartFake("M", "u", new[] { red, briefing, parked });
+        await Register(fake);
+
+        var sessions = await GetSessions();
+
+        var redOut = Assert.Single(sessions, s => s.SessionId == "red1");
+        Assert.Equal("red", redOut.EffectiveColor);
+        Assert.Equal("needsYou", redOut.TriageBucket);
+
+        var briefingOut = Assert.Single(sessions, s => s.SessionId == "brief1");
+        Assert.Equal("yellow", briefingOut.EffectiveColor);
+        Assert.Equal("active", briefingOut.TriageBucket);
+
+        var parkedOut = Assert.Single(sessions, s => s.SessionId == "hold1");
+        Assert.Equal("grey", parkedOut.EffectiveColor);
+        Assert.Equal("onHold", parkedOut.TriageBucket);
+    }
+
     // ---------- error surfacing ----------
 
     [Fact]

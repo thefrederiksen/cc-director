@@ -133,6 +133,23 @@ public sealed class SessionDto
     /// </summary>
     public DateTime? NeedsYouSince { get; set; }
 
+    /// <summary>
+    /// Gateway-owned presentation color after all overlays are folded in
+    /// (<see cref="SessionOrdering.EffectiveColor"/>): on-hold, transcribing, explaining,
+    /// briefing, and voice-generation state. Stamped by the Gateway aggregator so browser
+    /// clients do not reimplement the session state machine. Required on Gateway /sessions
+    /// responses; Director-local responses may leave it null.
+    /// </summary>
+    public string? EffectiveColor { get; set; }
+
+    /// <summary>
+    /// Gateway-owned triage bucket after the same effective-color fold:
+    /// "needsYou" | "active" | "onHold". Stamped by the Gateway aggregator as the
+    /// authoritative grouping value for mobile/Cockpit rosters. Required on Gateway /sessions
+    /// responses; Director-local responses may leave it null.
+    /// </summary>
+    public string? TriageBucket { get; set; }
+
     /// <summary>Backend type: ConPty / UnixPty / Pipe / Studio / Embedded.</summary>
     public string BackendType { get; set; } = "";
 
@@ -222,8 +239,9 @@ public sealed class SessionDto
     /// Issue #553: true when the Gateway has fetchable, playable cached audio for this session
     /// (<c>WingmanVoiceService.HasVoice</c>) - the SINGLE truthful "there is voice you can play right
     /// now" signal. Stamped by the Gateway aggregator only; always false in Director-local responses.
-    /// A voice-mode session waiting for the user only turns red once this is true; before then it
-    /// holds yellow (see <see cref="SessionOrdering.EffectiveColor"/>).
+    /// This controls whether a play affordance is available; the "preparing voice" color is driven
+    /// by <see cref="VoiceGenerating"/>, not by missing audio, so a TTS failure cannot wedge a
+    /// session outside Needs You forever.
     /// </summary>
     public bool VoiceAudioReady { get; set; }
 

@@ -50,12 +50,19 @@ public static class SessionOrdering
         s.BriefingState == "Explaining";
 
     /// <summary>
-    /// Issue #553: true while a VOICE-MODE session that is waiting for the user must hold yellow
-    /// ("preparing voice / not ready yet") rather than red. The voice is not ready to play until the
-    /// Gateway has fetchable audio (<see cref="SessionDto.VoiceAudioReady"/>), so a voice-mode session
-    /// whose raw color is red stays yellow while the wingman is still generating
-    /// (<see cref="SessionDto.VoiceGenerating"/>) OR before the audio exists. It only turns red once
-    /// audio is ready - it must NEVER show red/needs-you in voice mode before audio is available.
+    /// Issue #553: true while a VOICE-MODE waiting session is ACTIVELY generating its spoken summary,
+    /// so the roster holds yellow ("preparing voice") rather than flashing red mid-generation. Once
+    /// generation ends the session shows its real color - red "needs you", with the roster play
+    /// triangle appearing separately when <see cref="SessionDto.VoiceAudioReady"/> is true.
+    ///
+    /// This used to ALSO hold yellow whenever audio was not yet ready (<c>|| !VoiceAudioReady</c>),
+    /// on the assumption that audio always eventually arrives. It does not: a text-to-speech
+    /// failure (a DevThrottle/DeepInfra 504 or timeout) produces NO audio, so <c>VoiceAudioReady</c>
+    /// stayed false with nothing generating - and the session was stuck yellow/orange FOREVER while
+    /// it actually needed the user (the "stuck orange, says needs you" report, 2026-07-08). Gating
+    /// the hold on <see cref="SessionDto.VoiceGenerating"/> alone gives a terminal exit: when a turn's
+    /// voice fails, the session correctly becomes red/needs-you instead of a permanent wedge.
+    ///
     /// Gated on raw red and on WaitingForInput/WaitingForPerm so a working (blue) session is untouched.
     /// </summary>
     public static bool IsVoicePreparing(SessionDto s)
@@ -66,7 +73,7 @@ public static class SessionOrdering
         var waiting = string.Equals(state, "WaitingForInput", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(state, "WaitingForPerm", StringComparison.OrdinalIgnoreCase);
         if (!waiting) return false;
-        return s.VoiceGenerating || !s.VoiceAudioReady;
+        return s.VoiceGenerating;
     }
 
     /// <summary>

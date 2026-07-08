@@ -907,6 +907,12 @@ a.banner-btn {
   border: 1px solid rgba(34, 197, 94, 0.4);
 }
 
+.voice-state-red {
+  background: rgba(241, 76, 76, 0.14);
+  color: var(--attention);
+  border: 1px solid rgba(241, 76, 76, 0.45);
+}
+
 .voice-ref {
   font-size: 11px;
   color: var(--text-dim);

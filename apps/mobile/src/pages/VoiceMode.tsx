@@ -46,6 +46,8 @@ function sameSessionForVoice(a: SessionDto | null, b: SessionDto | null): boolea
     && a.name === b.name
     && Boolean(a.voiceMode) === Boolean(b.voiceMode)
     && Boolean(a.onHold) === Boolean(b.onHold)
+    && Boolean(a.voiceGenerating) === Boolean(b.voiceGenerating)
+    && Boolean(a.voiceAudioReady) === Boolean(b.voiceAudioReady)
     && a.statusColor === b.statusColor
     && a.assessedState === b.assessedState
     && a.activityState === b.activityState;
@@ -439,7 +441,18 @@ export function VoiceMode() {
   // finished-turn narration is stale, so the screen falls back to the working card instead of
   // offering a replay of it.
   const speaking = voiceOn && phoneReady && (voice?.spoken.length ?? 0) > 0 && !agentWorking;
-  const working = voiceOn && !speaking;
+  const gatewayPreparing = voiceOn && !speaking && !agentWorking && Boolean(session?.voiceGenerating);
+  const phoneDownloadPending =
+    voiceOn && !speaking && !agentWorking && Boolean(session?.voiceAudioReady) && clip.phase !== "error";
+  const audioUnavailable =
+    voiceOn
+    && pollDone
+    && !speaking
+    && !agentWorking
+    && !gatewayPreparing
+    && !phoneDownloadPending
+    && enableNote.length === 0;
+  const working = voiceOn && !speaking && !audioUnavailable;
   const narrative = voice?.spoken ?? "";
 
   return (
@@ -484,6 +497,24 @@ export function VoiceMode() {
               {enabling ? "Switching..." : "Switch to voice mode"}
             </button>
           </div>
+        )}
+
+        {audioUnavailable && (
+          <>
+            <div className="voice-statusbar">
+              <span className="voice-state voice-state-red">Voice unavailable</span>
+            </div>
+            <div className="voice-narr">
+              <div className="voice-narr-title">No playable narration is available.</div>
+              <div className="voice-narr-body">
+                {clip.phase === "error"
+                  ? "The phone could not download the spoken audio for this turn."
+                  : narrative.length > 0
+                    ? narrative
+                    : "The Gateway is not generating audio for this turn, and no audio is ready to play."}
+              </div>
+            </div>
+          </>
         )}
 
         {/* B. WORKING - either the Wingman is reading + the phone is downloading the clip, or (when
