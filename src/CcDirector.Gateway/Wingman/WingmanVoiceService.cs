@@ -26,13 +26,13 @@ namespace CcDirector.Gateway.Wingman;
 /// </summary>
 public sealed class WingmanVoiceService
 {
-    public sealed record VoiceReady(string Spoken, string Reply, byte[] Audio, DateTime AtUtc);
+    public sealed record VoiceReady(string Spoken, string Reply, byte[] Audio, DateTime AtUtc, string ContentType = "audio/mpeg");
 
     /// <summary>The outcome of one text-to-speech synthesis (issue #939): the audio bytes on success,
     /// or the shared <see cref="HostedAiState"/> when hosted AI is unavailable (out of credits, cap
     /// reached, or - in bring-your-own mode - no key) so the caller can surface it instead of a silent
     /// null. Both null means a generic provider error (logged, no shared state).</summary>
-    private sealed record TtsResult(byte[]? Audio, HostedAiState? Unavailable);
+    private sealed record TtsResult(byte[]? Audio, string? ContentType, HostedAiState? Unavailable);
 
     private readonly WingmanTranslator _translator;
     private readonly KeyVault _vault;
@@ -48,7 +48,7 @@ public sealed class WingmanVoiceService
 
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
-    private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc);
+    private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc, string? ContentType = null);
 
     /// <param name="ttsHttpClient">Optional HTTP client for the text-to-speech call (tests inject a stub
     /// over a fake handler, issue #939). A per-call 60-second client is created when null.</param>
@@ -108,7 +108,8 @@ public sealed class WingmanVoiceService
                 if (audio.Length == 0) continue;
                 var meta = JsonSerializer.Deserialize<PersistedVoice>(File.ReadAllText(metaPath));
                 if (meta is null) continue;
-                _ready[sid] = new VoiceReady(meta.Spoken, meta.Reply, audio, meta.AtUtc);
+                var contentType = NormalizeContentType(meta.ContentType) ?? DetectAudioContentType(audio);
+                _ready[sid] = new VoiceReady(meta.Spoken, meta.Reply, audio, meta.AtUtc, contentType);
                 loaded++;
             }
             FileLog.Write($"[WingmanVoiceService] loaded {loaded} ready voice audio cache(s) from disk");
@@ -125,7 +126,7 @@ public sealed class WingmanVoiceService
             // .mp3 and the .json) never sees a session ready before its bytes are on disk.
             File.WriteAllBytes(Path.Combine(_audioDir, sid + ".mp3"), ready.Audio);
             File.WriteAllText(Path.Combine(_audioDir, sid + ".json"),
-                JsonSerializer.Serialize(new PersistedVoice(ready.Spoken, ready.Reply, ready.AtUtc)));
+                JsonSerializer.Serialize(new PersistedVoice(ready.Spoken, ready.Reply, ready.AtUtc, ready.ContentType)));
         }
         catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] save ready audio FAILED sid={sid}: {ex.Message}"); }
     }
@@ -188,6 +189,7 @@ public sealed class WingmanVoiceService
 
     public VoiceReady? Get(string sid) => _ready.TryGetValue(sid, out var v) ? v : null;
     public byte[]? GetAudio(string sid) => _ready.TryGetValue(sid, out var v) ? v.Audio : null;
+    public string? GetAudioContentType(string sid) => _ready.TryGetValue(sid, out var v) ? v.ContentType : null;
 
     /// <summary>Mark the session as a voice session (persisted, so the gateway keeps its voice fresh
     /// across restarts via the background sweep + turn-end).</summary>
@@ -251,7 +253,7 @@ public sealed class WingmanVoiceService
         if (tts.Audio is { Length: > 0 })
         {
             _voiceUnavailable.TryRemove(sid, out _);   // success clears any prior unavailable-state (dismissible)
-            StoreReady(sid, spoken, reply ?? "", tts.Audio);
+            StoreReady(sid, spoken, reply ?? "", tts.Audio, tts.ContentType);
         }
         else if (tts.Unavailable is HostedAiState state)
         {
@@ -267,17 +269,18 @@ public sealed class WingmanVoiceService
     /// persist it to disk so it survives a gateway restart (issue #553). The single place the success
     /// branch lives - the test seam (<see cref="StoreReadyAudioForTest"/>) reuses it so persistence is
     /// exercised without a live OpenAI call.</summary>
-    private void StoreReady(string sid, string spoken, string reply, byte[] audio)
+    private void StoreReady(string sid, string spoken, string reply, byte[] audio, string? contentType)
     {
-        var ready = new VoiceReady(spoken, reply, audio, DateTime.UtcNow);
+        var ready = new VoiceReady(spoken, reply, audio, DateTime.UtcNow,
+            NormalizeContentType(contentType) ?? DetectAudioContentType(audio));
         _ready[sid] = ready;
         SaveReadyAudio(sid, ready);
     }
 
     /// <summary>Test seam: store ready audio exactly as a successful synthesis would (in-memory +
     /// durable), so the persistence round-trip can be tested without calling OpenAI.</summary>
-    internal void StoreReadyAudioForTest(string sid, string spoken, string reply, byte[] audio)
-        => StoreReady(sid, spoken, reply, audio);
+    internal void StoreReadyAudioForTest(string sid, string spoken, string reply, byte[] audio, string? contentType = null)
+        => StoreReady(sid, spoken, reply, audio, contentType);
 
     /// <summary>
     /// Regenerate the voice for a session from its latest turn: read the last reply, translate it,
@@ -338,7 +341,7 @@ public sealed class WingmanVoiceService
         if (string.IsNullOrWhiteSpace(key))
             // No key for the mode: bring-your-own means the user must add their OpenAI key; the hosted
             // mode with no key is a sign-in gap (outside the credits/key gate), left silent as before.
-            return new TtsResult(null, mode == TranscriptionMode.Byo ? HostedAiState.NeedsKey : (HostedAiState?)null);
+            return new TtsResult(null, null, mode == TranscriptionMode.Byo ? HostedAiState.NeedsKey : (HostedAiState?)null);
 
         var input = text.Length > 4000 ? text[..4000] : text;
         var voice = TtsVoiceConfig.Resolve(mode);
@@ -359,12 +362,41 @@ public sealed class WingmanVoiceService
                 // Out of credits / monthly cap (402): map by code to the shared state so the caller
                 // records the consistent unavailable state instead of a silent null (issue #939).
                 if ((int)resp.StatusCode == HostedAiHttp.PaymentRequired)
-                    return new TtsResult(null, HostedAiErrorMapper.Map402(body));
-                return new TtsResult(null, null);   // other provider error: logged, no shared state
+                    return new TtsResult(null, null, HostedAiErrorMapper.Map402(body));
+                return new TtsResult(null, null, null);   // other provider error: logged, no shared state
             }
-            return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), null);
+            var contentType = resp.Content.Headers.ContentType?.MediaType;
+            return new TtsResult(await resp.Content.ReadAsByteArrayAsync(ct), contentType, null);
         }
-        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message}"); return new TtsResult(null, null); }
+        catch (Exception ex) { FileLog.Write($"[WingmanVoiceService] tts FAILED: {ex.Message}"); return new TtsResult(null, null, null); }
         finally { if (_ttsHttp is null) http.Dispose(); }
+    }
+
+    private static string? NormalizeContentType(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType)) return null;
+        var mediaType = contentType.Split(';', 2)[0].Trim().ToLowerInvariant();
+        return mediaType.Length == 0 ? null : mediaType;
+    }
+
+    private static string DetectAudioContentType(byte[] audio)
+    {
+        if (audio.Length >= 4
+            && audio[0] == (byte)'R'
+            && audio[1] == (byte)'I'
+            && audio[2] == (byte)'F'
+            && audio[3] == (byte)'F')
+            return "audio/wav";
+
+        if (audio.Length >= 3
+            && audio[0] == (byte)'I'
+            && audio[1] == (byte)'D'
+            && audio[2] == (byte)'3')
+            return "audio/mpeg";
+
+        if (audio.Length >= 2 && audio[0] == 0xFF && (audio[1] & 0xE0) == 0xE0)
+            return "audio/mpeg";
+
+        return "audio/mpeg";
     }
 }
