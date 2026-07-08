@@ -89,13 +89,15 @@ export async function backgroundTranscribeAndSend(
     if (outcome.terminal) {
       if (persisted) await deletePending(rec.id);
     } else if (persisted) {
-      // The server did not confirm the turn - most often the session is parked on a prompt or
-      // permission dialog and would not accept the typed words - but the audio is saved durably and
-      // resumePendingDictations() re-drives it on the next app load. Tell the user their dictation is
-      // HELD and will retry, not silently lost, rather than surfacing a raw technical error (issue #1056).
+      // The server did not confirm the turn, but the audio is saved durably and resumePendingDictations()
+      // re-drives it on the next app load - a HELD-and-will-retry state, not a loss. Surface the SPECIFIC,
+      // already-humanized reason uploadDictationToSession produced (transcriptionFailureMessage): a
+      // transcription-service outage, a busy session, no method configured, etc. This tells the user WHAT
+      // went wrong instead of a blanket "the session may be busy" guess that a server-side transcription
+      // failure does not fit (issue #1139 follow-up: server-side transcription errors get a real message).
       hooks.onError?.(
-        "Couldn't send your dictation yet - the session may be busy or waiting on a prompt. " +
-          "It's saved and will retry the next time you open the app.",
+        outcome.error ??
+          "Couldn't send your dictation yet - it's saved and will retry the next time you open the app.",
       );
       hooks.onFailed?.();
     } else {
@@ -105,7 +107,14 @@ export async function backgroundTranscribeAndSend(
       hooks.onFailed?.();
     }
   } catch (err) {
-    hooks.onError?.(err instanceof Error ? err.message : "Transcription failed");
+    // A thrown error is a client-side/transport fault (the out-of-credits throw carries its own text; a
+    // bare network failure reaches here). Never leave the user with a bare "transcription failed": say the
+    // recording is kept and will retry.
+    hooks.onError?.(
+      err instanceof Error
+        ? err.message
+        : "Couldn't reach the transcription service. Your recording is saved and will retry.",
+    );
     hooks.onFailed?.();
   }
 }

@@ -21,10 +21,13 @@ const captured: CapturedUtterance = { blob: new Blob(["x"]), recordedMs: 1000, p
 describe("backgroundTranscribeAndSend", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("tells the user the dictation is held (not lost) when the turn is not confirmed but the audio was saved", async () => {
+  it("surfaces the SPECIFIC held-and-will-retry reason when the turn is not confirmed but the audio was saved", async () => {
     vi.mocked(savePending).mockResolvedValue(undefined);
+    // uploadDictationToSession has already humanized the failure (transcriptionFailureMessage), so the
+    // outcome.error carries the specific reason - here, a server-side transcription-service outage.
     vi.mocked(uploadDictationToSession).mockResolvedValue({
-      terminal: false, submitted: false, movedOn: false, transcript: "", error: "submit to session failed",
+      terminal: false, submitted: false, movedOn: false, transcript: "",
+      error: "The transcription service is temporarily unavailable. Your recording is saved and will retry.",
     });
     const onError = vi.fn();
     const onFailed = vi.fn();
@@ -32,9 +35,11 @@ describe("backgroundTranscribeAndSend", () => {
     await backgroundTranscribeAndSend("sid", captured, { onError, onFailed });
 
     expect(onError).toHaveBeenCalledTimes(1);
+    // The user sees the specific cause (the transcription service is down), not a blanket "session may be
+    // busy" guess, and is told the recording is held.
+    expect(onError.mock.calls[0][0]).toContain("temporarily unavailable");
     expect(onError.mock.calls[0][0]).toContain("saved and will retry");
-    // The raw server error is NOT what the user sees in the held case.
-    expect(onError.mock.calls[0][0]).not.toContain("submit to session failed");
+    expect(onError.mock.calls[0][0]).not.toContain("session may be busy");
     expect(onFailed).toHaveBeenCalledTimes(1);
     // The durable record is kept so resume-on-load re-drives it.
     expect(deletePending).not.toHaveBeenCalled();
