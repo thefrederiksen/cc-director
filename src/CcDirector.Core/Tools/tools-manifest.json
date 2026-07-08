@@ -30,11 +30,11 @@
       "note": null
     },
     {
-      "name": "cc-comm-queue",
-      "category": "Communications",
-      "description": "Queue content into the Communication Manager approval workflow.",
-      "smoke": { "args": ["status"], "expectContains": null },
-      "note": null
+      "name": "cc-image",
+      "category": "Media",
+      "description": "Image analysis, OCR, and batch folder cataloging via the DevThrottle API vision model.",
+      "smoke": null,
+      "note": "Auth-gated (needs DEVTHROTTLE_API_KEY). No zero-auth command. Presence + version only."
     },
     {
       "name": "cc-gmail",
