@@ -15,6 +15,15 @@ public enum PendingDictationStatus
     /// call that will keep failing; the next Director launch promotes them back to
     /// <see cref="Pending"/> to try once more in case the user has since fixed it.</summary>
     NeedsAttention,
+
+    /// <summary>Parked: a terminal submit probe already typed this dictation into the target session's
+    /// composer and it never echoed the text back, so the composer is not accepting input right now (the
+    /// session is starting up or wedged). Re-typing would only stack another unsubmitted copy, so the
+    /// sweeper skips a clip in this state instead of re-typing it every pass (the issue #1135 pile-up).
+    /// The audio is kept; the next Director launch promotes it back to <see cref="Pending"/> for one more
+    /// probe once the session has been recreated. Distinct from <see cref="NeedsAttention"/> because the
+    /// blocker is the session's composer, not the transcription account, so the user notice differs.</summary>
+    ComposerBlocked,
 }
 
 /// <summary>

@@ -1,4 +1,5 @@
 using CcDirector.Core.Dictation;
+using CcDirector.Core.Drivers;
 using CcDirector.Core.Transcription;
 using Xunit;
 
@@ -174,14 +175,39 @@ public sealed class DictationDeliveryServiceTests : IDisposable
     public async Task DeliverAsync_SubmitThrows_KeepsClipForRetry_NeverLosesIt()
     {
         // A transcription that SUCCEEDS but whose submit fails (e.g. the session momentarily unavailable)
-        // must not lose the words: the clip stays saved and retryable.
+        // must not lose the words: the clip stays saved and retryable. A plain InvalidOperationException
+        // is NOT the composer-not-echoing case, so it stays Pending (auto-retry), not ComposerBlocked.
         var rec = _store.Save("s", "", SampleWav);
         var svc = new DictationDeliveryService(FakeTranscriber.Returning("hello"), _store);
 
         var result = await svc.DeliverAsync(rec, _ => throw new InvalidOperationException("session busy"));
 
         Assert.Equal(DictationDeliveryOutcome.HeldWillRetry, result.Outcome);
-        Assert.Single(_store.LoadAll());
+        var kept = _store.LoadAll();
+        Assert.Single(kept);
+        Assert.Equal(PendingDictationStatus.Pending, kept[0].Status);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_ComposerNeverEchoed_ParksComposerBlocked_SoTheSweepStopsReTyping()
+    {
+        // issue #1135 gap: transcription SUCCEEDS, but the submit types into a session whose composer
+        // never echoes (the startup splash / a wedged session) and throws AFTER typing. Re-typing on the
+        // next sweep would stack another unsubmitted copy - the pile-up. This is parked ComposerBlocked
+        // (kept, but skipped by the sweep), distinct from the transient HeldWillRetry so only a REAL
+        // submit-probe failure - not a mere brand-new session - stops the auto-retry.
+        var rec = _store.Save("s", "", SampleWav);
+        var svc = new DictationDeliveryService(FakeTranscriber.Returning("hello"), _store);
+
+        var result = await svc.DeliverAsync(
+            rec, _ => throw new ComposerNotAcceptingInputException("composer never echoed"));
+
+        Assert.Equal(DictationDeliveryOutcome.ComposerNotReady, result.Outcome);
+        Assert.False(result.WillRetryAutomatically);          // the sweep must NOT keep re-typing
+        var kept = _store.LoadAll();
+        Assert.Single(kept);                                  // words kept, never lost
+        Assert.Equal(PendingDictationStatus.ComposerBlocked, kept[0].Status);
+        Assert.Equal(1, kept[0].AttemptCount);
     }
 
     [Fact]

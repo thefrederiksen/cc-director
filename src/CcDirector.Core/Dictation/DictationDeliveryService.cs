@@ -1,3 +1,4 @@
+using CcDirector.Core.Drivers;
 using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 
@@ -103,6 +104,20 @@ public sealed class DictationDeliveryService
             var kept = _store.RecordFailedAttempt(pending, ex.Message, PendingDictationStatus.NeedsAttention);
             return new DictationDeliveryResult(DictationDeliveryOutcome.PermanentError, kept, ex.Message);
         }
+        catch (ComposerNotAcceptingInputException ex)
+        {
+            // The transcription succeeded but the target session's composer never echoed the typed text,
+            // so the submit threw AFTER typing (issue #1135): the session is at Claude Code's startup
+            // splash or otherwise wedged. Re-typing on the next sweep would stack another unsubmitted copy
+            // - the exact pile-up. Park it ComposerBlocked (kept, but skipped by the sweep) so a real
+            // submit-probe failure - NOT a mere brand-new session - is what stops the re-typing; the next
+            // launch promotes it back to Pending for one more probe once the session has been recreated.
+            // Crucially this is caught BEFORE the generic transient branch below, so a transcription
+            // failure (nothing typed) still lands there and keeps auto-retrying - the durable guarantee
+            // for the first dictated turn is preserved.
+            var kept = _store.RecordFailedAttempt(pending, ex.Message, PendingDictationStatus.ComposerBlocked);
+            return new DictationDeliveryResult(DictationDeliveryOutcome.ComposerNotReady, kept, ex.Message);
+        }
         catch (Exception ex)
         {
             // Everything else - a transient 5xx/429 (the 504 upstream_timeout that started all this), a
@@ -170,6 +185,12 @@ public enum DictationDeliveryOutcome
     /// <summary>The saved audio could not be read back (disk error / removed). Nothing to deliver -
     /// reported, not silent.</summary>
     LostNoAudio,
+
+    /// <summary>Transcription succeeded but the target session's composer never echoed the typed text, so
+    /// the submit threw after typing (the session is at the startup splash or wedged). Audio kept, parked
+    /// <see cref="PendingDictationStatus.ComposerBlocked"/> so the sweep stops re-typing and stacking
+    /// copies (issue #1135); the next launch promotes it for one more probe.</summary>
+    ComposerNotReady,
 
     /// <summary>The target session was not idle at its prompt (Working, on a permission prompt, or
     /// starting), so the clip was deferred WITHOUT transcribing, submitting, or bumping its attempt

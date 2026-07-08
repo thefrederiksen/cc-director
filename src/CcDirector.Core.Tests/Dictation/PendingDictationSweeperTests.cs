@@ -92,6 +92,36 @@ public sealed class PendingDictationSweeperTests : IDisposable
     }
 
     [Fact]
+    public async Task SweepAsync_SkipsComposerBlockedClips_SoItNeverReTypesIntoAWedgedComposer()
+    {
+        // issue #1135: a clip parked ComposerBlocked already had a submit probe fail against the
+        // session's composer. The sweep must skip it - re-typing is exactly what stacked duplicate copies.
+        var rec = _store.Save("present", "", SampleWav);
+        _store.WriteSidecar(rec with { Status = PendingDictationStatus.ComposerBlocked });
+        var sweeper = new PendingDictationSweeper(_store, Delivery(FakeTranscriber.Returning("hi")));
+        var submitted = new List<string>();
+
+        var report = await sweeper.SweepAsync(Present(submitted, "present"));
+
+        Assert.Equal(0, report.Delivered);
+        Assert.Empty(submitted);              // never re-typed into the wedged composer
+        Assert.Single(_store.LoadAll());      // kept until a launch promotes it
+    }
+
+    [Fact]
+    public void PromoteParkedToPending_AlsoPromotesComposerBlocked_ForOneMoreProbeNextLaunch()
+    {
+        var rec = _store.Save("s", "", SampleWav);
+        _store.WriteSidecar(rec with { Status = PendingDictationStatus.ComposerBlocked });
+        var sweeper = new PendingDictationSweeper(_store, Delivery(FakeTranscriber.Returning("hi")));
+
+        var promoted = sweeper.PromoteParkedToPending();
+
+        Assert.Equal(1, promoted);
+        Assert.Equal(PendingDictationStatus.Pending, _store.LoadAll()[0].Status);
+    }
+
+    [Fact]
     public void PromoteParkedToPending_FlipsNeedsAttentionBackToPending()
     {
         var a = _store.Save("s", "", SampleWav);

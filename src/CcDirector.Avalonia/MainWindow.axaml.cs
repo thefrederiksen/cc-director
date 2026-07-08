@@ -3166,6 +3166,10 @@ public partial class MainWindow : Window
                 {
                     // Only deliver into a session idle at its prompt (issue #1135): typing a dictation
                     // into a Working, streaming composer is what piled up duplicate copies of the sentence.
+                    // A session wedged at Claude Code's startup splash also reads as ready here, but the
+                    // pile-up it caused is stopped at the clip level instead: the first submit probe that
+                    // the composer never echoes parks the clip ComposerBlocked, and the sweep skips a
+                    // non-Pending clip, so it is never re-typed (DictationDeliveryService.DeliverAsync).
                     if (!Guid.TryParse(sessionId, out var gid)) return false;
                     var session = _sessionManager?.GetSession(gid);
                     return session is not null
@@ -3232,12 +3236,13 @@ public partial class MainWindow : Window
     {
         var store = _pendingDictationStore;
         if (store is null) return;
-        int total, parked;
+        int total, parked, composerBlocked;
         try
         {
             var all = store.LoadAll();
             total = all.Count;
             parked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.NeedsAttention);
+            composerBlocked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.ComposerBlocked);
         }
         catch (Exception ex)
         {
@@ -3252,9 +3257,16 @@ public partial class MainWindow : Window
         }
 
         var noun = total == 1 ? "dictation is" : "dictations are";
-        var message = parked == total
-            ? $"{total} {noun} saved and waiting - transcription needs your attention (add credits or set a key). They will be sent automatically once resolved; you will not lose them."
-            : $"{total} {noun} saved and being sent automatically as soon as the session is ready for input. You will not lose them.";
+        string message;
+        if (parked == total)
+            message = $"{total} {noun} saved and waiting - transcription needs your attention (add credits or set a key). They will be sent automatically once resolved; you will not lose them.";
+        else if (composerBlocked == total)
+            // A real submit probe already failed against the session's composer (it is starting up or
+            // wedged), so the words are held rather than re-typed over and over (issue #1135). They will
+            // be delivered when the session is accepting input again.
+            message = $"{total} {noun} saved - the target session is not accepting input yet (starting up or stuck). They will be sent automatically once the session is ready; you will not lose them.";
+        else
+            message = $"{total} {noun} saved and being sent automatically as soon as the session is ready for input. You will not lose them.";
         ShowNotification(message);
         _heldNoticeShown = true;
     }
