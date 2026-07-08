@@ -81,8 +81,12 @@ public static class CodexRolloutLocator
             return null;
         }
 
-        // Newest first; the active session's rollout is normally the newest matching file, so
-        // we usually inspect only one or two session_meta lines.
+        // Without a launch time, keep the repo-level behavior: newest matching rollout wins.
+        // With a launch time, bind to the rollout whose session_meta timestamp is closest to that
+        // Director session's creation. Multiple Codex sessions can run in the same repo; choosing
+        // "newest for cwd" makes an older Director session read a newer sibling session's history.
+        var launchUtc = notBefore?.ToUniversalTime();
+        var launchCandidates = new List<(string Path, DateTimeOffset Timestamp)>();
         foreach (var file in files)
         {
             var meta = ReadSessionMeta(file.FullName);
@@ -90,10 +94,15 @@ public static class CodexRolloutLocator
                 && NormalizePath(meta.Cwd) == target
                 && IsWithinLaunchWindow(meta.Timestamp, file, notBefore))
             {
-                return file.FullName;
+                if (launchUtc is null)
+                    return file.FullName;
+                launchCandidates.Add((file.FullName, CandidateTimestamp(meta.Timestamp, file)));
             }
         }
-        return null;
+        return launchCandidates
+            .OrderBy(c => Math.Abs((c.Timestamp - launchUtc!.Value).TotalMilliseconds))
+            .Select(c => c.Path)
+            .FirstOrDefault();
     }
 
     /// <summary>Read cwd and timestamp from a rollout's first line (its session_meta), or null.</summary>
@@ -139,9 +148,12 @@ public static class CodexRolloutLocator
         if (notBefore is null)
             return true;
 
-        var candidateTimestamp = metadataTimestamp ?? new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero);
+        var candidateTimestamp = CandidateTimestamp(metadataTimestamp, file);
         return candidateTimestamp >= notBefore.Value.ToUniversalTime() - LaunchClockSkew;
     }
+
+    private static DateTimeOffset CandidateTimestamp(DateTimeOffset? metadataTimestamp, FileInfo file)
+        => metadataTimestamp ?? new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero);
 
     private static DateTimeOffset? ParseTimestamp(JsonElement obj)
         => obj.TryGetProperty("timestamp", out var ts)

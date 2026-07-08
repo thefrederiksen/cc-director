@@ -20,6 +20,7 @@ public class CodexTranscriptReaderTests
         """{"timestamp":"2026-06-19T17:29:08Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"permissions preamble"}]}}""",
         """{"timestamp":"2026-06-19T17:30:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"read the file"}]}}""",
         """{"timestamp":"2026-06-19T17:30:01Z","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"gAAAA"}}""",
+        """{"timestamp":"2026-06-19T17:30:01Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"I am checking files now."}]}}""",
         """{"timestamp":"2026-06-19T17:30:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Sure, reading it."}]}}""",
         """{"timestamp":"2026-06-19T17:30:03Z","type":"response_item","payload":{"type":"function_call","name":"shell_command","arguments":"{\"command\":\"cat x\"}","call_id":"call_1"}}""",
         """{"timestamp":"2026-06-19T17:30:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"file contents"}}""",
@@ -39,7 +40,7 @@ public class CodexTranscriptReaderTests
 
             // 5 conversation messages survive (the user prompt, two assistant texts, the tool
             // call, and the tool output). session_meta, event_msg, developer, encrypted
-            // reasoning, turn_context, and the truncated line are dropped.
+            // reasoning, commentary progress, turn_context, and the truncated line are dropped.
             Assert.Equal(5, history.Messages.Count);
 
             Assert.Equal(ConversationRole.User, history.Messages[0].Role);

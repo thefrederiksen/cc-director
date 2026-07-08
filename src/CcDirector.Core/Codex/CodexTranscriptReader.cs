@@ -75,6 +75,8 @@ public static class CodexTranscriptReader
                     var role = GetString(p, "role");
                     if (role is "developer" or "system")
                         return null; // system/permissions preamble, not conversation
+                    if (role == "assistant" && GetString(p, "phase") == "commentary")
+                        return null; // transient progress update; Wingman should narrate final answers
                     var text = ExtractMessageText(p);
                     if (text.Length == 0)
                         return null;

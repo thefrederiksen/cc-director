@@ -74,6 +74,31 @@ public class CodexRolloutLocatorTests
     }
 
     [Fact]
+    public void Scan_WithNotBefore_PicksClosestLaunchRollout_NotNewestSameRepo()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "codex-sessions-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+
+        const string target = @"C:\target\repo";
+        var firstLaunch = new DateTimeOffset(2026, 6, 19, 10, 0, 0, TimeSpan.Zero);
+        var firstTimestamp = new DateTimeOffset(2026, 6, 19, 10, 0, 20, TimeSpan.Zero);
+        var secondTimestamp = new DateTimeOffset(2026, 6, 19, 11, 0, 0, TimeSpan.Zero);
+
+        var firstRollout = WriteRollout(dir, "first-target", target, mtimeSeconds: 200, timestamp: firstTimestamp);
+        WriteRollout(dir, "second-target", target, mtimeSeconds: 400, timestamp: secondTimestamp);
+
+        try
+        {
+            var found = CodexRolloutLocator.Scan(target, dir, firstLaunch);
+            Assert.Equal(firstRollout, found, ignoreCase: true);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
     public void Scan_WithNotBefore_ReturnsNullUntilCurrentRolloutAppears()
     {
         var dir = Path.Combine(Path.GetTempPath(), "codex-sessions-" + Guid.NewGuid().ToString("N"));
