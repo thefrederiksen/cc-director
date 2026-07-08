@@ -386,6 +386,80 @@ def _save_profiles(profiles: dict) -> None:
     PROFILES_FILE.write_text(json.dumps(profiles, indent=2), encoding='utf-8')
 
 
+def derive_nickname(email: str) -> str:
+    """
+    Derive a default nickname from an email address.
+
+    The nickname is the domain label immediately before the top-level domain.
+    Examples:
+        email@devthrottle.com          -> devthrottle
+        soren.frederiksen@mindzie.com  -> mindzie
+        user@mail.corp.example.org     -> example
+
+    Args:
+        email: Email address to derive a nickname from
+
+    Returns:
+        The derived nickname (lower-cased)
+
+    Raises:
+        ValueError: If the email has no usable domain
+    """
+    if '@' not in email:
+        raise ValueError(f"Cannot derive a nickname: '{email}' is not an email address.")
+
+    domain = email.rsplit('@', 1)[1].strip().lower()
+    labels = [label for label in domain.split('.') if label]
+
+    if len(labels) >= 2:
+        # Second-to-last label is the registrable name (before the TLD).
+        return labels[-2]
+    if labels:
+        # Domain with no dot (unusual, but handle it rather than fall back silently).
+        return labels[0]
+
+    raise ValueError(f"Cannot derive a nickname from email '{email}': no domain found.")
+
+
+def get_nickname(email: str, profile: Optional[dict] = None) -> str:
+    """
+    Get the nickname for an account.
+
+    Uses the stored nickname when present, otherwise derives it from the email.
+    This makes accounts added before nicknames existed resolve by nickname too,
+    without requiring them to be re-added.
+
+    Args:
+        email: Account email
+        profile: Optional already-loaded profile dict for this account
+
+    Returns:
+        The account's nickname
+    """
+    if profile is None:
+        profile = get_profile(email) or {}
+
+    stored = profile.get('nickname')
+    if stored:
+        return stored
+    return derive_nickname(email)
+
+
+def _build_nickname_map(profiles: dict) -> dict:
+    """
+    Build a mapping of nickname -> account email from the profiles config.
+
+    Nicknames are derived when not explicitly stored, so existing accounts are
+    included. A nickname that collides with an existing account email is skipped
+    for that direction so the exact-email lookup always wins.
+    """
+    nickname_map = {}
+    for email, profile in profiles.get('profiles', {}).items():
+        nickname = get_nickname(email, profile)
+        nickname_map[nickname] = email
+    return nickname_map
+
+
 def get_token_path(account_name: str) -> Path:
     """Get token file path for an account."""
     safe_name = account_name.replace('@', '_').replace('.', '_')
@@ -416,6 +490,7 @@ def list_accounts() -> list:
 
         result.append({
             'name': email,
+            'nickname': get_nickname(email, profile),
             'is_default': email == profiles.get('default'),
             'authenticated': msal_token_path.exists(),
             'client_id': profile.get('client_id', '')[:20] + '...' if profile.get('client_id') else '',
@@ -455,9 +530,26 @@ def resolve_account(account_name: Optional[str] = None) -> str:
     """
     if account_name:
         profiles = _load_profiles()
-        if account_name not in profiles.get('profiles', {}):
-            raise ValueError(f"Account '{account_name}' not found. Run 'cc-outlook accounts list' to see available accounts.")
-        return account_name
+
+        # 1. Exact account-name (email) match first, so existing usage is unchanged.
+        if account_name in profiles.get('profiles', {}):
+            return account_name
+
+        # 2. Then nickname match (case-insensitive; nicknames are stored lower-cased).
+        nickname_map = _build_nickname_map(profiles)
+        if account_name.lower() in nickname_map:
+            return nickname_map[account_name.lower()]
+
+        # Not found: list valid names and nicknames to make the fix obvious.
+        available = []
+        for email, profile in profiles.get('profiles', {}).items():
+            available.append(f"{email} (nickname: {get_nickname(email, profile)})")
+        available_text = ", ".join(available) if available else "none configured"
+        raise ValueError(
+            f"Account '{account_name}' not found. "
+            f"Available accounts: {available_text}. "
+            f"Run 'cc-outlook accounts list' to see them."
+        )
 
     default = get_default_account()
     if not default:
@@ -472,7 +564,8 @@ def get_profile(account_name: str) -> Optional[dict]:
     return profiles.get('profiles', {}).get(account_name)
 
 
-def save_profile(email: str, client_id: str, tenant_id: str = 'common') -> None:
+def save_profile(email: str, client_id: str, tenant_id: str = 'common',
+                 nickname: Optional[str] = None) -> str:
     """
     Save a new account profile.
 
@@ -480,16 +573,37 @@ def save_profile(email: str, client_id: str, tenant_id: str = 'common') -> None:
         email: Email address for the account
         client_id: Azure App Client ID
         tenant_id: Azure Tenant ID (default: 'common')
+        nickname: Optional short nickname. When omitted, it is derived from the
+            email domain (e.g. email@devthrottle.com -> devthrottle).
+
+    Returns:
+        The nickname assigned to the account.
+
+    Raises:
+        ValueError: If the nickname collides with another account's nickname.
     """
     _ensure_config_dirs()
     profiles = _load_profiles()
+
+    resolved_nickname = (nickname or derive_nickname(email)).strip().lower()
+
+    # Nickname must be unique across accounts (excluding this same account on update).
+    for other_email, other_profile in profiles.get('profiles', {}).items():
+        if other_email == email:
+            continue
+        if get_nickname(other_email, other_profile) == resolved_nickname:
+            raise ValueError(
+                f"Nickname '{resolved_nickname}' is already used by account "
+                f"'{other_email}'. Choose a different nickname with --nickname."
+            )
 
     token_file = str(get_token_path(email))
 
     profiles['profiles'][email] = {
         'client_id': client_id,
         'tenant_id': tenant_id,
-        'token_file': token_file
+        'token_file': token_file,
+        'nickname': resolved_nickname,
     }
 
     # Set as default if it's the first account
@@ -497,6 +611,7 @@ def save_profile(email: str, client_id: str, tenant_id: str = 'common') -> None:
         profiles['default'] = email
 
     _save_profiles(profiles)
+    return resolved_nickname
 
 
 def delete_account(account_name: str) -> bool:

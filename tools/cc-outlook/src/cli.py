@@ -248,6 +248,7 @@ def accounts_list(
                 {
                     "name": acct["name"],
                     "email": acct["name"],  # For cc-outlook, the account name IS the email
+                    "nickname": acct.get("nickname", ""),
                     "is_default": acct["is_default"],
                     "authenticated": acct["authenticated"],
                     "can_send": acct["authenticated"],
@@ -267,6 +268,7 @@ def accounts_list(
 
     table = Table(title="Outlook Accounts")
     table.add_column("Account", style="cyan")
+    table.add_column("Nickname", style="magenta")
     table.add_column("Default")
     table.add_column("Authenticated")
     table.add_column("Client ID")
@@ -274,6 +276,7 @@ def accounts_list(
     for acct in accts:
         table.add_row(
             acct["name"],
+            acct.get("nickname", ""),
             "[green]*[/green]" if acct["is_default"] else "",
             "[green]Yes[/green]" if acct["authenticated"] else "[yellow]No[/yellow]",
             acct.get("client_id", ""),
@@ -288,6 +291,7 @@ def accounts_add(
     client_id: str = typer.Option(..., "--client-id", "-c", help="Azure App Client ID"),
     tenant_id: str = typer.Option("common", "--tenant-id", "-t", help="Azure Tenant ID (default: common)"),
     set_as_default: bool = typer.Option(False, "--default", "-d", help="Set as default account"),
+    nickname: Optional[str] = typer.Option(None, "--nickname", "-n", help="Short nickname for the account (default: derived from the email domain)"),
 ):
     """Add a new Outlook account."""
     console.print(f"[cyan]Setting up account:[/cyan] {email}")
@@ -295,8 +299,13 @@ def accounts_add(
     console.print()
 
     # Save the profile
-    save_profile(email, client_id, tenant_id)
+    try:
+        assigned_nickname = save_profile(email, client_id, tenant_id, nickname)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
     console.print(f"[green]Profile saved for {email}[/green]")
+    console.print(f"[green]Nickname:[/green] {assigned_nickname} (use it with -a {assigned_nickname})")
 
     if set_as_default or not get_default_account():
         set_default_account(email)
