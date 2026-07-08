@@ -7,10 +7,6 @@ import { SessionActionBar } from "./SessionActionBar";
 import { SessionComposer } from "./SessionComposer";
 import { QueuePanel } from "./QueuePanel";
 import { ScreenshotsPanel } from "./ScreenshotsPanel";
-// The Brief, History, and Awareness panes are hidden for now (their tabs are removed below): they are
-// being replaced by the mobile Chat and Voice modes. The pane components (BriefPane / HistoryPane /
-// AwarenessPane) are intentionally left in the repo so restoring a tab is only re-adding its button
-// and pane block here plus its import.
 
 // The selected session's detail region (issue #972): the live terminal (issue #971's TerminalPane,
 // reused verbatim) stacked over the driver action bar and the composer, with a tabbed dock for the
@@ -19,9 +15,8 @@ import { ScreenshotsPanel } from "./ScreenshotsPanel";
 // the composer text, and the queue are all per-session).
 
 type DockTab = "queue" | "shots";
-// The session-main view currently shows only the live terminal (issue #971). The Brief, History, and
-// Awareness views (issues #973/#974) are hidden pending their replacement by the mobile Chat and Voice
-// modes, so the tab set is Terminal-only for now (Chat and Voice will be added as their own tabs).
+// The session-main view shows only the live terminal (issue #971). The former Brief, History, and
+// Awareness views (issues #973/#974) were removed for the release; the session page is Terminal-only.
 type MainTab = "terminal";
 
 export function SessionDetail() {
