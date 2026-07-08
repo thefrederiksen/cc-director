@@ -7,9 +7,10 @@ import { SessionActionBar } from "./SessionActionBar";
 import { SessionComposer } from "./SessionComposer";
 import { QueuePanel } from "./QueuePanel";
 import { ScreenshotsPanel } from "./ScreenshotsPanel";
-import { BriefPane } from "./BriefPane";
-import { HistoryPane } from "./HistoryPane";
-import { AwarenessPane } from "./AwarenessPane";
+// The Brief, History, and Awareness panes are hidden for now (their tabs are removed below): they are
+// being replaced by the mobile Chat and Voice modes. The pane components (BriefPane / HistoryPane /
+// AwarenessPane) are intentionally left in the repo so restoring a tab is only re-adding its button
+// and pane block here plus its import.
 
 // The selected session's detail region (issue #972): the live terminal (issue #971's TerminalPane,
 // reused verbatim) stacked over the driver action bar and the composer, with a tabbed dock for the
@@ -18,12 +19,10 @@ import { AwarenessPane } from "./AwarenessPane";
 // the composer text, and the queue are all per-session).
 
 type DockTab = "queue" | "shots";
-// The session-main view can show the live terminal (issue #971), the Brief (issue #973), the
-// conversation History, or the Awareness panes - recap + turn rail (both issue #974). The terminal
-// stays MOUNTED across every switch (hidden via CSS, never torn down) so these async-enrichment panes -
-// which each catch up over their own polled fetch - never block or freeze the live terminal. The
-// History and Awareness panes are unmounted while hidden, so their polls run only on their own tab.
-type MainTab = "terminal" | "brief" | "history" | "awareness";
+// The session-main view currently shows only the live terminal (issue #971). The Brief, History, and
+// Awareness views (issues #973/#974) are hidden pending their replacement by the mobile Chat and Voice
+// modes, so the tab set is Terminal-only for now (Chat and Voice will be added as their own tabs).
+type MainTab = "terminal";
 
 export function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -68,33 +67,7 @@ export function SessionDetail() {
           >
             Terminal
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mainTab === "brief"}
-            className={`session-tab ${mainTab === "brief" ? "on" : ""}`}
-            onClick={() => setMainTab("brief")}
-          >
-            Brief
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mainTab === "history"}
-            className={`session-tab ${mainTab === "history" ? "on" : ""}`}
-            onClick={() => setMainTab("history")}
-          >
-            History
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mainTab === "awareness"}
-            className={`session-tab ${mainTab === "awareness" ? "on" : ""}`}
-            onClick={() => setMainTab("awareness")}
-          >
-            Awareness
-          </button>
+          {/* Brief / History / Awareness tabs are hidden for now - being replaced by Chat and Voice. */}
         </div>
 
         <div className="session-content">
@@ -103,26 +76,6 @@ export function SessionDetail() {
           <div className={`session-pane ${mainTab === "terminal" ? "" : "session-pane-off"}`}>
             <TerminalPane />
           </div>
-          {mainTab === "brief" && (
-            <div className="session-pane brief-scroll">
-              <BriefPane
-                sessionId={sessionId}
-                activityState={selected?.activityState ?? ""}
-                briefingState={selected?.briefingState ?? "None"}
-                onOpenTerminal={() => setMainTab("terminal")}
-              />
-            </div>
-          )}
-          {mainTab === "history" && (
-            <div className="session-pane hist-scroll-pane">
-              <HistoryPane sessionId={sessionId} />
-            </div>
-          )}
-          {mainTab === "awareness" && (
-            <div className="session-pane aware-scroll">
-              <AwarenessPane sessionId={sessionId} />
-            </div>
-          )}
         </div>
 
         <SessionActionBar sessionId={sessionId} capabilities={selected?.driverCapabilities} />
