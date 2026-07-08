@@ -28,31 +28,64 @@ public sealed class BatchTranscriptionPipelineChunkingTests
     // form fields) always fits under it.
     private const long ProviderBodyLimitBytes = 4_500_000;
 
-    // Records every /audio/transcriptions request and its body size, and answers each with a distinct
-    // numbered transcript so the assembled join order can be verified.
+    // Records every /audio/transcriptions request body size, and answers each with a transcript keyed to
+    // the CHUNK INDEX from the part's filename (dictation.{idx}.wav). Because chunks now transcribe in
+    // parallel, keying on the filename - not arrival order - lets a test prove the pipeline joins the
+    // parts in ORIGINAL order regardless of which request the fake answers first. Thread-safe: parallel
+    // chunk requests hit this handler concurrently.
     private sealed class CountingHandler : HttpMessageHandler
     {
-        public List<long> TranscribeBodyBytes { get; } = new();
-        private int _n;
+        private readonly object _lock = new();
+        private readonly List<long> _bodyBytes = new();
+
+        /// <summary>Request body sizes, in the order they were received (arrival order).</summary>
+        public IReadOnlyList<long> TranscribeBodyBytes { get { lock (_lock) return _bodyBytes.ToArray(); } }
+
+        /// <summary>Optional: chunk indices to fail with a 500, to prove one bad chunk fails the job.</summary>
+        public HashSet<int> FailChunkIndices { get; } = new();
+
+        /// <summary>Peak number of transcription requests in flight at once (proves the concurrency cap).</summary>
+        public int MaxConcurrent;
+        private int _inFlight;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var url = request.RequestUri?.ToString() ?? "";
             if (url.EndsWith("/audio/transcriptions", StringComparison.Ordinal))
             {
-                var bytes = request.Content is null ? 0 : (await request.Content.ReadAsByteArrayAsync(ct)).LongLength;
-                TranscribeBodyBytes.Add(bytes);
-                var word = $"seg{_n++}";
-                return new HttpResponseMessage(HttpStatusCode.OK)
+                int now = Interlocked.Increment(ref _inFlight);
+                lock (_lock) { if (now > MaxConcurrent) MaxConcurrent = now; }
+                try
                 {
-                    Content = new StringContent($"{{\"text\": \"{word}\"}}", Encoding.UTF8, "application/json"),
-                };
+                    int idx = ChunkIndexFromFilename(request);
+                    var bytes = request.Content is null ? 0 : (await request.Content.ReadAsByteArrayAsync(ct)).LongLength;
+                    lock (_lock) _bodyBytes.Add(bytes);
+                    await Task.Delay(15, ct);  // hold briefly so siblings pile up and concurrency is observable
+                    if (FailChunkIndices.Contains(idx))
+                        return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                        { Content = new StringContent("{\"error\":{\"message\":\"boom\"}}", Encoding.UTF8, "application/json") };
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    { Content = new StringContent($"{{\"text\": \"seg{idx}\"}}", Encoding.UTF8, "application/json") };
+                }
+                finally { Interlocked.Decrement(ref _inFlight); }
             }
             // The dictionary corrector's chat endpoint: return no edits so the corrected text equals raw.
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"{\\\"edits\\\": []}\"}}]}", Encoding.UTF8, "application/json"),
             };
+        }
+
+        // dictation.3.wav -> 3 ; a single-shot dictation.wav (no numeric part) -> 0.
+        private static int ChunkIndexFromFilename(HttpRequestMessage request)
+        {
+            string file = "";
+            if (request.Content is MultipartFormDataContent mp)
+                foreach (var part in mp)
+                    if (part.Headers.ContentDisposition?.Name?.Trim('"') == "file")
+                    { file = part.Headers.ContentDisposition?.FileName?.Trim('"') ?? ""; break; }
+            var tokens = file.Split('.');
+            return tokens.Length >= 3 && int.TryParse(tokens[^2], out var n) ? n : 0;
         }
     }
 
@@ -168,16 +201,16 @@ public sealed class BatchTranscriptionPipelineChunkingTests
 
         var partCount = handler.TranscribeBodyBytes.Count;
         Assert.True(partCount >= 4);
-        // First report announces the total with zero done; the last report is all parts done.
+        // The first report announces the total with zero done (fired before any chunk runs). Chunks now
+        // complete in PARALLEL, so completion reports arrive in a non-deterministic order - but there is
+        // still exactly one per chunk plus the announcement, every TotalParts is the count, and the
+        // completed values are exactly 0..partCount with none missing or repeated.
         Assert.Equal(new TranscriptionProgress(0, partCount), reports[0]);
-        Assert.Equal(new TranscriptionProgress(partCount, partCount), reports[^1]);
-        // One report per completed part plus the initial announcement, strictly increasing completion.
         Assert.Equal(partCount + 1, reports.Count);
-        for (int i = 1; i < reports.Count; i++)
-        {
-            Assert.Equal(i, reports[i].CompletedParts);
-            Assert.Equal(partCount, reports[i].TotalParts);
-        }
+        Assert.All(reports, r => Assert.Equal(partCount, r.TotalParts));
+        Assert.Equal(
+            Enumerable.Range(0, partCount + 1),
+            reports.Select(r => r.CompletedParts).OrderBy(x => x));
     }
 
     [Fact]
@@ -195,11 +228,57 @@ public sealed class BatchTranscriptionPipelineChunkingTests
         Assert.Equal(new TranscriptionProgress(1, 1), reports[^1]);
     }
 
-    // A synchronous IProgress so the reports are captured in order on the calling thread.
+    [Fact]
+    public async Task TranscribeRawAsync_LongWav_TranscribesChunksInParallel_BoundedByTheCap()
+    {
+        var handler = new CountingHandler();
+        using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
+
+        await pipeline.TranscribeRawAsync(LongWav(), "dictation.wav", DevThrottle());
+
+        Assert.True(handler.TranscribeBodyBytes.Count >= 4);
+        // Actually ran several at once (proves parallelism)...
+        Assert.True(handler.MaxConcurrent >= 2, $"expected concurrent chunks, peak was {handler.MaxConcurrent}");
+        // ...but never more than the cap (proves the bound that protects rate limits / the breaker).
+        Assert.True(handler.MaxConcurrent <= BatchTranscriptionPipeline.MaxParallelChunks,
+            $"peak concurrency {handler.MaxConcurrent} exceeded the cap {BatchTranscriptionPipeline.MaxParallelChunks}");
+    }
+
+    [Fact]
+    public async Task TranscribeRawAsync_OneChunkFails_JobFailsCleanly_NoSilentPartial()
+    {
+        var handler = new CountingHandler();
+        handler.FailChunkIndices.Add(2);   // the third chunk returns HTTP 500 on every attempt
+        using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
+
+        // The whole job surfaces the failure (the proxy's typed 5xx) - it never returns a partial join.
+        await Assert.ThrowsAsync<TranscriptionFailedException>(() =>
+            pipeline.TranscribeRawAsync(LongWav(), "dictation.wav", DevThrottle()));
+    }
+
+    [Fact]
+    public async Task TranscribeRawAsync_UnderByteBudgetButLong_StillSplitsByDuration()
+    {
+        // 120 s of 16 kHz mono 16-bit = 3.84 MB: UNDER the 4 MB byte budget but well over the 90 s max
+        // chunk duration. The old bytes-only gate sent this as ONE slow request; duration splitting now
+        // breaks it into several fast ones.
+        var wav = PcmWav.Wrap(new byte[120 * 16000 * 2], 16000, 1, 16);
+        Assert.True(wav.Length < BatchTranscriptionPipeline.MaxTranscriptionUploadBytes);
+
+        var handler = new CountingHandler();
+        using var pipeline = new BatchTranscriptionPipeline(new HttpClient(handler));
+        await pipeline.TranscribeRawAsync(wav, "dictation.wav", DevThrottle());
+
+        Assert.True(handler.TranscribeBodyBytes.Count >= 2,
+            $"expected a long-but-small clip to split by duration, got {handler.TranscribeBodyBytes.Count} request(s)");
+    }
+
+    // A thread-safe IProgress: chunks now complete in parallel, so reports arrive from worker threads.
     private sealed class SyncProgress<T> : IProgress<T>
     {
         private readonly Action<T> _on;
+        private readonly object _lock = new();
         public SyncProgress(Action<T> on) => _on = on;
-        public void Report(T value) => _on(value);
+        public void Report(T value) { lock (_lock) _on(value); }
     }
 }
