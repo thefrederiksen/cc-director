@@ -7,6 +7,7 @@ import { Terminal } from "./pages/Terminal";
 import { Chat } from "./pages/Chat";
 import { VoiceMode } from "./pages/VoiceMode";
 import { AiSettings } from "./pages/AiSettings";
+import { About } from "./pages/About";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
@@ -70,6 +71,7 @@ const router = createBrowserRouter(
       children: [
         { path: "/", element: <Home /> },
         { path: "/settings", element: <AiSettings /> },
+        { path: "/about", element: <About /> },
         { path: "/new", element: <NewSession /> },
         { path: "/session/:sessionId", element: <Chat /> },
         { path: "/session/:sessionId/chat", element: <Chat /> },

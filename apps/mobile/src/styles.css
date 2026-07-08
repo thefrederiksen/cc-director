@@ -1763,6 +1763,53 @@ a.banner-btn {
   margin: 6px 0;
 }
 
+/* ===== About screen ===== */
+.about-panel {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.about-product {
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.about-version {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.about-sha {
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.about-list {
+  border-top: 1px solid var(--border);
+}
+.about-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 36%) minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: start;
+}
+.about-label {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.about-value {
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 /* ===== AI settings screen ===== */
 .settings-intro {
   color: var(--text-dim);

@@ -46,6 +46,14 @@ export interface RepoInfo {
   lastUsed: string;
 }
 
+export interface GatewayHealth {
+  status: string;
+  directors: number;
+  sessions: number;
+  version: string;
+  serverTime: string;
+}
+
 // The app's credential is the per-device key it obtained at enrollment (issue #908/#1088), read from
 // the device-key store - NOT a token injected into the page (the shell carries no secret). Empty until
 // this device has enrolled, in which case the caller (the auth gate) routes to the Sign in screen.
@@ -246,6 +254,18 @@ export async function listSessions(signal?: AbortSignal): Promise<SessionDto[]> 
     throw new GatewayError(res.status, `GET /sessions failed: ${res.status}`);
   }
   return (await res.json()) as SessionDto[];
+}
+
+export async function getGatewayHealth(signal?: AbortSignal): Promise<GatewayHealth> {
+  const res = await fetch("/healthz", {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET /healthz failed: ${res.status}`);
+  }
+  return (await res.json()) as GatewayHealth;
 }
 
 // GET /sessions/{sid}/history - the parsed, agent-agnostic conversation history for one session
