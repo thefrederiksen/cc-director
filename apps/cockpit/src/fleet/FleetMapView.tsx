@@ -51,7 +51,11 @@ export function FleetMapView() {
   const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [pivot, setPivot] = useState<Pivot>("machine");
-  const [wingman, setWingman] = useState(false);
+  // The Wingman narration overlay is not implemented and is not planned, so its toggle is hidden from
+  // the header (see below). Keep the value wired as a constant false so the narration code paths stay
+  // intact for an easy future restore - flip this back to useState and restore the toggle to bring it
+  // back.
+  const wingman = false;
 
   const loadRoster = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -130,15 +134,9 @@ export function FleetMapView() {
               </button>
             ))}
           </div>
-          <label className={wingman ? "fmap-wm on" : "fmap-wm"}>
-            <input
-              type="checkbox"
-              checked={wingman}
-              onChange={(e) => setWingman(e.target.checked)}
-            />
-            <span className="fmap-wm-sw" aria-hidden="true" />
-            <span>Wingman narration</span>
-          </label>
+          {/* The "Wingman narration" toggle is hidden for now: the narration overlay is not
+              implemented and is not planned. Restore this <label> (and the useState above) to bring
+              the feature back. */}
         </div>
       </header>
 
