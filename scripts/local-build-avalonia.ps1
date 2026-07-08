@@ -21,7 +21,8 @@
 param(
     [switch]$SelfContained,
     [string]$Configuration = "Release",
-    [string]$Slot = ""
+    [string]$Slot = "",
+    [string]$OutputDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -114,8 +115,13 @@ if (-not (Test-Path $exePath)) {
     exit 1
 }
 
-# Copy to local_builds directory
-$releasesDir = Join-Path $repoRoot "local_builds"
+# Copy to output directory. Defaults to the repo-root local_builds folder, but callers
+# (e.g. the scripts\local-build\*.bat files) can pass -OutputDir to land the exe elsewhere.
+if ($OutputDir) {
+    $releasesDir = $OutputDir
+} else {
+    $releasesDir = Join-Path $repoRoot "local_builds"
+}
 if (-not (Test-Path $releasesDir)) {
     New-Item -ItemType Directory -Path $releasesDir | Out-Null
 }

@@ -1,5 +1,5 @@
 @echo off
-powershell -ExecutionPolicy Bypass -File "%~dp0..\local-build-avalonia.ps1" -Slot 4 %*
+powershell -ExecutionPolicy Bypass -File "%~dp0..\local-build-avalonia.ps1" -Slot 4 -OutputDir "%~dp0." %*
 if %ERRORLEVEL% neq 0 (
     echo.
     echo BUILD FAILED - see errors above
@@ -7,5 +7,5 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 echo.
-echo Exe location: %~dp0..\..\local_builds\cc-director4.exe
+echo Exe location: %~dp0cc-director4.exe
 pause

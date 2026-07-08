@@ -1,0 +1,3 @@
+# Local dev/test slot builds produced by _local_buildN.bat land here. Do not commit them.
+*.exe
+appsettings.json
