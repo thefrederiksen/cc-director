@@ -67,6 +67,122 @@ public static class WavSplitter
         return true;
     }
 
+    /// <summary>
+    /// Split a PCM WAV into standalone WAV parts by DURATION, preferring a cut at a quiet point
+    /// (near-silence) close to each target boundary so a word is not sliced across two parts. Every
+    /// part is at most <paramref name="maxSeconds"/> long AND at most <paramref name="maxPartBytes"/>,
+    /// so each is a valid, bounded, single-shot upload. The split is LOSSLESS and NON-OVERLAPPING:
+    /// concatenating the parts' sample data reproduces the input exactly, so the per-part transcripts
+    /// join with a single space and no de-duplication. A clip already within one target window comes
+    /// back as a single part. Returns false (and null parts) for anything that is not linear PCM WAV.
+    /// </summary>
+    /// <param name="wav">The complete PCM WAV blob.</param>
+    /// <param name="targetSeconds">Preferred chunk length; the cut is nudged to nearby silence.</param>
+    /// <param name="maxSeconds">Hard cap on a chunk's length (used when no silence is found).</param>
+    /// <param name="silenceWindowSeconds">How far before/after the target to search for a quiet cut.</param>
+    /// <param name="maxPartBytes">Hard cap on a chunk's total byte size (header included).</param>
+    /// <param name="parts">The ordered WAV parts on success; null on failure.</param>
+    public static bool TrySplitByDuration(
+        byte[] wav, int targetSeconds, int maxSeconds, int silenceWindowSeconds, int maxPartBytes,
+        out IReadOnlyList<byte[]>? parts)
+    {
+        parts = null;
+        if (wav is null) throw new ArgumentNullException(nameof(wav));
+        if (targetSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(targetSeconds));
+        if (maxSeconds < targetSeconds) throw new ArgumentOutOfRangeException(nameof(maxSeconds));
+        if (maxPartBytes <= WavHeaderBytes)
+            throw new ArgumentOutOfRangeException(nameof(maxPartBytes), "the byte budget must leave room for the WAV header");
+
+        if (!TryParse(wav, out var fmt, out var dataOffset, out var dataLength))
+            return false;
+
+        int blockAlign = fmt.Channels * fmt.BitsPerSample / 8;
+        if (blockAlign <= 0 || fmt.SampleRate <= 0) return false;
+
+        int framesTotal = dataLength / blockAlign;
+        if (framesTotal <= 0) return false;
+
+        // A single part may never exceed the byte budget OR the max duration, whichever is smaller.
+        long maxFramesByBytes = (maxPartBytes - WavHeaderBytes) / blockAlign;
+        long maxFramesByDuration = (long)maxSeconds * fmt.SampleRate;
+        int hardMaxFrames = (int)Math.Min(maxFramesByBytes, maxFramesByDuration);
+        if (hardMaxFrames <= 0) return false;
+
+        int targetFrames = (int)Math.Min((long)targetSeconds * fmt.SampleRate, hardMaxFrames);
+        int windowFrames = (int)Math.Max(0, Math.Min((long)silenceWindowSeconds * fmt.SampleRate, targetFrames - 1));
+        int probeFrames = Math.Max(1, fmt.SampleRate * 20 / 1000);   // ~20 ms energy window
+
+        var result = new List<byte[]>();
+        int pos = 0;
+        while (pos < framesTotal)
+        {
+            int remaining = framesTotal - pos;
+            int cutLen;
+            if (remaining <= hardMaxFrames && remaining <= targetFrames + windowFrames)
+            {
+                cutLen = remaining;                       // the rest fits in one final part
+            }
+            else
+            {
+                int lo = Math.Max(1, targetFrames - windowFrames);
+                int hi = Math.Min(hardMaxFrames, Math.Min(remaining, targetFrames + windowFrames));
+                if (hi < lo) hi = lo;
+                cutLen = QuietestCut(wav, dataOffset, blockAlign, fmt.BitsPerSample, pos, lo, hi, probeFrames);
+            }
+            if (cutLen <= 0) cutLen = Math.Min(hardMaxFrames, remaining);
+
+            int byteLen = cutLen * blockAlign;
+            var pcm = new byte[byteLen];
+            Array.Copy(wav, dataOffset + pos * blockAlign, pcm, 0, byteLen);
+            result.Add(PcmWav.Wrap(pcm, fmt.SampleRate, fmt.Channels, fmt.BitsPerSample));
+            pos += cutLen;
+        }
+
+        if (result.Count == 0) return false;
+        parts = result;
+        return true;
+    }
+
+    /// <summary>
+    /// The cut length (frames from <paramref name="posFrames"/>) at the center of the quietest ~20 ms
+    /// window whose center lies in [lo, hi]. Deterministic. For non-16-bit PCM the energy scan is
+    /// skipped and the hard boundary <paramref name="hi"/> is returned (a plain duration cut).
+    /// </summary>
+    private static int QuietestCut(byte[] wav, int dataOffset, int blockAlign, int bitsPerSample,
+        int posFrames, int lo, int hi, int probeFrames)
+    {
+        if (hi <= lo) return Math.Max(1, hi);
+        if (bitsPerSample != 16) return hi;
+
+        int step = Math.Max(1, probeFrames / 2);
+        long best = long.MaxValue;
+        int bestCut = hi;
+        for (int c = lo; c <= hi; c += step)
+        {
+            long e = FrameEnergy(wav, dataOffset, blockAlign, posFrames + c, probeFrames);
+            if (e < best) { best = e; bestCut = c; }
+        }
+        return bestCut;
+    }
+
+    /// <summary>Sum of absolute 16-bit sample values over a small window centered on a frame.</summary>
+    private static long FrameEnergy(byte[] wav, int dataOffset, int blockAlign, int centerFrame, int probeFrames)
+    {
+        int start = Math.Max(0, centerFrame - probeFrames / 2);
+        long sum = 0;
+        for (int f = 0; f < probeFrames; f++)
+        {
+            int frameByte = dataOffset + (start + f) * blockAlign;
+            if (frameByte + blockAlign > wav.Length) break;
+            for (int b = 0; b + 1 < blockAlign; b += 2)
+            {
+                short s = (short)(wav[frameByte + b] | (wav[frameByte + b + 1] << 8));
+                sum += Math.Abs((int)s);
+            }
+        }
+        return sum;
+    }
+
     private readonly record struct WavFormat(int SampleRate, int Channels, int BitsPerSample);
 
     /// <summary>

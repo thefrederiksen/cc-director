@@ -53,6 +53,29 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     /// </summary>
     public const int MaxTranscriptionUploadBytes = 4_000_000;
 
+    // Chunking parameters (transcription reliability epic, #324). A long recording is split by
+    // DURATION - preferring a cut at nearby silence - into short parts transcribed IN PARALLEL, so an
+    // hour of audio is many fast requests instead of one that times out. These are the shared spec
+    // constants (docs/architecture/transcription-service-design.md); AgentEyes mirrors them exactly.
+
+    /// <summary>Preferred chunk length. Short enough to transcribe fast and stay well under the
+    /// per-request timeout; long enough to keep the part count low.</summary>
+    public const int ChunkTargetSeconds = 60;
+
+    /// <summary>Hard cap on a chunk's length, used when no quiet cut is found near the target.</summary>
+    public const int ChunkMaxSeconds = 90;
+
+    /// <summary>How far before/after the target the splitter searches for a silence to cut on.</summary>
+    public const int ChunkSilenceWindowSeconds = 5;
+
+    /// <summary>Chunks transcribed at once. Bounded so a long recording does not fan out an unbounded
+    /// burst that would trip provider rate limits or the proxy's per-instance breaker.</summary>
+    public const int MaxParallelChunks = 4;
+
+    /// <summary>Extra attempts for a single chunk on a TRANSIENT failure, on top of the proxy's own
+    /// internal provider fallback. A permanent (4xx) failure is not retried.</summary>
+    public const int PerChunkRetries = 1;
+
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly string _cleanupModel;
@@ -167,6 +190,30 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         byte[] audio, string fileName, ResolvedTranscription routing, CancellationToken ct,
         IProgress<TranscriptionProgress>? progress = null)
     {
+        // Duration + silence aware split. For PCM WAV this returns ONE part when the clip is within a
+        // single target window (both bytes AND duration), or several bounded parts otherwise. Note this
+        // splits a WAV that is under the byte budget but LONG in duration too - the old bytes-only gate
+        // let a long-but-small compressed-style WAV through as one slow request.
+        if (WavSplitter.TrySplitByDuration(
+                audio, ChunkTargetSeconds, ChunkMaxSeconds, ChunkSilenceWindowSeconds,
+                MaxTranscriptionUploadBytes, out var parts) && parts is not null)
+        {
+            if (parts.Count == 1)
+            {
+                progress?.Report(new TranscriptionProgress(0, 1));
+                var only = await PostOneAsync(parts[0], fileName, routing, ct);
+                progress?.Report(new TranscriptionProgress(1, 1));
+                return only;
+            }
+
+            FileLog.Write($"[BatchTranscriptionPipeline] split {audio.Length} bytes into {parts.Count} parts "
+                          + $"(target={ChunkTargetSeconds}s, max={ChunkMaxSeconds}s, budget={MaxTranscriptionUploadBytes}); "
+                          + $"transcribing up to {MaxParallelChunks} in parallel");
+            return await TranscribeChunksInParallelAsync(parts, fileName, routing, ct, progress);
+        }
+
+        // Not a splittable PCM WAV. A clip within the byte budget is one POST as before; an over-budget
+        // non-WAV fails loud rather than posting an oversized body (the no-silent-413 rule).
         if (audio.Length <= MaxTranscriptionUploadBytes)
         {
             progress?.Report(new TranscriptionProgress(0, 1));
@@ -175,28 +222,95 @@ public sealed class BatchTranscriptionPipeline : IDisposable
             return only;
         }
 
-        if (!WavSplitter.TrySplit(audio, MaxTranscriptionUploadBytes, out var parts) || parts is null)
-            throw new InvalidOperationException(
-                $"Audio is {audio.Length:N0} bytes, over the {MaxTranscriptionUploadBytes:N0}-byte per-request "
-                + "limit, and is not a PCM WAV that can be split into bounded parts. Capture as PCM WAV so long "
-                + "recordings can be chunked.");
+        throw new InvalidOperationException(
+            $"Audio is {audio.Length:N0} bytes, over the {MaxTranscriptionUploadBytes:N0}-byte per-request "
+            + "limit, and is not a PCM WAV that can be split into bounded parts. Capture as PCM WAV so long "
+            + "recordings can be chunked.");
+    }
 
-        FileLog.Write($"[BatchTranscriptionPipeline] split {audio.Length} bytes into {parts.Count} parts "
-                      + $"(budget={MaxTranscriptionUploadBytes}), transcribing each");
-
+    /// <summary>
+    /// Transcribe the ordered chunks concurrently, at most <see cref="MaxParallelChunks"/> in flight,
+    /// and join the raw per-chunk texts in ORIGINAL order (never completion order). Each chunk is
+    /// retried on a transient failure (<see cref="PerChunkRetries"/>); if any chunk still fails, the
+    /// whole job throws the original typed exception - no silent partial transcripts. The split is
+    /// non-overlapping, so a single space joins the parts with no de-duplication.
+    /// </summary>
+    private async Task<string> TranscribeChunksInParallelAsync(
+        IReadOnlyList<byte[]> parts, string fileName, ResolvedTranscription routing, CancellationToken ct,
+        IProgress<TranscriptionProgress>? progress)
+    {
+        var texts = new string[parts.Count];
+        int completed = 0;
         progress?.Report(new TranscriptionProgress(0, parts.Count));
-        var texts = new List<string>(parts.Count);
-        for (int i = 0; i < parts.Count; i++)
+
+        using var gate = new SemaphoreSlim(MaxParallelChunks);
+
+        async Task ProcessAsync(int idx)
         {
-            var partName = PartFileName(fileName, i);
-            var text = await PostOneAsync(parts[i], partName, routing, ct);
-            FileLog.Write($"[BatchTranscriptionPipeline] part {i + 1}/{parts.Count}: bytes={parts[i].Length}, chars={text.Length}");
-            if (text.Length > 0) texts.Add(text);
-            progress?.Report(new TranscriptionProgress(i + 1, parts.Count));
+            await gate.WaitAsync(ct);
+            try
+            {
+                var text = await PostOneWithRetryAsync(parts[idx], PartFileName(fileName, idx), routing, idx, ct);
+                texts[idx] = text;
+                int done = Interlocked.Increment(ref completed);
+                FileLog.Write($"[BatchTranscriptionPipeline] chunk {idx + 1}/{parts.Count} done: bytes={parts[idx].Length}, chars={text.Length}");
+                progress?.Report(new TranscriptionProgress(done, parts.Count));
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
 
-        return string.Join(" ", texts);
+        var tasks = new Task[parts.Count];
+        for (int i = 0; i < parts.Count; i++) tasks[i] = ProcessAsync(i);
+        await Task.WhenAll(tasks);   // throws the first chunk failure -> job fails clean
+
+        return string.Join(" ", texts.Where(t => !string.IsNullOrEmpty(t)));
     }
+
+    /// <summary>
+    /// One chunk POST with a bounded retry on a TRANSIENT failure (network error, a per-request
+    /// timeout, or a 5xx/429 from the proxy - which has already tried its own provider fallback, so the
+    /// retry gives the breaker a moment to recover). A permanent 4xx (bad request, auth) or a 402
+    /// (out of credits) is NOT retried and propagates its original typed exception so the caller's
+    /// credit/retry handling still works. The chunk index is logged on failure.
+    /// </summary>
+    private async Task<string> PostOneWithRetryAsync(
+        byte[] audio, string fileName, ResolvedTranscription routing, int chunkIndex, CancellationToken ct)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await PostOneAsync(audio, fileName, routing, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < PerChunkRetries && IsTransient(ex))
+            {
+                FileLog.Write($"[BatchTranscriptionPipeline] chunk {chunkIndex} transient failure "
+                              + $"(attempt {attempt + 1}/{PerChunkRetries + 1}): {ex.Message} - retrying");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[BatchTranscriptionPipeline] chunk {chunkIndex} failed permanently: {ex.Message}");
+                throw;
+            }
+        }
+    }
+
+    /// <summary>A chunk failure worth one more attempt: a network error, a per-request timeout, or a
+    /// 5xx/429 from the proxy. A 4xx/402 is permanent (do not retry).</summary>
+    private static bool IsTransient(Exception ex) => ex switch
+    {
+        TranscriptionFailedException t => t.IsTransient,
+        HttpRequestException => true,
+        TaskCanceledException => true,
+        _ => false,
+    };
 
     /// <summary>
     /// Name one part of a split upload, keeping the original extension so the server still decodes the
