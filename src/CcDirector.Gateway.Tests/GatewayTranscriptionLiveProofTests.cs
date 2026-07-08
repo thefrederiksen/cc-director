@@ -17,7 +17,8 @@ namespace CcDirector.Gateway.Tests;
 /// This proves the consolidation on a running instance, not just in a unit harness:
 ///   * with no key for the current remote mode, the endpoint answers 409 with the mode - the exact
 ///     "no key set" condition that made a recorded note fail even when a key was present; and
-///   * the routing endpoint a connected Director consumes resolves through the SAME single owner.
+///   * once the DevThrottle key is set, the same endpoint gets past key resolution and reaches audio
+///     validation through the single owner.
 /// Tailscale is disabled via TestEnvironment so it never touches a running Gateway.
 /// </summary>
 [Collection("DirectorRoot")]
@@ -65,10 +66,10 @@ public sealed class GatewayTranscriptionLiveProofTests : IAsyncLifetime
     [Fact]
     public async Task PostTranscription_RemoteModeNoKey_Returns409_ThroughRealHost()
     {
-        // DevThrottle mode: its key (DEVTHROTTLE_API_KEY) is never seeded from the environment (only
-        // OPENAI_API_KEY is), so the no-key 409 gate is deterministic regardless of the host machine's
-        // OPENAI_API_KEY. This is the exact "no key set for the current transcription mode" condition
-        // the single endpoint now answers consistently for every batch caller.
+        // DevThrottle mode: its key is not seeded from the environment in this isolated host, so the
+        // no-key 409 gate is deterministic regardless of the host machine's credentials. This is the
+        // exact "no key set for the current transcription mode" condition the single endpoint now
+        // answers consistently for every batch caller.
         TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
 
         using var content = new ByteArrayContent(new byte[] { 1, 2, 3 });
@@ -81,20 +82,20 @@ public sealed class GatewayTranscriptionLiveProofTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RoutingEndpoint_ResolvesThroughSameOwner_ReturnsKeyOnceSet()
+    public async Task PostTranscription_WithKey_ReachesAudioValidation()
     {
-        // The single owner reads the key from the vault: set it via the vault HTTP surface, then the
-        // routing endpoint (what a connected Director consumes) composes URL + key server-side.
-        await _http.PutAsJsonAsync("vault/keys/OPENAI_API_KEY", new { value = "sk-live-proof" });
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
+        // The single owner reads the DevThrottle key from the vault. Once it is set, an empty upload
+        // no longer returns the no-key 409; it reaches the endpoint's audio validation and returns 400.
+        await _http.PutAsJsonAsync("vault/keys/DEVTHROTTLE_API_KEY", new { value = "dt_live_liveproof" });
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
 
-        var resp = await _http.GetAsync("transcription/routing");
+        using var content = new ByteArrayContent(Array.Empty<byte>());
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/webm");
+        var resp = await _http.PostAsync("transcription", content);
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.Equal("byo", doc.RootElement.GetProperty("mode").GetString());
-        Assert.Equal("https://api.openai.com/v1", doc.RootElement.GetProperty("baseUrl").GetString());
-        Assert.Equal("sk-live-proof", doc.RootElement.GetProperty("key").GetString());
+        Assert.Equal("no audio in the request body", doc.RootElement.GetProperty("error").GetString());
     }
 
     private static int AllocateFreePort()

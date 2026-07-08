@@ -515,14 +515,14 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// One-time bootstrap of the central vault from the user environment (option A). If the vault
-    /// does not yet carry OPENAI_API_KEY, seed it from the environment (process, then User scope on
-    /// Windows). Never clobbers an existing vault value (the Cockpit is the live rotation surface).
-    /// Key name matches <see cref="Core.Configuration.OpenAiKeyResolver.KeyName"/>.
+    /// One-time bootstrap of the central vault from the user environment. If the vault does not yet
+    /// carry the DevThrottle account key, seed it from the environment (process, then User scope on
+    /// Windows). Never clobbers an existing vault value.
+    /// Key name matches <see cref="Core.Configuration.HostedAiKeyResolver.KeyName"/>.
     /// </summary>
     private void SeedKeyVaultFromEnvironment()
     {
-        const string keyName = "OPENAI_API_KEY";
+        const string keyName = Core.Configuration.TranscriptionEndpointResolver.DevThrottleKeyName;
         var fromEnv = Environment.GetEnvironmentVariable(keyName);
         if (string.IsNullOrWhiteSpace(fromEnv) && OperatingSystem.IsWindows())
             fromEnv = Environment.GetEnvironmentVariable(keyName, EnvironmentVariableTarget.User);
@@ -600,7 +600,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <summary>
     /// Build the wingman's brain for the CURRENTLY selected AI provider and requested model role. The
     /// wingman is a stateless hosted chat-completions call, not the warm <c>claude.exe</c> brain,
-    /// because that agent speaks the Anthropic protocol and cannot run these OpenAI-compatible models.
+    /// because that agent speaks a different protocol and cannot run these hosted models.
     /// The provider, credential, and role-specific model are read at CALL time, so a settings change is
     /// honored on the next turn without a Gateway restart.
     /// </summary>
@@ -619,11 +619,8 @@ public sealed class GatewayHost : IAsyncDisposable
     {
         FileLog.Write($"[GatewayHost] StartAsync: port={Port}");
 
-        // Option A bootstrap (docs/install/INSTALLATION.md section 4): a Gateway install guarantees
-        // OPENAI_API_KEY is in the user environment. Seed the central vault from it ONCE here so the
-        // Cockpit shows the key as set and Directors can pull it immediately. The vault is the live
-        // source of truth thereafter - rotating the key in the Cockpit overwrites this seed, and we
-        // never clobber an existing vault value (SetIfAbsent).
+        // Seed the central vault from a DevThrottle account-key environment value once when present.
+        // The vault is the live source of truth thereafter and SetIfAbsent never clobbers it.
         SeedKeyVaultFromEnvironment();
 
         // Issue #881: an install that was already signed in before this shipped won't fire the
@@ -1029,16 +1026,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // with no sign-in flow (SignIn null) it reports an explicit "not available" result.
         AccountSignInCallbackEndpoint.Map(_app, SignIn);
 
-        // Transcription routing (issue #506): the Gateway serves the WHOLE routing target
-        // (mode + base URL + model + key) for its configured transcription mode, so a connected
-        // Director stops hardcoding the URL/mode. Composes URL+key server-side from the one pure
-        // resolver, so the bring-your-own OpenAI key is never paired with the devthrottle.com URL.
-        TranscriptionRoutingEndpoint.Map(_app, _keyVault);
-
         // The single Gateway speech-to-text endpoint (issue #839): a caller POSTs raw audio and gets
         // text back. The phone Notes worker, the Settings "Test it" button, and on-device mode all go
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
-        // Whisper, or the resolved OpenAI-compatible batch endpoint). Optional ?correct=true also runs
+        // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
         TranscriptionBatchEndpoint.Map(_app, _keyVault);
 

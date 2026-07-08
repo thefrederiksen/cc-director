@@ -6,9 +6,8 @@ namespace CcDirector.Core.Configuration;
 /// <summary>
 /// The text-to-speech voice for spoken wingman output, persisted in config.json as the top-level string
 /// "tts_voice". Voices are DYNAMIC and provider-specific - each speech model hands back its own voice
-/// list from the provider's <c>/models</c> catalog (OpenAI has nova/alloy/...; the DevThrottle proxy's
-/// Kokoro has af_bella/am_onyx/...), and the two sets do NOT overlap. So any non-empty id is accepted
-/// here (never a fixed allow-list), and the DEFAULT is provider-aware (<see cref="Resolve"/>).
+/// list from the provider's <c>/models</c> catalog. Any non-empty id is accepted here (never a fixed
+/// allow-list), and the DEFAULT comes from the DevThrottle hosted routing target (<see cref="Resolve"/>).
 ///
 /// Read at synthesis time, so a change applies on the next spoken summary.
 /// </summary>
@@ -17,9 +16,8 @@ public static class TtsVoiceConfig
     /// <summary>The config.json key this setting lives under.</summary>
     public const string ConfigKey = "tts_voice";
 
-    /// <summary>The OpenAI voice set - used only to populate the voice dropdown for the OpenAI provider
-    /// (whose flat /models list carries no voices). The DevThrottle voices come from its live catalog.</summary>
-    public static readonly IReadOnlyList<string> OpenAiVoices = new[]
+    /// <summary>A small fallback voice set used only when the live speech catalog carries no voices.</summary>
+    public static readonly IReadOnlyList<string> FallbackVoices = new[]
     {
         "nova", "alloy", "echo", "fable", "onyx", "shimmer",
     };
@@ -38,7 +36,7 @@ public static class TtsVoiceConfig
     }
 
     /// <summary>The effective voice for <paramref name="mode"/>: the saved value when set, else the
-    /// provider default (Kokoro's af_bella for DevThrottle, nova for OpenAI).</summary>
+    /// DevThrottle hosted default.</summary>
     public static string Resolve(TranscriptionMode mode)
     {
         var saved = Get();

@@ -11,9 +11,8 @@ namespace CcDirector.Core.Voice;
 ///   "... wingman send"     -> commit the captured prompt
 ///   "... wingman cancel"   -> discard the captured prompt
 ///
-/// The engine consumes the CUMULATIVE transcript the way
-/// <c>OpenAiRealtimeProvider.OnPartial</c> delivers it (one growing string per
-/// listen session), classifies the control phrases as delimiters, and raises
+/// The engine consumes a CUMULATIVE transcript (one growing string per listen session), classifies
+/// the control phrases as delimiters, and raises
 /// <see cref="OnEvent"/>. It knows nothing about microphones or Avalonia, so it
 /// is unit-tested with scripted strings and reused unchanged by the desktop test
 /// dialog (and later the phone / session view).
@@ -74,8 +73,8 @@ public sealed class WakeWordEngine
     }
 
     /// <summary>
-    /// Feed the latest CUMULATIVE transcript snapshot (as delivered by the realtime
-    /// provider's OnPartial). The engine processes only the newly appended text.
+    /// Feed the latest cumulative transcript snapshot. The engine processes only the newly appended
+    /// text.
     /// </summary>
     public void Feed(string cumulativeTranscript)
     {

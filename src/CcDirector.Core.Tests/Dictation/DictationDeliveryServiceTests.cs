@@ -150,7 +150,7 @@ public sealed class DictationDeliveryServiceTests : IDisposable
     {
         var rec = _store.Save("s", "", SampleWav);
         var svc = new DictationDeliveryService(
-            FakeTranscriber.Throwing(new TranscriptionUnavailableException("OpenAI key is not set.")), _store);
+            FakeTranscriber.Throwing(new TranscriptionUnavailableException("DevThrottle AI is not configured.")), _store);
 
         var result = await svc.DeliverAsync(rec, _ => Task.CompletedTask);
 

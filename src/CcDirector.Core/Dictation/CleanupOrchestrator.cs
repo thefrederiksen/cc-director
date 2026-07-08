@@ -3,13 +3,14 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation.Models;
 using CcDirector.Core.Utilities;
 
 namespace CcDirector.Core.Dictation;
 
 /// <summary>
-/// Runs a final transcript through an OpenAI chat-completion model that does
+/// Runs a final transcript through a hosted chat-completion model that does
 /// ONE thing: detect dictionary terms the speech-to-text engine misheard.
 ///
 /// The model NEVER outputs the transcript (issue #190: every logged
@@ -23,9 +24,8 @@ namespace CcDirector.Core.Dictation;
 /// canonical dictionary term. Anything the model returns that is not a valid
 /// edit document ships the raw transcript untouched.
 ///
-/// Defaults to <c>gpt-4o-mini</c>; callers specify the model
-/// (<c>gpt-4.1-nano</c> in production - ~1 second latency, fractional-cent
-/// cost). temperature is 0 so detection is as stable as the model can be.
+/// Defaults to the DevThrottle fast wingman model; callers can specify a different hosted model.
+/// Temperature is 0 so detection is as stable as the model can be.
 ///
 /// Fails open: on any error (network failure, bad response, invalid edit
 /// document) the returned <see cref="CleanupOutcome"/> carries the raw
@@ -33,9 +33,9 @@ namespace CcDirector.Core.Dictation;
 /// </summary>
 public sealed class CleanupOrchestrator : IDisposable
 {
-    /// <summary>Default OpenAI-compatible base URL (the bring-your-own-key path).</summary>
-    public const string DefaultBaseUrl = "https://api.openai.com/v1";
-    public const string DefaultModel = "gpt-4o-mini";
+    /// <summary>Default provider-compatible DevThrottle base URL.</summary>
+    public const string DefaultBaseUrl = TranscriptionEndpointResolver.DevThrottleBaseUrl;
+    public const string DefaultModel = TranscriptionEndpointResolver.DevThrottleWingmanFastModel;
     public static readonly TimeSpan HttpTimeout = TimeSpan.FromSeconds(60);
 
     private readonly HttpClient _http;
@@ -44,10 +44,10 @@ public sealed class CleanupOrchestrator : IDisposable
     private readonly string _model;
     private readonly string _chatCompletionsEndpoint;
 
-    /// <param name="apiKey">OpenAI API key. Reads <c>OPENAI_API_KEY</c> env var if blank.</param>
-    /// <param name="model">Chat model. Defaults to <c>gpt-4o-mini</c>.</param>
+    /// <param name="apiKey">DevThrottle account key. Reads <c>DEVTHROTTLE_API_KEY</c> env var if blank.</param>
+    /// <param name="model">Hosted chat model.</param>
     /// <param name="httpClient">Optional shared HttpClient. Provider creates and owns one if null.</param>
-    /// <param name="baseUrl">OpenAI-compatible base URL (issue #497). Defaults to <see cref="DefaultBaseUrl"/>.</param>
+    /// <param name="baseUrl">Provider-compatible base URL. Defaults to <see cref="DefaultBaseUrl"/>.</param>
     public CleanupOrchestrator(
         string? apiKey = null,
         string model = DefaultModel,
@@ -106,7 +106,7 @@ public sealed class CleanupOrchestrator : IDisposable
         var sw = Stopwatch.StartNew();
         try
         {
-            var modelOutput = await CallOpenAiAsync(systemPrompt, rawTranscript, ct);
+            var modelOutput = await CallChatCompletionsAsync(systemPrompt, rawTranscript, ct);
             sw.Stop();
             FileLog.Write($"[CleanupOrchestrator] CleanAsync: model responded in {sw.ElapsedMilliseconds}ms, output_len={modelOutput?.Length ?? 0}");
 
@@ -263,7 +263,7 @@ public sealed class CleanupOrchestrator : IDisposable
          "{\"edits\": []}"),
     };
 
-    private async Task<string> CallOpenAiAsync(string systemPrompt, string userText, CancellationToken ct)
+    private async Task<string> CallChatCompletionsAsync(string systemPrompt, string userText, CancellationToken ct)
     {
         var messages = new List<object> { new { role = "system", content = systemPrompt } };
         foreach (var (user, assistant) in FewShotExamples)
@@ -294,7 +294,7 @@ public sealed class CleanupOrchestrator : IDisposable
         {
             FileLog.Write($"[CleanupOrchestrator] HTTP {(int)resp.StatusCode}: {Truncate(body, 300)}");
             throw new HttpRequestException(
-                $"OpenAI chat completions failed: HTTP {(int)resp.StatusCode} - {Truncate(body, 200)}");
+                $"Hosted chat completions failed: HTTP {(int)resp.StatusCode} - {Truncate(body, 200)}");
         }
 
         using var doc = JsonDocument.Parse(body);
@@ -309,10 +309,10 @@ public sealed class CleanupOrchestrator : IDisposable
     {
         if (!string.IsNullOrWhiteSpace(explicitKey))
             return explicitKey.Trim();
-        var env = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var env = Environment.GetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName);
         if (string.IsNullOrWhiteSpace(env))
             throw new InvalidOperationException(
-                "OpenAI API key not provided and OPENAI_API_KEY environment variable is not set.");
+                "DevThrottle account key not provided and DEVTHROTTLE_API_KEY environment variable is not set.");
         return env.Trim();
     }
 

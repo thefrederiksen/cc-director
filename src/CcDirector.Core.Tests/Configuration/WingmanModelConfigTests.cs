@@ -4,9 +4,9 @@ using Xunit;
 namespace CcDirector.Core.Tests.Configuration;
 
 /// <summary>
-/// <see cref="WingmanModelConfig"/> resolves the hosted wingman chat model per provider: a real saved id
-/// is honored; an unset or stale Claude-alias value falls forward to the provider default (glm-5.2 /
-/// gpt-5.5) so the wingman never calls the proxy with a model it cannot run.
+/// <see cref="WingmanModelConfig"/> resolves the hosted wingman chat model: a real saved id is honored;
+/// an unset or stale Claude-alias value falls forward to the DevThrottle default so the wingman never
+/// calls the proxy with a model it cannot run.
 /// </summary>
 [Collection("CcStorageRoot")]
 public sealed class WingmanModelConfigTests : IDisposable
@@ -31,7 +31,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     public void Resolve_Unset_UsesProviderDefault()
     {
         Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("gpt-5.5", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("zai-org/GLM-5.2", WingmanModelConfig.Resolve(TranscriptionMode.Byo));
     }
 
     [Theory]
@@ -63,7 +63,7 @@ public sealed class WingmanModelConfigTests : IDisposable
     public void ResolveFast_Unset_UsesProviderFastDefault()
     {
         Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast(TranscriptionMode.DevThrottle));
-        Assert.Equal("gpt-5.5-mini", WingmanModelConfig.ResolveFast(TranscriptionMode.Byo));
+        Assert.Equal("Qwen/Qwen2.5-72B-Instruct", WingmanModelConfig.ResolveFast(TranscriptionMode.Byo));
     }
 
     [Fact]

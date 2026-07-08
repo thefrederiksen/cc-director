@@ -10,9 +10,9 @@ namespace CcDirector.Gateway.Transcription;
 /// <summary>
 /// The single Gateway owner of speech-to-text (issue #839). Every module that needs audio turned
 /// into text goes through this one service: it resolves the configured transcription mode and the
-/// key, runs the OpenAI-compatible batch endpoint for the mode (DevThrottle hosted or bring-your-own
-/// OpenAI), and optionally applies the validated dictionary correction. No caller resolves the mode,
-/// reads the key, picks a provider, or talks to OpenAI on its own.
+/// key, runs the provider-compatible DevThrottle batch endpoint, and optionally applies the validated
+/// dictionary correction. No caller resolves the mode, reads the key, picks a provider, or talks to a
+/// provider on its own.
 ///
 /// This collapses the three hand-kept-in-step resolvers that previously each did "figure out the
 /// mode, then read the key" - the phone Notes worker (<c>ResolveSelectedMethod</c>), the Settings
@@ -21,9 +21,8 @@ namespace CcDirector.Gateway.Transcription;
 /// (<see cref="Api.TranscriptionBatchEndpoint"/>).
 ///
 /// The key lives in exactly one store: the Gateway vault file (<see cref="KeyVault"/>). There is no
-/// second config.json copy. The bring-your-own OpenAI key is only ever paired with the OpenAI base
-/// URL because the (URL, key, transport, model) tuple is composed from the one pure
-/// <see cref="TranscriptionEndpointResolver"/> - it is never crossed onto the DevThrottle URL.
+/// second config.json copy. Legacy provider mode values migrate forward because the (URL, key,
+/// transport, model) tuple is composed from the one pure <see cref="TranscriptionEndpointResolver"/>.
 ///
 /// Transcription integrity (CodingStyle section 16): the only post-transcription transform is the
 /// validated dictionary corrector (<see cref="CleanupOrchestrator"/> / <see cref="TranscriptEditEngine"/>)
@@ -172,7 +171,7 @@ public sealed class GatewayTranscriptionService
 
     /// <summary>
     /// Run the transcription provider for the resolved routing: ONE batch POST to the resolved
-    /// OpenAI-compatible endpoint for the mode. Throws on a provider error (a missing transcript is a
+    /// provider-compatible endpoint for the mode. Throws on a provider error (a missing transcript is a
     /// real failure the caller must surface).
     /// </summary>
     private async Task<string> TranscribeRawCoreAsync(
@@ -260,8 +259,8 @@ public sealed record GatewayTranscriptionRouting
     public TranscriptionMode Mode => Endpoint.Mode;
 
     /// <summary>
-    /// Compose the <see cref="ResolvedTranscription"/> the remote batch pipeline consumes. Throws when
-    /// no key is set - call only after checking <see cref="Key"/> is non-null.
+    /// Compose the <see cref="ResolvedTranscription"/> the Gateway-local batch transport consumes.
+    /// Throws when no key is set - call only after checking <see cref="Key"/> is non-null.
     /// </summary>
     public ResolvedTranscription ToResolved()
     {
@@ -320,4 +319,27 @@ public sealed record GatewayTranscriptionResult(
     /// show the add-credits state and keep the recording.</summary>
     public static GatewayTranscriptionResult OutOfCredits(string mode, string? model, string code, string error)
         => new(TranscriptionOutcome.OutOfCredits, null, mode, model, error, code);
+}
+
+/// <summary>
+/// Gateway-local resolved transcription target: provider base URL, credential, transport, model, and
+/// mode. This deliberately lives in the Gateway transcription namespace so Director/Core code cannot
+/// depend on a reusable provider-direct transcription DTO.
+/// </summary>
+public sealed record ResolvedTranscription
+{
+    /// <summary>The provider-compatible base URL.</summary>
+    public required string BaseUrl { get; init; }
+
+    /// <summary>The credential to present (an <c>sk-</c> or <c>dt_</c> key, depending on mode).</summary>
+    public required string ApiKey { get; init; }
+
+    /// <summary>The provider transport to use.</summary>
+    public required TranscriptionTransport Transport { get; init; }
+
+    /// <summary>The transcription model to use.</summary>
+    public required string Model { get; init; }
+
+    /// <summary>The mode this target was resolved for.</summary>
+    public required TranscriptionMode Mode { get; init; }
 }

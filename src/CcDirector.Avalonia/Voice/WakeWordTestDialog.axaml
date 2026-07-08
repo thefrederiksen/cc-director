@@ -175,7 +175,7 @@
                                        FontSize="14" FontWeight="SemiBold" />
 
                             <TextBlock Foreground="#9CDCAA" FontSize="12" FontWeight="SemiBold"
-                                       Text="By voice (uses your mic + an OpenAI key)" />
+                                       Text="By voice (uses your mic + DevThrottle AI)" />
                             <TextBlock Foreground="#BBBBBB" FontSize="12" TextWrapping="Wrap"
                                        Text="1. Click Start. The bars move = the mic is live. The badge shows IDLE.&#10;2. Say &quot;wingman&quot; then your prompt (e.g. &quot;wingman fix the login bug&quot;). The badge turns to CAPTURING and your words build up in CAPTURED PROMPT.&#10;3. Say &quot;wingman send&quot; to emit it, or &quot;wingman cancel&quot; to discard. The badge returns to IDLE.&#10;4. Click Stop when you are finished." />
 

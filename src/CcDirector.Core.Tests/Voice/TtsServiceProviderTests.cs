@@ -8,10 +8,10 @@ namespace CcDirector.Core.Tests.Voice;
 
 /// <summary>
 /// Proves the consolidated AI provider drives <see cref="TtsService"/> when a key resolver is supplied
-/// (the desktop / Director path): the base URL, credential, voice, and model all follow the selected
-/// provider. Runs against an isolated CC_DIRECTOR_ROOT (config.json + a standalone key vault), with a
-/// capturing handler so the outgoing request is asserted without network. In the CcStorageRoot
-/// collection so it never races other root-mutating tests.
+/// (the desktop / Director path): the base URL, credential, voice, and model all resolve through the
+/// DevThrottle account endpoint. Runs against an isolated CC_DIRECTOR_ROOT (config.json + a
+/// standalone key vault), with a capturing handler so the outgoing request is asserted without
+/// network. In the CcStorageRoot collection so it never races other root-mutating tests.
 /// </summary>
 [Collection("CcStorageRoot")]
 public sealed class TtsServiceProviderTests : IDisposable
@@ -54,7 +54,7 @@ public sealed class TtsServiceProviderTests : IDisposable
         var vault = new KeyVault(Path.Combine(_root, "vault.dat"));
         vault.Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_testkey");
 
-        var resolver = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.DevThrottle, http: null, localVault: vault);
+        var resolver = new HostedAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.DevThrottle, http: null, localVault: vault);
         var handler = new CapturingHandler();
         var svc = new TtsService(new AgentOptions(), handler, resolver);
 
@@ -70,24 +70,25 @@ public sealed class TtsServiceProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task GenerateAsync_OpenAiProvider_PostsToOpenAiWithOpenAiKeyAndConfiguredVoice()
+    public async Task GenerateAsync_LegacyByoProvider_PostsToDevThrottleWithAccountKeyAndConfiguredVoice()
     {
         TranscriptionModeConfig.Set(TranscriptionMode.Byo);
         TtsVoiceConfig.Set("shimmer");
         var vault = new KeyVault(Path.Combine(_root, "vault.dat"));
-        vault.Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-testkey");
+        vault.Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_testkey");
 
-        var resolver = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.Byo, http: null, localVault: vault);
+        var resolver = new HostedAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.Byo, http: null, localVault: vault);
         var handler = new CapturingHandler();
         var svc = new TtsService(new AgentOptions(), handler, resolver);
 
         var result = await svc.GenerateAsync("Hi.", null, null);
 
         Assert.True(result.Success);
-        Assert.Equal("https://api.openai.com/v1/audio/speech", handler.Request!.RequestUri!.ToString());
-        Assert.Equal("sk-testkey", handler.Request.Headers.Authorization!.Parameter);
+        Assert.Equal("https://devthrottle.com/api/v1/audio/speech", handler.Request!.RequestUri!.ToString());
+        Assert.Equal("dt_live_testkey", handler.Request.Headers.Authorization!.Parameter);
         using var doc = JsonDocument.Parse(handler.Body!);
         Assert.Equal("shimmer", doc.RootElement.GetProperty("voice").GetString());
+        Assert.Equal("hexgrad/Kokoro-82M", doc.RootElement.GetProperty("model").GetString());
     }
 
     [Fact]
@@ -95,7 +96,7 @@ public sealed class TtsServiceProviderTests : IDisposable
     {
         // Signed-out / no account key: a clear no_key result, never a wrong-provider fallback.
         var vault = new KeyVault(Path.Combine(_root, "vault.dat"));
-        var resolver = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.DevThrottle, http: null, localVault: vault);
+        var resolver = new HostedAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.DevThrottle, http: null, localVault: vault);
         var svc = new TtsService(new AgentOptions(), new CapturingHandler(), resolver);
 
         var result = await svc.GenerateAsync("Hello.", null, null);

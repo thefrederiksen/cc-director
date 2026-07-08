@@ -10,9 +10,8 @@ namespace CcDirector.Avalonia.Voice;
 /// Whole-audio dictation recorder for the desktop Speak dialog (issue #589).
 ///
 /// This is the migrated, BATCH-ONLY dictation path. It captures EVERY byte of
-/// microphone audio locally for the whole turn and transcribes it exactly once,
-/// after the user stops, through the ONE shared
-/// <see cref="BatchTranscriptionPipeline"/> (issue #587). There is deliberately
+/// microphone audio locally for the whole turn and sends it to the Gateway transcription owner exactly
+/// once, after the user stops. There is deliberately
 /// NO realtime/streaming transcription and NO live partial preview: the realtime
 /// model lightly rewords phrasing and the live-partials experience is exactly the
 /// partial transcription the product removed, so desktop dictation now matches the
@@ -36,16 +35,11 @@ namespace CcDirector.Avalonia.Voice;
 /// post-transcription transform is the validated dictionary corrector, so a turn
 /// with no dictionary term comes back byte-identical to the raw transcription.
 ///
-/// No browser, no WebSocket, no localhost hop, no realtime socket. The shared C#
-/// pipeline runs in the same process as the Avalonia UI. This is deliberately a
-/// SEPARATE class from <see cref="SpeakService"/> (which still serves the
-/// continuous-listening wake-word and voice-command surfaces); dictation no longer
-/// shares the streaming orchestrator.
+/// No browser, no WebSocket, no localhost hop, no realtime socket.
 /// </summary>
 public sealed class BatchDictationRecorder : IAsyncDisposable
 {
     private readonly AgentOptions _options;
-    private readonly OpenAiKeyResolver _keyResolver;
     private readonly DictionaryResolver _dictionaryResolver;
     private readonly int _micDeviceNumber;
 
@@ -54,8 +48,8 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     // without a real microphone (the IAudioSource seam).
     private readonly Func<int, IAudioSource> _audioSourceFactory;
 
-    // Test seam: replaces the post-snapshot transcription (key + dictionary resolve,
-    // WAV wrap, shared batch pipeline, audit log) with a stub that receives the
+    // Test seam: replaces the post-snapshot transcription (WAV wrap, Gateway
+    // transcription call, audit log) with a stub that receives the
     // snapshotted PCM. Null in production, where the real pipeline runs. Lets a test
     // assert exactly which captured bytes reach transcription - i.e. that the tail is
     // not clipped - without any network.
@@ -65,7 +59,7 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
 
     // The whole-turn PCM16 accumulator. Every captured chunk is appended here in
     // capture order; nothing leaves the machine until TranscribeAsync wraps the
-    // whole buffer in one WAV blob and sends it through the shared batch pipeline.
+    // whole buffer in one WAV blob and sends it to the Gateway transcription endpoint.
     private readonly MemoryStream _audio = new();
     private readonly object _audioLock = new();
 
@@ -109,10 +103,6 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     public BatchDictationRecorder(AgentOptions options, int micDeviceNumber = MicDevices.DefaultDeviceNumber)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        // Resolve the OpenAI key + transcription method by mode: Gateway vault when attached to a
-        // Gateway, the local key vault when standalone (issue #839: the vault is the single key
-        // store). The user-selected method (base URL, key, model) governs every transcription path.
-        _keyResolver = new OpenAiKeyResolver();
         // Resolve the dictation dictionary the same way: the Gateway's shared glossary when
         // attached, the local cache when standalone (#253). A Cockpit edit reaches this Director.
         _dictionaryResolver = new DictionaryResolver(options);
@@ -133,7 +123,6 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         int micDeviceNumber = MicDevices.DefaultDeviceNumber)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _keyResolver = new OpenAiKeyResolver();
         _dictionaryResolver = new DictionaryResolver(options);
         _micDeviceNumber = micDeviceNumber;
         _audioSourceFactory = audioSourceFactory ?? throw new ArgumentNullException(nameof(audioSourceFactory));
@@ -255,8 +244,8 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
 
     /// <summary>
     /// Stop the microphone, then transcribe the whole captured clip exactly once
-    /// through the shared batch pipeline (the user-selected method), applying the
-    /// dictionary corrector only. Returns the raw transcript, the corrected
+    /// through the Gateway transcription endpoint, applying the dictionary corrector
+    /// only. Returns the raw transcript, the corrected
     /// transcript, and how many dictionary words were corrected.
     ///
     /// Enforces the completeness gate (issue #586): a turn that captured no audio
@@ -275,30 +264,22 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         if (_transcribeOverride is not null)
             return await _transcribeOverride(pcm, device, ct);
 
-        // Resolve the user-selected transcription method (base URL, key, model). No
-        // routing means dictation is unavailable; surface the mode-appropriate message.
-        var routing = await _keyResolver.ResolveEndpointAsync(ct);
-        if (routing is null)
-            throw new InvalidOperationException(_keyResolver.UnavailableMessage);
-
-        // Pull the latest glossary from the Gateway when connected (refreshing the
-        // local cache as a side effect, #253); falls back to the local cache offline.
+        // Pull a local glossary snapshot for diagnostics. The Gateway applies the authoritative
+        // glossary correction during /transcription.
         var dictionary = await _dictionaryResolver.ResolveAsync(ct);
 
         // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the
-        // shared batch pipeline. The dictionary corrector is the only text transform.
+        // Gateway transcription endpoint. The dictionary corrector is the only text transform.
         var wav = WavWriter.WrapPcm16(
             pcm, MicAudioCapture.SampleRate, MicAudioCapture.Channels, MicAudioCapture.BitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
-        using var pipeline = new BatchTranscriptionPipeline(cleanupModel: _options.DictationCleanupModel);
-        var progress = new Progress<TranscriptionProgress>(p => OnTranscriptionProgress?.Invoke(p.CompletedParts, p.TotalParts));
-        var batch = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, _profile, ct, progress);
+        var gateway = await new GatewayTranscriptionClient().TranscribeAsync(
+            wav, "dictation.wav", "audio/wav", applyCorrection: true, ct);
         stopWatch.Stop();
 
-        FileLog.Write($"[BatchDictationRecorder] transcribed: rawLen={batch.RawTranscript.Length}, "
-            + $"correctedLen={batch.CorrectedTranscript.Length}, dictionaryApplied={batch.DictionaryApplied}, "
-            + $"changed={batch.ChangedWords.Count}, method={routing.Mode.ToConfigString()}, model={routing.Model}");
+        FileLog.Write($"[BatchDictationRecorder] transcribed via Gateway: len={gateway.Text.Length}, "
+            + $"mode={gateway.Mode}, model={gateway.Model}");
 
         // Capture-health line (issue #863): a byte deficit paired with large callback GAPS
         // (and small handler self-time) points upstream - the audio was under-delivered
@@ -324,10 +305,10 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
             StopToTranscribedMs: stopWatch.ElapsedMilliseconds,
             StopToCleanedMs: stopWatch.ElapsedMilliseconds,
             AudioBytesReceived: pcm.Length,
-            RawTranscript: batch.RawTranscript,
-            CleanedTranscript: batch.CorrectedTranscript,
-            CleanupApplied: batch.DictionaryApplied,
-            CleanupReason: batch.Reason,
+            RawTranscript: gateway.Text,
+            CleanedTranscript: gateway.Text,
+            CleanupApplied: false,
+            CleanupReason: "gateway-owned transcription",
             CleanupModel: _options.DictationCleanupModel,
             RemoteIp: null,
             ClientError: null,
@@ -342,9 +323,9 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         _ = Task.Run(() => DictationSessionLog.TryAppend(record));
 
         return new DictationResult(
-            RawTranscript: batch.RawTranscript,
-            CleanedTranscript: batch.CorrectedTranscript,
-            DictionaryWordsCorrected: batch.ChangedWords.Count);
+            RawTranscript: gateway.Text,
+            CleanedTranscript: gateway.Text,
+            DictionaryWordsCorrected: 0);
     }
 
     /// <summary>Append one captured PCM16 chunk to the whole-turn buffer. Runs on NAudio's thread.</summary>

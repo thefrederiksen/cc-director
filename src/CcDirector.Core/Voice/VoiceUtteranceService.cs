@@ -37,8 +37,8 @@ public sealed class VoiceUtteranceService
         _options = options;
     }
 
-    /// <summary>True when an OpenAI key is configured.</summary>
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
+    /// <summary>True when resumable voice upload can accept audio; transcription is gateway-owned.</summary>
+    public bool IsAvailable => true;
 
     /// <summary>
     /// Begin a new utterance. If the caller supplies an id it must be a GUID (we use

@@ -23,10 +23,10 @@ namespace CcDirector.Gateway.Api;
 ///   PUT  /gateway/brain/config    body { "agentId": str, "model": str } -> { agentId, tool, model }
 ///                                  (issue #510; legacy { "tool": str, ... } still accepted)
 ///   PUT  /gateway/autostart       body { "enabled": bool } -> { supported, enabled }
-///   GET  /gateway/transcription-mode -> { mode } ("byo" | "devthrottle") (issue #497)
-///   PUT  /gateway/transcription-mode body { "mode": "byo"|"devthrottle" } -> { mode }
+///   GET  /gateway/transcription-mode -> { mode } ("devthrottle")
+///   PUT  /gateway/transcription-mode body { "mode": "devthrottle" } -> { mode }
 ///   GET  /gateway/ai-provider     -> { provider, wingmanModel, transcriptionModel, ttsVoice, voices[] }
-///   PUT  /gateway/ai-provider     body { "provider": "devthrottle"|"openai" } (sets mode + wingman model)
+///   PUT  /gateway/ai-provider     body { "provider": "devthrottle" } (resets hosted model defaults)
 ///   GET  /gateway/tts-voice       -> { voice, voices[] }
 ///   PUT  /gateway/tts-voice       body { "voice": "nova"|... } -> { voice }
 ///   GET  /gateway/telemetry-consent  -> { enabled } (fleet-wide richer-usage consent, default ON, issue #649)
@@ -228,13 +228,9 @@ internal static class SettingsEndpoints
             }
         });
 
-        // Transcription mode (issue #497, #887): "devthrottle" (the signed-in account's hosted
-        // transcription -> devthrottle.com, the DEFAULT) or "byo" (the user's own OpenAI key ->
-        // api.openai.com). The old in-process "local" option was removed in #887 (we dogfood our own
-        // hosted service); a "local" value is accepted as a legacy alias and migrates forward to
-        // devthrottle. Stored as the top-level config.json key transcription_mode, the same store
-        // addressing_mode uses. The two keys live in the existing vault (OPENAI_API_KEY,
-        // DEVTHROTTLE_API_KEY).
+        // Transcription mode: DevThrottle hosted transcription is the only supported production
+        // capability. Legacy "local", "byo", and "openai" values are migrated by the config parser
+        // when read, but this API only accepts the current value.
         app.MapGet("/gateway/transcription-mode", () =>
             Results.Json(new { mode = Core.Configuration.TranscriptionModeConfig.Get().ToConfigString() }));
 
@@ -245,14 +241,12 @@ internal static class SettingsEndpoints
                 var body = await JsonSerializer.DeserializeAsync<TranscriptionModeBody>(
                     ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Mode))
-                    return Results.BadRequest(new { error = "body { \"mode\": \"devthrottle\"|\"byo\" } is required" });
+                    return Results.BadRequest(new { error = "body { \"mode\": \"devthrottle\" } is required" });
 
-                if (!Core.Configuration.TranscriptionModeExtensions.IsValid(body.Mode))
-                    return Results.BadRequest(new { error = "mode must be \"devthrottle\" or \"byo\"" });
+                if (!string.Equals(body.Mode.Trim(), Core.Configuration.TranscriptionMode.DevThrottle.ToConfigString(), StringComparison.OrdinalIgnoreCase))
+                    return Results.BadRequest(new { error = "mode must be \"devthrottle\"" });
 
-                // Parse migrates a legacy "local" forward to devthrottle (issue #887); both current
-                // modes are selectable - DevThrottle is the default we dogfood.
-                var mode = Core.Configuration.TranscriptionModeExtensions.Parse(body.Mode);
+                var mode = Core.Configuration.TranscriptionMode.DevThrottle;
 
                 Core.Configuration.TranscriptionModeConfig.Set(mode);
                 FileLog.Write($"[SettingsEndpoints] transcription_mode set to {mode.ToConfigString()}");
@@ -265,11 +259,10 @@ internal static class SettingsEndpoints
             }
         });
 
-        // The consolidated AI provider (the one switch that drives transcription + wingman + TTS).
-        // A projection of transcription_mode: "devthrottle" (hosted, ours) or "openai" (bring-your-own
-        // OpenAI key). GET returns the derived wingman + transcription models, the TTS voice, and the
-        // selectable voices. PUT sets transcription_mode AND the provider-default wingman models
-        // atomically, so one choice moves all capabilities to the same provider.
+        // The consolidated AI provider. DevThrottle is the only selectable provider; GET returns the
+        // derived wingman + transcription models, the TTS voice, and the selectable fallback voices.
+        // PUT keeps the endpoint for older clients but accepts only "devthrottle" and resets hosted
+        // model defaults atomically.
         app.MapGet("/gateway/ai-provider", () => Results.Json(AiProviderSnapshot()));
 
         app.MapPut("/gateway/ai-provider", async (HttpContext ctx) =>
@@ -279,14 +272,12 @@ internal static class SettingsEndpoints
                 var body = await JsonSerializer.DeserializeAsync<AiProviderBody>(
                     ctx.Request.Body, JsonOpts, ctx.RequestAborted);
                 if (body is null || string.IsNullOrWhiteSpace(body.Provider))
-                    return Results.BadRequest(new { error = "body { \"provider\": \"devthrottle\"|\"openai\" } is required" });
-                if (!TryParseProvider(body.Provider, out var mode))
-                    return Results.BadRequest(new { error = "provider must be \"devthrottle\" or \"openai\"" });
+                    return Results.BadRequest(new { error = "body { \"provider\": \"devthrottle\" } is required" });
+                if (!string.Equals(body.Provider.Trim(), "devthrottle", StringComparison.OrdinalIgnoreCase))
+                    return Results.BadRequest(new { error = "provider must be \"devthrottle\"" });
 
-                // Reset the wingman model, speech model, and voice to the NEW provider's defaults. This
-                // is required, not just tidy: the two providers' catalogs do not overlap (a Kokoro voice
-                // is not an OpenAI voice; zai-org/GLM-5.2 is not an OpenAI model), so a value saved for one
-                // provider would fail against the other. One switch moves all three cleanly.
+                // Reset the wingman model, speech model, and voice to the hosted defaults.
+                var mode = Core.Configuration.TranscriptionMode.DevThrottle;
                 var wingmanModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingman(mode).Model;
                 var wingmanFastModel = Core.Configuration.TranscriptionEndpointResolver.ResolveWingmanFast(mode).Model;
                 var ttsModel = Core.Configuration.TranscriptionEndpointResolver.DefaultTtsModel(mode);
@@ -310,16 +301,15 @@ internal static class SettingsEndpoints
             }
         });
 
-        // The text-to-speech voice for spoken wingman output (consolidated AI settings). One of the
-        // OpenAI-compatible voices; applies to whichever provider is selected (both are OpenAI-compatible
-        // for speech). Read at synthesis time, so a change is honored on the next spoken summary.
+        // The text-to-speech voice for spoken wingman output (consolidated AI settings). Read at
+        // synthesis time, so a change is honored on the next spoken summary.
         app.MapGet("/gateway/tts-voice", () =>
         {
             var mode = Core.Configuration.TranscriptionModeConfig.Get();
             return Results.Json(new
             {
                 voice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
-                voices = Core.Configuration.TtsVoiceConfig.OpenAiVoices,   // fallback set; DevThrottle voices come from /gateway/ai/models
+                voices = Core.Configuration.TtsVoiceConfig.FallbackVoices,
             });
         });
 
@@ -447,16 +437,16 @@ internal static class SettingsEndpoints
 
     /// <summary>
     /// The consolidated AI-provider snapshot the Cockpit AI page renders: the selected provider plus
-    /// the models/voice it resolves to. "provider" is the projection of transcription_mode
-    /// ("devthrottle" or "openai"); the wingman + transcription models are the provider-correct
-    /// values from the one routing spot; the voice + selectable set come from <see cref="Core.Configuration.TtsVoiceConfig"/>.
+    /// the models/voice it resolves to. "provider" is always "devthrottle"; the wingman +
+    /// transcription models come from the one routing spot; the voice + fallback selectable set come
+    /// from <see cref="Core.Configuration.TtsVoiceConfig"/>.
     /// </summary>
     private static object AiProviderSnapshot()
     {
         var mode = Core.Configuration.TranscriptionModeConfig.Get();
         return new
         {
-            provider = ProviderString(mode),
+            provider = "devthrottle",
             // The saved wingman-model choices fall forward to provider defaults for stale/unset values,
             // so models picked on the AI tab round-trip across a reload.
             wingmanModel = Core.Configuration.WingmanModelConfig.Resolve(mode),
@@ -464,23 +454,8 @@ internal static class SettingsEndpoints
             transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
             ttsModel = Core.Configuration.TtsModelConfig.Resolve(mode),
             ttsVoice = Core.Configuration.TtsVoiceConfig.Resolve(mode),
-            voices = Core.Configuration.TtsVoiceConfig.OpenAiVoices,
+            voices = Core.Configuration.TtsVoiceConfig.FallbackVoices,
         };
-    }
-
-    /// <summary>The UI provider string for a mode: DevThrottle -> "devthrottle", Byo -> "openai".</summary>
-    private static string ProviderString(Core.Configuration.TranscriptionMode mode) =>
-        mode == Core.Configuration.TranscriptionMode.DevThrottle ? "devthrottle" : "openai";
-
-    /// <summary>Parse the UI provider string to a transcription mode. False (no-fallback) on anything else.</summary>
-    private static bool TryParseProvider(string? value, out Core.Configuration.TranscriptionMode mode)
-    {
-        switch (value?.Trim().ToLowerInvariant())
-        {
-            case "devthrottle": mode = Core.Configuration.TranscriptionMode.DevThrottle; return true;
-            case "openai": mode = Core.Configuration.TranscriptionMode.Byo; return true;
-            default: mode = Core.Configuration.TranscriptionMode.DevThrottle; return false;
-        }
     }
 
     private sealed record AiProviderBody(string? Provider);

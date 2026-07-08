@@ -5,23 +5,21 @@ using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.Dictation.Models;
 using CcDirector.Core.HostedAi;
+using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
 
-namespace CcDirector.Core.Transcription;
+namespace CcDirector.Gateway.Transcription;
 
 /// <summary>
-/// The ONE shared batch transcription pipeline every surface calls (issue #587, design gap items
-/// G1/G4/G5). It is deliberately the only transcription entry point outside the live-dictation UI:
+/// Gateway-owned batch transcription transport. Director surfaces must not call this class directly;
+/// they call the Gateway <c>POST /transcription</c> endpoint through <c>GatewayTranscriptionClient</c>.
 ///
 ///   1. Whole audio in. A complete, already-gated audio blob (the Audio Completeness Gate, issue
 ///      #586, runs upstream - this pipeline assumes the bytes it receives are complete). There is
 ///      NO streaming/partial transcription here: the whole clip is transcribed once.
-///   2. ONE batch request to the resolved method. The OpenAI-compatible
-///      <c>POST {baseUrl}/audio/transcriptions</c> that BOTH OpenAI and the DevThrottle/Groq proxy
-///      implement. The base URL, key, and model come entirely from the caller's
-///      <see cref="ResolvedTranscription"/> (produced by the Gateway routing resolver,
-///      <see cref="OpenAiKeyResolver.ResolveEndpointAsync"/>), so the user-selected method governs
-///      every path and the bring-your-own OpenAI key is never crossed onto the devthrottle.com URL.
+///   2. ONE batch request to the resolved method. The provider-compatible POST is encapsulated
+///      here inside the Gateway process. The base URL, key, and model come from
+///      <see cref="GatewayTranscriptionService.Resolve"/>, so every path uses the same hosted target.
 ///   3. Dictionary corrector ONLY. The raw transcript runs through the validated dictionary
 ///      corrector (<see cref="CleanupOrchestrator"/> + <see cref="TranscriptEditEngine"/>): the
 ///      model proposes find/replace edits, deterministic code validates and applies them to the RAW
@@ -39,8 +37,8 @@ public sealed class BatchTranscriptionPipeline : IDisposable
 {
     /// <summary>
     /// HTTP timeout for the batch transcription POST. Whole-clip uploads can be several seconds for
-    /// longer recordings; this matches <c>OpenAiTranscriptionProvider</c>'s batch timeout. The timeout
-    /// is per request, so a recording split into several parts gets the full budget for each part.
+    /// longer recordings. The timeout is per request, so a recording split into several parts gets the
+    /// full budget for each part.
     /// </summary>
     public static readonly TimeSpan TranscribeTimeout = TimeSpan.FromSeconds(120);
 
@@ -325,7 +323,7 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     }
 
     /// <summary>
-    /// ONE whole-audio batch POST to the OpenAI-compatible <c>/audio/transcriptions</c> endpoint of
+    /// ONE whole-audio batch POST to the provider-compatible <c>/audio/transcriptions</c> endpoint of
     /// the resolved base URL, presenting the resolved key and model. This is the single transcription
     /// transport for the shared pipeline - there is no streaming/partial path here. Callers over the
     /// per-request size limit are split into several of these by <see cref="TranscribeBatchAsync"/>.
@@ -414,7 +412,7 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         => string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "...";
 
     /// <summary>
-    /// Best-effort read of the machine-readable error code from an OpenAI-compatible 402 body. Delegates
+    /// Best-effort read of the machine-readable error code from a provider-compatible 402 body. Delegates
     /// to the shared <see cref="HostedAiErrorMapper.ParseErrorCode"/> so the whole stack parses the 402
     /// code in exactly one place (issue #938) - the transcription path and the epic-wide gate never drift.
     /// </summary>

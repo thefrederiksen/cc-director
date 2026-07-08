@@ -5,7 +5,7 @@ using Xunit;
 namespace CcDirector.Core.Tests.HostedAi;
 
 /// <summary>
-/// Issue #938 (epic #937): the shared pre-flight readiness check. Every (mode, key, balance)
+/// Issue #938 (epic #937): the shared pre-flight readiness check. Every (mode, balance)
 /// combination must resolve to the one correct <see cref="HostedAiState"/>, an unknown balance must
 /// NOT block, and - the criterion the whole gate exists for - adding $5 must flip a check from
 /// <see cref="HostedAiState.NeedsCredits"/> to <see cref="HostedAiState.Ready"/> with no restart,
@@ -21,30 +21,30 @@ public sealed class HostedAiReadinessTests
             _ => Task.FromResult(balanceMicros));
 
     [Fact]
-    public async Task Byo_NoKey_NeedsKey()
+    public async Task LegacyByo_NoKey_UsesDevThrottleBalanceAndReadyWhenUnknown()
     {
         var state = await Build(TranscriptionMode.Byo, key: null).CheckAsync();
-        Assert.Equal(HostedAiState.NeedsKey, state);
+        Assert.Equal(HostedAiState.Ready, state);
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public async Task Byo_BlankKey_NeedsKey(string key)
+    public async Task LegacyByo_BlankKey_UsesDevThrottleBalanceAndReadyWhenUnknown(string key)
     {
         var state = await Build(TranscriptionMode.Byo, key: key).CheckAsync();
-        Assert.Equal(HostedAiState.NeedsKey, state);
+        Assert.Equal(HostedAiState.Ready, state);
     }
 
     [Fact]
-    public async Task Byo_WithKey_Ready()
+    public async Task LegacyByo_WithKey_Ready()
     {
         var state = await Build(TranscriptionMode.Byo, key: "sk-abc123").CheckAsync();
         Assert.Equal(HostedAiState.Ready, state);
     }
 
     [Fact]
-    public async Task Byo_NeverReadsBalance()
+    public async Task LegacyByo_ReadsBalance()
     {
         var balanceRead = false;
         var check = new HostedAiReadiness(
@@ -54,7 +54,7 @@ public sealed class HostedAiReadinessTests
 
         await check.CheckAsync();
 
-        Assert.False(balanceRead); // BYO is a local key read only - no cloud call
+        Assert.True(balanceRead);
     }
 
     [Theory]

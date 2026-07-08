@@ -16,10 +16,9 @@ namespace CcDirector.ControlApi;
 /// Maps POST /sessions/{id}/voice-turn - the server-side walkie-talkie turn (issue #351).
 ///
 /// One call = one complete turn:
-///   1. (optional) Transcribe the whole audio clip ONCE through the shared batch pipeline
-///      (issue #587) using the user-selected transcription method (issue #592) - the base URL,
-///      key, and model come from the Gateway routing resolver, NOT a hardcoded whisper-1 path -
-///      then apply the validated dictionary corrector only (no free-text cleanup). The
+///   1. (optional) Transcribe the whole audio clip ONCE through the Gateway transcription endpoint,
+///      which resolves the selected method, key, model, chunking, and validated dictionary
+///      correction. Director code does not resolve providers or call a transcription provider. The
 ///      completeness gate ran upstream (the Gateway reassembles the whole clip before
 ///      forwarding), so a partial upload never reaches transcription.
 ///   2. Wait until the session is ready (not mid-turn).
@@ -120,24 +119,20 @@ internal static class VoiceTurnEndpoint
 
                         await EmitAsync(new { stage = "transcribing" });
 
-                        // The whole clip is transcribed ONCE through the ONE shared batch pipeline
-                        // (issue #587) using the user-selected method (issue #592): the base URL,
-                        // key, and model come from the Gateway routing resolver, NOT a hardcoded
-                        // whisper-1 / api.openai.com endpoint, so changing the selected method
-                        // changes the base URL the upload is transcribed against. The only
-                        // post-transcription transform is the validated dictionary corrector -
-                        // there is NO free-text language-model cleanup - so an utterance with no
-                        // dictionary term comes back byte-identical to the raw transcription. The
-                        // completeness gate ran upstream (the Gateway reassembles the whole clip
-                        // before forwarding it here), so the bytes are already complete.
+                        // The whole clip is transcribed ONCE through the Gateway transcription
+                        // endpoint. The only post-transcription transform is the validated
+                        // dictionary corrector - there is NO free-text language-model cleanup - so
+                        // an utterance with no dictionary term comes back byte-identical to the raw
+                        // transcription. The completeness gate ran upstream, so the bytes are
+                        // already complete.
                         await using var stream = file.OpenReadStream();
                         var voice = new VoiceService(sessionManager, options);
                         var transcription = await voice.TranscribeAndCleanAsync(stream, file.FileName, session.RepoPath, ct);
 
                         if (string.Equals(transcription.Status, "no_key", StringComparison.Ordinal))
                         {
-                            FileLog.Write($"[VoiceTurnEndpoint] sid={guid}: transcription routing unavailable (no key for selected method)");
-                            await EmitAsync(new { stage = "error", message = "no_key: " + (transcription.Error ?? "transcription routing unavailable") });
+                            FileLog.Write($"[VoiceTurnEndpoint] sid={guid}: Gateway transcription unavailable (no key for selected method)");
+                            await EmitAsync(new { stage = "error", message = "no_key: " + (transcription.Error ?? "Gateway transcription unavailable") });
                             return;
                         }
                         if (!string.Equals(transcription.Status, "ok", StringComparison.Ordinal))
@@ -272,7 +267,7 @@ internal static class VoiceTurnEndpoint
                     summary = "Done.";
 
                 // --- step 6: synthesize to audio ---
-                var ttsSvc = new TtsService(options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
+                var ttsSvc = new TtsService(options, new Core.Configuration.HostedAiKeyResolver(Core.Configuration.GatewayConfig.Load));
                 byte[] audioBytes;
                 if (!await ttsSvc.IsAvailableAsync(ctx.RequestAborted))
                 {

@@ -2,8 +2,8 @@ namespace CcDirector.Core.HostedAi;
 
 /// <summary>
 /// Whether a hosted-AI feature (transcription, voice mode, Wingman, text-to-speech) can run right now
-/// for this machine's configured provider mode (issue #938, epic #937). ONE typed answer that every
-/// voice/Wingman/TTS surface consumes, so the "you need credit / you need a key" gate is decided in a
+/// for this machine's DevThrottle hosted AI setup (issue #938, epic #937). ONE typed answer that every
+/// voice/Wingman/TTS surface consumes, so the "you need credit / finish setup" gate is decided in a
 /// single place and shown identically everywhere - never a per-surface hand-written string, a generic
 /// "transcription failed", or a silent nothing.
 ///
@@ -14,7 +14,7 @@ namespace CcDirector.Core.HostedAi;
 /// </summary>
 public enum HostedAiState
 {
-    /// <summary>The feature can run: the active mode has a working resource (credits or a key).</summary>
+    /// <summary>The feature can run: the active DevThrottle account has a working resource.</summary>
     Ready = 0,
 
     /// <summary>DevThrottle hosted mode and the account balance is empty - the user must add credits.</summary>
@@ -23,6 +23,6 @@ public enum HostedAiState
     /// <summary>The account's monthly spending limit has been reached - the user must raise it in Billing.</summary>
     CapReached = 2,
 
-    /// <summary>Bring-your-own mode and no OpenAI key is configured - the user must add their key.</summary>
+    /// <summary>DevThrottle AI setup is incomplete for this machine.</summary>
     NeedsKey = 3,
 }

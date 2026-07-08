@@ -13,10 +13,9 @@ namespace CcDirector.Avalonia.Voice;
 
 /// <summary>
 /// Sandbox for the "wingman / wingman send / wingman cancel" hands-free grammar.
-/// Reuses <see cref="SpeakService"/> for continuous mic + streaming partial
-/// transcripts (exactly as <see cref="SpeakDialog"/> does), pipes each cumulative
-/// partial into a <see cref="WakeWordEngine"/>, and renders every stage of the
-/// pipeline into debug panels.
+/// Records one complete utterance, transcribes it through the Gateway-owned dictation path, pipes the
+/// final transcript into a <see cref="WakeWordEngine"/>, and renders every stage of the pipeline into
+/// debug panels.
 ///
 /// SAFETY: a committed prompt is written to an on-screen textbox, NEVER to a live
 /// session. This is a tuning harness for the detection grammar, not a shipping
@@ -37,7 +36,7 @@ public partial class WakeWordTestDialog : Window
     private readonly DispatcherTimer _eqTimer;
     private readonly DispatcherTimer _debounceTimer;
 
-    private SpeakService? _service;
+    private BatchDictationRecorder? _recorder;
     private WakeWordEngine _engine;
     private bool _listening;
     private int _emittedCount;
@@ -70,12 +69,6 @@ public partial class WakeWordTestDialog : Window
         FileLog.Write("[WakeWordTestDialog] BtnStart_Click");
         if (_listening) return;
 
-        if (string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey()))
-        {
-            AppendLog("ERROR: no OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.");
-            return;
-        }
-
         var wake = (WakeWordBox.Text ?? "").Trim();
         try
         {
@@ -98,11 +91,10 @@ public partial class WakeWordTestDialog : Window
 
         try
         {
-            var svc = new SpeakService(_options);
-            svc.OnPartial += OnPartial;
-            svc.OnAudioBands += OnAudioBands;
-            await svc.StartAsync("default");
-            _service = svc;
+            var recorder = new BatchDictationRecorder(_options);
+            recorder.OnAudioBands += OnAudioBands;
+            await recorder.StartAsync("default");
+            _recorder = recorder;
             _listening = true;
             StopButton.IsEnabled = true;
             _eqTimer.Start();
@@ -114,7 +106,7 @@ public partial class WakeWordTestDialog : Window
         {
             FileLog.Write($"[WakeWordTestDialog] StartAsync FAILED: {ex.Message}");
             AppendLog($"ERROR: could not start microphone: {ex.Message}");
-            await DisposeServiceAsync();
+            await DisposeRecorderAsync();
             StartButton.IsEnabled = true;
             WakeWordBox.IsEnabled = true;
             InjectBox.IsEnabled = true;
@@ -133,9 +125,30 @@ public partial class WakeWordTestDialog : Window
         _debounceTimer.Stop();
         _eqTimer.Stop();
         _listening = false;
-        // Settle anything held before tearing down.
-        try { _engine.Flush(); } catch (Exception ex) { FileLog.Write($"[WakeWordTestDialog] Flush on stop threw: {ex.Message}"); }
-        await DisposeServiceAsync();
+        try
+        {
+            var recorder = _recorder;
+            _recorder = null;
+            if (recorder is not null)
+            {
+                try
+                {
+                    recorder.OnAudioBands -= OnAudioBands;
+                    var result = await recorder.TranscribeAsync();
+                    OnFinalTranscript(result.CleanedTranscript);
+                }
+                finally
+                {
+                    await recorder.DisposeAsync();
+                }
+            }
+            _engine.Flush();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[WakeWordTestDialog] stop/transcribe failed: {ex.Message}");
+            AppendLog($"ERROR: transcription failed: {ex.Message}");
+        }
         ParkBars();
         StopButton.IsEnabled = false;
         StartButton.IsEnabled = true;
@@ -145,14 +158,13 @@ public partial class WakeWordTestDialog : Window
         AppendLog("stopped.");
     }
 
-    private async System.Threading.Tasks.Task DisposeServiceAsync()
+    private async System.Threading.Tasks.Task DisposeRecorderAsync()
     {
-        var svc = _service;
-        _service = null;
-        if (svc is null) return;
-        svc.OnPartial -= OnPartial;
-        svc.OnAudioBands -= OnAudioBands;
-        try { await svc.DisposeAsync(); }
+        var recorder = _recorder;
+        _recorder = null;
+        if (recorder is null) return;
+        recorder.OnAudioBands -= OnAudioBands;
+        try { await recorder.DisposeAsync(); }
         catch (Exception ex) { FileLog.Write($"[WakeWordTestDialog] dispose error: {ex.Message}"); }
     }
 
@@ -160,23 +172,21 @@ public partial class WakeWordTestDialog : Window
     {
         _debounceTimer.Stop();
         _eqTimer.Stop();
-        await DisposeServiceAsync();
+        await DisposeRecorderAsync();
     }
 
-    // ===== streaming partials -> engine =====================================
+    // ===== transcript -> engine =============================================
 
-    private void OnPartial(string partial)
+    private void OnFinalTranscript(string transcript)
     {
         Dispatcher.UIThread.Post(() =>
         {
-            RawTranscriptText.Text = partial;
+            RawTranscriptText.Text = transcript;
             RawScroller.ScrollToEnd();
-            try { _engine.Feed(partial ?? ""); }
+            try { _engine.Feed(transcript ?? ""); }
             catch (Exception ex) { FileLog.Write($"[WakeWordTestDialog] engine.Feed threw: {ex.Message}"); }
-            // Restart the silence debounce: when the stream goes quiet, Flush settles
-            // the held trailing token so an ending "send"/"cancel" can act.
-            _debounceTimer.Stop();
-            _debounceTimer.Start();
+            try { _engine.Flush(); }
+            catch (Exception ex) { FileLog.Write($"[WakeWordTestDialog] engine.Flush threw: {ex.Message}"); }
         });
     }
 

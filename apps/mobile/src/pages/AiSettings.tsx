@@ -2,11 +2,9 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Link } from "react-router-dom";
 import {
   type AiModel,
-  type AiProviderId,
   type AiProviderSnapshot,
   getAiModels,
   getAiProvider,
-  setAiProvider,
   setWingmanFastModel,
   setTtsModel,
   setTtsVoice,
@@ -17,9 +15,9 @@ import {
 
 const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 
-// The mobile AI settings screen (issue: mobile settings). Same controls as the desktop AI tab, stacked
-// for touch: pick the provider, the wingman model (with a live Test), the speech model, and the voice
-// (with Play sample so you can hear it on the phone). Pure client of the Gateway AI endpoints.
+// The mobile AI settings screen. Same controls as the desktop AI tab, stacked for touch: hosted
+// DevThrottle AI, the wingman model (with a live Test), the speech model, and the voice (with Play
+// sample so you can hear it on the phone). Pure client of the Gateway AI endpoints.
 export function AiSettings() {
   const [snap, setSnap] = useState<AiProviderSnapshot | null>(null);
   const [chatModels, setChatModels] = useState<AiModel[]>([]);
@@ -68,26 +66,8 @@ export function AiSettings() {
     );
   }
 
-  const provider = snap.provider;
   const currentSpeech = speechModels.find((m) => m.id === snap.ttsModel);
   const voiceOptions = currentSpeech && currentSpeech.voices.length ? currentSpeech.voices : snap.voices;
-
-  const chooseProvider = async (p: AiProviderId) => {
-    if (busy || p === provider) return;
-    setBusy(true);
-    setMsg("Saving...");
-    setTestMsg("");
-    setFastTestMsg("");
-    try {
-      setSnap(await setAiProvider(p));
-      await loadModels();
-      setMsg(p === "devthrottle" ? "Using DevThrottle hosted AI." : "Using OpenAI. Add your key on the desktop AI tab if you have not.");
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const chooseWingman = async (model: string) => {
     setBusy(true);
@@ -190,14 +170,20 @@ export function AiSettings() {
   return (
     <Frame>
       <p className="settings-intro">
-        One choice for all AI - who runs it, which models, and the spoken voice. Applies to this whole fleet.
+        DevThrottle hosts transcription, wingman thinking, and spoken voice for this whole fleet.
       </p>
 
       <div className="setting-block">
         <div className="setting-label">Provider</div>
         <div className="provider-cards">
-          <ProviderCard id="devthrottle" title="DevThrottle" badge="Default" desc="Hosted models on your account." selected={provider === "devthrottle"} disabled={busy} onPick={chooseProvider} />
-          <ProviderCard id="openai" title="OpenAI" desc="Your own OpenAI key." selected={provider === "openai"} disabled={busy} onPick={chooseProvider} />
+          <div className="provider-card selected" aria-label="DevThrottle hosted AI">
+            <span className="provider-card-title">
+              <span className="provider-radio on" aria-hidden="true" />
+              DevThrottle
+              <span className="provider-badge">Hosted</span>
+            </span>
+            <span className="provider-card-desc">Hosted models on your DevThrottle account.</span>
+          </div>
         </div>
       </div>
 
@@ -269,32 +255,6 @@ function Frame({ children }: { children: ReactNode }) {
       </header>
       {children}
     </div>
-  );
-}
-
-function ProviderCard(props: {
-  id: AiProviderId;
-  title: string;
-  desc: string;
-  badge?: string;
-  selected: boolean;
-  disabled: boolean;
-  onPick: (id: AiProviderId) => void | Promise<void>;
-}) {
-  return (
-    <button
-      type="button"
-      className={"provider-card" + (props.selected ? " selected" : "")}
-      disabled={props.disabled}
-      onClick={() => void props.onPick(props.id)}
-    >
-      <span className="provider-card-title">
-        <span className={"provider-radio" + (props.selected ? " on" : "")} aria-hidden="true" />
-        {props.title}
-        {props.badge && <span className="provider-badge">{props.badge}</span>}
-      </span>
-      <span className="provider-card-desc">{props.desc}</span>
-    </button>
   );
 }
 

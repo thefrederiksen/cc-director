@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using CcDirector.Core.Configuration;
-using CcDirector.Core.Dictation;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Transcription;
 using CcDirector.Core.Utilities;
@@ -14,16 +13,13 @@ namespace CcDirector.Core.Voice;
 ///
 /// Pipeline:
 ///   1. Audio blob in (webm/opus, mp3, wav, m4a ...).
-///   2. The shared <see cref="BatchTranscriptionPipeline"/> transcribes the whole clip ONCE using
-///      the Gateway-selected method, then applies the validated dictionary corrector only.
+///   2. The Gateway transcription owner transcribes the whole clip ONCE and applies the validated
+///      dictionary corrector only.
 ///   3. Regex/keyword intent parser maps the transcript -> a structured command.
 ///   4. Executor runs the command against SessionManager and returns a spoken-style reply.
 ///
-/// Transcription method (base URL + key + model) comes entirely from the Gateway routing resolver
-/// (<see cref="OpenAiKeyResolver.ResolveEndpointAsync"/>): there is NO hardcoded whisper-1 /
-/// api.openai.com endpoint here, and the only post-transcription transform is the dictionary
-/// corrector - the free-text language-model cleanup was removed (issue #587). Intent parsing is
-/// deliberately small and extensible. v1 supports six intents:
+/// Transcription routing, keys, chunking, and dictionary correction are Gateway-owned. Intent parsing
+/// is deliberately small and extensible. v1 supports six intents:
 ///   ListSessions, ListWaiting, DescribeSession, OpenSession, SendToSession, InterruptSession.
 /// Anything else returns Status="unknown_command" with a helpful reply.
 /// </summary>
@@ -38,8 +34,8 @@ public sealed class VoiceService
         _options = options;
     }
 
-    /// <summary>True when an OpenAI key is configured (env var or appsettings).</summary>
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey());
+    /// <summary>True when a Gateway is configured; the Gateway owns transcription availability.</summary>
+    public bool IsAvailable => GatewayConfig.Load().IsEnabled;
 
     /// <summary>
     /// End-to-end: audio in, response out. Caller passes the upload stream
@@ -49,23 +45,20 @@ public sealed class VoiceService
     public async Task<VoiceCommandResponse> HandleAsync(
         Stream audio, string fileName, CancellationToken ct = default)
     {
-        var resolver = new OpenAiKeyResolver();
-        var routing = await resolver.ResolveEndpointAsync(ct);
-        if (routing is null)
+        GatewayTranscript transcription;
+        try
         {
-            FileLog.Write("[VoiceService] HandleAsync: no transcription routing available");
+            transcription = await TranscribeAndCorrectAsync(audio, fileName, ct);
+        }
+        catch (TranscriptionUnavailableException ex)
+        {
+            FileLog.Write($"[VoiceService] Transcribe unavailable: {ex.Message}");
             return new VoiceCommandResponse
             {
                 Status = "no_key",
-                ReplyText = resolver.UnavailableMessage,
-                Error = "transcription routing unavailable",
+                ReplyText = ex.Message,
+                Error = "Gateway transcription unavailable",
             };
-        }
-
-        BatchTranscriptionResult transcription;
-        try
-        {
-            transcription = await TranscribeAndCorrectAsync(audio, fileName, routing, ct);
         }
         catch (Exception ex)
         {
@@ -78,7 +71,7 @@ public sealed class VoiceService
             };
         }
 
-        var transcript = transcription.RawTranscript;
+        var transcript = transcription.Text;
         FileLog.Write($"[VoiceService] Transcript: \"{Truncate(transcript, 200)}\"");
 
         var command = IntentParser.Parse(transcript);
@@ -87,8 +80,8 @@ public sealed class VoiceService
         try
         {
             var response = Execute(transcript, command);
-            response.CleanedTranscript = transcription.CorrectedTranscript;
-            response.CleanupReason = transcription.Reason;
+            response.CleanedTranscript = transcription.Text;
+            response.CleanupReason = "gateway-owned transcription";
             return response;
         }
         catch (Exception ex)
@@ -97,8 +90,8 @@ public sealed class VoiceService
             return new VoiceCommandResponse
             {
                 Transcript = transcript,
-                CleanedTranscript = transcription.CorrectedTranscript,
-                CleanupReason = transcription.Reason,
+                CleanedTranscript = transcription.Text,
+                CleanupReason = "gateway-owned transcription",
                 Intent = command.Intent.ToString(),
                 Status = "execute_failed",
                 ReplyText = $"I heard you but ran into an error: {ex.Message}",
@@ -108,32 +101,27 @@ public sealed class VoiceService
     }
 
     /// <summary>
-    /// Transcribe an already-assembled audio blob through the ONE shared batch pipeline, returning
-    /// the raw transcript and the dictionary-corrected text. Used by the resumable /voice/utterance
-    /// path, which reassembles the chunked upload into one blob and then needs the transcribe+correct
-    /// half of <see cref="HandleAsync"/> WITHOUT the command intent parsing. The only text change is
-    /// swapping known dictionary terms; there is no free-text cleanup. Routing (agent vs wingman) is
-    /// the caller's button choice and never alters the transcript. Transcription failures surface as
-    /// "transcribe_failed"; the dictionary step fails open (corrected == raw).
+    /// Transcribe an already-assembled audio blob through the Gateway transcription endpoint,
+    /// returning the raw transcript and the dictionary-corrected text. Used by the resumable
+    /// /voice/utterance path, which reassembles the chunked upload into one blob and then needs the
+    /// transcribe+correct half of <see cref="HandleAsync"/> WITHOUT the command intent parsing. The
+    /// only text change is swapping known dictionary terms; there is no free-text cleanup. Routing
+    /// (agent vs wingman) is the caller's button choice and never alters the transcript.
+    /// Transcription failures surface as "transcribe_failed"; the dictionary step fails open
+    /// (corrected == raw).
     /// </summary>
     public async Task<VoiceCommandResponse> TranscribeAndCleanAsync(
         Stream audio, string fileName, string repoPath, CancellationToken ct = default)
     {
-        var routing = await new OpenAiKeyResolver().ResolveEndpointAsync(ct);
-        if (routing is null)
-        {
-            FileLog.Write("[VoiceService] TranscribeAndCleanAsync: no transcription routing available");
-            return new VoiceCommandResponse
-            {
-                Status = "no_key",
-                Error = "transcription routing unavailable",
-            };
-        }
-
-        BatchTranscriptionResult transcription;
+        GatewayTranscript transcription;
         try
         {
-            transcription = await TranscribeAndCorrectAsync(audio, fileName, routing, ct);
+            transcription = await TranscribeAndCorrectAsync(audio, fileName, ct);
+        }
+        catch (TranscriptionUnavailableException ex)
+        {
+            FileLog.Write($"[VoiceService] TranscribeAndCleanAsync unavailable: {ex.Message}");
+            return new VoiceCommandResponse { Status = "no_key", Error = ex.Message };
         }
         catch (InsufficientCreditsException credits)
         {
@@ -148,34 +136,32 @@ public sealed class VoiceService
             return new VoiceCommandResponse { Status = "transcribe_failed", Error = ex.Message };
         }
 
-        FileLog.Write($"[VoiceService] Utterance transcript: \"{Truncate(transcription.RawTranscript, 200)}\"");
+        FileLog.Write($"[VoiceService] Utterance transcript: \"{Truncate(transcription.Text, 200)}\"");
 
         return new VoiceCommandResponse
         {
-            Transcript = transcription.RawTranscript,
-            CleanedTranscript = transcription.CorrectedTranscript,
-            CleanupReason = transcription.Reason,
+            Transcript = transcription.Text,
+            CleanedTranscript = transcription.Text,
+            CleanupReason = "gateway-owned transcription",
             Status = "ok",
         };
     }
 
     /// <summary>
-    /// Run the ONE shared batch pipeline: whole-audio batch transcription via the resolved method,
-    /// then the validated dictionary corrector only. Resolves the live dictionary per call via
-    /// <see cref="DictionaryResolver"/> (#253) so a Cockpit edit takes effect on the next utterance.
+    /// Send whole audio to the Gateway transcription owner. The Gateway resolves provider routing,
+    /// applies chunking, and runs the validated dictionary corrector.
     /// </summary>
-    private async Task<BatchTranscriptionResult> TranscribeAndCorrectAsync(
-        Stream audio, string fileName, ResolvedTranscription routing, CancellationToken ct)
+    private async Task<GatewayTranscript> TranscribeAndCorrectAsync(
+        Stream audio, string fileName, CancellationToken ct)
     {
         using var buffer = new MemoryStream();
         await audio.CopyToAsync(buffer, ct);
         var audioBytes = buffer.ToArray();
 
-        var dictionary = await new DictionaryResolver(_options).ResolveAsync(ct);
-        using var pipeline = new BatchTranscriptionPipeline(cleanupModel: _options.DictationCleanupModel);
-        var result = await pipeline.TranscribeAsync(audioBytes, fileName, routing, dictionary, "default", ct);
-        FileLog.Write($"[VoiceService] dictionary correction: applied={result.DictionaryApplied} changed={result.ChangedWords.Count} reason=\"{result.Reason}\"");
-        return result;
+        var transcript = await new GatewayTranscriptionClient().TranscribeAsync(
+            audioBytes, fileName, "", applyCorrection: true, ct);
+        FileLog.Write($"[VoiceService] Gateway transcription: len={transcript.Text.Length}, mode={transcript.Mode}, model={transcript.Model}");
+        return transcript;
     }
 
     // ====== Execute the parsed command =================================================

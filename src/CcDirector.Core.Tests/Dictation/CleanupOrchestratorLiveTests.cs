@@ -8,9 +8,8 @@ namespace CcDirector.Core.Tests.Dictation;
 
 /// <summary>
 /// Live proof that the dictation cleanup pass corrects ONLY dictionary terms
-/// and never changes the speaker's words. These call the real OpenAI model
-/// (the production <c>gpt-4.1-nano</c>) with the production dictionary, so they
-/// are gated on <c>OPENAI_API_KEY</c> and skip (pass trivially) when it is not
+/// and never changes the speaker's words. These call the real DevThrottle hosted model with the
+/// production dictionary, so they are gated on <c>DEVTHROTTLE_API_KEY</c> and skip when it is not
 /// set, exactly like the other live tests in the suite.
 ///
 /// The bar is deliberately strict: for transcripts that contain no dictionary
@@ -27,7 +26,7 @@ public sealed class CleanupOrchestratorLiveTests
     public CleanupOrchestratorLiveTests(ITestOutputHelper output) => _out = output;
 
     private static bool HasKey()
-        => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
+        => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName));
 
     // The real, shipped dictionary. Mirrors
     // %LOCALAPPDATA%/cc-director/dictation/dictionary.yaml so the proof
@@ -58,7 +57,7 @@ public sealed class CleanupOrchestratorLiveTests
     }
 
     private static CleanupOrchestrator NewProductionOrchestrator()
-        => new CleanupOrchestrator(model: "gpt-4.1-nano");
+        => new CleanupOrchestrator(model: CleanupOrchestrator.DefaultModel);
 
     private async Task<string> CleanAsync(string raw)
     {
@@ -134,7 +133,7 @@ public sealed class CleanupOrchestratorLiveTests
     {
         if (!HasKey()) return;
         // Regression for the cockpit/desktop dictation bug: this exact utterance
-        // made gpt-4.1-nano narrate its corrections ("I corrected the transcript
+        // made the cleanup model narrate its corrections ("I corrected the transcript
         // by replacing all instances of...") instead of echoing the transcript.
         // The transcript is dictated text, not an instruction to the model, so it
         // must come back word for word with no dictionary term to change.

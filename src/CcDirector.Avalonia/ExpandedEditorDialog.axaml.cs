@@ -320,12 +320,14 @@ public partial class ExpandedEditorDialog : Window
                 return;
             }
             var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-            if (options is null || string.IsNullOrWhiteSpace(options.ResolveOpenAiKey()))
+            if (options is null)
             {
-                FileLog.Write("[ExpandedEditorDialog] DictateButton_Click: no OpenAI key configured");
-                HeaderText.Text = "Dictation needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.";
+                FileLog.Write("[ExpandedEditorDialog] DictateButton_Click: no AgentOptions available");
+                HeaderText.Text = "Dictation is not available: AgentOptions not loaded.";
                 return;
             }
+            if (!await global::CcDirector.Avalonia.HostedAi.DesktopHostedAiGate.EnsureReadyAsync(this))
+                return;
 
             // Snapshot the caret BEFORE opening the dialog; focus moves away and some
             // controls reset CaretIndex to 0 on focus loss, which would prepend instead.

@@ -1,4 +1,5 @@
 using CcDirector.Core.Claude;
+using CcDirector.Core.Configuration;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -7,7 +8,7 @@ namespace CcDirector.Core.Tests.Claude;
 /// <summary>
 /// Unit tests for the Brief's pure halves: widget extraction, the verbatim-by-construction
 /// fallback, the substring validation that enforces the fidelity invariant (a paraphrased
-/// needs-you is never shown), and cache staleness. The OpenAI condensation itself is
+/// needs-you is never shown), and cache staleness. The hosted condensation itself is
 /// covered by the live E2E (docs/plans/cockpit-brief-view.md Phase 3), not unit tests.
 /// </summary>
 public sealed class BriefBuilderTests
@@ -212,15 +213,15 @@ public sealed class BriefBuilderTests
     [Fact]
     public void TryCreate_NoApiKey_ReturnsNull()
     {
-        var prior = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var prior = Environment.GetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName);
         try
         {
-            Environment.SetEnvironmentVariable("OPENAI_API_KEY", null);
+            Environment.SetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName, null);
             Assert.Null(BriefBuilder.TryCreate());
         }
         finally
         {
-            Environment.SetEnvironmentVariable("OPENAI_API_KEY", prior);
+            Environment.SetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName, prior);
         }
     }
 }
@@ -233,7 +234,7 @@ public sealed class BriefCacheTests
         AtTurnCount = turnCount,
         DidBullets = new List<string> { "did a thing" },
         NeedsYouVerbatim = null,
-        Condenser = "openai:test",
+        Condenser = "devthrottle:test",
         GeneratedAt = DateTime.UtcNow,
     };
 

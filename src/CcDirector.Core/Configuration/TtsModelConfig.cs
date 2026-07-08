@@ -5,11 +5,10 @@ namespace CcDirector.Core.Configuration;
 
 /// <summary>
 /// The text-to-speech MODEL used for spoken wingman output, persisted in config.json as the top-level
-/// string "tts_model". The model list is DYNAMIC and provider-specific - the AI provider hands it back
-/// from its <c>GET /models?type=speech</c> catalog (OpenAI: tts-1/tts-1-hd; the DevThrottle proxy:
-/// hexgrad/Kokoro-82M, Chatterbox) - so this stores whatever id the user picked from that live list, and
-/// the DEFAULT is provider-aware (<see cref="Resolve"/>). Read at synthesis time, so a change applies on
-/// the next spoken summary.
+/// string "tts_model". The model list is dynamic: DevThrottle hands it back from
+/// <c>GET /models?type=speech</c>, so this stores whatever id the user picked from that live list and
+/// falls back to the hosted default (<see cref="Resolve"/>). Read at synthesis time, so a change applies
+/// on the next spoken summary.
 /// </summary>
 public static class TtsModelConfig
 {
@@ -30,7 +29,7 @@ public static class TtsModelConfig
     }
 
     /// <summary>The effective speech model for <paramref name="mode"/>: the saved value when set, else the
-    /// provider default (Kokoro for DevThrottle, tts-1 for OpenAI).</summary>
+    /// DevThrottle hosted default.</summary>
     public static string Resolve(TranscriptionMode mode)
     {
         var saved = Get();

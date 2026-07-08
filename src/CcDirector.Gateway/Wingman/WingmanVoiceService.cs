@@ -18,7 +18,7 @@ namespace CcDirector.Gateway.Wingman;
 /// Keeps a ready-to-play spoken summary for each "voice session" (issue #531 follow-up). Once the
 /// phone uses voice on a session it becomes a voice session; from then on, every time a turn
 /// finishes and the session is waiting for the user, the gateway automatically re-runs the wingman
-/// translation AND the OpenAI text-to-speech and stores the result here - so the phone's session
+/// translation and hosted text-to-speech and stores the result here - so the phone's session
 /// list can show "voice ready" with a play button, play it without entering, and entering is
 /// instant (the voice is already made). Since issue #549 the turn-end trigger is the always-running
 /// TurnEndWatcher, which calls <see cref="GenerateAsync"/> directly for voice sessions on turn-end
@@ -30,7 +30,7 @@ public sealed class WingmanVoiceService
 
     /// <summary>The outcome of one text-to-speech synthesis (issue #939): the audio bytes on success,
     /// or the shared <see cref="HostedAiState"/> when hosted AI is unavailable (out of credits, cap
-    /// reached, or - in bring-your-own mode - no key) so the caller can surface it instead of a silent
+    /// reached, or account setup is incomplete) so the caller can surface it instead of a silent
     /// null. Both null means a generic provider error (logged, no shared state).</summary>
     private sealed record TtsResult(byte[]? Audio, string? ContentType, HostedAiState? Unavailable);
 
@@ -197,7 +197,7 @@ public sealed class WingmanVoiceService
 
     /// <summary>
     /// Stop keeping voice for this session - it is no longer a voice session (issue #859). The user
-    /// turned voice off, so the gateway must stop spending the per-turn Opus translation + OpenAI
+    /// turned voice off, so the gateway must stop spending the per-turn Opus translation + hosted
     /// text-to-speech on it. Removes it from the persisted voice-session set (so the turn-end watcher
     /// and the background sweep skip it - both gate on <see cref="IsVoiceSession"/> /
     /// <see cref="VoiceSessionIds"/>), drops any cached spoken summary + audio (so the list stops
@@ -268,7 +268,7 @@ public sealed class WingmanVoiceService
     /// <summary>Mark a session ready with already-synthesized audio: update the in-memory cache and
     /// persist it to disk so it survives a gateway restart (issue #553). The single place the success
     /// branch lives - the test seam (<see cref="StoreReadyAudioForTest"/>) reuses it so persistence is
-    /// exercised without a live OpenAI call.</summary>
+    /// exercised without a live provider call.</summary>
     private void StoreReady(string sid, string spoken, string reply, byte[] audio, string? contentType)
     {
         var ready = new VoiceReady(spoken, reply, audio, DateTime.UtcNow,
@@ -278,7 +278,7 @@ public sealed class WingmanVoiceService
     }
 
     /// <summary>Test seam: store ready audio exactly as a successful synthesis would (in-memory +
-    /// durable), so the persistence round-trip can be tested without calling OpenAI.</summary>
+    /// durable), so the persistence round-trip can be tested without calling a provider.</summary>
     internal void StoreReadyAudioForTest(string sid, string spoken, string reply, byte[] audio, string? contentType = null)
         => StoreReady(sid, spoken, reply, audio, contentType);
 
@@ -328,8 +328,8 @@ public sealed class WingmanVoiceService
     /// Synthesize the spoken summary to audio through the SAME provider seam the <c>/wingman/tts</c>
     /// endpoint uses (issue #939): the configured mode's base URL + key + model + the user's chosen
     /// voice (<see cref="TtsVoiceConfig"/> / <see cref="TtsModelConfig"/>). This replaced a hardcoded
-    /// OpenAI <c>tts-1</c>/<c>nova</c> call - so a DevThrottle-mode user now hears their configured
-    /// voice and hosted narration works without a bring-your-own key. An out-of-credits / cap / no-key
+    /// legacy hardcoded speech call - so a DevThrottle-mode user now hears their configured
+    /// voice and hosted narration works from their DevThrottle account. An out-of-credits / cap / setup
     /// condition is returned as a typed <see cref="HostedAiState"/> instead of a silent null, so the
     /// caller can surface the consistent unavailable state.
     /// </summary>
@@ -339,9 +339,7 @@ public sealed class WingmanVoiceService
         var tts = TranscriptionEndpointResolver.ResolveTts(mode);
         var key = _vault.Get(tts.KeyName);
         if (string.IsNullOrWhiteSpace(key))
-            // No key for the mode: bring-your-own means the user must add their OpenAI key; the hosted
-            // mode with no key is a sign-in gap (outside the credits/key gate), left silent as before.
-            return new TtsResult(null, null, mode == TranscriptionMode.Byo ? HostedAiState.NeedsKey : (HostedAiState?)null);
+            return new TtsResult(null, null, HostedAiState.NeedsKey);
 
         var input = text.Length > 4000 ? text[..4000] : text;
         var voice = TtsVoiceConfig.Resolve(mode);

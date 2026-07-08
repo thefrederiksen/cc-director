@@ -8,7 +8,7 @@ namespace CcDirector.Core.Dictation;
 
 /// <summary>
 /// Resolves the dictation dictionary a Director uses for live dictation, Speak, and recording
-/// cleanup, honoring the SAME two-mode design as <see cref="OpenAiKeyResolver"/>
+/// cleanup, honoring the same hosted-AI resolver design as <see cref="HostedAiKeyResolver"/>
 /// (docs/architecture/gateway/GATEWAY_KEY_VAULT.md):
 ///
 ///   * Connected to a Gateway -> pull the glossary from the Gateway's central copy
@@ -21,7 +21,7 @@ namespace CcDirector.Core.Dictation;
 ///
 /// The gateway config is re-read on every resolve (not snapshotted at construction), so a
 /// Director that booted standalone and later had a <c>gateway.url</c> added to config.json
-/// self-heals into Gateway mode without a restart - matching the OpenAiKeyResolver fix.
+/// self-heals into Gateway mode without a restart - matching the hosted-AI resolver fix.
 ///
 /// Hot-reload comes for free: live dictation, Speak, and recording cleanup each construct a
 /// fresh resolver and call <see cref="ResolveAsync"/> at the start of every utterance, so a

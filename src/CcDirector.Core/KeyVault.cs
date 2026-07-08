@@ -12,7 +12,7 @@ namespace CcDirector.Core;
 ///
 /// The file is the single source of truth: every operation re-reads it, so an external edit
 /// is honored, and writes are atomic (temp file + replace) so a concurrent reader never sees
-/// a half-written file. Stores opaque name -> value pairs, e.g. "OPENAI_API_KEY".
+/// a half-written file. Stores opaque name -> value pairs, e.g. "DEVTHROTTLE_API_KEY".
 /// </summary>
 public sealed class KeyVault
 {
@@ -61,7 +61,7 @@ public sealed class KeyVault
     /// Set <paramref name="name"/> only if it is not already present with a non-empty value.
     /// Returns true if it was written, false if an existing value was kept. Used to seed a key
     /// ONCE without ever clobbering a value an operator has rotated in - e.g. the one-time
-    /// OPENAI_API_KEY environment -> vault bootstrap on a Gateway install (INSTALLATION.md section 4).
+    /// DevThrottle account-key environment -> vault bootstrap on a Gateway install.
     /// </summary>
     public bool SetIfAbsent(string name, string value)
     {

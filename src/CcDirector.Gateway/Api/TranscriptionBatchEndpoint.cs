@@ -10,7 +10,7 @@ namespace CcDirector.Gateway.Api;
 /// <summary>
 /// The single Gateway endpoint that turns audio into text (issue #839). A caller sends the raw audio
 /// bytes and the content type; the Gateway resolves the configured mode and the key, runs the
-/// OpenAI-compatible batch endpoint for the mode, and returns the text. The caller never sees or
+/// DevThrottle-compatible batch endpoint, and returns the text. The caller never sees or
 /// handles the key - it only sends audio and receives text.
 ///
 ///   POST /transcription            (raw audio body; Content-Type is the clip's MIME type)
@@ -21,8 +21,8 @@ namespace CcDirector.Gateway.Api;
 ///       -&gt; 402 { error, code, mode }    the DevThrottle account is out of credits (issue #885)
 ///       -&gt; 502 { error }                the provider rejected the request or the key
 ///
-/// Both modes (bring-your-own OpenAI, DevThrottle) go through this one endpoint - the resolution and
-/// the provider choice live in <see cref="GatewayTranscriptionService"/>, the single owner. Inherits
+/// Legacy mode values migrate forward and go through this one endpoint - the resolution and provider
+/// choice live in <see cref="GatewayTranscriptionService"/>, the single owner. Inherits
 /// the host-wide token middleware like every other Gateway route.
 ///
 /// Whether the dictionary correction runs is the caller's choice via <c>?correct=true</c>: the

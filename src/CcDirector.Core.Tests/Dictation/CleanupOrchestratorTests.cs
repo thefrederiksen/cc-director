@@ -146,7 +146,7 @@ public sealed class CleanupOrchestratorTests
         using var orchestrator = NewFailingOrchestrator();
         // Vocab present so the call proceeds past the empty-dictionary short
         // circuit. Unknown profile falls back to default (cleanup enabled),
-        // then attempts OpenAI. The fake handler fails the call so it fails
+        // then attempts the hosted cleanup call. The fake handler fails the call so it fails
         // open and returns the raw transcript with a failure reason.
         var dict = BuildDict(vocab: new[] { "acmeflow" });
         var outcome = await orchestrator.CleanAsync("hello", dict, "no-such-profile");
@@ -233,12 +233,12 @@ public sealed class CleanupOrchestratorTests
 
     /// <summary>
     /// Constructs a CleanupOrchestrator whose HTTP client always fails fast,
-    /// so tests run offline and don't hit the real OpenAI endpoint.
+    /// so tests run offline and don't hit the real hosted endpoint.
     /// </summary>
     private static CleanupOrchestrator NewFailingOrchestrator()
         => new CleanupOrchestrator(
             apiKey: "test-key-ignored-by-fake-handler",
-            model: "gpt-4o-mini",
+            model: CleanupOrchestrator.DefaultModel,
             httpClient: new HttpClient(new AlwaysFailHandler()));
 
     /// <summary>
@@ -248,7 +248,7 @@ public sealed class CleanupOrchestratorTests
     private static CleanupOrchestrator NewCannedOrchestrator(string modelContent)
         => new CleanupOrchestrator(
             apiKey: "test-key-ignored-by-fake-handler",
-            model: "gpt-4o-mini",
+            model: CleanupOrchestrator.DefaultModel,
             httpClient: new HttpClient(new CannedResponseHandler(modelContent)));
 
     private sealed class AlwaysFailHandler : HttpMessageHandler

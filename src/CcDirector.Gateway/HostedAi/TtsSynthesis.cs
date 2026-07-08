@@ -9,7 +9,7 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Gateway.HostedAi;
 
 /// <summary>
-/// Forwards a text-to-speech request to the configured OpenAI-compatible <c>/audio/speech</c>
+/// Forwards a text-to-speech request to the configured provider-compatible <c>/audio/speech</c>
 /// endpoint with a SHORT per-attempt timeout and a single retry.
 ///
 /// The upstream speech model (the DevThrottle proxy forwarding to DeepInfra's Kokoro) is bimodal: a

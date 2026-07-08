@@ -110,9 +110,10 @@ export async function backgroundTranscribeAndSend(
     // A thrown error is a client-side/transport fault (the out-of-credits throw carries its own text; a
     // bare network failure reaches here). Never leave the user with a bare "transcription failed": say the
     // recording is kept and will retry.
+    const message = err instanceof Error ? err.message : "";
     hooks.onError?.(
-      err instanceof Error
-        ? err.message
+      message && !/failed to fetch|networkerror/i.test(message)
+        ? message
         : "Couldn't reach the transcription service. Your recording is saved and will retry.",
     );
     hooks.onFailed?.();

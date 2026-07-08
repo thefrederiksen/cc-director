@@ -1481,7 +1481,7 @@ internal static class ControlEndpoints
 
         // ===== REST: Voice (Whisper-backed Director UI voice mode) ==================
         // Accepts a multipart/form-data upload with one audio file field. Returns the
-        // transcript + an executed reply. The OpenAI key lives in AgentOptions and is
+        // transcript + an executed reply. The hosted AI credential is resolved server-side and is
         // never sent to the browser.
         app.MapPost("/voice/command", async (HttpContext ctx) =>
         {
@@ -1691,9 +1691,9 @@ internal static class ControlEndpoints
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.BadRequest(new TtsErrorResponse { Status = "empty_text", Error = "text is required" });
 
-            // Provider-aware (the consolidated AI provider switch): the resolver picks the DevThrottle
-            // account key or the OpenAI key for the selected provider, and the base URL + voice follow.
-            var svc = new TtsService(sessionManager.Options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
+            // Hosted-AI aware: the resolver picks the DevThrottle account key, and the base URL +
+            // voice follow the central hosted routing.
+            var svc = new TtsService(sessionManager.Options, new Core.Configuration.HostedAiKeyResolver(Core.Configuration.GatewayConfig.Load));
             var result = await svc.GenerateAsync(req.Text, req.Voice, req.Model, ctx.RequestAborted);
             if (!result.Success || result.AudioBytes is null)
             {
@@ -1722,7 +1722,7 @@ internal static class ControlEndpoints
 
         app.MapGet("/tts/status", async () =>
         {
-            var svc = new TtsService(sessionManager.Options, new Core.Configuration.OpenAiKeyResolver(Core.Configuration.GatewayConfig.Load));
+            var svc = new TtsService(sessionManager.Options, new Core.Configuration.HostedAiKeyResolver(Core.Configuration.GatewayConfig.Load));
             var mode = Core.Configuration.TranscriptionModeConfig.Get();
             return Results.Json(new
             {

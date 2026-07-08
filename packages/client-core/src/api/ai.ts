@@ -1,11 +1,9 @@
 // AI settings client for the mobile Settings screen. Same-origin against the Gateway front door with
 // the injected Bearer (authHeaders), exactly like the rest of client.ts. These are the SAME endpoints
-// the desktop Settings "AI" tab uses - the mobile screen is just a phone-styled front end over them, so
-// there is no backend work here. The AI-settings response shapes are returned by the Gateway via
-// Results.Json without a [Produces] annotation, so they are read with the narrow local types below.
+// the desktop Settings "AI" tab uses - the mobile screen is just a phone-styled front end over them.
 import { authHeaders, GatewayError, creditsErrorFrom } from "./client";
 
-export type AiProviderId = "devthrottle" | "openai";
+export type AiProviderId = "devthrottle";
 
 /** The current AI-provider snapshot (GET/PUT /gateway/ai-provider). */
 export interface AiProviderSnapshot {
@@ -15,7 +13,7 @@ export interface AiProviderSnapshot {
   transcriptionModel: string;
   ttsModel: string;
   ttsVoice: string;
-  /** The OpenAI fallback voice set (DevThrottle voices come from the speech model's own list). */
+  /** Fallback voice set when the selected speech model does not advertise voices. */
   voices: string[];
 }
 
@@ -100,8 +98,7 @@ export function setTtsVoice(voice: string): Promise<{ voice: string }> {
   return putJson<{ voice: string }>("/gateway/tts-voice", { voice });
 }
 
-// POST /wingman/tts { text, model, voice } -> audio bytes to play (a short "Play sample"). The Gateway
-// passes the provider's content type through (OpenAI mp3, the DevThrottle proxy may return wav).
+// POST /wingman/tts { text, model, voice } -> audio bytes to play (a short "Play sample").
 export async function ttsSample(text: string, model: string, voice: string): Promise<Blob> {
   const res = await fetch("/wingman/tts", {
     method: "POST",

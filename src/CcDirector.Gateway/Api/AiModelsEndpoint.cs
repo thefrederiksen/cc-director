@@ -12,10 +12,9 @@ namespace CcDirector.Gateway.Api;
 
 /// <summary>
 /// The AI model catalog + test surface for the Settings AI tab. It lets the page populate the wingman
-/// and speech model dropdowns from the SELECTED provider's LIVE catalog (not a hardcoded list), test a
+/// and speech model dropdowns from DevThrottle's live catalog (not a hardcoded list), test a
 /// chat model with one round-trip, and persist the chosen wingman/speech model. The browser never sees
-/// the credential - the Gateway resolves it from the vault by the provider's key name and presents it to
-/// the OpenAI-compatible provider (the DevThrottle proxy or OpenAI).
+/// the credential - the Gateway resolves it from the vault and presents it to DevThrottle.
 ///
 ///   GET  /gateway/ai/models?kind=chat|speech -> { models:[ {id, description, voices[], defaultVoice} ] }
 ///   POST /gateway/ai/test-chat  { model }    -> { ok, reply, seconds } | { error }
@@ -23,9 +22,8 @@ namespace CcDirector.Gateway.Api;
 ///   PUT  /gateway/ai/wingman-fast-model { model } -> { model }
 ///   PUT  /gateway/ai/tts-model          { model } -> { model }
 ///
-/// DevThrottle serves a TYPED catalog (GET /models?type=chat|speech) where each speech model carries its
-/// own voices. OpenAI's /models is a flat, untyped list with no voices, so for OpenAI we return the known
-/// speech models + voice set and keep only chat-shaped ids for the chat list.
+/// DevThrottle serves a typed catalog (GET /models?type=chat|speech) where each speech model carries
+/// its own voices.
 /// </summary>
 internal static class AiModelsEndpoint
 {
@@ -46,7 +44,7 @@ internal static class AiModelsEndpoint
 
             try
             {
-                var models = await ListModelsAsync(ep.BaseUrl, key!, mode, k, ct);
+                var models = await ListModelsAsync(ep.BaseUrl, key!, k, ct);
                 return Results.Json(new { models });
             }
             catch (Exception ex)
@@ -133,22 +131,15 @@ internal static class AiModelsEndpoint
     }
 
     private static string ProviderKeyMissingMessage(TranscriptionMode mode) =>
-        mode == TranscriptionMode.DevThrottle
-            ? "not signed in to DevThrottle - sign in on the Account tab"
-            : "no OpenAI key configured - add it on the AI tab";
+        "not signed in to DevThrottle - sign in on the Account tab";
 
     /// <summary>
-    /// List the provider's models for a kind. DevThrottle: GET /models?type=chat|speech (typed catalog,
-    /// speech models carry voices). OpenAI: flat /models - so return the known speech set for speech, and
-    /// filter to chat-shaped ids for chat.
+    /// List DevThrottle models for a kind. DevThrottle uses GET /models?type=chat|speech; speech
+    /// models carry voices.
     /// </summary>
-    private static async Task<List<ModelDto>> ListModelsAsync(string baseUrl, string key, TranscriptionMode mode, string kind, CancellationToken ct)
+    private static async Task<List<ModelDto>> ListModelsAsync(string baseUrl, string key, string kind, CancellationToken ct)
     {
-        if (mode == TranscriptionMode.Byo && kind == "speech")
-            return OpenAiSpeechModels();
-
-        var typeParam = mode == TranscriptionMode.DevThrottle ? "?type=" + kind : "";
-        var url = baseUrl.TrimEnd('/') + "/models" + typeParam;
+        var url = baseUrl.TrimEnd('/') + "/models?type=" + kind;
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         using var resp = await Http.SendAsync(req, ct);
@@ -165,8 +156,6 @@ internal static class AiModelsEndpoint
         {
             var id = item.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String ? idEl.GetString() : null;
             if (string.IsNullOrWhiteSpace(id)) continue;
-            if (mode == TranscriptionMode.Byo && kind == "chat" && !LooksLikeChat(id!)) continue;
-
             var voices = new List<string>();
             if (item.TryGetProperty("voices", out var v) && v.ValueKind == JsonValueKind.Array)
                 foreach (var voice in v.EnumerateArray())
@@ -177,24 +166,6 @@ internal static class AiModelsEndpoint
             list.Add(new ModelDto(id!, desc ?? "", voices, defVoice));
         }
         return list;
-    }
-
-    private static bool LooksLikeChat(string id) =>
-        id.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("o1", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("o3", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("o4", StringComparison.OrdinalIgnoreCase)
-        || id.StartsWith("chatgpt", StringComparison.OrdinalIgnoreCase);
-
-    private static List<ModelDto> OpenAiSpeechModels()
-    {
-        var voices = TtsVoiceConfig.OpenAiVoices.ToList();
-        return new List<ModelDto>
-        {
-            new("tts-1", "Fast", voices, "nova"),
-            new("tts-1-hd", "Higher quality", voices, "nova"),
-            new("gpt-4o-mini-tts", "GPT-4o mini speech", voices, "nova"),
-        };
     }
 
     private sealed record ModelBody(string? Model);

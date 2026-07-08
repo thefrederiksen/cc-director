@@ -8,7 +8,7 @@ namespace CcDirector.Gateway.HostedAi;
 
 /// <summary>
 /// Wires the shared, delegate-injected <see cref="HostedAiReadiness"/> check (Core, issue #938) to the
-/// Gateway's real resources: the key vault (the bring-your-own OpenAI key), the account credential
+/// Gateway's real resources: the key vault, the account credential
 /// (<see cref="DevThrottleAccountService"/>), and the credits client (<see cref="AccountCreditsClient"/>).
 /// The Gateway is the only place that holds the account token and the vault, so the wiring lives here
 /// while the decision logic stays pure in Core. This is the factory the per-platform sub-issues
@@ -17,11 +17,10 @@ namespace CcDirector.Gateway.HostedAi;
 public static class GatewayHostedAi
 {
     /// <summary>
-    /// Build a <see cref="HostedAiReadiness"/> that reads the bring-your-own key from
-    /// <paramref name="vault"/> and the DevThrottle account balance through
+    /// Build a <see cref="HostedAiReadiness"/> that reads the DevThrottle account balance through
     /// <paramref name="credits"/> using the token <paramref name="account"/> holds.
     /// </summary>
-    /// <param name="vault">The Gateway key vault (the single store for the OpenAI/DevThrottle keys).</param>
+    /// <param name="vault">The Gateway key vault.</param>
     /// <param name="account">The Gateway-hosted account credential service, or null on a host without one
     /// (then the balance is always unknown and DevThrottle mode reports Ready - the runtime 402 gates it).</param>
     /// <param name="credits">The cloud credits client (the injectable cloud-egress seam).</param>

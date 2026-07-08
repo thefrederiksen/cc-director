@@ -65,11 +65,11 @@ public sealed class HostedAiMessagesTests
     }
 
     [Fact]
-    public void NeedsKeyCopy_MayNameOpenAi()
+    public void NeedsKeyCopy_DoesNotNameOpenAi()
     {
-        // The bring-your-own state is EXEMPT from the provider-name rule - it is the user's own key.
         var m = HostedAiMessages.For(HostedAiState.NeedsKey);
-        Assert.Contains("OpenAI", m.Text);
+        Assert.DoesNotContain("OpenAI", m.Text);
+        Assert.DoesNotContain("openai", m.Text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]

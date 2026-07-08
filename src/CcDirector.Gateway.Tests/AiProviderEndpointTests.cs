@@ -10,8 +10,8 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// End-to-end proof for the consolidated AI-provider surface (the one switch that drives transcription
-/// + wingman model + text-to-speech voice) and the TTS-voice endpoint. Boots a real GatewayHost on an
+/// End-to-end proof for the consolidated DevThrottle AI-provider surface and the TTS-voice endpoint.
+/// Boots a real GatewayHost on an
 /// ephemeral port with CC_DIRECTOR_ROOT redirected to a temp dir, so writes round-trip an isolated
 /// config.json rather than the user's real one.
 /// </summary>
@@ -65,37 +65,20 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         Assert.Equal("af_bella", (string?)obj["ttsVoice"]);   // DevThrottle (Kokoro) default voice
         var voices = obj["voices"] as JsonArray;
         Assert.NotNull(voices);
-        Assert.Contains(voices!, v => (string?)v == "nova");   // OpenAI voice fallback set
+        Assert.Contains(voices!, v => (string?)v == "nova");   // fallback set when catalog is unavailable
     }
 
     [Fact]
-    public async Task Put_ai_provider_openai_sets_mode_byo_and_gpt55_and_round_trips()
+    public async Task Put_ai_provider_openai_is_rejected()
     {
         var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "openai" });
-        resp.EnsureSuccessStatusCode();
-
-        var echoed = await resp.Content.ReadFromJsonAsync<JsonObject>();
-        Assert.Equal("openai", (string?)echoed!["provider"]);
-        Assert.Equal("gpt-5.5", (string?)echoed["wingmanModel"]);
-        Assert.Equal("gpt-5.5-mini", (string?)echoed["wingmanFastModel"]);
-
-        // Durable on disk: transcription_mode flips to byo AND the wingman model default is persisted.
-        var onDisk = CcDirectorConfigService.ReadRaw();
-        Assert.Equal("byo", (string?)onDisk["transcription_mode"]);
-        Assert.Equal("gpt-5.5", (string?)onDisk["brain_model"]);
-        Assert.Equal("gpt-5.5-mini", (string?)onDisk["brain_model_fast"]);
-
-        // The GET reflects the saved choice after a reload.
-        var obj = await _http.GetFromJsonAsync<JsonObject>("gateway/ai-provider");
-        Assert.Equal("openai", (string?)obj!["provider"]);
-        Assert.Equal("gpt-5.5", (string?)obj["wingmanModel"]);
-        Assert.Equal("gpt-5.5-mini", (string?)obj["wingmanFastModel"]);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Null(CcDirectorConfigService.ReadRaw()["transcription_mode"]);
     }
 
     [Fact]
-    public async Task Put_ai_provider_back_to_devthrottle_restores_glm()
+    public async Task Put_ai_provider_devthrottle_restores_hosted_defaults()
     {
-        await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "openai" });
         var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "devthrottle" });
         resp.EnsureSuccessStatusCode();
 
@@ -122,12 +105,12 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
             ["gateway"] = new JsonObject { ["url"] = "http://gw.example:7878" },
         });
 
-        var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "openai" });
+        var resp = await _http.PutAsJsonAsync("gateway/ai-provider", new { provider = "devthrottle" });
         resp.EnsureSuccessStatusCode();
 
         var onDisk = CcDirectorConfigService.ReadRaw();
         Assert.Equal("http://gw.example:7878", (string?)onDisk["gateway"]!["url"]);
-        Assert.Equal("byo", (string?)onDisk["transcription_mode"]);
+        Assert.Equal("devthrottle", (string?)onDisk["transcription_mode"]);
     }
 
     [Fact]
@@ -137,7 +120,7 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
         Assert.Equal("af_bella", (string?)obj!["voice"]);   // DevThrottle (Kokoro) default
         var voices = obj["voices"] as JsonArray;
         Assert.NotNull(voices);
-        Assert.Contains(voices!, v => (string?)v == "shimmer");   // OpenAI fallback set
+        Assert.Contains(voices!, v => (string?)v == "shimmer");   // fallback set
     }
 
     [Fact]
@@ -155,8 +138,7 @@ public sealed class AiProviderEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Put_tts_voice_accepts_any_voice_id()
     {
-        // Voices are dynamic + provider-specific (Kokoro's af_bella is not an OpenAI voice), so any
-        // non-empty id is accepted - there is no fixed allow-list.
+        // Voices are dynamic, so any non-empty id is accepted - there is no fixed allow-list.
         var resp = await _http.PutAsJsonAsync("gateway/tts-voice", new { voice = "af_bella" });
         resp.EnsureSuccessStatusCode();
         Assert.Equal("af_bella", (string?)(await resp.Content.ReadFromJsonAsync<JsonObject>())!["voice"]);

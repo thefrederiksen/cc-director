@@ -24,11 +24,9 @@ namespace CcDirector.ControlApi;
 /// Web Audio + AudioWorklet (<c>/dictate-worklet.js</c>) and ships chunks over
 /// the WebSocket as it speaks. NO text is produced while talking: there is no
 /// streaming/partial transcription and no realtime socket. When the client sends
-/// <c>stop</c> the server wraps the WHOLE captured clip in one WAV blob and runs
-/// it through the ONE shared <see cref="BatchTranscriptionPipeline"/> (issue #587)
-/// - the exact pipeline the desktop uses - which transcribes once and applies the
-/// validated dictionary corrector only. This is what gives every surface the same
-/// whole-clip quality instead of the lightly-reworded realtime transcript.
+/// <c>stop</c> the server wraps the WHOLE captured clip in one WAV blob and sends
+/// it to the Gateway transcription owner, which transcribes once and applies the
+/// validated dictionary corrector only.
 ///
 /// Pause/Resume is a CLIENT concern: the client opens a fresh <c>/dictate</c>
 /// connection per recording segment and accumulates the cleaned segments itself,
@@ -67,7 +65,7 @@ internal static class DictationEndpoint
     private const int CaptureChannels = 1;
     private const int CaptureBitsPerSample = 16;
 
-    public static void Map(IEndpointRouteBuilder app, AgentOptions options, OpenAiKeyResolver keyResolver, DictionaryResolver dictionaryResolver)
+    public static void Map(IEndpointRouteBuilder app, AgentOptions options, DictionaryResolver dictionaryResolver)
     {
         app.MapGet("/dictate.html", () =>
         {
@@ -103,7 +101,7 @@ internal static class DictationEndpoint
             var remoteIp = ctx.Connection.RemoteIpAddress?.ToString();
             try
             {
-                await ServeSessionAsync(ws, options, keyResolver, dictionaryResolver, remoteIp, ctx.RequestAborted);
+                await ServeSessionAsync(ws, options, dictionaryResolver, remoteIp, ctx.RequestAborted);
             }
             catch (Exception ex)
             {
@@ -114,7 +112,7 @@ internal static class DictationEndpoint
         });
     }
 
-    private static async Task ServeSessionAsync(WebSocket ws, AgentOptions options, OpenAiKeyResolver keyResolver, DictionaryResolver dictionaryResolver, string? remoteIp, CancellationToken ct)
+    private static async Task ServeSessionAsync(WebSocket ws, AgentOptions options, DictionaryResolver dictionaryResolver, string? remoteIp, CancellationToken ct)
     {
         await SendJsonAsync(ws, new { type = "ready" }, ct);
 
@@ -135,26 +133,8 @@ internal static class DictationEndpoint
 
         var profile = TryReadString(startMsg, "profile", out var p) && !string.IsNullOrWhiteSpace(p) ? p : "default";
 
-        // Resolve the transcription routing target for this Director's mode (issue #497):
-        //   - BYO        -> the user's own OpenAI key against api.openai.com.
-        //   - DevThrottle -> a dt_ key against devthrottle.com's OpenAI-compatible managed proxy.
-        // The key comes from the Gateway vault when attached, the local Settings > Voice key when
-        // standalone (BYO only). No key -> dictation is unavailable; tell the user where to set one
-        // rather than failing with a raw error. The BYO OpenAI key is only ever paired with the
-        // OpenAI base URL - it is never sent to devthrottle.com. Whichever mode resolves, the SAME
-        // whole-clip batch POST is used (BatchTranscriptionPipeline), so there is no realtime socket.
-        var routing = await keyResolver.ResolveEndpointAsync(ct);
-        if (routing is null)
-        {
-            FileLog.Write($"[DictationEndpoint] no transcription key available (usesGateway={keyResolver.UsesGateway})");
-            await TrySendErrorAsync(ws, keyResolver.UnavailableMessage, ct);
-            await TryCloseAsync(ws, WebSocketCloseStatus.PolicyViolation, "no api key");
-            return;
-        }
-
-        // Pull the latest glossary from the Gateway when connected and refresh the local cache
-        // (#253); standalone or unreachable falls back to the existing cache. Resolving here (start
-        // of each dictation) is the hot-reload path - a Cockpit edit lands on the next utterance.
+        // Pull the latest glossary snapshot for diagnostics. The actual glossary correction is owned
+        // by the Gateway /transcription endpoint.
         var dictionary = await dictionaryResolver.ResolveAsync(ct);
 
         // Session-scoped diagnostics so we can audit every dictation cycle.
@@ -175,12 +155,11 @@ internal static class DictationEndpoint
         await SendJsonAsync(ws, new { type = "started" }, ct);
 
         FileLog.Write($"[DictationEndpoint] session started: sid={sessionId} profile={profile} "
-                      + $"vocab={dictionary.Vocabulary.Count} patterns={dictionary.CommonMistranscriptions.Count} "
-                      + $"mode={routing.Mode.ToConfigString()} model={routing.Model} baseUrl={routing.BaseUrl}");
+                      + $"vocab={dictionary.Vocabulary.Count} patterns={dictionary.CommonMistranscriptions.Count}");
 
         // Accumulate the whole segment's PCM16 locally. Nothing leaves the machine until an explicit
-        // 'stop' wraps it in one WAV and sends it through the shared batch pipeline. This is the same
-        // capture-everything-then-transcribe-once shape as the desktop BatchDictationRecorder.
+        // 'stop' wraps it in one WAV and sends it through the Gateway transcription endpoint. This is
+        // the same capture-everything-then-transcribe-once shape as the desktop BatchDictationRecorder.
         using var pcm = new MemoryStream();
         var rxBuffer = new byte[16 * 1024];
 
@@ -271,32 +250,16 @@ internal static class DictationEndpoint
             return;
         }
 
-        // Wrap the whole captured PCM in one WAV blob and transcribe ONCE through the shared batch
-        // pipeline (the same one the desktop uses). The dictionary corrector is the only text transform.
+        // Wrap the whole captured PCM in one WAV blob and send it to the Gateway transcription owner.
         var wav = PcmWav.Wrap(pcmBytes, CaptureSampleRate, CaptureChannels, CaptureBitsPerSample);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
-        BatchTranscriptionResult? transcript = null;
+        GatewayTranscript? transcript = null;
         string? clientError = null;
         try
         {
-            using var pipeline = new BatchTranscriptionPipeline(cleanupModel: options.DictationCleanupModel);
-
-            // Per-part progress for a long recording. The pipeline splits an oversized clip into several
-            // bounded requests and reports as each finishes; forward that to the browser as a "progress"
-            // frame so the overlay shows "part N of M" instead of a silent wait. The pipeline reports
-            // strictly between its awaited POSTs (never concurrently with the frames sent here), and
-            // Kestrel has no synchronization context, so a blocking send inside Report keeps the frames
-            // strictly ordered without racing the "transcribing"/"final" frames. Best-effort: a failed
-            // progress frame must never fail the transcription.
-            var progress = new SynchronousProgress<TranscriptionProgress>(p =>
-            {
-                if (p.TotalParts <= 1) return;
-                try { SendJsonAsync(ws, new { type = "progress", done = p.CompletedParts, total = p.TotalParts }, ct).GetAwaiter().GetResult(); }
-                catch (Exception ex) { FileLog.Write($"[DictationEndpoint] progress frame failed: {ex.Message}"); }
-            });
-
-            transcript = await pipeline.TranscribeAsync(wav, "dictation.wav", routing, dictionary, profile, ct, progress);
+            transcript = await new GatewayTranscriptionClient().TranscribeAsync(
+                wav, "dictation.wav", "audio/wav", applyCorrection: true, ct);
         }
         catch (InsufficientCreditsException credits)
         {
@@ -321,22 +284,21 @@ internal static class DictationEndpoint
             await SendJsonAsync(ws, new
             {
                 type = "final",
-                raw = transcript.RawTranscript,
-                cleaned = transcript.CorrectedTranscript,
-                cleanupApplied = transcript.DictionaryApplied,
+                raw = transcript.Text,
+                cleaned = transcript.Text,
+                cleanupApplied = false,
                 profile,
-                reason = transcript.Reason,
+                reason = "gateway-owned transcription",
             }, ct);
 
             FileLog.Write($"[DictationEndpoint] sid={sessionId} done in {stopWatch.ElapsedMilliseconds}ms: "
-                          + $"raw_len={transcript.RawTranscript.Length} cleaned_len={transcript.CorrectedTranscript.Length} "
-                          + $"applied={transcript.DictionaryApplied}");
+                          + $"len={transcript.Text.Length} mode={transcript.Mode} model={transcript.Model}");
         }
 
         LogSessionRecord(sessionId, sessionStartUtc, profile, dictionary, recordingStart,
             stopWatch.ElapsedMilliseconds, stopWatch.ElapsedMilliseconds, audioBytesReceived,
-            raw: transcript?.RawTranscript, cleaned: transcript?.CorrectedTranscript,
-            applied: transcript?.DictionaryApplied ?? false, reason: transcript?.Reason,
+            raw: transcript?.Text, cleaned: transcript?.Text,
+            applied: false, reason: transcript is null ? null : "gateway-owned transcription",
             options, remoteIp, clientError,
             clientRecordedMs: clientRecordingMs, clientFrames: clientFrames, clientMaxGapMs: clientMaxGapMs);
 
@@ -495,16 +457,4 @@ internal static class DictationEndpoint
         catch { /* best effort */ }
     }
 
-    /// <summary>
-    /// An <see cref="IProgress{T}"/> that invokes its handler synchronously on the reporting thread,
-    /// unlike <see cref="Progress{T}"/> which marshals to a captured synchronization context. This
-    /// keeps progress WebSocket frames strictly ordered with the pipeline's sequential per-part reports
-    /// (see the transcription progress wiring above).
-    /// </summary>
-    private sealed class SynchronousProgress<T> : IProgress<T>
-    {
-        private readonly Action<T> _handler;
-        public SynchronousProgress(Action<T> handler) => _handler = handler;
-        public void Report(T value) => _handler(value);
-    }
 }

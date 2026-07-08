@@ -227,6 +227,40 @@ export function gatewayErrorMessage(err: unknown): string {
   return GATEWAY_UNREACHABLE_MESSAGE;
 }
 
+type GatewayErrorBody = {
+  error?: unknown;
+  detail?: unknown;
+  message?: unknown;
+  code?: unknown;
+};
+
+function stringFromErrorBody(body: unknown): string | undefined {
+  if (typeof body === "string") return body;
+  if (!body || typeof body !== "object") return undefined;
+  const b = body as GatewayErrorBody;
+  if (typeof b.error === "string") return b.error;
+  if (b.error && typeof b.error === "object") {
+    const nested = b.error as GatewayErrorBody;
+    const message = typeof nested.message === "string" ? nested.message : undefined;
+    const code = typeof nested.code === "string" ? nested.code : undefined;
+    return [message, code].filter(Boolean).join(" ") || undefined;
+  }
+  if (typeof b.detail === "string") return b.detail;
+  if (typeof b.message === "string") return b.message;
+  if (typeof b.code === "string") return b.code;
+  return undefined;
+}
+
+async function readGatewayErrorBody(res: Response): Promise<string | undefined> {
+  const text = await res.text().catch(() => "");
+  if (!text.trim()) return undefined;
+  try {
+    return stringFromErrorBody(JSON.parse(text)) ?? text;
+  } catch {
+    return text;
+  }
+}
+
 // GET /sessions - the fleet roster aggregator. Returns the same SessionDto shape the Cockpit
 // Mobile page consumes. Throws GatewayError on a non-2xx so the caller surfaces it (no silent
 // fallback). The request is same-origin against the Gateway front door.
@@ -715,8 +749,7 @@ export async function killSession(sessionId: string, signal?: AbortSignal): Prom
 // EXISTING resilient batch-upload flow the Gateway exposes for the phone (register -> chunk ->
 // complete): the same record-then-ship-then-transcribe shape the native mobile app uses, resumable
 // on a poor phone network because each landed chunk stays landed. The Gateway transcribes the
-// reassembled clip with whatever transcription mode the machine is set to (Local Whisper in
-// process, or a remote OpenAI-compatible endpoint) and returns the transcript already run through
+// reassembled clip with the hosted transcription mode the machine is set to and returns the transcript already run through
 // the SAME dictionary-correction engine every surface uses - so we prefer/return that cleaned text.
 //
 // The Director's own /voice/utterance flow is NOT proxied through the Gateway; this /wingman/
@@ -751,7 +784,8 @@ export async function transcribeUtterance(
     signal,
   });
   if (!reg.ok) {
-    throw new GatewayError(reg.status, `POST wingman/utterance/upload failed: ${reg.status}`);
+    const error = await readGatewayErrorBody(reg);
+    throw new GatewayError(reg.status, transcriptionFailureMessage(error, reg.status, false));
   }
   const regBody = (await reg.json()) as { upload_id?: string };
   const uploadId = regBody.upload_id;
@@ -776,7 +810,8 @@ export async function transcribeUtterance(
       signal,
     });
     if (!put.ok) {
-      throw new GatewayError(put.status, `PUT wingman/utterance chunk ${range.index} failed: ${put.status}`);
+      const error = await readGatewayErrorBody(put);
+      throw new GatewayError(put.status, transcriptionFailureMessage(error, put.status, false));
     }
     onProgress?.(range.index + 1, ranges.length);
   }
@@ -801,7 +836,7 @@ export async function transcribeUtterance(
   if (!comp.ok) {
     // Out of credits / cap (issue #942): a typed CreditsError carrying the shared message + call-to-action.
     if (comp.status === 402) throw creditsErrorFrom(compBody);
-    throw new GatewayError(comp.status, compBody.error ?? `transcription failed: ${comp.status}`);
+    throw new GatewayError(comp.status, transcriptionFailureMessage(compBody.error, comp.status, false));
   }
   return (compBody.transcript ?? "").trim();
 }
@@ -867,7 +902,7 @@ export async function uploadDictationToSession(
     body: JSON.stringify({ sessionId: args.sessionId, baselineBufferBytes: args.baselineBufferBytes }),
     signal,
   });
-  if (!reg.ok) return failed(`Couldn't start the upload (server said ${reg.status}).`);
+  if (!reg.ok) return failed(transcriptionFailureMessage(await readGatewayErrorBody(reg), reg.status));
   const regBody = (await reg.json().catch(() => ({}))) as { upload_id?: string };
   const id = encodeURIComponent(regBody.upload_id ?? args.uploadId);
 
@@ -891,13 +926,13 @@ export async function uploadDictationToSession(
           signal,
         });
         ok = put.ok;
-        if (!ok) lastErr = `chunk ${range.index}: ${put.status}`;
+        if (!ok) lastErr = transcriptionFailureMessage(await readGatewayErrorBody(put), put.status);
       } catch (e) {
         lastErr = e instanceof Error ? e.message : String(e);
       }
       if (!ok && attempt < CHUNK_RETRIES - 1) await uploadBackoff(400 * (attempt + 1), signal);
     }
-    if (!ok) return failed(`Upload interrupted (${lastErr}).`);
+    if (!ok) return failed(lastErr || "Couldn't upload your recording. Your recording is saved and will retry.");
     uploaded += 1;
     publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded, total: ranges.length });
   }
@@ -933,12 +968,13 @@ export async function uploadDictationToSession(
       const r = ranges[i];
       if (!r) continue;
       const part = bytes.subarray(r.start, r.end);
-      await fetch(`/dictation/${id}/chunk/${i}`, {
+      const put = await fetch(`/dictation/${id}/chunk/${i}`, {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": await sha256Hex(part), ...authHeaders() },
         body: part,
         signal,
       });
+      if (!put.ok) return failed(transcriptionFailureMessage(await readGatewayErrorBody(put), put.status));
     }
     comp = await complete();
   }
@@ -969,8 +1005,14 @@ export async function uploadDictationToSession(
 // raw "Transcription returned 502: {...}" dump), and every known server-side condition gets its own
 // specific line so the user is told WHAT went wrong - a transcription-service outage, a busy session, no
 // method configured - not merely that "transcription failed" (issue #1139 follow-up).
-export function transcriptionFailureMessage(serverError: string | undefined, status: number): string {
+export function transcriptionFailureMessage(serverError: string | undefined, status: number, durable = true): string {
   const raw = (serverError ?? "").toLowerCase();
+
+  if (status === 401)
+    return "This device is no longer authorized. Please sign in again.";
+
+  if (status === 403)
+    return "This device is not allowed to use transcription on this Gateway.";
 
   // The session the dictation was headed for is gone (exited / not found).
   if (status === 404 || status === 410 || raw.includes("session not found") || raw.includes("session has exited"))
@@ -983,22 +1025,30 @@ export function transcriptionFailureMessage(serverError: string | undefined, sta
 
   // The upstream speech-to-text provider took too long to respond.
   if (status === 504 || raw.includes("upstream_timeout") || raw.includes("timed out") || raw.includes("did not respond"))
-    return "The transcription service timed out. Your recording is saved and will retry.";
+    return durable
+      ? "The transcription service timed out. Your recording is saved and will retry."
+      : "The transcription service timed out. Try again in a moment.";
 
   // The upstream speech-to-text provider is down / circuit-broken ("temporarily unavailable after
   // repeated failures"). The Gateway wraps the proxy's 503/504 as a 502 whose body carries this code.
   if (status === 503 || raw.includes("upstream_unavailable") || raw.includes("temporarily unavailable"))
-    return "The transcription service is temporarily unavailable. Your recording is saved and will retry.";
+    return durable
+      ? "The transcription service is temporarily unavailable. Your recording is saved and will retry."
+      : "The transcription service is temporarily unavailable. Try again in a moment.";
 
   // The transcript was produced but could not be delivered into the session (parked on a prompt or a
   // permission dialog and refusing typed input).
   if (raw.includes("submit to session failed"))
-    return "Couldn't deliver your dictation to the session - it may be busy or waiting on a prompt. It's saved and will retry.";
+    return durable
+      ? "Couldn't deliver your dictation to the session - it may be busy or waiting on a prompt. It's saved and will retry."
+      : "Couldn't deliver your dictation to the session - it may be busy or waiting on a prompt.";
 
   // Any other server-side transcription fault - the provider itself returned an error ("openai
   // transcription failed" / upstream_error), an empty assembly, some other 5xx. A real backend problem,
   // not the user's audio: say so plainly instead of dumping the raw server response.
-  return "The transcription service had a problem and couldn't process your recording. Your recording is saved and will retry.";
+  return durable
+    ? "The transcription service had a problem and couldn't process your recording. Your recording is saved and will retry."
+    : "The transcription service had a problem and couldn't process your recording. Try again in a moment.";
 }
 
 function extForMime(mime: string | undefined): string {

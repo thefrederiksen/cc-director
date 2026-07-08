@@ -7,7 +7,7 @@ namespace CcDirector.Core.Tests.Configuration;
 /// <summary>
 /// <see cref="TtsVoiceConfig"/> persists the text-to-speech voice. Voices are dynamic and
 /// provider-specific (each speech model hands back its own set), so ANY non-empty id is accepted and the
-/// default is provider-aware. Runs against an isolated CC_DIRECTOR_ROOT; the CcStorageRoot collection
+/// default is the DevThrottle hosted voice. Runs against an isolated CC_DIRECTOR_ROOT; the CcStorageRoot collection
 /// serializes root-mutating tests.
 /// </summary>
 [Collection("CcStorageRoot")]
@@ -37,7 +37,7 @@ public sealed class TtsVoiceConfigTests : IDisposable
     public void Resolve_NoConfig_UsesProviderDefault()
     {
         Assert.Equal("af_bella", TtsVoiceConfig.Resolve(TranscriptionMode.DevThrottle));   // Kokoro default
-        Assert.Equal("nova", TtsVoiceConfig.Resolve(TranscriptionMode.Byo));               // OpenAI default
+        Assert.Equal("af_bella", TtsVoiceConfig.Resolve(TranscriptionMode.Byo));           // Legacy BYO migrates forward
     }
 
     [Theory]
@@ -77,9 +77,9 @@ public sealed class TtsVoiceConfigTests : IDisposable
     }
 
     [Fact]
-    public void OpenAiVoices_IsTheFallbackSet()
+    public void FallbackVoices_IsTheFallbackSet()
     {
-        Assert.Contains("nova", TtsVoiceConfig.OpenAiVoices);
-        Assert.Contains("shimmer", TtsVoiceConfig.OpenAiVoices);
+        Assert.Contains("nova", TtsVoiceConfig.FallbackVoices);
+        Assert.Contains("shimmer", TtsVoiceConfig.FallbackVoices);
     }
 }

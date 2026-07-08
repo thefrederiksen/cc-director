@@ -22,6 +22,15 @@ describe("transcriptionFailureMessage", () => {
     expect(msg).not.toContain("openai");
   });
 
+  it("uses immediate-mode copy for blocking Voice/Chat transcription so it does not claim the segment was saved", () => {
+    const msg = transcriptionFailureMessage("upstream_error openai transcription failed", 502, false);
+    expect(msg).toBe(
+      "The transcription service had a problem and couldn't process your recording. Try again in a moment.",
+    );
+    expect(msg).not.toContain("saved");
+    expect(msg).not.toContain("retry");
+  });
+
   it("maps a circuit-broken upstream (upstream_unavailable, wrapped as 502) to 'temporarily unavailable'", () => {
     const raw =
       'Transcription returned 504: {"error":{"message":"Upstream provider is temporarily unavailable after repeated failures. Retry in 60 seconds.","type":"api_error","code":"upstream_unavailable"}}';
@@ -33,6 +42,9 @@ describe("transcriptionFailureMessage", () => {
 
   it("maps a timeout (status 504) to a timed-out line", () => {
     expect(transcriptionFailureMessage("upstream_timeout", 504)).toContain("timed out");
+    expect(transcriptionFailureMessage("upstream_timeout", 504, false)).toBe(
+      "The transcription service timed out. Try again in a moment.",
+    );
   });
 
   it("maps a gone session (404 / 410) to a session-unavailable line", () => {
@@ -44,6 +56,11 @@ describe("transcriptionFailureMessage", () => {
     const msg = transcriptionFailureMessage("no key configured for transcription mode devthrottle", 503);
     expect(msg).toContain("Settings");
     expect(msg).not.toContain("will retry");
+  });
+
+  it("maps authorization failures to a sign-in message instead of a generic transcription error", () => {
+    expect(transcriptionFailureMessage(undefined, 401)).toContain("sign in");
+    expect(transcriptionFailureMessage(undefined, 403)).toContain("not allowed");
   });
 
   it("maps an undelivered transcript (submit to session failed) to a busy-session line", () => {

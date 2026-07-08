@@ -147,7 +147,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
       });
       return text;
     } catch (err) {
-      setHint("Transcription failed: " + (err instanceof Error ? err.message : "unknown error"));
+      setHint(err instanceof Error ? err.message : "The transcription service had a problem and couldn't process your recording.");
       return null;
     }
   }, []);

@@ -3,14 +3,13 @@ namespace CcDirector.Core.HostedAi;
 /// <summary>
 /// The ONE source of the hosted-AI unavailable copy (issue #938, epic #937). Every voice/Wingman/TTS
 /// surface across desktop, web, mobile, and native calls <see cref="For"/> so the message a user sees
-/// when they have no credits / no key is identical by construction - not 13 hand-written strings that
+/// when they have no credits or account setup is incomplete by construction - not 13 hand-written strings that
 /// drift apart.
 ///
 /// Copy rules (from epic #937, enforced by <see cref="HostedAiCopyRules"/> and unit-tested):
 /// the hosted-account states (<see cref="HostedAiState.NeedsCredits"/>, <see cref="HostedAiState.CapReached"/>)
 /// name NO provider ("OpenAI", "Groq", ...), say nothing about "free credits", and use no
-/// subscription/tier words. The bring-your-own state (<see cref="HostedAiState.NeedsKey"/>) MAY name
-/// OpenAI, because it is the user's own key.
+/// subscription/tier words.
 /// </summary>
 public static class HostedAiMessages
 {
@@ -35,7 +34,7 @@ public static class HostedAiMessages
             HostedAiUrls.Billing),
 
         HostedAiState.NeedsKey => new HostedAiMessage(
-            "Add your OpenAI key in Settings to use this.",
+            "DevThrottle AI is not configured for this machine yet. Open Settings to finish setup.",
             "Open Settings",
             HostedAiCtaAction.OpenSettings,
             null),
@@ -46,8 +45,7 @@ public static class HostedAiMessages
 
 /// <summary>
 /// The forbidden-language rules for the hosted-account copy (epic #937). Pure and unit-tested so the
-/// copy is provably clean, not clean by reviewer memory. Applies to the hosted-account states only -
-/// the bring-your-own key copy is allowed to name OpenAI (it is the user's own key).
+/// copy is provably clean, not clean by reviewer memory.
 /// </summary>
 public static class HostedAiCopyRules
 {

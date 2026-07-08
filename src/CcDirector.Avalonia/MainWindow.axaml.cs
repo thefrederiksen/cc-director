@@ -2935,12 +2935,9 @@ public partial class MainWindow : Window
             FileLog.Write("[MainWindow] BtnSpeak_Click ignored: session transcribing");
             return;
         }
-        // In-process dictation. Opens SpeakDialog which captures audio via
-        // NAudio (BatchDictationRecorder), runs it through the shared
-        // BatchTranscriptionPipeline (one batch transcription, then the validated
-        // dictionary find/replace in CleanupOrchestrator/TranscriptEditEngine -
-        // never a free-text model rewrite), then returns the corrected transcript
-        // which we insert into PromptInput. No browser, no localhost roundtrip.
+        // Desktop dictation. Opens SpeakDialog which captures audio via NAudio
+        // (BatchDictationRecorder), sends the completed audio to the Gateway transcription owner, then
+        // returns the corrected transcript which we insert into PromptInput.
         try
         {
             var app = global::Avalonia.Application.Current as App;
@@ -2951,12 +2948,8 @@ public partial class MainWindow : Window
                 ShowNotification("Dictation not available: AgentOptions not loaded.");
                 return;
             }
-            if (string.IsNullOrWhiteSpace(options.ResolveOpenAiKey()))
-            {
-                FileLog.Write("[MainWindow] BtnSpeak_Click: no OpenAI key configured");
-                ShowNotification("Dictation needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.");
+            if (!await global::CcDirector.Avalonia.HostedAi.DesktopHostedAiGate.EnsureReadyAsync(this))
                 return;
-            }
             FileLog.Write("[MainWindow] BtnSpeak_Click: opening SpeakDialog");
             // Snapshot the caret BEFORE opening the dialog. Focus moves to the
             // dialog, and on some controls CaretIndex can be reset to 0 after
@@ -4535,11 +4528,13 @@ public partial class MainWindow : Window
         try
         {
             var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-            if (options is null || string.IsNullOrWhiteSpace(options.ResolveOpenAiKey()))
+            if (options is null)
             {
-                ShowNotification("Dictation needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.");
+                ShowNotification("Dictation not available: AgentOptions not loaded.");
                 return;
             }
+            if (!await global::CcDirector.Avalonia.HostedAi.DesktopHostedAiGate.EnsureReadyAsync(this))
+                return;
             var dlg = new global::CcDirector.Avalonia.Voice.SpeakDialog(options);
             await dlg.ShowDialog(this);
             var transcript = dlg.ResultText;
