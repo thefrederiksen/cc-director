@@ -1033,6 +1033,16 @@ public sealed class GatewayHost : IAsyncDisposable
         // the validated dictionary correction, keeping that out of the callers too.
         TranscriptionBatchEndpoint.Map(_app, _keyVault);
 
+        // Read-only analysis over the LOCAL transcription telemetry log: latency percentiles, cleanup
+        // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to
+        // see how fast and how good transcription is - all from data on this machine, never a server.
+        Api.TranscriptionAnalysisEndpoint.Map(_app);
+
+        // Text-in / text-out cleanup: run ONLY the deterministic dictionary correction over supplied
+        // text + a supplied term list (no audio). The engine the multilingual eval harness drives, and
+        // a way for any agent to test cleanup on arbitrary text/terms.
+        Api.TranscriptionCleanupEndpoint.Map(_app);
+
         // Named work lists (issue #273, child of #270): an ordered list of structured item refs
         // { source, id, area? } + a single-consumer claim, the object the product skill writes to,
         // the Cockpit views, and the queue runner drains. Persisted to worklists.json across
