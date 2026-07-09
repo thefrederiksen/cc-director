@@ -313,6 +313,39 @@ public sealed class SessionDto
     public string? ControllerSessionId { get; set; }
 
     /// <summary>
+    /// Automatic session role, COMPUTED by the Gateway aggregation from the whole fleet (not stored):
+    /// <c>Worker</c> = this session is controlled AND its controller is still alive; <c>Manager</c> = a
+    /// non-worker that controls at least one LIVE worker; <c>Standalone</c> = neither. Dynamic - a
+    /// Standalone becomes a Manager when it gains a live worker and reverts when the last dies. The fold
+    /// (<see cref="SessionOrdering.EffectiveColor"/>) SUPPRESSES a live Worker's red (it recedes and never
+    /// nags the human); Manager/Standalone stay human-facing. Empty on a Director-local response (the role
+    /// needs the fleet view). One of "Standalone" / "Worker" / "Manager".
+    /// </summary>
+    public string? SessionRole { get; set; }
+
+    /// <summary>
+    /// RAW FACT: the sticky EXPLICIT role a human/session declared for this session (mirrors
+    /// <c>Session.ExplicitRole</c>), or null when none was set. When present it WINS over auto-derivation in
+    /// the aggregation's role resolution (so an explicit <see cref="SessionRoles.Architect"/> - which can
+    /// never be inferred from the spawn graph - stays Architect and stays human-facing). One of the
+    /// <see cref="SessionRoles"/> values, or null.
+    /// </summary>
+    public string? ExplicitRole { get; set; }
+
+    /// <summary>
+    /// RAW FACT: a still-Working Worker wants its manager's attention (an explicit escalation signal),
+    /// default false. Reserved for the manager-facing rail; the global fold does not consume it yet.
+    /// </summary>
+    public bool NeedsManager { get; set; }
+
+    /// <summary>
+    /// RAW FACT: the display name was AUTO-composed at birth (mirrors <c>Session.IsAutoNamed</c>); false once
+    /// a human/self explicitly renamed it. Automatic session roles (chunk 3): the marker any future
+    /// auto-rename gates on so a self/human name is never re-auto-named.
+    /// </summary>
+    public bool IsAutoNamed { get; set; }
+
+    /// <summary>
     /// RAW FACT: the Wingman determined this session is parked on its OWN background task (a build, a
     /// running shell) rather than on the user (mirrors <c>Session.IsBackgroundRunning</c>). At a turn-end
     /// the fold paints this purple instead of red.

@@ -67,6 +67,21 @@ public class SessionManagerTests : IDisposable
         Assert.Equal(session.Id, fetched.Id);
     }
 
+    [Fact]
+    public void RenameSession_ExplicitRename_ClearsIsAutoNamed()
+    {
+        // Automatic session roles (chunk 3): an explicit rename is a human/self name - it wins and clears the
+        // auto-named marker so the name is never re-auto-named.
+        var session = _manager.CreateSession(Path.GetTempPath());
+        session.IsAutoNamed = true; // simulate an auto-composed birth name
+
+        var ok = _manager.RenameSession(session.Id, "my explicit name");
+
+        Assert.True(ok);
+        Assert.Equal("my explicit name", session.CustomName);
+        Assert.False(session.IsAutoNamed);
+    }
+
     // Skipped on CI (issue #1052): this races a real stand-in process spawn+kill - the status
     // transition after KillSessionAsync can lag the assertion under load, and even a bounded wait is not
     // reliable (see the sibling SessionLifecycleTests.KillSession_RunningSession_TransitionsToExited).

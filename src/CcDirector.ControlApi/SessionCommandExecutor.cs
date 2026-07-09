@@ -64,6 +64,7 @@ internal static class SessionCommandExecutor
             "patch" => Patch(sessionManager, directorId, command),
             "create" => Create(sessionManager, directorId, command),
             "wingman-goal" => WingmanGoal(sessionManager, command, services),
+            "set-role" => SetRole(sessionManager, directorId, command),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown verb '{command.Verb}'"),
         };
 
@@ -299,6 +300,11 @@ internal static class SessionCommandExecutor
         if (!Enum.TryParse<AgentKind>(req.Agent, ignoreCase: true, out var kind))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown agent: {req.Agent}. Valid: ClaudeCode, Pi, Codex, Gemini, OpenCode, Grok, Copilot, RawCli");
 
+        // Automatic session roles (chunk 2.5): reject an unknown explicit role BEFORE creating the session,
+        // so a mistyped --role never silently drops (the exact --type situation we removed).
+        if (req.Role is not null && !SessionRoles.IsValid(req.Role))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown role '{req.Role}'. Valid: {string.Join(", ", SessionRoles.All)}");
+
         // RawCli requires a Command; validate before constructing the agent.
         if (kind == AgentKind.RawCli && string.IsNullOrWhiteSpace(req.Command))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "command is required when agent is RawCli");
@@ -354,8 +360,11 @@ internal static class SessionCommandExecutor
                 effectiveArgs,
                 SessionBackendType.ConPty,
                 resumeSessionId: string.IsNullOrWhiteSpace(req.ResumeSessionId) ? null : req.ResumeSessionId,
+                // Automatic session roles (chunk 3): a controlled-at-birth session is a Worker, so its
+                // auto-composed name is task-flavored; others get the repo default.
                 nameFactory: id => SessionName.Compose(
-                    repoFolderName, explicitName, purpose, SessionName.Disambiguator(id)),
+                    repoFolderName, explicitName, purpose, SessionName.Disambiguator(id),
+                    isWorker: controllerSessionId is not null),
                 controllerSessionId: controllerSessionId);
         }
         catch (Exception ex)
@@ -369,6 +378,16 @@ internal static class SessionCommandExecutor
         // Apply the per-session Wingman opt-in (contract default true, matching Session.WingmanEnabled).
         session.WingmanEnabled = req.WingmanEnabled;
         FileLog.Write($"[SessionCommandExecutor] create: sid={session.Id} wingmanEnabled={session.WingmanEnabled}");
+
+        // Automatic session roles (chunk 3): the name was AUTO-composed unless the caller gave an explicit
+        // --name. Marking it lets a later explicit rename win and never be re-auto-named.
+        session.IsAutoNamed = string.IsNullOrWhiteSpace(explicitName);
+
+        // Automatic session roles (chunk 2.5): a spawn-time explicit role is sticky and WINS over the
+        // Gateway's auto-derivation (the only way to declare an Architect). Already validated above.
+        var explicitRole = SessionRoles.Normalize(req.Role);
+        if (explicitRole is not null)
+            session.SetExplicitRole(explicitRole);
 
         // Issue #212: dispatch a supplied PrePrompt once the agent is actually READY, fire-and-forget so
         // create returns immediately. Readiness = a substantial startup burst followed by a quiet poll;
@@ -446,6 +465,41 @@ internal static class SessionCommandExecutor
             goalSetAt = session.WingmanGoalSetAt,
             goalState = session.WingmanGoalState,
         }));
+    }
+
+    /// <summary>
+    /// The <c>set-role</c> verb: (re)declare a session's sticky explicit role after birth (automatic session
+    /// roles). Invalid id -&gt; BadRequest, missing session -&gt; NotFound, unknown role -&gt; BadRequest. A
+    /// blank/absent role CLEARS the explicit role (reverting to auto-derivation). Returns the updated session
+    /// mapped through the SAME <see cref="ControlEndpoints.Map"/> the stream snapshot uses.
+    /// </summary>
+    internal static DirectorCommandResult SetRole(SessionManager sessionManager, string directorId, DirectorCommand command)
+    {
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var request = Deserialize<SetRoleRequest>(command.PayloadJson);
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        string? normalized;
+        if (string.IsNullOrWhiteSpace(request?.Role))
+        {
+            normalized = null; // clear -> revert to auto-derivation
+        }
+        else
+        {
+            normalized = SessionRoles.Normalize(request.Role);
+            if (normalized is null)
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                    $"unknown role '{request.Role}'. Valid: {string.Join(", ", SessionRoles.All)}");
+        }
+
+        session.SetExplicitRole(normalized);
+        FileLog.Write($"[SessionCommandExecutor] set-role: session={guid} role={normalized ?? "(cleared)"}");
+        return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
     }
 
     /// <summary>Serialize a verb response DTO for <see cref="DirectorCommandResult.BodyJson"/>.</summary>

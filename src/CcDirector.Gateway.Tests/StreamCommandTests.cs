@@ -542,6 +542,25 @@ public sealed class StreamCommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GatewaySetRoleEndpoint_RoutesDownTheStream_SetsExplicitRoleOnTheDirector()
+    {
+        var session = _directorSessions.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
+        var spy = new CountingDispatcher(_directorSessions);
+        await using var client = NewClient(spy);
+        client.Start();
+        await WaitForStream();
+
+        var resp = await _http.PostAsJsonAsync($"sessions/{session.Id}/role", new SetRoleRequest { Role = "architect" });
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var dto = await resp.Content.ReadFromJsonAsync<SessionDto>();
+        Assert.NotNull(dto);
+        Assert.Equal("Architect", dto.ExplicitRole);      // the returned DTO carries the normalized role
+        Assert.Equal("Architect", session.ExplicitRole);  // and it took effect on the Director
+        Assert.Equal(1, spy.Count);                        // delivered over the stream, not the HTTP endpoint
+    }
+
+    [Fact]
     public async Task PeriodicRePush_KeepsPushedCacheFresh_ForAQuietSession()
     {
         // Phase 4a Fix 2: a quiet session (no deltas after the initial snapshot). With a SHORT re-push

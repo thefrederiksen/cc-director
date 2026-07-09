@@ -741,6 +741,9 @@ public sealed class SessionManager : IDisposable
         }
         var normalized = string.IsNullOrWhiteSpace(newName) ? null : newName.Trim();
         session.CustomName = normalized;
+        // Automatic session roles (chunk 3): an explicit rename is a human/self name - it wins and must
+        // never be re-auto-named, so clear the auto-named marker.
+        session.IsAutoNamed = false;
         try { OnSessionRenamed?.Invoke(session, normalized); }
         catch (Exception ex) { _log?.Invoke($"OnSessionRenamed handler threw: {ex.Message}"); }
         return true;
@@ -923,6 +926,8 @@ public sealed class SessionManager : IDisposable
                 GroupRole = s.GroupRole,
                 GroupName = s.GroupName,
                 ControllerSessionId = s.ControllerSessionId,
+                ExplicitRole = s.ExplicitRole,
+                IsAutoNamed = s.IsAutoNamed,
                 RawStartupText = s.RawStartupText,
                 SelectedTabName = s.SelectedTabName,
                 WingmanEnabled = s.WingmanEnabled,
@@ -965,6 +970,8 @@ public sealed class SessionManager : IDisposable
         session.GroupRole = ps.GroupRole;
         session.GroupName = ps.GroupName;
         session.ControllerSessionId = ps.ControllerSessionId;
+        session.ExplicitRole = ps.ExplicitRole;
+        session.IsAutoNamed = ps.IsAutoNamed;
         session.WingmanEnabled = ps.WingmanEnabled;
         // Issue #820: carry the persisted three-digit number in BEFORE RaiseSessionCreated so
         // AssignSessionNumber reserves this exact number (keeping it across a restart) when it is

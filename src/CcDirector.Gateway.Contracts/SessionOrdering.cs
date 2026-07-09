@@ -118,14 +118,25 @@ public static class SessionOrdering
     private static string BaseColor(SessionDto s)
     {
         var activity = ResolveActivity(s);
+        var controlled = s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId);
+        var isRed = string.Equals(activity, "red", StringComparison.OrdinalIgnoreCase);
+
         // Slate overlay (issue #815): a controlled sub-agent recedes to slate while its controller is
         // present, EXCEPT red "needs you" breaks through so a blocked sub-agent still surfaces. The
         // Director gated this on the controller being ALIVE; the Gateway approximates with "a controller
-        // id is present" (the aggregation roster could confirm liveness - kept simple here, so this
-        // differs only for a controlled session whose controller has already exited).
-        if (s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId)
-            && !string.Equals(activity, "red", StringComparison.OrdinalIgnoreCase))
+        // id is present" (this differs only for a controlled session whose controller has already exited).
+        if (controlled && !isRed)
             return "supporting";
+
+        // Automatic session roles (Layer 1 - "workers never nag the human"): a LIVE-controlled Worker ALSO
+        // suppresses its red - it recedes to slate and never surfaces red to the human (its manager sees it
+        // via the rail). SessionRole is stamped by the Gateway aggregation from the WHOLE fleet, so
+        // "Worker" already means "controlled AND controller ALIVE". A Worker whose controller has DIED is
+        // role Manager/Standalone (not "Worker"), so this does NOT fire and its red surfaces - the escape
+        // hatch. Managers and Standalones are human-facing, so their red always breaks through.
+        if (isRed && string.Equals(s.SessionRole, SessionRoles.Worker, StringComparison.OrdinalIgnoreCase))
+            return "supporting";
+
         return activity;
     }
 

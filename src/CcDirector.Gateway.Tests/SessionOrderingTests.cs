@@ -309,7 +309,8 @@ public sealed class SessionOrderingTests
     /// <summary>A session built from the RAW facts the Director reports (no cooked StatusColor).</summary>
     private static SessionDto Raw(string activityState, bool wingmanEnabled = false, bool brandNew = false,
         bool backgroundRunning = false, bool controlled = false, string? controllerId = null,
-        bool transcribing = false, bool autoExplaining = false, string briefingState = "None") => new()
+        bool transcribing = false, bool autoExplaining = false, string briefingState = "None",
+        string? sessionRole = null) => new()
     {
         SessionId = "raw",
         ActivityState = activityState,
@@ -321,6 +322,7 @@ public sealed class SessionOrderingTests
         IsTranscribing = transcribing,
         IsAutoExplaining = autoExplaining,
         BriefingState = briefingState,
+        SessionRole = sessionRole,
         // StatusColor deliberately left at its default "unknown" to PROVE the fold never reads it.
     };
 
@@ -389,6 +391,51 @@ public sealed class SessionOrderingTests
         // Red "needs you" breaks through the slate overlay so a blocked sub-agent still surfaces.
         Assert.Equal("red", SessionOrdering.EffectiveColor(
             Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString())));
+    }
+
+    [Fact]
+    public void EffectiveColor_LiveWorker_SuppressesRed_RecedesToSupporting()
+    {
+        // Automatic roles (Layer 1): a LIVE-controlled Worker's red is SUPPRESSED - it recedes to slate and
+        // never nags the human (its manager sees it via the rail). The aggregation stamps SessionRole=Worker
+        // only when the controller is alive, so red suppression is exactly "live worker".
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: "Worker")));
+    }
+
+    [Fact]
+    public void EffectiveColor_ManagerRed_IsAllowed_HumanFacing()
+    {
+        // A Manager is human-facing: its red always surfaces.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", sessionRole: "Manager")));
+    }
+
+    [Fact]
+    public void EffectiveColor_StandaloneRed_IsAllowed_HumanFacing()
+    {
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", sessionRole: "Standalone")));
+    }
+
+    [Fact]
+    public void EffectiveColor_DeadControllerWorkerRed_IsAllowed_EscapeHatch()
+    {
+        // A Worker whose controller has DIED is role Standalone (not "Worker"), so its red is NOT suppressed
+        // and surfaces to the human - the escape hatch, so a stranded worker is never lost. The controller
+        // id may still be on the DTO, but the role (not the id) drives the suppression.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: "Standalone")));
+    }
+
+    [Fact]
+    public void EffectiveColor_Architect_RedAllowed_EvenWithAController()
+    {
+        // Chunk 2.5: an explicit Architect is human-facing. Even one that happens to carry a controller keeps
+        // its red - the aggregation's explicit-wins precedence resolves it to Architect (not Worker), so the
+        // fold (which only suppresses Worker) never suppresses it.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: SessionRoles.Architect)));
     }
 
     [Fact]

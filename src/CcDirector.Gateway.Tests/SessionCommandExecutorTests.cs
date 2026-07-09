@@ -567,6 +567,209 @@ public sealed class SessionCommandExecutorTests
         finally { sm.Dispose(); }
     }
 
+    // ---------- auto-name + IsAutoNamed (chunk 3) ----------
+
+    [Fact]
+    public async Task DispatchAsync_Create_Worker_GetsTaskFlavoredAutoName_AndIsAutoNamedTrue()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = CreateCommand(new NewSessionRequest
+            {
+                RepoPath = Path.GetTempPath(),
+                Agent = "RawCli",
+                Command = TestShellPath,
+                Purpose = "implement #799",
+                ControllerSessionId = Guid.NewGuid().ToString(), // controlled at birth -> Worker
+                // no Name -> auto-composed
+            });
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal("implement #799", dto.Name); // task-flavored: the purpose leads, no repo prefix
+            Assert.True(dto.IsAutoNamed);
+            Assert.True(Guid.TryParse(dto.SessionId, out var sid));
+            Assert.True(sm.GetSession(sid)?.IsAutoNamed);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Create_NonWorker_GetsRepoScopedAutoName()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var repoFolder = SessionName.FolderName(Path.GetTempPath());
+            var command = CreateCommand(new NewSessionRequest
+            {
+                RepoPath = Path.GetTempPath(),
+                Agent = "RawCli",
+                Command = TestShellPath,
+                Purpose = "implement #799", // no controller -> not a worker
+            });
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal($"{repoFolder}: implement #799", dto.Name); // repo-scoped, as before
+            Assert.True(dto.IsAutoNamed);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Create_ExplicitName_IsNotAutoNamed()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = CreateCommand(new NewSessionRequest
+            {
+                RepoPath = Path.GetTempPath(),
+                Agent = "RawCli",
+                Command = TestShellPath,
+                Name = "my chosen name",
+            });
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal("my chosen name", dto.Name);
+            Assert.False(dto.IsAutoNamed); // an explicit --name is never marked auto-named
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- set-role verb + create-time explicit role (chunk 2.5) ----------
+
+    private static DirectorCommand SetRoleCommand(string sid, string? role) => new()
+    {
+        CommandId = "sr1",
+        Verb = "set-role",
+        SessionId = sid,
+        PayloadJson = JsonSerializer.Serialize(new SetRoleRequest { Role = role }, Json),
+    };
+
+    [Fact]
+    public async Task DispatchAsync_SetRole_SetsNormalizedStickyRole_AndReturnsUpdatedSession()
+    {
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", SetRoleCommand(session.Id.ToString(), "architect"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("Architect", session.ExplicitRole); // normalized casing + sticky on the session
+            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal("Architect", dto.ExplicitRole);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_SetRole_UnknownRole_ReturnsBadRequest_Unchanged()
+    {
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", SetRoleCommand(session.Id.ToString(), "Wizard"));
+
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.Null(session.ExplicitRole);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_SetRole_BlankRole_ClearsExplicitRole()
+    {
+        var (sm, session, _) = NewSession();
+        try
+        {
+            await SessionCommandExecutor.DispatchAsync(sm, "dir-A", SetRoleCommand(session.Id.ToString(), "Architect"));
+            Assert.Equal("Architect", session.ExplicitRole);
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", SetRoleCommand(session.Id.ToString(), ""));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Null(session.ExplicitRole); // cleared -> reverts to auto-derivation
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_SetRole_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", SetRoleCommand(Guid.NewGuid().ToString(), "Architect"));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Create_WithExplicitRole_SetsStickyRole()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = CreateCommand(new NewSessionRequest
+            {
+                RepoPath = Path.GetTempPath(),
+                Agent = "RawCli",
+                Command = TestShellPath,
+                Name = "role-create-test",
+                Role = "architect",
+            });
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal("Architect", dto.ExplicitRole);
+            Assert.True(Guid.TryParse(dto.SessionId, out var sid));
+            Assert.Equal("Architect", sm.GetSession(sid)?.ExplicitRole);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Create_WithUnknownRole_ReturnsBadRequest_NoSessionCreated()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var before = sm.ListSessions().Count;
+            var command = CreateCommand(new NewSessionRequest
+            {
+                RepoPath = Path.GetTempPath(),
+                Agent = "RawCli",
+                Command = TestShellPath,
+                Name = "bad-role",
+                Role = "Wizard",
+            });
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.Equal(before, sm.ListSessions().Count); // rejected before creation - no orphan
+        }
+        finally { sm.Dispose(); }
+    }
+
     [Fact]
     public async Task DispatchAsync_Create_MissingRepoPath_ReturnsBadRequest()
     {

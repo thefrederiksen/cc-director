@@ -125,6 +125,113 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         Assert.Equal("onHold", parkedOut.TriageBucket);
     }
 
+    // ---------- automatic session roles (chunk 1) ----------
+
+    [Fact]
+    public async Task Aggregator_computes_worker_manager_standalone_roles_and_suppresses_worker_red()
+    {
+        var mgr = Sample("mgr", "ClaudeCode", "repo", "Working", "blue");
+        var worker = Sample("wrk", "ClaudeCode", "repo", "WaitingForInput", "red");
+        worker.IsControlled = true;
+        worker.ControllerSessionId = "mgr"; // controlled by the live manager
+        var lone = Sample("lone", "ClaudeCode", "repo", "Working", "blue");
+        var fake = await StartFake("M", "u", new[] { mgr, worker, lone });
+        await Register(fake);
+
+        var sessions = await GetSessions();
+
+        // Roles computed from the whole fleet.
+        Assert.Equal("Manager", Assert.Single(sessions, s => s.SessionId == "mgr").SessionRole);
+        Assert.Equal("Standalone", Assert.Single(sessions, s => s.SessionId == "lone").SessionRole);
+        var w = Assert.Single(sessions, s => s.SessionId == "wrk");
+        Assert.Equal("Worker", w.SessionRole);
+
+        // Fold: the LIVE worker's red is SUPPRESSED - it recedes and never enters the needs-you bucket.
+        Assert.Equal("supporting", w.EffectiveColor);
+        Assert.NotEqual("needsYou", w.TriageBucket);
+
+        // The manager stays human-facing (its own working shows blue).
+        Assert.Equal("blue", Assert.Single(sessions, s => s.SessionId == "mgr").EffectiveColor);
+    }
+
+    [Fact]
+    public async Task Aggregator_deadControllerWorker_isStandalone_andItsRedSurfaces()
+    {
+        // A controlled session whose controller is NOT in the fleet (dead/gone) is role Standalone, so its
+        // red is NOT suppressed - the escape hatch, so a stranded worker is never lost to the human.
+        var orphan = Sample("orphan", "ClaudeCode", "repo", "WaitingForInput", "red");
+        orphan.IsControlled = true;
+        orphan.ControllerSessionId = "ghost-controller-not-in-fleet";
+        var fake = await StartFake("M", "u", new[] { orphan });
+        await Register(fake);
+
+        var sessions = await GetSessions();
+
+        var o = Assert.Single(sessions, s => s.SessionId == "orphan");
+        Assert.Equal("Standalone", o.SessionRole);
+        Assert.Equal("red", o.EffectiveColor);   // surfaces
+        Assert.Equal("needsYou", o.TriageBucket);
+    }
+
+    [Fact]
+    public async Task Aggregator_manager_reverts_to_standalone_when_its_last_worker_dies()
+    {
+        // Dynamic role: a manager whose only worker has EXITED (filtered out of the live roster) controls no
+        // live worker anymore, so it reverts from Manager to Standalone.
+        var mgr = Sample("mgr", "ClaudeCode", "repo", "Working", "blue");
+        var deadWorker = Sample("dw", "ClaudeCode", "repo", "Exited", "grey");
+        deadWorker.IsControlled = true;
+        deadWorker.ControllerSessionId = "mgr";
+        var fake = await StartFake("M", "u", new[] { mgr, deadWorker });
+        await Register(fake);
+
+        var sessions = await GetSessions(); // default excludes Exited, so the dead worker is not in the roster
+
+        Assert.DoesNotContain(sessions, s => s.SessionId == "dw");
+        Assert.Equal("Standalone", Assert.Single(sessions, s => s.SessionId == "mgr").SessionRole);
+    }
+
+    [Fact]
+    public async Task Aggregator_explicit_role_wins_over_derivation_and_architect_stays_human_facing()
+    {
+        // A session that WOULD auto-derive Worker (controlled + live controller) but carries an EXPLICIT
+        // Architect role resolves to Architect (explicit wins, sticky) and stays human-facing (red NOT
+        // suppressed) - the only way to be an Architect since it can't be inferred from the spawn graph.
+        var mgr = Sample("mgr", "ClaudeCode", "repo", "Working", "blue");
+        var arch = Sample("arch", "ClaudeCode", "repo", "WaitingForInput", "red");
+        arch.IsControlled = true;
+        arch.ControllerSessionId = "mgr"; // would derive Worker...
+        arch.ExplicitRole = "Architect";   // ...but the explicit role wins
+        var fake = await StartFake("M", "u", new[] { mgr, arch });
+        await Register(fake);
+
+        var sessions = await GetSessions();
+
+        var a = Assert.Single(sessions, s => s.SessionId == "arch");
+        Assert.Equal("Architect", a.SessionRole);
+        Assert.Equal("red", a.EffectiveColor);   // human-facing: red NOT suppressed
+        Assert.Equal("needsYou", a.TriageBucket);
+    }
+
+    [Fact]
+    public async Task Aggregator_manager_derivation_excludes_architect()
+    {
+        // An explicit Architect that controls a live worker stays Architect (NOT re-derived to Manager),
+        // because explicit wins over the Manager derivation. The worker it controls is still a Worker.
+        var arch = Sample("arch", "ClaudeCode", "repo", "Working", "blue");
+        arch.ExplicitRole = "Architect";
+        var worker = Sample("wrk", "ClaudeCode", "repo", "Working", "blue");
+        worker.IsControlled = true;
+        worker.ControllerSessionId = "arch"; // controlled by the (alive) architect
+        var fake = await StartFake("M", "u", new[] { arch, worker });
+        await Register(fake);
+
+        var sessions = await GetSessions();
+
+        Assert.Equal("Architect", Assert.Single(sessions, s => s.SessionId == "arch").SessionRole);
+        Assert.Equal("Worker", Assert.Single(sessions, s => s.SessionId == "wrk").SessionRole);
+    }
+
     // ---------- error surfacing ----------
 
     [Fact]

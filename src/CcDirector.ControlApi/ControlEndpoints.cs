@@ -996,6 +996,29 @@ internal static class ControlEndpoints
                 });
         });
 
+        // Automatic session roles (chunk 2.5): (re)declare this session's sticky explicit role. Runs through
+        // the shared SessionCommandExecutor so this REST path and the Gateway stream down-channel are
+        // identical. Returns the updated session DTO; a blank role clears the explicit role.
+        app.MapPost("/sessions/{sid}/role", async (string sid, SetRoleRequest req) =>
+        {
+            if (!Guid.TryParse(sid, out _))
+                return Results.BadRequest(new { error = "invalid session id format" });
+
+            var command = new DirectorCommand
+            {
+                Verb = "set-role",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.NotFound(new { error = result.Error });
+            return Results.Content(result.BodyJson ?? "{}", "application/json");
+        });
+
         app.MapPatch("/sessions/{sid}", async (string sid, SessionUpdateRequest req) =>
         {
             if (!Guid.TryParse(sid, out var guid))
@@ -3244,6 +3267,11 @@ internal static class ControlEndpoints
             IsBrandNew = s.IsBrandNew,
             IsControlled = s.IsControlled,
             ControllerSessionId = s.ControllerSessionId?.ToString(),
+            // Automatic session roles (chunk 2.5): the sticky explicit role, so the Gateway aggregation can
+            // apply the explicit-wins precedence. The RESOLVED SessionRole is computed at the aggregation.
+            ExplicitRole = s.ExplicitRole,
+            // Chunk 3: the auto-vs-explicit name marker (a future auto-rename gates on it).
+            IsAutoNamed = s.IsAutoNamed,
             IsBackgroundRunning = s.IsBackgroundRunning,
             // Issue #1177 (Phase 2): the two Director-baked overlays that previously reached the Gateway
             // ONLY via the cooked StatusColor. Now reported as raw facts so the Gateway fold reproduces

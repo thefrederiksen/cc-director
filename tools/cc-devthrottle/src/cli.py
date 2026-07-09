@@ -339,9 +339,6 @@ def spawn(
         help="Short description of what the session is FOR (e.g. 'implement #799'); used to "
         "build the session name when no --name is given.",
     ),
-    session_type: Optional[str] = typer.Option(
-        None, "--type", help="Session type: Developer, Implementation, Discuss, Product, QA, Support."
-    ),
     command: Optional[str] = typer.Option(
         None, "--command", help="For --agent RawCli: the executable to run (e.g. cmd, pwsh)."
     ),
@@ -358,15 +355,29 @@ def spawn(
     controlled_by: Optional[str] = typer.Option(
         None,
         "--controlled-by",
-        help="Spawn the new session as a controlled 'Supporting' sub-agent of another session "
-        "(issue #815). Pass 'self' to mean controlled by this session (resolved from CC_SESSION_ID), "
-        "or an explicit controlling session id. The sub-agent shows the recessive Supporting color "
-        "while its controller is alive; a red 'needs you' still breaks through.",
+        help="Controlling session for the new session (issue #815 / automatic roles). By DEFAULT a "
+        "session-initiated spawn (CC_SESSION_ID set) becomes a Worker controlled by the spawner, so it "
+        "stays quiet and reports to its manager. Pass an explicit session id to be controlled by a "
+        "different session, 'self' for this session, or 'none' (same as --standalone) to spawn a "
+        "human-facing PEER with no controller.",
+    ),
+    standalone: bool = typer.Option(
+        False,
+        "--standalone",
+        help="Spawn a human-facing PEER, not a subordinate Worker: force NO controller even when run "
+        "from inside a session. The opt-out for the automatic-worker default.",
+    ),
+    role: Optional[str] = typer.Option(
+        None,
+        "--role",
+        help="Explicit session role (automatic session roles): Standalone, Manager, Worker, or Architect "
+        "(case-insensitive). Sticky, and wins over auto-derivation - the way to declare an Architect. An "
+        "unknown value is rejected by the Director.",
     ),
 ) -> None:
     """Open a new session on the local Director and print its id."""
     spawn_session(
-        repo, agent, prompt, name, purpose, session_type, command, command_args, controlled_by, args
+        repo, agent, prompt, name, purpose, command, command_args, controlled_by, args, standalone, role
     )
 
 

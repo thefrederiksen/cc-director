@@ -561,30 +561,10 @@ internal static class GatewayEndpoints
                     // (a transcribing session is not "needs you") when the clock reads the final color.
                     if (transcribingFor is not null)
                         s.Transcribing = transcribingFor(s.SessionId);
-                    // Authoritative presentation state for browser clients. The raw fields above remain
-                    // for diagnostics and backward compatibility, but the Gateway owns the fold so the
-                    // phone/Cockpit do not need a second state machine that can drift from C#.
-                    var effectiveColor = SessionOrdering.EffectiveColor(s);
-                    s.EffectiveColor = effectiveColor;
-                    // Issue #1177 (Phase 2): stamp the ONE human-readable label from the same fold, so
-                    // every client renders a consistent label instead of hand-rolling its own.
-                    s.StateLabel = SessionOrdering.StateLabel(s);
-                    s.TriageBucket = SessionOrdering.Classify(s) switch
-                    {
-                        SessionOrdering.TriageBucket.NeedsYou => "needsYou",
-                        SessionOrdering.TriageBucket.OnHold => "onHold",
-                        _ => "active",
-                    };
-                    // Issue #218: stamp NeedsYouSince AFTER the briefing/rail fields above, so the
-                    // EffectiveColor fold sees this refresh's final BriefingState/RailLine/OnHold -
-                    // a session still being briefed/explained is effective yellow/orange (not red)
-                    // and so is correctly treated as not-yet-waiting. The clock sets the entry
-                    // timestamp on first red, holds it while red, and clears it when it leaves red.
-                    if (needsYouStampFor is not null)
-                    {
-                        var isRed = string.Equals(effectiveColor, "red", StringComparison.OrdinalIgnoreCase);
-                        s.NeedsYouSince = needsYouStampFor(s.SessionId, isRed);
-                    }
+                    // The authoritative presentation fold (EffectiveColor / StateLabel / TriageBucket /
+                    // NeedsYouSince) is stamped in ONE post-pass AFTER this loop assembles the whole fleet -
+                    // see StampFleetRolesAndFold below. It is deferred because SessionRole (which the fold
+                    // now reads to suppress a live Worker's red) needs the full roster, not one session.
                     // Issue #335: ViewUrl - use the Director-supplied value when present (it carries
                     // the correct tailnet endpoint and sessionId); for OLD Directors (empty ViewUrl)
                     // fall back to the Gateway-derived deep link, preserving the gw= parameter so
@@ -594,6 +574,11 @@ internal static class GatewayEndpoints
                     all.Add(s);
                 }
             }
+
+            // The whole fleet is now assembled: compute each session's automatic role from the roster and
+            // stamp the presentation fold (which reads the role to suppress a live Worker's red toward the
+            // human). Done here, once, because the role needs the full fleet view.
+            StampFleetRolesAndFold(all, needsYouStampFor);
 
             if (envelope == true)
             {
@@ -862,6 +847,24 @@ internal static class GatewayEndpoints
             var body = streamResult is not null
                 ? (streamResult.Ok ? streamResult.BodyJson : null)
                 : await client.SetWingmanGoalAsync(ep, sid, goalReq, ct);
+            if (body is null)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Content(body, "application/json");
+        });
+
+        // Automatic session roles (chunk 2.5): (re)declare a session's sticky explicit role, routed DOWN the
+        // stream first (DirectorCommandRouter), HTTP fallback otherwise. The Ok body is the updated SessionDto.
+        app.MapPost("/sessions/{sid}/role", async (string sid, SetRoleRequest req, CancellationToken ct) =>
+        {
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
+            if (session is null || director is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+            var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
+            var roleReq = req ?? new SetRoleRequest();
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "set-role", sid, roleReq, ct);
+            var body = streamResult is not null
+                ? (streamResult.Ok ? streamResult.BodyJson : null)
+                : await client.SetRoleAsync(ep, sid, roleReq, ct);
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Content(body, "application/json");
@@ -1615,6 +1618,59 @@ internal static class GatewayEndpoints
 
             return Results.Problem("director did not register within timeout", statusCode: 504);
         });
+    }
+
+    // Automatic session roles (chunk 1): compute each session's role from the assembled fleet, then stamp
+    // the presentation fold. Role: a session controlled by a session that is STILL ALIVE in the roster is a
+    // Worker (this wins even if it also controls sub-workers - nesting keeps the Worker label); a non-worker
+    // that controls at least one LIVE worker is a Manager; everything else is Standalone. The fold
+    // (EffectiveColor/StateLabel/TriageBucket) then reads SessionRole to suppress a live Worker's red, so it
+    // must run AFTER the role is known. NeedsYouSince keys off the final EffectiveColor, so it is stamped
+    // here too (a suppressed Worker is not "red", so it never enters the needs-you clock).
+    private static void StampFleetRolesAndFold(List<SessionDto> all, Func<string, bool, DateTime?>? needsYouStampFor)
+    {
+        var liveIds = new HashSet<string>(StringComparer.Ordinal);
+        var controllersWithLiveChild = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var s in all)
+        {
+            var alive = !string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase);
+            if (alive && !string.IsNullOrEmpty(s.SessionId))
+                liveIds.Add(s.SessionId);
+            if (alive && s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId))
+                controllersWithLiveChild.Add(s.ControllerSessionId);
+        }
+
+        foreach (var s in all)
+        {
+            // Resolution precedence (chunk 2.5): an EXPLICIT role wins (sticky - auto-derivation never
+            // overwrites it), and is the only way to be an Architect. Else Worker (controlled + controller
+            // alive), else Manager (controls a live session - and it is a non-worker, non-architect here
+            // because both of those were already resolved above), else Standalone.
+            var explicitRole = SessionRoles.Normalize(s.ExplicitRole);
+            if (explicitRole is not null)
+                s.SessionRole = explicitRole;
+            else if (s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId) && liveIds.Contains(s.ControllerSessionId))
+                s.SessionRole = SessionRoles.Worker;
+            else if (!string.IsNullOrEmpty(s.SessionId) && controllersWithLiveChild.Contains(s.SessionId))
+                s.SessionRole = SessionRoles.Manager;
+            else
+                s.SessionRole = SessionRoles.Standalone;
+
+            var effectiveColor = SessionOrdering.EffectiveColor(s);
+            s.EffectiveColor = effectiveColor;
+            s.StateLabel = SessionOrdering.StateLabel(s);
+            s.TriageBucket = SessionOrdering.Classify(s) switch
+            {
+                SessionOrdering.TriageBucket.NeedsYou => "needsYou",
+                SessionOrdering.TriageBucket.OnHold => "onHold",
+                _ => "active",
+            };
+            if (needsYouStampFor is not null)
+            {
+                var isRed = string.Equals(effectiveColor, "red", StringComparison.OrdinalIgnoreCase);
+                s.NeedsYouSince = needsYouStampFor(s.SessionId, isRed);
+            }
+        }
     }
 
     // Locate the Director that owns a session. Every session endpoint calls this first,

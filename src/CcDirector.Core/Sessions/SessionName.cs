@@ -72,13 +72,16 @@ public static class SessionName
     /// </list>
     /// </summary>
     public static string Compose(string repoFolderName,
-        string? explicitName, string? purpose, string disambiguator)
+        string? explicitName, string? purpose, string disambiguator, bool isWorker = false)
     {
         if (!string.IsNullOrWhiteSpace(explicitName))
             return explicitName.Trim();
 
         if (!string.IsNullOrWhiteSpace(purpose))
-            return $"{repoFolderName}: {CapPurpose(purpose)}";
+            // Automatic session roles (chunk 3): a Worker (spawned by another session) is named by its TASK -
+            // the purpose leads, since a worker IS its job; a Manager/Standalone keeps the repo-scoped
+            // "folder: purpose" as before.
+            return isWorker ? CapPurpose(purpose) : $"{repoFolderName}: {CapPurpose(purpose)}";
 
         return $"{repoFolderName} / {disambiguator}";
     }
