@@ -92,13 +92,17 @@ other's layer.
 - A fourth role, set EXPLICITLY (the human asks, or a session self-declares "make yourself an
   architect", or it is spawned as one) - NEVER auto-derived, because architecture cannot be
   inferred from the spawn graph.
-- Mandate: defines and edits architectural documents and diagrams. Does NOT implement code.
-- Human-facing, like Standalone/Manager - it may go red / needs-you to the human; its red is
-  NEVER suppressed (it is not a worker).
+- Mandate: it ONLY (a) recommends to the Manager and (b) maintains the design / architecture docs
+  and diagrams. It does NOT drive implementation and does NOT implement code.
+- Attention (AMENDED, Soren 2026-07-09): the Architect does NOT push needs-you or status to the
+  human - that is the Manager's job. The human addresses the MANAGER for status + next steps. Like
+  a Worker, the Architect never surfaces to the human. The ONLY difference from a Worker: the human
+  may PULL the Architect into a design conversation the HUMAN initiates; the Architect then
+  recommends to the Manager and edits the docs. It never PUSHES to the human.
 - Runs ALONGSIDE managers without blocking them. When it changes an architectural document it
-  NOTIFIES the relevant manager(s) so they incorporate the change in their next round - a
-  messaging/coordination behavior, not attention suppression.
-- Does not manage workers by default (standalone-like); it is an independent design seat.
+  NOTIFIES the relevant Manager(s) so they incorporate the change - a coordination behavior toward
+  the MANAGER, not a human-facing push.
+- Does not manage workers by default; it is an independent design seat.
 - UI display and how it ties into the roster: DEFERRED (Soren, 2026-07-09) - design later.
 
 ## How roles are assigned (explicit set, else auto-derived)
@@ -176,7 +180,7 @@ am still mid-turn so idling will not express it."
 |---|---|---|---|
 | Manager | Waiting / needs-perm | global color (fold) | human, red allowed |
 | Standalone | Waiting / needs-perm | global color (fold) | human, red allowed |
-| Architect | Waiting / needs-perm | global color (fold) | human, red allowed |
+| Architect | any | global color (fold) | does NOT push to the human (like a worker); human may PULL a design chat |
 | Worker (manager alive) | any | global color (fold) | everyone: quiet/receded, red suppressed |
 | Worker (manager alive) | Waiting OR NeedsManager | manager-facing highlight (my rail) | ONLY its manager, never human |
 | Worker (manager DEAD) | Waiting / blocked | global color (fold) | human, red allowed (escape hatch) |
@@ -187,10 +191,13 @@ am still mid-turn so idling will not express it."
 Mirror of the "Attention hard rules" section in the Architect's `mission-as-first-class-unit-of-work.md`
 (the authority). Summarized here for the roles implementation:
 
-- Rule 1 - WORKER never surfaces to the human in NORMAL operation (not blocked, not done, while its
-  manager is alive). Structural (the fold suppresses worker red), not a request. The ONE deliberate
-  exception is Rule 3 (dead manager + blocked worker) - because an exception always involves the
-  operator.
+- Rule 1 - The human-facing PUSH channel is MANAGER + STANDALONE ONLY (amended 2026-07-09). A WORKER
+  never surfaces to the human in NORMAL operation (structural - the fold suppresses worker red); the
+  ONE deliberate exception is Rule 3 (dead manager + blocked worker), because an exception always
+  involves the operator. An ARCHITECT also never PUSHES to the human (same as a worker); it differs
+  only in that the human may PULL it into a human-initiated design conversation. So Worker and
+  Architect are both silent-by-default to the human; only Manager and Standalone push
+  needs-you/status.
 - Rule 2 - MANAGER / Standalone are NEVER auto-muted. A manager raises "need you" by its OWN
   judgment - to get a decision OR simply to report an update - on the SAME single "need you".
   Involving the operator when the manager judges it worthwhile is the point of a manager, not clutter.
