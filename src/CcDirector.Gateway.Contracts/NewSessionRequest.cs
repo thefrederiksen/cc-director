@@ -93,6 +93,17 @@ public sealed class NewSessionRequest
     /// inferred from the spawn graph. Null leaves the role to auto-derivation.
     /// </summary>
     public string? Role { get; set; }
+
+    /// <summary>
+    /// Optional target machine for spawn routing ("start a session on another computer"). Null,
+    /// empty, or the local machine name spawns on the LOCAL machine (the default, unchanged); a
+    /// remote machine name routes the spawn via the Gateway to a Director on that machine (first
+    /// available, auto-launched if none is running). This field is ADVISORY on a Director's own
+    /// POST /sessions - the Director always creates locally and its identity comes from
+    /// <c>Environment.MachineName</c>; the routing decision is made before the request reaches the
+    /// target Director.
+    /// </summary>
+    public string? Machine { get; set; }
 }
 
 /// <summary>

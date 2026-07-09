@@ -218,6 +218,9 @@ public sealed class GatewayHost : IAsyncDisposable
     private Account.ChildDeviceMirrorService? _childMirror;
 
     private readonly DirectorEndpointClient _client;
+    // The single resolve-then-create path for spawning a session on a target machine (cron + the
+    // interactive POST /machines/{machine}/sessions relay). Built in the constructor, used by both.
+    private readonly Running.MachineSessionSpawner _machineSessionSpawner;
     private readonly TailscaleServeProvisioner _serveProvisioner;
     private readonly GatewayTurnBriefStore _turnBriefStore;
     private readonly KeyVault _keyVault;
@@ -410,6 +413,9 @@ public sealed class GatewayHost : IAsyncDisposable
         var cronTargetResolver = new Running.RegistryDirectorTargetResolver(
             () => Registry.ListDirectors(),
             new Running.RelayDirectorLauncher(Port, Token));
+        // The single resolve-then-create path shared by the cron firing engine and the interactive
+        // POST /machines/{machine}/sessions relay ("start a session on another computer").
+        _machineSessionSpawner = new Running.MachineSessionSpawner(_client, cronTargetResolver);
         // A work-list cron job (#484) drains a named list via the shipped #274 runner on the resolved
         // Director, launching the drain in the background on the shared runner manager.
         var cronWorkListRunner = new Running.DirectorCronWorkListRunner(
@@ -433,7 +439,7 @@ public sealed class GatewayHost : IAsyncDisposable
             $"http://127.0.0.1:{Port}",
             new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
         _cronEngine = new Running.CronEngine(
-            _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_client, cronTargetResolver),
+            _cronJobs, _cronRuns, new Running.DirectorCronSessionStarter(_machineSessionSpawner),
             cronWorkListRunner, cronNotifier, new Running.SystemClock());
 
         // Web Push (mobile app-icon "needs you" dot): load (or generate on first run) the VAPID key
@@ -1148,7 +1154,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
         // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
         // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
-        MachineEndpoints.Map(_app, Launchers, _streamMode ? SendLauncherCommandAsync : null);
+        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, _streamMode ? SendLauncherCommandAsync : null);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly

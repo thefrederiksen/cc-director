@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Running;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -52,8 +53,11 @@ internal static class MachineEndpoints
         new(@"cc-director(\d*)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static void Map(IEndpointRouteBuilder app, LauncherRegistry launchers,
+        MachineSessionSpawner spawner,
         LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null)
     {
+        if (spawner is null) throw new ArgumentNullException(nameof(spawner));
+
         // ===== Launcher self-registration surface =====
 
         // POST /launchers/register - the launcher POSTs this on startup and after reconnects.
@@ -114,6 +118,27 @@ internal static class MachineEndpoints
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/start: caller={ctx.Connection.RemoteIpAddress}");
             return await RelayDirectorLifecycleAsync(machine, "start", ctx, launchers, sendLauncherCommand, ct);
+        });
+
+        // POST /machines/{machine}/sessions - "start a session on another computer". Resolve the machine
+        // to a Director (auto-launching one via the launcher if none is running) and create the session
+        // there through the SAME resolve-then-create path the cron firing engine uses. Fail loud: an
+        // off/unreachable machine or a create failure returns 502 with the error - NEVER a local spawn.
+        app.MapPost("/machines/{machine}/sessions", async (string machine, NewSessionRequest req, CancellationToken ct) =>
+        {
+            FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: repo={req?.RepoPath}, agent={req?.Agent}");
+            if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
+                return Results.BadRequest(new { error = "repoPath is required" });
+
+            var (ok, dto, error, _) = await spawner.SpawnOnMachineAsync(machine, req, ct);
+            if (!ok || dto is null)
+            {
+                FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions FAILED: {error}");
+                return Results.Json(new { error = error ?? $"could not start a session on '{machine}'", machine }, statusCode: 502);
+            }
+
+            FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: started sid={dto.SessionId}");
+            return Results.Json(dto, statusCode: 201);
         });
 
         // POST /machines/{machine}/director/stop
