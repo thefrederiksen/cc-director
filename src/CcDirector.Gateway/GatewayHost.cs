@@ -32,6 +32,14 @@ public sealed class GatewayHost : IAsyncDisposable
     public int Port { get; }
     public string Token { get; }
     public DirectorRegistry Registry { get; }
+
+    /// <summary>
+    /// Issue #1176 (Phase 1a): the Gateway's cache of session state pushed up by stream-connected
+    /// Directors. The <c>/sessions</c> aggregation serves a Director from here (instead of pulling it)
+    /// when that Director's stream is connected and fresh. Empty until Directors connect and push.
+    /// </summary>
+    public Streaming.PushedSessionStore PushedSessions { get; }
+
     public bool AuthEnabled { get; }
 
     /// <summary>
@@ -293,6 +301,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
+        PushedSessions = new Streaming.PushedSessionStore();
         Devices = new Pairing.DeviceRegistry(devicesPath);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
         if (AuthEnabled)
@@ -717,6 +726,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // the C# DTOs stay the single source of truth for the front-end.
         builder.Services.AddOpenApi();
 
+        // Issue #1176 (Phase 1a): the Director-push stream. The hub and its two collaborators are
+        // registered as singletons so the hub (constructed per-invocation by SignalR's container) and the
+        // /sessions aggregation (wired explicitly below) share the one PushedSessionStore instance.
+        builder.Services.AddSignalR();
+        builder.Services.AddSingleton(PushedSessions);
+        builder.Services.AddSingleton(Registry);
+
         // Honor X-Forwarded-Proto/Host/For from a Tailscale Serve front-end so
         // ctx.Request.Scheme reflects the public scheme the user actually used.
         // Without this, every request appears as plain "http" to the Gateway
@@ -809,6 +825,11 @@ public sealed class GatewayHost : IAsyncDisposable
         _app.UseWebSockets();
 
         _app.UseRouting();
+
+        // Issue #1176 (Phase 1a): the Director-push stream endpoint. Mapped after the host-wide auth
+        // middleware above, so the handshake is token-gated exactly like every other route; a Director's
+        // .NET SignalR client presents its Bearer token on the negotiate and WebSocket handshake.
+        _app.MapHub<Streaming.DirectorHub>("/director-stream");
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;

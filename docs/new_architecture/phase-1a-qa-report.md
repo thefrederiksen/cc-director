@@ -4,6 +4,48 @@ Living QA report for the Phase 1a implementation on branch `feat/director-gatewa
 
 ---
 
+## Increment 2: the SignalR hub (DirectorHub)
+
+**Date:** 2026-07-09
+**Status:** PASS
+
+### What was built
+
+- `DirectorStreamHello` contract - the identity-declaring first message.
+- `CcDirector.Gateway.Streaming.DirectorHub` - the SignalR hub each Director dials out to. It receives
+  `Hello` (binds the connection to one Director), `PushSnapshot`, `PushDelta`, and `RemoveSession`, and
+  records them in the `PushedSessionStore`. It also marks the Director state-reporting in the
+  `DirectorRegistry` so the reconcile poll skips it.
+- Wired into `GatewayHost`: a shared `PushedSessions` store instance, `AddSignalR()`, singleton
+  registration of the store and registry, and `MapHub<DirectorHub>("/director-stream")` mapped after the
+  host-wide auth middleware so the handshake is token-gated like every other route.
+
+### Review items covered
+
+| Item | How | Evidence (test) |
+|------|-----|-----------------|
+| #9 identity binding (Phase 1a form) | The connection is bound to one Director at `Hello`; every later message uses the bound id, so a connection can only ever affect the Director it declared. A message before `Hello` is rejected; an empty id aborts the connection. | `Hello_WithEmptyDirectorId_AbortsAndDoesNotBind`, `PushSnapshot_BeforeHello_ThrowsHubException`, `TwoConnectionsBoundToDifferentDirectors_DoNotCrossContaminate` |
+| auth (transport) | The hub is mapped after the host-wide token middleware; the .NET SignalR client presents its Bearer token on the handshake (verified end-to-end in the integration harness increment). | wired in `GatewayHost` |
+| state-reporting integration | `Hello` marks the Director state-reporting so the reconcile poll skips it | `Hello_BindsConnection_AndMarksStateReporting` |
+
+Also covered: snapshot/delta/remove apply to the bound Director, disconnect unregisters the connection,
+and a restarted Director (new connection, same Director) reseeds.
+
+**Note on the residual for #9:** binding a credential *cryptographically* to a specific Director id needs
+per-Director credentials from the account/device epic; Phase 1a enforces connection-to-Director binding
+(a connection cannot push to a Director other than the one it declared) on top of the existing token gate.
+
+### Test result
+
+```
+dotnet test --filter "DirectorHubTests|PushedSessionStoreTests"
+Passed!  Failed: 0, Passed: 23, Skipped: 0, Total: 23
+```
+
+Build: clean, `TreatWarningsAsErrors=true` (Gateway project compiles with the hub wired in).
+
+---
+
 ## Increment 1: correctness core (config flag + PushedSessionStore)
 
 **Date:** 2026-07-09
