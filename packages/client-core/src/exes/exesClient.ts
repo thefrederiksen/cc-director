@@ -16,6 +16,10 @@ export interface ExesSession {
   agent?: string | null;
   activityState?: string | null;
   statusColor?: string | null;
+  // Issue #1177 (Phase 2.3): the Gateway-computed fold the Exes page renders, so its dot + label match
+  // every other client instead of re-deriving from the raw Director statusColor.
+  effectiveColor?: string | null;
+  stateLabel?: string | null;
   repoPath?: string | null;
 }
 

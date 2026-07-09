@@ -8,6 +8,7 @@ using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Briefing;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Tailscale;
 using CcDirector.Gateway.Util;
@@ -16,6 +17,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.SignalR; // Issue #1176: ClientProxyExtensions.InvokeAsync (client results) for the down-channel
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,6 +34,20 @@ public sealed class GatewayHost : IAsyncDisposable
     public int Port { get; }
     public string Token { get; }
     public DirectorRegistry Registry { get; }
+
+    /// <summary>
+    /// Issue #1176 (Phase 1a): the Gateway's cache of session state pushed up by stream-connected
+    /// Directors. The <c>/sessions</c> aggregation serves a Director from here (instead of pulling it)
+    /// when that Director's stream is connected and fresh. Empty until Directors connect and push.
+    /// </summary>
+    public Streaming.PushedSessionStore PushedSessions { get; }
+
+    // Issue #1176 (Phase 1a): Gateway-side stream feature switch + staleness window, resolved from
+    // config.json (or an explicit constructor override for tests). When off, the hub is not mapped and
+    // /sessions never consults the pushed cache, so behaviour is byte-identical to today.
+    private readonly bool _streamMode;
+    private readonly TimeSpan _streamStaleAfter;
+
     public bool AuthEnabled { get; }
 
     /// <summary>
@@ -289,11 +305,15 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
+        PushedSessions = new Streaming.PushedSessionStore();
+        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
+        _streamMode = streamMode ?? gatewayConfig.StreamMode;
+        _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
         Devices = new Pairing.DeviceRegistry(devicesPath);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
         if (AuthEnabled)
@@ -715,6 +735,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // the C# DTOs stay the single source of truth for the front-end.
         builder.Services.AddOpenApi();
 
+        // Issue #1176 (Phase 1a): the Director-push stream. The hub and its two collaborators are
+        // registered as singletons so the hub (constructed per-invocation by SignalR's container) and the
+        // /sessions aggregation (wired explicitly below) share the one PushedSessionStore instance.
+        builder.Services.AddSignalR();
+        builder.Services.AddSingleton(PushedSessions);
+        builder.Services.AddSingleton(Registry);
+
         // Honor X-Forwarded-Proto/Host/For from a Tailscale Serve front-end so
         // ctx.Request.Scheme reflects the public scheme the user actually used.
         // Without this, every request appears as plain "http" to the Gateway
@@ -808,6 +835,16 @@ public sealed class GatewayHost : IAsyncDisposable
 
         _app.UseRouting();
 
+        // Issue #1176 (Phase 1a): the Director-push stream endpoint, mapped only when stream mode is on
+        // (kill-switch: off => the hub does not exist and behaviour is byte-identical to today). Mapped
+        // after the host-wide auth middleware above, so the handshake is token-gated exactly like every
+        // other route; a Director's .NET SignalR client presents its Bearer token on the handshake.
+        if (_streamMode)
+        {
+            _app.MapHub<Streaming.DirectorHub>("/director-stream");
+            FileLog.Write("[GatewayHost] stream mode ON: DirectorHub mapped at /director-stream; /sessions serves from the push cache when fresh");
+        }
+
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
         GatewayEndpoints.Map(_app, Registry, _client, version, Token, AuthEnabled,
@@ -881,7 +918,14 @@ public sealed class GatewayHost : IAsyncDisposable
             // front-door human-input endpoints can enforce the session lock (reject input while a PENDING
             // dictation record exists for the session). One store instance per Gateway, so the lock reads
             // this host's own on-disk root.
-            dictationUploads: _dictationUploads);
+            dictationUploads: _dictationUploads,
+            // Issue #1176 (Phase 1a): serve /sessions from the Director-push cache when the stream is
+            // fresh; null when stream mode is off, keeping /sessions byte-identical to today.
+            pushedSessions: _streamMode ? PushedSessions : null,
+            streamStaleAfter: _streamStaleAfter,
+            // Issue #1177 (Phase 1): route per-session commands DOWN the Director's stream when stream mode
+            // is on. Null when off, so every command endpoint stays on its HTTP path (byte-identical).
+            sendCommand: _streamMode ? SendCommandAsync : null);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1206,6 +1250,49 @@ public sealed class GatewayHost : IAsyncDisposable
         {
             FileLog.Write($"[GatewayHost] cron sweep FAILED: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Issue #1176 (Phase 1b): the down-channel proof. Sends a message DOWN a Director's stream and awaits
+    /// its reply over the SAME connection (SignalR client results), demonstrating that the Gateway can
+    /// both push to and request from a Director on the one outbound-dialed connection. Returns null when
+    /// that Director has no active stream. NOTE: this is a synthetic proof, not a production command path -
+    /// the retired assessed-state producer meant there was no live down-path to migrate (plan 4.7b).
+    /// </summary>
+    public async Task<string?> PingDirectorAsync(string directorId, string message, CancellationToken ct = default)
+    {
+        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
+            as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
+        if (connectionId is null || hub is null)
+        {
+            FileLog.Write($"[GatewayHost] PingDirectorAsync: no active stream for director={directorId}");
+            return null;
+        }
+        return await hub.Clients.Client(connectionId).InvokeAsync<string>("Ping", message, ct);
+    }
+
+    /// <summary>
+    /// Issue #1177 (Phase 1): send a command DOWN a Director's stream and await its result over the SAME
+    /// connection (SignalR client results), modeled exactly on <see cref="PingDirectorAsync"/>. Returns
+    /// null when that Director has no active stream connection (or the hub is unavailable), which the
+    /// caller treats as "no stream" and falls back to the HTTP command path. Any non-null result - success
+    /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
+    /// </summary>
+    public async Task<DirectorCommandResult?> SendCommandAsync(string directorId, DirectorCommand command, CancellationToken ct = default)
+    {
+        if (command is null) throw new ArgumentNullException(nameof(command));
+
+        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
+            as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
+        if (connectionId is null || hub is null)
+        {
+            FileLog.Write($"[GatewayHost] SendCommandAsync: no active stream for director={directorId}, verb={command.Verb}");
+            return null;
+        }
+        FileLog.Write($"[GatewayHost] SendCommandAsync: director={directorId}, verb={command.Verb}, sid={command.SessionId}, cmdId={command.CommandId}");
+        return await hub.Clients.Client(connectionId).InvokeAsync<DirectorCommandResult>("Command", command, ct);
     }
 
     public async Task StopAsync()

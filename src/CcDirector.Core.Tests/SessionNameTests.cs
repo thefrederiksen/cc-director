@@ -52,6 +52,41 @@ public class SessionNameTests
     }
 
     [Fact]
+    public void Compose_Worker_WithPurpose_IsTaskFlavored_NoRepoPrefix()
+    {
+        // Automatic session roles (chunk 3): a Worker is named by its TASK - the purpose leads, without the
+        // repo prefix a Manager/Standalone gets.
+        var name = SessionName.Compose("devthrottle",
+            explicitName: null, purpose: "implement #799", disambiguator: "1fb5", isWorker: true);
+        Assert.Equal("implement #799", name);
+    }
+
+    [Fact]
+    public void Compose_NonWorker_WithPurpose_KeepsRepoPrefix()
+    {
+        var name = SessionName.Compose("devthrottle",
+            explicitName: null, purpose: "implement #799", disambiguator: "1fb5", isWorker: false);
+        Assert.Equal("devthrottle: implement #799", name);
+    }
+
+    [Fact]
+    public void Compose_Worker_NoPurpose_FallsBackToRepoDefault()
+    {
+        // Nothing to flavor with - a worker with no purpose still gets the repo default, not a bare folder.
+        var name = SessionName.Compose("devthrottle",
+            explicitName: null, purpose: null, disambiguator: "1fb5", isWorker: true);
+        Assert.Equal("devthrottle / 1fb5", name);
+    }
+
+    [Fact]
+    public void Compose_Worker_ExplicitName_StillWins()
+    {
+        var name = SessionName.Compose("devthrottle",
+            explicitName: "hand picked", purpose: "implement #799", disambiguator: "1fb5", isWorker: true);
+        Assert.Equal("hand picked", name);
+    }
+
+    [Fact]
     public void Compose_Purpose_IsTrimmedAndCappedAtMaxLength()
     {
         var longPurpose = new string('x', SessionName.MaxPurposeLength + 25);

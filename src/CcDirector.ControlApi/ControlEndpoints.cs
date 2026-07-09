@@ -8,6 +8,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Fleet;
 using CcDirector.Core.History;
 using CcDirector.Core.Network;
 using CcDirector.Core.Sessions;
@@ -28,7 +29,7 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class ControlEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null)
     {
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
         // URL of the Gateway this Director is registered with, for the "Gateway" nav
@@ -303,6 +304,20 @@ internal static class ControlEndpoints
             if (!Guid.TryParse(req.ToSessionId, out var toGuid))
                 return Results.BadRequest(new { error = "invalid toSessionId format" });
 
+            // Fleet-message steward (messaging.steward): dedupe + per-source rate limit on this session's
+            // OUTGOING messages. Never silent - a drop is logged AND returned to the sender. Disabled or
+            // not wired => Allow (byte-identical).
+            if (messageSteward is not null)
+            {
+                var decision = messageSteward.CheckMessage(req.FromSessionId, req.ToSessionId, req.Text);
+                if (!decision.Allowed)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/send steward {decision.Outcome}: from={FleetMessaging.ShortId(req.FromSessionId)} to={FleetMessaging.ShortId(req.ToSessionId)} - {decision.Reason}");
+                    return Results.Json(new FleetSendResponse { Accepted = false, DeliveredCount = 0, Error = decision.Reason },
+                        statusCode: decision.Outcome == StewardOutcome.DuplicateSuppressed ? StatusCodes.Status200OK : StatusCodes.Status429TooManyRequests);
+                }
+            }
+
             var framed = string.IsNullOrWhiteSpace(req.FromSessionId)
                 ? req.Text
                 : FrameForSender(req.FromSessionId, req.Text);
@@ -358,6 +373,19 @@ internal static class ControlEndpoints
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
                 return Results.BadRequest(new { error = "text is required" });
+
+            // Fleet-message steward (messaging.steward): dedupe + per-source BROADCAST throttle (a broadcast
+            // fans out to the whole fleet, so it is capped tighter). Never silent. Disabled/unwired => Allow.
+            if (messageSteward is not null)
+            {
+                var decision = messageSteward.CheckBroadcast(req.FromSessionId, req.Text);
+                if (!decision.Allowed)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/broadcast steward {decision.Outcome}: from={FleetMessaging.ShortId(req.FromSessionId)} - {decision.Reason}");
+                    return Results.Json(new FleetSendResponse { Accepted = false, DeliveredCount = 0, Error = decision.Reason },
+                        statusCode: decision.Outcome == StewardOutcome.DuplicateSuppressed ? StatusCodes.Status200OK : StatusCodes.Status429TooManyRequests);
+                }
+            }
 
             var framed = FrameForSender(req.FromSessionId, req.Text);
 
@@ -485,6 +513,24 @@ internal static class ControlEndpoints
                 return Results.BadRequest(new { error = "invalid toSessionId format" });
 
             var timeoutMs = req.TimeoutMs > 0 ? req.TimeoutMs : 120_000;
+
+            // Fleet-message steward (messaging.steward): dedupe + per-source rate limit on this session's
+            // outgoing asks too. Never silent. Disabled/unwired => Allow (byte-identical).
+            if (messageSteward is not null)
+            {
+                var decision = messageSteward.CheckMessage(req.FromSessionId, req.ToSessionId, req.Question);
+                if (!decision.Allowed)
+                {
+                    FileLog.Write($"[ControlEndpoints] /fleet/ask steward {decision.Outcome}: from={FleetMessaging.ShortId(req.FromSessionId)} to={FleetMessaging.ShortId(req.ToSessionId)} - {decision.Reason}");
+                    return Results.Json(new FleetAskResponse
+                    {
+                        Answered = false,
+                        Status = decision.Outcome == StewardOutcome.DuplicateSuppressed ? "duplicate" : "throttled",
+                        Error = decision.Reason,
+                    }, statusCode: decision.Outcome == StewardOutcome.DuplicateSuppressed ? StatusCodes.Status200OK : StatusCodes.Status429TooManyRequests);
+                }
+            }
+
             // No reply hint for an ask: the asker is waiting and reads the answer from the target's
             // output, so the target must answer directly rather than try to send a separate reply.
             var framed = FrameForSender(req.FromSessionId, req.Question, includeReplyHint: false);
@@ -740,12 +786,7 @@ internal static class ControlEndpoints
         // Empty body defaults to onHold=true (the common case is "hold this one").
         app.MapPost("/sessions/{sid}/hold", async (string sid, HttpContext httpCtx) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
+            // Read the (optional) body at the boundary, exactly as before: an empty body defaults to hold.
             var onHold = true;
             try
             {
@@ -754,9 +795,23 @@ internal static class ControlEndpoints
             }
             catch { /* empty body -> default to hold */ }
 
-            session.OnHold = onHold;
-            FileLog.Write($"[ControlEndpoints] /hold: session={guid} onHold={onHold}");
-            return Results.Json(new { onHold = session.OnHold });
+            // Issue #1177 (Phase 1): the hold state change runs through the shared SessionCommandExecutor
+            // so this REST path and the Gateway stream down-channel are identical.
+            var command = new DirectorCommand
+            {
+                Verb = "hold",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new HoldRequest { OnHold = onHold }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<HoldResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "hold command failed"),
+            };
         });
 
         // Toggle the Wingman experience for a session. Default ON for every session; users
@@ -908,38 +963,86 @@ internal static class ControlEndpoints
         // Goal management: set (or clear) the session's stated goal. Setting a goal
         // kicks off an immediate background assessment so the verdict is warm. Pass an
         // empty/null goal to clear it and stop goal-tracking.
-        app.MapPost("/sessions/{sid}/wingman/goal", (string sid, WingmanGoalRequest req) =>
+        app.MapPost("/sessions/{sid}/wingman/goal", async (string sid, WingmanGoalRequest req) =>
         {
             if (!Guid.TryParse(sid, out var guid))
                 return Results.BadRequest(new { error = "invalid session id format" });
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.SetWingmanGoal(req?.Goal);
-            FileLog.Write($"[ControlEndpoints] POST /wingman/goal: session={guid} goal=\"{req?.Goal}\"");
-
-            if (!string.IsNullOrWhiteSpace(req?.Goal) && turnSummaryCache is not null)
-                _ = turnSummaryCache.AssessGoalNowAsync(guid);
-
-            return Results.Json(new
+            // Issue #1177 (Phase 1, increment 6): the goal set + its cache-warm side effect run through the
+            // shared SessionCommandExecutor (given the Director-local services), so this REST path and the
+            // Gateway stream down-channel are identical. The local response is re-read here, byte-identical.
+            var command = new DirectorCommand
             {
-                goal = session.WingmanGoal,
-                goalSetAt = session.WingmanGoalSetAt,
-                goalState = session.WingmanGoalState,
-            });
+                Verb = "wingman-goal",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var services = new SessionCommandServices { ProactiveExplain = proactiveExplain, TurnSummaryCache = turnSummaryCache };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
+
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.NotFound(new { error = result.Error });
+
+            var session = sessionManager.GetSession(guid);
+            return session is null
+                ? Results.NotFound(new { error = "session not found" })
+                : Results.Json(new
+                {
+                    goal = session.WingmanGoal,
+                    goalSetAt = session.WingmanGoalSetAt,
+                    goalState = session.WingmanGoalState,
+                });
         });
 
-        app.MapPatch("/sessions/{sid}", (string sid, SessionUpdateRequest req) =>
+        // Automatic session roles (chunk 2.5): (re)declare this session's sticky explicit role. Runs through
+        // the shared SessionCommandExecutor so this REST path and the Gateway stream down-channel are
+        // identical. Returns the updated session DTO; a blank role clears the explicit role.
+        app.MapPost("/sessions/{sid}/role", async (string sid, SetRoleRequest req) =>
+        {
+            if (!Guid.TryParse(sid, out _))
+                return Results.BadRequest(new { error = "invalid session id format" });
+
+            var command = new DirectorCommand
+            {
+                Verb = "set-role",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.NotFound(new { error = result.Error });
+            return Results.Content(result.BodyJson ?? "{}", "application/json");
+        });
+
+        app.MapPatch("/sessions/{sid}", async (string sid, SessionUpdateRequest req) =>
         {
             if (!Guid.TryParse(sid, out var guid))
                 return Results.BadRequest(new { error = "invalid session id format" });
 
             FileLog.Write($"[ControlEndpoints] PATCH /sessions/{sid}: name=\"{req?.Name}\"");
 
-            if (!sessionManager.RenameSession(guid, req?.Name))
-                return Results.NotFound(new { error = "session not found" });
+            // Issue #1177 (Phase 1): the rename runs through the shared SessionCommandExecutor so this REST
+            // path and the Gateway stream down-channel apply the identical mutation. The Director's local
+            // response still uses its identity-stamped mapper (MachineName/User/TailnetEndpoint), so this
+            // endpoint stays byte-identical to before; the executor returns the plain stream DTO that the
+            // Gateway stamps during aggregation.
+            var command = new DirectorCommand
+            {
+                Verb = "patch",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.NotFound(new { error = result.Error });
 
             var session = sessionManager.GetSession(guid);
             return session is null
@@ -1021,23 +1124,6 @@ internal static class ControlEndpoints
                 // client update doesn't break.
                 html = scrollbackHtml + gridHtml,
             });
-        });
-
-        // The Gateway pushing its assessed state DOWN (issue #186 two-owner model): stored
-        // as a display annotation only. Never fed into the detector; any real activity
-        // change wipes it (see Session.SetActivityState).
-        app.MapPost("/sessions/{sid}/assessment", async (string sid, HttpContext ctx) =>
-        {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var req = await ctx.Request.ReadFromJsonAsync<AssessmentRequest>(ctx.RequestAborted);
-            session.SetAssessedStateAnnotation(req?.AssessedState);
-            FileLog.Write($"[ControlEndpoints] assessment: sid={sid} -> {req?.AssessedState ?? "(cleared)"}");
-            return Results.Json(new { ok = true });
         });
 
         // (The agent-agnostic conversation history endpoint, GET /sessions/{sid}/history, is already
@@ -1934,35 +2020,25 @@ internal static class ControlEndpoints
         {
             FileLog.Write($"[ControlEndpoints] POST prompt: sid={sid}, len={req?.Text?.Length ?? 0}");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            if (req is null || string.IsNullOrEmpty(req.Text))
-                return Results.BadRequest(new { error = "text is required" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            if (session.Status is SessionStatus.Exited or SessionStatus.Failed)
-                return Results.StatusCode(StatusCodes.Status409Conflict);
-
-            var bufferCursor = session.Buffer?.TotalBytesWritten ?? 0;
-
-            if (req.AppendEnter)
-                await session.SendTextAsync(req.Text);
-            else
-                session.SendInput(Encoding.UTF8.GetBytes(req.Text));
-
-            FileLog.Write($"[ControlEndpoints] POST prompt OK: sid={sid}, cursor={bufferCursor}");
-
-            return Results.Json(new PromptResponse
+            // Issue #1177 (Phase 1): the prompt body is executed through the shared SessionCommandExecutor
+            // so this REST path and the Gateway stream down-channel run identical logic. The executor's
+            // DirectorCommandStatus is mapped back to the same HTTP results this endpoint returned before.
+            var command = new DirectorCommand
             {
-                Accepted = true,
-                SentAt = DateTime.UtcNow,
-                BufferCursor = bufferCursor,
-                ActivityState = session.ActivityState.ToString(),
-            });
+                Verb = "prompt",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<PromptResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.StatusCode(StatusCodes.Status409Conflict),
+                _ => Results.Problem(result.Error ?? "prompt command failed"),
+            };
         });
 
         // ===== Per-session prompt queue =====
@@ -2088,22 +2164,20 @@ internal static class ControlEndpoints
         {
             FileLog.Write($"[ControlEndpoints] POST interrupt: sid={sid}");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            // Issue #1177 (Phase 1): executed through the shared SessionCommandExecutor so this REST path
+            // and the Gateway stream down-channel run identical logic. A driver that refuses -> Conflict
+            // with the same { error } body this endpoint returned before.
+            var command = new DirectorCommand { Verb = "interrupt", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            try
+            return result.Status switch
             {
-                await session.InterruptAsync();
-            }
-            catch (NotSupportedException ex)
-            {
-                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status409Conflict);
-            }
-            return Results.Json(new { accepted = true });
+                DirectorCommandStatus.Ok => Results.Json(new { accepted = true }),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status409Conflict),
+                _ => Results.Problem(result.Error ?? "interrupt command failed"),
+            };
         });
 
         // Soft-stop the current turn via the session's agent driver (Esc for Claude
@@ -2112,22 +2186,18 @@ internal static class ControlEndpoints
         {
             FileLog.Write($"[ControlEndpoints] POST escape: sid={sid}");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            // Issue #1177 (Phase 1): executed through the shared SessionCommandExecutor (same as interrupt).
+            var command = new DirectorCommand { Verb = "escape", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            try
+            return result.Status switch
             {
-                await session.CancelTurnAsync();
-            }
-            catch (NotSupportedException ex)
-            {
-                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status409Conflict);
-            }
-            return Results.Json(new { accepted = true });
+                DirectorCommandStatus.Ok => Results.Json(new { accepted = true }),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status409Conflict),
+                _ => Results.Problem(result.Error ?? "escape command failed"),
+            };
         });
 
         // Open the tool's in-terminal history picker (Claude's double-Esc). A
@@ -2781,149 +2851,38 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Create a session =====
-        app.MapPost("/sessions", (NewSessionRequest req) =>
+        app.MapPost("/sessions", async (NewSessionRequest req) =>
         {
             FileLog.Write($"[ControlEndpoints] POST /sessions: repo={req?.RepoPath}, agent={req?.Agent}");
 
-            if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
-                return Results.BadRequest(new { error = "repoPath is required" });
-
-            if (!Directory.Exists(req.RepoPath))
-                return Results.BadRequest(new { error = $"repoPath does not exist: {req.RepoPath}" });
-
-            if (!Enum.TryParse<AgentKind>(req.Agent, ignoreCase: true, out var kind))
-                return Results.BadRequest(new { error = $"unknown agent: {req.Agent}. Valid: ClaudeCode, Pi, Codex, Gemini, OpenCode, Grok, Copilot, RawCli" });
-
-            // RawCli requires a Command; validate before constructing the agent.
-            if (kind == AgentKind.RawCli && string.IsNullOrWhiteSpace(req.Command))
-                return Results.BadRequest(new { error = "command is required when agent is RawCli" });
-
-            IAgent agent = kind == AgentKind.RawCli
-                ? new RawCliAgent(req.Command!, req.CommandArgs)
-                : AgentPluginRegistry.CreateAgent(kind, sessionManager.Options);
-
-            // Issue #1017: a programmatically-created session (the CLI `session spawn`, a Gateway
-            // schedule, any REST client) must inherit the SAME configured agent defaults - most
-            // importantly the permission-mode preset - that the desktop New Session dialog applies,
-            // or it comes up prompting for approval on everything and is unusable for unattended
-            // work. When the caller supplies no Args, resolve the default effective launch line for
-            // the requested kind from the user's configured agent library, exactly as the dialog
-            // does (AgentLaunchDefaults mirrors its default entry selection). An explicitly supplied
-            // Args (even empty) is honored verbatim as a per-session override and skips this. RawCli
-            // carries its whole command line explicitly, so it has nothing to inherit. Empty is
-            // normalized back to null so Claude's legacy DefaultClaudeArgs fallback still applies -
-            // this is the same null-when-empty rule the dialog uses.
-            string? effectiveArgs = req.Args;
-            if (req.Args is null && kind != AgentKind.RawCli)
+            // Issue #1177 (Phase 1): the whole create - agent parse/construct, default-args, name-at-birth
+            // validation, CreateSession, Wingman opt-in, and the fire-and-forget PrePrompt - runs through
+            // the shared SessionCommandExecutor so this REST path and the Gateway stream down-channel
+            // create identically. The Director's own 201 response is still built with the identity-stamped
+            // MapWithIdentity (unchanged), so this endpoint stays byte-identical; the executor returns the
+            // plain stream DTO that the Gateway stamps during aggregation.
+            var command = new DirectorCommand
             {
-                var resolvedDefault = AgentLaunchDefaults.ResolveDefaultArgs(kind, sessionManager.Options);
-                effectiveArgs = string.IsNullOrWhiteSpace(resolvedDefault) ? null : resolvedDefault;
-                FileLog.Write($"[ControlEndpoints] POST /sessions: no args supplied; applied default agent settings for {kind}: \"{effectiveArgs ?? "(empty)"}\"");
-            }
+                Verb = "create",
+                SessionId = "",
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            // Issue #800: enforce a meaningful name at birth. An EXPLICIT name (req.Name supplied,
-            // even if blank) that is blank or equal to the bare repository folder name is rejected;
-            // an ABSENT name (req.Name == null) is auto-composed from folder + purpose +
-            // disambiguator by the name factory below, so a session never displays as the bare folder.
-            var repoFolderName = SessionName.FolderName(req.RepoPath);
-            if (req.Name is not null && SessionName.IsWeakExplicitName(req.Name, repoFolderName))
-                return Results.BadRequest(new { error =
-                    $"Provide a meaningful session name or a purpose: a blank name or the bare repository folder name (\"{repoFolderName}\") is not allowed." });
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.Problem(result.Error ?? "create failed", statusCode: 500);
 
-            var explicitName = req.Name;
-            var purpose = req.Purpose;
-
-            // Issue #815: a controlled "Supporting" sub-agent carries the spawning session's id.
-            // Parse it here; an absent or unparseable value leaves the session a normal
-            // (uncontrolled) session - the relationship is set only at birth, so there is no later
-            // toggle.
-            Guid? controllerSessionId = null;
-            if (!string.IsNullOrWhiteSpace(req.ControllerSessionId)
-                && Guid.TryParse(req.ControllerSessionId, out var parsedControllerId))
-                controllerSessionId = parsedControllerId;
-
-            Session session;
-            try
-            {
-                session = sessionManager.CreateSession(
-                    req.RepoPath,
-                    agent,
-                    effectiveArgs,
-                    SessionBackendType.ConPty,
-                    resumeSessionId: string.IsNullOrWhiteSpace(req.ResumeSessionId) ? null : req.ResumeSessionId,
-                    nameFactory: id => SessionName.Compose(
-                        repoFolderName, explicitName, purpose, SessionName.Disambiguator(id)),
-                    controllerSessionId: controllerSessionId);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[ControlEndpoints] POST /sessions FAILED: {ex.Message}");
-                return Results.Problem(ex.Message, statusCode: 500);
-            }
-
-            // Apply the per-session Wingman opt-in from the request. Default in the contract
-            // is true (matching Session.WingmanEnabled's default), so a new session boots with
-            // the auto-explain briefing on unless the caller explicitly disabled it.
-            session.WingmanEnabled = req.WingmanEnabled;
-            FileLog.Write($"[ControlEndpoints] POST /sessions: sid={session.Id} wingmanEnabled={session.WingmanEnabled}");
-
-            // SessionManager.CreateSession now fires OnSessionCreated itself, so no
-            // explicit RaiseSessionCreated call is needed here.
-
-            // If a PrePrompt was supplied, dispatch it once the agent is actually READY.
-            // Fire-and-forget on a background task so the POST returns 201 immediately.
-            //
-            // READINESS (issue #212): ActivityState alone is NOT a gate here - a fresh
-            // session reads WaitingForInput from t=0, which dispatched seeds into a
-            // still-BOOTING claude: the typed text reached the composer but the Enter
-            // keypresses were dropped, parking the whole prompt unsubmitted (observed
-            // live on the restore E2E, repeatedly). Claude is ready once its startup
-            // burst (the welcome banner) has rendered AND the TUI has settled - so wait
-            // for substantial output followed by a full quiet poll. If the deadline
-            // passes without that, dispatch anyway; the backend's @-reference submit
-            // watchdog is the last line of defense.
-            // Session-type playbooks are intentionally NOT seeded into the terminal -
-            // the type drives the badge and wingman mission clause only. Only the
-            // caller-supplied PrePrompt (e.g. the #236 bug-session task) is dispatched.
-            var seedText = req.PrePrompt;
-
-            if (!string.IsNullOrWhiteSpace(seedText))
-            {
-                var prePrompt = seedText;
-                var waitMs = Math.Max(1000, req.PrePromptWaitMs);
-                var capturedSession = session;
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        var deadline = DateTime.UtcNow.AddMilliseconds(waitMs);
-                        long lastBytes = -1;
-                        while (DateTime.UtcNow < deadline)
-                        {
-                            var st = capturedSession.ActivityState;
-                            if (st is ActivityState.Exited) { FileLog.Write($"[ControlEndpoints] PrePrompt: session exited before ready, sid={capturedSession.Id}"); return; }
-                            var bytes = capturedSession.Buffer?.TotalBytesWritten ?? 0;
-                            var settled = bytes > 1500 && bytes == lastBytes
-                                && st is ActivityState.Idle or ActivityState.WaitingForInput;
-                            if (settled)
-                            {
-                                FileLog.Write($"[ControlEndpoints] PrePrompt: agent ready (TUI rendered {bytes} bytes, then settled), sid={capturedSession.Id}");
-                                break;
-                            }
-                            lastBytes = bytes;
-                            await Task.Delay(750);
-                        }
-                        FileLog.Write($"[ControlEndpoints] PrePrompt: dispatching to sid={capturedSession.Id}, len={prePrompt.Length}");
-                        await capturedSession.SendTextAsync(prePrompt);
-                    }
-                    catch (Exception ex)
-                    {
-                        FileLog.Write($"[ControlEndpoints] PrePrompt FAILED: {ex.Message}");
-                    }
-                });
-            }
-
-            return Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
+            // Re-fetch the created session by the id the executor returned so the local response carries
+            // the identity fields (MachineName/User/TailnetEndpoint), exactly as before.
+            var created = SessionCommandExecutor.Deserialize<SessionDto>(result.BodyJson);
+            if (created is null || !Guid.TryParse(created.SessionId, out var newGuid))
+                return Results.Problem("created session id missing", statusCode: 500);
+            var session = sessionManager.GetSession(newGuid);
+            return session is null
+                ? Results.Problem("created session not found", statusCode: 500)
+                : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
         });
 
         // ===== REST: Create a GitHub Actions remote session =====
@@ -2974,34 +2933,22 @@ internal static class ControlEndpoints
             var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
             FileLog.Write($"[ControlEndpoints] DELETE /sessions/{sid} caller={caller}");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
+            // Issue #1177 (Phase 1): the kill+remove runs through the shared SessionCommandExecutor (same
+            // best-effort-kill-then-remove semantics as before), so this REST path and the Gateway stream
+            // down-channel are identical. The boundary try-catch preserves the endpoint's 500 on an
+            // unexpected fault (an executor verb is not a boundary, so it lets such faults bubble here).
             try
             {
-                // Kill best-effort, then ALWAYS remove. The kill and the removal used to be two
-                // separate statements: if the kill threw (e.g. a broken pipe while sending Ctrl+C
-                // to an already-dying process), removal was skipped and the row was orphaned -
-                // claude gone, but the session still listed ("two sessions, one with no claude").
-                try
-                {
-                    await sessionManager.KillSessionAsync(guid);
-                }
-                catch (Exception killEx) when (killEx is not KeyNotFoundException)
-                {
-                    // The process may have already exited. That is not a reason to leave a zombie
-                    // row, so log and fall through to removal: DELETE always means gone - same as
-                    // the desktop's close flow, which has always paired kill with removal.
-                    // (KeyNotFoundException is let through to the outer 404 handler below.)
-                    FileLog.Write($"[ControlEndpoints] DELETE /sessions/{sid}: kill raised (process likely already gone): {killEx.Message}");
-                }
+                var command = new DirectorCommand { Verb = "kill", SessionId = sid };
+                var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-                sessionManager.RemoveSession(guid);
-                return Results.Json(new { killed = true, removed = true });
-            }
-            catch (KeyNotFoundException)
-            {
-                return Results.NotFound(new { error = "session not found" });
+                return result.Status switch
+                {
+                    DirectorCommandStatus.Ok => Results.Json(new { killed = true, removed = true }),
+                    DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                    DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                    _ => Results.Problem(result.Error ?? "kill command failed", statusCode: 500),
+                };
             }
             catch (Exception ex)
             {
@@ -3239,7 +3186,11 @@ internal static class ControlEndpoints
     /// Directors that send empty fields (back-compat for mixed-version fleets) but must NOT
     /// overwrite non-empty Director-supplied values.
     /// </summary>
-    private static SessionDto Map(Session s, string directorId, TurnSummaryCache? cache = null,
+    // Issue #1176 (Phase 1a): internal so the Director's stream client builds its pushed snapshots and
+    // deltas through the EXACT same mapper the local /sessions endpoint uses (review #6), rather than a
+    // second, divergent builder. Callers outside /sessions pass only (session, directorId); the Gateway
+    // aggregator stamps machine/user/tailnet/view-url during aggregation, for pushed and pulled alike.
+    internal static SessionDto Map(Session s, string directorId, TurnSummaryCache? cache = null,
         string machineName = "", string user = "", string tailnetEndpoint = "", string? gatewayUrl = null)
     {
         // Phase 3: StatusColor and LastStatusReason are owned by the SessionStatusWingman
@@ -3287,10 +3238,10 @@ internal static class ControlEndpoints
             RepoPath = s.RepoPath,
             Status = s.Status.ToString(),
             ActivityState = s.ActivityState.ToString(),
-            // The Gateway-pushed display annotation (issue #186 two-owner model). Null
-            // unless the Gateway's brain assessed the CURRENT quiet; wiped by any real
-            // state change. Display only - never feeds the detector.
-            AssessedState = s.AssessedStateAnnotation,
+            // SessionDto.AssessedState is intentionally left null (defaults null): the Gateway-pushed
+            // "assessed state" display annotation (issue #186) was retired with the Director's overlay
+            // fold (issue #1177, Phase 2.3). Readers still do "AssessedState ?? ActivityState", so a null
+            // here means they fall through to the raw ActivityState - the documented steady state.
             CreatedAt = s.CreatedAt.UtcDateTime,
             TotalBufferBytes = s.Buffer?.TotalBytesWritten ?? 0,
             IsAlternateScreen = s.IsAlternateScreen,
@@ -3311,6 +3262,22 @@ internal static class ControlEndpoints
             VoiceMode = s.VoiceMode,
             OnHold = s.OnHold,
             WingmanEnabled = s.WingmanEnabled,
+            // Raw local facts for the Gateway color fold (issue #1177, Phase 2). Reported straight from
+            // the Session; the Director does NOT fold them into a color here (StatusColor is unchanged).
+            IsBrandNew = s.IsBrandNew,
+            IsControlled = s.IsControlled,
+            ControllerSessionId = s.ControllerSessionId?.ToString(),
+            // Automatic session roles (chunk 2.5): the sticky explicit role, so the Gateway aggregation can
+            // apply the explicit-wins precedence. The RESOLVED SessionRole is computed at the aggregation.
+            ExplicitRole = s.ExplicitRole,
+            // Chunk 3: the auto-vs-explicit name marker (a future auto-rename gates on it).
+            IsAutoNamed = s.IsAutoNamed,
+            IsBackgroundRunning = s.IsBackgroundRunning,
+            // Issue #1177 (Phase 2): the two Director-baked overlays that previously reached the Gateway
+            // ONLY via the cooked StatusColor. Now reported as raw facts so the Gateway fold reproduces
+            // them (desktop-dictation orange, legacy auto-explain yellow) without reading StatusColor.
+            IsTranscribing = s.IsTranscribing,
+            IsAutoExplaining = s.IsExplaining,
             RemoteRepo = s.RemoteRepo ?? "",
             RemoteThreadUrl = s.RemoteThreadUrl ?? "",
             RemoteRunUrl = s.RemoteRunUrl ?? "",

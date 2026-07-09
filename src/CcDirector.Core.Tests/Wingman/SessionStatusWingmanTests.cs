@@ -164,12 +164,17 @@ public sealed class SessionStatusWingmanTests
 
     // ---------- End-to-end: the timer flip drives the badge ----------
 
-    // ---------- Yellow overlay (Wingman auto-explain in flight) ----------
-    // These tests use the in-process BufferOnlyBackend (never auto-exits) so the
-    // Yellow rule is exercised without racing the cmd.exe spawn/exit lifecycle.
+    // ---------- Former overlays are GONE (Phase 2.3): the Director maps ActivityState ONLY ----------
+    // The transcribing (orange), wingman-reading (yellow: briefing + auto-explain), background-running
+    // (purple), brand-new "ready" (green), and controlled-sub-agent (slate/supporting) overlays moved OUT
+    // of the Director. The Director still reports the raw facts (IsTranscribing / IsExplaining /
+    // BriefingState / IsBackgroundRunning / IsControlled / IsBrandNew) so a Gateway can fold them, but it
+    // no longer turns any of them into a color: the standalone-desktop badge is purely blue (working) /
+    // red (needs you) / gray (exited). These tests guard that each former-overlay flag no longer repaints
+    // the Director color. They use the in-process BufferOnlyBackend (never auto-exits).
 
     [Fact]
-    public void Yellow_only_when_wingman_enabled_and_explaining_and_at_turn_end()
+    public void IsExplaining_no_longer_repaints_the_director_color()
     {
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
@@ -177,19 +182,15 @@ public sealed class SessionStatusWingmanTests
         {
             wingman.Start();
             var (session, _) = CreateBufferSession(manager);
-            // The wingman overlays only fire after a turn ends, so use a post-first-turn
-            // session; a brand-new one would baseline green "ready", not red "needs you".
             session.IsBrandNew = false;
 
-            // Run a turn (Working) and park at its end. The Working->WaitingForInput
-            // transition recomputes the colour; a non-brand-new turn-end is red "needs you".
+            // Park at a red turn-end, then toggle the auto-explain flag: the color must NOT move to yellow.
             session.ApplyTerminalActivityState(ActivityState.Working);
             session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
             Assert.Equal(StatusColor.Red, session.StatusColor);
 
             session.IsExplaining = true;
-            Assert.Equal(StatusColor.Yellow, session.StatusColor);
-            Assert.Equal("wingman is reading", session.LastStatusReason);
+            Assert.Equal(StatusColor.Red, session.StatusColor);
 
             session.IsExplaining = false;
             Assert.Equal(StatusColor.Red, session.StatusColor);
@@ -198,11 +199,8 @@ public sealed class SessionStatusWingmanTests
     }
 
     [Fact]
-    public void Yellow_does_not_apply_while_session_is_working()
+    public void IsExplaining_while_working_stays_blue()
     {
-        // Yellow is the "your turn just ended, Wingman is reading" overlay. While the agent
-        // is still producing bytes the dot must stay Blue even if IsExplaining is somehow
-        // set (defensive: ProactiveExplainService only fires on WaitingForInput).
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
         try
@@ -217,30 +215,10 @@ public sealed class SessionStatusWingmanTests
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
-    [Fact]
-    public void Yellow_suppressed_when_wingman_disabled()
-    {
-        // A WingmanEnabled=false session must never go Yellow -- it goes straight Blue->Red.
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-            session.WingmanEnabled = false;
-            session.IsBrandNew = false; // post-first-turn: turn-end baselines red, not green "ready"
-
-            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-            session.IsExplaining = true;
-            Assert.Equal(StatusColor.Red, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
-
-    // ---------- Orange overlay: a dictated utterance is being transcribed (spec section 10) ----------
+    // ---------- Former transcribing (orange) overlay: no longer a Director color ----------
 
     [Fact]
-    public void Orange_while_transcribing_over_a_red_turn_end_then_back()
+    public void IsTranscribing_no_longer_repaints_the_director_color()
     {
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
@@ -254,9 +232,9 @@ public sealed class SessionStatusWingmanTests
             session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
             Assert.Equal(StatusColor.Red, session.StatusColor);
 
+            // The Gateway now folds IsTranscribing into orange; the Director stays on its activity color.
             session.IsTranscribing = true;
-            Assert.Equal(StatusColor.Orange, session.StatusColor);
-            Assert.Equal("Transcribing...", session.LastStatusReason);
+            Assert.Equal(StatusColor.Red, session.StatusColor);
 
             session.IsTranscribing = false;
             Assert.Equal(StatusColor.Red, session.StatusColor);
@@ -265,11 +243,8 @@ public sealed class SessionStatusWingmanTests
     }
 
     [Fact]
-    public void Orange_while_transcribing_applies_even_while_working()
+    public void IsTranscribing_while_working_stays_blue()
     {
-        // Unlike the wingman Yellow overlay (turn-end gated), the orange "Transcribing" overlay has
-        // NO turn-end gate: a message is being dictated into the session regardless of what it is
-        // doing, so it shows orange even while the agent is working (blue).
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
         try
@@ -281,235 +256,75 @@ public sealed class SessionStatusWingmanTests
             Assert.Equal(StatusColor.Blue, session.StatusColor);
 
             session.IsTranscribing = true;
-            Assert.Equal(StatusColor.Orange, session.StatusColor);
+            Assert.Equal(StatusColor.Blue, session.StatusColor);
         }
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
+    // ---------- Former turn-brief (yellow) overlay: no longer a Director color ----------
+
     [Fact]
-    public void Orange_while_transcribing_applies_even_when_wingman_disabled()
+    public void BriefingState_no_longer_repaints_the_director_color()
     {
-        // The orange overlay is a plain-terminal busy signal, not a wingman feature, so it must show
-        // even on a WingmanEnabled=false session (unlike the Yellow overlay, which is suppressed).
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
         try
         {
             wingman.Start();
             var (session, _) = CreateBufferSession(manager);
-            session.WingmanEnabled = false;
             session.IsBrandNew = false;
 
-            // Run a turn and park at its end so the Working->WaitingForInput transition recomputes
-            // the colour to red "needs you" (a bare WaitingForInput apply is not a state change).
             session.ApplyTerminalActivityState(ActivityState.Working);
             session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
             Assert.Equal(StatusColor.Red, session.StatusColor);
 
-            session.IsTranscribing = true;
-            Assert.Equal(StatusColor.Orange, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
-
-    // ---------- Yellow overlay (turn-brief pipeline, issue #192) ----------
-    // The TurnBriefOrchestrator drives BriefingState around its read of a finished
-    // turn. While Briefing the badge must be Yellow, not red "needs you" - until the
-    // brief lands we do not know whether the session needs you.
-
-    [Fact]
-    public void Yellow_when_turn_brief_in_flight_at_turn_end()
-    {
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-            session.IsBrandNew = false; // post-first-turn: turn-end baselines red, not green "ready"
-
-            // Run a turn and park at its end so the colour recomputes to red "needs you".
-            session.ApplyTerminalActivityState(ActivityState.Working);
-            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-            Assert.Equal(StatusColor.Red, session.StatusColor);
-
+            // The Gateway now folds BriefingState==Briefing into yellow; the Director stays activity-only.
             session.SetBriefingState(BriefingState.Briefing);
-            Assert.Equal(StatusColor.Yellow, session.StatusColor);
-            Assert.Equal("wingman is reading", session.LastStatusReason);
+            Assert.Equal(StatusColor.Red, session.StatusColor);
 
-            // The brief lands: back to the activity-state verdict.
             session.SetBriefingState(BriefingState.Briefed);
             Assert.Equal(StatusColor.Red, session.StatusColor);
         }
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
+    // ---------- Former background-running (purple) overlay: no longer a Director color ----------
+
     [Fact]
-    public void TurnBrief_yellow_does_not_require_wingman_enabled()
+    public void IsBackgroundRunning_no_longer_repaints_the_director_color()
     {
-        // The TurnBriefOrchestrator briefs EVERY session, so the briefing yellow applies
-        // regardless of WingmanEnabled (unlike the legacy IsExplaining overlay).
+        // A session parked at WaitingForInput is red "needs you". Setting the background-running
+        // verdict no longer paints purple on the Director; the Gateway folds that from the raw fact.
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
         try
         {
             wingman.Start();
             var (session, _) = CreateBufferSession(manager);
-            session.WingmanEnabled = false;
+            session.IsBrandNew = false;
 
-            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-            session.SetBriefingState(BriefingState.Briefing);
-            Assert.Equal(StatusColor.Yellow, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
-
-    [Fact]
-    public void TurnBrief_yellow_does_not_apply_while_working()
-    {
-        // Watch-cancel: the user replied while the wingman was reading. The session is
-        // Working again, so the dot must be Blue even while BriefingState is still
-        // Briefing for a beat (defensive; the orchestrator cancels and resets to None).
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-
-            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-            session.SetBriefingState(BriefingState.Briefing);
-            Assert.Equal(StatusColor.Yellow, session.StatusColor);
-
-            session.ApplyTerminalActivityState(ActivityState.Working);
-            Assert.Equal(StatusColor.Blue, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
-
-    // ---------- Purple overlay (Wingman "running in background" verdict) ----------
-
-    [Fact]
-    public void Purple_when_background_running_and_at_turn_end()
-    {
-        // A session parked at WaitingForInput is normally red "needs you". When the Wingman
-        // sets the background-running verdict, the badge becomes purple "running in background".
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-            session.IsBrandNew = false; // post-first-turn: turn-end baselines red, not green "ready"
-
-            // Run a turn and park at its end so the colour recomputes to red "needs you".
             session.ApplyTerminalActivityState(ActivityState.Working);
             session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
             Assert.Equal(StatusColor.Red, session.StatusColor);
 
             session.SetBackgroundRunning(true, "build still running");
-            Assert.Equal(StatusColor.Purple, session.StatusColor);
-            Assert.Equal("build still running", session.LastStatusReason);
+            Assert.Equal(StatusColor.Red, session.StatusColor);
 
-            // Clearing the verdict drops back to red "needs you".
             session.SetBackgroundRunning(false);
             Assert.Equal(StatusColor.Red, session.StatusColor);
         }
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
-    [Fact]
-    public void Purple_released_when_output_resumes()
-    {
-        // The background-running overlay is released the instant real output resumes: the
-        // Session clears IsBackgroundRunning on the transition off WaitingForInput, so a purple
-        // session that starts producing bytes again goes blue, not purple.
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-
-            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-            session.SetBackgroundRunning(true);
-            Assert.Equal(StatusColor.Purple, session.StatusColor);
-
-            session.ApplyTerminalActivityState(ActivityState.Working);
-            Assert.False(session.IsBackgroundRunning);
-            Assert.Equal(StatusColor.Blue, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
+    // ---------- Former controlled-sub-agent (supporting/slate) overlay: no longer a Director color ----------
+    // A controlled sub-agent (issue #815) used to recede to slate "Supporting" while its controller drove
+    // it. That overlay moved to the Gateway (it folds IsControlled + ControllerSessionId). The Director now
+    // paints a controlled sub-agent by its own plain activity color, and no longer repaints children when
+    // their controller exits (the RecomputeControlledChildren color machinery is gone). The raw facts
+    // IsControlled / ControllerSessionId are still set on the Session for the Gateway to fold.
 
     [Fact]
-    public void Purple_does_not_apply_while_session_is_working()
-    {
-        // Like Yellow, Purple is a turn-end overlay. While the agent is producing bytes the dot
-        // must stay Blue even if the flag is somehow set (defensive).
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-
-            session.ApplyTerminalActivityState(ActivityState.Working);
-            session.SetBackgroundRunning(true);
-            Assert.Equal(StatusColor.Blue, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
-
-    [Fact]
-    public void Yellow_takes_precedence_over_purple_while_explaining()
-    {
-        // While a briefing is in flight (IsExplaining) the transient Yellow "wingman is reading"
-        // wins; the Purple verdict settles in once the briefing lifts.
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-
-            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-            session.SetBackgroundRunning(true);
-            session.IsExplaining = true;
-            Assert.Equal(StatusColor.Yellow, session.StatusColor);
-
-            session.IsExplaining = false;
-            Assert.Equal(StatusColor.Purple, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
-
-    [Fact]
-    public void Purple_suppressed_when_wingman_disabled()
-    {
-        // A WingmanEnabled=false session never goes purple; it stays on the plain mapping (red).
-        var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
-        var wingman = new SessionStatusWingman(manager);
-        try
-        {
-            wingman.Start();
-            var (session, _) = CreateBufferSession(manager);
-            session.WingmanEnabled = false;
-            session.IsBrandNew = false; // post-first-turn: turn-end baselines red, not green "ready"
-
-            session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
-            session.SetBackgroundRunning(true);
-            Assert.Equal(StatusColor.Red, session.StatusColor);
-        }
-        finally { wingman.Dispose(); manager.Dispose(); }
-    }
-
-    // ---------- Supporting overlay (controlled sub-agent, issue #815) ----------
-    // A sub-agent another session spawned and drives recedes to slate "Supporting" while working,
-    // EXCEPT red "needs you" breaks through, and it reverts to normal once its controller is gone.
-
-    [Fact]
-    public void Controlled_subagent_while_working_is_supporting()
+    public void Controlled_subagent_while_working_is_plain_blue_not_supporting()
     {
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
@@ -519,19 +334,17 @@ public sealed class SessionStatusWingmanTests
             var (controller, _) = CreateBufferSession(manager);   // the controlling session, alive
             var (child, _) = CreateBufferSession(manager);
             child.ControllerSessionId = controller.Id;
+            Assert.True(child.IsControlled); // the raw fact the Gateway folds is still set
             child.IsBrandNew = false;
 
-            // Working would normally be blue; the Supporting overlay recedes it to slate because a
-            // live controller is driving it.
             child.ApplyTerminalActivityState(ActivityState.Working);
-            Assert.Equal(StatusColor.Supporting, child.StatusColor);
-            Assert.StartsWith("supporting", child.LastStatusReason);
+            Assert.Equal(StatusColor.Blue, child.StatusColor);
         }
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
     [Fact]
-    public void Controlled_subagent_needing_user_shows_red_breaking_through()
+    public void Controlled_subagent_waiting_is_plain_red()
     {
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
@@ -541,10 +354,8 @@ public sealed class SessionStatusWingmanTests
             var (controller, _) = CreateBufferSession(manager);
             var (child, _) = CreateBufferSession(manager);
             child.ControllerSessionId = controller.Id;
-            child.IsBrandNew = false; // post-first-turn: a turn-end is red "needs you", not green "ready"
+            child.IsBrandNew = false;
 
-            // A blocked sub-agent must still surface: red "needs you" wins over Supporting so the
-            // operator sees it even though another session is nominally in charge.
             child.ApplyTerminalActivityState(ActivityState.Working);
             child.ApplyTerminalActivityState(ActivityState.WaitingForInput);
             Assert.Equal(StatusColor.Red, child.StatusColor);
@@ -554,7 +365,7 @@ public sealed class SessionStatusWingmanTests
     }
 
     [Fact]
-    public void Controlled_subagent_reverts_to_normal_when_controller_exits()
+    public void Controller_exit_does_not_repaint_the_child()
     {
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
@@ -566,20 +377,19 @@ public sealed class SessionStatusWingmanTests
             child.ControllerSessionId = controller.Id;
             child.IsBrandNew = false;
 
+            // The child paints by its own activity color, and stays there when its controller exits
+            // (no Director-side child repaint anymore - the Gateway owns the supporting fold).
             child.ApplyTerminalActivityState(ActivityState.Working);
-            Assert.Equal(StatusColor.Supporting, child.StatusColor);
+            Assert.Equal(StatusColor.Blue, child.StatusColor);
 
-            // The controller exits: the child loses its driver and reverts to its normal colour
-            // (blue "working") even though the child's own activity has not changed.
             controller.ApplyTerminalActivityState(ActivityState.Exited);
             Assert.Equal(StatusColor.Blue, child.StatusColor);
-            Assert.Equal("working", child.LastStatusReason);
         }
         finally { wingman.Dispose(); manager.Dispose(); }
     }
 
     [Fact]
-    public void Uncontrolled_session_is_never_supporting()
+    public void Uncontrolled_session_working_is_blue()
     {
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
@@ -818,7 +628,7 @@ public sealed class SessionStatusWingmanTests
     }
 
     [Fact]
-    public void Wingman_OnSessionCreated_writes_green_ready()
+    public void Wingman_OnSessionCreated_writes_red_needs_you()
     {
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         try
@@ -828,12 +638,13 @@ public sealed class SessionStatusWingmanTests
             try
             {
                 var session = manager.CreateSession(Path.GetTempPath());
-                // A brand-new session is born WaitingForInput, parked at Claude Code's prompt.
-                // It is ready for the user but does NOT need anything yet, so the badge starts
-                // green "ready" (not red "needs you"). It flips to blue/working on the first
-                // prompt and only reaches red once a turn ends.
-                Assert.Equal(StatusColor.Green, session.StatusColor);
-                Assert.Equal("ready", session.LastStatusReason);
+                // Phase 2.3: the brand-new "green ready" overlay is gone from the Director. A brand-new
+                // session is born WaitingForInput, which the dumb standalone map paints red "needs you".
+                // The Gateway still folds a green "ready" for brand-new sessions from the IsBrandNew raw
+                // fact, which the Session below still reports.
+                Assert.Equal(StatusColor.Red, session.StatusColor);
+                Assert.Equal("needs you", session.LastStatusReason);
+                Assert.True(session.IsBrandNew); // the raw fact the Gateway folds is still set
             }
             finally { wingman.Dispose(); }
         }
@@ -841,25 +652,26 @@ public sealed class SessionStatusWingmanTests
     }
 
     [Fact]
-    public void Brand_new_session_goes_blue_then_red_after_first_turn()
+    public void Brand_new_session_is_red_then_blue_then_red_across_first_turn()
     {
-        // Lifecycle: green "ready" on startup -> blue "working" once the user submits
-        // (which clears IsBrandNew) -> red "needs you" when that first turn ends.
+        // Reduced standalone lifecycle (no green "ready" overlay): red "needs you" on startup ->
+        // blue "working" once the user submits (which clears IsBrandNew) -> red "needs you" when the
+        // first turn ends.
         var manager = new SessionManager(new AgentOptions { ClaudePath = TestShell.Path });
         var wingman = new SessionStatusWingman(manager);
         try
         {
             wingman.Start();
             var (session, _) = CreateBufferSession(manager);
-            Assert.Equal(StatusColor.Green, session.StatusColor);
-            Assert.Equal("ready", session.LastStatusReason);
+            Assert.Equal(StatusColor.Red, session.StatusColor);
+            Assert.Equal("needs you", session.LastStatusReason);
 
             // First submit clears IsBrandNew and drives Working.
             session.SendInput(new byte[] { 0x0A });
             Assert.False(session.IsBrandNew);
             Assert.Equal(StatusColor.Blue, session.StatusColor);
 
-            // Turn ends: now that the session is no longer brand-new, the turn-end is red.
+            // Turn ends: red "needs you".
             session.ApplyTerminalActivityState(ActivityState.WaitingForInput);
             Assert.Equal(StatusColor.Red, session.StatusColor);
             Assert.Equal("needs you", session.LastStatusReason);

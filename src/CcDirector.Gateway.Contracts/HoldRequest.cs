@@ -9,3 +9,12 @@ public sealed class HoldRequest
 {
     public bool OnHold { get; set; } = true;
 }
+
+/// <summary>
+/// Response from <c>POST /sessions/{sid}/hold</c>: the session's hold state after the call. Issue #1177
+/// (Phase 1): a typed DTO so the hold verb's result round-trips identically over the stream and over HTTP.
+/// </summary>
+public sealed class HoldResponse
+{
+    public bool OnHold { get; set; }
+}

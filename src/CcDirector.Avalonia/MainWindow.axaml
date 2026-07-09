@@ -574,6 +574,23 @@
                                                       Data="M10.2 10.4 C10.2 9.1 11.2 8.1 12.5 8.1 C13.8 8.1 14.8 9.1 14.8 10.4 C14.8 11.6 13.9 12.1 13.2 12.7" />
                                             </Canvas>
                                         </Viewbox>
+                                        <!-- Role badge: a small NON-color glyph for the session's
+                                             automatic role - "M" Manager, "W" Worker, "A" Architect
+                                             (nothing for Standalone). Deliberately a muted neutral
+                                             gray, never a status color, so it does not compete with
+                                             the status dot; the tooltip gives the full role name. -->
+                                        <Border Background="{DynamicResource ButtonBackground}"
+                                                CornerRadius="6"
+                                                Padding="6,1"
+                                                VerticalAlignment="Center"
+                                                Margin="0,0,6,0"
+                                                IsVisible="{Binding HasRoleGlyph}"
+                                                ToolTip.Tip="{Binding RoleTooltip}">
+                                            <TextBlock Text="{Binding RoleGlyphText}"
+                                                       Foreground="{DynamicResource TextForeground}"
+                                                       FontSize="9"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
                                         <!-- Agent badge: shows which CLI this session is running -->
                                         <Border Background="{Binding AgentBadgeBrush}"
                                                 CornerRadius="6"

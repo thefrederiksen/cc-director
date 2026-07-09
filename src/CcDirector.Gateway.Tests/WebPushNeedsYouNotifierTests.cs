@@ -40,12 +40,15 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     [Fact]
     public void CountNeedsYou_CountsEffectiveRedNotParked()
     {
+        // Issue #1177 (Phase 2): the fold derives the base color from the raw ActivityState, not the
+        // cooked StatusColor. These inputs previously set only StatusColor; supply the raw ActivityState
+        // the color implies (inverse of ColorFromActivityState). Expected count is unchanged.
         var sessions = new[]
         {
-            new SessionDto { StatusColor = "red" },                    // needs you
-            new SessionDto { StatusColor = "red" },                    // needs you
-            new SessionDto { StatusColor = "red", OnHold = true },     // parked -> not needs you
-            new SessionDto { StatusColor = "blue" },                   // working -> not needs you
+            new SessionDto { StatusColor = "red", ActivityState = "WaitingForInput" },                 // needs you
+            new SessionDto { StatusColor = "red", ActivityState = "WaitingForInput" },                 // needs you
+            new SessionDto { StatusColor = "red", ActivityState = "WaitingForInput", OnHold = true },  // parked -> not needs you
+            new SessionDto { StatusColor = "blue", ActivityState = "Working" },                        // working -> not needs you
         };
 
         Assert.Equal(2, WebPushNeedsYouNotifier.CountNeedsYou(sessions));

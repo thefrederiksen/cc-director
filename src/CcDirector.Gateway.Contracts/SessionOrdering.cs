@@ -32,11 +32,12 @@ public static class SessionOrdering
     /// <summary>
     /// True while the session must present as "the wingman is reading": the Gateway's brief
     /// agent has the finished turn queued or in flight (<see cref="SessionDto.BriefingState"/>
-    /// "Briefing") AND the raw turn-end color is red. While a NEW turn is already running
-    /// (blue) the stale in-flight brief is irrelevant - raw activity wins, no chip.
+    /// "Briefing") AND the RAW activity color is red (issue #1177, Phase 2: gated on the raw
+    /// <see cref="SessionDto.ActivityState"/>, no longer the Director's cooked StatusColor). While a
+    /// NEW turn is already running (blue) the stale in-flight brief is irrelevant - raw activity wins.
     /// </summary>
     public static bool IsBriefing(SessionDto s) =>
-        s.BriefingState == "Briefing" && string.Equals(s.StatusColor, "red", StringComparison.OrdinalIgnoreCase);
+        s.BriefingState == "Briefing" && RawActivityColor(s) == "red";
 
     /// <summary>
     /// True while a user-initiated "I am lost - explain" deep dive runs for the session
@@ -68,7 +69,9 @@ public static class SessionOrdering
     public static bool IsVoicePreparing(SessionDto s)
     {
         if (!s.VoiceMode) return false;
-        if (!string.Equals(s.StatusColor, "red", StringComparison.OrdinalIgnoreCase)) return false;
+        // Issue #1177 (Phase 2): gate on the RAW activity color (from ActivityState), not the Director's
+        // cooked StatusColor. Equivalent today (StatusColor=="red" iff the raw activity is Waiting/Idle).
+        if (RawActivityColor(s) != "red") return false;
         var state = s.AssessedState ?? s.ActivityState;
         var waiting = string.Equals(state, "WaitingForInput", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(state, "WaitingForPerm", StringComparison.OrdinalIgnoreCase);
@@ -91,11 +94,112 @@ public static class SessionOrdering
     /// </summary>
     public static string EffectiveColor(SessionDto s) =>
         s.OnHold ? "grey"
-        : s.Transcribing ? "orange"
+        // Transcribing orange fires for EITHER source: the Gateway flag (mobile Speak, s.Transcribing) OR
+        // the Director raw fact (desktop dictation, s.IsTranscribing). Both yield orange today.
+        : (s.Transcribing || s.IsTranscribing) ? "orange"
+        // The Gateway user-initiated deep dive (issue #217) is orange, ungated.
         : IsExplaining(s) ? "orange"
         : IsBriefing(s) ? "yellow"
         : IsVoicePreparing(s) ? "yellow"
-        : s.StatusColor;
+        // Issue #1177 (Phase 2): the base color is now computed from RAW facts (the Gateway is the single
+        // fold and reads the Director's cooked StatusColor for NOTHING).
+        : BaseColor(s);
+
+    // ===== Issue #1177 (Phase 2): the raw-fact base color (a port of the Director's SessionStatusWingman
+    // ColorFor, computed from the wire's raw facts) =====
+
+    /// <summary>
+    /// The base presentation color from raw facts, reproducing the Director's structural fold: the
+    /// activity color with the purple (background), green (brand-new), and Director auto-explain (yellow)
+    /// turn-end overlays, wrapped by the slate "Supporting" overlay for a controlled sub-agent. The
+    /// briefing and Gateway-deep-dive overlays are applied by <see cref="EffectiveColor"/> above (they win
+    /// before this is reached), so they are intentionally not repeated here.
+    /// </summary>
+    private static string BaseColor(SessionDto s)
+    {
+        var activity = ResolveActivity(s);
+        var controlled = s.IsControlled && !string.IsNullOrEmpty(s.ControllerSessionId);
+        var isRed = string.Equals(activity, "red", StringComparison.OrdinalIgnoreCase);
+
+        // Slate overlay (issue #815): a controlled sub-agent recedes to slate while its controller is
+        // present, EXCEPT red "needs you" breaks through so a blocked sub-agent still surfaces. The
+        // Director gated this on the controller being ALIVE; the Gateway approximates with "a controller
+        // id is present" (this differs only for a controlled session whose controller has already exited).
+        if (controlled && !isRed)
+            return "supporting";
+
+        // Automatic session roles (Layer 1 - "workers never nag the human"): a LIVE-controlled Worker ALSO
+        // suppresses its red - it recedes to slate and never surfaces red to the human (its manager sees it
+        // via the rail). SessionRole is stamped by the Gateway aggregation from the WHOLE fleet, so
+        // "Worker" already means "controlled AND controller ALIVE". A Worker whose controller has DIED is
+        // role Manager/Standalone (not "Worker"), so this does NOT fire and its red surfaces - the escape
+        // hatch. Managers and Standalones are human-facing, so their red always breaks through.
+        if (isRed && string.Equals(s.SessionRole, SessionRoles.Worker, StringComparison.OrdinalIgnoreCase))
+            return "supporting";
+
+        return activity;
+    }
+
+    /// <summary>The activity color plus the turn-end overlays the Director bakes: auto-explain yellow,
+    /// background purple, brand-new green. Order matches the Director's <c>ResolveActivityColor</c>.</summary>
+    private static string ResolveActivity(SessionDto s)
+    {
+        var atTurnEnd = IsAtTurnEnd(s);
+        // Legacy auto-explain (ProactiveExplainService): yellow while WingmanEnabled and at a turn-end.
+        if (s.WingmanEnabled && s.IsAutoExplaining && atTurnEnd) return "yellow";
+        // Parked on its OWN background task: purple (turn-end, WingmanEnabled).
+        if (s.WingmanEnabled && s.IsBackgroundRunning && atTurnEnd) return "purple";
+        // Brand-new, has not yet taken a turn: green ("ready").
+        if (s.IsBrandNew && atTurnEnd) return "green";
+        return RawActivityColor(s);
+    }
+
+    /// <summary>The pure activity-state color. Starting/Working -&gt; blue; Waiting/Idle -&gt; red;
+    /// Exited -&gt; "grey" (Phase 2.3, owner-approved: an exited session shows the SAME grey string as an
+    /// OnHold one, so clients render it identically). This deliberately DIVERGES from the Director's
+    /// standalone <c>ColorFromActivityState</c>, which keeps exited as "unknown" - the Gateway is the single
+    /// source of truth for the fold. Any unrecognized state -&gt; "unknown".</summary>
+    private static string RawActivityColor(SessionDto s) => s.ActivityState switch
+    {
+        "Starting" => "blue",
+        "Working" => "blue",
+        "WaitingForInput" => "red",
+        "WaitingForPerm" => "red",
+        "Idle" => "red",
+        "Exited" => "grey",
+        _ => "unknown",
+    };
+
+    /// <summary>True when the session is parked at a turn-end (WaitingForInput / WaitingForPerm), the
+    /// gate the Director uses for its purple/green/auto-explain overlays.</summary>
+    private static bool IsAtTurnEnd(SessionDto s) =>
+        string.Equals(s.ActivityState, "WaitingForInput", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(s.ActivityState, "WaitingForPerm", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Issue #1177 (Phase 2): the ONE human-readable state label every client renders, computed by the
+    /// Gateway from the same fold inputs as <see cref="EffectiveColor"/> (so the dot color and its label
+    /// never disagree). Consolidates the label logic each client used to hand-roll.
+    /// </summary>
+    public static string StateLabel(SessionDto s)
+    {
+        if (s.OnHold) return "On hold";
+        if (s.Transcribing || s.IsTranscribing) return "Transcribing";
+        if (IsExplaining(s)) return "Explaining";
+        if (IsBriefing(s)) return "Wingman reading";
+        if (IsVoicePreparing(s)) return "Preparing voice";
+        return BaseColor(s) switch
+        {
+            "supporting" => "Sub-agent",
+            "purple" => "Background",
+            "green" => "Ready",
+            "yellow" => "Wingman reading",   // Director auto-explain base yellow
+            "blue" => "Working",
+            "red" => "Needs you",
+            "grey" => "Exited",              // Phase 2.3: an exited session's grey base (see RawActivityColor)
+            _ => "Idle",
+        };
+    }
 
     /// <summary>
     /// Classify a session for triage. On-hold takes precedence over color: a parked session sinks

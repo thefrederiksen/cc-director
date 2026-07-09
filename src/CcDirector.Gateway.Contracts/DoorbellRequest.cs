@@ -93,14 +93,3 @@ public sealed class SessionStateSnapshot
 
     public string ActivityState { get; set; } = "";
 }
-
-/// <summary>
-/// Body of POST /sessions/{sid}/assessment on a DIRECTOR (issue #186): the Gateway pushing
-/// its assessed state back down for the Director's local UI. Stored as a display
-/// annotation only - never fed into the detector, never re-pushed, wiped by new PTY bytes.
-/// </summary>
-public sealed class AssessmentRequest
-{
-    /// <summary>The Gateway's assessed state, or null to clear the annotation.</summary>
-    public string? AssessedState { get; set; }
-}

@@ -9,6 +9,9 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- Issue #1176 (Phase 1a): the SignalR CLIENT (separate from the server in the shared framework)
+         so the Director can dial the Gateway's DirectorHub and push its session state. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

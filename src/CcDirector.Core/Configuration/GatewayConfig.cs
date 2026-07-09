@@ -53,6 +53,26 @@ public sealed class GatewayConfig
     /// </summary>
     public AddressingMode AddressingMode { get; init; } = AddressingModeConfig.Default;
 
+    /// <summary>
+    /// Issue #1176 (Phase 1a): when true, the Director opens a persistent stream to the Gateway and
+    /// pushes its session state, and the Gateway serves <c>GET /sessions</c> from that pushed cache
+    /// when it is fresh. Default false: the Director uses only the existing pull/heartbeat path and the
+    /// Gateway ignores the pushed cache, so behaviour is byte-identical to today. Read from the gateway
+    /// block's <c>streamMode</c> key in config.json.
+    /// </summary>
+    public bool StreamMode { get; init; }
+
+    /// <summary>
+    /// Issue #1176 (Phase 1a): how many seconds a Director's most recent stream push may age before the
+    /// Gateway treats its pushed cache as stale and falls back to pulling that Director for
+    /// <c>GET /sessions</c>. Guards against a wedged stream serving frozen data. Read from the gateway
+    /// block's <c>staleAfterSeconds</c> key; default <see cref="DefaultStreamStaleAfterSeconds"/>.
+    /// </summary>
+    public int StreamStaleAfterSeconds { get; init; } = DefaultStreamStaleAfterSeconds;
+
+    /// <summary>Default value for <see cref="StreamStaleAfterSeconds"/>.</summary>
+    public const int DefaultStreamStaleAfterSeconds = 20;
+
     /// <summary>True when <see cref="Url"/> is configured.</summary>
     public bool IsEnabled => !string.IsNullOrWhiteSpace(Url);
 
@@ -84,6 +104,15 @@ public sealed class GatewayConfig
             var token = (gw.TryGetProperty("token", out var t) ? t.GetString() ?? "" : "").Trim();
             var tailnet = gw.TryGetProperty("tailnetEndpoint", out var te) ? te.GetString() : null;
 
+            // Issue #1176 (Phase 1a). streamMode is opt-in (only a JSON boolean true enables it), so a
+            // missing or malformed key leaves the Director on the existing pull path. staleAfterSeconds
+            // must be a positive integer or the default stands.
+            var streamMode = gw.TryGetProperty("streamMode", out var sm) && sm.ValueKind == JsonValueKind.True;
+            var staleAfterSeconds = gw.TryGetProperty("staleAfterSeconds", out var sa)
+                && sa.ValueKind == JsonValueKind.Number && sa.TryGetInt32(out var sav) && sav > 0
+                    ? sav
+                    : DefaultStreamStaleAfterSeconds;
+
             // Same-machine credential resolution. A Gateway-role install never runs the pairing step
             // (that step, and only that step, writes gateway.token - it is a Workstation-only step), so
             // the Gateway host's own Director/launcher have no configured token and, once host-wide auth
@@ -110,6 +139,8 @@ public sealed class GatewayConfig
                 Token = token,
                 TailnetEndpoint = string.IsNullOrWhiteSpace(tailnet) ? null : tailnet.Trim(),
                 AddressingMode = mode,
+                StreamMode = streamMode,
+                StreamStaleAfterSeconds = staleAfterSeconds,
             };
         }
         catch (Exception ex)

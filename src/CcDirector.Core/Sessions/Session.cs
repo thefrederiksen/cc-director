@@ -166,6 +166,23 @@ public sealed class Session : IDisposable
     /// painted also depends on the controller still being alive; see the SessionStatusWingman.</summary>
     public bool IsControlled => ControllerSessionId.HasValue;
 
+    /// <summary>
+    /// The sticky EXPLICIT role a human/session declared for this session (automatic session roles), or null
+    /// for none. When set it WINS over the Gateway's auto-derivation of the role - the only way to be an
+    /// Architect, which cannot be inferred from the spawn graph. Settable at birth (from the create request)
+    /// and later via the set-role verb (<see cref="SetExplicitRole"/>); a null/blank value clears it. One of
+    /// the SessionRoles values (validated by the caller). Persisted so it survives a Director restart.
+    /// </summary>
+    public string? ExplicitRole { get; internal set; }
+
+    /// <summary>Set (or clear, on a null/blank value) this session's sticky explicit role. The value is
+    /// validated against the role set by the caller; this only stores it.</summary>
+    public void SetExplicitRole(string? role)
+    {
+        ExplicitRole = string.IsNullOrWhiteSpace(role) ? null : role.Trim();
+        FileLog.Write($"[Session] {Id} explicit role set to {ExplicitRole ?? "(none)"}");
+    }
+
     public Guid Id { get; }
 
     /// <summary>
@@ -285,6 +302,16 @@ public sealed class Session : IDisposable
 
     /// <summary>User-defined display name for this session. Null means use default (repo folder name).</summary>
     public string? CustomName { get; set; }
+
+    /// <summary>
+    /// True when <see cref="CustomName"/> was AUTO-composed at birth (no human/explicit name); false once a
+    /// human or the session itself explicitly renamed it (automatic session roles, chunk 3). A self/human
+    /// name always wins and must never be re-auto-named - this is the marker that gates any future
+    /// auto-rename. Set at birth by the create path and cleared by an explicit
+    /// <see cref="SessionManager.RenameSession"/>. Persisted so the auto-vs-explicit distinction survives a
+    /// restart.
+    /// </summary>
+    public bool IsAutoNamed { get; set; }
 
     /// <summary>
     /// The structured question, plan, or permission ask the agent is currently
@@ -433,21 +460,6 @@ public sealed class Session : IDisposable
         if (_disposed || BriefingState == state) return;
         BriefingState = state;
         OnBriefingStateChanged?.Invoke(state);
-    }
-
-    /// <summary>
-    /// The Gateway's assessed state, pushed DOWN to this Director as a DISPLAY ANNOTATION
-    /// only (issue #186 two-owner model): the Gateway's brain read the transcript after a
-    /// turn end and may have refuted the mechanical quiet signal. Never fed into the
-    /// detector, never re-pushed; any real <see cref="ActivityState"/> change wipes it
-    /// (new PTY bytes invalidate the assessment it was based on).
-    /// </summary>
-    public string? AssessedStateAnnotation { get; private set; }
-
-    /// <summary>Store the Gateway-pushed assessment (POST /sessions/{sid}/assessment).</summary>
-    public void SetAssessedStateAnnotation(string? assessedState)
-    {
-        AssessedStateAnnotation = string.IsNullOrWhiteSpace(assessedState) ? null : assessedState;
     }
 
     /// <summary>
@@ -1561,10 +1573,6 @@ public sealed class Session : IDisposable
         // idle, but the moment the user answers (-> Working) the badge is free to go
         // blue again.
         Interlocked.Increment(ref _activityGeneration);
-        // Two-owner model (issue #186): any REAL state change invalidates the Gateway's
-        // standing assessment - it judged the PREVIOUS quiet, and new PTY activity means
-        // that judgment is stale. Display annotation only; nothing here reads it.
-        AssessedStateAnnotation = null;
         // Log the transition (blue<->red) to the in-memory ring the Wingman tab renders.
         RecordStateChange(old, newState);
         OnActivityStateChanged?.Invoke(old, newState);

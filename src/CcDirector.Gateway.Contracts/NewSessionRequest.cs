@@ -84,6 +84,25 @@ public sealed class NewSessionRequest
     /// session id (GUID string); an unparseable value is ignored and the session is born normal.
     /// </summary>
     public string? ControllerSessionId { get; set; }
+
+    /// <summary>
+    /// Optional EXPLICIT role for the new session (automatic session roles). One of the
+    /// <see cref="SessionRoles"/> values (Standalone / Manager / Worker / Architect); case-insensitive. An
+    /// unknown value is REJECTED as a bad request (so a mistyped --role never silently drops). When set it
+    /// is sticky and WINS over auto-derivation - the way to make a session an Architect, which cannot be
+    /// inferred from the spawn graph. Null leaves the role to auto-derivation.
+    /// </summary>
+    public string? Role { get; set; }
+}
+
+/// <summary>
+/// Body of the set-role command / POST /sessions/{sid}/role: (re)declare a session's explicit role after
+/// birth. <see cref="Role"/> is one of the <see cref="SessionRoles"/> values (case-insensitive); an empty
+/// or null value CLEARS the explicit role (reverting the session to auto-derivation).
+/// </summary>
+public sealed class SetRoleRequest
+{
+    public string? Role { get; set; }
 }
 
 /// <summary>

@@ -307,20 +307,28 @@ def spawn_session(
     prompt: Optional[str],
     name: Optional[str],
     purpose: Optional[str],
-    session_type: Optional[str],
     command: Optional[str],
     command_args: Optional[str],
     controlled_by: Optional[str] = None,
     args: Optional[str] = None,
+    standalone: bool = False,
+    role: Optional[str] = None,
 ) -> None:
     """Open a new session on the local Director."""
-    # Issue #815: spawn the new session as a controlled "Supporting" sub-agent of another session.
-    # The literal "self" means "controlled by ME" - resolved from CC_SESSION_ID, the id this very
-    # session runs under. Any other value is used verbatim as the controlling session's id.
+    # Automatic roles: a SESSION-initiated spawn (CC_SESSION_ID present) DEFAULTS to a Worker controlled by
+    # the spawner, so it stays quiet and reports to its manager instead of nagging the human. The opt-out
+    # (guard 1) is --standalone / --controlled-by none: a deliberate human-facing PEER with no controller. A
+    # human/desktop spawn (no CC_SESSION_ID) is unaffected. An explicit --controlled-by <id> or 'self' wins.
+    # (The handover / move-session flow does NOT come through here - it uses POST /handover, which never sets
+    # a controller - so a moved session keeps its red visible to the human, guard 2 by construction.)
     controller_session_id: Optional[str] = None
-    if controlled_by:
-        if controlled_by.lower() == "self":
-            controller_session_id = os.environ.get("CC_SESSION_ID")
+    cc_session = os.environ.get("CC_SESSION_ID")
+    opt_out = standalone or (controlled_by is not None and controlled_by.strip().lower() == "none")
+    if opt_out:
+        controller_session_id = None
+    elif controlled_by:
+        if controlled_by.strip().lower() == "self":
+            controller_session_id = cc_session
             if not controller_session_id:
                 console.print(
                     "[red]Error:[/red] --controlled-by self requires CC_SESSION_ID to be set, but it "
@@ -329,6 +337,8 @@ def spawn_session(
                 raise typer.Exit(1)
         else:
             controller_session_id = controlled_by
+    elif cc_session:
+        controller_session_id = cc_session
     # Issue #800: always name your session. On this fleet many sessions run in the same
     # checkout, so a session with neither a name nor a purpose still gets an auto-composed
     # name from the Director, but it reads better when you describe what it is FOR.
@@ -351,14 +361,16 @@ def spawn_session(
         body["purpose"] = purpose
     if prompt:
         body["prePrompt"] = prompt
-    if session_type:
-        body["type"] = session_type
     if command:
         body["command"] = command
     if command_args:
         body["commandArgs"] = command_args
     if controller_session_id:
         body["controllerSessionId"] = controller_session_id
+    # Automatic session roles: forward an explicit --role VERBATIM to the Director, which validates it
+    # against Standalone/Manager/Worker/Architect and rejects an unknown value (never a silent drop).
+    if role:
+        body["role"] = role
 
     try:
         resp = director.post_json("sessions", body)
