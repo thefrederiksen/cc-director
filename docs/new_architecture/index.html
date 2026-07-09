@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>DevThrottle Architecture</title>
+<style>
+        /* Blueprint Theme - Technical documentation style */
+        
+        :root {
+            /* Colors */
+            --primary: #3B82F6;
+            --primary-light: #60A5FA;
+            --accent: #F59E0B;
+            --text: #374151;
+            --heading: #1E3A5F;
+            --background: #FFFFFF;
+            --code-bg: #F1F5F9;
+            --code-text: #0F172A;
+            --border: #CBD5E1;
+            --link: #3B82F6;
+            --blockquote-text: #64748B;
+            --blockquote-border: #3B82F6;
+            --blockquote-bg: #EFF6FF;
+            --table-header-bg: #1E3A5F;
+            --table-header-text: #FFFFFF;
+            --alt-row-bg: #EFF6FF;
+            --shadow-color: rgba(59, 130, 246, 0.08);
+        
+            /* Fonts */
+            --font-heading: "Segoe UI", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-body: "Segoe UI", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-code: "Consolas", "JetBrains Mono", "Fira Code", Consolas, monospace;
+        
+            /* Style */
+            --heading-letter-spacing: -0.01em;
+            --line-height: 1.65;
+            --radius: 6px;
+            --code-radius: 6px;
+            --shadow-sm: 0 1px 3px rgba(59, 130, 246, 0.08);
+            --shadow-md: 0 4px 12px rgba(59, 130, 246, 0.1);
+        }
+        
+        /* Base styles for all themes */
+        
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+        
+        html {
+            font-size: 16px;
+            line-height: var(--line-height);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: var(--font-body);
+            color: var(--text);
+            background: var(--background);
+        }
+        
+        .markdown-body {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 3rem 2.5rem;
+        }
+        
+        /* Typography */
+        h1, h2, h3, h4, h5, h6 {
+            font-family: var(--font-heading);
+            color: var(--heading);
+            margin-top: 1.8em;
+            margin-bottom: 0.6em;
+            font-weight: 600;
+            line-height: 1.25;
+            letter-spacing: var(--heading-letter-spacing);
+            orphans: 3;
+            widows: 3;
+        }
+        
+        h1 {
+            font-size: 2.25em;
+            margin-top: 0;
+        }
+        
+        h2 { font-size: 1.65em; }
+        h3 { font-size: 1.35em; }
+        h4 { font-size: 1.1em; }
+        h5 { font-size: 0.95em; }
+        h6 { font-size: 0.85em; color: var(--blockquote-text); }
+        
+        p {
+            margin: 1em 0;
+            orphans: 3;
+            widows: 3;
+        }
+        
+        /* Links */
+        a {
+            color: var(--link);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s ease;
+        }
+        
+        a:hover {
+            border-bottom-color: var(--link);
+        }
+        
+        /* Lists */
+        ul, ol {
+            margin: 1em 0;
+            padding-left: 2em;
+            line-height: var(--line-height);
+        }
+        
+        li {
+            margin: 0.35em 0;
+        }
+        
+        li > ul,
+        li > ol {
+            margin: 0.2em 0;
+        }
+        
+        /* Inline code */
+        code {
+            font-family: var(--font-code);
+            font-size: 0.875em;
+            padding: 0.15em 0.4em;
+            border-radius: var(--radius);
+            background: var(--code-bg);
+            color: var(--code-text);
+        }
+        
+        /* Code blocks */
+        pre {
+            margin: 1.5em 0;
+            padding: 1.25em 1.5em;
+            overflow-x: auto;
+            border-radius: var(--code-radius);
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+            position: relative;
+        }
+        
+        pre code {
+            padding: 0;
+            background: transparent;
+            border-radius: 0;
+            font-size: 0.875em;
+            line-height: 1.55;
+        }
+        
+        /* Blockquotes */
+        blockquote {
+            margin: 1.5em 0;
+            padding: 0.75em 1.25em;
+            border-left: 4px solid var(--blockquote-border);
+            background: var(--blockquote-bg);
+            color: var(--blockquote-text);
+            border-radius: 0 var(--radius) var(--radius) 0;
+        }
+        
+        blockquote p {
+            margin: 0.4em 0;
+        }
+        
+        blockquote p:first-child {
+            margin-top: 0;
+        }
+        
+        blockquote p:last-child {
+            margin-bottom: 0;
+        }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin: 1.5em 0;
+            border-radius: var(--radius);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--border);
+        }
+        
+        th, td {
+            padding: 0.75em 1em;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        th {
+            font-weight: 600;
+            background: var(--table-header-bg);
+            color: var(--table-header-text);
+        }
+        
+        tr:last-child td {
+            border-bottom: none;
+        }
+        
+        /* Horizontal rule */
+        hr {
+            border: none;
+            height: 2px;
+            max-width: 200px;
+            margin: 2.5em auto;
+            background: var(--border);
+            border-radius: 1px;
+        }
+        
+        /* Images */
+        img {
+            max-width: 100%;
+            height: auto;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-sm);
+        }
+        
+        /* Task lists */
+        .task-list-item {
+            list-style-type: none;
+        }
+        
+        .task-list-item input[type="checkbox"] {
+            margin-right: 0.5em;
+        }
+        
+        /* Strong and emphasis */
+        strong {
+            font-weight: 700;
+        }
+        
+        /* Definition lists (if supported by parser) */
+        dt {
+            font-weight: 600;
+            margin-top: 1em;
+        }
+        
+        dd {
+            margin-left: 1.5em;
+            margin-bottom: 0.5em;
+        }
+        
+        
+        /* Blueprint: precise technical documentation */
+        h1 {
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 0.5em;
+        }
+        
+        h2 {
+            color: var(--primary);
+        }
+        
+        a {
+            font-weight: 500;
+        }
+        
+        code {
+            font-size: 0.85em;
+        }
+        
+        pre {
+            border-left: 4px solid var(--primary);
+            border-radius: 0 var(--code-radius) var(--code-radius) 0;
+        }
+        
+        blockquote {
+            background: var(--blockquote-bg);
+        }
+        
+        /* Callout styling: blockquote with bold first line */
+        blockquote strong:first-child {
+            color: var(--primary);
+        }
+        
+        th {
+            text-transform: uppercase;
+            font-size: 0.8em;
+            letter-spacing: 0.06em;
+        }
+        
+        tr:nth-child(even) td {
+            background: var(--alt-row-bg);
+        }
+        
+        hr {
+            background: var(--primary);
+            max-width: 80px;
+            height: 3px;
+        }
+        
+    </style>
+</head>
+<body>
+<article class="markdown-body">
+<h1>DevThrottle Architecture</h1>
+<p>The authoritative, rebuilt-from-scratch architecture documentation for DevThrottle: cc-director, the Gateway, the Cockpit, and the mobile client.</p>
+<blockquote>
+<p><strong>This is a clean-room rebuild.</strong> Every architecture document is being rewritten here from scratch. The documents in the legacy <code>docs/architecture/</code> tree are not trusted and are not authoritative. A document is authoritative only once it has been deliberately re-vetted and placed in this <code>docs/new_architecture/</code> area. All documents here are HTML.</p>
+</blockquote>
+<hr/>
+<h2>Documents</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Status</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="state-and-color-architecture.html">Session State and Color Architecture</a></td>
+<td>HYBRID</td>
+<td>Who owns session activity state and status color. DECIDED: the Director is a sensor (reports the raw activity fact only), the Gateway is the single interpreter (one fold; owns EffectiveColor, TriageBucket, and StateLabel), clients only render. Includes the sensor-versus-interpreter distinction, the target one-direction flow, the full color scheme and precedence, and the current three-fold and circular-flow violation inventory.</td>
+</tr>
+<tr>
+<td><a href="portless-director-gateway-stream.html">Portless Director: one outbound stream to the Gateway</a></td>
+<td>CANDIDATE</td>
+<td>Proposed transport: each Director dials one persistent, bidirectional connection out to the Gateway and exposes no network-facing ports. State pushes up, commands and requests flow both ways, terminal bytes ride outbound byte streams. Records the invariants (no Director-to-Director; all remote access via the Gateway; loopback stays), the reconnect-is-reseed recovery, the accepted consequences, and the open decisions. UNDER CONSIDERATION -- nothing built.</td>
+</tr>
+<tr>
+<td><a href="phase-1-director-gateway-stream-plan.html">Phase 1 plan: Director-to-Gateway push stream</a></td>
+<td>PLAN</td>
+<td>Implementation plan for the first, safe increment of the portless model: move session-state reporting from Gateway-pull to Director-push over a flag-gated SignalR stream, keeping the pull path as fallback. Filed as GitHub issues <a href="https://github.com/thefrederiksen/devthrottle/issues/1176">#1176</a> (Phase 1a, ready for development) and <a href="https://github.com/thefrederiksen/devthrottle/issues/1177">#1177</a> (Phase 1b, blocked on 1a). Source of record for a development agent is the companion <code>.md</code>.</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2>Conventions</h2>
+<ul>
+<li><strong>HTML only.</strong> Every architecture document in this area is delivered as HTML. (Implementation plans handed to a development agent also keep a companion Markdown source of record.)</li>
+<li><strong>Status on every document.</strong> One of CURRENT (describes code that exists), PLANNED / PLAN (intended design or implementation plan), CANDIDATE (proposed, under consideration, nothing built), or HYBRID (each section labels its own status). CURRENT sections carry a "verified against" date.</li>
+<li><strong>Reference code by symbol name</strong> (class, method, field), never by line number, because line numbers drift on every refactor.</li>
+<li><strong>Trusted only.</strong> Nothing is copied over from the legacy tree wholesale. Each document is re-authored and re-verified before it lands here.</li>
+</ul>
+</article>
+</body>
+</html>
