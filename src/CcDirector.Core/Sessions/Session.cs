@@ -183,6 +183,35 @@ public sealed class Session : IDisposable
         FileLog.Write($"[Session] {Id} explicit role set to {ExplicitRole ?? "(none)"}");
     }
 
+    /// <summary>
+    /// The Mission this session is ATTACHED to (see
+    /// docs/new_architecture/mission-as-first-class-unit-of-work.md), or null when it is attached to no
+    /// Mission. A Mission is its own persisted record (<see cref="Mission"/>); this is the attachment link
+    /// that binds a pod (Architect + Manager + Workers all attach to one Mission). Stamped at spawn (from
+    /// the create request) or later via the attach verb (<see cref="AttachToMission"/>). Persisted so the
+    /// attachment survives a Director restart.
+    /// </summary>
+    public Guid? MissionId { get; internal set; }
+
+    /// <summary>
+    /// The attached Mission's display name, CACHED here so a client can render the Mission without resolving
+    /// <see cref="MissionId"/> against the Mission store. Set alongside <see cref="MissionId"/> at attach
+    /// time; the Mission record remains the source of truth. Null when attached to no Mission. Persisted.
+    /// </summary>
+    public string? MissionName { get; internal set; }
+
+    /// <summary>
+    /// Attach this session to a Mission (or DETACH it when <paramref name="missionId"/> is null). Stamps
+    /// <see cref="MissionId"/> and caches the resolved <see cref="MissionName"/>. The caller resolves the
+    /// name from the Mission store; this only stores what it is given.
+    /// </summary>
+    public void AttachToMission(Guid? missionId, string? missionName)
+    {
+        MissionId = missionId;
+        MissionName = missionId is null ? null : (string.IsNullOrWhiteSpace(missionName) ? null : missionName.Trim());
+        FileLog.Write($"[Session] {Id} attached to mission {MissionId?.ToString() ?? "(none)"} (name={MissionName ?? "(none)"})");
+    }
+
     public Guid Id { get; }
 
     /// <summary>

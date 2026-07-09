@@ -155,6 +155,9 @@ public sealed class ControlApiHost : IAsyncDisposable
         => _gatewayClient?.GetLatestTurnBriefAsync(sessionId, ct) ?? Task.FromResult<Gateway.Contracts.TurnBriefDto?>(null);
 
     private TurnSummaryCache? _turnSummaryCache;
+    // Mission records (mission-as-first-class-unit-of-work): a durable, file-backed store with no runtime
+    // dependencies, so it is ready from construction (unlike the caches wired up in StartAsync).
+    private readonly Core.Sessions.MissionStore _missionStore = new();
     private SessionStatusWingman? _statusWingman;
     private ProactiveExplainService? _proactiveExplain;
     private TerminalStateDetector? _terminalStateDetector;
@@ -388,7 +391,7 @@ public sealed class ControlApiHost : IAsyncDisposable
         // Director's sessions' OUTGOING /fleet/* messages. Built from the Director's options, so it is
         // default-on-generous and config-tunable, and inert (Allow) when disabled.
         var messageSteward = new MessageSteward(_sessionManager.Options.MessageSteward);
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward);
+        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore);
         // Dictation glossary resolution mirrors the key resolver (#253): the Gateway's shared
         // dictionary when attached, the local cache when standalone. GatewayConfig.Load (not the
         // snapshot) is passed so the resolver re-reads config.json each dictation and self-heals
@@ -612,7 +615,7 @@ public sealed class ControlApiHost : IAsyncDisposable
             // StartAsync has initialized them - BuildStreamClient runs before _proactiveExplain /
             // _turnSummaryCache are set. Additive: verbs that need no service ignore it (issue #1177 inc 6).
             cmd => SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
-                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache }));
+                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore }));
     }
 
     /// <summary>

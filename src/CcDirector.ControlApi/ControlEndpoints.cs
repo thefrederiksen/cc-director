@@ -29,7 +29,7 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class ControlEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null)
     {
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
         // URL of the Gateway this Director is registered with, for the "Gateway" nav
@@ -63,7 +63,10 @@ internal static class ControlEndpoints
                 SessionId = "",
                 PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
             };
-            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+            // Pass the Mission store so a create-time MissionId (attach at spawn) resolves+validates
+            // through the SAME executor path the Gateway stream down-channel uses.
+            var createServices = new SessionCommandServices { ProactiveExplain = proactiveExplain, TurnSummaryCache = turnSummaryCache, MissionStore = missionStore };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, createServices);
 
             if (result.Status == DirectorCommandStatus.BadRequest)
                 return Results.BadRequest(new { error = result.Error });
@@ -1082,6 +1085,70 @@ internal static class ControlEndpoints
                 PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
             };
             var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.NotFound(new { error = result.Error });
+            return Results.Content(result.BodyJson ?? "{}", "application/json");
+        });
+
+        // ===== Missions (mission-as-first-class-unit-of-work) =====
+        // A Mission is its OWN persisted record that sessions attach to. These endpoints create and read
+        // the records; POST /sessions/{sid}/mission attaches a session to one.
+
+        // Create a Mission record and return it.
+        app.MapPost("/missions", (NewMissionRequest req) =>
+        {
+            FileLog.Write($"[ControlEndpoints] POST /missions: name=\"{req?.MissionName}\"");
+
+            if (missionStore is null)
+                return Results.Problem("mission store not available", statusCode: 500);
+            if (req is null || string.IsNullOrWhiteSpace(req.MissionName))
+                return Results.BadRequest(new { error = "missionName is required" });
+
+            var mission = missionStore.Create(req.MissionName, req.ParentMissionId);
+            return Results.Json(ToMissionDto(mission), statusCode: 201);
+        });
+
+        // List every Mission record.
+        app.MapGet("/missions", () =>
+        {
+            if (missionStore is null)
+                return Results.Problem("mission store not available", statusCode: 500);
+            return Results.Json(missionStore.List().Select(ToMissionDto).ToList());
+        });
+
+        // Read one Mission record by id.
+        app.MapGet("/missions/{mid}", (string mid) =>
+        {
+            if (!Guid.TryParse(mid, out var missionId))
+                return Results.BadRequest(new { error = "invalid mission id format" });
+            if (missionStore is null)
+                return Results.Problem("mission store not available", statusCode: 500);
+
+            var mission = missionStore.Get(missionId);
+            return mission is null
+                ? Results.NotFound(new { error = "mission not found" })
+                : Results.Json(ToMissionDto(mission));
+        });
+
+        // Attach a session to a Mission (or detach on a blank/absent missionId). Runs through the shared
+        // SessionCommandExecutor so this REST path and the Gateway stream down-channel are identical, exactly
+        // like POST /sessions/{sid}/role. Returns the updated session DTO.
+        app.MapPost("/sessions/{sid}/mission", async (string sid, SetMissionRequest req) =>
+        {
+            if (!Guid.TryParse(sid, out _))
+                return Results.BadRequest(new { error = "invalid session id format" });
+
+            var command = new DirectorCommand
+            {
+                Verb = "attach-mission",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var services = new SessionCommandServices { ProactiveExplain = proactiveExplain, TurnSummaryCache = turnSummaryCache, MissionStore = missionStore };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
 
             if (result.Status == DirectorCommandStatus.BadRequest)
                 return Results.BadRequest(new { error = result.Error });
@@ -3241,6 +3308,14 @@ internal static class ControlEndpoints
     // deltas through the EXACT same mapper the local /sessions endpoint uses (review #6), rather than a
     // second, divergent builder. Callers outside /sessions pass only (session, directorId); the Gateway
     // aggregator stamps machine/user/tailnet/view-url during aggregation, for pushed and pulled alike.
+    /// <summary>Map a Mission record onto its wire DTO (mission-as-first-class-unit-of-work).</summary>
+    internal static MissionDto ToMissionDto(Mission m) => new()
+    {
+        MissionId = m.MissionId,
+        MissionName = m.MissionName,
+        ParentMissionId = m.ParentMissionId,
+    };
+
     internal static SessionDto Map(Session s, string directorId, TurnSummaryCache? cache = null,
         string machineName = "", string user = "", string tailnetEndpoint = "", string? gatewayUrl = null)
     {
@@ -3302,6 +3377,11 @@ internal static class ControlEndpoints
             DriverCapabilities = CapabilityNames(s),
             Name = s.CustomName,
             Number = s.Number,
+            // Mission attachment (mission-as-first-class-unit-of-work): the link + cached display name flow
+            // straight through the Gateway aggregation on the SessionDto; the RESOLVED Mission record lives
+            // in the Director's MissionStore.
+            MissionId = s.MissionId,
+            MissionName = s.MissionName,
             SortOrder = s.SortOrder,
             StatusColor = s.StatusColor,
             LastStatusReason = s.LastStatusReason,

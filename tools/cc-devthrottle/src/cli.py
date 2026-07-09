@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
+from . import mission_ops
 from . import schedule_ops
 from . import settings_ops
 from . import setup_ops
@@ -30,6 +31,11 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 session_app = typer.Typer(help="Manage running sessions.", add_completion=False)
+mission_app = typer.Typer(
+    help="Create and list Missions (the unit of work sessions attach to).",
+    add_completion=False,
+    no_args_is_help=True,
+)
 message_app = typer.Typer(help="Send messages between sessions.", add_completion=False)
 settings_app = typer.Typer(
     help="Read and write CC Director settings.", add_completion=False, no_args_is_help=True
@@ -41,6 +47,7 @@ setup_app = typer.Typer(
     help="Install, update, and repair DevThrottle.", add_completion=False, no_args_is_help=True
 )
 app.add_typer(session_app, name="session")
+app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
 app.add_typer(schedule_app, name="schedule")
@@ -382,12 +389,38 @@ def spawn(
         "machine (first available, auto-launched if none is running); an off/unreachable machine fails "
         "loudly with no local fallback.",
     ),
+    mission: Optional[str] = typer.Option(
+        None,
+        "--mission",
+        help="Attach the new session to a Mission by its id at spawn (mission-as-first-class-unit-of-work). "
+        "The Mission must already exist (create one with 'cc-devthrottle mission create'); an unknown "
+        "Mission is rejected by the Director.",
+    ),
 ) -> None:
     """Open a new session on the local Director, or on another computer with --machine, and print its id."""
     spawn_session(
         repo, agent, prompt, name, purpose, command, command_args, controlled_by, args, standalone, role,
-        machine,
+        machine, mission,
     )
+
+
+@mission_app.command("create")
+def mission_create(
+    name: str = typer.Argument(..., help="Human-friendly name for the Mission."),
+    parent: Optional[str] = typer.Option(
+        None, "--parent", help="Parent Mission id to nest this Mission under (a tree of Missions)."
+    ),
+) -> None:
+    """Create a Mission record on the local Director and print its id."""
+    mission_ops.create_mission(name, parent)
+
+
+@mission_app.command("list")
+def mission_list(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """List every Mission record on the local Director."""
+    mission_ops.list_missions(json_output)
 
 
 @message_app.command("send")

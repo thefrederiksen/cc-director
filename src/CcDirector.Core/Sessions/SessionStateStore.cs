@@ -56,6 +56,14 @@ public class PersistedSession
     /// so an explicit human/self rename is never re-auto-named after a restart.</summary>
     public bool IsAutoNamed { get; set; }
 
+    /// <summary>The Mission this session is attached to, or null for none. Persisted so the attachment (the
+    /// pod binding) survives a Director restart. Null for sessions persisted before this field existed.</summary>
+    public Guid? MissionId { get; set; }
+
+    /// <summary>The attached Mission's cached display name, or null for none. Persisted alongside
+    /// <see cref="MissionId"/> so the name renders after a restart without re-resolving the Mission store.</summary>
+    public string? MissionName { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>Order in the session list, used to restore UI order after restart.</summary>
