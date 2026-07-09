@@ -1,0 +1,20 @@
+[
+  {
+    "id": "ja-001-correct-cer",
+    "language": "ja",
+    "raw_transcript": "今日はAcme Flowのダッシュボードを確認します",
+    "term_list": ["acmeflow", "ConPTY"],
+    "reference_corrected": "今日はacmeflowのダッシュボードを確認します",
+    "target_terms": ["acmeflow"],
+    "gold_edits": [{"from": "Acme Flow", "to": "acmeflow"}]
+  },
+  {
+    "id": "ja-002-noop-trap-cer",
+    "language": "ja",
+    "raw_transcript": "猫が台所で魚を食べています",
+    "term_list": ["acmeflow", "ConPTY"],
+    "reference_corrected": "猫が台所で魚を食べています",
+    "target_terms": [],
+    "gold_edits": []
+  }
+]

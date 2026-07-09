@@ -1,0 +1,20 @@
+[
+  {
+    "id": "es-001-correct",
+    "language": "es",
+    "raw_transcript": "reinicia Teraskale y abre el panel de control",
+    "term_list": ["Tailscale", "acmeflow"],
+    "reference_corrected": "reinicia Tailscale y abre el panel de control",
+    "target_terms": ["Tailscale"],
+    "gold_edits": [{"from": "Teraskale", "to": "Tailscale"}]
+  },
+  {
+    "id": "es-002-noop-trap",
+    "language": "es",
+    "raw_transcript": "el gato come el raton en la cocina por la manana",
+    "term_list": ["ConPTY", "acmeflow"],
+    "reference_corrected": "el gato come el raton en la cocina por la manana",
+    "target_terms": [],
+    "gold_edits": []
+  }
+]

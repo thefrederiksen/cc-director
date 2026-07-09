@@ -29,6 +29,7 @@ const NAV_ITEMS: ReadonlyArray<{ to: string; label: string; subtree?: string }> 
   { to: "/learn", label: "Learning" },
   { to: "/account", label: "Account" },
   { to: "/telemetry", label: "Telemetry" },
+  { to: "/transcription", label: "Transcription" },
   { to: "/settings", label: "Settings" },
   { to: "/about", label: "About" },
 ];
