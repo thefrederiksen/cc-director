@@ -1,4 +1,5 @@
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Dictation;
 using Xunit;
 
 namespace CcDirector.Core.Tests.Configuration;
@@ -44,6 +45,13 @@ public sealed class ProviderRoutingTests
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, ep.BaseUrl);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleKeyName, ep.KeyName);
         Assert.Equal("Qwen/Qwen2.5-72B-Instruct", ep.Model);
+    }
+
+    [Fact]
+    public void DictationCleanup_DefaultsToOpenAiStabilityModel()
+    {
+        Assert.Equal("o4-mini", TranscriptionEndpointResolver.DevThrottleDictationCleanupModel);
+        Assert.Equal(TranscriptionEndpointResolver.DevThrottleDictationCleanupModel, CleanupOrchestrator.DefaultModel);
     }
 
     [Fact]
