@@ -90,8 +90,17 @@ public static class TranscriptionEndpointResolver
     /// <summary>Vault key name for the DevThrottle-issued key.</summary>
     public const string DevThrottleKeyName = "DEVTHROTTLE_API_KEY";
 
-    /// <summary>The DevThrottle transcription model.</summary>
-    public const string DevThrottleModel = "whisper-large-v3";
+    /// <summary>
+    /// The DevThrottle transcription model. The hosted DevThrottle API owns the upstream provider;
+    /// this model id requests the interim OpenAI-backed speech-to-text route.
+    /// </summary>
+    public const string DevThrottleModel = "gpt-4o-transcribe";
+
+    /// <summary>
+    /// The dictation dictionary-cleanup model. Kept separate from the general Wingman fast model so
+    /// transcription cleanup can use the OpenAI stability route without moving unrelated chat traffic.
+    /// </summary>
+    public const string DevThrottleDictationCleanupModel = "o4-mini";
 
     /// <summary>The default DevThrottle thinking model.</summary>
     public const string DevThrottleWingmanModel = "zai-org/GLM-5.2";

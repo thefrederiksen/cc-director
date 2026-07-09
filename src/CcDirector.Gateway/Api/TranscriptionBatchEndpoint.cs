@@ -63,6 +63,9 @@ internal static class TranscriptionBatchEndpoint
                 // Out of credits (issue #885): HTTP 402 with the machine-readable code so the client
                 // shows the add-credits state and keeps the recording, never a raw error.
                 TranscriptionOutcome.OutOfCredits => Results.Json(new { error = result.Error, code = result.Code, mode = result.Mode }, statusCode: StatusCodes.Status402PaymentRequired),
+                // Permanent, non-retryable (issue #1139): unsupported/undecodable format or too large to
+                // reduce. A 4xx (415) so the durable dictation loop STOPS rather than resending forever.
+                TranscriptionOutcome.PermanentError => Results.Json(new { error = result.Error, code = result.Code, mode = result.Mode }, statusCode: StatusCodes.Status415UnsupportedMediaType),
                 TranscriptionOutcome.ProviderError => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway),
                 _ => Results.Json(new { error = "unknown transcription outcome" }, statusCode: StatusCodes.Status500InternalServerError),
             };

@@ -77,14 +77,20 @@ public sealed class BatchTranscriptionPipeline : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly string _cleanupModel;
+    private readonly IAudioTranscoder _transcoder;
 
     /// <param name="httpClient">Optional shared HttpClient (tests inject a stub). The pipeline creates
     /// and owns one when null.</param>
     /// <param name="cleanupModel">The chat model the dictionary corrector uses to PROPOSE edits
     /// (deterministic validation still gates them). Defaults to the dictation default.</param>
-    public BatchTranscriptionPipeline(HttpClient? httpClient = null, string? cleanupModel = null)
+    /// <param name="transcoder">Turns a non-WAV clip too large to send into a splittable PCM WAV (issue
+    /// #1139). Defaults to the bundled-ffmpeg transcoder; tests inject a stub. ffmpeg is resolved lazily,
+    /// so this default never touches disk unless a clip actually needs transcoding.</param>
+    public BatchTranscriptionPipeline(HttpClient? httpClient = null, string? cleanupModel = null,
+        IAudioTranscoder? transcoder = null)
     {
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
+        _transcoder = transcoder ?? new FfmpegAudioTranscoder();
         if (httpClient is null)
         {
             _http = new HttpClient { Timeout = TranscribeTimeout };
@@ -210,8 +216,8 @@ public sealed class BatchTranscriptionPipeline : IDisposable
             return await TranscribeChunksInParallelAsync(parts, fileName, routing, ct, progress);
         }
 
-        // Not a splittable PCM WAV. A clip within the byte budget is one POST as before; an over-budget
-        // non-WAV fails loud rather than posting an oversized body (the no-silent-413 rule).
+        // Not a splittable PCM WAV. A clip within the byte budget is one POST as before (the provider
+        // decodes the codec itself), so a short WebM/Opus dictation keeps its fast single-request path.
         if (audio.Length <= MaxTranscriptionUploadBytes)
         {
             progress?.Report(new TranscriptionProgress(0, 1));
@@ -220,10 +226,33 @@ public sealed class BatchTranscriptionPipeline : IDisposable
             return only;
         }
 
-        throw new InvalidOperationException(
-            $"Audio is {audio.Length:N0} bytes, over the {MaxTranscriptionUploadBytes:N0}-byte per-request "
-            + "limit, and is not a PCM WAV that can be split into bounded parts. Capture as PCM WAV so long "
-            + "recordings can be chunked.");
+        // An over-budget NON-WAV (e.g. a long WebM/Opus recording - issue #1139) cannot be sent whole and
+        // the splitter only understands PCM WAV, so transcode it to PCM WAV first, then run the exact same
+        // duration split + parallel path. A clip ffmpeg cannot decode throws a permanent, non-retryable
+        // failure (loop-stop) rather than being retried forever.
+        FileLog.Write($"[BatchTranscriptionPipeline] over-budget non-WAV ({audio.Length:N0} bytes) - transcoding to PCM WAV to enable splitting");
+        var wav = await Task.Run(() => _transcoder.ToPcmWav(audio, fileName, ct), ct);
+        var wavName = Path.ChangeExtension(string.IsNullOrEmpty(fileName) ? "audio.wav" : fileName, ".wav");
+
+        if (WavSplitter.TrySplitByDuration(
+                wav, ChunkTargetSeconds, ChunkMaxSeconds, ChunkSilenceWindowSeconds,
+                MaxTranscriptionUploadBytes, out var wavParts) && wavParts is not null && wavParts.Count > 0)
+        {
+            if (wavParts.Count == 1)
+            {
+                progress?.Report(new TranscriptionProgress(0, 1));
+                var only = await PostOneAsync(wavParts[0], wavName, routing, ct);
+                progress?.Report(new TranscriptionProgress(1, 1));
+                return only;
+            }
+            FileLog.Write($"[BatchTranscriptionPipeline] transcoded WAV {wav.Length:N0} bytes -> {wavParts.Count} parts; "
+                          + $"transcribing up to {MaxParallelChunks} in parallel");
+            return await TranscribeChunksInParallelAsync(wavParts, wavName, routing, ct, progress);
+        }
+
+        // A valid PCM WAV always splits; reaching here means the transcode produced something unusable.
+        throw new TranscriptionPermanentException(TranscriptionPermanentException.AudioTooLarge,
+            $"Audio is {audio.Length:N0} bytes and could not be transcoded into a splittable PCM WAV.");
     }
 
     /// <summary>
@@ -383,12 +412,9 @@ public sealed class BatchTranscriptionPipeline : IDisposable
         if (string.IsNullOrWhiteSpace(raw))
             return new CleanupOutcome(raw, Applied: false, Reason: "empty transcript");
 
-        // The corrector talks to a chat-completions endpoint. Use the SAME base URL the transcription
-        // was routed to so the key is never crossed onto the wrong provider's URL, and share this
-        // pipeline's HttpClient so both calls go through the same transport. The corrector's own
-        // fail-open contract turns any cleanup problem into a verbatim passthrough.
-        using var cleanup = new CleanupOrchestrator(
-            apiKey: routing.ApiKey, model: _cleanupModel, httpClient: _http, baseUrl: routing.BaseUrl);
+        // The corrector is deterministic and in-process (no provider call), so no key or base URL is
+        // threaded here. Its own fail-open contract turns any cleanup problem into a verbatim passthrough.
+        var cleanup = new CleanupOrchestrator(model: _cleanupModel);
         return await cleanup.CleanAsync(raw, dictionary, profileName, ct);
     }
 

@@ -15,9 +15,9 @@ namespace CcDirector.Core.Claude;
 /// Two halves:
 ///  - <see cref="Extract"/>: pure, testable extraction from the parsed JSONL widget stream
 ///    (first/last user prompt, full last assistant reply).
-///  - <see cref="CondenseAsync"/>: a hosted chat call (the CleanupOrchestrator pattern,
-///    NOT a claude --print side-spawn - issue #142 proved the cold-spawn latency kills
-///    per-flip UX) that produces the DID bullets and extracts the NEEDS-YOU sentence(s).
+///  - <see cref="CondenseAsync"/>: a hosted chat call (NOT a claude --print side-spawn - issue #142
+///    proved the cold-spawn latency kills per-flip UX) that produces the DID bullets and extracts the
+///    NEEDS-YOU sentence(s).
 ///
 /// Fidelity invariant: the needs-you text shown to the user must be VERBATIM. The model's
 /// extraction is validated as a substring of the reply (whitespace-tolerant); when validation

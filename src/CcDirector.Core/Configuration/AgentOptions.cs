@@ -138,9 +138,9 @@ public class AgentOptions
 
     /// <summary>
     /// Hosted cleanup model used by the Gateway transcription CleanupOrchestrator.
-    /// Defaults to the DevThrottle fast model.
+    /// Defaults to the DevThrottle dictation cleanup model.
     /// </summary>
-    public string DictationCleanupModel { get; set; } = TranscriptionEndpointResolver.DevThrottleWingmanFastModel;
+    public string DictationCleanupModel { get; set; } = TranscriptionEndpointResolver.DevThrottleDictationCleanupModel;
 
     /// <summary>
     /// Legacy preview model setting retained for config compatibility. Production transcription is
