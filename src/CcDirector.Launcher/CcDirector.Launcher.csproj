@@ -22,6 +22,10 @@
   <!-- ASP.NET Core Kestrel: the Launcher hosts a minimal loopback REST API. -->
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- launcher-persistent-join: the SignalR CLIENT (separate from the server in the shared framework)
+         so the Launcher can dial the Gateway's LauncherHub and receive lifecycle commands down the stream.
+         Same package + version the Director's ControlApi uses for GatewayStreamClient. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

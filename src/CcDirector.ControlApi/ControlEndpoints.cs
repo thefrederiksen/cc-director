@@ -51,6 +51,34 @@ internal static class ControlEndpoints
             return Map(s, directorId, cache, mn, usr, ep, gatewayUrl);
         }
 
+        // Create a session LOCALLY through the shared SessionCommandExecutor (issue #1177 Phase 1), then
+        // build the identity-stamped 201 response. Shared by POST /sessions and the local branch of
+        // POST /fleet/spawn so both create identically; the Machine routing field is advisory here (the
+        // routing decision is made before the request reaches this Director).
+        async Task<IResult> CreateLocalSessionAsync(NewSessionRequest? req)
+        {
+            var command = new DirectorCommand
+            {
+                Verb = "create",
+                SessionId = "",
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.Problem(result.Error ?? "create failed", statusCode: 500);
+
+            var created = SessionCommandExecutor.Deserialize<SessionDto>(result.BodyJson);
+            if (created is null || !Guid.TryParse(created.SessionId, out var newGuid))
+                return Results.Problem("created session id missing", statusCode: 500);
+            var session = sessionManager.GetSession(newGuid);
+            return session is null
+                ? Results.Problem("created session not found", statusCode: 500)
+                : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
+        }
+
         // ===== Healthz =====
         app.MapGet("/healthz", () => Results.Json(new HealthDto
         {
@@ -598,6 +626,49 @@ internal static class ControlEndpoints
                 {
                     Answered = false, Status = "failed", Error = ex.Message,
                 }, statusCode: StatusCodes.Status500InternalServerError);
+            }
+        });
+
+        // POST /fleet/spawn - "start a session on another computer". The body is a NewSessionRequest whose
+        // Machine field selects the target: empty / "local" / this Director's own machine name spawns
+        // LOCALLY (unchanged local behavior); any other machine name routes the spawn through the Gateway to
+        // a Director on that machine (first available, auto-launched if none is running). A remote spawn
+        // FAILS LOUD when no Gateway is configured or the machine is off / unreachable - it NEVER falls back
+        // to a local spawn.
+        app.MapPost("/fleet/spawn", async (NewSessionRequest req, CancellationToken ct) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
+                return Results.BadRequest(new { error = "repoPath is required" });
+
+            var machine = req.Machine?.Trim();
+            var isLocal = string.IsNullOrEmpty(machine)
+                || string.Equals(machine, "local", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(machine, Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+
+            if (isLocal)
+            {
+                FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: LOCAL, repo={req.RepoPath}, agent={req.Agent}");
+                return await CreateLocalSessionAsync(req);
+            }
+
+            FileLog.Write($"[ControlEndpoints] POST /fleet/spawn: machine={machine}, repo={req.RepoPath}, agent={req.Agent}");
+            var gw = gatewayClientProvider?.Invoke();
+            if (gw is not { IsEnabled: true })
+                return Results.Json(
+                    new { error = $"Cannot start a session on '{machine}': no Gateway is configured on this Director." },
+                    statusCode: StatusCodes.Status502BadGateway);
+
+            try
+            {
+                var dto = await gw.SpawnOnMachineAsync(machine!, req, ct);
+                return Results.Json(dto, statusCode: StatusCodes.Status201Created);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[ControlEndpoints] POST /fleet/spawn relay to {machine} FAILED: {ex.Message}");
+                return Results.Json(
+                    new { error = $"Cannot start a session on '{machine}': {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
             }
         });
 
@@ -2860,29 +2931,9 @@ internal static class ControlEndpoints
             // the shared SessionCommandExecutor so this REST path and the Gateway stream down-channel
             // create identically. The Director's own 201 response is still built with the identity-stamped
             // MapWithIdentity (unchanged), so this endpoint stays byte-identical; the executor returns the
-            // plain stream DTO that the Gateway stamps during aggregation.
-            var command = new DirectorCommand
-            {
-                Verb = "create",
-                SessionId = "",
-                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
-            };
-            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
-
-            if (result.Status == DirectorCommandStatus.BadRequest)
-                return Results.BadRequest(new { error = result.Error });
-            if (result.Status != DirectorCommandStatus.Ok)
-                return Results.Problem(result.Error ?? "create failed", statusCode: 500);
-
-            // Re-fetch the created session by the id the executor returned so the local response carries
-            // the identity fields (MachineName/User/TailnetEndpoint), exactly as before.
-            var created = SessionCommandExecutor.Deserialize<SessionDto>(result.BodyJson);
-            if (created is null || !Guid.TryParse(created.SessionId, out var newGuid))
-                return Results.Problem("created session id missing", statusCode: 500);
-            var session = sessionManager.GetSession(newGuid);
-            return session is null
-                ? Results.Problem("created session not found", statusCode: 500)
-                : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
+            // plain stream DTO that the Gateway stamps during aggregation. The Machine routing field (if any)
+            // is advisory here - a POST /sessions always creates on THIS Director.
+            return await CreateLocalSessionAsync(req);
         });
 
         // ===== REST: Create a GitHub Actions remote session =====

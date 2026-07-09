@@ -374,10 +374,19 @@ def spawn(
         "(case-insensitive). Sticky, and wins over auto-derivation - the way to declare an Architect. An "
         "unknown value is rejected by the Director.",
     ),
+    machine: Optional[str] = typer.Option(
+        None,
+        "--machine",
+        help="Start the session on ANOTHER computer. Omit (or name this machine) to spawn locally, "
+        "unchanged. A remote machine name routes the spawn through the Gateway to a Director on that "
+        "machine (first available, auto-launched if none is running); an off/unreachable machine fails "
+        "loudly with no local fallback.",
+    ),
 ) -> None:
-    """Open a new session on the local Director and print its id."""
+    """Open a new session on the local Director, or on another computer with --machine, and print its id."""
     spawn_session(
-        repo, agent, prompt, name, purpose, command, command_args, controlled_by, args, standalone, role
+        repo, agent, prompt, name, purpose, command, command_args, controlled_by, args, standalone, role,
+        machine,
     )
 
 

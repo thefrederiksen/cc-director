@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 import tempfile
 import time
@@ -313,8 +314,9 @@ def spawn_session(
     args: Optional[str] = None,
     standalone: bool = False,
     role: Optional[str] = None,
+    machine: Optional[str] = None,
 ) -> None:
-    """Open a new session on the local Director."""
+    """Open a new session on the local Director, or on another computer when a remote --machine is given."""
     # Automatic roles: a SESSION-initiated spawn (CC_SESSION_ID present) DEFAULTS to a Worker controlled by
     # the spawner, so it stays quiet and reports to its manager instead of nagging the human. The opt-out
     # (guard 1) is --standalone / --controlled-by none: a deliberate human-facing PEER with no controller. A
@@ -372,8 +374,23 @@ def spawn_session(
     if role:
         body["role"] = role
 
+    # "Start a session on another computer": with no --machine, or a --machine that names THIS machine,
+    # keep the unchanged LOCAL spawn (POST /sessions on the local Director). A remote machine name routes
+    # the spawn through the local Director's POST /fleet/spawn, which forwards it via the Gateway to a
+    # Director on that machine (first available, auto-launched if none is running). An off/unreachable
+    # machine fails loudly (DirectorError -> red error + exit 1) with NO local fallback.
+    target_machine = machine.strip() if machine else ""
+    is_local = (
+        not target_machine
+        or target_machine.lower() == "local"
+        or target_machine.lower() == platform.node().lower()
+    )
+
     try:
-        resp = director.post_json("sessions", body)
+        if is_local:
+            resp = director.post_json("sessions", body)
+        else:
+            resp = director.post_json("fleet/spawn", {"machine": target_machine, **body})
     except director.DirectorError as err:
         console.print(f"[red]Error:[/red] {err}")
         raise typer.Exit(1)

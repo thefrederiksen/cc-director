@@ -286,6 +286,50 @@ public sealed class GatewayClient : IDisposable
     }
 
     /// <summary>
+    /// Start a session on ANOTHER machine ("start a session on another computer"), via the Gateway's
+    /// POST /machines/{machine}/sessions relay. The Gateway resolves the machine to a Director (launching
+    /// one through the launcher when none is running) and creates the session there. Fail-loud like the
+    /// other fleet relays: THROWS when the Gateway is disabled, the machine is off / unreachable, or the
+    /// create fails - it NEVER falls back to a local spawn. Returns the new session on success.
+    ///
+    /// Uses a DEDICATED HttpClient with a generous timeout: the shared <c>_http</c> has a 10s ceiling, but
+    /// a remote spawn may auto-launch a Director and wait (bounded) for it to register, which legitimately
+    /// exceeds 10s (same reasoning as <see cref="AskFleetAsync"/>).
+    /// </summary>
+    public async Task<SessionDto> SpawnOnMachineAsync(string machine, NewSessionRequest req, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("Gateway is not configured; cannot start a session on another machine.");
+        if (string.IsNullOrWhiteSpace(machine))
+            throw new ArgumentException("Target machine is required", nameof(machine));
+        if (req is null)
+            throw new ArgumentNullException(nameof(req));
+
+        FileLog.Write($"[GatewayClient] SpawnOnMachineAsync: POST /machines/{machine}/sessions, repo={req.RepoPath}, agent={req.Agent}");
+        using var http = new HttpClient
+        {
+            BaseAddress = new Uri(_config.Url.TrimEnd('/') + "/"),
+            Timeout = TimeSpan.FromSeconds(120),
+        };
+        if (!string.IsNullOrEmpty(_config.Token))
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _config.Token);
+
+        using var resp = await http.PostAsJsonAsync($"machines/{Uri.EscapeDataString(machine)}/sessions", req, ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var detail = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException(
+                $"Gateway could not start a session on '{machine}': HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}".TrimEnd());
+        }
+
+        var parsed = await resp.Content.ReadFromJsonAsync<SessionDto>(ct);
+        if (parsed is null)
+            throw new InvalidOperationException("Gateway start-on-machine returned an unparsable body.");
+        FileLog.Write($"[GatewayClient] SpawnOnMachineAsync: started sid={parsed.SessionId} on machine={machine}");
+        return parsed;
+    }
+
+    /// <summary>
     /// Start the registration lifecycle. Fire-and-forget: the first register attempt
     /// runs in the background so a slow or unreachable Gateway never blocks Director
     /// startup. The heartbeat timer is set up regardless.
