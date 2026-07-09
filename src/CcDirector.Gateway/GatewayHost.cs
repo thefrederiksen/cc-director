@@ -42,6 +42,14 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     public Streaming.PushedSessionStore PushedSessions { get; }
 
+    /// <summary>
+    /// launcher-persistent-join: the map of which machine's cc-launcher is currently joined over a
+    /// persistent stream. When a launcher is stream-connected, the machine lifecycle relay pushes a command
+    /// DOWN the open stream instead of dialing the launcher's REST API. Empty until launchers connect and
+    /// only consulted when stream mode is on.
+    /// </summary>
+    public Streaming.LauncherConnectionRegistry LauncherConnections { get; }
+
     // Issue #1176 (Phase 1a): Gateway-side stream feature switch + staleness window, resolved from
     // config.json (or an explicit constructor override for tests). When off, the hub is not mapped and
     // /sessions never consults the pushed cache, so behaviour is byte-identical to today.
@@ -311,6 +319,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
         PushedSessions = new Streaming.PushedSessionStore();
+        LauncherConnections = new Streaming.LauncherConnectionRegistry();
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         _streamMode = streamMode ?? gatewayConfig.StreamMode;
         _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
@@ -741,6 +750,9 @@ public sealed class GatewayHost : IAsyncDisposable
         builder.Services.AddSignalR();
         builder.Services.AddSingleton(PushedSessions);
         builder.Services.AddSingleton(Registry);
+        // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
+        // SendLauncherCommandAsync share this one connection registry.
+        builder.Services.AddSingleton(LauncherConnections);
 
         // Honor X-Forwarded-Proto/Host/For from a Tailscale Serve front-end so
         // ctx.Request.Scheme reflects the public scheme the user actually used.
@@ -843,6 +855,13 @@ public sealed class GatewayHost : IAsyncDisposable
         {
             _app.MapHub<Streaming.DirectorHub>("/director-stream");
             FileLog.Write("[GatewayHost] stream mode ON: DirectorHub mapped at /director-stream; /sessions serves from the push cache when fresh");
+
+            // launcher-persistent-join: the launcher-push stream endpoint, mapped under the SAME kill-switch
+            // as DirectorHub. When a launcher joins, the machine lifecycle relay pushes commands DOWN this
+            // stream instead of dialing the launcher's REST API; off => the hub does not exist and the relay
+            // uses REST exactly as today.
+            _app.MapHub<Streaming.LauncherHub>("/launcher-stream");
+            FileLog.Write("[GatewayHost] stream mode ON: LauncherHub mapped at /launcher-stream; machine lifecycle relay prefers the stream when a launcher is joined");
         }
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
@@ -1127,7 +1146,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #331: launcher registration + cross-machine Director lifecycle relay.
         // Launchers POST /launchers/register on startup; relay callers POST
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
-        MachineEndpoints.Map(_app, Launchers);
+        // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
+        // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
+        MachineEndpoints.Map(_app, Launchers, _streamMode ? SendLauncherCommandAsync : null);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly
@@ -1293,6 +1314,29 @@ public sealed class GatewayHost : IAsyncDisposable
         }
         FileLog.Write($"[GatewayHost] SendCommandAsync: director={directorId}, verb={command.Verb}, sid={command.SessionId}, cmdId={command.CommandId}");
         return await hub.Clients.Client(connectionId).InvokeAsync<DirectorCommandResult>("Command", command, ct);
+    }
+
+    /// <summary>
+    /// launcher-persistent-join: push a lifecycle command DOWN a machine's launcher stream and await its
+    /// result over the SAME connection (SignalR client results), modeled exactly on <see cref="SendCommandAsync"/>.
+    /// Returns null when that machine's launcher has no active stream connection (or the hub is unavailable),
+    /// which the caller treats as "no stream" and falls back to the HTTP relay. Any non-null result - success
+    /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
+    /// </summary>
+    public async Task<LauncherCommandResult?> SendLauncherCommandAsync(string machineName, LauncherCommand command, CancellationToken ct = default)
+    {
+        if (command is null) throw new ArgumentNullException(nameof(command));
+
+        var connectionId = LauncherConnections.GetActiveConnectionId(machineName);
+        var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.LauncherHub>))
+            as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.LauncherHub>;
+        if (connectionId is null || hub is null)
+        {
+            FileLog.Write($"[GatewayHost] SendLauncherCommandAsync: no active stream for machine={machineName}, verb={command.Verb}");
+            return null;
+        }
+        FileLog.Write($"[GatewayHost] SendLauncherCommandAsync: machine={machineName}, verb={command.Verb}");
+        return await hub.Clients.Client(connectionId).InvokeAsync<LauncherCommandResult>("Command", command, ct);
     }
 
     public async Task StopAsync()

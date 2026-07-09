@@ -51,7 +51,8 @@ internal static class MachineEndpoints
     private static readonly Regex SlotFromPath =
         new(@"cc-director(\d*)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public static void Map(IEndpointRouteBuilder app, LauncherRegistry launchers)
+    public static void Map(IEndpointRouteBuilder app, LauncherRegistry launchers,
+        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null)
     {
         // ===== Launcher self-registration surface =====
 
@@ -105,21 +106,21 @@ internal static class MachineEndpoints
         app.MapPost("/machines/{machine}/director/restart", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/restart: caller={ctx.Connection.RemoteIpAddress}");
-            return await RelayDirectorLifecycleAsync(machine, "restart", ctx, launchers, ct);
+            return await RelayDirectorLifecycleAsync(machine, "restart", ctx, launchers, sendLauncherCommand, ct);
         });
 
         // POST /machines/{machine}/director/start
         app.MapPost("/machines/{machine}/director/start", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/start: caller={ctx.Connection.RemoteIpAddress}");
-            return await RelayDirectorLifecycleAsync(machine, "start", ctx, launchers, ct);
+            return await RelayDirectorLifecycleAsync(machine, "start", ctx, launchers, sendLauncherCommand, ct);
         });
 
         // POST /machines/{machine}/director/stop
         app.MapPost("/machines/{machine}/director/stop", async (string machine, HttpContext ctx, CancellationToken ct) =>
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/director/stop: caller={ctx.Connection.RemoteIpAddress}");
-            return await RelayDirectorLifecycleAsync(machine, "stop", ctx, launchers, ct);
+            return await RelayDirectorLifecycleAsync(machine, "stop", ctx, launchers, sendLauncherCommand, ct);
         });
 
         // POST /machines/{machine}/launch - relay a generic launch request to the launcher.
@@ -127,17 +128,32 @@ internal static class MachineEndpoints
         {
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/launch: caller={ctx.Connection.RemoteIpAddress}");
 
+            // Forward the original request body verbatim to the launcher.
+            LaunchRelayBody? body = null;
+            try { body = await ctx.Request.ReadFromJsonAsync<LaunchRelayBody>(ct); }
+            catch { /* treat as null -> launcher will 400 */ }
+
+            // launcher-persistent-join: prefer the persistent stream. When stream mode is on and the launcher
+            // is joined, push the launch DOWN the open connection instead of dialing its REST API. A null
+            // result means no stream (flag off, or launcher offline), so fall through to the REST relay below.
+            var launchStreamCmd = new LauncherCommand
+            {
+                Verb = "launch",
+                Path = body?.Path,
+                Args = body?.Args,
+                Cwd = body?.Cwd,
+                Headless = body?.Headless ?? false,
+            };
+            var launchStreamResult = await LauncherCommandRouter.TrySendAsync(sendLauncherCommand, machine, launchStreamCmd, ct);
+            if (launchStreamResult is not null)
+                return MapLauncherStreamResult(machine, "launch", launchStreamResult);
+
             var (launcher, token, networkAddress, err) = ResolveLauncher(machine, launchers);
             if (err is not null)
             {
                 FileLog.Write($"[MachineEndpoints] /machines/{machine}/launch: {err.Value.log}");
                 return err.Value.result;
             }
-
-            // Forward the original request body verbatim to the launcher.
-            LaunchRelayBody? body = null;
-            try { body = await ctx.Request.ReadFromJsonAsync<LaunchRelayBody>(ct); }
-            catch { /* treat as null -> launcher will 400 */ }
 
             using var http = BuildLauncherClient(launcher!.Port, token!, networkAddress!);
             IResult result;
@@ -172,7 +188,8 @@ internal static class MachineEndpoints
     /// Enforces the slot guard for restart/stop verbs.
     /// </summary>
     private static async Task<IResult> RelayDirectorLifecycleAsync(
-        string machine, string verb, HttpContext ctx, LauncherRegistry launchers, CancellationToken ct)
+        string machine, string verb, HttpContext ctx, LauncherRegistry launchers,
+        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand, CancellationToken ct)
     {
         // Parse optional body for confirmProtected flag and target exe path.
         // Use JsonDocument to avoid internal-class reflection issues with System.Text.Json.
@@ -213,6 +230,20 @@ internal static class MachineEndpoints
                 }, statusCode: 403);
             }
         }
+
+        // launcher-persistent-join: prefer the persistent stream. When stream mode is on and the launcher is
+        // joined, push the lifecycle verb DOWN the open connection instead of dialing its REST API. The slot
+        // guard above has already run, so a protected-slot action is still gated identically. A null result
+        // means no stream (flag off, or launcher offline), so fall through to the REST relay below unchanged.
+        var streamCmd = new LauncherCommand
+        {
+            Verb = $"director/{verb}",
+            Path = exePathFromBody,
+            ConfirmProtected = confirmProtectedFromBody == true,
+        };
+        var streamResult = await LauncherCommandRouter.TrySendAsync(sendLauncherCommand, machine, streamCmd, ct);
+        if (streamResult is not null)
+            return MapLauncherStreamResult(machine, verb, streamResult);
 
         var (launcher, token, networkAddress, err) = ResolveLauncher(machine, launchers);
         if (err is not null)
@@ -290,6 +321,33 @@ internal static class MachineEndpoints
         };
         http.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
         return http;
+    }
+
+    /// <summary>
+    /// launcher-persistent-join: render a <see cref="LauncherCommandResult"/> from the stream path as the
+    /// same <see cref="RelayResult"/> envelope the REST relay returns, so a stream-served call is
+    /// indistinguishable to the caller. Ok -> 200; BadRequest -> 400; Error -> 502 (launcher-side failure,
+    /// mirroring the REST relay's "launcher unreachable" 502).
+    /// </summary>
+    private static IResult MapLauncherStreamResult(string machine, string verb, LauncherCommandResult result)
+    {
+        var status = result.Status switch
+        {
+            LauncherCommandStatus.Ok => 200,
+            LauncherCommandStatus.BadRequest => 400,
+            _ => 502,
+        };
+        var payload = result.IsOk
+            ? JsonSerializer.Serialize(new { ok = true, via = "stream" })
+            : JsonSerializer.Serialize(new { error = result.Error, via = "stream" });
+        FileLog.Write($"[MachineEndpoints] relay /director/{verb} machine={machine} via=stream -> status={status}");
+        return Results.Json(new RelayResult
+        {
+            Machine = machine,
+            Verb = verb,
+            RelayStatus = status,
+            Payload = payload,
+        }, statusCode: status);
     }
 
     /// <summary>

@@ -33,6 +33,7 @@ public sealed class LauncherTrayController : IDisposable
     private Bitmap? _icon;
     private LauncherHost? _host;
     private GatewayRegistrationClient? _gatewayClient;
+    private LauncherStreamClient? _launcherStreamClient;
     private HostState _state = HostState.Starting;
     private bool _disposed;
 
@@ -226,6 +227,14 @@ public sealed class LauncherTrayController : IDisposable
             var launcherToken = LauncherAuth.LoadOrCreateToken();
             _gatewayClient = new GatewayRegistrationClient(gwConfig, _port, launcherToken, version);
             _gatewayClient.Start();
+
+            // launcher-persistent-join: when gateway.streamMode is on, also JOIN the Gateway over a
+            // persistent SignalR stream so the Gateway can push lifecycle commands DOWN the open connection
+            // instead of dialing this launcher's REST API. Runs alongside the registration client (which
+            // stays for metadata). Start() is a no-op unless a Gateway is configured AND stream mode is on,
+            // so with the flag off behaviour is unchanged and the Gateway relays over REST as today.
+            _launcherStreamClient = new LauncherStreamClient(gwConfig, _port, version, directorSupervisor, launchService);
+            _launcherStreamClient.Start();
         }
         catch (Exception ex)
         {
@@ -259,6 +268,13 @@ public sealed class LauncherTrayController : IDisposable
     {
         FileLog.Write("[LauncherTrayController] QuitAsync");
         _lifetime.Cancel();
+
+        // launcher-persistent-join: close the persistent stream before shutting down.
+        if (_launcherStreamClient is not null)
+        {
+            await _launcherStreamClient.StopAsync();
+            _launcherStreamClient = null;
+        }
 
         // Issue #331: unregister from the Gateway before shutting down the REST host.
         if (_gatewayClient is not null)
@@ -448,6 +464,9 @@ public sealed class LauncherTrayController : IDisposable
         if (_disposed) return;
         _disposed = true;
         _lifetime.Cancel();
+        try { _launcherStreamClient?.StopAsync().GetAwaiter().GetResult(); }
+        catch (Exception ex) { FileLog.Write($"[LauncherTrayController] Dispose stream client stop error: {ex.Message}"); }
+        _launcherStreamClient = null;
         try { _gatewayClient?.StopAsync().GetAwaiter().GetResult(); }
         catch (Exception ex) { FileLog.Write($"[LauncherTrayController] Dispose gateway client stop error: {ex.Message}"); }
         _gatewayClient = null;

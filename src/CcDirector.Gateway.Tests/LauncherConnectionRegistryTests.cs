@@ -1,0 +1,128 @@
+using CcDirector.Gateway.Streaming;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// Unit tests for <see cref="LauncherConnectionRegistry"/> (launcher-persistent-join). The launcher twin of
+/// the connection-tracking half of <see cref="PushedSessionStore"/>: a thread-safe machine-name to
+/// connection-id map whose one delicate behaviour is that a superseded connection's LATE disconnect must not
+/// wipe a newer connection registered for the same machine (atomic compare-remove).
+/// </summary>
+public sealed class LauncherConnectionRegistryTests
+{
+    private static LauncherConnectionRegistry NewRegistry() => new();
+
+    [Fact]
+    public void RegisterConnection_ThenGetActiveConnectionId_ReturnsIt_AndIsStreamConnectedIsTrue()
+    {
+        // Arrange
+        var registry = NewRegistry();
+
+        // Act
+        registry.RegisterConnection("machine-A", "conn-1");
+
+        // Assert
+        Assert.Equal("conn-1", registry.GetActiveConnectionId("machine-A"));
+        Assert.True(registry.IsStreamConnected("machine-A"));
+    }
+
+    [Fact]
+    public void GetActiveConnectionId_IsCaseInsensitiveOnMachineName()
+    {
+        // Arrange
+        var registry = NewRegistry();
+        registry.RegisterConnection("Machine-A", "conn-1");
+
+        // Assert - the map is keyed case-insensitively (OrdinalIgnoreCase).
+        Assert.Equal("conn-1", registry.GetActiveConnectionId("machine-a"));
+        Assert.True(registry.IsStreamConnected("MACHINE-A"));
+    }
+
+    [Fact]
+    public void Unregister_ClearsTheActiveConnection()
+    {
+        // Arrange
+        var registry = NewRegistry();
+        registry.RegisterConnection("machine-A", "conn-1");
+
+        // Act
+        registry.Unregister("conn-1");
+
+        // Assert
+        Assert.False(registry.IsStreamConnected("machine-A"));
+        Assert.Null(registry.GetActiveConnectionId("machine-A"));
+    }
+
+    [Fact]
+    public void Reconnect_SecondConnectionSameMachine_Supersedes()
+    {
+        // Arrange - a launcher restart / reconnect: a new connection for the same machine wins.
+        var registry = NewRegistry();
+        registry.RegisterConnection("machine-A", "conn-1");
+
+        // Act
+        registry.RegisterConnection("machine-A", "conn-2");
+
+        // Assert
+        Assert.Equal("conn-2", registry.GetActiveConnectionId("machine-A"));
+    }
+
+    [Fact]
+    public void LateUnregisterOfSupersededConnection_DoesNotWipeNewerConnection()
+    {
+        // Arrange - a reconnect overlap: conn-2 becomes the active connection for the machine, THEN conn-1
+        // (the superseded old connection) disconnects late. The atomic compare-remove must ignore the stale
+        // disconnect so the newer connection keeps owning the machine.
+        var registry = NewRegistry();
+        registry.RegisterConnection("machine-A", "conn-1");
+        registry.RegisterConnection("machine-A", "conn-2");
+
+        // Act
+        registry.Unregister("conn-1");
+
+        // Assert - the newer connection still owns the machine.
+        Assert.True(registry.IsStreamConnected("machine-A"));
+        Assert.Equal("conn-2", registry.GetActiveConnectionId("machine-A"));
+    }
+
+    [Fact]
+    public void UnregisterUnknownConnection_IsANoOp()
+    {
+        // Arrange
+        var registry = NewRegistry();
+        registry.RegisterConnection("machine-A", "conn-1");
+
+        // Act - a connection id the registry never held.
+        registry.Unregister("conn-does-not-exist");
+
+        // Assert - the active connection is untouched.
+        Assert.True(registry.IsStreamConnected("machine-A"));
+        Assert.Equal("conn-1", registry.GetActiveConnectionId("machine-A"));
+    }
+
+    [Fact]
+    public void GetActiveConnectionId_ForUnknownMachine_ReturnsNull()
+    {
+        var registry = NewRegistry();
+        Assert.Null(registry.GetActiveConnectionId("nobody"));
+        Assert.False(registry.IsStreamConnected("nobody"));
+    }
+
+    [Fact]
+    public void TwoMachines_DoNotCrossContaminate()
+    {
+        // Arrange - two machines each with their own launcher connection.
+        var registry = NewRegistry();
+        registry.RegisterConnection("machine-A", "conn-A");
+        registry.RegisterConnection("machine-B", "conn-B");
+
+        // Act - one disconnects.
+        registry.Unregister("conn-A");
+
+        // Assert - the other is unaffected.
+        Assert.False(registry.IsStreamConnected("machine-A"));
+        Assert.True(registry.IsStreamConnected("machine-B"));
+        Assert.Equal("conn-B", registry.GetActiveConnectionId("machine-B"));
+    }
+}
