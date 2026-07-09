@@ -4,6 +4,61 @@ Living QA report for the Phase 1a implementation on branch `feat/director-gatewa
 
 ---
 
+## Increment 3: /sessions aggregation dual-mode + end-to-end harness
+
+**Date:** 2026-07-09
+**Status:** PASS
+
+### What was built
+
+- **Cache-first fetch** in the `GET /sessions` fan-out (`GatewayEndpoints`): if a Director's stream is
+  connected and its last push is within the stale window, its sessions are served from
+  `PushedSessionStore.TryGetFresh` (deep copies with recomputed idle clocks) and the pull is skipped
+  entirely. Every downstream side effect (owner-cache retain/remember, filters, machine/user/tailnet/
+  view-url enrichment, voice/transcription overlays, EffectiveColor + triage, NeedsYouSince,
+  machineErrors) runs **unchanged** on the cached sessions - only the fetch step changed (review #10).
+- **`includeExited` fallback** (review #5): cache-first is gated on `!includeExited`, so an
+  exited-inclusive query always pulls (a live-only snapshot never answers it).
+- **Observability** (review #11): the fan-out logs `served=pushed-cache` on a hit and
+  `served=pull (stream connected but cache stale/empty)` on a fallback, per Director per request, for
+  any stream-participating Director.
+- **Gateway kill-switch**: `GatewayHost` reads `gateway.streamMode` (or an explicit constructor
+  override); when off, the hub is not mapped and `/sessions` never consults the cache - byte-identical
+  to today.
+- **Integration harness** (`StreamIntegrationTests`): boots a real `GatewayHost` (stream mode on) and
+  dials the hub with a real SignalR client over HTTP.
+
+### End-to-end tests (over real HTTP + SignalR)
+
+| Test | Proves | Review item |
+|------|--------|-------------|
+| `StreamPush_IsServedFromCache_WithoutPullingTheDirector` | The Director is registered with an unreachable endpoint; a pushed snapshot appears in `/sessions` with no machine error, so it can only have come from cache | core #1, #10 |
+| `PushDelta_IsReflectedInSessions` | A single-session delta changes the served state | #4 groundwork |
+| `RemoveSession_IsReflectedInSessions` | A remove drops the session from `/sessions` | #4 |
+| `UnauthenticatedConnect_IsRejected` | A hub connection with no token fails the handshake | auth #9 |
+| `StreamModeOff_DoesNotMapTheHub` | With the flag off, `/director-stream/negotiate` is 404 | flag-off parity |
+
+This confirms the whole Gateway side (hub auth, store, aggregation) works on the wire, and that the .NET
+SignalR client's Bearer token satisfies the existing host-wide auth middleware with no middleware change.
+
+### Test result
+
+```
+dotnet test --filter "StreamIntegrationTests|DirectorHubTests|PushedSessionStoreTests"
+Passed!  Failed: 0, Passed: 28, Skipped: 0, Total: 28
+```
+
+Build: clean, `TreatWarningsAsErrors=true`.
+
+### Still remaining for Phase 1a
+
+The Director-side `GatewayStreamClient` (increment 4: dial out, auto-reconnect, snapshot/delta/remove
+from a shared session mapper, feed the connection monitor). The integration harness above already covers
+the Gateway side of the plan's test list; the remaining harness cases (stale-cache fallback, restart
+reseed over the wire) fold in with the client.
+
+---
+
 ## Increment 2: the SignalR hub (DirectorHub)
 
 **Date:** 2026-07-09

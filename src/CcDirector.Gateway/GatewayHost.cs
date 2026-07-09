@@ -40,6 +40,12 @@ public sealed class GatewayHost : IAsyncDisposable
     /// </summary>
     public Streaming.PushedSessionStore PushedSessions { get; }
 
+    // Issue #1176 (Phase 1a): Gateway-side stream feature switch + staleness window, resolved from
+    // config.json (or an explicit constructor override for tests). When off, the hub is not mapped and
+    // /sessions never consults the pushed cache, so behaviour is byte-identical to today.
+    private readonly bool _streamMode;
+    private readonly TimeSpan _streamStaleAfter;
+
     public bool AuthEnabled { get; }
 
     /// <summary>
@@ -296,12 +302,15 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
         PushedSessions = new Streaming.PushedSessionStore();
+        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
+        _streamMode = streamMode ?? gatewayConfig.StreamMode;
+        _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
         Devices = new Pairing.DeviceRegistry(devicesPath);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
         if (AuthEnabled)
@@ -826,10 +835,15 @@ public sealed class GatewayHost : IAsyncDisposable
 
         _app.UseRouting();
 
-        // Issue #1176 (Phase 1a): the Director-push stream endpoint. Mapped after the host-wide auth
-        // middleware above, so the handshake is token-gated exactly like every other route; a Director's
-        // .NET SignalR client presents its Bearer token on the negotiate and WebSocket handshake.
-        _app.MapHub<Streaming.DirectorHub>("/director-stream");
+        // Issue #1176 (Phase 1a): the Director-push stream endpoint, mapped only when stream mode is on
+        // (kill-switch: off => the hub does not exist and behaviour is byte-identical to today). Mapped
+        // after the host-wide auth middleware above, so the handshake is token-gated exactly like every
+        // other route; a Director's .NET SignalR client presents its Bearer token on the handshake.
+        if (_streamMode)
+        {
+            _app.MapHub<Streaming.DirectorHub>("/director-stream");
+            FileLog.Write("[GatewayHost] stream mode ON: DirectorHub mapped at /director-stream; /sessions serves from the push cache when fresh");
+        }
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
@@ -899,7 +913,11 @@ public sealed class GatewayHost : IAsyncDisposable
             turnJobs: TurnJobs,
             // Issue #1045: pass the per-device-key registry so the voice-turn routes' own token
             // check (issue #369) accepts a phone's enrolled device key, not just the shared token.
-            devices: Devices);
+            devices: Devices,
+            // Issue #1176 (Phase 1a): serve /sessions from the Director-push cache when the stream is
+            // fresh; null when stream mode is off, keeping /sessions byte-identical to today.
+            pushedSessions: _streamMode ? PushedSessions : null,
+            streamStaleAfter: _streamStaleAfter);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and

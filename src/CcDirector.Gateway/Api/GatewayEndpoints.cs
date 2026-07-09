@@ -54,7 +54,12 @@ internal static class GatewayEndpoints
         SessionOwnerCache? owners = null,
         Gateway.Events.DirectorEventLog? directorEvents = null,
         Voice.GatewayTurnJobStore? turnJobs = null,
-        Pairing.DeviceRegistry? devices = null)
+        Pairing.DeviceRegistry? devices = null,
+        // Issue #1176 (Phase 1a): when non-null, /sessions serves a Director from this push cache instead
+        // of pulling it, whenever that Director's stream is connected and its last push is within
+        // streamStaleAfter. Null (stream mode off) keeps the pull-only behaviour byte-identical to today.
+        Streaming.PushedSessionStore? pushedSessions = null,
+        TimeSpan? streamStaleAfter = null)
     {
         // Issue #376: async voice-turn submit/poll (the phone's reconnect-resilient voice
         // interface). Mapped first for readability; route precedence (literal segments win
@@ -386,8 +391,27 @@ internal static class GatewayEndpoints
                 .ToList();
 
             var includeExitedActual = includeExited ?? false;
+            var streamStale = streamStaleAfter ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
             var fanoutTasks = directors.Select(async d =>
             {
+                // Issue #1176 (Phase 1a): if this Director's stream is connected and its last push is fresh,
+                // serve its sessions from the pushed cache and skip the pull entirely (no probe, no
+                // control-endpoint round trip). TryGetFresh returns deep copies with recomputed idle clocks,
+                // so the enrichment pipeline below stamps them exactly as it stamps pulled sessions, and the
+                // cache is never contaminated. includeExited is not yet representable in a pushed snapshot,
+                // so those queries always fall through to the pull below.
+                if (pushedSessions is not null && !includeExitedActual)
+                {
+                    var cached = pushedSessions.TryGetFresh(d.DirectorId, streamStale);
+                    if (cached is not null)
+                    {
+                        FileLog.Write($"[GatewayEndpoints] /sessions director={d.DirectorId} served=pushed-cache ({cached.Count} sessions)");
+                        return (Director: d, Sessions: (List<SessionDto>?)cached.ToList(), Error: (string?)null);
+                    }
+                    if (pushedSessions.IsStreamConnected(d.DirectorId))
+                        FileLog.Write($"[GatewayEndpoints] /sessions director={d.DirectorId} served=pull (stream connected but cache stale/empty)");
+                }
+
                 // Reachability circuit-breaker: a Director that has failed recent probes is skipped while
                 // its breaker is open, so it stops costing a per-poll timeout. Still surfaced as an error
                 // so the UI shows it as unreachable - with an ACTIONABLE message (issue #197): an endpoint
