@@ -3503,6 +3503,9 @@ public partial class MainWindow : Window
         for (int i = 0; i < _sessions.Count; i++)
         {
             var vm = _sessions[i];
+            // Stamp the non-color role glyph from the local fleet on every list rebuild (same place
+            // the group first/last flags are stamped) so the rail badge tracks controller changes.
+            vm.ResolvedRole = _sessionManager.ResolveLocalRole(vm.Session);
             if (!vm.IsGroupMember) { vm.IsGroupFirst = false; vm.IsGroupLast = false; continue; }
             var gid = vm.GroupId;
             vm.IsGroupFirst = i == 0 || _sessions[i - 1].GroupId != gid;

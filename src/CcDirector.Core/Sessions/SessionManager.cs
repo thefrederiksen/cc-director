@@ -6,6 +6,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Core.Sessions;
 
@@ -591,6 +592,43 @@ public sealed class SessionManager : IDisposable
 
     /// <summary>List all sessions.</summary>
     public IReadOnlyCollection<Session> ListSessions() => _sessions.Values.ToList().AsReadOnly();
+
+    /// <summary>
+    /// Resolve a session's automatic role from THIS Director's local fleet, returning one of the
+    /// <see cref="SessionRoles"/> constants. This mirrors the Gateway's fleet resolver
+    /// (StampFleetRolesAndFold) but sees only the local roster, so it is a best-effort desktop badge.
+    /// Precedence: an explicit role wins (the only path to Architect); else Worker when the session is
+    /// controlled by a controller that is still alive; else Manager when it controls at least one live
+    /// session; else Standalone.
+    /// </summary>
+    public string ResolveLocalRole(Session session)
+    {
+        FileLog.Write($"[SessionManager] ResolveLocalRole: session={session.Id}");
+
+        var explicitRole = SessionRoles.Normalize(session.ExplicitRole);
+        if (explicitRole is not null)
+            return explicitRole;
+
+        if (session.IsControlled && session.ControllerSessionId is Guid controllerId)
+        {
+            var controller = GetSession(controllerId);
+            if (controller is not null &&
+                controller.Status != SessionStatus.Exited &&
+                controller.Status != SessionStatus.Failed)
+            {
+                return SessionRoles.Worker;
+            }
+        }
+
+        foreach (var candidate in ListSessions())
+        {
+            if (candidate.Status is SessionStatus.Exited or SessionStatus.Failed) continue;
+            if (candidate.ControllerSessionId == session.Id)
+                return SessionRoles.Manager;
+        }
+
+        return SessionRoles.Standalone;
+    }
 
     /// <summary>
     /// Kill a session by ID. <paramref name="gracefulTimeoutMsOverride"/> (issue: faster STOP) lets the

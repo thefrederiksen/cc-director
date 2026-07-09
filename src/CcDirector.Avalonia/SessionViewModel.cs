@@ -5,6 +5,7 @@ using Avalonia.Threading;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Sessions;
+using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Avalonia;
 
@@ -318,6 +319,52 @@ public class SessionViewModel : INotifyPropertyChanged
         AgentKind.Copilot => CopilotAgentBrush,
         AgentKind.RawCli => RawCliAgentBrush,
         _ => ClaudeAgentBrush
+    };
+
+    // ===== Automatic session role (non-color rail glyph) =====
+
+    private string _resolvedRole = SessionRoles.Standalone;
+
+    /// <summary>
+    /// This session's resolved automatic role - one of the <see cref="SessionRoles"/> constants.
+    /// Stamped by MainWindow after construction (and on every list rebuild) from the local fleet,
+    /// following the same stamped-property pattern as <see cref="IsGroupFirst"/>. Setting it raises
+    /// change notification for the derived badge properties so the rail glyph refreshes.
+    /// </summary>
+    public string ResolvedRole
+    {
+        get => _resolvedRole;
+        set
+        {
+            var normalized = string.IsNullOrWhiteSpace(value) ? SessionRoles.Standalone : value;
+            if (_resolvedRole == normalized) return;
+            _resolvedRole = normalized;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasRoleGlyph));
+            OnPropertyChanged(nameof(RoleGlyphText));
+            OnPropertyChanged(nameof(RoleTooltip));
+        }
+    }
+
+    /// <summary>True when the role warrants a rail glyph (Manager, Worker, or Architect). Standalone
+    /// and any unknown value show nothing, so the badge stays out of the way for the common case.</summary>
+    public bool HasRoleGlyph => RoleGlyphFor(ResolvedRole).Length > 0;
+
+    /// <summary>The single-letter, non-color role glyph ("M"/"W"/"A") or "" for Standalone/unknown.</summary>
+    public string RoleGlyphText => RoleGlyphFor(ResolvedRole);
+
+    /// <summary>The full role name for the badge tooltip ("Manager"/"Worker"/"Architect") or "".</summary>
+    public string RoleTooltip => HasRoleGlyph ? ResolvedRole : string.Empty;
+
+    /// <summary>Pure role -> single-letter glyph mapping. Static so it can be unit-tested without a
+    /// live <see cref="Session"/>, mirroring <see cref="LabelFor"/> / <see cref="BadgeBrushFor"/>.
+    /// Manager -> "M", Worker -> "W", Architect -> "A"; Standalone and anything else -> "".</summary>
+    public static string RoleGlyphFor(string? role) => role switch
+    {
+        SessionRoles.Manager => "M",
+        SessionRoles.Worker => "W",
+        SessionRoles.Architect => "A",
+        _ => ""
     };
 
     // ===== Group membership (issue #225) =====
