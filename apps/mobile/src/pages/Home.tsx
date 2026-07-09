@@ -8,9 +8,10 @@ import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, us
 import { NavDrawer } from "../components/NavDrawer";
 import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "../push/register";
 
-// Home / roster. A "needs you" group first (when any session wants attention), then the full
-// session list, both using the live Gateway /sessions data and the shared triage ordering.
-// Tapping a row opens the session-detail placeholder bound to that session id.
+// Home / roster. A "needs you" group first (when any session wants attention), then an "other
+// sessions" group with everything that is NOT waiting on you - so a session appears in exactly one
+// group and is never listed twice. Both use the live Gateway /sessions data and the shared triage
+// ordering. Tapping a row opens the session-detail placeholder bound to that session id.
 const POLL_INTERVAL_MS = 5000;
 
 export function Home() {
@@ -54,7 +55,10 @@ export function Home() {
   }, [load]);
 
   const needsYou = sessions ? inBucket(sessions, "needsYou") : [];
-  const all = sessions ? inDesktopOrder(sessions) : [];
+  // The bottom group is "the rest": every session that is NOT waiting on you, still in your manual
+  // desktop order. A needs-you session shows only once, at the top - never duplicated down here.
+  const others = sessions ? inDesktopOrder(sessions.filter((s) => classify(s) !== "needsYou")) : [];
+  const total = sessions ? sessions.length : 0;
 
   return (
     <div className="screen">
@@ -81,7 +85,7 @@ export function Home() {
 
       {sessions === null && error === null && <p className="status-line">Loading sessions...</p>}
 
-      {sessions !== null && all.length === 0 && (
+      {sessions !== null && total === 0 && (
         <p className="status-line">No sessions running.</p>
       )}
 
@@ -96,11 +100,11 @@ export function Home() {
         </section>
       )}
 
-      {all.length > 0 && (
+      {others.length > 0 && (
         <section className="group">
-          <h2 className="group-title">All sessions</h2>
+          <h2 className="group-title">Other sessions</h2>
           <ul className="roster">
-            {all.map((s) => (
+            {others.map((s) => (
               <SessionRow key={s.sessionId} session={s} />
             ))}
           </ul>

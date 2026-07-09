@@ -1,0 +1,75 @@
+// Client for the Gateway's local transcription analysis API (GET /transcription/*). It reads the
+// on-machine transcription telemetry the Gateway records for every turn - latency, outcomes, the
+// dictionary corrections that were applied, and word frequencies - so the Cockpit (and any agent) can
+// see how fast and how good transcription is. Same-origin through the Gateway front door with the
+// per-device key, exactly like the rest of client-core; never a Director address.
+
+import { authHeaders } from "../api/client";
+
+export interface Percentiles {
+  count: number;
+  min: number;
+  max: number;
+  avg: number;
+  p50: number;
+  p90: number;
+  p95: number;
+  p99: number;
+}
+
+export interface TranscriptionStats {
+  totalTurns: number;
+  successfulTurns: number;
+  byOutcome: Record<string, number>;
+  firstTurnUtc: string | null;
+  lastTurnUtc: string | null;
+  transcriptionMs: Percentiles;
+  cleanupMs: Percentiles;
+  correctedTurns: number;
+  cleanupAppliedTurns: number;
+  totalWords: number;
+  totalCharacters: number;
+  totalAudioBytes: number;
+}
+
+export interface TermFrequency {
+  find: string;
+  replace: string;
+  count: number;
+}
+
+async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(path, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(`GET ${path} failed: ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
+function windowQuery(days?: number): string {
+  return days && days > 0 ? `?days=${days}` : "";
+}
+
+/** Aggregate transcription stats over the last {days} days (or all time when omitted). */
+export function getTranscriptionStats(days?: number, signal?: AbortSignal): Promise<TranscriptionStats> {
+  return getJson<TranscriptionStats>(`/transcription/stats${windowQuery(days)}`, signal);
+}
+
+/** The most frequent dictionary corrections applied, over the window. */
+export async function getTranscriptionTerms(
+  top = 10,
+  days?: number,
+  signal?: AbortSignal,
+): Promise<TermFrequency[]> {
+  const q = windowQuery(days);
+  const sep = q ? "&" : "?";
+  const data = await getJson<{ terms: TermFrequency[] }>(
+    `/transcription/terms${q}${sep}top=${top}`,
+    signal,
+  );
+  return data.terms ?? [];
+}
