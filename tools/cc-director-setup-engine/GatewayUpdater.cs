@@ -37,6 +37,13 @@ public sealed class GatewayUpdater
     /// </summary>
     public string StagedCockpitZipPath => Path.Combine(_layout.StateDir, "staged", CockpitAssetPackage.AssetName);
 
+    /// <summary>
+    /// The staging path the matching ffmpeg zip is downloaded to before a self-update (issue #1186), so
+    /// the detached update helper can lay ffmpeg.exe beside the swapped exe with no download. Staged +
+    /// SHA-verified by <see cref="StageAsync"/>.
+    /// </summary>
+    public string StagedFfmpegZipPath => Path.Combine(_layout.StateDir, "staged", FfmpegPackage.AssetName);
+
     /// <summary>True when the release has a Gateway newer than the installed one (and it isn't pinned).</summary>
     public bool IsUpdateAvailable(ResolvedRelease release)
     {
@@ -81,6 +88,7 @@ public sealed class GatewayUpdater
             // together.
             await StageMobileZipAsync(release, source, ct);
             await StageCockpitZipAsync(release, source, ct);
+            await StageFfmpegZipAsync(release, source, ct);
             return (StagedExePath, asset.Version);
         }
         finally
@@ -146,6 +154,38 @@ public sealed class GatewayUpdater
             Directory.CreateDirectory(Path.GetDirectoryName(StagedCockpitZipPath) ?? _layout.StateDir);
             File.Copy(downloaded, StagedCockpitZipPath, overwrite: true);
             EngineLog.Write($"[GatewayUpdater] staged {CockpitAssetPackage.AssetName} {asset.Version} -> {StagedCockpitZipPath}");
+        }
+        finally
+        {
+            try { if (File.Exists(downloaded)) File.Delete(downloaded); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
+    /// Stage the matching ffmpeg zip (issue #1186) to <see cref="StagedFfmpegZipPath"/>. SHA-verified here
+    /// (never stage a corrupt build). When the release carries no ffmpeg asset (a release that predates
+    /// #1186), any stale staged zip is removed so the helper never applies an out-of-date ffmpeg over a
+    /// newer one.
+    /// </summary>
+    private async Task StageFfmpegZipAsync(ResolvedRelease release, ReleaseSource source, CancellationToken ct)
+    {
+        var asset = release.Manifest.TryGetAsset(FfmpegPackage.AssetName);
+        if (asset is null)
+        {
+            try { if (File.Exists(StagedFfmpegZipPath)) File.Delete(StagedFfmpegZipPath); } catch { /* best effort */ }
+            EngineLog.Write($"[GatewayUpdater] release has no {FfmpegPackage.AssetName}; no ffmpeg staged");
+            return;
+        }
+
+        var downloaded = await source.DownloadAssetAsync(asset.Name, release.DownloadUrls, ct);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Sha256) && !Hashing.Sha256Matches(downloaded, asset.Sha256))
+                throw new InvalidOperationException("ffmpeg zip SHA-256 mismatch; not staging.");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(StagedFfmpegZipPath) ?? _layout.StateDir);
+            File.Copy(downloaded, StagedFfmpegZipPath, overwrite: true);
+            EngineLog.Write($"[GatewayUpdater] staged {FfmpegPackage.AssetName} {asset.Version} -> {StagedFfmpegZipPath}");
         }
         finally
         {

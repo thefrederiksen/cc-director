@@ -166,6 +166,26 @@ public static class Program
             {
                 FileLog.Write($"[Program] Cockpit apply FAILED (prior Cockpit build still served): {ex.Message}");
             }
+
+            // Issue #1186: lay the matching bundled ffmpeg down beside the freshly swapped exe so the
+            // long-clip WebM/Opus -> PCM WAV transcode (issue #1139) keeps working after a self-update
+            // (the single-file exe carries no loose content). Same contract as the mobile app / Cockpit
+            // above: the running Gateway staged + SHA-verified the zip before launching this helper.
+            // Boundary try/catch so a failure leaves the prior ffmpeg.exe in place and never undoes an
+            // already-successful exe update.
+            try
+            {
+                var layout = InstallLayout.Default();
+                var stagedFfmpegZip = new GatewayUpdater(layout).StagedFfmpegZipPath;
+                var appliedExe = FfmpegPackage.ExtractStagedZip(layout, stagedFfmpegZip);
+                FileLog.Write(appliedExe is null
+                    ? "[Program] no staged ffmpeg zip to apply (release without ffmpeg)"
+                    : $"[Program] applied ffmpeg -> {appliedExe}");
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[Program] ffmpeg apply FAILED (prior ffmpeg.exe still in place): {ex.Message}");
+            }
         }
 
         FileLog.Stop();

@@ -99,6 +99,15 @@ public sealed class InstallLayout
     /// </summary>
     public string GatewayCockpitDir => Path.Combine(GatewayDir, "wwwroot", "c");
 
+    /// <summary>
+    /// The bundled ffmpeg (issue #1186): ffmpeg.exe placed DIRECTLY beside the Gateway exe, exactly where
+    /// <c>FfmpegAudioTranscoder.ResolveFfmpegPath</c> (<c>AppContext.BaseDirectory/ffmpeg.exe</c>) looks
+    /// for it. The single-file Gateway exe carries no loose content, so the pinned static ffmpeg ships as
+    /// a side-car zip the setup engine unpacks here on clean install and self-update (the same delivery as
+    /// the mobile app / Cockpit, but at the Gateway dir root - see <see cref="FfmpegPackage"/>).
+    /// </summary>
+    public string GatewayFfmpegPath => Path.Combine(GatewayDir, FfmpegPackage.ExeFile);
+
     /// <summary>The CC Launcher tray app's binaries (issue #250).</summary>
     public string LauncherDir => Path.Combine(LocalRoot, "launcher");
 
