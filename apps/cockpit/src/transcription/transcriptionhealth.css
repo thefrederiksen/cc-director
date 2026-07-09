@@ -1,0 +1,161 @@
+/* Transcription Health page. Rendered as normal scrolling content in the padded main pane. Every
+   color is a shared theme token from src/styles.css :root (nothing hard-codes a color) so the page
+   reads as one product with the rest of the Cockpit. */
+.txh {
+  --txh-ok: #22c55e;
+  max-width: 860px;
+}
+
+.txh .page-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+.txh-lede {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 6px 0 16px;
+}
+
+.txh-windows {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.txh-window {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.txh-window-on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.txh-loading,
+.txh-empty,
+.txh-muted {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.txh-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--warn);
+  font-size: 13px;
+}
+.txh-retry {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.txh-banner {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 14px;
+  margin-bottom: 18px;
+}
+.txh-ok {
+  border-left-color: var(--txh-ok);
+}
+.txh-warn {
+  border-left-color: var(--warn);
+}
+
+.txh-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.txh-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.txh-card-title {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.txh-card-big {
+  font-size: 26px;
+  font-weight: 600;
+  margin: 6px 0 2px;
+}
+.txh-card-sub {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.txh-section {
+  margin-bottom: 22px;
+}
+.txh-section h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.txh-outcomes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 14px;
+}
+.txh-outcomes li {
+  padding: 4px 0;
+}
+.txh-count {
+  display: inline-block;
+  min-width: 1.6em;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.txh-terms {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.txh-terms th,
+.txh-terms td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.txh-terms th {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.txh-terms td:last-child,
+.txh-terms th:last-child {
+  text-align: right;
+}
+
+.txh-agent-note {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.6;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.txh-agent-note code {
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}

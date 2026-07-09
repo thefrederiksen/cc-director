@@ -13,17 +13,30 @@ namespace CcDirector.Gateway.Push;
 ///
 /// On a fixed interval (only while at least one device is subscribed) it reads the CURRENT count of
 /// sessions that "need you" (the same effective-red bucket the roster shows, via
-/// <see cref="SessionOrdering.Classify"/>) and, when that count is above zero and has changed since
-/// the last push, sends every subscription a <c>{ "count": N }</c> message. The service worker turns
-/// that into the icon dot.
+/// <see cref="SessionOrdering.Classify"/>) and pushes every subscription a <c>{ "count": N }</c>
+/// message ONLY when the app-icon dot must flip. The service worker turns that into the icon dot.
 ///
-/// It pushes the count on every rise or change, and sends ONE "zero" push on the falling edge (the
-/// moment all sessions are done) so the dot CLEARS even while the phone app is closed - the service
-/// worker closes its notification on a zero payload. A push that shows no notification is a "silent"
-/// push that browsers budget (the userVisibleOnly contract); we spend that budget sparingly - only
-/// the single falling edge, never a repeated zero - which Chrome/Android tolerates for an installed,
-/// engaged app. The foreground app also clears the dot when it opens with nothing waiting, so the two
-/// paths agree.
+/// The dot is boolean on the phone: on Android the launcher draws a dot while a notification is
+/// present, and it does not matter whether two or five sessions need you - the dot looks the same. So
+/// this notifier pushes on these moments, and stays quiet otherwise:
+///   - The RISING edge (nothing was waiting, now something needs you) pushes the count so the dot
+///     appears immediately.
+///   - A HEARTBEAT while the dot is up (every <see cref="HeartbeatPolls"/> polls) re-asserts the count.
+///     This is what makes the dot COME BACK after the phone cleared it in a way the Gateway cannot see -
+///     the user swiping the notification away, or opening the app (which clears the dot on foreground)
+///     and then leaving while sessions still wait. Without it the Gateway would believe the dot is
+///     still up and never re-send it. The re-assert shows the same silent, tagged notification, so it
+///     does not buzz.
+///   - The FALLING edge (the count has read zero for <see cref="ClearConfirmations"/> polls in a row)
+///     pushes a single zero so the dot CLEARS even while the phone app is closed - the service worker
+///     closes its notification on a zero payload.
+/// A change from one non-zero count to another (2 -> 3 -> 4) is NOT pushed between heartbeats: the dot
+/// is already there. Keeping the volume this low is what stops the constant pinging, and in particular
+/// keeps the silent zero-clear push (a push that shows no notification, which browsers budget under the
+/// userVisibleOnly contract - the real source of the earlier buzzing was one such generic notification
+/// per falling edge) rare enough to be delivered. The short confirmation window on the falling edge
+/// also swallows a brief flicker - one session finishing a moment before another goes red - so it never
+/// emits a clear-then-reappear pair.
 /// </summary>
 public sealed class WebPushNeedsYouNotifier : IDisposable
 {
@@ -33,10 +46,23 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
     /// <summary>A short settling delay before the first check, so startup finishes first.</summary>
     public static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(10);
 
-    // The sentinel "nothing pushed yet" last-count. Chosen below any real count (which is >= 0) so the
-    // first non-zero count always differs from it and pushes. Resetting to it (no subscribers, or a
-    // fresh subscribe) forces the next non-zero count to re-push.
-    private const int NotYetPushed = -1;
+    /// <summary>
+    /// Number of consecutive zero-count polls required before the "all clear" push is sent. The dot
+    /// appears the instant work needs you, but only clears after the count has settled at zero for this
+    /// many polls - so a brief flicker (one session finishing a moment before another goes red) does
+    /// not emit a needless clear-then-reappear pair of pushes. At the 8-second poll interval this is a
+    /// settle window of roughly 8 to 16 seconds before the dot clears.
+    /// </summary>
+    public const int ClearConfirmations = 2;
+
+    /// <summary>
+    /// Number of polls between heartbeat re-assertions while the dot is up. The Gateway cannot observe
+    /// the phone clearing the dot on its own (a swipe-away, or the app clearing it on foreground), so
+    /// while sessions still need you it re-sends the current count this often to bring the dot back. At
+    /// the 8-second poll interval this is roughly once a minute - responsive enough that a dismissed dot
+    /// returns quickly, infrequent enough that the silent re-assert is never felt as pinging.
+    /// </summary>
+    public const int HeartbeatPolls = 8;
 
     private readonly PushSubscriptionStore _store;
     private readonly Func<CancellationToken, Task<int>> _getNeedsYouCount;
@@ -44,7 +70,8 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
 
     private System.Threading.Timer? _timer;
     private int _busy; // 0 = idle, 1 = a tick is running (reentrancy guard)
-    private int _lastNotifiedCount = NotYetPushed;
+    private readonly object _dotLock = new();
+    private DotState _dot = DotState.Initial;
 
     public WebPushNeedsYouNotifier(
         PushSubscriptionStore store,
@@ -64,31 +91,66 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
     }
 
     /// <summary>
-    /// Force the next check to re-push the current count even if it is unchanged. Called when a new
-    /// device subscribes so it receives the current dot promptly rather than only on the next change.
+    /// Force the next check to re-push the dot even if the count is unchanged. Called when a new device
+    /// subscribes so it receives the current dot promptly (on the next poll, if something needs you)
+    /// rather than only on the next rising edge.
     /// </summary>
     public void ResetDedupe()
     {
-        Interlocked.Exchange(ref _lastNotifiedCount, NotYetPushed);
+        lock (_dotLock)
+            _dot = DotState.Initial;
     }
 
     /// <summary>
-    /// The pure decision: given the current needs-you count and the last count pushed, should a push
-    /// go out now, and what becomes the new "last pushed" value? Pushes a changed non-zero count (the
-    /// dot appears/updates) AND pushes a single zero on the falling edge from a non-zero count (the dot
-    /// clears, even while the app is closed). It never pushes a zero at startup or a repeated zero.
+    /// Immutable decision state for the app-icon dot: whether we have told the phone a dot is present,
+    /// how many consecutive zero-count polls we have seen while it is present (the falling-edge debounce
+    /// counter), and how many polls have passed since we last pushed while it is present (the heartbeat
+    /// counter that brings a phone-cleared dot back).
     /// </summary>
-    public static (bool push, int newLast) Decide(int current, int last)
+    public readonly record struct DotState(bool DotShowing, int ZeroStreak, int PollsSincePush)
     {
-        // A rise, or a change to a different non-zero count -> push the new count.
-        if (current > 0 && current != last)
-            return (true, current);
-        // The falling edge to zero -> push ONE clear. Guard on last > 0 so this only fires after a real
-        // non-zero push (never at startup where last is the sentinel, never a repeated zero).
-        if (current == 0 && last > 0)
-            return (true, 0);
-        // Nothing worth a push. Record 0 while idle so the next rise re-pushes.
-        return (false, current <= 0 ? 0 : last);
+        /// <summary>The starting state: no dot on the phone, no pending clear.</summary>
+        public static readonly DotState Initial = new(false, 0, 0);
+    }
+
+    /// <summary>
+    /// The pure decision. The app-icon dot is boolean on Android (a dot is present or not - the exact
+    /// count does not change it), so we push on the moments that matter and stay quiet otherwise:
+    ///   - Rising edge (no dot yet, work now needs you): push the current count so the dot appears.
+    ///   - Heartbeat (dot showing, <see cref="HeartbeatPolls"/> polls since the last push): re-push the
+    ///     current count so a dot the phone cleared on its own (a swipe-away, or the app clearing it on
+    ///     foreground) comes back while sessions still wait. The re-assert is silent, so it does not buzz.
+    ///   - Falling edge (dot showing, count has read zero for <see cref="ClearConfirmations"/> polls in
+    ///     a row): push a single zero so the dot clears, even while the app is closed.
+    /// A change from one non-zero count to another (2 -> 3 -> 4) does NOT push between heartbeats: the
+    /// dot is already there. Returns whether to push, the count to send, and the next state to carry
+    /// forward.
+    /// </summary>
+    public static (bool push, int count, DotState next) Decide(int current, DotState state)
+    {
+        if (current > 0)
+        {
+            // Rising edge: work now needs you and no dot is up yet -> show it immediately.
+            if (!state.DotShowing)
+                return (true, current, new DotState(DotShowing: true, ZeroStreak: 0, PollsSincePush: 0));
+
+            // Dot already up. Re-assert on the heartbeat (recovers a phone-side clear); otherwise stay
+            // quiet, only advancing the heartbeat counter.
+            var polls = state.PollsSincePush + 1;
+            if (polls >= HeartbeatPolls)
+                return (true, current, new DotState(DotShowing: true, ZeroStreak: 0, PollsSincePush: 0));
+            return (false, 0, new DotState(DotShowing: true, ZeroStreak: 0, PollsSincePush: polls));
+        }
+
+        // current == 0: nothing needs you right now.
+        if (!state.DotShowing)
+            return (false, 0, DotState.Initial); // no dot to clear (startup, or already cleared)
+
+        var streak = state.ZeroStreak + 1;
+        if (streak >= ClearConfirmations)
+            return (true, 0, DotState.Initial); // settled at zero -> clear the dot once
+        // Debouncing the clear: hold the dot, keep the heartbeat counter so a re-rise resumes cleanly.
+        return (false, 0, new DotState(DotShowing: true, ZeroStreak: streak, PollsSincePush: state.PollsSincePush));
     }
 
     /// <summary>The count of sessions that currently "need you" (effective-red, not parked).</summary>
@@ -104,7 +166,7 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
         if (_store.Count == 0)
         {
             // No subscribers - nothing to do, and reset so a device that subscribes later re-pushes.
-            Interlocked.Exchange(ref _lastNotifiedCount, NotYetPushed);
+            ResetDedupe();
             return;
         }
 
@@ -119,11 +181,15 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
             return;
         }
 
-        var (push, newLast) = Decide(current, Volatile.Read(ref _lastNotifiedCount));
-        Interlocked.Exchange(ref _lastNotifiedCount, newLast);
+        bool push;
+        int count;
+        lock (_dotLock)
+        {
+            (push, count, _dot) = Decide(current, _dot);
+        }
         if (!push) return;
 
-        await SendToAllAsync(current, cancellationToken);
+        await SendToAllAsync(count, cancellationToken);
     }
 
     private async Task SendToAllAsync(int count, CancellationToken cancellationToken)

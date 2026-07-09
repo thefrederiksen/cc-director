@@ -1,0 +1,20 @@
+[
+  {
+    "id": "de-001-correct",
+    "language": "de",
+    "raw_transcript": "ich benutze Akmeflow jeden Tag fuer meine Arbeit",
+    "term_list": ["acmeflow", "ConPTY"],
+    "reference_corrected": "ich benutze acmeflow jeden Tag fuer meine Arbeit",
+    "target_terms": ["acmeflow"],
+    "gold_edits": [{"from": "Akmeflow", "to": "acmeflow"}]
+  },
+  {
+    "id": "de-002-noop-trap",
+    "language": "de",
+    "raw_transcript": "der schnelle braune Fuchs springt ueber den faulen Hund",
+    "term_list": ["acmeflow", "ConPTY", "Tailscale"],
+    "reference_corrected": "der schnelle braune Fuchs springt ueber den faulen Hund",
+    "target_terms": [],
+    "gold_edits": []
+  }
+]
