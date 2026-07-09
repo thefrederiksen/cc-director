@@ -95,6 +95,16 @@ public sealed class NewSessionRequest
     public string? Role { get; set; }
 
     /// <summary>
+    /// Optional Mission to ATTACH the new session to at spawn (see
+    /// docs/new_architecture/mission-as-first-class-unit-of-work.md). When set, the Director stamps the
+    /// session's <see cref="SessionDto.MissionId"/> and caches the resolved
+    /// <see cref="SessionDto.MissionName"/> at birth - the attachment that binds this session into a pod.
+    /// The Mission must already exist (create it with POST /missions); an unknown Mission is REJECTED as a
+    /// bad request. Null leaves the session attached to no Mission.
+    /// </summary>
+    public Guid? MissionId { get; set; }
+
+    /// <summary>
     /// Optional target machine for spawn routing ("start a session on another computer"). Null,
     /// empty, or the local machine name spawns on the LOCAL machine (the default, unchanged); a
     /// remote machine name routes the spawn via the Gateway to a Director on that machine (first

@@ -966,6 +966,8 @@ public sealed class SessionManager : IDisposable
                 ControllerSessionId = s.ControllerSessionId,
                 ExplicitRole = s.ExplicitRole,
                 IsAutoNamed = s.IsAutoNamed,
+                MissionId = s.MissionId,
+                MissionName = s.MissionName,
                 RawStartupText = s.RawStartupText,
                 SelectedTabName = s.SelectedTabName,
                 WingmanEnabled = s.WingmanEnabled,
@@ -1010,6 +1012,8 @@ public sealed class SessionManager : IDisposable
         session.ControllerSessionId = ps.ControllerSessionId;
         session.ExplicitRole = ps.ExplicitRole;
         session.IsAutoNamed = ps.IsAutoNamed;
+        session.MissionId = ps.MissionId;
+        session.MissionName = ps.MissionName;
         session.WingmanEnabled = ps.WingmanEnabled;
         // Issue #820: carry the persisted three-digit number in BEFORE RaiseSessionCreated so
         // AssignSessionNumber reserves this exact number (keeping it across a restart) when it is

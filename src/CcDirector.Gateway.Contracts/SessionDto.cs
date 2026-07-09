@@ -76,6 +76,24 @@ public sealed class SessionDto
     public string? Name { get; set; }
 
     /// <summary>
+    /// The Mission this session is ATTACHED to (see
+    /// docs/new_architecture/mission-as-first-class-unit-of-work.md), or null when it is attached to no
+    /// Mission. A Mission is its own persisted record (<see cref="MissionDto"/>); this is the attachment
+    /// link, stamped at spawn (from <see cref="NewSessionRequest.MissionId"/>) or later via
+    /// POST /sessions/{id}/mission. Mirrors <c>Session.MissionId</c> on the owning Director; passes through
+    /// the Gateway aggregation unchanged. Null on Directors that predate this field.
+    /// </summary>
+    public Guid? MissionId { get; set; }
+
+    /// <summary>
+    /// The attached Mission's display name, CACHED on the session for at-a-glance rendering so a client
+    /// does not have to resolve <see cref="MissionId"/> against the Mission store. Resolved and stamped at
+    /// attach time; the Mission record (<see cref="MissionId"/>) remains the source of truth. Null when the
+    /// session is attached to no Mission. Mirrors <c>Session.MissionName</c> on the owning Director.
+    /// </summary>
+    public string? MissionName { get; set; }
+
+    /// <summary>
     /// The session's short, human-friendly three-digit number (100-999), or null when the session
     /// has no number (issue #820). Allocated by the owning Director at creation and stable for the
     /// life of the session - a separate field from <see cref="Name"/>, so a rename never changes it.

@@ -315,6 +315,7 @@ def spawn_session(
     standalone: bool = False,
     role: Optional[str] = None,
     machine: Optional[str] = None,
+    mission: Optional[str] = None,
 ) -> None:
     """Open a new session on the local Director, or on another computer when a remote --machine is given."""
     # Automatic roles: a SESSION-initiated spawn (CC_SESSION_ID present) DEFAULTS to a Worker controlled by
@@ -373,6 +374,9 @@ def spawn_session(
     # against Standalone/Manager/Worker/Architect and rejects an unknown value (never a silent drop).
     if role:
         body["role"] = role
+    # Mission attach at spawn: forward the Mission id; the Director resolves+validates it (unknown -> 400).
+    if mission:
+        body["missionId"] = mission
 
     # "Start a session on another computer": with no --machine, or a --machine that names THIS machine,
     # keep the unchanged LOCAL spawn (POST /sessions on the local Director). A remote machine name routes

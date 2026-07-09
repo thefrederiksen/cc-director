@@ -25,6 +25,10 @@ internal sealed class SessionCommandServices
 
     /// <summary>The turn-summary + goal-assessment cache (setting a wingman goal kicks an assessment).</summary>
     public TurnSummaryCache? TurnSummaryCache { get; init; }
+
+    /// <summary>The Mission record store (attaching a session to a Mission, and honoring a create-time
+    /// MissionId, resolve the Mission's display name through it). Null skips Mission resolution.</summary>
+    public MissionStore? MissionStore { get; init; }
 }
 
 /// <summary>
@@ -62,9 +66,10 @@ internal static class SessionCommandExecutor
             "hold" => Hold(sessionManager, command),
             "kill" => await KillAsync(sessionManager, command),
             "patch" => Patch(sessionManager, directorId, command),
-            "create" => Create(sessionManager, directorId, command),
+            "create" => Create(sessionManager, directorId, command, services),
             "wingman-goal" => WingmanGoal(sessionManager, command, services),
             "set-role" => SetRole(sessionManager, directorId, command),
+            "attach-mission" => AttachMission(sessionManager, directorId, command, services),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown verb '{command.Verb}'"),
         };
 
@@ -287,7 +292,7 @@ internal static class SessionCommandExecutor
     /// session mapped through the plain <see cref="ControlEndpoints.Map"/> (the Director's own REST
     /// endpoint re-maps with its identity-stamped mapper for its local 201 response).
     /// </summary>
-    internal static DirectorCommandResult Create(SessionManager sessionManager, string directorId, DirectorCommand command)
+    internal static DirectorCommandResult Create(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services = null)
     {
         var req = Deserialize<NewSessionRequest>(command.PayloadJson);
 
@@ -304,6 +309,18 @@ internal static class SessionCommandExecutor
         // so a mistyped --role never silently drops (the exact --type situation we removed).
         if (req.Role is not null && !SessionRoles.IsValid(req.Role))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown role '{req.Role}'. Valid: {string.Join(", ", SessionRoles.All)}");
+
+        // Mission attach at spawn: resolve+validate the Mission BEFORE creating the session, mirroring the
+        // explicit-role check, so attaching to an unknown Mission never silently drops. The resolved record
+        // (below) supplies the cached display name stamped onto the session after it is created.
+        Mission? mission = null;
+        if (req.MissionId is Guid createMissionId)
+        {
+            mission = services?.MissionStore?.Get(createMissionId);
+            if (mission is null)
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                    $"unknown mission '{createMissionId}'. Create it first with POST /missions.");
+        }
 
         // RawCli requires a Command; validate before constructing the agent.
         if (kind == AgentKind.RawCli && string.IsNullOrWhiteSpace(req.Command))
@@ -388,6 +405,11 @@ internal static class SessionCommandExecutor
         var explicitRole = SessionRoles.Normalize(req.Role);
         if (explicitRole is not null)
             session.SetExplicitRole(explicitRole);
+
+        // Mission attach at spawn: stamp the session's MissionId and cache the resolved display name (the
+        // Mission was validated above). This is the attachment that binds the new session into a pod.
+        if (mission is not null)
+            session.AttachToMission(mission.MissionId, mission.MissionName);
 
         // Issue #212: dispatch a supplied PrePrompt once the agent is actually READY, fire-and-forget so
         // create returns immediately. Readiness = a substantial startup burst followed by a quiet poll;
@@ -499,6 +521,42 @@ internal static class SessionCommandExecutor
 
         session.SetExplicitRole(normalized);
         FileLog.Write($"[SessionCommandExecutor] set-role: session={guid} role={normalized ?? "(cleared)"}");
+        return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
+    }
+
+    /// <summary>
+    /// The <c>attach-mission</c> verb: attach a session to a Mission (or DETACH it on a blank/absent
+    /// MissionId). Invalid id -&gt; BadRequest, missing session -&gt; NotFound, unknown Mission -&gt;
+    /// BadRequest. The Mission's display name is resolved through the Mission store and cached onto the
+    /// session. Returns the updated session mapped through the SAME <see cref="ControlEndpoints.Map"/> the
+    /// stream snapshot uses. Mirrors <see cref="SetRole"/>.
+    /// </summary>
+    internal static DirectorCommandResult AttachMission(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services)
+    {
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var request = Deserialize<SetMissionRequest>(command.PayloadJson);
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        if (request?.MissionId is not Guid missionId)
+        {
+            // Blank/absent -> detach (mirrors set-role clearing the explicit role).
+            session.AttachToMission(null, null);
+            FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} detached");
+            return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
+        }
+
+        var mission = services?.MissionStore?.Get(missionId);
+        if (mission is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                $"unknown mission '{missionId}'. Create it first with POST /missions.");
+
+        session.AttachToMission(mission.MissionId, mission.MissionName);
+        FileLog.Write($"[SessionCommandExecutor] attach-mission: session={guid} mission={mission.MissionId}");
         return DirectorCommandResult.Success(Serialize(ControlEndpoints.Map(session, directorId)));
     }
 
