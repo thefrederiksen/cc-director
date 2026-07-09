@@ -110,6 +110,25 @@ public sealed class GatewayStreamClientTests : IAsyncLifetime
         Assert.DoesNotContain("s2", ids);
     }
 
+    [Fact]
+    public async Task DownChannel_Ping_RoundTripsToTheDirector()
+    {
+        await using var client = NewClient(() => new List<SessionDto> { Session("s1") });
+        client.Start();
+        await WaitUntil(async () => (await SessionIds()).Contains("s1"), "the stream to connect"); // connected
+
+        var pong = await _gateway.PingDirectorAsync("dir-A", "hello");
+
+        Assert.Equal("pong:hello", pong);
+    }
+
+    [Fact]
+    public async Task DownChannel_Ping_ReturnsNull_WhenNoStreamConnected()
+    {
+        var pong = await _gateway.PingDirectorAsync("dir-nobody", "hello");
+        Assert.Null(pong);
+    }
+
     private static SessionDto Session(string id, string state = "Working") =>
         new() { SessionId = id, ActivityState = state };
 

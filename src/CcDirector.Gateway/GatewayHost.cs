@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.SignalR; // Issue #1176: ClientProxyExtensions.InvokeAsync (client results) for the down-channel
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -1239,6 +1240,26 @@ public sealed class GatewayHost : IAsyncDisposable
         {
             FileLog.Write($"[GatewayHost] cron sweep FAILED: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Issue #1176 (Phase 1b): the down-channel proof. Sends a message DOWN a Director's stream and awaits
+    /// its reply over the SAME connection (SignalR client results), demonstrating that the Gateway can
+    /// both push to and request from a Director on the one outbound-dialed connection. Returns null when
+    /// that Director has no active stream. NOTE: this is a synthetic proof, not a production command path -
+    /// the retired assessed-state producer meant there was no live down-path to migrate (plan 4.7b).
+    /// </summary>
+    public async Task<string?> PingDirectorAsync(string directorId, string message, CancellationToken ct = default)
+    {
+        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
+            as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
+        if (connectionId is null || hub is null)
+        {
+            FileLog.Write($"[GatewayHost] PingDirectorAsync: no active stream for director={directorId}");
+            return null;
+        }
+        return await hub.Clients.Client(connectionId).InvokeAsync<string>("Ping", message, ct);
     }
 
     public async Task StopAsync()

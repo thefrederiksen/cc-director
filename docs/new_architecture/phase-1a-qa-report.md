@@ -16,8 +16,37 @@ environmental - it fails with `websocket closed unexpectedly: no api key` becaus
 transcription provider, and it touches nothing this work changed. With stream mode OFF (the default in
 those tests), `/sessions` is unchanged - the byte-identical guarantee.
 
-Remaining: Phase 1b (#1177) - the synthetic down-channel proof, the Director connection-status UI, skill
-parity verification, and doc wording.
+Phase 1b (#1177): the **down-channel proof is done** (below). Remaining 1b items - the Director
+connection-status UI wiring and the skill parity verification - need a live running app, so they are best
+done as a focused follow-up rather than unit-tested here.
+
+---
+
+## Phase 1b increment: the down-channel proof
+
+**Date:** 2026-07-09
+**Status:** PASS
+
+### What was built
+
+- `GatewayHost.PingDirectorAsync(directorId, message)` - sends a message DOWN a Director's stream and
+  awaits its reply over the SAME connection (SignalR client results), using
+  `PushedSessionStore.GetActiveConnectionId` to address the active connection. Returns null when the
+  Director has no active stream.
+- The Director's `GatewayStreamClient` registers a `Ping` handler that returns `pong:{message}`.
+
+This proves request-both-ways on one outbound-dialed connection (the property portless will depend on).
+Per plan 4.7b it is a synthetic proof, not a migrated production command path (the old assessed-state
+down-producer is retired, so there was no live down-path to move).
+
+### Tests
+
+| Test | Proves |
+|------|--------|
+| `DownChannel_Ping_RoundTripsToTheDirector` | Gateway -> Director request returns the reply over the stream |
+| `DownChannel_Ping_ReturnsNull_WhenNoStreamConnected` | No active stream yields null (no crash) |
+
+Stream suite now 33 passing (adds the 2 above).
 
 ---
 

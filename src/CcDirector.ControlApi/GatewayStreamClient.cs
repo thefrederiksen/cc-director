@@ -77,6 +77,11 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         _connection.Reconnecting += ex => { FileLog.Write($"[GatewayStreamClient] reconnecting: {ex?.Message}"); return Task.CompletedTask; };
         _connection.Reconnected += async _ => await ReseedAsync();
 
+        // Issue #1176 (Phase 1b): the down-channel proof. The Gateway can call this and await the reply
+        // over the same connection (SignalR client results), demonstrating request-both-ways on one
+        // outbound-dialed stream. A synthetic proof, not a production command handler.
+        _connection.On<string, string>("Ping", message => $"pong:{message}");
+
         while (!_disposed)
         {
             if (await TryConnectAsync())

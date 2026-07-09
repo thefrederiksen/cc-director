@@ -196,6 +196,18 @@ public sealed class PushedSessionStore
     public bool IsStreamConnected(string directorId) =>
         _byDirector.TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;
 
+    /// <summary>
+    /// The active stream connection id for a Director, or null when none. The Gateway uses it to address a
+    /// message DOWN the stream to that Director (issue #1176, Phase 1b down-channel).
+    /// </summary>
+    public string? GetActiveConnectionId(string directorId)
+    {
+        if (!_byDirector.TryGetValue(directorId, out var entry))
+            return null;
+        lock (entry.Gate)
+            return entry.ActiveConnectionId;
+    }
+
     private static bool IsAcceptable(DirectorEntry entry, string directorId, string connectionId, long sequence, string kind)
     {
         if (!string.Equals(entry.ActiveConnectionId, connectionId, StringComparison.Ordinal))
