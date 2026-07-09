@@ -75,7 +75,7 @@ public sealed class TranscriptionModeTests
         Assert.Equal("DEVTHROTTLE_API_KEY", ep.KeyName);
         Assert.True(ep.IsDevThrottle);
         Assert.Equal(TranscriptionTransport.Batch, ep.Transport);
-        Assert.Equal("whisper-large-v3", ep.Model);
+        Assert.Equal("gpt-4o-transcribe", ep.Model);
         Assert.Equal(TranscriptionMode.DevThrottle, ep.Mode);
     }
 
@@ -87,10 +87,10 @@ public sealed class TranscriptionModeTests
         Assert.Equal("https://devthrottle.com/api/v1", ep.BaseUrl);
         Assert.Equal("DEVTHROTTLE_API_KEY", ep.KeyName);
         Assert.True(ep.IsDevThrottle);
-        // Issue #513: DevThrottle is the batch transport with the provider-correct Groq model -
-        // never the shared OpenAI default (the proxy 404s on gpt-4o-transcribe).
+        // Interim stability route: DevThrottle still owns the key and proxy, but the requested
+        // hosted transcription model is the OpenAI-backed speech-to-text route.
         Assert.Equal(TranscriptionTransport.Batch, ep.Transport);
-        Assert.Equal("whisper-large-v3", ep.Model);
+        Assert.Equal("gpt-4o-transcribe", ep.Model);
         Assert.Equal(TranscriptionEndpointResolver.DevThrottleModel, ep.Model);
         // DevThrottle mode must never present the user's own legacy provider key name.
         Assert.NotEqual("OPENAI_API_KEY", ep.KeyName);
