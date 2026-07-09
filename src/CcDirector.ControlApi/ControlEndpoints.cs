@@ -3239,7 +3239,11 @@ internal static class ControlEndpoints
     /// Directors that send empty fields (back-compat for mixed-version fleets) but must NOT
     /// overwrite non-empty Director-supplied values.
     /// </summary>
-    private static SessionDto Map(Session s, string directorId, TurnSummaryCache? cache = null,
+    // Issue #1176 (Phase 1a): internal so the Director's stream client builds its pushed snapshots and
+    // deltas through the EXACT same mapper the local /sessions endpoint uses (review #6), rather than a
+    // second, divergent builder. Callers outside /sessions pass only (session, directorId); the Gateway
+    // aggregator stamps machine/user/tailnet/view-url during aggregation, for pushed and pulled alike.
+    internal static SessionDto Map(Session s, string directorId, TurnSummaryCache? cache = null,
         string machineName = "", string user = "", string tailnetEndpoint = "", string? gatewayUrl = null)
     {
         // Phase 3: StatusColor and LastStatusReason are owned by the SessionStatusWingman

@@ -2,6 +2,68 @@
 
 Living QA report for the Phase 1a implementation on branch `feat/director-gateway-stream-1a`. One section per verified increment, newest first. Every increment is built with warnings-as-errors and its tests run before it is committed.
 
+## Phase 1a status: FUNCTIONALLY COMPLETE
+
+All four increments are implemented and verified end to end. The full data path works with the real
+components: the Director's `GatewayStreamClient` dials the Gateway, sends `Hello` + a full snapshot,
+pushes deltas/removes; the `DirectorHub` records them in the `PushedSessionStore`; and `GET /sessions`
+serves the Director from that cache instead of pulling it.
+
+**Test totals:** 31 stream tests (14 store + 9 hub + 5 Gateway-integration + 3 real-client end-to-end)
+plus 5 new `GatewayConfig` tests. **Regression: the full Gateway suite is 1388 passed / 1 failed**, and
+the single failure (`DictationEndpointTests.FullPipeline_transcribes_phase0_clip2`) is pre-existing and
+environmental - it fails with `websocket closed unexpectedly: no api key` because it needs a live
+transcription provider, and it touches nothing this work changed. With stream mode OFF (the default in
+those tests), `/sessions` is unchanged - the byte-identical guarantee.
+
+Remaining: Phase 1b (#1177) - the synthetic down-channel proof, the Director connection-status UI, skill
+parity verification, and doc wording.
+
+---
+
+## Increment 4: the Director stream client (GatewayStreamClient)
+
+**Date:** 2026-07-09
+**Status:** PASS
+
+### What was built
+
+- `CcDirector.ControlApi.GatewayStreamClient` - the Director's outbound client. It dials
+  `{gateway.url}/director-stream` with the same token the HTTP client uses (via `AccessTokenProvider`),
+  `WithAutomaticReconnect`, and a supervise loop that restarts the connection after a long outage. On
+  connect AND every reconnect it sends `Hello` + a full `PushSnapshot` (so a Director restart reseeds).
+  `NotifyDelta` / `NotifyRemove` push single changes, fire-and-forget (a drop is reconciled by the next
+  snapshot). Inert unless `gateway.streamMode` is on and a Gateway URL is set.
+- **Shared mapper (review #6):** `ControlEndpoints.Map` is now `internal`, and the client's snapshot
+  source `ControlApiHost.SnapshotFullSessions` builds each `SessionDto` through that exact mapper - so a
+  pushed row equals a pulled row for the same session.
+- **Wired into `ControlApiHost`:** built/started alongside the existing `GatewayClient` (additive), torn
+  down and rebuilt in `ReapplyGatewayAsync`, stopped on host shutdown. The existing session-event
+  subscription (`WireDoorbellPush`) now also pushes a delta on create/state-change and a remove on
+  session removal.
+
+### End-to-end tests (real client -> real Gateway)
+
+| Test | Proves |
+|------|--------|
+| `RealClient_Snapshot_IsServedFromCache` | The real client's snapshot appears in `/sessions` (served from cache, unreachable endpoint) |
+| `RealClient_NotifyDelta_IsReflected` | A pushed delta changes the served state |
+| `RealClient_NotifyRemove_IsReflected` | A pushed remove drops the session |
+
+Plus 5 `GatewayConfig` unit tests for `streamMode` / `staleAfterSeconds` parsing (default off, boolean-only
+enable, positive/non-positive stale window).
+
+### Test result
+
+```
+dotnet test --filter "PushedSessionStoreTests|DirectorHubTests|StreamIntegrationTests|GatewayStreamClientTests"
+Passed!  Failed: 0, Passed: 31, Skipped: 0, Total: 31
+dotnet test --filter GatewayConfigTests
+Passed!  Failed: 0, Passed: 18, Skipped: 0, Total: 18
+```
+
+Build: clean, `TreatWarningsAsErrors=true` (Gateway + ControlApi + both test projects).
+
 ---
 
 ## Increment 3: /sessions aggregation dual-mode + end-to-end harness
