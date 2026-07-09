@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 
@@ -20,7 +22,16 @@ namespace CcDirector.Gateway.Voice;
 /// assembled clip into the existing async voice-turn worker, so the resumable upload and the
 /// audio-reply turn become one pipeline behind a single Gateway URL.
 ///
-/// Transient by design: the per-upload dir is deleted once the turn has been started.
+/// Transient by design for the voice-turn path: the per-upload dir is deleted once the turn has been
+/// started (<see cref="Delete"/> + the age-based <see cref="SweepAbandoned"/>).
+///
+/// The durable dictation path (issue #1183) adds a per-upload-id DELIVERY RECORD on top of the same
+/// staging: while an upload is undelivered it stays PENDING (its chunks are retained for resume, never
+/// age-swept), and on delivery or abandonment it becomes a small terminal tombstone
+/// (<see cref="MarkDelivered"/> / <see cref="MarkAbandoned"/>) that discards the heavy chunk bytes but
+/// keeps the outcome marker, so a delivered upload id is de-duplicated forever - across time and a
+/// Gateway restart - until the client acknowledges it (<see cref="Acknowledge"/>). See
+/// <see cref="DictationDeliveryRecord"/> for the model.
 /// </summary>
 public sealed class VoiceUploadStore
 {
@@ -185,10 +196,231 @@ public sealed class VoiceUploadStore
         }
     }
 
+    // ====== durable delivery record (issue #1183) ===================================
+    // One durable record per upload id with three states. PENDING is the ABSENCE of a terminal record
+    // while the staging dir exists (its chunks are retained for resume). DELIVERED and ABANDONED are
+    // terminal tombstones written as record.json AFTER the heavy chunk bytes are discarded. The tombstone
+    // is the durable "already resolved" marker and is retired only by a client acknowledgment - so it is
+    // exactly as long-lived as the audio it guards, and a delivered/abandoned upload id never re-injects.
+
+    /// <summary>
+    /// The durable delivery record for this upload id, or null when there is none (an unknown id, or a
+    /// staged upload that was never given a marker). Read from disk, so it survives a Gateway restart (a
+    /// fresh store instance over the same root finds it).
+    /// </summary>
+    public DictationDeliveryRecord? ReadRecord(string uploadId)
+    {
+        var uid = NormalizeId(uploadId);
+        return uid is null ? null : ReadRecordFile(RecordPath(DirFor(uid)));
+    }
+
+    private static DictationDeliveryRecord? ReadRecordFile(string path)
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<DictationDeliveryRecord>(File.ReadAllText(path), RecordJson);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] ReadRecord {path} failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when this upload id holds an explicit PENDING marker (issue #1188): undelivered and not
+    /// abandoned, its chunks retained. The enforced per-session dictation lock is a projection of this.
+    /// </summary>
+    public bool IsPending(string uploadId) => ReadRecord(uploadId) is { State: DictationDeliveryState.Pending };
+
+    /// <summary>
+    /// Write the explicit durable PENDING marker for this upload id, carrying the owning session id (issue
+    /// #1188). While a PENDING marker exists the session is LOCKED for human input (a projection read by
+    /// <see cref="IsSessionLocked"/>). Called at register so the session id is on disk and the lock survives
+    /// a Gateway restart. Keeps any staged chunks and overwrites a prior PENDING or FAILED marker (a retry
+    /// re-entry back to PENDING); the DELIVERED/ABANDONED short-circuit means those never reach here.
+    /// </summary>
+    public void MarkPending(string uploadId, string sessionId)
+    {
+        var uid = NormalizeId(uploadId) ?? throw new InvalidOperationException("invalid upload id");
+        var dir = DirFor(uid);
+        Directory.CreateDirectory(dir);
+        WriteRecordMarker(dir, new DictationDeliveryRecord(
+            DictationDeliveryState.Pending, false, false, "", null, sessionId ?? ""));
+        FileLog.Write($"[VoiceUploadStore] MarkPending: uploadId={uid} sessionId={sessionId}");
+    }
+
+    /// <summary>
+    /// True when any dictation upload is PENDING for this session (issue #1188): the enforced session lock is
+    /// a pure projection of the durable PENDING marker - it NEVER auto-releases; it clears only when every
+    /// record for the session has left PENDING (delivered / abandoned / failed). Computed from disk, so it
+    /// survives a Gateway restart. The Gateway's OWN dictation injection reaches the session directly through
+    /// the Director control API, not the guarded Gateway front door, so it is not blocked by this lock.
+    /// </summary>
+    public bool IsSessionLocked(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        foreach (var rec in EnumeratePendingRecords())
+            if (string.Equals(rec.SessionId, sessionId, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>The distinct session ids that currently hold a PENDING dictation (issue #1188).</summary>
+    public IReadOnlyCollection<string> LockedSessionIds()
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rec in EnumeratePendingRecords())
+            if (!string.IsNullOrWhiteSpace(rec.SessionId)) set.Add(rec.SessionId);
+        return set;
+    }
+
+    private IEnumerable<DictationDeliveryRecord> EnumeratePendingRecords()
+    {
+        string[] dirs;
+        try { dirs = Directory.Exists(_root) ? Directory.GetDirectories(_root) : Array.Empty<string>(); }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] enumerate pending failed: {ex.Message}");
+            dirs = Array.Empty<string>();
+        }
+        foreach (var dir in dirs)
+            if (ReadRecordFile(RecordPath(dir)) is { State: DictationDeliveryState.Pending } rec)
+                yield return rec;
+    }
+
+    /// <summary>
+    /// Transition this upload id to the durable DELIVERED tombstone: persist the submitted outcome, then
+    /// discard the heavy chunk bytes (the turn is resolved and resume is no longer needed) while keeping the
+    /// small marker. Idempotent: re-marking an already-delivered id rewrites the same tombstone. The
+    /// tombstone is retired only by <see cref="Acknowledge"/>.
+    /// </summary>
+    public void MarkDelivered(string uploadId, bool submitted, bool movedOn, string transcript)
+        => WriteTombstone(uploadId, new DictationDeliveryRecord(
+            DictationDeliveryState.Delivered, submitted, movedOn, transcript ?? "", null, ExistingSessionId(uploadId)));
+
+    /// <summary>
+    /// Transition this upload id to the durable ABANDONED tombstone: persist the reason and discard the
+    /// chunk bytes. Terminal and not-undelivered, so the session lock is off. The abandon WRITE triggers
+    /// from the surfaces are a later task; this provides the state and its read side.
+    /// </summary>
+    public void MarkAbandoned(string uploadId, string reason)
+        => WriteTombstone(uploadId, new DictationDeliveryRecord(
+            DictationDeliveryState.Abandoned, false, false, "", reason ?? "", ExistingSessionId(uploadId)));
+
+    /// <summary>
+    /// Park this upload id as FAILED with a permanent-failure reason code (issue #1185). Unlike DELIVERED
+    /// and ABANDONED, FAILED is NOT a terminal tombstone and NOT a de-dupe short-circuit: it is a
+    /// user-retryable pause that KEEPS the staged chunk bytes, so an explicit retry can re-complete without
+    /// a full re-upload. <see cref="IsPending"/> is false while FAILED (the session is not locked, which
+    /// stops the client auto-loop); <see cref="ClearFailed"/> puts it back to PENDING for the retry.
+    /// </summary>
+    public void MarkFailed(string uploadId, string reasonCode)
+    {
+        var uid = NormalizeId(uploadId) ?? throw new InvalidOperationException("invalid upload id");
+        var dir = DirFor(uid);
+        Directory.CreateDirectory(dir);
+        // Write ONLY the marker - keep the chunk bytes (the retry re-drives them), the opposite of a tombstone.
+        // Preserve the owning session id so a later ClearFailed can restore a PENDING marker that re-locks it.
+        WriteRecordMarker(dir, new DictationDeliveryRecord(
+            DictationDeliveryState.Failed, false, false, "", reasonCode ?? "", ExistingSessionId(uid)));
+        FileLog.Write($"[VoiceUploadStore] MarkFailed: uploadId={uid} reason={reasonCode} (chunks retained)");
+    }
+
+    /// <summary>
+    /// If this upload id is parked FAILED, clear it back to an explicit PENDING marker - preserving the
+    /// owning session id (which re-locks the session while the retry re-drives) and KEEPING the staged chunks
+    /// - so an explicit retry re-completes without a full re-upload (issue #1185, updated for #1188). A no-op
+    /// returning false for any other state: DELIVERED and ABANDONED tombstones are left intact (their
+    /// short-circuit stands).
+    /// </summary>
+    public bool ClearFailed(string uploadId)
+    {
+        var uid = NormalizeId(uploadId);
+        if (uid is null) return false;
+        if (ReadRecord(uid) is not { State: DictationDeliveryState.Failed } failed) return false;
+        try
+        {
+            WriteRecordMarker(DirFor(uid), new DictationDeliveryRecord(
+                DictationDeliveryState.Pending, false, false, "", null, failed.SessionId));
+            FileLog.Write($"[VoiceUploadStore] ClearFailed: uploadId={uid} back to PENDING (chunks retained)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] ClearFailed uploadId={uid} failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Retire the terminal tombstone for this upload id once the client has acknowledged it. Idempotent: a
+    /// no-op returning false when the record is already gone. The server retires a tombstone ONLY on this
+    /// client ack, so a delivered/abandoned upload id is de-duplicated for as long as the client could
+    /// still re-drive it; a lost ack simply leaves the tiny marker and a later re-complete re-acks.
+    /// </summary>
+    public bool Acknowledge(string uploadId)
+    {
+        var uid = NormalizeId(uploadId);
+        if (uid is null) return false;
+        var dir = DirFor(uid);
+        if (!Directory.Exists(dir)) return false;
+        try
+        {
+            Directory.Delete(dir, recursive: true);
+            FileLog.Write($"[VoiceUploadStore] Acknowledge: uploadId={uid} tombstone retired");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[VoiceUploadStore] Acknowledge uploadId={uid} failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    // The owning session id already recorded for this upload id (empty when there is no record yet), so a
+    // state transition preserves the session id first written by MarkPending at register (issue #1188).
+    private string ExistingSessionId(string uploadId) => ReadRecord(uploadId)?.SessionId ?? "";
+
+    // Write the small durable marker first (atomic temp+move), THEN discard the heavy chunk bytes, so a
+    // crash between the two leaves a valid tombstone rather than orphaned chunks with no marker. Used by the
+    // TERMINAL transitions (delivered/abandoned) that no longer need the audio; FAILED keeps its bytes and
+    // so writes the marker alone (see MarkFailed).
+    private void WriteTombstone(string uploadId, DictationDeliveryRecord record)
+    {
+        var uid = NormalizeId(uploadId) ?? throw new InvalidOperationException("invalid upload id");
+        var dir = DirFor(uid);
+        Directory.CreateDirectory(dir);
+        WriteRecordMarker(dir, record);
+        foreach (var part in Directory.EnumerateFiles(dir, "*.part"))
+        {
+            try { File.Delete(part); }
+            catch (Exception ex) { FileLog.Write($"[VoiceUploadStore] discard chunk {part} failed: {ex.Message}"); }
+        }
+        FileLog.Write($"[VoiceUploadStore] MarkRecord: uploadId={uid} state={record.State} " +
+            $"submitted={record.Submitted} movedOn={record.MovedOn}");
+    }
+
+    // Persist the record.json marker atomically (temp + move), leaving any staged chunks untouched.
+    private static void WriteRecordMarker(string dir, DictationDeliveryRecord record)
+    {
+        var path = RecordPath(dir);
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(record, RecordJson));
+        File.Move(tmp, path, overwrite: true);
+    }
+
     // ====== internals ===============================================================
 
     private string DirFor(string uid) => Path.Combine(_root, uid);
     private static string ChunkPath(string dir, int index) => Path.Combine(dir, $"{index:D5}.part");
+    private static string RecordPath(string dir) => Path.Combine(dir, "record.json");
+
+    private static readonly JsonSerializerOptions RecordJson = new()
+    {
+        WriteIndented = false,
+        Converters = { new JsonStringEnumConverter() },
+    };
 
     /// <summary>Accept only GUID-shaped ids so the id can never escape the staging root.</summary>
     private static string? NormalizeId(string? id)
@@ -208,3 +440,31 @@ public readonly record struct AssembleResult(string Status, byte[]? Audio, IRead
     public static AssembleResult Incomplete(IReadOnlyList<int> missing) => new("incomplete", null, missing);
     public static AssembleResult Unknown() => new("unknown_upload", null, Array.Empty<int>());
 }
+
+/// <summary>
+/// The lifecycle of one durable dictation upload id (issue #1183, extended by #1185). PENDING is
+/// undelivered and not abandoned - its chunks are retained in full for resume, and while it is PENDING the
+/// session is locked. DELIVERED (the turn was injected) and ABANDONED (the dictation was given up) are both
+/// terminal tombstones - not-undelivered, so the session lock is off - kept until the client acknowledges
+/// them. FAILED (a permanent transcription failure) is a PARKED, USER-RETRYABLE pause - NOT a terminal
+/// tombstone and NOT a de-dupe short-circuit: it keeps its chunk bytes, leaves the session unlocked (so the
+/// client auto-loop stops), and an explicit retry clears it back to PENDING to re-drive.
+/// </summary>
+public enum DictationDeliveryState { Pending, Delivered, Abandoned, Failed }
+
+/// <summary>
+/// A dictation delivery record (issue #1183, extended by #1185 and #1188): the durable marker for an upload
+/// id. PENDING is an explicit marker carrying the owning <see cref="SessionId"/> (the enforced session lock
+/// is a projection of it). For DELIVERED it holds the submitted outcome so a re-complete returns the
+/// identical result without injecting a second turn; for ABANDONED it holds the drop reason; for FAILED it
+/// holds the permanent-failure reason code (in <see cref="Reason"/>) and its chunks are kept for an explicit
+/// retry. Every state carries the <see cref="SessionId"/> so a transition (e.g. FAILED back to PENDING)
+/// preserves the owning session.
+/// </summary>
+public sealed record DictationDeliveryRecord(
+    DictationDeliveryState State,
+    bool Submitted,
+    bool MovedOn,
+    string Transcript,
+    string? Reason,
+    string SessionId = "");

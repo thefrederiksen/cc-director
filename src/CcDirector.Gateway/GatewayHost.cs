@@ -227,10 +227,11 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Wingman.WingmanTrainingStore _trainingStore = new();
     private System.Threading.Timer? _voiceSweepTimer;
     // Durable dictation upload staging (issue #1006): the phone streams recorded audio here in chunks;
-    // the Gateway assembles, transcribes, and injects the turn itself. A background timer sweeps
-    // abandoned uploads after ~1 hour so an interrupted upload never leaks.
+    // the Gateway assembles, transcribes, and injects the turn itself. Each upload id carries a durable
+    // delivery record (issue #1183): PENDING chunks are retained until delivered/abandoned, and the
+    // terminal tombstone de-dupes the upload id forever until the client acknowledges it - so there is no
+    // age sweep for dictation staging (only the unrelated voice-turn staging is age-swept).
     private readonly Voice.VoiceUploadStore _dictationUploads = new(CcDirector.Core.Storage.CcStorage.DictationUploads());
-    private System.Threading.Timer? _dictationSweepTimer;
     private AdvertisedEndpointMonitor? _endpointMonitor;
     // Issue #629: the durable, bounded, restart-surviving retry queue behind the login-telemetry
     // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
@@ -875,7 +876,12 @@ public sealed class GatewayHost : IAsyncDisposable
             turnJobs: TurnJobs,
             // Issue #1045: pass the per-device-key registry so the voice-turn routes' own token
             // check (issue #369) accepts a phone's enrolled device key, not just the shared token.
-            devices: Devices);
+            devices: Devices,
+            // Issue #1188: the same durable dictation upload store the dictation endpoint writes to, so the
+            // front-door human-input endpoints can enforce the session lock (reject input while a PENDING
+            // dictation record exists for the session). One store instance per Gateway, so the lock reads
+            // this host's own on-disk root.
+            dictationUploads: _dictationUploads);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -911,16 +917,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, _client, SessionOwners, Token,
             new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices);
-        // Sweep abandoned upload staging + the complete-idempotency cache after ~1 hour.
-        _dictationSweepTimer = new System.Threading.Timer(_ =>
-        {
-            try
-            {
-                _dictationUploads.SweepAbandoned(TimeSpan.FromHours(1));
-                GatewayDictationEndpoint.SweepCompletes(TimeSpan.FromHours(1));
-            }
-            catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation sweep error: {ex.Message}"); }
-        }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+        // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
+        // until it becomes DELIVERED or ABANDONED, and the delivered/abandoned tombstone (the durable
+        // de-dupe marker) is retained until the client acknowledges it - so an undelivered dictation
+        // survives time and a restart, and a delivered upload id is de-duplicated forever. There is
+        // deliberately NO age sweep here: a fixed age cut would reopen exactly the hole this closes - a
+        // phone out of signal for longer than the cut would lose its already-uploaded chunks, or re-inject
+        // an already-delivered turn. The record is retired only by the client ack
+        // (POST /dictation/{uploadId}/ack). The unrelated voice-turn upload staging keeps its own
+        // transient SweepAbandoned; only the dictation record changed.
 
         // Central key vault (docs/architecture/gateway/GATEWAY_KEY_VAULT.md): set keys once
         // here (via the Cockpit Keys page); Directors pull them on demand. Inherits the
@@ -1239,8 +1244,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // supervisor's dispose gracefully stops the hosted claude.exe (never leaked).
         try { _voiceSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice sweep dispose error: {ex.Message}"); }
         _voiceSweepTimer = null;
-        try { _dictationSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation sweep dispose error: {ex.Message}"); }
-        _dictationSweepTimer = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         _turnEndWatcher = null;
         try { Brain.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] brain dispose error: {ex.Message}"); }

@@ -54,8 +54,25 @@ internal static class GatewayEndpoints
         SessionOwnerCache? owners = null,
         Gateway.Events.DirectorEventLog? directorEvents = null,
         Voice.GatewayTurnJobStore? turnJobs = null,
-        Pairing.DeviceRegistry? devices = null)
+        Pairing.DeviceRegistry? devices = null,
+        Voice.VoiceUploadStore? dictationUploads = null)
     {
+        // Issue #1188: the enforced session lock. A session is LOCKED for human input exactly while a PENDING
+        // dictation record exists for it (a pure projection of the durable record - it never auto-releases;
+        // it clears only when the record leaves PENDING). The front-door human-text entry points below reject
+        // with 423 Locked while locked. The Gateway's OWN dictation injection reaches the Director directly
+        // (GatewayDictationEndpoint.RunCompleteCoreAsync -> client.PostPromptAsync), which BYPASSES this
+        // Gateway endpoint, so the dictation being delivered is naturally exempt from its own lock.
+        // Guarded human-text entry points: POST /sessions/{sid}/prompt (the primary), /sessions/{sid}/upload-image,
+        // and POST /sessions/{sid}/recap. DEFERRED (voice features, not plain human text - a later task if
+        // wanted): the voice-turn submit and the wingman ask/goal paths.
+        IResult? DictationLock(string sid) =>
+            dictationUploads?.IsSessionLocked(sid) == true
+                ? Results.Json(
+                    new { error = "This session is receiving a dictation. You cannot send input until it arrives or is cancelled." },
+                    statusCode: StatusCodes.Status423Locked)
+                : null;
+
         // Issue #376: async voice-turn submit/poll (the phone's reconnect-resilient voice
         // interface). Mapped first for readability; route precedence (literal segments win
         // over the catch-all session forwarder) does the actual dispatch.
@@ -885,6 +902,7 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req) =>
         {
+            if (DictationLock(sid) is { } locked) return locked; // issue #1188: reject human input while a dictation is arriving
             if (req is null || string.IsNullOrEmpty(req.Text))
                 return Results.BadRequest(new { error = "text is required" });
 
@@ -964,6 +982,7 @@ internal static class GatewayEndpoints
         // folder (same machine as the session) and returns the saved absolute path.
         app.MapPost("/sessions/{sid}/upload-image", async (string sid, HttpContext ctx) =>
         {
+            if (DictationLock(sid) is { } locked) return locked; // issue #1188
             var (director, session) = await LocateSessionAsync(registry, client, sid);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
@@ -1221,6 +1240,7 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/recap", async (string sid, HttpContext ctx) =>
         {
+            if (DictationLock(sid) is { } locked) return locked; // issue #1188
             var (director, session) = await LocateSessionAsync(registry, client, sid);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });

@@ -14,7 +14,7 @@ describe("transcriptionFailureMessage", () => {
       'Transcription returned 502: {"error":{"message":"Transcription failed: openai transcription failed","type":"api_error","code":"upstream_error"}}';
     const msg = transcriptionFailureMessage(raw, 502);
     expect(msg).toBe(
-      "The transcription service had a problem and couldn't process your recording. Your recording is saved and will retry.",
+      "The transcription service had a problem and couldn't process your recording. Dictation was not transcribed.",
     );
     // The raw server response never leaks to the user.
     expect(msg).not.toContain("{");
@@ -22,10 +22,10 @@ describe("transcriptionFailureMessage", () => {
     expect(msg).not.toContain("openai");
   });
 
-  it("uses immediate-mode copy for blocking Voice/Chat transcription so it does not claim the segment was saved", () => {
-    const msg = transcriptionFailureMessage("upstream_error openai transcription failed", 502, false);
+  it("does not claim the segment was saved", () => {
+    const msg = transcriptionFailureMessage("upstream_error openai transcription failed", 502);
     expect(msg).toBe(
-      "The transcription service had a problem and couldn't process your recording. Try again in a moment.",
+      "The transcription service had a problem and couldn't process your recording. Dictation was not transcribed.",
     );
     expect(msg).not.toContain("saved");
     expect(msg).not.toContain("retry");
@@ -36,14 +36,14 @@ describe("transcriptionFailureMessage", () => {
       'Transcription returned 504: {"error":{"message":"Upstream provider is temporarily unavailable after repeated failures. Retry in 60 seconds.","type":"api_error","code":"upstream_unavailable"}}';
     const msg = transcriptionFailureMessage(raw, 502);
     expect(msg).toContain("temporarily unavailable");
-    expect(msg).toContain("saved and will retry");
+    expect(msg).toContain("not transcribed");
     expect(msg).not.toContain("{");
   });
 
   it("maps a timeout (status 504) to a timed-out line", () => {
     expect(transcriptionFailureMessage("upstream_timeout", 504)).toContain("timed out");
-    expect(transcriptionFailureMessage("upstream_timeout", 504, false)).toBe(
-      "The transcription service timed out. Try again in a moment.",
+    expect(transcriptionFailureMessage("upstream_timeout", 504)).toBe(
+      "The transcription service timed out. Dictation was not transcribed.",
     );
   });
 
@@ -73,6 +73,45 @@ describe("transcriptionFailureMessage", () => {
     const msg = transcriptionFailureMessage("some totally unexpected internal error blob 0xdeadbeef", 500);
     expect(msg).not.toContain("0xdeadbeef");
     expect(msg).not.toContain("blob");
-    expect(msg).toContain("saved and will retry");
+    expect(msg).toContain("not transcribed");
+  });
+
+  // The durable dictation path (issue #1182) keeps the audio and keeps retrying, so it passes
+  // durable=true and the copy must say the recording is saved and will keep trying - and must NEVER say
+  // "was not transcribed", because the clip is held, not lost (criterion 8).
+  describe("durable framing (the held dictation path)", () => {
+    it("a timeout is held, not lost", () => {
+      const msg = transcriptionFailureMessage("upstream_timeout", 504, true);
+      expect(msg).toContain("saved");
+      expect(msg).toContain("keep trying");
+      expect(msg).not.toContain("was not transcribed");
+    });
+
+    it("a temporarily-unavailable provider is held, not lost", () => {
+      const msg = transcriptionFailureMessage("upstream_unavailable", 502, true);
+      expect(msg).toContain("temporarily unavailable");
+      expect(msg).toContain("saved");
+      expect(msg).not.toContain("was not transcribed");
+    });
+
+    it("a generic backend fault is held, not lost, and never leaks raw server text", () => {
+      const msg = transcriptionFailureMessage("upstream_error openai transcription failed", 502, true);
+      expect(msg).toContain("saved");
+      expect(msg).toContain("keep trying");
+      expect(msg).not.toContain("openai");
+      expect(msg).not.toContain("was not transcribed");
+    });
+
+    it("a busy session is held and will keep trying", () => {
+      const msg = transcriptionFailureMessage("submit to session failed", 502, true);
+      expect(msg).toContain("busy or waiting on a prompt");
+      expect(msg).toContain("saved");
+    });
+
+    it("no transcription method points at Settings without a false quick-retry promise", () => {
+      const msg = transcriptionFailureMessage("no key configured for transcription mode devthrottle", 503, true);
+      expect(msg).toContain("Settings");
+      expect(msg).not.toContain("was not transcribed");
+    });
   });
 });

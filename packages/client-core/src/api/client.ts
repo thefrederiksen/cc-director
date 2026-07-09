@@ -785,7 +785,7 @@ export async function transcribeUtterance(
   });
   if (!reg.ok) {
     const error = await readGatewayErrorBody(reg);
-    throw new GatewayError(reg.status, transcriptionFailureMessage(error, reg.status, false));
+    throw new GatewayError(reg.status, transcriptionFailureMessage(error, reg.status));
   }
   const regBody = (await reg.json()) as { upload_id?: string };
   const uploadId = regBody.upload_id;
@@ -811,7 +811,7 @@ export async function transcribeUtterance(
     });
     if (!put.ok) {
       const error = await readGatewayErrorBody(put);
-      throw new GatewayError(put.status, transcriptionFailureMessage(error, put.status, false));
+      throw new GatewayError(put.status, transcriptionFailureMessage(error, put.status));
     }
     onProgress?.(range.index + 1, ranges.length);
   }
@@ -836,7 +836,7 @@ export async function transcribeUtterance(
   if (!comp.ok) {
     // Out of credits / cap (issue #942): a typed CreditsError carrying the shared message + call-to-action.
     if (comp.status === 402) throw creditsErrorFrom(compBody);
-    throw new GatewayError(comp.status, transcriptionFailureMessage(compBody.error, comp.status, false));
+    throw new GatewayError(comp.status, transcriptionFailureMessage(compBody.error, comp.status));
   }
   return (compBody.transcript ?? "").trim();
 }
@@ -850,24 +850,64 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
     .join("");
 }
 
-// ===== Durable, server-owned dictation upload (issue #1006) =====================================
-// Streams the raw recorded audio to the Gateway in resumable, SHA-checked chunks; the Gateway then
-// assembles, transcribes, and INJECTS the turn into the session itself. Once every chunk is up the
-// turn lands even if this tab dies. Idempotent by uploadId, so a resume re-runs safely.
+// ===== Durable, server-owned dictation upload (issue #1006, strengthened for #1182) ==============
+// Streams the raw recorded audio (already saved to the on-device durable store) to the Gateway in
+// resumable, SHA-checked chunks; the Gateway then assembles, transcribes, and INJECTS the turn into
+// the session itself. Once the server confirms it owns the turn, the local copy is deleted.
+//
+// This function is ONE self-contained delivery attempt. The retry CADENCE (hard for the first hour,
+// then throttled, resumed on connectivity) lives in the background driver (dictation/backgroundSend.ts),
+// which calls this repeatedly with the same uploadId. Because that uploadId is also the server's
+// Idempotency-Key, every attempt is safe:
+//   - Register is idempotent and RE-CREATES the staging folder even after the server's abandoned-upload
+//     sweep, so a resume after an hour re-drives from the on-device copy (never a loss, criterion 9).
+//   - The client discovers exactly which chunks the server still needs from complete's 409 { missing }
+//     response, and uploads only those - a resume continues from the next missing chunk, never a restart
+//     from zero (criterion 3).
+//   - A dropped connection mid-chunk PAUSES the attempt (returns a held, retryable outcome); it does not
+//     fail the whole clip. The next attempt resumes from the still-missing chunks.
+//   - A complete that already succeeded server-side but whose response was lost is retried against the
+//     Gateway's per-uploadId idempotency cache, which returns the SAME submitted outcome - so the turn is
+//     injected exactly once and the #1135 duplicate pile-up cannot return (criterion 7).
 
-/** Outcome of a durable dictation submit. `terminal` means the server handled it (submitted or
- *  dropped as stale) and the durable local copy can be deleted; otherwise retry it on resume. */
+/** The tight allow-list of GENUINELY PERMANENT, non-retryable transcription failures (issue #1184). A clip
+ *  that hits one of these can never succeed AS-SENT, so it must stop the auto-retry loop and PARK rather
+ *  than re-drive forever. EVERYTHING outside this list (network, provider 502/504, busy session, out of
+ *  credits) stays retryable/held. Default is retryable; only these reasons are permanent.
+ *   - "audio-too-large": the clip is over the provider's per-request byte cap and cannot be split as-sent.
+ *   - "unsupported-format": the audio is a format the Gateway cannot decode or split. */
+export type PermanentDictationReason = "audio-too-large" | "unsupported-format";
+
+/** Outcome of one dictation delivery attempt.
+ *  - `terminal` true: the server made a final decision (injected the turn, or deliberately dropped it as
+ *    stale / empty) and the durable local copy can be deleted.
+ *  - `permanent` true: a genuinely permanent, non-retryable failure (an allow-listed `permanentReason`,
+ *    issue #1184). NOT terminal - the on-device copy is KEPT and the clip is PARKED (the auto-loop stops)
+ *    until the user explicitly retries it; nothing was injected.
+ *  - otherwise (`terminal` false, `permanent` falsey): nothing final happened; the copy is KEPT and the
+ *    driver retries. `error` carries the honest "held, will keep trying" reason and `outOfCredits` flags
+ *    the out-of-credits case so the driver can throttle and the app can show the Add-credits notice. */
 export interface DictationSubmitResult {
   terminal: boolean;
   submitted: boolean;
   movedOn: boolean;
+  /** True when the server returned an ABANDONED upload id (the dictation was given up server-side, issue
+   *  #1183): terminal like a delivered turn, so the driver drops the on-device copy and does not re-drive,
+   *  but nothing was injected. */
+  abandoned?: boolean;
+  /** True when the failure is genuinely permanent and non-retryable (issue #1184): the driver parks the
+   *  clip (keeps the audio, stops the auto-loop) and offers an explicit user Retry. */
+  permanent?: boolean;
+  /** The allow-listed reason a permanent failure was parked (only set when `permanent` is true). */
+  permanentReason?: PermanentDictationReason;
   transcript: string;
   error?: string;
+  outOfCredits?: boolean;
 }
 
 export interface DictationUploadArgs {
   sessionId: string;
-  /** The durable record id; also the server upload id and Idempotency-Key. */
+  /** Client-generated id (the durable record id); also the server upload id and Idempotency-Key. */
   uploadId: string;
   /** Raw recorded audio exactly as the microphone produced it. */
   audio: Blob;
@@ -878,69 +918,77 @@ export interface DictationUploadArgs {
   resumed: boolean;
 }
 
-const CHUNK_RETRIES = 4;
+/** The honest, plain-English line for a dictation whose delivery is paused because the connection
+ *  dropped (mid-upload, or the Gateway is unreachable). The audio is safe on the device and the
+ *  background driver keeps trying - never "was not transcribed", because it is held, not lost. */
+export const DICTATION_HELD_NO_CONNECTION_MESSAGE =
+  "No connection - your recording is saved and will keep trying.";
+
+/** The held line when transcription credits ran out: kept, and it sends once credits are available. */
+export const DICTATION_HELD_CREDITS_MESSAGE =
+  "Out of transcription credits - your recording is saved and will send when credits are added.";
 
 export async function uploadDictationToSession(
   args: DictationUploadArgs,
   signal?: AbortSignal,
 ): Promise<DictationSubmitResult> {
-  // Live status is published at every step so the on-screen strip and the roster badge show exactly
-  // where the send is (owner rule after #1139: never a silent dictation). A failure is published as a
-  // sticky, retryable status rather than only returned, so it cannot be lost if the caller is gone.
+  // Live status is published for the mechanical steps (uploading / transcribing / done) here; the
+  // driver owns the held-and-retrying status between attempts. A non-terminal outcome returns a held
+  // result (terminal:false) with the honest reason, so the driver keeps the audio and retries.
   const sid = args.sessionId;
   const uploadId = args.uploadId;
-  const failed = (error: string, retryable = true): DictationSubmitResult => {
-    publishDictationStatus({ sessionId: sid, uploadId, phase: "failed", error, retryable });
-    return { terminal: false, submitted: false, movedOn: false, transcript: "", error };
-  };
+  const held = (error: string, outOfCredits = false): DictationSubmitResult =>
+    ({ terminal: false, submitted: false, movedOn: false, transcript: "", error, outOfCredits });
+  const permanent = (reason: PermanentDictationReason): DictationSubmitResult =>
+    ({ terminal: false, submitted: false, movedOn: false, transcript: "", permanent: true, permanentReason: reason });
 
-  // 1. Register (idempotent: the same id re-opens the same staging after a resume).
+  // 1. Register (idempotent by Idempotency-Key: re-opens the same staging on a resume, and RE-CREATES it
+  //    if the server already swept the abandoned upload - so we always re-drive from the on-device copy).
   publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded: 0, total: 1 });
-  const reg = await fetch(`/dictation/upload`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", "Idempotency-Key": args.uploadId, ...authHeaders() },
-    body: JSON.stringify({ sessionId: args.sessionId, baselineBufferBytes: args.baselineBufferBytes }),
-    signal,
-  });
-  if (!reg.ok) return failed(transcriptionFailureMessage(await readGatewayErrorBody(reg), reg.status));
-  const regBody = (await reg.json().catch(() => ({}))) as { upload_id?: string };
+  let reg: Response;
+  try {
+    reg = await fetch(`/dictation/upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "Idempotency-Key": args.uploadId, ...authHeaders() },
+      body: JSON.stringify({ sessionId: args.sessionId, baselineBufferBytes: args.baselineBufferBytes }),
+      signal,
+    });
+  } catch {
+    return held(DICTATION_HELD_NO_CONNECTION_MESSAGE);
+  }
+  if (!reg.ok) return held(transcriptionFailureMessage(await readGatewayErrorBody(reg), reg.status, true));
+  const regBody = (await reg.json().catch(() => ({}))) as {
+    upload_id?: string;
+    terminal?: boolean;
+    submitted?: boolean;
+    movedOn?: boolean;
+    dropped?: boolean;
+    transcript?: string;
+  };
   const id = encodeURIComponent(regBody.upload_id ?? args.uploadId);
 
-  // 2. Upload chunks with per-chunk retry, so a dropped chunk on a bad connection resumes at that
-  //    chunk instead of restarting the whole clip.
-  const bytes = new Uint8Array(await args.audio.arrayBuffer());
-  const ranges = planUploadChunks(bytes.length, MAX_UPLOAD_CHUNK_BYTES);
-  publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded: 0, total: ranges.length });
-  let uploaded = 0;
-  for (const range of ranges) {
-    const part = bytes.subarray(range.start, range.end);
-    const sha = await sha256Hex(part);
-    let ok = false;
-    let lastErr = "";
-    for (let attempt = 0; attempt < CHUNK_RETRIES && !ok; attempt++) {
-      try {
-        const put = await fetch(`/dictation/${id}/chunk/${range.index}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
-          body: part,
-          signal,
-        });
-        ok = put.ok;
-        if (!ok) lastErr = transcriptionFailureMessage(await readGatewayErrorBody(put), put.status);
-      } catch (e) {
-        lastErr = e instanceof Error ? e.message : String(e);
-      }
-      if (!ok && attempt < CHUNK_RETRIES - 1) await uploadBackoff(400 * (attempt + 1), signal);
-    }
-    if (!ok) return failed(lastErr || "Couldn't upload your recording. Your recording is saved and will retry.");
-    uploaded += 1;
-    publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded, total: ranges.length });
+  // Durable de-dupe at register (issue #1183): the server already reached a terminal outcome for this
+  // upload id (delivered or abandoned) - our earlier response was lost. Treat it exactly like a fresh
+  // terminal outcome: acknowledge it (so the server can retire the tombstone) and return terminal so the
+  // driver drops the on-device copy. No chunks are re-uploaded and nothing is injected a second time.
+  if (regBody.terminal === true) {
+    await ackDictation(id);
+    return {
+      terminal: true,
+      submitted: Boolean(regBody.submitted),
+      movedOn: Boolean(regBody.movedOn),
+      abandoned: Boolean(regBody.dropped),
+      transcript: regBody.transcript ?? "",
+    };
   }
 
-  // 3. Complete: the server assembles, transcribes, and injects the turn.
+  // 2. Read the whole clip from the (already durable) on-device copy and plan its bounded chunks.
+  const bytes = new Uint8Array(await args.audio.arrayBuffer());
+  const ranges = planUploadChunks(bytes.length, MAX_UPLOAD_CHUNK_BYTES);
+  const total = ranges.length;
   const completeBody = {
     sessionId: args.sessionId,
-    totalChunks: ranges.length,
+    totalChunks: total,
     mime: args.audio.type || "audio/webm",
     ext: extForMime(args.audio.type),
     before: args.before,
@@ -957,55 +1005,151 @@ export async function uploadDictationToSession(
       signal,
     });
 
-  // The server now assembles, transcribes, and injects inside this one request, so from the client's
-  // side "complete in flight" is the transcribing phase.
-  publishDictationStatus({ sessionId: sid, uploadId, phase: "transcribing" });
-  let comp = await complete();
-  if (comp.status === 409) {
-    // Some chunks did not land; re-send exactly those, then complete once more.
-    const body = (await comp.json().catch(() => ({}))) as { missing?: number[] };
-    for (const i of body.missing ?? []) {
-      const r = ranges[i];
-      if (!r) continue;
-      const part = bytes.subarray(r.start, r.end);
-      const put = await fetch(`/dictation/${id}/chunk/${i}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": await sha256Hex(part), ...authHeaders() },
-        body: part,
-        signal,
-      });
-      if (!put.ok) return failed(transcriptionFailureMessage(await readGatewayErrorBody(put), put.status));
+  publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded: 0, total });
+
+  // 3. Resume-from-missing loop. complete tells us (cheaply, before any transcription) which chunks the
+  //    server still needs (409 { missing }); we upload exactly those from the on-device copy and complete
+  //    again. On the first ever attempt nothing is up yet, so the first complete reports every index and
+  //    we upload the whole clip; on a resume only the still-missing set is sent. Bounded so a server that
+  //    keeps reporting the same chunk missing cannot spin forever - it becomes a held retry instead.
+  let uploadedAllThisAttempt = false;
+  const maxRounds = total + 2;
+  for (let round = 0; round < maxRounds; round++) {
+    // Only the complete AFTER all chunks are up does the real transcribe; show "transcribing" then.
+    if (uploadedAllThisAttempt) publishDictationStatus({ sessionId: sid, uploadId, phase: "transcribing" });
+    let comp: Response;
+    try {
+      comp = await complete();
+    } catch {
+      return held(DICTATION_HELD_NO_CONNECTION_MESSAGE);
     }
-    comp = await complete();
+
+    if (comp.status === 409) {
+      // Missing chunks: send exactly those, pausing (held) if the connection drops mid-chunk.
+      const body = (await comp.json().catch(() => ({}))) as { missing?: number[] };
+      const missing = (body.missing ?? []).filter((i) => ranges[i]);
+      if (missing.length === 0) return held(transcriptionFailureMessage(undefined, 502, true));
+      let uploaded = total - missing.length;
+      publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded, total });
+      for (const i of missing) {
+        const r = ranges[i];
+        const part = bytes.subarray(r.start, r.end);
+        const sha = await sha256Hex(part);
+        let put: Response;
+        try {
+          put = await fetch(`/dictation/${id}/chunk/${r.index}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
+            body: part,
+            signal,
+          });
+        } catch {
+          // Connection dropped mid-chunk: pause here, keep every chunk that already landed, and let the
+          // driver resume from the next missing chunk on the following attempt (criterion 3).
+          return held(DICTATION_HELD_NO_CONNECTION_MESSAGE);
+        }
+        if (put.status === 404) {
+          // The server swept this upload's staging between our register and this chunk. Re-register on the
+          // next attempt (same Idempotency-Key) and re-drive from the on-device copy (criterion 9).
+          return held(DICTATION_HELD_NO_CONNECTION_MESSAGE);
+        }
+        if (!put.ok) return held(transcriptionFailureMessage(await readGatewayErrorBody(put), put.status, true));
+        uploaded += 1;
+        publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded, total });
+      }
+      uploadedAllThisAttempt = true;
+      continue;
+    }
+
+    if (comp.status === 402) {
+      // Out of transcription credits: fire the app-level Add-credits notice, then keep the audio held so
+      // it sends once credits return. A plain fast retry will not fix it, so the driver throttles this.
+      creditsErrorFrom(await comp.json().catch(() => ({})));
+      return held(DICTATION_HELD_CREDITS_MESSAGE, true);
+    }
+
+    const body = (await comp.json().catch(() => ({}))) as {
+      submitted?: boolean; movedOn?: boolean; dropped?: boolean; transcript?: string; error?: string;
+      permanent?: boolean; reason?: string;
+    };
+
+    // Genuinely permanent, non-retryable failure (issue #1184). The server (a later, coordinated step)
+    // signals this on complete with { permanent: true, reason: <allow-listed> } - naturally an HTTP 422,
+    // but we key off the typed body flag, not the status, so the server may pick any status. Only the
+    // tight allow-list parks; a permanent flag with any other reason falls through to the retryable/held
+    // path below, so the default stays retryable and the auto-loop is only ever stopped for the two
+    // reasons that truly can never succeed as-sent.
+    const reason = permanentReasonFrom(body.permanent, body.reason);
+    if (reason !== null) return permanent(reason);
+
+    if (!comp.ok) {
+      // A reachable Gateway that answered with a server-side transcription fault (timeout / outage / no
+      // key / session gone). Held, not lost - the honest "saved and will keep trying" copy.
+      return held(transcriptionFailureMessage(body.error, comp.status, true));
+    }
+
+    // 200: the server made a final decision. submitted -> the turn was injected; movedOn -> the server
+    // deliberately dropped a stale resumed clip; dropped -> the upload id was abandoned server-side (issue
+    // #1183); neither -> a silent/empty clip with nothing to submit. All are terminal: the server owns the
+    // outcome and holds a durable delivery record. Acknowledge it so the server can retire that tombstone
+    // (best-effort, idempotent), then return terminal so the driver drops the durable local copy. The
+    // background driver owns the terminal status (a "done" for a delivered turn, or a quiet clear).
+    await ackDictation(id);
+    return {
+      terminal: true,
+      submitted: Boolean(body.submitted),
+      movedOn: Boolean(body.movedOn),
+      abandoned: Boolean(body.dropped),
+      transcript: body.transcript ?? "",
+    };
   }
 
-  if (comp.status === 402) {
-    // Out of credits is a hard failure a plain retry will not fix - mark it non-retryable so the strip
-    // offers "Add credits" rather than a pointless Retry, then throw so the caller's credits UI fires.
-    publishDictationStatus({ sessionId: sid, uploadId, phase: "failed", retryable: false, error: "Out of transcription credits." });
-    throw creditsErrorFrom(await comp.json().catch(() => ({})));
+  // The server kept reporting missing chunks past the bounded rounds (a chunk that will not stick, e.g. a
+  // persistent SHA rejection). Hold it - the driver retries from a clean register on the next attempt.
+  return held(DICTATION_HELD_NO_CONNECTION_MESSAGE);
+}
+
+// Map a complete response's permanent-failure signal to an allow-listed reason, or null when it is not a
+// permanent failure we recognize (issue #1184). Only "audio-too-large" and "unsupported-format" park; any
+// other value - including a permanent flag with an unknown/blank reason - returns null so the clip stays
+// on the default retryable/held path. This is the SINGLE gate that decides "park" versus "keep retrying",
+// so the allow-list can never widen by accident.
+function permanentReasonFrom(permanent: boolean | undefined, reason: string | undefined): PermanentDictationReason | null {
+  if (permanent !== true) return null;
+  if (reason === "audio-too-large" || reason === "unsupported-format") return reason;
+  return null;
+}
+
+// Acknowledge a terminal dictation outcome so the Gateway can retire its durable de-dupe tombstone (issue
+// #1183). Best-effort and idempotent, keyed by the (already-encoded) upload id: a lost ack simply leaves
+// the tiny tombstone in place and a later re-complete returns the same outcome and re-acks. Never throws -
+// a failed ack must never turn a delivered turn into an error.
+async function ackDictation(encodedUploadId: string): Promise<void> {
+  try {
+    await fetch(`/dictation/${encodedUploadId}/ack`, {
+      method: "POST",
+      headers: { Accept: "application/json", ...authHeaders() },
+    });
+  } catch {
+    /* best-effort: the tombstone persists and a later re-complete re-acks */
   }
-  const body = (await comp.json().catch(() => ({}))) as { submitted?: boolean; movedOn?: boolean; transcript?: string; error?: string };
-  if (!comp.ok) {
-    // The transcription-provider failures (the #1139 502/504 wrapping upstream_timeout) land here. The
-    // audio is saved durably, so this is a HELD-and-will-retry state, not a loss - say so, and keep it
-    // sticky on screen and on the roster until it retries or the user dismisses it.
-    return failed(transcriptionFailureMessage(body.error, comp.status));
-  }
-  publishDictationStatus({ sessionId: sid, uploadId, phase: "done" });
-  return { terminal: true, submitted: Boolean(body.submitted), movedOn: Boolean(body.movedOn), transcript: body.transcript ?? "" };
 }
 
 // Turn a raw dictation-complete failure (any non-OK response from POST /dictation/{id}/complete) into a
-// short, honest, plain-English sentence for the status strip and the error banner. The recorded audio is
-// durable at this point, so the transcription-service faults are all "held, will retry" states.
+// short, honest, plain-English sentence for the status strip and the error banner.
 //
 // This is the SINGLE place a dictation failure is turned into user-facing words. It never surfaces the
 // raw server JSON/text at the user (the bug this fixes: a server-side outage used to reach the user as a
 // raw "Transcription returned 502: {...}" dump), and every known server-side condition gets its own
 // specific line so the user is told WHAT went wrong - a transcription-service outage, a busy session, no
 // method configured - not merely that "transcription failed" (issue #1139 follow-up).
-export function transcriptionFailureMessage(serverError: string | undefined, status: number, durable = true): string {
+//
+// `durable` frames the message for the caller's recovery model (issue #1182). The durable dictation path
+// (uploadDictationToSession) keeps the audio and keeps retrying, so it passes durable=true and the copy
+// says "saved and will keep trying" - never "was not transcribed", because it is held, not lost. The
+// synchronous voice-narration path (transcribeUtterance) has no durable copy, so it uses the default
+// (durable=false) and reports the fault plainly.
+export function transcriptionFailureMessage(serverError: string | undefined, status: number, durable = false): string {
   const raw = (serverError ?? "").toLowerCase();
 
   if (status === 401)
@@ -1019,36 +1163,38 @@ export function transcriptionFailureMessage(serverError: string | undefined, sta
     return "That session is no longer available, so your dictation couldn't be delivered.";
 
   // No transcription method is configured on the Gateway (no key for the selected mode). A plain retry
-  // will not fix it, so point at Settings rather than promising a retry.
+  // will not fix it, so point at Settings rather than promising a quick retry.
   if (raw.includes("no key configured") || raw.includes("no key set"))
-    return "No transcription method is set up. Open Settings > Transcription and choose one.";
+    return durable
+      ? "No transcription method is set up. Open Settings > Transcription; your recording is saved and will send once one is chosen."
+      : "No transcription method is set up. Open Settings > Transcription and choose one.";
 
   // The upstream speech-to-text provider took too long to respond.
   if (status === 504 || raw.includes("upstream_timeout") || raw.includes("timed out") || raw.includes("did not respond"))
     return durable
-      ? "The transcription service timed out. Your recording is saved and will retry."
-      : "The transcription service timed out. Try again in a moment.";
+      ? "The transcription service timed out - your recording is saved and will keep trying."
+      : "The transcription service timed out. Dictation was not transcribed.";
 
   // The upstream speech-to-text provider is down / circuit-broken ("temporarily unavailable after
   // repeated failures"). The Gateway wraps the proxy's 503/504 as a 502 whose body carries this code.
   if (status === 503 || raw.includes("upstream_unavailable") || raw.includes("temporarily unavailable"))
     return durable
-      ? "The transcription service is temporarily unavailable. Your recording is saved and will retry."
-      : "The transcription service is temporarily unavailable. Try again in a moment.";
+      ? "The transcription service is temporarily unavailable - your recording is saved and will keep trying."
+      : "The transcription service is temporarily unavailable. Dictation was not transcribed.";
 
   // The transcript was produced but could not be delivered into the session (parked on a prompt or a
   // permission dialog and refusing typed input).
   if (raw.includes("submit to session failed"))
     return durable
-      ? "Couldn't deliver your dictation to the session - it may be busy or waiting on a prompt. It's saved and will retry."
+      ? "Couldn't deliver your dictation to the session yet - it may be busy or waiting on a prompt. It's saved and will keep trying."
       : "Couldn't deliver your dictation to the session - it may be busy or waiting on a prompt.";
 
   // Any other server-side transcription fault - the provider itself returned an error ("openai
   // transcription failed" / upstream_error), an empty assembly, some other 5xx. A real backend problem,
   // not the user's audio: say so plainly instead of dumping the raw server response.
   return durable
-    ? "The transcription service had a problem and couldn't process your recording. Your recording is saved and will retry."
-    : "The transcription service had a problem and couldn't process your recording. Try again in a moment.";
+    ? "The transcription service had a problem - your recording is saved and will keep trying."
+    : "The transcription service had a problem and couldn't process your recording. Dictation was not transcribed.";
 }
 
 function extForMime(mime: string | undefined): string {
@@ -1059,13 +1205,6 @@ function extForMime(mime: string | undefined): string {
   if (m.includes("mpeg") || m.includes("mp3")) return "mp3";
   if (m.includes("wav")) return "wav";
   return "webm";
-}
-
-function uploadBackoff(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => { clearTimeout(t); reject(new Error("aborted")); }, { once: true });
-  });
 }
 
 // ===== Wingman Voice mode (issue #850): the mobile hands-free narration loop =====
