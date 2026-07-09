@@ -269,6 +269,95 @@ jobs:
           path: artifacts/devthrottle-gateway-cockpit-win-x64.zip
           if-no-files-found: error
 
+      # Issue #1186: the single-file Gateway exe carries NO loose content, so the ffmpeg the Gateway
+      # shells out to for the long-clip WebM/Opus -> PCM WAV transcode (issue #1139) must ship as its OWN
+      # side-car asset the setup engine unpacks BESIDE the exe on install + self-update (FfmpegPackage,
+      # same delivery as the mobile app / Cockpit). We download a PINNED, reputable static Windows ffmpeg
+      # (scripts/ffmpeg-pin.json - the single source of truth for the version), SHA-256 verify it (fail
+      # loud on mismatch - never ship an unverified binary), and repack ffmpeg.exe + its GPL license +
+      # a source-offer note as ffmpeg-win-x64.zip (zip root = ffmpeg.exe, matching FfmpegPackage's
+      # extract-into-GatewayDir contract).
+      - name: Package pinned ffmpeg (ffmpeg-win-x64.zip)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pin = Get-Content scripts/ffmpeg-pin.json -Raw | ConvertFrom-Json
+          Write-Host "[ffmpeg] pin: version=$($pin.version) provider=$($pin.provider)"
+          Write-Host "[ffmpeg] url=$($pin.archiveUrl)"
+
+          $work = Join-Path $env:RUNNER_TEMP ("ffmpeg-" + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $archive = Join-Path $work "ffmpeg-archive.zip"
+
+          Write-Host "[ffmpeg] downloading pinned archive..."
+          Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -UseBasicParsing
+
+          # Verify SHA-256 against the pin - a mismatch means a tampered or moved build; fail the release.
+          $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = $pin.archiveSha256.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            Write-Error "[ffmpeg] SHA-256 mismatch: expected $expected but got $actual. Refusing to ship an unverified ffmpeg."
+            exit 1
+          }
+          Write-Host "[ffmpeg] SHA-256 verified: $actual"
+
+          $extract = Join-Path $work "extract"
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+
+          # Locate ffmpeg.exe (the pin records the expected path, but recurse so a provider layout tweak
+          # doesn't silently drop it - a missing exe fails loud below).
+          $exe = Get-ChildItem -Path $extract -Recurse -Filter $pin.exeNameInArchive | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "[ffmpeg] $($pin.exeNameInArchive) not found inside the pinned archive."
+            exit 1
+          }
+          Write-Host "[ffmpeg] found $($exe.FullName) ($([math]::Round($exe.Length/1MB,1)) MB)"
+
+          $license = Get-ChildItem -Path $extract -Recurse -Filter "LICENSE" | Select-Object -First 1
+
+          # Stage the side-car payload: ffmpeg.exe at the zip root (beside where the Gateway exe installs)
+          # plus GPL attribution + a written source offer (our app is MIT; ffmpeg essentials is GPL, and we
+          # invoke it as a separate process - standard mere-aggregation, but we still ship the license text
+          # and a source pointer for compliance).
+          $stage = Join-Path $work "stage"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item $exe.FullName (Join-Path $stage $pin.exeNameInArchive) -Force
+          if ($license) { Copy-Item $license.FullName (Join-Path $stage "LICENSE-ffmpeg.txt") -Force }
+
+          # Build the attribution note line-by-line (a PowerShell here-string's column-0 terminator would
+          # break the surrounding YAML block scalar).
+          $readme = @(
+            "This directory ships ffmpeg.exe, a pinned static build of FFmpeg, used by the DevThrottle",
+            "Gateway to transcode long audio recordings (WebM/Opus, MP4/AAC, MP3, ...) to PCM WAV for",
+            "transcription (issue #1139).",
+            "",
+            "FFmpeg version : $($pin.version)",
+            "Build provider : $($pin.provider)",
+            "Source archive : $($pin.archiveUrl)",
+            "SHA-256        : $($pin.archiveSha256)",
+            "License        : GPL - see LICENSE-ffmpeg.txt in this directory.",
+            "",
+            "DevThrottle itself is MIT-licensed and invokes ffmpeg.exe only as a separate process (mere",
+            "aggregation). FFmpeg source code and the corresponding build scripts are available from the",
+            "build provider above and from the upstream project at https://ffmpeg.org/download.html and",
+            "https://git.ffmpeg.org/ffmpeg.git . The version tag above identifies the source revision."
+          )
+          Set-Content -Path (Join-Path $stage "ffmpeg-README-license.txt") -Value $readme -Encoding utf8
+
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $out = "artifacts/ffmpeg-win-x64.zip"
+          if (Test-Path $out) { Remove-Item $out -Force }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $out -Force
+          Write-Host "[ffmpeg] packaged $out with:"
+          Get-ChildItem $stage | ForEach-Object { Write-Host "  - $($_.Name)" }
+
+      - name: Upload gateway ffmpeg artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: gateway-ffmpeg-win
+          path: artifacts/ffmpeg-win-x64.zip
+          if-no-files-found: error
+
   # ---------------------------------------------------------------
   # Job 1c2: Build the CC Launcher tray app (Windows)
   # ---------------------------------------------------------------
@@ -493,6 +582,11 @@ jobs:
           # the setup engine on install + self-update so the Cockpit serves at the site root.
           cp release-artifacts/gateway-cockpit-win/devthrottle-gateway-cockpit-win-x64.zip "$RELEASE_DIR/devthrottle-gateway-cockpit-win-x64.zip"
 
+          # Windows bundled ffmpeg (issue #1186): the pinned static ffmpeg.exe (+ GPL license/attribution),
+          # unpacked beside the Gateway exe by the setup engine on install + self-update so the long-clip
+          # WebM/Opus -> PCM WAV transcode (issue #1139) works with no manual copy.
+          cp release-artifacts/gateway-ffmpeg-win/ffmpeg-win-x64.zip "$RELEASE_DIR/ffmpeg-win-x64.zip"
+
           # Windows Launcher tray app (publish emits cc-launcher.exe)
           cp release-artifacts/launcher-win/cc-launcher.exe "$RELEASE_DIR/cc-launcher-win-x64.exe"
 
@@ -526,6 +620,7 @@ jobs:
             devthrottle-gateway-win-x64.exe
             devthrottle-gateway-mobile-win-x64.zip
             devthrottle-gateway-cockpit-win-x64.zip
+            ffmpeg-win-x64.zip
             cc-launcher-win-x64.exe
             devthrottle-setup-win-x64.exe
             devthrottle-setup-cli-win-x64.exe

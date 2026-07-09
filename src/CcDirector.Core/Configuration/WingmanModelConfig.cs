@@ -4,18 +4,16 @@ using System.Text.Json.Nodes;
 namespace CcDirector.Core.Configuration;
 
 /// <summary>
-/// The chat model the hosted wingman runs on for the SELECTED AI provider. The wingman is a stateless
-/// OpenAI-compatible chat call to the provider (glm-5.2 on the DevThrottle proxy, gpt-5.5 on OpenAI), so
-/// the model must be one the provider serves. The user can pick any model from the provider's live
-/// catalog (the AI tab's "Wingman model" dropdown); the choice is stored in the existing config.json
-/// "brain_model" key.
+/// The chat model the hosted wingman runs on through DevThrottle. The wingman is a stateless
+/// provider-compatible chat call, so the model must be one DevThrottle serves. The user can pick any
+/// model from the live catalog (the AI tab's "Wingman model" dropdown); the choice is stored in the
+/// existing config.json "brain_model" key.
 ///
 /// Resolution rule (why this exists rather than reading brain_model directly): brain_model historically
 /// defaulted to a Claude tier alias ("opus"/"sonnet"/"haiku") for the old warm claude.exe brain, which
 /// the hosted proxy does NOT serve. So a stale or unset brain_model must fall forward to the provider's
 /// default hosted model (glm-5.2 / gpt-5.5), never a Claude alias - otherwise the wingman would call the
-/// proxy with a model it cannot run. A real hosted model id the user (or the provider switch) saved is
-/// honored as-is.
+/// proxy with a model it cannot run. A real hosted model id the user saved is honored as-is.
 /// </summary>
 public static class WingmanModelConfig
 {

@@ -154,7 +154,7 @@ const router = createBrowserRouter(
             { path: "/about", element: <AboutView /> },
             // The Settings page (issue #1025): a real React port of the retired Blazor
             // wwwroot/pages/settings.html (the "This machine" gateway-connection tab + the "AI"
-            // transcription/keys tab, incl. the #497 OpenAI key panel). The rail's Settings item used to be
+            // transcription/settings tab. The rail's Settings item used to be
             // a dead full-load anchor to /settings (nothing served it, so it fell through to "Not found");
             // it is now this route, reading/writing same-origin through the Gateway settings endpoints.
             { path: "/settings", element: <SettingsView /> },

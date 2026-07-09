@@ -328,6 +328,30 @@ public sealed class DirectorEndpointClient : IDisposable
     }
 
     /// <summary>
+    /// Forward a "set the session role" call (automatic session roles, chunk 2.5) to the owning Director.
+    /// Returns the raw JSON body (the updated session) on success, or null on failure.
+    /// </summary>
+    public async Task<string?> SetRoleAsync(string endpoint, string sessionId, SetRoleRequest req, CancellationToken ct = default)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync($"{endpoint}/sessions/{sessionId}/role", req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                FileLog.Write($"[DirectorEndpointClient] SetRoleAsync HTTP {(int)resp.StatusCode}: {Truncate(body, 200)}");
+                return null;
+            }
+            return await resp.Content.ReadAsStringAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorEndpointClient] SetRoleAsync FAILED: endpoint={endpoint}, sid={sessionId}, error={ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Forward a "park / un-park this session in the FIFO queue" (hold) call to the owning
     /// Director. Returns the raw JSON body ({ onHold }) on success, or null on failure.
     /// </summary>

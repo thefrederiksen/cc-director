@@ -17,7 +17,7 @@ public enum HostedAiCtaAction
     /// <summary>Open the DevThrottle Billing page so the user can add credits or raise their limit.</summary>
     OpenBilling = 1,
 
-    /// <summary>Open the local Settings AI tab so the user can add their own OpenAI key.</summary>
+    /// <summary>Open the local Settings AI tab so the user can finish DevThrottle AI setup.</summary>
     OpenSettings = 2,
 }
 

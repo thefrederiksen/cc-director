@@ -114,6 +114,25 @@ public sealed class GatewayTrayInstaller
             return Fail(steps, $"Cockpit extraction failed: {ex.Message}");
         }
 
+        // 3c. Extract the bundled ffmpeg (issue #1186) beside the Gateway exe so the long-clip WebM/Opus
+        // -> PCM WAV transcode (issue #1139) works on a clean install with no manual copy. Same side-car
+        // delivery as the mobile app / Cockpit above (the single-file exe carries no loose content), but
+        // ffmpeg.exe lands in the Gateway dir root where FfmpegAudioTranscoder resolves it. A release that
+        // predates #1186 has no such asset and simply cannot transcode over-budget non-WAV clips
+        // (ExtractAsync returns null).
+        try
+        {
+            var ffmpegExe = await FfmpegPackage.ExtractAsync(_layout, release, source, ct);
+            steps.Add(ffmpegExe is null
+                ? "no ffmpeg asset in this release (no long non-WAV transcode)"
+                : $"extracted {FfmpegPackage.AssetName} -> {ffmpegExe}");
+            EngineLog.Write($"[GatewayTrayInstaller] ffmpeg at {(ffmpegExe ?? "(none)")}");
+        }
+        catch (Exception ex)
+        {
+            return Fail(steps, $"ffmpeg extraction failed: {ex.Message}");
+        }
+
         // 4. Start the tray app. It registers its own HKCU Run-key autostart (pointing at itself with
         // the same arguments) on startup, so install-time registration and app self-registration can
         // never disagree.

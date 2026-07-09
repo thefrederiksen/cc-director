@@ -1,14 +1,18 @@
-// Durable local store for recorded dictation audio (issue #1006).
+// Durable local store for recorded dictation audio (issue #1006, strengthened for #1182).
 //
 // The instant Send is pressed, the raw recorded audio is written here (IndexedDB, which holds Blobs
 // on disk) BEFORE any network work. So a page refresh, a tab crash, a phone reboot, or a dropped
-// connection can no longer lose a just-recorded utterance: the audio survives, and the app re-drives
-// the upload+submit on the next load. A record is deleted only when the server confirms it owns the
-// turn (submitted or deliberately dropped as stale); records older than the TTL are pruned unsent.
+// connection can no longer lose a just-recorded utterance: the audio survives, and the background
+// driver re-drives the upload+submit on the next load and whenever connectivity returns.
+//
+// The on-device copy is the single source of truth. A record is deleted ONLY when the server confirms
+// it owns the turn (submitted, or deliberately dropped as stale), or after an explicit user abandon (a
+// later Task). Undelivered audio is NEVER aged out automatically - there is deliberately no time-based
+// prune here (issue #1182): a recording the user could not send yet is kept until it is delivered.
 //
 // IndexedDB (not localStorage) because the audio is binary and can be minutes long; localStorage is
 // string-only and tiny. Absence of IndexedDB (rare, e.g. some private modes) is capability-detected -
-// the caller falls back to a non-durable send for that one utterance, never a crash.
+// the caller tells the user durable storage is unavailable rather than silently dropping the clip.
 
 export interface PendingDictation {
   /** Client-generated GUID; doubles as the server upload id and Idempotency-Key. */
@@ -25,8 +29,15 @@ export interface PendingDictation {
   prefix: string;
   /** The session's TotalBufferBytes when the clip was recorded (server moved-on guard). */
   baselineBufferBytes: number;
-  /** Epoch milliseconds the clip was recorded, for the TTL. */
+  /** Epoch milliseconds the clip was recorded. Drives the retry cadence (hard for the first hour,
+   *  then throttled) - NOT a prune deadline: undelivered audio is never aged out (issue #1182). */
   createdAt: number;
+  /** Set when the clip is PARKED after a genuinely permanent, non-retryable failure (issue #1184): it
+   *  carries the allow-listed reason ("audio-too-large" / "unsupported-format"). A parked record keeps its
+   *  audio but is EXCLUDED from every automatic retry trigger (app load, online, foreground, the cadence
+   *  timer) - the forever-loop stops. It is cleared only by an explicit user Retry, which moves the record
+   *  back to active. Absent for a normal, still-auto-retrying clip. */
+  parkedReason?: string;
 }
 
 const DB_NAME = "dt-dictation";
@@ -95,20 +106,10 @@ export async function getPending(id: string): Promise<PendingDictation | null> {
   return rec ?? null;
 }
 
-/** Remove a record once the server has confirmed the turn (submitted or dropped as stale). */
+/** Remove a record once the server has confirmed the turn (submitted or dropped as stale), or the user
+ *  explicitly abandons it. There is deliberately no time-based prune: undelivered audio is kept until it
+ *  is delivered or abandoned (issue #1182). */
 export async function deletePending(id: string): Promise<void> {
   if (!hasIndexedDb()) return;
   await tx("readwrite", (s) => s.delete(id));
-}
-
-/** Delete records older than maxAgeMs (unsent, now stale) and return the survivors to resume. */
-export async function prunePending(maxAgeMs: number): Promise<PendingDictation[]> {
-  const all = await listPending();
-  const cutoff = Date.now() - maxAgeMs;
-  const survivors: PendingDictation[] = [];
-  for (const rec of all) {
-    if (rec.createdAt < cutoff) await deletePending(rec.id);
-    else survivors.push(rec);
-  }
-  return survivors;
 }

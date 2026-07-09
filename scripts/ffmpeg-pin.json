@@ -1,0 +1,12 @@
+{
+  "_comment": "Pinned Windows ffmpeg the release build downloads, verifies, and repacks as the ffmpeg-win-x64.zip side-car asset the Gateway ships (issue #1186, for the #1139 long-clip WebM/Opus -> PCM WAV transcode). The Gateway shells out to ffmpeg.exe placed beside devthrottle-gateway.exe (FfmpegAudioTranscoder.ResolveFfmpegPath). This is the ONE source of truth for the ffmpeg version; bump it here (version + archiveUrl + archiveSha256 + archiveSize) to move ffmpeg. The build fails loud on a SHA-256 mismatch - never ship an unverified binary.",
+  "version": "8.1.2",
+  "provider": "gyan.dev (GyanD/codexffmpeg) - reputable static Windows builds",
+  "license": "GPL-3.0 (gyan.dev 'essentials' static build). ffmpeg.exe is invoked as a separate process only; the archive's LICENSE + README are carried into the side-car zip for attribution.",
+  "archiveUrl": "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip",
+  "archiveSha256": "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec",
+  "archiveSize": 109728040,
+  "exeNameInArchive": "ffmpeg.exe",
+  "exeRelativePathInArchive": "ffmpeg-8.1.2-essentials_build/bin/ffmpeg.exe",
+  "licenseRelativePathInArchive": "ffmpeg-8.1.2-essentials_build/LICENSE"
+}

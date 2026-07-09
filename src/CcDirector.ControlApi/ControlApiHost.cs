@@ -1,5 +1,6 @@
 using System.Net;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Fleet;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Wingman;
 using CcDirector.Core.Utilities;
@@ -94,6 +95,9 @@ public sealed class ControlApiHost : IAsyncDisposable
     private WebApplication? _app;
     private InstanceRegistration? _registration;
     private GatewayClient? _gatewayClient;
+    // Issue #1176 (Phase 1a): the outbound push-stream client, running alongside _gatewayClient when
+    // gateway.streamMode is on. Null when stream mode is off, so the Director behaves exactly as today.
+    private GatewayStreamClient? _streamClient;
     private TailscaleServeSelfProvisioner? _serveProvisioner;
     private readonly SemaphoreSlim _gatewayReapplyLock = new(1, 1);
 
@@ -380,21 +384,18 @@ public sealed class ControlApiHost : IAsyncDisposable
         // The fleet-relay endpoints (issue #705) read the _gatewayClient FIELD lazily via this
         // provider, so they always use the current client even after a settings-change rebuild
         // (the field is replaced, not this lambda). The client is built later in this method.
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient);
-        // Dictation key resolution: the Gateway vault when attached to a Gateway, the local key
-        // vault when standalone (issue #839: the vault is the single key store). Pass
-        // GatewayConfig.Load (not the snapshot above) so the resolver re-reads config.json on every
-        // dictation: a Director that booted standalone and later had a gateway.url added self-heals
-        // into Gateway mode without a restart.
-        var openAiKeyResolver = new Core.Configuration.OpenAiKeyResolver(
-            Core.Configuration.GatewayConfig.Load);
+        // The fleet-message steward (messaging.steward) - one instance per Director, guarding this
+        // Director's sessions' OUTGOING /fleet/* messages. Built from the Director's options, so it is
+        // default-on-generous and config-tunable, and inert (Allow) when disabled.
+        var messageSteward = new MessageSteward(_sessionManager.Options.MessageSteward);
+        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward);
         // Dictation glossary resolution mirrors the key resolver (#253): the Gateway's shared
         // dictionary when attached, the local cache when standalone. GatewayConfig.Load (not the
         // snapshot) is passed so the resolver re-reads config.json each dictation and self-heals
         // into Gateway mode without a restart.
         var dictionaryResolver = new Core.Dictation.DictionaryResolver(
             _sessionManager.Options, Core.Configuration.GatewayConfig.Load);
-        DictationEndpoint.Map(_app, _sessionManager.Options, openAiKeyResolver, dictionaryResolver);
+        DictationEndpoint.Map(_app, _sessionManager.Options, dictionaryResolver);
         TerminalStreamEndpoint.Map(_app, _sessionManager);
         SessionUsageEndpoint.Map(_app, _sessionManager);
         // GET /sessions/{sid}/context (issue #799): the always-visible "how full is the window"
@@ -480,6 +481,9 @@ public sealed class ControlApiHost : IAsyncDisposable
         // loaded above for the HTML nav button.
         _gatewayClient = BuildGatewayClient(gatewayConfig);
         _gatewayClient.Start();
+        // Issue #1176 (Phase 1a): additive push stream, alongside the heartbeat/doorbell floor.
+        _streamClient = BuildStreamClient(gatewayConfig);
+        _streamClient?.Start();
         WireDoorbellPush();
 
         IsListening = true;
@@ -592,6 +596,33 @@ public sealed class ControlApiHost : IAsyncDisposable
         return client;
     }
 
+    /// <summary>
+    /// Issue #1176 (Phase 1a): build the push-stream client, or null when stream mode is off / no Gateway
+    /// is configured. Its snapshot source is <see cref="SnapshotFullSessions"/>, which uses the SAME
+    /// mapper as the local /sessions endpoint (review #6) so a pushed row equals a pulled row.
+    /// </summary>
+    private GatewayStreamClient? BuildStreamClient(GatewayConfig gatewayConfig)
+    {
+        if (!gatewayConfig.IsEnabled || !gatewayConfig.StreamMode) return null;
+        // Issue #1177 (Phase 1): the stream client's down-channel dispatcher reuses the SAME in-process
+        // SessionCommandExecutor the Control API endpoints call, so a command executed over the stream is
+        // byte-for-byte identical to the same command over HTTP.
+        return new GatewayStreamClient(gatewayConfig, DirectorId, _version, SnapshotFullSessions,
+            // The services are read per-command (inside the lambda) so they reflect the fields once
+            // StartAsync has initialized them - BuildStreamClient runs before _proactiveExplain /
+            // _turnSummaryCache are set. Additive: verbs that need no service ignore it (issue #1177 inc 6).
+            cmd => SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
+                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache }));
+    }
+
+    /// <summary>
+    /// Full per-session snapshot for the stream, built through the SAME <see cref="ControlEndpoints.Map"/>
+    /// the local /sessions endpoint uses (issue #1176, review #6), so a pushed snapshot row is identical
+    /// to what a pull would have returned for the same session.
+    /// </summary>
+    private List<SessionDto> SnapshotFullSessions()
+        => _sessionManager.ListSessions().Select(s => ControlEndpoints.Map(s, DirectorId)).ToList();
+
     /// <summary>Per-session mechanical-state snapshot for the heartbeat body (issue #186).</summary>
     private List<SessionStateSnapshot> SnapshotSessionStates()
         => _sessionManager.ListSessions()
@@ -635,6 +666,8 @@ public sealed class ControlApiHost : IAsyncDisposable
                     _ => null,
                 };
                 _gatewayClient?.NotifySessionState(session.Id.ToString(), newState.ToString(), eventName);
+                // Issue #1176 (Phase 1a): push the changed session up the stream as a delta.
+                _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
             };
 
         _sessionManager.OnSessionCreated += session =>
@@ -642,12 +675,15 @@ public sealed class ControlApiHost : IAsyncDisposable
             Attach(session);
             _gatewayClient?.NotifySessionState(session.Id.ToString(), session.ActivityState.ToString(),
                 DoorbellEvents.SessionCreated);
+            _streamClient?.NotifyDelta(ControlEndpoints.Map(session, DirectorId));
         };
         _sessionManager.OnSessionRemoved += session =>
         {
             if (_exitAnnounced.TryAdd(session.Id, 0))
                 _gatewayClient?.NotifySessionState(session.Id.ToString(),
                     Core.Sessions.ActivityState.Exited.ToString(), DoorbellEvents.SessionExited);
+            // Issue #1176 (Phase 1a): tombstone the removed session so the Gateway prunes it immediately.
+            _streamClient?.NotifyRemove(session.Id.ToString());
             // The session is gone from the roster - drop the announce guard so the map
             // never grows past the live roster.
             _exitAnnounced.TryRemove(session.Id, out _);
@@ -678,10 +714,21 @@ public sealed class ControlApiHost : IAsyncDisposable
                 _gatewayClient.Dispose();
                 _gatewayClient = null;
             }
+            // Issue #1176 (Phase 1a): tear down the old stream client before rebuilding, so a settings
+            // change never leaves two streams pushing for the same directorId.
+            if (_streamClient is not null)
+            {
+                try { await _streamClient.StopAsync(); }
+                catch (Exception ex) { FileLog.Write($"[ControlApiHost] ReapplyGateway stream stop error: {ex.Message}"); }
+                await _streamClient.DisposeAsync();
+                _streamClient = null;
+            }
 
             var gatewayConfig = GatewayConfig.Load();
             _gatewayClient = BuildGatewayClient(gatewayConfig);
             _gatewayClient.Start();
+            _streamClient = BuildStreamClient(gatewayConfig);
+            _streamClient?.Start();
         }
         finally
         {
@@ -737,6 +784,14 @@ public sealed class ControlApiHost : IAsyncDisposable
             catch (Exception ex) { FileLog.Write($"[ControlApiHost] GatewayClient.StopAsync error: {ex.Message}"); }
             _gatewayClient.Dispose();
             _gatewayClient = null;
+        }
+        // Issue #1176 (Phase 1a): stop the push stream on host shutdown.
+        if (_streamClient is not null)
+        {
+            try { await _streamClient.StopAsync(); }
+            catch (Exception ex) { FileLog.Write($"[ControlApiHost] GatewayStreamClient.StopAsync error: {ex.Message}"); }
+            await _streamClient.DisposeAsync();
+            _streamClient = null;
         }
 
         _terminalStateDetector?.Dispose();

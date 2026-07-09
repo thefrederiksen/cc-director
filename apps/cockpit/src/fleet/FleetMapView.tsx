@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
-import { dotColor, effectiveColor } from "@devthrottle/client-core/sessions/ordering";
+import { dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import { getSessionsEnvelope, type MachineError } from "@devthrottle/client-core/fleet/fleetClient";
 import { repoBasename, relativeTime } from "./format";
 
@@ -408,7 +408,7 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
       )}
 
       <div className="fmap-card-state" style={{ color: dotColor(color) }}>
-        {stateLabel(color)}
+        {stateLabel(s)}
         <span className="fmap-card-idle">{relativeTime(s.lastActivityAt)}</span>
       </div>
 
@@ -567,25 +567,4 @@ function aggregateColors(sessions: SessionDto[]): string[] {
   const priority = ["red", "orange", "yellow", "blue", "green", "supporting", "grey"];
   const present = new Set(sessions.map((s) => effectiveColor(s)));
   return priority.filter((c) => present.has(c));
-}
-
-function stateLabel(color: string): string {
-  switch (color) {
-    case "red":
-      return "Needs you";
-    case "blue":
-      return "Working";
-    case "green":
-      return "Idle";
-    case "yellow":
-      return "Wingman reading";
-    case "orange":
-      return "Transcribing";
-    case "supporting":
-      return "Sub-agent";
-    case "grey":
-      return "On hold";
-    default:
-      return color;
-  }
 }

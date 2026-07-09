@@ -497,54 +497,6 @@ public sealed class RecordingIngestServiceTests : IDisposable
         Assert.Equal(Path.Combine(_tmp, "recordings"), svc.TranscriptsRoot);
     }
 
-    [Fact]
-    public async Task EndToEnd_RealTranscription_Phase0Clips_PreservesCompanyTerms()
-    {
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OPENAI_API_KEY")))
-            return; // self-skip without credentials
-
-        var clips = FindPhase0Clips();
-        if (clips.Count == 0) return; // clips not present in this checkout
-
-        // Real transcription + cleanup, with the project vocabulary so company
-        // terms survive. Fake filer so the test does not mutate the real vault.
-        using var transcriber = new OpenAiRecordingTranscriber(
-            dictionaryPath: WriteTestDictionary());
-        var filer = new FakeFiler();
-        var svc = NewService(transcriber, filer);
-        svc.Register(Reg("e2e", codec: "mp3"));
-
-        var chunkInfos = new List<RecordingChunkInfo>();
-        for (int i = 0; i < clips.Count; i++)
-        {
-            var bytes = await File.ReadAllBytesAsync(clips[i]);
-            var sha = Sha(bytes);
-            await svc.StoreChunkAsync("e2e", i, bytes, sha);
-            chunkInfos.Add(new RecordingChunkInfo(i, $"{i:D4}.mp3", i * 60000L, 60000, bytes.Length, sha));
-        }
-
-        var manifest = new RecordingManifest("e2e", "Phase0 Injected Call", "test-injector",
-            "2026-05-23T09:00:00Z", "2026-05-23T09:03:00Z", 16000, 1, "mp3",
-            chunkInfos, new() { new RecordingNote(1000, "injected audio test") });
-
-        await svc.CompleteAsync("e2e", manifest);  // enqueue
-        await svc.ProcessRecordingAsync("e2e");     // run the queued job
-        var status = svc.GetStatus("e2e");
-
-        Assert.Equal("transcribed", status.State);
-        Assert.Equal(clips.Count, status.ChunksTranscribed);
-
-        // Promote into the (fake) vault so we can inspect the filed markdown.
-        await svc.PromoteToVaultAsync("e2e");
-        var md = File.ReadAllText(filer.Filed[0].TranscriptMarkdownPath);
-        // At least one of the known Phase 0 company terms must survive cleanup.
-        var hit = md.Contains("ConPTY", StringComparison.OrdinalIgnoreCase)
-               || md.Contains("Avalonia", StringComparison.OrdinalIgnoreCase)
-               || md.Contains("the operator", StringComparison.OrdinalIgnoreCase)
-               || md.Contains("acmeflow", StringComparison.OrdinalIgnoreCase);
-        Assert.True(hit, "expected a known company term in the transcript markdown");
-    }
-
     // ===== decoupling: audio + notes ingest never depends on transcription ==
 
     [Fact]

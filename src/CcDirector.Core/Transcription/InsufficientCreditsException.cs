@@ -5,9 +5,9 @@ namespace CcDirector.Core.Transcription;
 /// <c>code=insufficient_credits</c>) for a transcription request (issue #885). This is a distinct,
 /// expected condition - NOT a provider rejection - so the whole stack can handle it uniformly: the
 /// action stops cleanly, the user's recording is preserved and retryable, and the UI offers "Add
-/// credits" and "Use my own OpenAI key" instead of a raw error. Thrown by
-/// <see cref="BatchTranscriptionPipeline"/> when the hosted endpoint returns 402; the Gateway
-/// transcription owner turns it into an out-of-credits result the HTTP face maps to 402.
+/// credits" instead of a raw error. Thrown by
+/// the Gateway transcription owner when the hosted endpoint returns 402; the Gateway HTTP face maps
+/// it to 402.
 /// </summary>
 public sealed class InsufficientCreditsException : Exception
 {

@@ -17,6 +17,28 @@ public class AgentOptions
     public int GracefulShutdownTimeoutSeconds { get; set; } = 5;
 
     /// <summary>
+    /// Faster-stop control for the FLEET/remote stop path only (a Gateway DELETE / stream "kill" verb,
+    /// i.e. the mobile + Cockpit stop button). The graceful window in MILLISECONDS the Director waits for a
+    /// clean exit (after sending Ctrl+C) before force-killing, when the stop arrives remotely. A remote stop
+    /// usually means "I want this gone now", and most agent TUIs ignore Ctrl+C entirely, so waiting the full
+    /// <see cref="GracefulShutdownTimeoutSeconds"/> (5s) is dead time; this escalates to force faster while
+    /// still trying graceful first.
+    ///
+    /// Tunable + safe: raise it toward 5000 to be more patient, or set it to null / a non-positive value to
+    /// DISABLE the fast path entirely - the fleet stop then uses the standard <see
+    /// cref="GracefulShutdownTimeoutSeconds"/>, byte-identical to before. The LOCAL desktop kill is never
+    /// affected: it always uses <see cref="GracefulShutdownTimeoutSeconds"/>.
+    /// </summary>
+    public int? FleetKillGraceMs { get; set; } = 1500;
+
+    /// <summary>
+    /// Fleet-message steward policy (flag: <c>messaging.steward</c>): dedupe + per-source rate limit +
+    /// broadcast throttle on a session's OUTGOING fleet messages, applied at its own Director's
+    /// <c>/fleet/*</c> handlers. Default-ON with generous limits; see <see cref="MessageStewardOptions"/>.
+    /// </summary>
+    public MessageStewardOptions MessageSteward { get; set; } = new();
+
+    /// <summary>
     /// Path to the Pi agent CLI (<c>pi.cmd</c> from <c>@earendil-works/pi-coding-agent</c>).
     /// Defaults to the standard npm global install location on Windows; users can override
     /// in config.json if pi is installed elsewhere.
@@ -107,26 +129,23 @@ public class AgentOptions
     public string? ChatSessionRepoPath { get; set; }
 
     /// <summary>
-    /// OpenAI TTS voice for the voice mode.  Defaults to "onyx" - OpenAI's deep,
-    /// natural male voice.  Both the web voice page and the Android client POST
-    /// /tts with no voice override, so this single default is the voice every
-    /// client speaks with.  Valid values: alloy, echo, fable, onyx, nova, shimmer.
+    /// Legacy standalone TTS voice for older no-resolver callers. Production hosted voice selection
+    /// comes from <see cref="TtsVoiceConfig"/>.
     /// </summary>
     public string TtsVoice { get; set; } = "onyx";
 
     /// <summary>
-    /// OpenAI TTS model for Phase 3 of the voice mode.  Defaults to "tts-1".
-    /// Use "tts-1-hd" for higher quality at 2x cost.
+    /// Legacy standalone TTS model for older no-resolver callers. Production hosted model selection
+    /// comes from <see cref="TtsModelConfig"/>.
     /// </summary>
     public string TtsModel { get; set; } = "tts-1";
 
     /// <summary>
-    /// OpenAI API key for the desktop voice / text-to-speech availability checks
+    /// Legacy standalone provider key for older no-resolver callers
     /// (<see cref="ResolveOpenAiKey"/>). Issue #839 removed the config.json
     /// Voice.OpenAiKey loading, so this is no longer populated from config and is
     /// NOT the transcription key store - transcription reads the key vault only
-    /// (<see cref="OpenAiKeyResolver"/> / the Gateway transcription service). The
-    /// OPENAI_API_KEY environment variable remains as the documented seed.
+    /// (<see cref="HostedAiKeyResolver"/> / the Gateway transcription service). The
     /// Never sent to browsers.
     /// </summary>
     public string? OpenAiKey { get; set; }
@@ -140,24 +159,16 @@ public class AgentOptions
     public string? DictationDictionaryPath { get; set; }
 
     /// <summary>
-    /// OpenAI chat model used by the dictation library's CleanupOrchestrator.
-    /// Defaults to <c>gpt-4.1-nano</c> — the smallest/fastest gpt-4.1 tier,
-    /// purpose-built for high-throughput follow-instructions tasks like
-    /// transcript cleanup. Override to <c>gpt-4o-mini</c> for slightly higher
-    /// quality at noticeably higher latency, or to <c>gpt-4o</c> for the
-    /// best quality at substantially higher latency and cost.
+    /// Hosted cleanup model used by the Gateway transcription CleanupOrchestrator.
+    /// Defaults to the DevThrottle dictation cleanup model.
     /// </summary>
-    public string DictationCleanupModel { get; set; } = "gpt-4.1-nano";
+    public string DictationCleanupModel { get; set; } = TranscriptionEndpointResolver.DevThrottleDictationCleanupModel;
 
     /// <summary>
-    /// OpenAI transcription model used by the dictation live preview
-    /// (<see cref="Dictation.LivePreviewTranscriber"/>), which re-transcribes
-    /// the growing clip while the user is still talking so the dialog shows
-    /// the words as they are spoken. Defaults to <c>gpt-4o-mini-transcribe</c>:
-    /// the preview re-runs every few seconds, so the cheap/fast tier is the
-    /// right default. The FINAL transcript does not use this model.
+    /// Legacy preview model setting retained for config compatibility. Production transcription is
+    /// Gateway-owned and does not use a Director-side preview transcriber.
     /// </summary>
-    public string DictationPreviewModel { get; set; } = "gpt-4o-mini-transcribe";
+    public string DictationPreviewModel { get; set; } = TranscriptionEndpointResolver.DevThrottleModel;
 
     /// <summary>
     /// Resolve the effective dictation dictionary path. Always returns a
@@ -172,20 +183,18 @@ public class AgentOptions
     }
 
     /// <summary>
-    /// Resolve the effective OpenAI key for the desktop voice / text-to-speech availability checks:
-    /// the in-process <see cref="OpenAiKey"/> when set, then the OPENAI_API_KEY environment variable.
-    /// Returns null if neither is set.
+    /// Resolve the legacy standalone provider key: the in-process <see cref="OpenAiKey"/> when set,
+    /// then the legacy environment variable. Returns null if neither is set.
     ///
     /// Issue #839: this is NOT the transcription key path. Transcription reads the key vault only
-    /// (<see cref="OpenAiKeyResolver"/> and the Gateway transcription service); the config.json
-    /// Voice.OpenAiKey loading was removed, so in production <see cref="OpenAiKey"/> is unset and the
-    /// environment variable (the documented vault seed) is what this returns.
+    /// (<see cref="HostedAiKeyResolver"/> and the Gateway transcription service); the config.json
+    /// Voice.OpenAiKey loading was removed, so in production <see cref="OpenAiKey"/> is unset.
     /// </summary>
     public string? ResolveOpenAiKey()
     {
         if (!string.IsNullOrWhiteSpace(OpenAiKey))
             return OpenAiKey.Trim();
-        var env = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var env = Environment.GetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName);
         return string.IsNullOrWhiteSpace(env) ? null : env.Trim();
     }
 

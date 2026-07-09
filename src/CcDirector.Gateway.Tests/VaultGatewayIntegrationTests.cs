@@ -14,8 +14,8 @@ namespace CcDirector.Gateway.Tests;
 /// <see cref="GatewayHost"/> (auth on, Tailscale off via TestEnvironment, isolated dirs +
 /// isolated key-vault file, ephemeral port - so it never touches a running Gateway or the
 /// real %LOCALAPPDATA% store), then drives the vault over HTTP AND through the real
-/// <see cref="OpenAiKeyResolver"/> a Director uses. This is the live contract the Cockpit
-/// Keys page and Director dictation depend on.
+/// <see cref="HostedAiKeyResolver"/> a Director uses. This is the live contract the Cockpit
+/// Keys page and Director hosted-AI surfaces depend on.
 /// </summary>
 public sealed class VaultGatewayIntegrationTests : IAsyncLifetime
 {
@@ -61,35 +61,34 @@ public sealed class VaultGatewayIntegrationTests : IAsyncLifetime
     public async Task Put_then_resolver_pulls_the_key()
     {
         // Set the key the way the Cockpit Keys page does.
-        var put = await _http.PutAsJsonAsync("vault/keys/OPENAI_API_KEY", new { value = "sk-integration-123" });
+        var put = await _http.PutAsJsonAsync("vault/keys/DEVTHROTTLE_API_KEY", new { value = "dt_live_integration" });
         put.EnsureSuccessStatusCode();
 
         // The names list shows it (and never a value).
         var list = await _http.GetAsync("vault/keys");
         var listBody = await list.Content.ReadAsStringAsync();
-        Assert.Contains("OPENAI_API_KEY", listBody);
-        Assert.DoesNotContain("sk-integration-123", listBody);
+        Assert.Contains("DEVTHROTTLE_API_KEY", listBody);
+        Assert.DoesNotContain("dt_live_integration", listBody);
 
-        // The real resolver a gateway-attached Director uses pulls it over HTTP. Pin BYO transcription
-        // mode: since issue #541 the default mode is Local (in-process, no key), so an unpinned
-        // resolver would short-circuit ResolveAsync to null; this test covers the OpenAI key path.
-        var resolver = new OpenAiKeyResolver(
+        // The real resolver a gateway-attached Director uses pulls it over HTTP. Legacy BYO mode
+        // migrates to DevThrottle, so this proves the gateway key path used by upgraded machines.
+        var resolver = new HostedAiKeyResolver(
             () => new GatewayConfig { Url = _gatewayBase, Token = Token },
             () => TranscriptionMode.Byo);
         Assert.True(resolver.UsesGateway);
-        Assert.Equal("sk-integration-123", await resolver.ResolveAsync());
+        Assert.Equal("dt_live_integration", await resolver.ResolveAsync());
     }
 
     [Fact]
     public async Task Delete_then_resolver_returns_null_with_gateway_message()
     {
-        await _http.PutAsJsonAsync("vault/keys/OPENAI_API_KEY", new { value = "sk-temp" });
-        var del = await _http.DeleteAsync("vault/keys/OPENAI_API_KEY");
+        await _http.PutAsJsonAsync("vault/keys/DEVTHROTTLE_API_KEY", new { value = "dt_live_temp" });
+        var del = await _http.DeleteAsync("vault/keys/DEVTHROTTLE_API_KEY");
         del.EnsureSuccessStatusCode();
 
-        // Pin BYO mode (default is Local since #541, which has no key) so the deleted-key path is
-        // what makes ResolveAsync return null - not the mode having no key in the first place.
-        var resolver = new OpenAiKeyResolver(
+        // Legacy BYO mode migrates to DevThrottle, so deleting the DevThrottle account key is what
+        // makes ResolveAsync return null.
+        var resolver = new HostedAiKeyResolver(
             () => new GatewayConfig { Url = _gatewayBase, Token = Token },
             () => TranscriptionMode.Byo);
         Assert.Null(await resolver.ResolveAsync());
@@ -100,22 +99,22 @@ public sealed class VaultGatewayIntegrationTests : IAsyncLifetime
     public async Task Standalone_resolver_uses_local_vault_key_no_gateway()
     {
         // No gateway configured: the resolver reads the LOCAL key vault (issue #839: the vault is the
-        // single key store; the config.json Voice.OpenAiKey copy is gone). Pin BYO mode (default is
-        // Local since #541, which has no key) so the local OpenAI key path is exercised.
+        // single key store; the config.json Voice.OpenAiKey copy is gone). Legacy BYO mode migrates
+        // forward to the DevThrottle account key.
         var localVaultPath = Path.Combine(Path.GetTempPath(), "cc-vault-it-local-" + Guid.NewGuid().ToString("N") + ".json");
         var emptyVaultPath = Path.Combine(Path.GetTempPath(), "cc-vault-it-empty-" + Guid.NewGuid().ToString("N") + ".json");
         try
         {
             var localVault = new KeyVault(localVaultPath);
-            localVault.Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-local-standalone");
-            var withKey = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.Byo, localVault: localVault);
+            localVault.Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_local");
+            var withKey = new HostedAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.Byo, localVault: localVault);
             Assert.False(withKey.UsesGateway);
-            Assert.Equal("sk-local-standalone", await withKey.ResolveAsync());
+            Assert.Equal("dt_live_local", await withKey.ResolveAsync());
 
-            // Empty local vault: unavailable, pointed at Settings > Transcription (not the Cockpit).
-            var noKey = new OpenAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.Byo, localVault: new KeyVault(emptyVaultPath));
+            // Empty local vault: unavailable, pointed at DevThrottle account setup.
+            var noKey = new HostedAiKeyResolver(() => new GatewayConfig(), () => TranscriptionMode.Byo, localVault: new KeyVault(emptyVaultPath));
             Assert.Null(await noKey.ResolveAsync());
-            Assert.Contains("Settings > Transcription", noKey.UnavailableMessage);
+            Assert.Contains("Sign in to DevThrottle", noKey.UnavailableMessage);
         }
         finally
         {
@@ -131,24 +130,24 @@ public sealed class VaultGatewayIntegrationTests : IAsyncLifetime
         // yet), then the user adds a gateway block + sets the key in the Cockpit. Dictation must
         // start working WITHOUT restarting the Director - the resolver re-reads the mode live
         // rather than snapshotting it at construction.
-        await _http.PutAsJsonAsync("vault/keys/OPENAI_API_KEY", new { value = "sk-late-gateway" });
+        await _http.PutAsJsonAsync("vault/keys/DEVTHROTTLE_API_KEY", new { value = "dt_live_late_gateway" });
 
         var mode = new GatewayConfig();                 // standalone at boot
         // Pin BYO transcription mode (default is Local since #541, which has no key); this test is
         // about the gateway-config live re-read (standalone -> attached), not the transcription mode.
         // Standalone reads an EMPTY local vault (issue #839) so the boot state is "no key" - distinct
-        // from the gateway vault that holds sk-late-gateway once attached below.
+        // from the gateway vault that holds dt_live_late_gateway once attached below.
         var emptyLocalVaultPath = Path.Combine(Path.GetTempPath(), "cc-vault-it-boot-" + Guid.NewGuid().ToString("N") + ".json");
-        var resolver = new OpenAiKeyResolver(() => mode, () => TranscriptionMode.Byo, localVault: new KeyVault(emptyLocalVaultPath));
+        var resolver = new HostedAiKeyResolver(() => mode, () => TranscriptionMode.Byo, localVault: new KeyVault(emptyLocalVaultPath));
         Assert.False(resolver.UsesGateway);
         Assert.Null(await resolver.ResolveAsync());
-        Assert.Contains("Settings > Transcription", resolver.UnavailableMessage);
+        Assert.Contains("Sign in to DevThrottle", resolver.UnavailableMessage);
 
         // config.json gains a gateway block (what writing it later did) - same resolver instance.
         mode = new GatewayConfig { Url = _gatewayBase, Token = Token };
         Assert.True(resolver.UsesGateway);
         Assert.Contains("Cockpit", resolver.UnavailableMessage);
-        Assert.Equal("sk-late-gateway", await resolver.ResolveAsync());
+        Assert.Equal("dt_live_late_gateway", await resolver.ResolveAsync());
     }
 
     private static int AllocateFreePort()

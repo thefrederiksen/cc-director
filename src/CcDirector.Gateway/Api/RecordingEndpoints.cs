@@ -50,7 +50,7 @@ internal static class RecordingEndpoints
         // Lazily built on FIRST USE, not at host startup: constructing the service resolves
         // the OpenAI API key (the transcriber needs it), and the Gateway must boot on machines
         // without that key. A missing key then fails the individual recording request loudly
-        // (500 with the explicit "OPENAI_API_KEY ... not set" message) instead of preventing
+        // (500 with an explicit hosted-AI setup message) instead of preventing
         // the entire Gateway host from starting.
         var lazyService = new Lazy<RecordingIngestService>(BuildService);
 
@@ -426,7 +426,7 @@ internal static class RecordingEndpoints
         // It routes through the ONE Gateway transcription owner (issue #839): the single
         // GatewayTranscriptionService resolves the configured mode and the key (from the Gateway
         // vault) and picks the provider - in-process Whisper for on-device mode, or the resolved
-        // OpenAI-compatible batch endpoint for the remote modes. So switching the mode in the Cockpit
+        // provider-compatible batch endpoint for hosted mode. So switching the mode in the Cockpit
         // changes how the recording is transcribed with no Gateway restart, and on-device mode now
         // works for recordings too - the same single audio-to-text path every other batch caller uses.
         return new RecordingIngestService(

@@ -7,9 +7,9 @@ import {
   killDirector,
   type ExesDirector,
   type ExesList,
-  type ExesSession,
 } from "@devthrottle/client-core/exes/exesClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { dotColor } from "@devthrottle/client-core/sessions/ordering";
 
 // The Exes management page (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Exes.razor(.css) (#183). It lists the Directors running on THIS computer + their sessions and the
@@ -176,7 +176,7 @@ export function ExesView() {
                     ) : (
                       dir.sessions.map((s) => (
                         <div className="ex-sess" key={s.sessionId}>
-                          <span className={`ex-dot ${colorClass(s)}`} />
+                          <span className="ex-dot" style={{ backgroundColor: dotColor(s.effectiveColor ?? "unknown") }} />
                           {!s.name || s.name.trim().length === 0 ? (
                             <span className="ex-sname ex-unnamed">(unnamed)</span>
                           ) : (
@@ -186,7 +186,7 @@ export function ExesView() {
                             {!s.agent || s.agent.trim().length === 0 ? "?" : s.agent}
                           </span>
                           <span className="ex-sstate">
-                            {repoBasename(s.repoPath)} &middot; {humanizeState(s.activityState)}
+                            {repoBasename(s.repoPath)} &middot; {s.stateLabel ?? "-"}
                           </span>
                         </div>
                       ))
@@ -260,34 +260,6 @@ function repoBasename(path: string | null | undefined): string {
   const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
   const i = norm.lastIndexOf("/");
   return i >= 0 ? norm.slice(i + 1) : norm;
-}
-
-function colorClass(s: ExesSession): string {
-  const c = (s.statusColor ?? "").toLowerCase();
-  return c === "red" || c === "yellow" || c === "green" || c === "blue" ? c : "unknown";
-}
-
-function humanizeState(state: string | null | undefined): string {
-  switch (state) {
-    case "WaitingForInput":
-      return "Waiting for input";
-    case "WaitingForPerm":
-      return "Waiting for permission";
-    case "Idle":
-      return "Idle";
-    case "Working":
-      return "Working";
-    case "Starting":
-      return "Starting";
-    case "Exited":
-      return "Exited";
-    case null:
-    case undefined:
-    case "":
-      return "-";
-    default:
-      return state;
-  }
 }
 
 function fmtSize(bytes: number): string {

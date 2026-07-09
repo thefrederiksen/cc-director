@@ -13,6 +13,9 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
     <PackageReference Include="xunit" Version="2.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+    <!-- Issue #1176 (Phase 1a): the SignalR CLIENT (a separate package from the server, which ships in
+         the AspNetCore shared framework) so the integration harness can dial the DirectorHub end to end. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

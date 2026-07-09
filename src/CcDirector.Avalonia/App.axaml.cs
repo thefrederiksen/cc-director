@@ -853,6 +853,25 @@ public partial class App : Application
                     Options.DefaultBufferSizeBytes = bs.GetInt32();
                 if (agentSection.TryGetProperty("GracefulShutdownTimeoutSeconds", out var gs))
                     Options.GracefulShutdownTimeoutSeconds = gs.GetInt32();
+                // Faster STOP: the fleet/remote stop graceful window (ms) before force-kill. A non-positive
+                // value disables the fast path (falls back to the standard GracefulShutdownTimeoutSeconds).
+                if (agentSection.TryGetProperty("FleetKillGraceMs", out var fkg) && fkg.TryGetInt32(out var fkgMs))
+                    Options.FleetKillGraceMs = fkgMs;
+            }
+
+            // Fleet-message steward (messaging.steward): dedupe + per-source rate limit + broadcast throttle
+            // on a session's outgoing /fleet/* messages. Default-on-generous; every threshold is tunable.
+            if (doc.RootElement.TryGetProperty("Messaging", out var messagingSection)
+                && messagingSection.TryGetProperty("Steward", out var stewardSection))
+            {
+                if (stewardSection.TryGetProperty("Enabled", out var mse) && (mse.ValueKind == System.Text.Json.JsonValueKind.True || mse.ValueKind == System.Text.Json.JsonValueKind.False))
+                    Options.MessageSteward.Enabled = mse.GetBoolean();
+                if (stewardSection.TryGetProperty("DedupeWindowMs", out var mdw) && mdw.TryGetInt32(out var mdwMs))
+                    Options.MessageSteward.DedupeWindowMs = mdwMs;
+                if (stewardSection.TryGetProperty("PerSourcePerMin", out var mps) && mps.TryGetInt32(out var mpsN))
+                    Options.MessageSteward.PerSourcePerMin = mpsN;
+                if (stewardSection.TryGetProperty("BroadcastsPerMin", out var mbp) && mbp.TryGetInt32(out var mbpN))
+                    Options.MessageSteward.BroadcastsPerMin = mbpN;
             }
 
             if (doc.RootElement.TryGetProperty("Voice", out var voiceSection))

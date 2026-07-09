@@ -1100,9 +1100,8 @@ public partial class SettingsDialog : Window
     }
 
     /// <summary>
-    /// Open the wake-word grammar sandbox. Resolves AgentOptions from the running App
-    /// (same path the Wingman Speak button uses) so the test dialog can build a
-    /// SpeakService. If no OpenAI key is configured the test dialog itself reports it.
+    /// Open the wake-word grammar sandbox. Resolves AgentOptions from the running App so the test
+    /// dialog can use the Gateway-owned desktop dictation path.
     /// </summary>
     private async void BtnWakeWordTest_Click(object? sender, RoutedEventArgs e)
     {

@@ -7,30 +7,49 @@ import { useMemo, useSyncExternalStore } from "react";
 //
 // The store is in-memory and keyed by uploadId. It intentionally survives route changes within the
 // single-page PWA (leaving the Terminal for Home keeps the status), which is exactly why the roster
-// can carry a dictation that started on the session screen. A full app reload clears it, but the
-// durable pendingStore record plus resumePendingDictations re-drive the send and re-publish status on
-// the next load, so nothing is silently dropped.
+// can carry a dictation that started on the session screen. A full app reload clears the in-memory
+// status, but the durable pendingStore record plus the background driver re-drive the send and
+// re-publish status on the next load, so a held dictation is never silently dropped (issue #1182).
 //
 // Publishing lives in the send pipeline: uploadDictationToSession publishes the mechanical steps
-// (uploading, transcribing) and the terminal outcome (done / failed), and backgroundTranscribeAndSend
-// publishes the very first "saving" step before any network work. Consumers only read.
+// (uploading, transcribing) and the terminal outcome (done / failed), and the background driver
+// publishes the very first "saving" step before any network work and the "held" step between retries.
+// Consumers only read.
 
-export type DictationPhase = "saving" | "uploading" | "transcribing" | "done" | "failed";
+// saving      - writing the audio to durable on-device storage, before any network work.
+// uploading   - streaming chunks to the Gateway (uploaded / total).
+// transcribing - all chunks are up; the Gateway is assembling, transcribing, and injecting the turn.
+// held        - kept durably and will keep retrying in the background (waiting for a connection, or
+//               retrying, or throttled after the first hard hour). This is NOT a failure: the audio is
+//               safe and delivery continues automatically. retryable is true so the UI offers Upload now.
+// parked      - a genuinely permanent, non-retryable failure stopped the auto-loop (issue #1184): the clip
+//               is over the provider size cap or an unsupported format. The audio is KEPT and the clip is
+//               saved-and-retryable, but delivery does NOT auto-retry - retryable is true so the UI offers
+//               an explicit Retry, which is the only way it re-drives (it will succeed once the server
+//               transcode-and-split fix lands). Distinct from held: nothing is auto-retrying.
+// done        - the server confirmed it owns the turn (delivered). Brief, then auto-clears.
+// failed      - a genuine, non-recoverable failure (durable storage unavailable, so the clip could not
+//               be saved at all). Distinct from held: nothing is retrying.
+export type DictationPhase = "saving" | "uploading" | "transcribing" | "held" | "parked" | "done" | "failed";
 
 export interface DictationStatus {
   /** The session the dictation is being sent into. */
   sessionId: string;
-  /** The client-generated upload id (also the durable record id and the server Idempotency-Key). */
+  /** The client-generated upload id (also the server Idempotency-Key). */
   uploadId: string;
   phase: DictationPhase;
   /** Chunks uploaded so far (uploading phase only). */
   uploaded?: number;
   /** Total chunks for this clip (uploading phase only). */
   total?: number;
-  /** Human-readable failure reason (failed phase only). */
+  /** Human-readable reason for a held, parked, or failed phase. For held, this is the honest "kept and will
+   *  keep trying" copy (never "was not transcribed"); for parked, the saved-and-retryable message; for
+   *  failed, the non-recoverable reason. */
   error?: string;
-  /** True when the clip is saved durably and will retry on the next app load - "held", not lost.
-   *  False for a hard failure (for example out of credits) that a plain retry will not fix. */
+  /** True when the clip is saved durably and the UI should offer a retry control: the held phase (an
+   *  "Upload now" that kicks a waiting or throttled retry to full speed) and the parked phase (an explicit
+   *  "Retry" that re-enters the active drive after a permanent failure stopped the auto-loop). False for a
+   *  genuine, non-recoverable failure that no retry can fix. */
   retryable?: boolean;
   /** Epoch milliseconds of the last update (newest-first ordering, and the done auto-clear timer). */
   updatedAt: number;

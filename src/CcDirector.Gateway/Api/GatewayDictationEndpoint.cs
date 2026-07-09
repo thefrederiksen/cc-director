@@ -27,12 +27,17 @@ namespace CcDirector.Gateway.Api;
 ///   POST /dictation/upload               { sessionId, baselineBufferBytes } + Idempotency-Key -> { upload_id }
 ///   PUT  /dictation/{uploadId}/chunk/{i}  octet-stream + X-Chunk-Sha256                        -> { ok }
 ///   POST /dictation/{uploadId}/complete   { sessionId,totalChunks,mime,ext,before,after,baselineBufferBytes,resumed }
-///                                          -> 200 { submitted, movedOn, transcript } | 409 { missing } | 402 | 5xx
+///                                          -> 200 { submitted, movedOn, transcript } | 200 { dropped, reason } | 409 { missing } | 402 | 5xx
+///   POST /dictation/{uploadId}/ack        -> 200 { ok, retired }
 ///
-/// A retried complete is single-flighted per uploadId so the turn is submitted at most once. Abandoned
-/// uploads are swept after ~1 hour (<see cref="VoiceUploadStore.SweepAbandoned"/> + <see cref="SweepCompletes"/>).
-/// Every route is token-gated via <see cref="AuthMiddleware.HasValidToken"/> so it holds even when the
-/// production tray Gateway runs with the global auth middleware off.
+/// A retried complete is single-flighted per uploadId (so the turn is submitted at most once WHILE this
+/// instance holds it), and de-duplicated durably by the per-upload-id delivery record on disk (issue
+/// #1183): once an upload id is DELIVERED or ABANDONED, its terminal tombstone makes every later
+/// register/complete return the cached outcome and NEVER inject a second turn - past any age and across a
+/// Gateway restart. A PENDING upload's chunks are retained (never age-swept) until it becomes terminal;
+/// the tombstone is retired only by the client ack. Every route is token-gated via
+/// <see cref="AuthMiddleware.HasValidToken"/> so it holds even when the production tray Gateway runs with
+/// the global auth middleware off.
 /// </summary>
 internal static class GatewayDictationEndpoint
 {
@@ -41,11 +46,12 @@ internal static class GatewayDictationEndpoint
     // (non-resumed) sends always inject; the 1-hour staging sweep is the hard backstop for staleness.
     private const long MovedOnBufferGrowthBytes = 512;
 
-    // Single-flight + idempotency cache for complete, keyed by uploadId: concurrent or retried completes
-    // await the SAME work, and a terminal outcome is cached so a retry after a dropped response returns
-    // it instead of submitting a second turn. Non-terminal outcomes (error/incomplete/no-key) are NOT
-    // cached, so a genuine retry re-runs. Swept by age (SweepCompletes).
-    private sealed record CompleteEntry(DateTime At, Lazy<Task<DictationOutcome>> Task);
+    // In-memory single-flight for complete, keyed by uploadId: concurrent or retried completes await the
+    // SAME in-flight work so the turn is submitted at most once WHILE this instance holds the entry. The
+    // entry is dropped as soon as the work settles - the DURABLE de-dupe (a delivered/abandoned upload id
+    // never re-injecting, past any age and across a restart) is owned by the on-disk delivery record
+    // (issue #1183), not by this cache, so there is no age-swept idempotency window to reopen the hole.
+    private sealed record CompleteEntry(Lazy<Task<DictationOutcome>> Task);
     private static readonly ConcurrentDictionary<string, CompleteEntry> _completes = new();
 
     // uploadId -> sessionId, captured at register so the chunk handler (which only has the uploadId)
@@ -69,7 +75,26 @@ internal static class GatewayDictationEndpoint
             // The client's locally-generated id (its IndexedDB record id) is the Idempotency-Key AND the
             // upload id, so a resumed upload after a tab death maps back to the same staging dir.
             var key = ctx.Request.Headers["Idempotency-Key"].ToString();
+
+            // Durable de-dupe at register (issue #1183): if this upload id already reached a terminal record
+            // (delivered or abandoned), do NOT re-open it as a fresh PENDING upload - return the cached
+            // outcome so a re-registering client (whose earlier response was lost) drops its on-device copy
+            // and acknowledges instead of re-uploading and re-injecting. Survives a restart (on disk).
+            var existing = string.IsNullOrWhiteSpace(key) ? null : uploads.ReadRecord(key);
+            if (existing is { State: DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned })
+            {
+                FileLog.Write($"[GatewayDictation] upload re-register of terminal uploadId={key} state={existing.State}");
+                return TerminalRegisterResult(uploads.Register(key), existing);
+            }
+            // A PENDING or FAILED record (or none) is (re-)opened as a fresh PENDING upload. Register
+            // (re-)opens the staging dir; MarkPending writes the explicit durable PENDING marker carrying the
+            // sessionId, which BOTH persists the owning session on disk for the enforced session lock (issue
+            // #1188, so the lock survives a Gateway restart) AND, for a FAILED id, IS the retry re-entry back
+            // to PENDING - overwriting the FAILED marker while keeping the staged chunks (issue #1185).
+            if (existing is { State: DictationDeliveryState.Failed })
+                FileLog.Write($"[GatewayDictation] upload re-register clears FAILED uploadId={key}, retrying");
             var uploadId = uploads.Register(string.IsNullOrWhiteSpace(key) ? null : key);
+            uploads.MarkPending(uploadId, sid);
             _uploadSids[uploadId] = sid;
             try { transcribingSessions.Begin(sid); } catch { /* the orange mark is a nicety */ }
             FileLog.Write($"[GatewayDictation] upload registered sid={sid} uploadId={uploadId}");
@@ -114,8 +139,34 @@ internal static class GatewayDictationEndpoint
             // transcribe so a slow transcribe cannot let it age out mid-flight (issue #1126).
             transcribingSessions.Refresh(req.SessionId!);
 
+            // Durable de-dupe (issue #1183): a DELIVERED or ABANDONED upload id has a terminal tombstone on
+            // disk. Return its cached outcome and NEVER inject a second turn - even past the old one-hour
+            // window and even after a Gateway restart (the record and this check both live on disk). This
+            // handles the SEQUENTIAL/after-restart retry; the in-memory single-flight below handles two
+            // CONCURRENT completes racing before the first tombstone is written (they share one run).
+            var settled = uploads.ReadRecord(uploadId);
+            if (settled is { State: DictationDeliveryState.Delivered or DictationDeliveryState.Abandoned })
+            {
+                EndTranscribing(transcribingSessions, req.SessionId!);
+                _uploadSids.TryRemove(uploadId, out _);
+                FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: cached terminal outcome " +
+                    $"state={settled.State} (no re-injection)");
+                return TerminalOutcome(settled).ToResult();
+            }
+            // A FAILED (parked) record is user-retryable, NOT a terminal short-circuit (issue #1185): this
+            // complete IS the explicit retry, so clear the FAILED marker back to PENDING (keeping the staged
+            // chunks) and re-drive the real work below.
+            if (settled is { State: DictationDeliveryState.Failed })
+            {
+                uploads.ClearFailed(uploadId);
+                FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: cleared FAILED, retrying");
+            }
+
+            // Per-uploadId single-flight: concurrent or retried completes await the SAME in-flight run, so a
+            // still-PENDING id is assembled + transcribed + injected at most once even under a concurrent
+            // race. The entry is dropped once the run settles (below); the durable tombstone owns de-dupe
+            // from then on, so there is no age-swept cache window.
             var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
-                DateTime.UtcNow,
                 new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
                     id, req, uploads, registry, client, owners, transcription))));
 
@@ -142,13 +193,80 @@ internal static class GatewayDictationEndpoint
                 EndTranscribing(transcribingSessions, req.SessionId!);
                 _uploadSids.TryRemove(uploadId, out _);
             }
-            // Only a truly terminal outcome (submitted / moved-on) is kept for idempotent dedupe; anything
-            // retryable (transient error, incomplete upload, out-of-credits) is dropped so the next
-            // complete re-runs the real work.
-            if (!outcome.Terminal) _completes.TryRemove(uploadId, out _);
+            // Drop the in-memory single-flight entry once the run settles. A terminal run has already
+            // written the durable tombstone (inside the core), so a later retry short-circuits on the
+            // ReadRecord check above; a non-terminal run (transient error, incomplete upload, out-of-credits)
+            // leaves no tombstone, so the next complete re-runs the real work (issue #1183).
+            _completes.TryRemove(uploadId, out _);
             return outcome.ToResult();
         });
+
+        // Client acknowledgment (issue #1183): once the client has received a terminal (delivered or
+        // abandoned) outcome, dropped its on-device copy, and will not re-drive this upload id, it calls
+        // this to retire the durable tombstone. Idempotent: acking an already-retired (or never-created) id
+        // is a no-op returning retired=false. If the ack is lost the tombstone simply persists and a later
+        // re-complete returns the same outcome and the client re-acks - so the tombstone is retired ONLY on
+        // a real client ack, never by age.
+        app.MapPost("/dictation/{uploadId}/ack", (string uploadId, HttpContext ctx) =>
+        {
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
+                return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
+            var retired = uploads.Acknowledge(uploadId);
+            FileLog.Write($"[GatewayDictation] ack uploadId={uploadId} retired={retired}");
+            return Results.Json(new { ok = true, retired });
+        });
     }
+
+    // Map a NON-Ok transcription result to the dictation outcome, or null when the result is Ok and the
+    // caller should continue to inject (issue #1185). This is where the permanent-failure classification
+    // lives, and the GUARD is exact: ONLY Outcome==PermanentError parks the record FAILED and returns the
+    // 422 stop; out-of-credits stays 402; every OTHER non-Ok outcome (provider error, no-key, no-audio,
+    // transient) keeps its existing retryable 502 behavior and is NOT reclassified as permanent.
+    internal static DictationOutcome? MapNonOkTranscription(
+        GatewayTranscriptionResult result, string uploadId, VoiceUploadStore uploads)
+    {
+        if (result.Outcome == TranscriptionOutcome.Ok) return null;
+        if (result.Outcome == TranscriptionOutcome.OutOfCredits)
+            return DictationOutcome.OutOfCredits(HostedAiErrorMapper.MapCode(result.Code));
+        // A genuinely-permanent failure (unsupported/undecodable format, or too large to reduce - issue
+        // #1139) can NEVER transcribe, so returning the generic retryable 502 makes the durable queue
+        // re-drive it forever. Instead park the record FAILED with the reason code (KEEPING the chunks so an
+        // explicit user retry can re-complete) and return the client's stop contract.
+        if (result.Outcome == TranscriptionOutcome.PermanentError)
+        {
+            uploads.MarkFailed(uploadId, result.Code ?? "");
+            FileLog.Write($"[GatewayDictation] complete uploadId={uploadId}: permanent failure " +
+                $"code={result.Code}; parked FAILED");
+            return DictationOutcome.Permanent(TranslatePermanentReason(result.Code));
+        }
+        return DictationOutcome.Error(StatusCodes.Status502BadGateway, result.Error ?? "transcription failed");
+    }
+
+    // Translate the transcription lane's machine-readable permanent-failure code into the client-facing
+    // reason at THIS boundary (issue #1185): audio_too_large -> audio-too-large; unsupported_format and
+    // non_decodable both -> unsupported-format. Any unrecognized permanent code is still a permanent stop,
+    // so it defaults to the generic unsupported-format rather than being reclassified as retryable.
+    internal static string TranslatePermanentReason(string? code) => code switch
+    {
+        "audio_too_large" => "audio-too-large",
+        "unsupported_format" => "unsupported-format",
+        "non_decodable" => "unsupported-format",
+        _ => "unsupported-format",
+    };
+
+    // Map a terminal delivery record to the outcome a re-complete returns: the cached submitted result for
+    // DELIVERED (so the turn is never injected twice), or a clear dropped result for ABANDONED.
+    private static DictationOutcome TerminalOutcome(DictationDeliveryRecord record)
+        => record.State == DictationDeliveryState.Abandoned
+            ? DictationOutcome.Dropped(record.Reason ?? "")
+            : DictationOutcome.Submitted(record.Submitted, record.MovedOn, record.Transcript);
+
+    // The register-time response for an upload id that is already terminal: echoes the id plus the cached
+    // outcome so a re-registering client drops its copy and acknowledges instead of re-uploading.
+    private static IResult TerminalRegisterResult(string uploadId, DictationDeliveryRecord record)
+        => record.State == DictationDeliveryState.Abandoned
+            ? Results.Json(new { upload_id = uploadId, terminal = true, submitted = false, movedOn = false, dropped = true, reason = record.Reason ?? "", transcript = "" })
+            : Results.Json(new { upload_id = uploadId, terminal = true, submitted = record.Submitted, movedOn = record.MovedOn, dropped = false, transcript = record.Transcript });
 
     private static async Task<DictationOutcome> RunCompleteCoreAsync(
         string uploadId, DictationCompleteRequest req, VoiceUploadStore uploads, DirectorRegistry registry,
@@ -177,10 +295,8 @@ internal static class GatewayDictationEndpoint
 
             var result = await transcription.TranscribeAsync(
                 audio, "audio." + (req.Ext ?? "wav"), req.Mime ?? "audio/wav", applyCorrection: true, CancellationToken.None);
-            if (result.Outcome == TranscriptionOutcome.OutOfCredits)
-                return DictationOutcome.OutOfCredits(HostedAiErrorMapper.MapCode(result.Code));
-            if (result.Outcome != TranscriptionOutcome.Ok)
-                return DictationOutcome.Error(StatusCodes.Status502BadGateway, result.Error ?? "transcription failed");
+            if (MapNonOkTranscription(result, uploadId, uploads) is { } nonOk)
+                return nonOk;
 
             var transcript = (result.Text ?? "").Trim();
             // Compose the final message: any typed text the caret split the dictation around (before /
@@ -192,8 +308,10 @@ internal static class GatewayDictationEndpoint
             var message = string.Join(" ", parts).Trim();
             if (message.Length == 0)
             {
-                // Silent/empty clip with no typed text: nothing to submit, but the turn is genuinely done.
-                uploads.Delete(uploadId);
+                // Silent/empty clip with no typed text: nothing to submit, but the turn is genuinely done -
+                // record it as a durable DELIVERED tombstone so a re-complete returns the same no-op outcome
+                // instead of re-running (issue #1183). Discards the retained chunks, keeps the marker.
+                uploads.MarkDelivered(uploadId, submitted: false, movedOn: false, transcript);
                 return DictationOutcome.Submitted(false, false, transcript);
             }
 
@@ -209,17 +327,30 @@ internal static class GatewayDictationEndpoint
             if (req.Resumed && session is not null && req.BaselineBufferBytes > 0 &&
                 session.TotalBufferBytes > req.BaselineBufferBytes + MovedOnBufferGrowthBytes)
             {
-                uploads.Delete(uploadId);
+                // The turn is resolved (deliberately dropped as stale): a durable DELIVERED tombstone with
+                // movedOn set, so a re-complete returns the same moved-on outcome and never injects the stale
+                // clip (issue #1183). Discards the retained chunks, keeps the marker.
+                uploads.MarkDelivered(uploadId, submitted: false, movedOn: true, transcript);
                 FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: session moved on " +
                     $"(buffer {req.BaselineBufferBytes}->{session.TotalBufferBytes}); dropped");
                 return DictationOutcome.Submitted(false, true, transcript);
             }
 
+            // The Gateway injects the dictation by calling the owning Director's control API DIRECTLY, which
+            // BYPASSES the Gateway's own /sessions/{sid}/prompt front door. So this delivery is naturally
+            // EXEMPT from the enforced session lock (issue #1188) - the lock (which is on while this upload is
+            // PENDING) blocks other surfaces from typing into the session, never this dictation's own arrival.
             var (ok, _, err) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = message, AppendEnter = true });
             if (!ok)
                 return DictationOutcome.Error(StatusCodes.Status502BadGateway, err ?? "submit to session failed");
 
-            uploads.Delete(uploadId);
+            // Write the durable DELIVERED tombstone as the IMMEDIATE next step after the session accepted the
+            // prompt, before anything else, to minimize the window in which a re-complete could re-inject
+            // (issue #1183). Known, deliberately unfixed residual limitation: a Gateway crash in the few
+            // milliseconds between PostPromptAsync returning and this marker landing on disk would let a
+            // later re-complete inject the turn a second time. We minimize and document it rather than paper
+            // over it with a fallback. MarkDelivered discards the retained chunks and keeps the marker.
+            uploads.MarkDelivered(uploadId, submitted: true, movedOn: false, transcript);
             FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId}: submitted chars={message.Length}");
             return DictationOutcome.Submitted(true, false, transcript);
         }
@@ -228,16 +359,6 @@ internal static class GatewayDictationEndpoint
             FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId} FAILED: {ex.Message}");
             return DictationOutcome.Error(StatusCodes.Status502BadGateway, ex.Message);
         }
-    }
-
-    /// <summary>Drop cached complete outcomes older than <paramref name="maxAge"/> (idempotency window).</summary>
-    public static int SweepCompletes(TimeSpan maxAge)
-    {
-        var cutoff = DateTime.UtcNow - maxAge;
-        var removed = 0;
-        foreach (var kv in _completes)
-            if (kv.Value.At < cutoff && _completes.TryRemove(kv.Key, out _)) removed++;
-        return removed;
     }
 
     private static void EndTranscribing(TranscribingSessions t, string sid)
@@ -317,7 +438,7 @@ public sealed class DictationCompleteRequest
 /// <summary>Terminal or retryable outcome of a dictation complete, mapped to an HTTP result.</summary>
 internal sealed class DictationOutcome
 {
-    private enum Kind { Submitted, Error, Incomplete, OutOfCredits }
+    private enum Kind { Submitted, Error, Incomplete, OutOfCredits, Dropped, Permanent }
     private readonly Kind _kind;
     private readonly bool _submitted;
     private readonly bool _movedOn;
@@ -340,8 +461,9 @@ internal sealed class DictationOutcome
         _missing = missing ?? Array.Empty<int>();
     }
 
-    /// <summary>Terminal: the server handled the clip (submitted, moved-on, or empty). Do not retry.</summary>
-    public bool Terminal => _kind == Kind.Submitted;
+    /// <summary>Terminal: the server resolved the clip (submitted, moved-on, empty, or an abandoned
+    /// upload id that was dropped). Do not retry.</summary>
+    public bool Terminal => _kind == Kind.Submitted || _kind == Kind.Dropped;
 
     /// <summary>The upload is missing chunks and the client will complete again on the same upload id, so
     /// the session is still genuinely transcribing - the ONE outcome that must NOT clear the orange mark
@@ -353,10 +475,19 @@ internal sealed class DictationOutcome
     public static DictationOutcome Error(int status, string error) => new(Kind.Error, status: status, error: error);
     public static DictationOutcome Incomplete(IReadOnlyList<int> missing) => new(Kind.Incomplete, missing: missing);
     public static DictationOutcome OutOfCredits(HostedAiState state) => new(Kind.OutOfCredits, creditsState: state);
+    /// <summary>An ABANDONED upload id: the dictation was given up, so a re-complete returns a clear dropped
+    /// outcome and never injects (issue #1183). Terminal - the client drops its copy and does not re-drive.</summary>
+    public static DictationOutcome Dropped(string reason) => new(Kind.Dropped, error: reason);
+    /// <summary>A PERMANENT transcription failure (issue #1185): this attempt is over (clears the orange
+    /// mark, HTTP 422 { permanent, reason }), but the record is parked FAILED and is user-retryable - so it
+    /// is NOT Terminal (a retry re-runs, it is not cached in _completes) and NOT Incomplete.</summary>
+    public static DictationOutcome Permanent(string reason) => new(Kind.Permanent, error: reason);
 
     public IResult ToResult() => _kind switch
     {
         Kind.Submitted => Results.Json(new { submitted = _submitted, movedOn = _movedOn, transcript = _transcript }),
+        Kind.Dropped => Results.Json(new { submitted = false, movedOn = false, dropped = true, reason = _error ?? "" }),
+        Kind.Permanent => Results.Json(new { permanent = true, reason = _error ?? "" }, statusCode: StatusCodes.Status422UnprocessableEntity),
         Kind.Incomplete => Results.Json(new { status = "incomplete", missing = _missing }, statusCode: StatusCodes.Status409Conflict),
         Kind.OutOfCredits => HostedAiHttp.PaymentRequiredResult(_creditsState),
         _ => Results.Json(new { error = _error }, statusCode: _status),

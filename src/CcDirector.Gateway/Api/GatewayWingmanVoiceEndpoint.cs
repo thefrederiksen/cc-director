@@ -49,9 +49,9 @@ internal static class GatewayWingmanVoiceEndpoint
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(750);
 
-    /// <summary>Per-call input cap: the OpenAI-compatible speech endpoint accepts up to 4096 chars and
+    /// <summary>Per-call input cap: hosted speech endpoints accept bounded input and
     /// spoken summaries are short. The model + voice are no longer hardcoded here - they are resolved
-    /// per provider (<see cref="TranscriptionEndpointResolver.ResolveTts"/>) and per user
+    /// through the hosted routing target (<see cref="TranscriptionEndpointResolver.ResolveTts"/>) and per user
     /// (<see cref="TtsVoiceConfig"/>).</summary>
     private const int TtsMaxChars = 4000;
 
@@ -68,9 +68,8 @@ internal static class GatewayWingmanVoiceEndpoint
 
         // The single Gateway owner of speech-to-text (issue #839): both batch transcribe paths below
         // (the resumable /wingman/utterance/complete and the one-shot /wingman/transcribe) go through
-        // it, so they resolve the mode + key and pick the provider (local Whisper or the resolved
-        // remote endpoint) exactly the same way every other batch caller does - no second resolver,
-        // and DevThrottle/on-device modes are honored, not just bring-your-own OpenAI.
+        // it, so they resolve the mode + key and pick the hosted endpoint exactly the same way every
+        // other batch caller does - no second resolver.
         var transcription = new Transcription.GatewayTranscriptionService(vault);
 
         // Which voice sessions have a ready, playable spoken summary right now (the phone's list
@@ -96,7 +95,7 @@ internal static class GatewayWingmanVoiceEndpoint
         });
 
         // Turn voice off for a session (issue #859): unmark it as a voice session so the gateway
-        // STOPS spending the per-turn Opus translation + OpenAI text-to-speech on it. This is the
+        // STOPS spending the per-turn Opus translation + hosted text-to-speech on it. This is the
         // counterpart to the marking that POST /sessions/{sid}/wingman/explain performs on entry; the
         // phone's "Turn voice off" calls it alongside the Director's /voice-mode { enabled:false }.
         // Gateway-side only and read-only - it clears the voice marker + cached clip and sends nothing
@@ -196,11 +195,9 @@ internal static class GatewayWingmanVoiceEndpoint
 
         // Text-to-speech for the mobile Voice screen + Cockpit: turn the wingman's spoken summary into
         // natural-sounding audio (the browser's own voice is robotic). Returns audio/mpeg bytes the
-        // page plays in an <audio> element. Provider-aware (the consolidated AI-provider setting):
-        // DevThrottle routes to the hosted proxy's OpenAI-compatible /audio/speech, OpenAI
-        // (bring-your-own key) to OpenAI directly. The voice is the user's choice (TtsVoiceConfig,
-        // default nova); a request Voice overrides it. The credential comes from the gateway key vault
-        // by the selected provider's key name.
+        // page plays in an <audio> element. DevThrottle routes to the hosted proxy's
+        // provider-compatible /audio/speech. The voice is the user's choice (TtsVoiceConfig); a
+        // request Voice overrides it. The credential comes from the gateway key vault.
         app.MapPost("/wingman/tts", async (WingmanTtsRequest? req, CancellationToken ct) =>
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Text))
@@ -210,9 +207,7 @@ internal static class GatewayWingmanVoiceEndpoint
             var tts = TranscriptionEndpointResolver.ResolveTts(mode);
             var key = vault.Get(tts.KeyName);
             if (string.IsNullOrWhiteSpace(key))
-                return Results.Json(new { error = mode == TranscriptionMode.DevThrottle
-                        ? "no DevThrottle account key configured in the gateway vault - sign in to DevThrottle"
-                        : "no OpenAI key configured in the gateway vault" },
+                return Results.Json(new { error = "no DevThrottle account key configured in the gateway vault - sign in to DevThrottle" },
                     statusCode: StatusCodes.Status503ServiceUnavailable);
 
             var input = req.Text.Length > TtsMaxChars ? req.Text[..TtsMaxChars] : req.Text;
@@ -237,7 +232,7 @@ internal static class GatewayWingmanVoiceEndpoint
                         statusCode: StatusCodes.Status502BadGateway);
                 }
                 var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-                // Pass the upstream content type through: OpenAI returns audio/mpeg, the DevThrottle proxy
+                // Pass the upstream content type through: speech providers usually return audio/mpeg.
                 // may return audio/wav for some models - the browser must be told which so it can play it.
                 var contentType = resp.Content.Headers.ContentType?.MediaType ?? "audio/mpeg";
                 FileLog.Write($"[GatewayWingmanVoice] tts ok: provider={mode.ToConfigString()}, chars={input.Length}, bytes={bytes.Length}, model={model}, voice={voice}, type={contentType}");
@@ -724,7 +719,7 @@ public sealed class WingmanTtsRequest
 }
 
 /// <summary>Body of the resumable-utterance complete route: how many chunks to reassemble and the
-/// recording's MIME type / file extension (so OpenAI gets a correctly-named file).</summary>
+/// recording's MIME type / file extension (so the hosted transcriber gets a correctly-named file).</summary>
 public sealed class UtteranceCompleteRequest
 {
     public int TotalChunks { get; set; }

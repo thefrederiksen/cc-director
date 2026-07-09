@@ -320,8 +320,8 @@
   <p class="footer-note">
     Browser captures audio via Web Audio + <code>AudioWorklet</code> as
     PCM16 at 24 kHz and streams it over a WebSocket to <code>/dictate</code>.
-    Server transcribes via the OpenAI Realtime API and cleans up via a
-    nano-tier chat model using your dictionary at
+    Server transcribes once through the Gateway transcription endpoint and
+    applies dictionary correction using your dictionary at
     <code>%LOCALAPPDATA%/cc-director/dictation/dictionary.yaml</code>. If
     the upstream connection drops, audio is buffered (in memory then on
     disk) and drained when the connection returns. Timing in the log is

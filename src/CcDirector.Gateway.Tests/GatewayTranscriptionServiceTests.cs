@@ -11,7 +11,7 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Unit tests for the single Gateway speech-to-text owner (issue #839),
 /// <see cref="GatewayTranscriptionService"/>. Cover the branches that do not call a live provider:
-/// the mode-and-key resolution for both modes (with and without a key), and the
+/// the mode-and-key resolution, legacy mode migration, and the
 /// <see cref="GatewayTranscriptionService.TranscribeAsync"/> outcomes for no-audio, no-key, and
 /// out-of-credits (issue #885). The success path is exercised by the live provider tests; here we
 /// prove the single resolver and the outcome mapping without a network. Uses a temp-file vault and
@@ -75,29 +75,29 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     }
 
     [Fact]
-    public void Resolve_ByoMode_NoKey_ReportsRemoteWithNoKey()
+    public void Resolve_LegacyByoMode_NoKey_ReportsDevThrottleWithNoKey()
     {
         TranscriptionModeConfig.Set(TranscriptionMode.Byo);
 
         var routing = Service().Resolve();
 
         Assert.Null(routing.Key);
-        Assert.Equal(TranscriptionMode.Byo, routing.Mode);
+        Assert.Equal(TranscriptionMode.DevThrottle, routing.Mode);
     }
 
     [Fact]
-    public void Resolve_ByoMode_WithKey_ComposesOpenAiTarget()
+    public void Resolve_LegacyByoMode_WithDevThrottleKey_ComposesDevThrottleTarget()
     {
         TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-byo-123");
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
 
         var routing = Service().Resolve();
 
-        Assert.Equal("sk-byo-123", routing.Key);
+        Assert.Equal("dt_live_abc", routing.Key);
         var resolved = routing.ToResolved();
-        Assert.Equal(TranscriptionEndpointResolver.OpenAiBaseUrl, resolved.BaseUrl);
-        Assert.Equal("sk-byo-123", resolved.ApiKey);
-        Assert.Equal(TranscriptionTransport.Realtime, resolved.Transport);
+        Assert.Equal(TranscriptionEndpointResolver.DevThrottleBaseUrl, resolved.BaseUrl);
+        Assert.Equal("dt_live_abc", resolved.ApiKey);
+        Assert.Equal(TranscriptionTransport.Batch, resolved.Transport);
     }
 
     [Fact]
@@ -132,8 +132,8 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     [Fact]
     public async Task TranscribeAsync_NoAudio_ReturnsNoAudioOutcome()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.OpenAiKeyName, "sk-byo-123");
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        new KeyVault(_vaultPath).Set(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
 
         var result = await Service().TranscribeAsync(Array.Empty<byte>(), "audio.webm", "audio/webm", applyCorrection: false, CancellationToken.None);
 
@@ -142,7 +142,7 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task TranscribeAsync_RemoteModeNoKey_ReturnsNoKeyOutcome_WithMode()
+    public async Task TranscribeAsync_NoKey_ReturnsNoKeyOutcome_WithMode()
     {
         TranscriptionModeConfig.Set(TranscriptionMode.Byo);
         // No key seeded.
@@ -150,7 +150,7 @@ public sealed class GatewayTranscriptionServiceTests : IDisposable
         var result = await Service().TranscribeAsync(new byte[] { 1, 2, 3 }, "audio.webm", "audio/webm", applyCorrection: false, CancellationToken.None);
 
         Assert.Equal(TranscriptionOutcome.NoKey, result.Outcome);
-        Assert.Equal("byo", result.Mode);
+        Assert.Equal("devthrottle", result.Mode);
         Assert.Null(result.Text);
     }
 

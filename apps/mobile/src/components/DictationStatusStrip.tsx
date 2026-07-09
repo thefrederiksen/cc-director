@@ -9,15 +9,19 @@ import { clearDictationStatus, useDictationStatusFor } from "@devthrottle/client
 // once they leave, because both read the one shared store.
 //
 // While a send is in flight it shows the live phase (saving -> uploading N of M -> transcribing). On
-// success it shows a brief "Sent" that clears itself. On failure it stays put, red, with a plain
-// sentence and a Retry (for a held, will-retry failure) plus Dismiss - it does NOT disappear on its
-// own, so a failed dictation can never be missed.
+// success it shows a brief "Sent" that clears itself. A held send (saved and still being delivered on a
+// bad connection) shows a calm amber strip with the honest reason and an "Upload now" control that kicks
+// a waiting or throttled retry to full speed - it is not a failure, so it offers no Dismiss. A PARKED send
+// (a permanent failure that stopped the auto-loop, issue #1184) shows the saved-and-retryable message with
+// an explicit "Retry" control - the audio is safe, delivery just no longer loops on its own. A genuine
+// failure (durable storage unavailable, so nothing could be queued) shows a red alert with Dismiss; it
+// does NOT disappear on its own, so it can never be missed.
 
 const DONE_AUTOCLEAR_MS = 2500;
 
 export function DictationStatusStrip({ sessionId }: { sessionId: string | undefined }) {
   const status = useDictationStatusFor(sessionId);
-  const [retrying, setRetrying] = useState(false);
+  const [uploadingNow, setUploadingNow] = useState(false);
 
   // A successful send is acknowledged briefly, then clears itself so the strip does not linger.
   useEffect(() => {
@@ -29,24 +33,51 @@ export function DictationStatusStrip({ sessionId }: { sessionId: string | undefi
 
   if (!status) return null;
 
-  if (status.phase === "failed") {
-    const onRetry = async () => {
-      setRetrying(true);
+  if (status.phase === "held") {
+    const onUploadNow = async () => {
+      setUploadingNow(true);
       try {
         await retryPendingDictation(status.uploadId);
       } finally {
-        setRetrying(false);
+        setUploadingNow(false);
       }
     };
+    return (
+      <div className="dictate-strip dictate-strip-held" role="status">
+        <span className="dictate-strip-icon" aria-hidden="true">!</span>
+        <span className="dictate-strip-text">{status.error ?? "Saved - still trying to send your recording..."}</span>
+        <button type="button" className="dictate-strip-btn" onClick={() => void onUploadNow()} disabled={uploadingNow}>
+          {uploadingNow ? "Uploading..." : "Upload now"}
+        </button>
+      </div>
+    );
+  }
+
+  if (status.phase === "parked") {
+    const onRetry = async () => {
+      setUploadingNow(true);
+      try {
+        await retryPendingDictation(status.uploadId);
+      } finally {
+        setUploadingNow(false);
+      }
+    };
+    return (
+      <div className="dictate-strip dictate-strip-parked" role="status">
+        <span className="dictate-strip-icon" aria-hidden="true">!</span>
+        <span className="dictate-strip-text">{status.error ?? "Saved on your device - you can retry it."}</span>
+        <button type="button" className="dictate-strip-btn" onClick={() => void onRetry()} disabled={uploadingNow}>
+          {uploadingNow ? "Retrying..." : "Retry"}
+        </button>
+      </div>
+    );
+  }
+
+  if (status.phase === "failed") {
     return (
       <div className="dictate-strip dictate-strip-failed" role="alert">
         <span className="dictate-strip-icon" aria-hidden="true">!</span>
         <span className="dictate-strip-text">{status.error ?? "Dictation failed."}</span>
-        {status.retryable !== false && (
-          <button type="button" className="dictate-strip-btn" onClick={() => void onRetry()} disabled={retrying}>
-            {retrying ? "Retrying..." : "Retry"}
-          </button>
-        )}
         <button type="button" className="dictate-strip-btn dictate-strip-dismiss" onClick={() => clearDictationStatus(status.uploadId)}>
           Dismiss
         </button>

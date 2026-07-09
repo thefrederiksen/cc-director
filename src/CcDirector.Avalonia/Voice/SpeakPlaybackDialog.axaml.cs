@@ -73,7 +73,7 @@ public partial class SpeakPlaybackDialog : Window
             if (played)
                 Close();
             else
-                ShowError("Could not generate the audio. Check the OpenAI key and network connection.");
+                ShowError("Could not generate the audio. Check your DevThrottle account setup and network connection.");
         }
         catch (OperationCanceledException)
         {

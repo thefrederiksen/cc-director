@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -14,9 +15,9 @@ namespace CcDirector.Core.Claude;
 /// Two halves:
 ///  - <see cref="Extract"/>: pure, testable extraction from the parsed JSONL widget stream
 ///    (first/last user prompt, full last assistant reply).
-///  - <see cref="CondenseAsync"/>: a direct OpenAI chat call (the CleanupOrchestrator pattern,
-///    NOT a claude --print side-spawn - issue #142 proved the cold-spawn latency kills
-///    per-flip UX) that produces the DID bullets and extracts the NEEDS-YOU sentence(s).
+///  - <see cref="CondenseAsync"/>: a hosted chat call (NOT a claude --print side-spawn - issue #142
+///    proved the cold-spawn latency kills per-flip UX) that produces the DID bullets and extracts the
+///    NEEDS-YOU sentence(s).
 ///
 /// Fidelity invariant: the needs-you text shown to the user must be VERBATIM. The model's
 /// extraction is validated as a substring of the reply (whitespace-tolerant); when validation
@@ -25,10 +26,10 @@ namespace CcDirector.Core.Claude;
 /// </summary>
 public sealed class BriefBuilder : IDisposable
 {
-    /// <summary>Default condenser model. Mini-tier: nano mangles structured extraction.</summary>
-    public const string DefaultModel = "gpt-4.1-mini";
+    /// <summary>Default DevThrottle-hosted condenser model.</summary>
+    public const string DefaultModel = TranscriptionEndpointResolver.DevThrottleWingmanFastModel;
 
-    private const string ChatCompletionsEndpoint = "https://api.openai.com/v1/chat/completions";
+    private const string ChatCompletionsEndpoint = TranscriptionEndpointResolver.DevThrottleBaseUrl + "/chat/completions";
     private static readonly TimeSpan HttpTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>Max reply characters fed to the condenser (tail-biased: the ask is at the end).</summary>
@@ -44,7 +45,7 @@ public sealed class BriefBuilder : IDisposable
     private readonly string _model;
 
     /// <summary>Model identity string reported in <c>BriefResponse.Condenser</c>.</summary>
-    public string CondenserId => $"openai:{_model}";
+    public string CondenserId => $"devthrottle:{_model}";
 
     private BriefBuilder(string apiKey, string model, HttpClient? httpClient)
     {
@@ -62,16 +63,16 @@ public sealed class BriefBuilder : IDisposable
     }
 
     /// <summary>
-    /// Create a condenser, or null when no OpenAI key is available. A null condenser is the
+    /// Create a condenser, or null when no DevThrottle account key is available. A null condenser is the
     /// EXPLICIT degrade path: the brief endpoint still serves the raw extraction and reports
     /// <c>Condenser = "unavailable"</c> - visible, never silent.
     /// </summary>
     public static BriefBuilder? TryCreate(string model = DefaultModel, HttpClient? httpClient = null)
     {
-        var key = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var key = Environment.GetEnvironmentVariable(TranscriptionEndpointResolver.DevThrottleKeyName);
         if (string.IsNullOrWhiteSpace(key))
         {
-            FileLog.Write("[BriefBuilder] TryCreate: OPENAI_API_KEY not set; condenser unavailable");
+            FileLog.Write("[BriefBuilder] TryCreate: DEVTHROTTLE_API_KEY not set; condenser unavailable");
             return null;
         }
         return new BriefBuilder(key.Trim(), string.IsNullOrWhiteSpace(model) ? DefaultModel : model, httpClient);
@@ -187,7 +188,7 @@ public sealed class BriefBuilder : IDisposable
     }
 
     // ====================================================================
-    // Condensation (OpenAI)
+    // Condensation (hosted)
     // ====================================================================
 
     /// <summary>Condenser output. NeedsYouVerbatim is already substring-validated (or null).</summary>
@@ -290,7 +291,7 @@ public sealed class BriefBuilder : IDisposable
         using var resp = await _http.SendAsync(req, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
         if (!resp.IsSuccessStatusCode)
-            throw new HttpRequestException($"OpenAI chat completions failed: HTTP {(int)resp.StatusCode} - {Truncate(body, 200)}");
+            throw new HttpRequestException($"Hosted chat completions failed: HTTP {(int)resp.StatusCode} - {Truncate(body, 200)}");
 
         using var doc = JsonDocument.Parse(body);
         var choices = doc.RootElement.GetProperty("choices");

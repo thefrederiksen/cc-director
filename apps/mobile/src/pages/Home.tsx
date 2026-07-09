@@ -247,22 +247,40 @@ function VoiceIndicator({ session }: { session: SessionDto }) {
   return null;
 }
 
-// The per-row dictation status pill (#1139 follow-up). Reads the same shared store the on-screen
-// status strip reads, so a Speak Send shows on the roster too: a muted "Transcribing..." while it is
-// in flight, and a persistent red "Dictation failed" when it died (which the Gateway's own orange
-// mark cannot show - that just clears on failure). A just-"done" send shows nothing here; the brief
-// "Sent" acknowledgement belongs on the session screen, not as roster noise.
+// The per-row dictation status pill (#1139 follow-up, honest states for #1182/#1184). Reads the same shared
+// store the on-screen status strip reads, so a Speak Send shows on the roster too: a muted progress label
+// while it is in flight, a calm amber "saved - still sending" while it is held on a bad connection, a
+// "saved - tap to retry" while it is parked after a permanent failure, and a red "Dictation failed" for the
+// rare hard failure. A just-"done" send shows nothing here; the brief "Sent" acknowledgement belongs on the
+// session screen, not as roster noise.
 function DictationRowBadge({ sessionId }: { sessionId: string | undefined }) {
   const status = useDictationStatusFor(sessionId);
   if (!status || status.phase === "done") return null;
   if (status.phase === "failed") {
-    return <span className="row-dictate row-dictate-failed">Dictation failed - tap to retry</span>;
+    return <span className="row-dictate row-dictate-failed">Dictation failed</span>;
+  }
+  if (status.phase === "held") {
+    return <span className="row-dictate row-dictate-held">Saved - still sending</span>;
+  }
+  if (status.phase === "parked") {
+    return <span className="row-dictate row-dictate-parked">Saved - tap to retry</span>;
   }
   return (
     <span className="row-dictate row-dictate-busy">
-      <span className="row-spin" aria-hidden="true" /> Transcribing...
+      <span className="row-spin" aria-hidden="true" /> {rowBusyLabel(status.phase, status.uploaded, status.total)}
     </span>
   );
+}
+
+// The compact roster label for an in-flight dictation, mirroring the on-screen strip's phases so the
+// roster is honest about where the send is (saving / uploading N of M / transcribing).
+function rowBusyLabel(phase: string, uploaded?: number, total?: number): string {
+  if (phase === "saving") return "Saving...";
+  if (phase === "uploading") {
+    if (total && total > 1) return `Uploading... ${uploaded ?? 0} of ${total}`;
+    return "Uploading...";
+  }
+  return "Transcribing...";
 }
 
 // Issue #844: the live elapsed-waiting label for a needs-you card, right-aligned on the status

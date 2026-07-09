@@ -1,11 +1,10 @@
 namespace CcDirector.Core.Dictation;
 
 /// <summary>
-/// Transport-agnostic microphone (or replay) source the dictation pipeline
-/// captures from. Kept deliberately tiny so the capture-first orchestration in
-/// <see cref="DictationPipeline"/> can be unit-tested without a real audio
-/// device: the desktop path implements this over NAudio's WaveInEvent, while
-/// tests implement it with a fake that emits known PCM chunks on demand.
+/// Transport-agnostic microphone (or replay) source used by desktop dictation capture. Kept
+/// deliberately tiny so the capture flow can be unit-tested without a real audio device: the desktop
+/// path implements this over NAudio's WaveInEvent, while tests implement it with a fake that emits
+/// known PCM chunks on demand.
 ///
 /// Contract:
 /// - <see cref="Start"/> begins capture synchronously and (near) immediately;

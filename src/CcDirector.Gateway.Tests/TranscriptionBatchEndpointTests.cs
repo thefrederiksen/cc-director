@@ -16,9 +16,8 @@ namespace CcDirector.Gateway.Tests;
 /// HTTP wire test for the single Gateway speech-to-text endpoint (issue #839),
 /// <c>POST /transcription</c>. Boots only <see cref="TranscriptionBatchEndpoint"/> on an ephemeral
 /// port with a temp-file vault and a temp CC_DIRECTOR_ROOT (so the test owns the transcription_mode
-/// config). Covers the branches that do not call a live provider: 409 when no key is set for the
-/// current remote mode (the failure that made a recorded note fail even with a key present), and 400
-/// when the request carries no audio. The success path needs a live provider key and is not
+/// config). Covers the branches that do not call a live provider: 409 when no DevThrottle account key
+/// is set, and 400 when the request carries no audio. The success path needs a live provider key and is not
 /// exercised here. In the "DirectorRoot" collection because it sets CC_DIRECTOR_ROOT.
 /// </summary>
 [Collection("DirectorRoot")]
@@ -76,22 +75,22 @@ public sealed class TranscriptionBatchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Transcription_NoKeyForRemoteMode_Returns409_WithMode()
+    public async Task Transcription_NoDevThrottleKey_Returns409_WithMode()
     {
         TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        // No key seeded for the BYO mode.
+        // Legacy BYO config migrates forward; no DevThrottle key is seeded.
         var resp = await _http.PostAsync("/transcription", Audio(new byte[] { 1, 2, 3 }));
 
         Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.Equal("byo", doc.RootElement.GetProperty("mode").GetString());
+        Assert.Equal("devthrottle", doc.RootElement.GetProperty("mode").GetString());
     }
 
     [Fact]
     public async Task Transcription_KeySetButNoAudio_Returns400()
     {
-        TranscriptionModeConfig.Set(TranscriptionMode.Byo);
-        SeedVault(TranscriptionEndpointResolver.OpenAiKeyName, "sk-byo-123");
+        TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
+        SeedVault(TranscriptionEndpointResolver.DevThrottleKeyName, "dt_live_abc");
 
         // Key is present, so we get past the 409, but the body is empty -> 400 before any provider call.
         var resp = await _http.PostAsync("/transcription", Audio(Array.Empty<byte>()));

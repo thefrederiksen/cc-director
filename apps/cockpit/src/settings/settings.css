@@ -308,7 +308,7 @@
   line-height: 1.4;
 }
 
-/* ---- OpenAI key panel ---- */
+/* ---- AI provider panel ---- */
 .settings-keypanel {
   border-top: 1px solid var(--border);
   padding-top: 16px;

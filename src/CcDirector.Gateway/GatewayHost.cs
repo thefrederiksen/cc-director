@@ -8,6 +8,7 @@ using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Briefing;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Tailscale;
 using CcDirector.Gateway.Util;
@@ -16,6 +17,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.SignalR; // Issue #1176: ClientProxyExtensions.InvokeAsync (client results) for the down-channel
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,6 +34,20 @@ public sealed class GatewayHost : IAsyncDisposable
     public int Port { get; }
     public string Token { get; }
     public DirectorRegistry Registry { get; }
+
+    /// <summary>
+    /// Issue #1176 (Phase 1a): the Gateway's cache of session state pushed up by stream-connected
+    /// Directors. The <c>/sessions</c> aggregation serves a Director from here (instead of pulling it)
+    /// when that Director's stream is connected and fresh. Empty until Directors connect and push.
+    /// </summary>
+    public Streaming.PushedSessionStore PushedSessions { get; }
+
+    // Issue #1176 (Phase 1a): Gateway-side stream feature switch + staleness window, resolved from
+    // config.json (or an explicit constructor override for tests). When off, the hub is not mapped and
+    // /sessions never consults the pushed cache, so behaviour is byte-identical to today.
+    private readonly bool _streamMode;
+    private readonly TimeSpan _streamStaleAfter;
+
     public bool AuthEnabled { get; }
 
     /// <summary>
@@ -227,10 +243,11 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Wingman.WingmanTrainingStore _trainingStore = new();
     private System.Threading.Timer? _voiceSweepTimer;
     // Durable dictation upload staging (issue #1006): the phone streams recorded audio here in chunks;
-    // the Gateway assembles, transcribes, and injects the turn itself. A background timer sweeps
-    // abandoned uploads after ~1 hour so an interrupted upload never leaks.
+    // the Gateway assembles, transcribes, and injects the turn itself. Each upload id carries a durable
+    // delivery record (issue #1183): PENDING chunks are retained until delivered/abandoned, and the
+    // terminal tombstone de-dupes the upload id forever until the client acknowledges it - so there is no
+    // age sweep for dictation staging (only the unrelated voice-turn staging is age-swept).
     private readonly Voice.VoiceUploadStore _dictationUploads = new(CcDirector.Core.Storage.CcStorage.DictationUploads());
-    private System.Threading.Timer? _dictationSweepTimer;
     private AdvertisedEndpointMonitor? _endpointMonitor;
     // Issue #629: the durable, bounded, restart-surviving retry queue behind the login-telemetry
     // relay. Constructed here (loads any events a previous run left on disk), wired into the relay
@@ -288,11 +305,15 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
+        PushedSessions = new Streaming.PushedSessionStore();
+        var gatewayConfig = Core.Configuration.GatewayConfig.Load();
+        _streamMode = streamMode ?? gatewayConfig.StreamMode;
+        _streamStaleAfter = TimeSpan.FromSeconds(gatewayConfig.StreamStaleAfterSeconds);
         Devices = new Pairing.DeviceRegistry(devicesPath);
         AuthEnabled = ResolveAuthEnabled(authEnabled);
         if (AuthEnabled)
@@ -515,14 +536,14 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// One-time bootstrap of the central vault from the user environment (option A). If the vault
-    /// does not yet carry OPENAI_API_KEY, seed it from the environment (process, then User scope on
-    /// Windows). Never clobbers an existing vault value (the Cockpit is the live rotation surface).
-    /// Key name matches <see cref="Core.Configuration.OpenAiKeyResolver.KeyName"/>.
+    /// One-time bootstrap of the central vault from the user environment. If the vault does not yet
+    /// carry the DevThrottle account key, seed it from the environment (process, then User scope on
+    /// Windows). Never clobbers an existing vault value.
+    /// Key name matches <see cref="Core.Configuration.HostedAiKeyResolver.KeyName"/>.
     /// </summary>
     private void SeedKeyVaultFromEnvironment()
     {
-        const string keyName = "OPENAI_API_KEY";
+        const string keyName = Core.Configuration.TranscriptionEndpointResolver.DevThrottleKeyName;
         var fromEnv = Environment.GetEnvironmentVariable(keyName);
         if (string.IsNullOrWhiteSpace(fromEnv) && OperatingSystem.IsWindows())
             fromEnv = Environment.GetEnvironmentVariable(keyName, EnvironmentVariableTarget.User);
@@ -600,7 +621,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <summary>
     /// Build the wingman's brain for the CURRENTLY selected AI provider and requested model role. The
     /// wingman is a stateless hosted chat-completions call, not the warm <c>claude.exe</c> brain,
-    /// because that agent speaks the Anthropic protocol and cannot run these OpenAI-compatible models.
+    /// because that agent speaks a different protocol and cannot run these hosted models.
     /// The provider, credential, and role-specific model are read at CALL time, so a settings change is
     /// honored on the next turn without a Gateway restart.
     /// </summary>
@@ -619,11 +640,8 @@ public sealed class GatewayHost : IAsyncDisposable
     {
         FileLog.Write($"[GatewayHost] StartAsync: port={Port}");
 
-        // Option A bootstrap (docs/install/INSTALLATION.md section 4): a Gateway install guarantees
-        // OPENAI_API_KEY is in the user environment. Seed the central vault from it ONCE here so the
-        // Cockpit shows the key as set and Directors can pull it immediately. The vault is the live
-        // source of truth thereafter - rotating the key in the Cockpit overwrites this seed, and we
-        // never clobber an existing vault value (SetIfAbsent).
+        // Seed the central vault from a DevThrottle account-key environment value once when present.
+        // The vault is the live source of truth thereafter and SetIfAbsent never clobbers it.
         SeedKeyVaultFromEnvironment();
 
         // Issue #881: an install that was already signed in before this shipped won't fire the
@@ -716,6 +734,13 @@ public sealed class GatewayHost : IAsyncDisposable
         // app's build-time codegen (openapi-typescript) turns it into a typed TypeScript client, so
         // the C# DTOs stay the single source of truth for the front-end.
         builder.Services.AddOpenApi();
+
+        // Issue #1176 (Phase 1a): the Director-push stream. The hub and its two collaborators are
+        // registered as singletons so the hub (constructed per-invocation by SignalR's container) and the
+        // /sessions aggregation (wired explicitly below) share the one PushedSessionStore instance.
+        builder.Services.AddSignalR();
+        builder.Services.AddSingleton(PushedSessions);
+        builder.Services.AddSingleton(Registry);
 
         // Honor X-Forwarded-Proto/Host/For from a Tailscale Serve front-end so
         // ctx.Request.Scheme reflects the public scheme the user actually used.
@@ -810,6 +835,16 @@ public sealed class GatewayHost : IAsyncDisposable
 
         _app.UseRouting();
 
+        // Issue #1176 (Phase 1a): the Director-push stream endpoint, mapped only when stream mode is on
+        // (kill-switch: off => the hub does not exist and behaviour is byte-identical to today). Mapped
+        // after the host-wide auth middleware above, so the handshake is token-gated exactly like every
+        // other route; a Director's .NET SignalR client presents its Bearer token on the handshake.
+        if (_streamMode)
+        {
+            _app.MapHub<Streaming.DirectorHub>("/director-stream");
+            FileLog.Write("[GatewayHost] stream mode ON: DirectorHub mapped at /director-stream; /sessions serves from the push cache when fresh");
+        }
+
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
         GatewayEndpoints.Map(_app, Registry, _client, version, Token, AuthEnabled,
@@ -878,7 +913,19 @@ public sealed class GatewayHost : IAsyncDisposable
             turnJobs: TurnJobs,
             // Issue #1045: pass the per-device-key registry so the voice-turn routes' own token
             // check (issue #369) accepts a phone's enrolled device key, not just the shared token.
-            devices: Devices);
+            devices: Devices,
+            // Issue #1188: the same durable dictation upload store the dictation endpoint writes to, so the
+            // front-door human-input endpoints can enforce the session lock (reject input while a PENDING
+            // dictation record exists for the session). One store instance per Gateway, so the lock reads
+            // this host's own on-disk root.
+            dictationUploads: _dictationUploads,
+            // Issue #1176 (Phase 1a): serve /sessions from the Director-push cache when the stream is
+            // fresh; null when stream mode is off, keeping /sessions byte-identical to today.
+            pushedSessions: _streamMode ? PushedSessions : null,
+            streamStaleAfter: _streamStaleAfter,
+            // Issue #1177 (Phase 1): route per-session commands DOWN the Director's stream when stream mode
+            // is on. Null when off, so every command endpoint stays on its HTTP path (byte-identical).
+            sendCommand: _streamMode ? SendCommandAsync : null);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -914,16 +961,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // owning session itself, so a refresh / dropped connection cannot lose a recorded utterance.
         GatewayDictationEndpoint.Map(_app, Registry, _client, SessionOwners, Token,
             new Transcription.GatewayTranscriptionService(_keyVault), _transcribingSessions, _dictationUploads, Devices);
-        // Sweep abandoned upload staging + the complete-idempotency cache after ~1 hour.
-        _dictationSweepTimer = new System.Threading.Timer(_ =>
-        {
-            try
-            {
-                _dictationUploads.SweepAbandoned(TimeSpan.FromHours(1));
-                GatewayDictationEndpoint.SweepCompletes(TimeSpan.FromHours(1));
-            }
-            catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation sweep error: {ex.Message}"); }
-        }, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+        // Durable per-upload-id dictation record (issue #1183): a PENDING upload's chunks are retained
+        // until it becomes DELIVERED or ABANDONED, and the delivered/abandoned tombstone (the durable
+        // de-dupe marker) is retained until the client acknowledges it - so an undelivered dictation
+        // survives time and a restart, and a delivered upload id is de-duplicated forever. There is
+        // deliberately NO age sweep here: a fixed age cut would reopen exactly the hole this closes - a
+        // phone out of signal for longer than the cut would lose its already-uploaded chunks, or re-inject
+        // an already-delivered turn. The record is retired only by the client ack
+        // (POST /dictation/{uploadId}/ack). The unrelated voice-turn upload staging keeps its own
+        // transient SweepAbandoned; only the dictation record changed.
 
         // Central key vault (docs/architecture/gateway/GATEWAY_KEY_VAULT.md): set keys once
         // here (via the Cockpit Keys page); Directors pull them on demand. Inherits the
@@ -1029,18 +1075,22 @@ public sealed class GatewayHost : IAsyncDisposable
         // with no sign-in flow (SignIn null) it reports an explicit "not available" result.
         AccountSignInCallbackEndpoint.Map(_app, SignIn);
 
-        // Transcription routing (issue #506): the Gateway serves the WHOLE routing target
-        // (mode + base URL + model + key) for its configured transcription mode, so a connected
-        // Director stops hardcoding the URL/mode. Composes URL+key server-side from the one pure
-        // resolver, so the bring-your-own OpenAI key is never paired with the devthrottle.com URL.
-        TranscriptionRoutingEndpoint.Map(_app, _keyVault);
-
         // The single Gateway speech-to-text endpoint (issue #839): a caller POSTs raw audio and gets
         // text back. The phone Notes worker, the Settings "Test it" button, and on-device mode all go
         // through this one endpoint - it resolves the mode + key and runs the right provider (in-process
-        // Whisper, or the resolved OpenAI-compatible batch endpoint). Optional ?correct=true also runs
+        // Whisper, or the resolved provider-compatible batch endpoint). Optional ?correct=true also runs
         // the validated dictionary correction, keeping that out of the callers too.
         TranscriptionBatchEndpoint.Map(_app, _keyVault);
+
+        // Read-only analysis over the LOCAL transcription telemetry log: latency percentiles, cleanup
+        // behaviour, most-corrected terms, and word frequencies, so any agent can query the Gateway to
+        // see how fast and how good transcription is - all from data on this machine, never a server.
+        Api.TranscriptionAnalysisEndpoint.Map(_app);
+
+        // Text-in / text-out cleanup: run ONLY the deterministic dictionary correction over supplied
+        // text + a supplied term list (no audio). The engine the multilingual eval harness drives, and
+        // a way for any agent to test cleanup on arbitrary text/terms.
+        Api.TranscriptionCleanupEndpoint.Map(_app);
 
         // Named work lists (issue #273, child of #270): an ordered list of structured item refs
         // { source, id, area? } + a single-consumer claim, the object the product skill writes to,
@@ -1202,6 +1252,49 @@ public sealed class GatewayHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Issue #1176 (Phase 1b): the down-channel proof. Sends a message DOWN a Director's stream and awaits
+    /// its reply over the SAME connection (SignalR client results), demonstrating that the Gateway can
+    /// both push to and request from a Director on the one outbound-dialed connection. Returns null when
+    /// that Director has no active stream. NOTE: this is a synthetic proof, not a production command path -
+    /// the retired assessed-state producer meant there was no live down-path to migrate (plan 4.7b).
+    /// </summary>
+    public async Task<string?> PingDirectorAsync(string directorId, string message, CancellationToken ct = default)
+    {
+        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
+            as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
+        if (connectionId is null || hub is null)
+        {
+            FileLog.Write($"[GatewayHost] PingDirectorAsync: no active stream for director={directorId}");
+            return null;
+        }
+        return await hub.Clients.Client(connectionId).InvokeAsync<string>("Ping", message, ct);
+    }
+
+    /// <summary>
+    /// Issue #1177 (Phase 1): send a command DOWN a Director's stream and await its result over the SAME
+    /// connection (SignalR client results), modeled exactly on <see cref="PingDirectorAsync"/>. Returns
+    /// null when that Director has no active stream connection (or the hub is unavailable), which the
+    /// caller treats as "no stream" and falls back to the HTTP command path. Any non-null result - success
+    /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
+    /// </summary>
+    public async Task<DirectorCommandResult?> SendCommandAsync(string directorId, DirectorCommand command, CancellationToken ct = default)
+    {
+        if (command is null) throw new ArgumentNullException(nameof(command));
+
+        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
+            as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
+        if (connectionId is null || hub is null)
+        {
+            FileLog.Write($"[GatewayHost] SendCommandAsync: no active stream for director={directorId}, verb={command.Verb}");
+            return null;
+        }
+        FileLog.Write($"[GatewayHost] SendCommandAsync: director={directorId}, verb={command.Verb}, sid={command.SessionId}, cmdId={command.CommandId}");
+        return await hub.Clients.Client(connectionId).InvokeAsync<DirectorCommandResult>("Command", command, ct);
+    }
+
     public async Task StopAsync()
     {
         if (_stopped) return;
@@ -1238,8 +1331,6 @@ public sealed class GatewayHost : IAsyncDisposable
         // supervisor's dispose gracefully stops the hosted claude.exe (never leaked).
         try { _voiceSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] voice sweep dispose error: {ex.Message}"); }
         _voiceSweepTimer = null;
-        try { _dictationSweepTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] dictation sweep dispose error: {ex.Message}"); }
-        _dictationSweepTimer = null;
         try { _turnEndWatcher?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] watcher dispose error: {ex.Message}"); }
         _turnEndWatcher = null;
         try { Brain.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] brain dispose error: {ex.Message}"); }

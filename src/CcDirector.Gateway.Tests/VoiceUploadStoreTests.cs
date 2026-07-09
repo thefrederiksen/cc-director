@@ -163,4 +163,251 @@ public sealed class VoiceUploadStoreTests : IDisposable
         Assert.False(_store.Exists(stale));
         Assert.True(_store.Exists(fresh));
     }
+
+    // ===== durable delivery record (issue #1183) =====================================================
+
+    [Fact]
+    public async Task PendingChunks_AreRetainedPastTheOldOneHourWindow_AndStillAssemble()
+    {
+        // Acceptance criterion 1: a PENDING upload's chunks are kept until it becomes delivered or
+        // abandoned - never age-swept. A clip whose staging is well past the old one-hour window still
+        // assembles in full (the dictation path no longer runs the age sweep that used to delete it).
+        var id = _store.Register(null);
+        _store.MarkPending(id, Guid.NewGuid().ToString()); // the explicit PENDING marker written at register
+        await _store.StoreChunkAsync(id, 0, Bytes("AAA"), null);
+        await _store.StoreChunkAsync(id, 1, Bytes("BBB"), null);
+
+        // Age the staging dir two hours into the past - well beyond the old one-hour cut.
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-2));
+
+        Assert.True(_store.IsPending(id), "an undelivered upload stays PENDING");
+        var result = await _store.AssembleAsync(id, 2);
+        Assert.Equal("ok", result.Status);
+        Assert.Equal("AAABBB", Encoding.UTF8.GetString(result.Audio!));
+    }
+
+    [Fact]
+    public async Task RestartWithFreshStoreInstance_AssemblesPendingChunksFromDisk()
+    {
+        // Acceptance criterion 2: the record and its chunks live on disk, so a Gateway restart still finds
+        // them. Stage in one store, then assemble a still-PENDING id from a FRESH store over the same root.
+        var id = _store.Register(null);
+        _store.MarkPending(id, Guid.NewGuid().ToString());
+        await _store.StoreChunkAsync(id, 0, Bytes("AAA"), null);
+        await _store.StoreChunkAsync(id, 1, Bytes("BBB"), null);
+        await _store.StoreChunkAsync(id, 2, Bytes("CCC"), null);
+
+        var afterRestart = new VoiceUploadStore(_root);
+        Assert.True(afterRestart.IsPending(id));
+        var result = await afterRestart.AssembleAsync(id, 3);
+        Assert.Equal("ok", result.Status);
+        Assert.Equal("AAABBBCCC", Encoding.UTF8.GetString(result.Audio!));
+    }
+
+    [Fact]
+    public async Task MarkDelivered_DiscardsChunkBytes_KeepsMarker_SurvivesFreshInstance()
+    {
+        // Acceptance criterion 3: delivery writes a durable DELIVERED tombstone holding the submitted
+        // outcome; the heavy chunk bytes MAY be discarded (resume is no longer needed) but the small marker
+        // remains and survives a restart. A fresh store over the same root returns the same outcome.
+        var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Bytes("AAA"), null);
+
+        _store.MarkDelivered(id, submitted: true, movedOn: false, transcript: "hello there");
+
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Assert.Empty(Directory.EnumerateFiles(dir, "*.part")); // chunk bytes discarded
+        Assert.True(File.Exists(Path.Combine(dir, "record.json"))); // marker kept
+        Assert.False(_store.IsPending(id), "a delivered upload is terminal, not pending");
+
+        var afterRestart = new VoiceUploadStore(_root);
+        var record = afterRestart.ReadRecord(id);
+        Assert.NotNull(record);
+        Assert.Equal(DictationDeliveryState.Delivered, record!.State);
+        Assert.True(record.Submitted);
+        Assert.False(record.MovedOn);
+        Assert.Equal("hello there", record.Transcript);
+    }
+
+    [Fact]
+    public void MarkAbandoned_WritesAbandonedTombstone_SurvivesFreshInstance()
+    {
+        // Acceptance criterion 6: an abandoned upload id becomes a durable ABANDONED tombstone holding the
+        // reason, so its read side returns a clear dropped outcome across a restart.
+        var id = _store.Register(null);
+
+        _store.MarkAbandoned(id, "user cancelled");
+
+        Assert.False(_store.IsPending(id), "an abandoned upload is terminal, not pending");
+        var record = new VoiceUploadStore(_root).ReadRecord(id);
+        Assert.NotNull(record);
+        Assert.Equal(DictationDeliveryState.Abandoned, record!.State);
+        Assert.False(record.Submitted);
+        Assert.Equal("user cancelled", record.Reason);
+    }
+
+    [Fact]
+    public void Acknowledge_RetiresTombstone_AndIsIdempotent()
+    {
+        // Acceptance criterion 5: the tombstone is retired ONLY on the client ack, and ack is idempotent -
+        // a second ack (a re-ack after a lost first ack) is a harmless no-op.
+        var id = _store.Register(null);
+        _store.MarkDelivered(id, submitted: true, movedOn: false, transcript: "done");
+        Assert.NotNull(_store.ReadRecord(id));
+
+        Assert.True(_store.Acknowledge(id), "the first ack retires the tombstone");
+        Assert.Null(_store.ReadRecord(id));
+        Assert.False(_store.Exists(id));
+        Assert.False(_store.Acknowledge(id), "acking an already-retired id is a no-op");
+    }
+
+    [Fact]
+    public async Task ReadRecord_PendingMarker_And_UnknownUpload()
+    {
+        // PENDING is now an EXPLICIT marker (issue #1188): a registered upload reads back State==Pending, and
+        // the terminal short-circuit (delivered/abandoned only) does NOT fire for it. An unknown id (no
+        // marker at all) reads null.
+        var pending = _store.Register(null);
+        _store.MarkPending(pending, Guid.NewGuid().ToString());
+        await _store.StoreChunkAsync(pending, 0, Bytes("AAA"), null);
+        Assert.Equal(DictationDeliveryState.Pending, _store.ReadRecord(pending)!.State);
+        Assert.Null(_store.ReadRecord(Guid.NewGuid().ToString()));
+    }
+
+    // ===== the parked FAILED state (issue #1185) ====================================================
+
+    [Fact]
+    public async Task MarkFailed_ParksTheRecord_KeepsChunkBytes_AndIsNotPending()
+    {
+        // FAILED is a parked, user-retryable pause: it writes the marker with the reason code but - unlike a
+        // delivered/abandoned tombstone - KEEPS the staged chunk bytes so an explicit retry can re-complete.
+        // IsPending is false (so the session is not locked and the client auto-loop stops).
+        var id = _store.Register(null);
+        await _store.StoreChunkAsync(id, 0, Bytes("AAA"), null);
+        await _store.StoreChunkAsync(id, 1, Bytes("BBB"), null);
+
+        _store.MarkFailed(id, "audio_too_large");
+
+        var dir = Path.Combine(_root, Guid.Parse(id).ToString("N"));
+        Assert.Equal(2, Directory.EnumerateFiles(dir, "*.part").Count()); // chunk bytes RETAINED
+        Assert.False(_store.IsPending(id), "a FAILED record is not pending (the session is not locked)");
+        var record = _store.ReadRecord(id);
+        Assert.NotNull(record);
+        Assert.Equal(DictationDeliveryState.Failed, record!.State);
+        Assert.Equal("audio_too_large", record.Reason);
+    }
+
+    [Fact]
+    public async Task ClearFailed_ReturnsAFailedRecordToPending_KeepingChunks()
+    {
+        // An explicit retry clears the FAILED marker back to PENDING (deletes only record.json) while keeping
+        // the chunks, so the retry re-drives and can still assemble without a full re-upload.
+        var id = _store.Register(null);
+        var sid = Guid.NewGuid().ToString();
+        _store.MarkPending(id, sid);
+        await _store.StoreChunkAsync(id, 0, Bytes("AAA"), null);
+        await _store.StoreChunkAsync(id, 1, Bytes("BBB"), null);
+        _store.MarkFailed(id, "unsupported_format");
+
+        Assert.True(_store.ClearFailed(id), "clearing a FAILED record returns true");
+
+        // Under the explicit-PENDING model (issue #1188) clearing FAILED restores a PENDING marker carrying
+        // the SAME session id (so the session re-locks for the retry), NOT a deleted record.
+        Assert.True(_store.IsPending(id), "after clearing, the record is PENDING again");
+        var restored = _store.ReadRecord(id);
+        Assert.Equal(DictationDeliveryState.Pending, restored!.State);
+        Assert.Equal(sid, restored.SessionId);
+        var result = await _store.AssembleAsync(id, 2);
+        Assert.Equal("ok", result.Status);
+        Assert.Equal("AAABBB", Encoding.UTF8.GetString(result.Audio!)); // chunks survived the clear
+    }
+
+    [Fact]
+    public void ClearFailed_IsANoOpForDeliveredAbandonedOrUnknown()
+    {
+        // ClearFailed must ONLY touch a FAILED record - it must never disturb a DELIVERED or ABANDONED
+        // tombstone (their short-circuit stands) or an unknown id.
+        var delivered = _store.Register(null);
+        _store.MarkDelivered(delivered, submitted: true, movedOn: false, transcript: "done");
+        var abandoned = _store.Register(null);
+        _store.MarkAbandoned(abandoned, "cancelled");
+
+        Assert.False(_store.ClearFailed(delivered));
+        Assert.False(_store.ClearFailed(abandoned));
+        Assert.False(_store.ClearFailed(Guid.NewGuid().ToString()));
+
+        Assert.Equal(DictationDeliveryState.Delivered, _store.ReadRecord(delivered)!.State);
+        Assert.Equal(DictationDeliveryState.Abandoned, _store.ReadRecord(abandoned)!.State);
+    }
+
+    // ===== the enforced session lock projection (issue #1188) =======================================
+
+    [Fact]
+    public void MarkPending_LocksTheSession_CarryingTheSessionIdOnDisk()
+    {
+        var id = _store.Register(null);
+        var sid = Guid.NewGuid().ToString();
+
+        _store.MarkPending(id, sid);
+
+        Assert.True(_store.IsPending(id));
+        Assert.Equal(sid, _store.ReadRecord(id)!.SessionId);
+        Assert.True(_store.IsSessionLocked(sid), "a PENDING record locks its session");
+        Assert.False(_store.IsSessionLocked(Guid.NewGuid().ToString()), "an unrelated session is not locked");
+        // Restart-safe: a fresh store over the same root recomputes the lock from disk.
+        Assert.True(new VoiceUploadStore(_root).IsSessionLocked(sid));
+    }
+
+    [Fact]
+    public void IsSessionLocked_ClearsWhenTheRecordLeavesPending()
+    {
+        var sid = Guid.NewGuid().ToString();
+        var delivered = _store.Register(null); _store.MarkPending(delivered, sid);
+        var abandoned = _store.Register(null); _store.MarkPending(abandoned, sid);
+        var failed = _store.Register(null); _store.MarkPending(failed, sid);
+        Assert.True(_store.IsSessionLocked(sid));
+
+        // The lock is a pure projection: it clears only when EVERY record for the session leaves PENDING.
+        _store.MarkDelivered(delivered, submitted: true, movedOn: false, transcript: "hi");
+        Assert.True(_store.IsSessionLocked(sid), "still locked - two records remain PENDING");
+        _store.MarkAbandoned(abandoned, "cancelled");
+        Assert.True(_store.IsSessionLocked(sid), "still locked - one record remains PENDING");
+        _store.MarkFailed(failed, "audio_too_large");
+        Assert.False(_store.IsSessionLocked(sid), "unlocked - no PENDING record remains");
+    }
+
+    [Fact]
+    public void LockedSessionIds_ReturnsTheDistinctPendingSessions()
+    {
+        var sidA = Guid.NewGuid().ToString();
+        var sidB = Guid.NewGuid().ToString();
+        _store.MarkPending(_store.Register(null), sidA);
+        _store.MarkPending(_store.Register(null), sidA); // same session, two uploads
+        _store.MarkPending(_store.Register(null), sidB);
+        var deliveredId = _store.Register(null);
+        _store.MarkPending(deliveredId, Guid.NewGuid().ToString());
+        _store.MarkDelivered(deliveredId, submitted: true, movedOn: false, transcript: "x"); // not pending
+
+        var locked = _store.LockedSessionIds();
+
+        Assert.Equal(2, locked.Count);
+        Assert.Contains(sidA, locked);
+        Assert.Contains(sidB, locked);
+    }
+
+    [Fact]
+    public void TerminalTransitions_PreserveTheSessionId()
+    {
+        // A state transition preserves the session id first written by MarkPending (so a later ClearFailed
+        // can restore a PENDING marker that re-locks the right session).
+        var sid = Guid.NewGuid().ToString();
+        var d = _store.Register(null); _store.MarkPending(d, sid); _store.MarkDelivered(d, true, false, "hi");
+        var a = _store.Register(null); _store.MarkPending(a, sid); _store.MarkAbandoned(a, "cancelled");
+        var f = _store.Register(null); _store.MarkPending(f, sid); _store.MarkFailed(f, "audio_too_large");
+
+        Assert.Equal(sid, _store.ReadRecord(d)!.SessionId);
+        Assert.Equal(sid, _store.ReadRecord(a)!.SessionId);
+        Assert.Equal(sid, _store.ReadRecord(f)!.SessionId);
+    }
 }

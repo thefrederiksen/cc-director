@@ -1,0 +1,279 @@
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
+using Microsoft.AspNetCore.SignalR.Client;
+
+namespace CcDirector.ControlApi;
+
+/// <summary>
+/// Issue #1176 (Phase 1a): the Director's outbound client for the Gateway's DirectorHub. It dials the
+/// Gateway (never the other way), authenticates with the same token the HTTP client uses, and pushes this
+/// Director's session state UP the stream:
+///
+///   - on connect AND on every reconnect it sends <c>Hello</c> then a full <c>PushSnapshot</c> (the new
+///     connection makes the snapshot authoritative at the Gateway, so a Director restart reseeds cleanly);
+///   - <see cref="NotifyDelta"/> pushes one changed session; <see cref="NotifyRemove"/> pushes a removal.
+///
+/// It runs ALONGSIDE the existing <see cref="GatewayClient"/> in Phase 1a (additive): the heartbeat/
+/// doorbell stay as the reconcile floor. It is inert unless the config has a Gateway URL and
+/// <see cref="GatewayConfig.StreamMode"/> is on, so a Director with stream mode off behaves exactly as today.
+///
+/// Sends are best-effort and fire-and-forget: a dropped delta is harmless because the next snapshot (on
+/// reconnect) re-establishes the full truth, mirroring the doorbell/heartbeat resilience model.
+/// </summary>
+public sealed class GatewayStreamClient : IAsyncDisposable
+{
+    private readonly GatewayConfig _config;
+    private readonly string _directorId;
+    private readonly string _version;
+    private readonly Func<List<SessionDto>> _snapshot;
+    private readonly Func<DirectorCommand, Task<DirectorCommandResult>>? _commandDispatcher;
+    private readonly TimeSpan _rePushInterval;
+
+    private HubConnection? _connection;
+    private long _sequence;
+    private int _started;
+    private int _rePushInFlight;
+    private Timer? _rePushTimer;
+    private volatile bool _disposed;
+
+    /// <summary>Reconnect backoff between long-outage restart attempts once auto-reconnect has given up.</summary>
+    private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
+
+    /// <param name="commandDispatcher">
+    /// Issue #1177 (Phase 1): handler for commands the Gateway sends DOWN this stream. When null (or in
+    /// Phase 1a callers that pre-date it), the Director declines any command with an Error result; the
+    /// Gateway then falls back to its HTTP command path, so behaviour is unchanged.
+    /// </param>
+    /// <param name="rePushInterval">
+    /// Issue #1177 (Phase 4a): how often, while connected, the Director re-pushes its full snapshot so a
+    /// QUIET session's pushed cache never ages past the Gateway's stale window. Null uses half the default
+    /// stale window (comfortably under it). A test seam; production passes null.
+    /// </param>
+    public GatewayStreamClient(GatewayConfig config, string directorId, string version, Func<List<SessionDto>> snapshot,
+        Func<DirectorCommand, Task<DirectorCommandResult>>? commandDispatcher = null,
+        TimeSpan? rePushInterval = null)
+    {
+        _config = config ?? throw new ArgumentNullException(nameof(config));
+        _directorId = string.IsNullOrWhiteSpace(directorId) ? throw new ArgumentException("directorId is required", nameof(directorId)) : directorId;
+        _version = version ?? "";
+        _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
+        _commandDispatcher = commandDispatcher;
+        _rePushInterval = rePushInterval ?? TimeSpan.FromSeconds(GatewayConfig.DefaultStreamStaleAfterSeconds / 2.0);
+    }
+
+    /// <summary>True when stream mode is enabled for a configured Gateway. When false, <see cref="Start"/> is a no-op.</summary>
+    public bool IsEnabled => _config.IsEnabled && _config.StreamMode;
+
+    /// <summary>Start dialing the Gateway. Idempotent; inert when <see cref="IsEnabled"/> is false.</summary>
+    public void Start()
+    {
+        if (!IsEnabled) return;
+        if (Interlocked.Exchange(ref _started, 1) == 1) return;
+        FileLog.Write($"[GatewayStreamClient] Start: dialing {_config.Url} for director {_directorId}");
+        _ = SuperviseAsync();
+
+        // Issue #1177 (Phase 4a): keep the Gateway's pushed cache fresh for a QUIET session. A portless
+        // (remotely-unreachable) Director has no HTTP pull floor, so once the last push ages past the
+        // Gateway's stale window its sessions vanish from the roster and can no longer be located. A periodic
+        // full re-push - comfortably under that window - keeps TryGetFresh/TryLocate fresh. Best-effort, only
+        // while connected. Armed only here (inside the IsEnabled guard), so it is inert when stream mode off.
+        _rePushTimer = new Timer(_ => RePushTick(), null, _rePushInterval, _rePushInterval);
+    }
+
+    // Timer callback (a boundary): re-push the full snapshot so a quiet session's pushed cache stays fresh.
+    // Skips when disposed, when disconnected, or when a prior re-push is still in flight (no overlap).
+    private void RePushTick()
+    {
+        if (_disposed) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        if (Interlocked.Exchange(ref _rePushInFlight, 1) == 1) return;
+        _ = RePushAsync();
+    }
+
+    private async Task RePushAsync()
+    {
+        try
+        {
+            // ReseedAsync sends Hello + a full PushSnapshot with an incrementing sequence (the same path used
+            // on connect/reconnect) and already swallows its own send faults, so a re-push is best-effort.
+            await ReseedAsync();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _rePushInFlight, 0);
+        }
+    }
+
+    // Owns the connection for its whole life: build once, keep it connected, and reseed on every
+    // (re)connection. Auto-reconnect handles transient drops fast; when it gives up (Closed), this loop
+    // restarts the connection so a long Gateway outage self-heals without a Director restart.
+    private async Task SuperviseAsync()
+    {
+        _connection = new HubConnectionBuilder()
+            .WithUrl(_config.Url.TrimEnd('/') + "/director-stream", options =>
+            {
+                var token = _config.Token;
+                if (!string.IsNullOrEmpty(token))
+                    options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+            })
+            .WithAutomaticReconnect(new[]
+            {
+                TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10),
+            })
+            .Build();
+
+        _connection.Reconnecting += ex => { FileLog.Write($"[GatewayStreamClient] reconnecting: {ex?.Message}"); return Task.CompletedTask; };
+        _connection.Reconnected += async _ => await ReseedAsync();
+
+        // Issue #1176 (Phase 1b): the down-channel proof. The Gateway can call this and await the reply
+        // over the same connection (SignalR client results), demonstrating request-both-ways on one
+        // outbound-dialed stream. A synthetic proof, not a production command handler.
+        _connection.On<string, string>("Ping", message => $"pong:{message}");
+
+        // Issue #1177 (Phase 1): the production down-channel. The Gateway invokes "Command" with a
+        // DirectorCommand and awaits the DirectorCommandResult over the same connection (SignalR client
+        // results). This handler is a boundary, so it catches: a dispatcher fault becomes an Error result
+        // the Gateway can fall back on, never a faulted hub invocation.
+        _connection.On<DirectorCommand, DirectorCommandResult>("Command", async cmd =>
+        {
+            try
+            {
+                if (_commandDispatcher is null)
+                {
+                    FileLog.Write($"[GatewayStreamClient] Command declined (no dispatcher): verb={cmd?.Verb}, cmdId={cmd?.CommandId}");
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.Error, "director has no command dispatcher");
+                }
+                if (cmd is null)
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "command is required");
+
+                FileLog.Write($"[GatewayStreamClient] Command received: verb={cmd.Verb}, sid={cmd.SessionId}, cmdId={cmd.CommandId}");
+                return await _commandDispatcher(cmd);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayStreamClient] Command FAILED: verb={cmd?.Verb}, cmdId={cmd?.CommandId}, error={ex.Message}");
+                return DirectorCommandResult.Fail(DirectorCommandStatus.Error, ex.Message);
+            }
+        });
+
+        while (!_disposed)
+        {
+            if (await TryConnectAsync())
+            {
+                await ReseedAsync();
+                await WaitUntilClosedAsync();      // returns when auto-reconnect has exhausted its attempts
+            }
+            if (_disposed) break;
+            await Task.Delay(RestartDelay);        // long-outage restart
+        }
+    }
+
+    private async Task<bool> TryConnectAsync()
+    {
+        if (_connection is null) return false;
+        try
+        {
+            await _connection.StartAsync();
+            FileLog.Write($"[GatewayStreamClient] connected to {_config.Url}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] connect failed (will retry): {ex.Message}");
+            return false;
+        }
+    }
+
+    private async Task WaitUntilClosedAsync()
+    {
+        if (_connection is null) return;
+        var closed = new TaskCompletionSource();
+        Task OnClosed(Exception? _) { closed.TrySetResult(); return Task.CompletedTask; }
+        _connection.Closed += OnClosed;
+        try
+        {
+            if (_connection.State == HubConnectionState.Disconnected) return;
+            await closed.Task;
+        }
+        finally
+        {
+            _connection.Closed -= OnClosed;
+        }
+    }
+
+    private async Task ReseedAsync()
+    {
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        try
+        {
+            var seq = Interlocked.Increment(ref _sequence);
+            await conn.InvokeAsync("Hello", new DirectorStreamHello { DirectorId = _directorId, Version = _version });
+            await conn.InvokeAsync("PushSnapshot", seq, _snapshot().ToArray());
+            FileLog.Write($"[GatewayStreamClient] reseeded full snapshot seq={seq}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayStreamClient] reseed failed (auto-reconnect will retry): {ex.Message}");
+        }
+    }
+
+    /// <summary>Push one changed session. Fire-and-forget; a drop is reconciled by the next snapshot.</summary>
+    public void NotifyDelta(SessionDto session)
+    {
+        if (session is null || string.IsNullOrEmpty(session.SessionId)) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        var seq = Interlocked.Increment(ref _sequence);
+        _ = SendAsync(() => conn.InvokeAsync("PushDelta", seq, session), "PushDelta");
+    }
+
+    /// <summary>Push a session removal. Fire-and-forget; a drop is reconciled by the next snapshot.</summary>
+    public void NotifyRemove(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        var seq = Interlocked.Increment(ref _sequence);
+        _ = SendAsync(() => conn.InvokeAsync("RemoveSession", seq, sessionId), "RemoveSession");
+    }
+
+    private static async Task SendAsync(Func<Task> send, string what)
+    {
+        try { await send(); }
+        catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] {what} dropped (mid-reconnect?): {ex.Message}"); }
+    }
+
+    public async Task StopAsync()
+    {
+        _disposed = true;
+        if (_rePushTimer is not null)
+        {
+            await _rePushTimer.DisposeAsync();
+            _rePushTimer = null;
+        }
+        if (_connection is not null)
+        {
+            try { await _connection.StopAsync(); }
+            catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] StopAsync error: {ex.Message}"); }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_rePushTimer is not null)
+        {
+            await _rePushTimer.DisposeAsync();
+            _rePushTimer = null;
+        }
+        if (_connection is not null)
+        {
+            try { await _connection.DisposeAsync(); }
+            catch (Exception ex) { FileLog.Write($"[GatewayStreamClient] DisposeAsync error: {ex.Message}"); }
+            _connection = null;
+        }
+    }
+}

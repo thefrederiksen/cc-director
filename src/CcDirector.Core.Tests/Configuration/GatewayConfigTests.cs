@@ -132,4 +132,58 @@ public sealed class GatewayConfigTests : IDisposable
 
         Assert.Equal("", cfg.Token);
     }
+
+    // ===== Issue #1176 (Phase 1a): streamMode + staleAfterSeconds =====
+
+    [Fact]
+    public void Load_streamMode_defaults_off_when_absent()
+    {
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878" } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        Assert.False(cfg.StreamMode);
+        Assert.Equal(GatewayConfig.DefaultStreamStaleAfterSeconds, cfg.StreamStaleAfterSeconds);
+    }
+
+    [Fact]
+    public void Load_streamMode_true_when_configured()
+    {
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878", "streamMode": true } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        Assert.True(cfg.StreamMode);
+    }
+
+    [Fact]
+    public void Load_streamMode_false_for_non_boolean_value()
+    {
+        // Only a JSON boolean true enables it; a string "true" must not.
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878", "streamMode": "true" } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        Assert.False(cfg.StreamMode);
+    }
+
+    [Fact]
+    public void Load_staleAfterSeconds_reads_positive_value()
+    {
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878", "staleAfterSeconds": 45 } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        Assert.Equal(45, cfg.StreamStaleAfterSeconds);
+    }
+
+    [Fact]
+    public void Load_staleAfterSeconds_ignores_non_positive_value()
+    {
+        SeedConfig("""{ "gateway": { "url": "http://gw:7878", "staleAfterSeconds": 0 } }""");
+
+        var cfg = GatewayConfig.Load();
+
+        Assert.Equal(GatewayConfig.DefaultStreamStaleAfterSeconds, cfg.StreamStaleAfterSeconds);
+    }
 }

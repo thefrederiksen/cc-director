@@ -12,7 +12,7 @@ namespace CcDirector.Avalonia.Voice;
 
 /// <summary>
 /// Speaks text aloud on the desktop. Generation reuses the shared in-process
-/// <see cref="TtsService"/> (OpenAI /v1/audio/speech, returning mp3 bytes); this
+/// <see cref="TtsService"/> (hosted /v1/audio/speech, returning mp3 bytes); this
 /// class is only the playback half - it decodes the mp3 and plays it through
 /// NAudio's default output device. One player serves the whole app: a new
 /// <see cref="SpeakAsync"/> cuts off any speech still playing so replies never
@@ -27,10 +27,9 @@ public sealed class DesktopTtsPlayer : IDisposable
     private readonly object _gate = new();
     private WaveOutEvent? _output;
 
-    // Resolves the text-to-speech credential for the SELECTED AI provider (DevThrottle account key or
-    // OpenAI key), the same resolver dictation uses - Gateway vault when attached, local vault when
-    // standalone. Passed to TtsService so desktop speech honours the one AI provider switch + voice.
-    private readonly OpenAiKeyResolver _keyResolver = new();
+    // Resolves the DevThrottle text-to-speech credential from the Gateway vault when attached, or the
+    // local vault when standalone. Passed to TtsService so desktop speech honors the hosted voice setup.
+    private readonly HostedAiKeyResolver _keyResolver = new();
 
     public DesktopTtsPlayer(AgentOptions options)
     {

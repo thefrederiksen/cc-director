@@ -92,7 +92,8 @@ export function Terminal() {
       {error !== null && <div className="banner banner-error" role="alert">{error}</div>}
 
       {/* Live dictation status - always visible (even with the Keys panel hidden) so a Speak Send is
-          never silent: progress while it runs, a sticky red failure with Retry if it dies (#1139). */}
+          never silent: progress while it runs, a saved "still sending" strip with Upload now if the
+          connection is bad, and a sticky failure only if it truly could not be saved (#1182). */}
       <DictationStatusStrip sessionId={sessionId} />
 
       {/* The terminal fills all remaining space. .term-wrap is the only scroll container (vertical

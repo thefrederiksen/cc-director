@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
@@ -10,9 +11,9 @@ namespace CcDirector.Gateway.Transcription;
 /// <summary>
 /// The single Gateway owner of speech-to-text (issue #839). Every module that needs audio turned
 /// into text goes through this one service: it resolves the configured transcription mode and the
-/// key, runs the OpenAI-compatible batch endpoint for the mode (DevThrottle hosted or bring-your-own
-/// OpenAI), and optionally applies the validated dictionary correction. No caller resolves the mode,
-/// reads the key, picks a provider, or talks to OpenAI on its own.
+/// key, runs the provider-compatible DevThrottle batch endpoint, and optionally applies the validated
+/// dictionary correction. No caller resolves the mode, reads the key, picks a provider, or talks to a
+/// provider on its own.
 ///
 /// This collapses the three hand-kept-in-step resolvers that previously each did "figure out the
 /// mode, then read the key" - the phone Notes worker (<c>ResolveSelectedMethod</c>), the Settings
@@ -21,9 +22,8 @@ namespace CcDirector.Gateway.Transcription;
 /// (<see cref="Api.TranscriptionBatchEndpoint"/>).
 ///
 /// The key lives in exactly one store: the Gateway vault file (<see cref="KeyVault"/>). There is no
-/// second config.json copy. The bring-your-own OpenAI key is only ever paired with the OpenAI base
-/// URL because the (URL, key, transport, model) tuple is composed from the one pure
-/// <see cref="TranscriptionEndpointResolver"/> - it is never crossed onto the DevThrottle URL.
+/// second config.json copy. Legacy provider mode values migrate forward because the (URL, key,
+/// transport, model) tuple is composed from the one pure <see cref="TranscriptionEndpointResolver"/>.
 ///
 /// Transcription integrity (CodingStyle section 16): the only post-transcription transform is the
 /// validated dictionary corrector (<see cref="CleanupOrchestrator"/> / <see cref="TranscriptEditEngine"/>)
@@ -37,6 +37,7 @@ public sealed class GatewayTranscriptionService
     private readonly Func<TranscriptionMode> _modeProvider;
     private readonly HttpClient? _http;
     private readonly string _cleanupModel;
+    private readonly TranscriptionTelemetryLog _telemetry;
 
     /// <param name="vault">The Gateway key vault - the single store for the transcription key.</param>
     /// <param name="dictionaryProvider">Supplies the live dictation dictionary the corrector uses;
@@ -47,20 +48,24 @@ public sealed class GatewayTranscriptionService
     /// <see cref="TranscriptionModeConfig.Get"/>.</param>
     /// <param name="http">Optional shared HttpClient for the remote batch transcription and the
     /// dictionary-corrector POST (tests inject a stub). The pipeline creates and owns one when null.</param>
-    /// <param name="cleanupModel">The chat model the dictionary corrector uses to PROPOSE edits
-    /// (deterministic validation still gates them). Defaults to the dictation default when blank.</param>
+    /// <param name="cleanupModel">Cleanup identity used only for logging (the corrector is deterministic,
+    /// not a model). Defaults to the dictation default when blank.</param>
+    /// <param name="telemetry">Local transcription telemetry sink. Defaults to the process-wide shared
+    /// log (<see cref="TranscriptionTelemetryLog.Shared"/>); tests inject their own.</param>
     public GatewayTranscriptionService(
         KeyVault vault,
         Func<DictationDictionary>? dictionaryProvider = null,
         Func<TranscriptionMode>? modeProvider = null,
         HttpClient? http = null,
-        string? cleanupModel = null)
+        string? cleanupModel = null,
+        TranscriptionTelemetryLog? telemetry = null)
     {
         _vault = vault ?? throw new ArgumentNullException(nameof(vault));
         _dictionaryProvider = dictionaryProvider ?? (() => DictionaryLoader.LoadFromDisk(DictionaryPath()));
         _modeProvider = modeProvider ?? TranscriptionModeConfig.Get;
         _http = http;
         _cleanupModel = string.IsNullOrWhiteSpace(cleanupModel) ? CleanupOrchestrator.DefaultModel : cleanupModel;
+        _telemetry = telemetry ?? TranscriptionTelemetryLog.Shared;
     }
 
     /// <summary>
@@ -104,10 +109,13 @@ public sealed class GatewayTranscriptionService
         if (routing.Key is null)
             return GatewayTranscriptionResult.NoKey(mode, routing.Endpoint.Model);
 
+        var turnId = Guid.NewGuid().ToString("N");
+        var swTranscribe = Stopwatch.StartNew();
         string raw;
         try
         {
             raw = await TranscribeRawCoreAsync(routing, audio, fileName, contentType, ct);
+            swTranscribe.Stop();
         }
         catch (OperationCanceledException)
         {
@@ -118,22 +126,86 @@ public sealed class GatewayTranscriptionService
             // Out of credits (issue #885): a distinct, expected condition. Carry it as its own value so
             // the endpoint maps it to 402 and the client preserves the recording and offers "Add
             // credits" - never a raw error, never a lost clip.
+            swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OUT OF CREDITS: mode={mode}, code={ex.Code}");
+            RecordTelemetry(turnId, "out_of_credits", mode, routing, audio.Length,
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, error: ex.Message);
             return GatewayTranscriptionResult.OutOfCredits(mode, routing.Endpoint.Model, ex.Code, ex.Message);
+        }
+        catch (TranscriptionPermanentException ex)
+        {
+            // A PERMANENT failure (issue #1139): the clip cannot be decoded/transcoded or is too large to
+            // send, so retrying is pointless. Carry it as its own outcome with the machine-readable code
+            // so the endpoint maps it to a non-retryable status and the durable dictation loop stops
+            // resending a doomed clip, rather than looping like a transient provider outage.
+            swTranscribe.Stop();
+            FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync PERMANENT: mode={mode}, code={ex.Code}, {ex.Message}");
+            RecordTelemetry(turnId, "permanent_error", mode, routing, audio.Length,
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, error: ex.Message);
+            return GatewayTranscriptionResult.PermanentError(mode, routing.Endpoint.Model, ex.Code, ex.Message);
         }
         catch (Exception ex)
         {
             // A provider rejection (bad key, model not found, network) is an expected external
             // failure (CodingStyle: Result Objects for Expected Failures): carry it as a value so the
             // single endpoint maps it to 502, rather than throwing the same shape from N call sites.
+            swTranscribe.Stop();
             FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync provider FAILED: mode={mode}, {ex.Message}");
+            RecordTelemetry(turnId, "provider_error", mode, routing, audio.Length,
+                swTranscribe.ElapsedMilliseconds, 0, applyCorrection, raw: null, cleanup: null, error: ex.Message);
             return GatewayTranscriptionResult.ProviderError(mode, routing.Endpoint.Model, ex.Message);
         }
 
-        var text = applyCorrection ? (await CleanupCoreAsync(routing, raw, ct)).Text : raw;
-        FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OK: mode={mode}, corrected={applyCorrection}, chars={text.Length}");
+        CleanupOutcome? cleanup = null;
+        var swCleanup = Stopwatch.StartNew();
+        if (applyCorrection)
+            cleanup = await CleanupCoreAsync(raw, ct);
+        swCleanup.Stop();
+        var text = cleanup?.Text ?? raw;
+
+        FileLog.Write($"[GatewayTranscriptionService] TranscribeAsync OK: mode={mode}, corrected={applyCorrection}, "
+                      + $"transcribeMs={swTranscribe.ElapsedMilliseconds}, cleanupMs={(applyCorrection ? swCleanup.ElapsedMilliseconds : 0)}, chars={text.Length}");
+        RecordTelemetry(turnId, "ok", mode, routing, audio.Length, swTranscribe.ElapsedMilliseconds,
+            applyCorrection ? swCleanup.ElapsedMilliseconds : 0, applyCorrection, raw, cleanup, error: null);
         return GatewayTranscriptionResult.Ok(text, mode, routing.Endpoint.Model);
     }
+
+    /// <summary>Append one turn to the local transcription telemetry log. Never throws (the sink itself
+    /// swallows and logs errors), so instrumentation can never fail a transcription.</summary>
+    private void RecordTelemetry(
+        string turnId, string outcome, string mode, GatewayTranscriptionRouting routing, long audioBytes,
+        long transcribeMs, long cleanupMs, bool corrected, string? raw, CleanupOutcome? cleanup, string? error)
+    {
+        var finalText = cleanup?.Text ?? raw;
+        _telemetry.Record(new TranscriptionTelemetryRecord
+        {
+            TimestampUtc = DateTime.UtcNow,
+            TurnId = turnId,
+            Outcome = outcome,
+            Mode = mode,
+            TranscriptionModel = routing.Endpoint.Model,
+            CleanupModel = corrected ? _cleanupModel : null,
+            AudioBytes = audioBytes,
+            TranscriptionMs = transcribeMs,
+            CleanupMs = cleanupMs,
+            Corrected = corrected,
+            CleanupApplied = cleanup?.Applied ?? false,
+            ChangedWordCount = cleanup?.ChangedWords.Count ?? 0,
+            Changes = cleanup is { ChangedWords.Count: > 0 }
+                ? cleanup.ChangedWords.Select(TelemetryEdit.From).ToList()
+                : null,
+            CharCount = finalText?.Length ?? 0,
+            WordCount = CountWords(finalText),
+            Error = error,
+            RawText = raw,
+            CleanedText = cleanup is { Applied: true } ? cleanup.Text : null,
+        });
+    }
+
+    private static int CountWords(string? text)
+        => string.IsNullOrWhiteSpace(text)
+            ? 0
+            : text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
 
     /// <summary>
     /// Transcribe one complete audio segment to RAW text (no dictionary correction) using the
@@ -160,19 +232,19 @@ public sealed class GatewayTranscriptionService
 
     /// <summary>
     /// Apply the validated dictionary correction to an assembled raw transcript and return the
-    /// outcome. Fails open (CodingStyle section 16 / issue #190): with no key, on an empty dictionary,
-    /// or on any cleanup error, the raw transcript comes back byte-identical.
+    /// outcome. Fails open (CodingStyle section 16 / issue #190): on an empty dictionary or any cleanup
+    /// error, the raw transcript comes back byte-identical. Deterministic and in-process - needs no key.
     /// </summary>
     public async Task<CleanupOutcome> CleanupAsync(string rawTranscript, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(rawTranscript))
             return new CleanupOutcome(rawTranscript ?? "", Applied: false, Reason: "empty transcript");
-        return await CleanupCoreAsync(Resolve(), rawTranscript, ct);
+        return await CleanupCoreAsync(rawTranscript, ct);
     }
 
     /// <summary>
     /// Run the transcription provider for the resolved routing: ONE batch POST to the resolved
-    /// OpenAI-compatible endpoint for the mode. Throws on a provider error (a missing transcript is a
+    /// provider-compatible endpoint for the mode. Throws on a provider error (a missing transcript is a
     /// real failure the caller must surface).
     /// </summary>
     private async Task<string> TranscribeRawCoreAsync(
@@ -188,28 +260,19 @@ public sealed class GatewayTranscriptionService
     /// The validated dictionary correction core, shared by the optional <c>correct</c> flag and the
     /// Notes assemble-then-clean path. Fails open to the raw transcript.
     /// </summary>
-    private async Task<CleanupOutcome> CleanupCoreAsync(
-        GatewayTranscriptionRouting routing, string raw, CancellationToken ct)
+    private async Task<CleanupOutcome> CleanupCoreAsync(string raw, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(raw))
             return new CleanupOutcome(raw ?? "", Applied: false, Reason: "empty transcript");
 
-        // A missing key has no chat-completions endpoint for the corrector to reach - ship the raw
-        // words, exactly as they stood before this step existed.
-        if (routing.Key is null)
-        {
-            FileLog.Write("[GatewayTranscriptionService] cleanup: no-key - shipping raw");
-            return new CleanupOutcome(raw, Applied: false, Reason: "no-key: no corrector endpoint");
-        }
-
-        // CleanAsync short-circuits an empty dictionary to a verbatim passthrough; the early check just
-        // avoids constructing the orchestrator for nothing.
+        // Cleanup is deterministic and in-process now - no key or provider endpoint is needed, so it
+        // runs even offline. CleanAsync short-circuits an empty dictionary to a verbatim passthrough;
+        // the early check just avoids constructing the orchestrator for nothing.
         var dictionary = _dictionaryProvider();
         if (dictionary.Vocabulary.Count == 0 && dictionary.CommonMistranscriptions.Count == 0)
             return new CleanupOutcome(raw, Applied: false, Reason: "empty dictionary");
 
-        using var cleanup = new CleanupOrchestrator(
-            apiKey: routing.Key, model: _cleanupModel, httpClient: _http, baseUrl: routing.Endpoint.RequireBaseUrl());
+        var cleanup = new CleanupOrchestrator(model: _cleanupModel);
         var outcome = await cleanup.CleanAsync(raw, dictionary, "default", ct);
         FileLog.Write($"[GatewayTranscriptionService] cleanup: applied={outcome.Applied}, changed={outcome.ChangedWords.Count}, reason=\"{outcome.Reason}\"");
         return outcome;
@@ -260,8 +323,8 @@ public sealed record GatewayTranscriptionRouting
     public TranscriptionMode Mode => Endpoint.Mode;
 
     /// <summary>
-    /// Compose the <see cref="ResolvedTranscription"/> the remote batch pipeline consumes. Throws when
-    /// no key is set - call only after checking <see cref="Key"/> is non-null.
+    /// Compose the <see cref="ResolvedTranscription"/> the Gateway-local batch transport consumes.
+    /// Throws when no key is set - call only after checking <see cref="Key"/> is non-null.
     /// </summary>
     public ResolvedTranscription ToResolved()
     {
@@ -295,6 +358,10 @@ public enum TranscriptionOutcome
 
     /// <summary>The DevThrottle account is out of credits (HTTP 402) - issue #885.</summary>
     OutOfCredits = 4,
+
+    /// <summary>The clip can NEVER transcribe (unsupported/undecodable format, or too large to reduce) -
+    /// a permanent, non-retryable failure so the durable dictation loop stops (issue #1139).</summary>
+    PermanentError = 5,
 }
 
 /// <summary>
@@ -320,4 +387,32 @@ public sealed record GatewayTranscriptionResult(
     /// show the add-credits state and keep the recording.</summary>
     public static GatewayTranscriptionResult OutOfCredits(string mode, string? model, string code, string error)
         => new(TranscriptionOutcome.OutOfCredits, null, mode, model, error, code);
+
+    /// <summary>Permanent, non-retryable failure (issue #1139): carries the machine-readable code
+    /// (unsupported_format / audio_too_large / non_decodable) so the endpoint can map it to a stop.</summary>
+    public static GatewayTranscriptionResult PermanentError(string mode, string? model, string code, string error)
+        => new(TranscriptionOutcome.PermanentError, null, mode, model, error, code);
+}
+
+/// <summary>
+/// Gateway-local resolved transcription target: provider base URL, credential, transport, model, and
+/// mode. This deliberately lives in the Gateway transcription namespace so Director/Core code cannot
+/// depend on a reusable provider-direct transcription DTO.
+/// </summary>
+public sealed record ResolvedTranscription
+{
+    /// <summary>The provider-compatible base URL.</summary>
+    public required string BaseUrl { get; init; }
+
+    /// <summary>The credential to present (an <c>sk-</c> or <c>dt_</c> key, depending on mode).</summary>
+    public required string ApiKey { get; init; }
+
+    /// <summary>The provider transport to use.</summary>
+    public required TranscriptionTransport Transport { get; init; }
+
+    /// <summary>The transcription model to use.</summary>
+    public required string Model { get; init; }
+
+    /// <summary>The mode this target was resolved for.</summary>
+    public required TranscriptionMode Mode { get; init; }
 }

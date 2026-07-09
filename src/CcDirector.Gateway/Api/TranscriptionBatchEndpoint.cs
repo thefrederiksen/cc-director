@@ -10,7 +10,7 @@ namespace CcDirector.Gateway.Api;
 /// <summary>
 /// The single Gateway endpoint that turns audio into text (issue #839). A caller sends the raw audio
 /// bytes and the content type; the Gateway resolves the configured mode and the key, runs the
-/// OpenAI-compatible batch endpoint for the mode, and returns the text. The caller never sees or
+/// DevThrottle-compatible batch endpoint, and returns the text. The caller never sees or
 /// handles the key - it only sends audio and receives text.
 ///
 ///   POST /transcription            (raw audio body; Content-Type is the clip's MIME type)
@@ -21,8 +21,8 @@ namespace CcDirector.Gateway.Api;
 ///       -&gt; 402 { error, code, mode }    the DevThrottle account is out of credits (issue #885)
 ///       -&gt; 502 { error }                the provider rejected the request or the key
 ///
-/// Both modes (bring-your-own OpenAI, DevThrottle) go through this one endpoint - the resolution and
-/// the provider choice live in <see cref="GatewayTranscriptionService"/>, the single owner. Inherits
+/// Legacy mode values migrate forward and go through this one endpoint - the resolution and provider
+/// choice live in <see cref="GatewayTranscriptionService"/>, the single owner. Inherits
 /// the host-wide token middleware like every other Gateway route.
 ///
 /// Whether the dictionary correction runs is the caller's choice via <c>?correct=true</c>: the
@@ -63,6 +63,9 @@ internal static class TranscriptionBatchEndpoint
                 // Out of credits (issue #885): HTTP 402 with the machine-readable code so the client
                 // shows the add-credits state and keeps the recording, never a raw error.
                 TranscriptionOutcome.OutOfCredits => Results.Json(new { error = result.Error, code = result.Code, mode = result.Mode }, statusCode: StatusCodes.Status402PaymentRequired),
+                // Permanent, non-retryable (issue #1139): unsupported/undecodable format or too large to
+                // reduce. A 4xx (415) so the durable dictation loop STOPS rather than resending forever.
+                TranscriptionOutcome.PermanentError => Results.Json(new { error = result.Error, code = result.Code, mode = result.Mode }, statusCode: StatusCodes.Status415UnsupportedMediaType),
                 TranscriptionOutcome.ProviderError => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status502BadGateway),
                 _ => Results.Json(new { error = "unknown transcription outcome" }, statusCode: StatusCodes.Status500InternalServerError),
             };

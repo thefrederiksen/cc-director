@@ -835,7 +835,7 @@ This is an absolute, load-bearing rule (it traces to a real corruption incident,
 ### Forbidden
 
 - Sending the user's transcript to a chat/completions (or any text-generating) model and using the returned text as the user's words. No rephrasing, reordering, summarizing, grammar-fixing, "cleanup", expansion, or answering.
-- Adding a second, divergent cleanup path. `TranscriptEditEngine` is the single chokepoint; route every surface through `BatchTranscriptionPipeline` / `CleanupOrchestrator`.
+- Adding a second, divergent cleanup path. `TranscriptEditEngine` is the single cleanup chokepoint inside the Gateway transcription service; surfaces outside the Gateway route audio through `POST /transcription`, not provider-direct transcription helpers.
 - Mutating transcript content in front-end JavaScript beyond pure display (trivial whitespace trimming and single-space segment joining are the only allowed touches).
 
 ### Allowed (different feature, do not confuse)

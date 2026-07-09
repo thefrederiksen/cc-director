@@ -5,8 +5,8 @@ using Xunit;
 namespace CcDirector.Core.Tests.HostedAi;
 
 /// <summary>
-/// Issue #940 (epic #937): the Director/desktop readiness helper. It gathers the mode locally, the
-/// bring-your-own key via the resolver, and the balance over HTTP, then defers to the shared
+/// Issue #940 (epic #937): the Director/desktop readiness helper. It gathers the mode locally and the
+/// balance over HTTP, then defers to the shared
 /// <see cref="HostedAiReadiness"/> - so the desktop resolves the identical state the Gateway does. These
 /// prove it consults only the input the mode needs and maps each combination correctly, including the
 /// add-credits-without-restart flow.
@@ -25,19 +25,19 @@ public sealed class DirectorHostedAiReadinessTests
             _ => { onBalanceFetch?.Invoke(); return Task.FromResult(balanceMicros); });
 
     [Fact]
-    public async Task Byo_NoKey_NeedsKey()
-        => Assert.Equal(HostedAiState.NeedsKey, await Build(TranscriptionMode.Byo, key: null).CheckAsync());
+    public async Task LegacyByo_NoKey_UsesDevThrottleBalanceAndReadyWhenUnknown()
+        => Assert.Equal(HostedAiState.Ready, await Build(TranscriptionMode.Byo, key: null).CheckAsync());
 
     [Fact]
-    public async Task Byo_WithKey_Ready()
+    public async Task LegacyByo_WithKey_Ready()
         => Assert.Equal(HostedAiState.Ready, await Build(TranscriptionMode.Byo, key: "sk-abc").CheckAsync());
 
     [Fact]
-    public async Task Byo_DoesNotFetchBalance()
+    public async Task LegacyByo_FetchesBalance()
     {
         var balanceFetched = false;
         await Build(TranscriptionMode.Byo, key: "sk-abc", onBalanceFetch: () => balanceFetched = true).CheckAsync();
-        Assert.False(balanceFetched); // bring-your-own never needs the balance
+        Assert.True(balanceFetched);
     }
 
     [Theory]
@@ -59,7 +59,7 @@ public sealed class DirectorHostedAiReadinessTests
     {
         var keyFetched = false;
         await Build(TranscriptionMode.DevThrottle, balanceMicros: 5_000_000, onKeyFetch: () => keyFetched = true).CheckAsync();
-        Assert.False(keyFetched); // DevThrottle gates on balance, not the bring-your-own key
+        Assert.False(keyFetched);
     }
 
     [Fact]

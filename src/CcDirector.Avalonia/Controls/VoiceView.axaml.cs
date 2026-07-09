@@ -15,18 +15,14 @@ namespace CcDirector.Avalonia.Controls;
 /// Eyes-free voice tab for the active session. Two push-to-talk buttons:
 /// Ask Agent (talk TO the working agent) and Ask Wingman (ask the read-only
 /// observer). Click a button to start capturing; click the same button again
-/// ("Stop &amp; Send") to stop, which transcribes in-process via
-/// <see cref="BatchDictationRecorder"/> (the same whole-audio batch path the
-/// Speak dialog uses since issue #589) and raises the matching event with the
+/// ("Stop &amp; Send") to stop, which transcribes through the Gateway-owned path via
+/// <see cref="BatchDictationRecorder"/> and raises the matching event with the
 /// transcript. The host (MainWindow) decides what to do with it - send to the
 /// session or ask the wingman - and calls back <see cref="ShowReply"/> with the
 /// answer.
 ///
 /// Transcription (issue #590): the whole captured clip is transcribed ONCE after
-/// the user stops, through the shared <see cref="Core.Transcription.BatchTranscriptionPipeline"/>
-/// using the user-selected method (no hardcoded realtime model), and the only
-/// post-transcription transform is the validated dictionary corrector (no free-text
-/// cleanup; a turn with no dictionary term comes back byte-identical). There is no
+/// the user stops, by the Gateway transcription owner. There is no
 /// live partial transcript while recording. Choosing Ask Agent versus Ask Wingman is
 /// a UI-only routing decision applied to the finished transcript AFTER transcription;
 /// it never alters the transcript itself.
@@ -101,11 +97,6 @@ public partial class VoiceView : UserControl
         // ---- START a new capture ----
         if (!_recording)
         {
-            if (string.IsNullOrWhiteSpace(_options.ResolveOpenAiKey()))
-            {
-                SetStatus("Voice needs an OpenAI key. Set it in the Cockpit Settings > Transcription tab, or via the OPENAI_API_KEY environment variable.", "#F44747");
-                return;
-            }
             try
             {
                 _wingmanTurn = wingman;

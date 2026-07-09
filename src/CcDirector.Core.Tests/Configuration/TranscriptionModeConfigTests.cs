@@ -55,12 +55,13 @@ public sealed class TranscriptionModeConfigTests : IDisposable
     }
 
     [Fact]
-    public void SetThenGet_Byo_PersistsAcrossReread()
+    public void SetThenGet_Byo_SerializesForwardToDevThrottle()
     {
         TranscriptionModeConfig.Set(TranscriptionMode.DevThrottle);
         TranscriptionModeConfig.Set(TranscriptionMode.Byo);
 
-        Assert.Equal(TranscriptionMode.Byo, TranscriptionModeConfig.Get());
+        Assert.Equal(TranscriptionMode.DevThrottle, TranscriptionModeConfig.Get());
+        Assert.Equal("devthrottle", CcDirectorConfigService.ReadRaw()["transcription_mode"]!.GetValue<string>());
     }
 
     [Fact]

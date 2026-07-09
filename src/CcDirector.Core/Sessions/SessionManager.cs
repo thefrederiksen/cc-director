@@ -6,6 +6,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Core.Sessions;
 
@@ -592,14 +593,68 @@ public sealed class SessionManager : IDisposable
     /// <summary>List all sessions.</summary>
     public IReadOnlyCollection<Session> ListSessions() => _sessions.Values.ToList().AsReadOnly();
 
-    /// <summary>Kill a session by ID.</summary>
-    public async Task KillSessionAsync(Guid id)
+    /// <summary>
+    /// Resolve a session's automatic role from THIS Director's local fleet, returning one of the
+    /// <see cref="SessionRoles"/> constants. This mirrors the Gateway's fleet resolver
+    /// (StampFleetRolesAndFold) but sees only the local roster, so it is a best-effort desktop badge.
+    /// Precedence: an explicit role wins (the only path to Architect); else Worker when the session is
+    /// controlled by a controller that is still alive; else Manager when it controls at least one live
+    /// session; else Standalone.
+    /// </summary>
+    public string ResolveLocalRole(Session session)
+    {
+        FileLog.Write($"[SessionManager] ResolveLocalRole: session={session.Id}");
+
+        var explicitRole = SessionRoles.Normalize(session.ExplicitRole);
+        if (explicitRole is not null)
+            return explicitRole;
+
+        if (session.IsControlled && session.ControllerSessionId is Guid controllerId)
+        {
+            var controller = GetSession(controllerId);
+            if (controller is not null &&
+                controller.Status != SessionStatus.Exited &&
+                controller.Status != SessionStatus.Failed)
+            {
+                return SessionRoles.Worker;
+            }
+        }
+
+        foreach (var candidate in ListSessions())
+        {
+            if (candidate.Status is SessionStatus.Exited or SessionStatus.Failed) continue;
+            if (candidate.ControllerSessionId == session.Id)
+                return SessionRoles.Manager;
+        }
+
+        return SessionRoles.Standalone;
+    }
+
+    /// <summary>
+    /// Kill a session by ID. <paramref name="gracefulTimeoutMsOverride"/> (issue: faster STOP) lets the
+    /// FLEET stop path escalate to force sooner than the local desktop window: a positive value is the
+    /// graceful-wait in milliseconds; null (the default, used by every local caller) keeps the standard
+    /// <see cref="AgentOptions.GracefulShutdownTimeoutSeconds"/> window, byte-identical to before.
+    /// </summary>
+    public async Task KillSessionAsync(Guid id, int? gracefulTimeoutMsOverride = null)
     {
         if (!_sessions.TryGetValue(id, out var session))
             throw new KeyNotFoundException($"Session {id} not found.");
 
-        await session.KillAsync(_options.GracefulShutdownTimeoutSeconds * 1000);
+        var timeoutMs = gracefulTimeoutMsOverride is int o && o > 0
+            ? o
+            : _options.GracefulShutdownTimeoutSeconds * 1000;
+        await session.KillAsync(timeoutMs);
     }
+
+    /// <summary>
+    /// The graceful-shutdown window (milliseconds) the FLEET/remote stop path uses before force-killing.
+    /// Resolves <see cref="AgentOptions.FleetKillGraceMs"/>; a null or non-positive config disables the fast
+    /// path, falling back to the standard <see cref="AgentOptions.GracefulShutdownTimeoutSeconds"/> window
+    /// (so a disabled fast path is byte-identical to before). The LOCAL desktop kill never reads this.
+    /// </summary>
+    public int FleetKillGraceMs =>
+        _options.FleetKillGraceMs is int ms && ms > 0 ? ms : _options.GracefulShutdownTimeoutSeconds * 1000;
 
     /// <summary>Return PIDs of all tracked sessions that have live processes.</summary>
     public HashSet<int> GetTrackedProcessIds()
@@ -724,6 +779,9 @@ public sealed class SessionManager : IDisposable
         }
         var normalized = string.IsNullOrWhiteSpace(newName) ? null : newName.Trim();
         session.CustomName = normalized;
+        // Automatic session roles (chunk 3): an explicit rename is a human/self name - it wins and must
+        // never be re-auto-named, so clear the auto-named marker.
+        session.IsAutoNamed = false;
         try { OnSessionRenamed?.Invoke(session, normalized); }
         catch (Exception ex) { _log?.Invoke($"OnSessionRenamed handler threw: {ex.Message}"); }
         return true;
@@ -906,6 +964,8 @@ public sealed class SessionManager : IDisposable
                 GroupRole = s.GroupRole,
                 GroupName = s.GroupName,
                 ControllerSessionId = s.ControllerSessionId,
+                ExplicitRole = s.ExplicitRole,
+                IsAutoNamed = s.IsAutoNamed,
                 RawStartupText = s.RawStartupText,
                 SelectedTabName = s.SelectedTabName,
                 WingmanEnabled = s.WingmanEnabled,
@@ -948,6 +1008,8 @@ public sealed class SessionManager : IDisposable
         session.GroupRole = ps.GroupRole;
         session.GroupName = ps.GroupName;
         session.ControllerSessionId = ps.ControllerSessionId;
+        session.ExplicitRole = ps.ExplicitRole;
+        session.IsAutoNamed = ps.IsAutoNamed;
         session.WingmanEnabled = ps.WingmanEnabled;
         // Issue #820: carry the persisted three-digit number in BEFORE RaiseSessionCreated so
         // AssignSessionNumber reserves this exact number (keeping it across a restart) when it is

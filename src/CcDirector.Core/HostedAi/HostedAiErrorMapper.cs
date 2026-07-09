@@ -37,7 +37,7 @@ public static class HostedAiErrorMapper
     };
 
     /// <summary>
-    /// Best-effort read of the machine-readable error code from an OpenAI-compatible 402 body
+    /// Best-effort read of the machine-readable error code from a provider-compatible 402 body
     /// (<c>{ "error": { "code": "insufficient_credits" } }</c> or a flat <c>{ "code": ... }</c>).
     /// Defaults to <see cref="InsufficientCreditsCode"/> when the body carries no code, since the caller
     /// only reaches here on a 402. This is the single shared parse the transcription pipeline also uses.

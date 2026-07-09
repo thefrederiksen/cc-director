@@ -3,9 +3,9 @@
  * to PCM16 (signed little-endian) and posts each render quantum (128
  * samples) back to the main thread.
  *
- * Used by /dictate.html when mode=streaming. The OpenAI Realtime
- * transcription API expects PCM16 at 24 kHz; the main thread is expected
- * to create the AudioContext with sampleRate: 24000 so the worklet
+ * Used by /dictate.html to send PCM16 at 24 kHz to the Director websocket;
+ * the Gateway transcription endpoint receives the final WAV. The main thread
+ * is expected to create the AudioContext with sampleRate: 24000 so the worklet
  * receives audio at that rate. Browsers may not honor the requested
  * sample rate on every platform, so the AudioContext.sampleRate should
  * be checked and the audio resampled by the browser as needed before it

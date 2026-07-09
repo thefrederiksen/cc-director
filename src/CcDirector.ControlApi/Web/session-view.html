@@ -3316,7 +3316,7 @@
     }, VOICE_TIMEOUTS.register);
     const body = await r.json().catch(() => null);
     if (!body) throw new Error('register failed (HTTP ' + r.status + ')');
-    if (body.status === 'no_key') { const e = new Error(body.error || 'no OpenAI key'); e.noKey = true; throw e; }
+    if (body.status === 'no_key') { const e = new Error(body.error || 'DevThrottle AI is not configured'); e.noKey = true; throw e; }
     return body.utteranceId;
   }
 
@@ -3778,7 +3778,7 @@
         return;
       }
       if (voiceResp.status === 'no_key') {
-        setVoiceState('Voice mode disabled: ' + (voiceResp.error || 'no OpenAI key'), 'error');
+        setVoiceState('Voice mode disabled: ' + (voiceResp.error || 'DevThrottle AI is not configured'), 'error');
         appendVoiceBubble('system', 'Voice mode disabled. ' + (voiceResp.error || ''));
         return;
       }

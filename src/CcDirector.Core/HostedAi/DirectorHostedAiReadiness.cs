@@ -6,9 +6,8 @@ namespace CcDirector.Core.HostedAi;
 /// <summary>
 /// The Director/desktop-side hosted-AI readiness check (issue #940, epic #937). The desktop app runs
 /// transcription and text-to-speech in-process, so - unlike the Gateway - it must gather the readiness
-/// inputs itself: the mode from local config, the bring-your-own key through the same resolver its
-/// voice surfaces already use, and the account balance over HTTP from the Gateway (the account token is
-/// Gateway-only, so the balance cannot be read locally).
+/// inputs itself: the mode from local config and the account balance over HTTP from the Gateway (the
+/// account token is Gateway-only, so the balance cannot be read locally).
 ///
 /// It does NOT re-implement the decision - it gathers the three inputs (async: the key and balance are
 /// I/O) and feeds them to the one shared, unit-tested <see cref="HostedAiReadiness"/>, so the desktop
@@ -19,12 +18,10 @@ namespace CcDirector.Core.HostedAi;
 public sealed class DirectorHostedAiReadiness
 {
     private readonly Func<TranscriptionMode> _modeProvider;
-    private readonly Func<CancellationToken, Task<string?>> _byoKeyProvider;
     private readonly Func<CancellationToken, Task<long?>> _balanceMicrosProvider;
 
     /// <param name="modeProvider">Supplies the current mode (local config, read fresh per check).</param>
-    /// <param name="byoKeyProvider">Resolves the bring-your-own OpenAI key (local vault or the Gateway),
-    /// returning null/empty when none is set. Only consulted in bring-your-own mode.</param>
+    /// <param name="byoKeyProvider">Legacy constructor parameter retained for compatibility; ignored.</param>
     /// <param name="balanceMicrosProvider">Reads the account balance in micro-dollars over HTTP, null when
     /// unknown (signed out / unreachable - do not block). Only consulted in DevThrottle mode.</param>
     public DirectorHostedAiReadiness(
@@ -33,17 +30,16 @@ public sealed class DirectorHostedAiReadiness
         Func<CancellationToken, Task<long?>> balanceMicrosProvider)
     {
         _modeProvider = modeProvider ?? throw new ArgumentNullException(nameof(modeProvider));
-        _byoKeyProvider = byoKeyProvider ?? throw new ArgumentNullException(nameof(byoKeyProvider));
+        _ = byoKeyProvider ?? throw new ArgumentNullException(nameof(byoKeyProvider));
         _balanceMicrosProvider = balanceMicrosProvider ?? throw new ArgumentNullException(nameof(balanceMicrosProvider));
     }
 
     /// <summary>
     /// Wire the real desktop plumbing: the mode from <see cref="TranscriptionModeConfig"/>, the key from
-    /// the shared <see cref="OpenAiKeyResolver"/> (the same one the voice surfaces use), and the balance
-    /// from <see cref="GatewayAccountCreditsClient"/> against the configured Gateway.
+    /// the balance from <see cref="GatewayAccountCreditsClient"/> against the configured Gateway.
     /// </summary>
     public static DirectorHostedAiReadiness Create(
-        OpenAiKeyResolver keyResolver,
+        HostedAiKeyResolver keyResolver,
         GatewayAccountCreditsClient creditsClient,
         Func<GatewayConfig>? gatewayProvider = null,
         Func<TranscriptionMode>? modeProvider = null)
@@ -54,22 +50,20 @@ public sealed class DirectorHostedAiReadiness
 
         return new DirectorHostedAiReadiness(
             modeProvider ?? TranscriptionModeConfig.Get,
-            ct => keyResolver.ResolveAsync(ct),
+            _ => Task.FromResult<string?>(null),
             async ct => (await creditsClient.GetCreditsAsync(gateway(), ct)).BalanceMicros);
     }
 
     /// <summary>
-    /// Resolve whether hosted AI can run for the configured mode right now. Gathers the mode, and only
-    /// the input the mode needs (the key in bring-your-own mode, the balance in DevThrottle mode), then
-    /// defers the decision to the shared <see cref="HostedAiReadiness"/>.
+    /// Resolve whether hosted AI can run for the configured mode right now. Gathers the mode and
+    /// current account balance, then defers the decision to the shared <see cref="HostedAiReadiness"/>.
     /// </summary>
     public async Task<HostedAiState> CheckAsync(CancellationToken ct = default)
     {
         var mode = _modeProvider();
-        var key = mode == TranscriptionMode.Byo ? await _byoKeyProvider(ct).ConfigureAwait(false) : null;
-        var balance = mode == TranscriptionMode.DevThrottle ? await _balanceMicrosProvider(ct).ConfigureAwait(false) : (long?)null;
+        var balance = await _balanceMicrosProvider(ct).ConfigureAwait(false);
 
-        var readiness = new HostedAiReadiness(() => mode, _ => key, _ => Task.FromResult(balance));
+        var readiness = new HostedAiReadiness(() => mode, _ => null, _ => Task.FromResult(balance));
         return await readiness.CheckAsync(ct).ConfigureAwait(false);
     }
 }

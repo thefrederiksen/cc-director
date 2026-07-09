@@ -65,7 +65,7 @@ public sealed class RecordingIngestService : IDisposable
     // invoked only when the background worker actually transcribes (see ResolveTranscriber).
     // This is what decouples audio + notes ingest from transcription - registering a
     // recording, storing its audio chunks, and saving its manifest (the notes) never touch
-    // the transcriber, so a missing OpenAI key or a not-yet-configured transcription route
+    // the transcriber, so missing hosted-AI setup or a not-yet-configured transcription route
     // can never block the audio from landing on the server. Transcription is attempted
     // afterwards and, if it cannot run, fails as a retryable job (never as an ingest error).
     private readonly Func<IRecordingTranscriber> _transcriberFactory;
@@ -89,7 +89,7 @@ public sealed class RecordingIngestService : IDisposable
     /// <param name="recordingsRoot">Root folder for received recordings.</param>
     /// <param name="transcriberFactory">Builds the transcription + cleanup engine on demand.
     /// Invoked lazily, only when the background worker first transcribes - NEVER during
-    /// register/chunk/complete - so a transcriber that cannot be built (e.g. no OpenAI key)
+    /// register/chunk/complete - so a transcriber that cannot be built (e.g. hosted AI is not configured)
     /// can never block audio + notes ingest. A throw from the factory is treated as a
     /// retryable transcription failure; it is re-invoked on the next job attempt, so a key
     /// rotated in after startup is picked up without a restart.</param>

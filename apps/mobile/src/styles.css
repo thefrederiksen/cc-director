@@ -1913,6 +1913,19 @@ a.banner-btn {
   background: rgba(241, 76, 76, 0.12);
   border-color: rgba(241, 76, 76, 0.45);
 }
+/* Held: saved and still being delivered - a calm amber strip, not an alarm. It is not a failure. */
+.dictate-strip-held {
+  color: #f5c264;
+  background: rgba(217, 164, 65, 0.12);
+  border-color: rgba(217, 164, 65, 0.4);
+}
+/* Parked (permanent failure, #1184): saved-and-retryable, auto-loop stopped - a muted slate strip with an
+   explicit Retry, distinct from the still-retrying amber held state. */
+.dictate-strip-parked {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.4);
+}
 
 .dictate-strip-icon {
   flex: 0 0 auto;
@@ -1926,6 +1939,8 @@ a.banner-btn {
 }
 .dictate-strip-done .dictate-strip-icon { background: rgba(16, 185, 129, 0.25); }
 .dictate-strip-failed .dictate-strip-icon { background: rgba(241, 76, 76, 0.3); }
+.dictate-strip-held .dictate-strip-icon { background: rgba(217, 164, 65, 0.3); }
+.dictate-strip-parked .dictate-strip-icon { background: rgba(148, 163, 184, 0.3); }
 
 /* Small inline spinner for the strip's in-flight state (reuses the voice-spin keyframes). */
 .dictate-strip-spin {
@@ -1948,6 +1963,14 @@ a.banner-btn {
   background: var(--accent);
   border: none;
 }
+
+.dictate-strip-failed .dictate-strip-btn {
+  align-self: flex-start;
+  padding: 10px 18px;
+  background: #ffffff;
+  color: #7f0018;
+  border-color: transparent;
+}
 .dictate-strip-btn:disabled { opacity: 0.6; }
 .dictate-strip-dismiss {
   background: transparent;
@@ -1966,6 +1989,8 @@ a.banner-btn {
 }
 .row-dictate-busy { color: var(--text-dim); }
 .row-dictate-failed { color: #ffb4b4; }
+.row-dictate-held { color: #f5c264; }
+.row-dictate-parked { color: #cbd5e1; }
 .row-dictate-busy .row-spin {
   width: 12px;
   height: 12px;

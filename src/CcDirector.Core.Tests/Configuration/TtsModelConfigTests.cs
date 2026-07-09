@@ -36,7 +36,7 @@ public sealed class TtsModelConfigTests : IDisposable
     public void Resolve_NoConfig_UsesProviderDefault()
     {
         Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve(TranscriptionMode.DevThrottle));
-        Assert.Equal("tts-1", TtsModelConfig.Resolve(TranscriptionMode.Byo));
+        Assert.Equal("hexgrad/Kokoro-82M", TtsModelConfig.Resolve(TranscriptionMode.Byo));
     }
 
     [Fact]

@@ -47,6 +47,15 @@ public class PersistedSession
     /// restart - it is set only at birth and never changes.</summary>
     public Guid? ControllerSessionId { get; set; }
 
+    /// <summary>The sticky EXPLICIT session role (automatic session roles), or null for none. Persisted so
+    /// an Architect (or any explicitly-set role) survives a Director restart. One of the SessionRoles
+    /// values.</summary>
+    public string? ExplicitRole { get; set; }
+
+    /// <summary>True when the name was auto-composed at birth (automatic session roles, chunk 3). Persisted
+    /// so an explicit human/self rename is never re-auto-named after a restart.</summary>
+    public bool IsAutoNamed { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>Order in the session list, used to restore UI order after restart.</summary>

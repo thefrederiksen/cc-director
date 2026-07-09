@@ -15,14 +15,14 @@ namespace CcDirector.Gateway.Tests;
 /// loopback port so we exercise multipart parsing, JSON routing, and the
 /// VoiceService end-to-end up to (but not including) the actual Whisper call.
 ///
-/// We deliberately do NOT exercise Whisper itself - that requires a live OpenAI
+/// We deliberately do NOT exercise speech-to-text itself - that requires a live DevThrottle
 /// key and we want these tests to run offline. Instead we verify that:
-///   - /voice/status correctly reports availability based on the resolved key
+///   - /voice/status reports unavailable when the Gateway transcription path has no key
 ///   - /voice/command returns the structured "no_key" response when no key is set
 ///   - /voice/command returns BadRequest when no audio file is uploaded
 ///
-/// We force the no-key path by clearing both the AgentOptions field and the
-/// OPENAI_API_KEY env var for the duration of each test.
+/// We force the no-key path by isolating CC_DIRECTOR_ROOT and clearing OPENAI_API_KEY for the
+/// duration of each test.
 /// </summary>
 public sealed class VoiceEndpointTests : IAsyncLifetime
 {
@@ -89,10 +89,10 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task VoiceStatus_reports_available_when_options_key_set()
+    public async Task VoiceStatus_ignores_legacy_options_key()
     {
-        // Rebuild the host with a key set in AgentOptions.
-        // We don't actually call Whisper - just verify the availability flag flips.
+        // Rebuild the host with the legacy AgentOptions.OpenAiKey set. Gateway-only transcription
+        // deliberately ignores it, so availability stays false unless the Gateway key path is ready.
         await _host.StopAsync();
         _sm.Dispose();
 
@@ -108,7 +108,7 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
         var resp = await _client.GetAsync("voice/status");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var body = await resp.Content.ReadFromJsonAsync<VoiceStatusDto>();
-        Assert.True(body!.available);
+        Assert.False(body!.available);
     }
 
     [Fact]
@@ -127,9 +127,7 @@ public sealed class VoiceEndpointTests : IAsyncLifetime
         var body = await resp.Content.ReadFromJsonAsync<VoiceCommandResponse>();
         Assert.NotNull(body);
         Assert.Equal("no_key", body!.Status);
-        // Issue #887: the default mode is now DevThrottle (hosted), so the unavailable message guides
-        // the user to their DevThrottle account rather than to an OpenAI key.
-        Assert.Contains("DevThrottle", body.ReplyText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Gateway", body.ReplyText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

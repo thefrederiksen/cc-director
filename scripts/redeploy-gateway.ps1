@@ -270,6 +270,54 @@ function Get-GatewayToken {
     return ''
 }
 
+# Issue #1186: ensure the pinned ffmpeg.exe is available locally (cached), so a dev redeploy lays it
+# beside the Gateway exe and the long-clip WebM/Opus -> PCM WAV transcode (issue #1139) works with no
+# manual copy - the same ffmpeg the release ships (scripts/ffmpeg-pin.json is the single source of truth).
+# Downloads + SHA-256 verifies the pinned archive on a cache MISS (fail loud on mismatch), then caches
+# ffmpeg.exe by version so an unchanged pin never re-downloads and a pin bump re-fetches. Returns the
+# cached ffmpeg.exe path.
+function Get-BundledFfmpeg {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$CacheRoot
+    )
+
+    $pinPath = Join-Path $RepoRoot 'scripts\ffmpeg-pin.json'
+    if (-not (Test-Path $pinPath)) { throw "Get-BundledFfmpeg: pin file not found at $pinPath" }
+    $pin = Get-Content $pinPath -Raw | ConvertFrom-Json
+
+    $cacheDir = Join-Path $CacheRoot $pin.version
+    $cachedExe = Join-Path $cacheDir $pin.exeNameInArchive
+    if (Test-Path $cachedExe) { return $cachedExe }
+
+    New-Item -ItemType Directory -Force $cacheDir | Out-Null
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) ("cc-ffmpeg-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force $work | Out-Null
+    try {
+        $archive = Join-Path $work 'ffmpeg-archive.zip'
+        Write-Host "[redeploy-gateway] fetching pinned ffmpeg $($pin.version) (one-time, cached under $CacheRoot)..."
+        Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -UseBasicParsing
+
+        $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expected = ([string]$pin.archiveSha256).ToLowerInvariant()
+        if ($actual -ne $expected) {
+            throw "Get-BundledFfmpeg: ffmpeg SHA-256 mismatch (expected $expected, got $actual); refusing to use an unverified binary."
+        }
+
+        $extract = Join-Path $work 'extract'
+        Expand-Archive -Path $archive -DestinationPath $extract -Force
+        $exe = Get-ChildItem -Path $extract -Recurse -Filter $pin.exeNameInArchive | Select-Object -First 1
+        if (-not $exe) { throw "Get-BundledFfmpeg: $($pin.exeNameInArchive) not found in the pinned archive." }
+        Copy-Item $exe.FullName $cachedExe -Force
+        Write-Host "[redeploy-gateway] cached ffmpeg -> $cachedExe"
+        return $cachedExe
+    }
+    finally {
+        if (Test-Path $work) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
+    }
+}
+
 if ($DefineOnly) { return }
 
 # ---------------------------------------------------------------------------
@@ -309,6 +357,17 @@ try {
 
     # Issue #809: copy the exe AND its wwwroot tree (mobile app) - not just the exe - so /m serves.
     Copy-GatewayPayload -StageDir $stage -GatewayDir $gwDir
+
+    # Issue #1186: lay the pinned ffmpeg.exe beside the exe (from a local cache) so the long-clip
+    # WebM/Opus -> PCM WAV transcode (issue #1139) works after a dev redeploy with no manual copy - the
+    # same ffmpeg the release ships beside the exe.
+    $ffmpegExe = Get-BundledFfmpeg -RepoRoot $repoRoot -CacheRoot (Join-Path $repoRoot 'local_builds\_ffmpeg-cache')
+    Copy-Item $ffmpegExe (Join-Path $gwDir 'ffmpeg.exe') -Force
+    if (-not (Test-Path (Join-Path $gwDir 'ffmpeg.exe'))) {
+        throw "[redeploy-gateway] ffmpeg.exe not present beside the exe after copy ($gwDir\ffmpeg.exe)"
+    }
+    Write-Host "[redeploy-gateway] copied ffmpeg.exe -> $gwDir (issue #1186)"
+
     Start-Process -FilePath "$gwDir\devthrottle-gateway.exe" -ArgumentList '--managed' -WorkingDirectory $gwDir
 
     Start-Sleep 5

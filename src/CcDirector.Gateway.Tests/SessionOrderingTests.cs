@@ -17,6 +17,18 @@ public sealed class SessionOrderingTests
         SessionId = id,
         SortOrder = sortOrder,
         StatusColor = color,
+        // Issue #1177 (Phase 2): the fold now derives the base color from the RAW ActivityState, not the
+        // cooked StatusColor. These cases set `color` (a cooked color) but historically omitted the raw
+        // activity that color implies; supply it here as the INVERSE of ColorFromActivityState so every
+        // asserted output color stays byte-identical while the fold reads raw facts. Only "red"/"blue"
+        // are mapped (the colors these cases assert through the base); grey/OnHold win before the base,
+        // so those are left with the default state.
+        ActivityState = color switch
+        {
+            "red" => "WaitingForInput",
+            "blue" => "Working",
+            _ => "",
+        },
         OnHold = onHold,
         BriefingState = briefingState,
         CreatedAt = createdAt == default ? new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) : createdAt,
@@ -289,6 +301,271 @@ public sealed class SessionOrderingTests
         Assert.Equal(new[] { "needs0", "needs1" }, needs.Select(s => s.SessionId));
         // The held-red session lands in OnHold, not NeedsYou.
         Assert.Equal(new[] { "held1" }, active.Select(s => s.SessionId));
+    }
+
+    // ===== Issue #1177 (Phase 2): the Gateway fold now computes EVERY color from RAW facts (migrated
+    // from SessionStatusWingmanTests, rebuilt against the raw-fact inputs the Director reports). =====
+
+    /// <summary>A session built from the RAW facts the Director reports (no cooked StatusColor).</summary>
+    private static SessionDto Raw(string activityState, bool wingmanEnabled = false, bool brandNew = false,
+        bool backgroundRunning = false, bool controlled = false, string? controllerId = null,
+        bool transcribing = false, bool autoExplaining = false, string briefingState = "None",
+        string? sessionRole = null) => new()
+    {
+        SessionId = "raw",
+        ActivityState = activityState,
+        WingmanEnabled = wingmanEnabled,
+        IsBrandNew = brandNew,
+        IsBackgroundRunning = backgroundRunning,
+        IsControlled = controlled,
+        ControllerSessionId = controllerId,
+        IsTranscribing = transcribing,
+        IsAutoExplaining = autoExplaining,
+        BriefingState = briefingState,
+        SessionRole = sessionRole,
+        // StatusColor deliberately left at its default "unknown" to PROVE the fold never reads it.
+    };
+
+    [Fact]
+    public void EffectiveColor_Working_IsBlue_FromRawFacts()
+    {
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(Raw("Working")));
+    }
+
+    [Fact]
+    public void EffectiveColor_Waiting_IsRed_FromRawFacts()
+    {
+        Assert.Equal("red", SessionOrdering.EffectiveColor(Raw("WaitingForInput")));
+        Assert.Equal("red", SessionOrdering.EffectiveColor(Raw("WaitingForPerm")));
+        Assert.Equal("red", SessionOrdering.EffectiveColor(Raw("Idle")));
+    }
+
+    [Fact]
+    public void EffectiveColor_Exited_IsGrey()
+    {
+        // Phase 2.3 (owner-approved behavior change): an exited session shows the SAME grey string as an
+        // OnHold session, so clients render the two identically. No longer byte-identical for exited.
+        Assert.Equal("grey", SessionOrdering.EffectiveColor(Raw("Exited")));
+    }
+
+    [Fact]
+    public void EffectiveColor_BrandNewAtTurnEnd_IsGreen_FromRawFacts()
+    {
+        // A brand-new session sitting at its prompt is "ready" (green), not red "needs you".
+        Assert.Equal("green", SessionOrdering.EffectiveColor(Raw("WaitingForInput", brandNew: true)));
+    }
+
+    [Fact]
+    public void EffectiveColor_BrandNewWhileWorking_IsBlue_NotGreen()
+    {
+        // Green only applies at a turn-end; a brand-new session that is working is blue.
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(Raw("Working", brandNew: true)));
+    }
+
+    [Fact]
+    public void EffectiveColor_BackgroundRunningAtTurnEnd_IsPurple_FromRawFacts()
+    {
+        Assert.Equal("purple", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", wingmanEnabled: true, backgroundRunning: true)));
+    }
+
+    [Fact]
+    public void EffectiveColor_BackgroundRunning_NoWingman_IsRed_NotPurple()
+    {
+        // Purple is gated on WingmanEnabled (matching the Director) - without it, the base red shows.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", wingmanEnabled: false, backgroundRunning: true)));
+    }
+
+    [Fact]
+    public void EffectiveColor_ControlledNonRed_IsSupporting_FromRawFacts()
+    {
+        // A controlled sub-agent recedes to slate ("supporting") while its controller is present.
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(
+            Raw("Working", controlled: true, controllerId: Guid.NewGuid().ToString())));
+    }
+
+    [Fact]
+    public void EffectiveColor_ControlledButRed_BreaksThroughSupporting()
+    {
+        // Red "needs you" breaks through the slate overlay so a blocked sub-agent still surfaces.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString())));
+    }
+
+    [Fact]
+    public void EffectiveColor_LiveWorker_SuppressesRed_RecedesToSupporting()
+    {
+        // Automatic roles (Layer 1): a LIVE-controlled Worker's red is SUPPRESSED - it recedes to slate and
+        // never nags the human (its manager sees it via the rail). The aggregation stamps SessionRole=Worker
+        // only when the controller is alive, so red suppression is exactly "live worker".
+        Assert.Equal("supporting", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: "Worker")));
+    }
+
+    [Fact]
+    public void EffectiveColor_ManagerRed_IsAllowed_HumanFacing()
+    {
+        // A Manager is human-facing: its red always surfaces.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", sessionRole: "Manager")));
+    }
+
+    [Fact]
+    public void EffectiveColor_StandaloneRed_IsAllowed_HumanFacing()
+    {
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", sessionRole: "Standalone")));
+    }
+
+    [Fact]
+    public void EffectiveColor_DeadControllerWorkerRed_IsAllowed_EscapeHatch()
+    {
+        // A Worker whose controller has DIED is role Standalone (not "Worker"), so its red is NOT suppressed
+        // and surfaces to the human - the escape hatch, so a stranded worker is never lost. The controller
+        // id may still be on the DTO, but the role (not the id) drives the suppression.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: "Standalone")));
+    }
+
+    [Fact]
+    public void EffectiveColor_Architect_RedAllowed_EvenWithAController()
+    {
+        // Chunk 2.5: an explicit Architect is human-facing. Even one that happens to carry a controller keeps
+        // its red - the aggregation's explicit-wins precedence resolves it to Architect (not Worker), so the
+        // fold (which only suppresses Worker) never suppresses it.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", controlled: true, controllerId: Guid.NewGuid().ToString(), sessionRole: SessionRoles.Architect)));
+    }
+
+    [Fact]
+    public void EffectiveColor_ControlledWithNoControllerId_IsNotSupporting()
+    {
+        // Without a controller id present the slate overlay does not apply (it paints its normal color).
+        Assert.Equal("blue", SessionOrdering.EffectiveColor(
+            Raw("Working", controlled: true, controllerId: null)));
+    }
+
+    [Fact]
+    public void EffectiveColor_DesktopTranscribing_IsOrange_FromRawFact()
+    {
+        // Newly covered (issue #1177 audit): the desktop-dictation transcribing fact (Session.IsTranscribing)
+        // must paint orange, exactly as the mobile Speak flag does - previously this survived ONLY via the
+        // cooked StatusColor fall-through and was untested.
+        Assert.Equal("orange", SessionOrdering.EffectiveColor(Raw("Working", transcribing: true)));
+        Assert.Equal("orange", SessionOrdering.EffectiveColor(Raw("WaitingForInput", transcribing: true)));
+    }
+
+    [Fact]
+    public void EffectiveColor_AutoExplainingAtTurnEnd_IsYellow_FromRawFact()
+    {
+        // Newly covered (issue #1177 audit): the legacy auto-explain (ProactiveExplainService,
+        // Session.IsExplaining) must paint yellow while WingmanEnabled and at a turn-end - previously this
+        // survived ONLY via the cooked StatusColor fall-through and was untested. Distinct from the Gateway
+        // deep-dive overlay (BriefingState=="Explaining"), which is ORANGE.
+        Assert.Equal("yellow", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", wingmanEnabled: true, autoExplaining: true)));
+    }
+
+    [Fact]
+    public void EffectiveColor_AutoExplaining_NoWingman_IsRed_NotYellow()
+    {
+        // Auto-explain yellow is gated on WingmanEnabled (matching the Director) - without it, base red shows.
+        Assert.Equal("red", SessionOrdering.EffectiveColor(
+            Raw("WaitingForInput", wingmanEnabled: false, autoExplaining: true)));
+    }
+
+    [Fact]
+    public void EffectiveColor_GatewayDeepDiveExplaining_IsOrange_NotYellow()
+    {
+        // The Gateway user-initiated deep dive (BriefingState=="Explaining", issue #217) stays ORANGE,
+        // distinct from the Director auto-explain yellow above.
+        Assert.Equal("orange", SessionOrdering.EffectiveColor(Raw("WaitingForInput", briefingState: "Explaining")));
+    }
+
+    // ----- StateLabel: one per color / overlay (issue #1177, Phase 2) -----
+
+    [Fact]
+    public void StateLabel_OnHold_IsOnHold()
+    {
+        var s = Raw("WaitingForInput");
+        s.OnHold = true;
+        Assert.Equal("On hold", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void StateLabel_Transcribing_IsTranscribing()
+    {
+        Assert.Equal("Transcribing", SessionOrdering.StateLabel(Raw("Working", transcribing: true)));
+        var mobile = Raw("Working");
+        mobile.Transcribing = true;
+        Assert.Equal("Transcribing", SessionOrdering.StateLabel(mobile));
+    }
+
+    [Fact]
+    public void StateLabel_GatewayDeepDive_IsExplaining()
+    {
+        Assert.Equal("Explaining", SessionOrdering.StateLabel(Raw("WaitingForInput", briefingState: "Explaining")));
+    }
+
+    [Fact]
+    public void StateLabel_Briefing_IsWingmanReading()
+    {
+        Assert.Equal("Wingman reading", SessionOrdering.StateLabel(Raw("WaitingForInput", briefingState: "Briefing")));
+    }
+
+    [Fact]
+    public void StateLabel_AutoExplain_IsWingmanReading()
+    {
+        Assert.Equal("Wingman reading", SessionOrdering.StateLabel(
+            Raw("WaitingForInput", wingmanEnabled: true, autoExplaining: true)));
+    }
+
+    [Fact]
+    public void StateLabel_VoicePreparing_IsPreparingVoice()
+    {
+        var s = Raw("WaitingForInput");
+        s.VoiceMode = true;
+        s.VoiceGenerating = true;
+        Assert.Equal("Preparing voice", SessionOrdering.StateLabel(s));
+    }
+
+    [Fact]
+    public void StateLabel_BackgroundRunning_IsBackground()
+    {
+        Assert.Equal("Background", SessionOrdering.StateLabel(
+            Raw("WaitingForInput", wingmanEnabled: true, backgroundRunning: true)));
+    }
+
+    [Fact]
+    public void StateLabel_Controlled_IsSubAgent()
+    {
+        Assert.Equal("Sub-agent", SessionOrdering.StateLabel(
+            Raw("Working", controlled: true, controllerId: Guid.NewGuid().ToString())));
+    }
+
+    [Fact]
+    public void StateLabel_BrandNew_IsReady()
+    {
+        Assert.Equal("Ready", SessionOrdering.StateLabel(Raw("WaitingForInput", brandNew: true)));
+    }
+
+    [Fact]
+    public void StateLabel_Working_IsWorking()
+    {
+        Assert.Equal("Working", SessionOrdering.StateLabel(Raw("Working")));
+    }
+
+    [Fact]
+    public void StateLabel_Waiting_IsNeedsYou()
+    {
+        Assert.Equal("Needs you", SessionOrdering.StateLabel(Raw("WaitingForInput")));
+    }
+
+    [Fact]
+    public void StateLabel_Exited_IsExited()
+    {
+        Assert.Equal("Exited", SessionOrdering.StateLabel(Raw("Exited")));
     }
 
     // ===== by-repo grouping (issue #219) =====

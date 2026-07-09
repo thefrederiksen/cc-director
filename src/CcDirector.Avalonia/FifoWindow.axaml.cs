@@ -33,8 +33,8 @@ namespace CcDirector.Avalonia;
 /// question and speaks the read-only answer back. Both reuse the same whole-audio batch
 /// <see cref="BatchDictationRecorder"/> capture the Voice tab uses (issue #590) and the
 /// read-only <see cref="Core.Wingman.WingmanService"/> the rest of the app uses. The question
-/// is transcribed ONCE after the user stops, through the shared batch pipeline using the
-/// user-selected method (no hardcoded realtime model, no live partials), with dictionary-only
+/// is transcribed ONCE after the user stops, through the Gateway transcription endpoint
+/// (no hardcoded realtime model, no live partials), with dictionary-only
 /// correction. Ask Agent versus Ask Wingman is a UI-only routing of the finished transcript and
 /// never alters the transcribed text. Advancing is manual (Skip / Hold / Next) - nothing
 /// auto-rotates.
