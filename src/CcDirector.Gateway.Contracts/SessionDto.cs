@@ -150,6 +150,16 @@ public sealed class SessionDto
     /// </summary>
     public string? TriageBucket { get; set; }
 
+    /// <summary>
+    /// Gateway-owned human-readable state label after the same fold (issue #1177, Phase 2):
+    /// e.g. "Needs you" | "Working" | "Ready" | "Wingman reading" | "Preparing voice" |
+    /// "Transcribing" | "Explaining" | "Sub-agent" | "Background" | "On hold" | "Exited".
+    /// Computed by <see cref="SessionOrdering.StateLabel"/> from the same raw facts + overlays as
+    /// <see cref="EffectiveColor"/>, so every client renders ONE consistent label instead of each
+    /// hand-rolling its own. Stamped by the Gateway aggregator; Director-local responses may leave it null.
+    /// </summary>
+    public string? StateLabel { get; set; }
+
     /// <summary>Backend type: ConPty / UnixPty / Pipe / Studio / Embedded.</summary>
     public string BackendType { get; set; } = "";
 
@@ -274,6 +284,58 @@ public sealed class SessionDto
     /// Mirrors <c>Session.WingmanEnabled</c> on the owning Director.
     /// </summary>
     public bool WingmanEnabled { get; set; } = false;
+
+    // ===== Raw local facts for the Gateway color fold (issue #1177, Phase 2) =====
+    // These are RAW FACTS the Director reports straight from the Session - it does NOT fold them into a
+    // color. The Gateway is the single fold: it computes EffectiveColor / TriageBucket / StateLabel from
+    // these plus its own overlays (Transcribing/Briefing/Explaining/VoicePreparing). Additive: they ride
+    // the existing snapshot/delta path, and default to false/null on Directors that predate them.
+
+    /// <summary>
+    /// RAW FACT: a brand-new session that has not yet taken its first turn (mirrors
+    /// <c>Session.IsBrandNew</c>). At a turn-end this is what the fold paints green ("ready") - the
+    /// session is sitting at its prompt, available, and must not read as red "needs you".
+    /// </summary>
+    public bool IsBrandNew { get; set; }
+
+    /// <summary>
+    /// RAW FACT: this session is a controlled "Supporting" sub-agent that another session is driving
+    /// (mirrors <c>Session.IsControlled</c>, i.e. <see cref="ControllerSessionId"/> is set). The fold
+    /// recedes it to slate while its controller is alive, except red "needs you" breaks through.
+    /// </summary>
+    public bool IsControlled { get; set; }
+
+    /// <summary>
+    /// RAW FACT: the id of the session controlling this one (mirrors <c>Session.ControllerSessionId</c>),
+    /// or null when this is a normal (uncontrolled) session. The fold uses its presence for the slate
+    /// overlay; the roster can confirm the controller is still alive.
+    /// </summary>
+    public string? ControllerSessionId { get; set; }
+
+    /// <summary>
+    /// RAW FACT: the Wingman determined this session is parked on its OWN background task (a build, a
+    /// running shell) rather than on the user (mirrors <c>Session.IsBackgroundRunning</c>). At a turn-end
+    /// the fold paints this purple instead of red.
+    /// </summary>
+    public bool IsBackgroundRunning { get; set; }
+
+    /// <summary>
+    /// RAW FACT: a dictated utterance is being transcribed and submitted into this session in the
+    /// background on the DIRECTOR (the Avalonia desktop <c>BackgroundDictationSend</c> flow; mirrors
+    /// <c>Session.IsTranscribing</c>). Distinct from <see cref="Transcribing"/>, which is the Gateway's
+    /// OWN transcribing flag (the mobile Speak flow). The fold paints EITHER source orange, so a
+    /// desktop-dictating session shows "Transcribing..." the same as a phone-dictating one.
+    /// </summary>
+    public bool IsTranscribing { get; set; }
+
+    /// <summary>
+    /// RAW FACT: the legacy auto-explain deep dive (<c>ProactiveExplainService</c>) is running for this
+    /// session at a turn-end (mirrors <c>Session.IsExplaining</c>). While it runs, and the session is
+    /// WingmanEnabled and at a turn-end, the fold paints yellow ("wingman is reading"). This is DISTINCT
+    /// from the Gateway's user-initiated deep dive (<c>BriefingState == "Explaining"</c>, issue #217),
+    /// which the fold paints ORANGE - see <see cref="SessionOrdering.IsExplaining"/>.
+    /// </summary>
+    public bool IsAutoExplaining { get; set; }
 
     /// <summary>
     /// For GitHub Actions remote sessions: the "owner/repo" the session runs against.

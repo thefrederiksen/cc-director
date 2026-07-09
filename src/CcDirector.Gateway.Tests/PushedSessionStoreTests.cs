@@ -265,4 +265,85 @@ public sealed class PushedSessionStoreTests
         Assert.Null(store.TryGetFresh("nobody", _staleAfter));
         Assert.False(store.IsStreamConnected("nobody"));
     }
+
+    [Fact]
+    public void TryLocate_FindsSessionAndOwningDirectorFromFreshCache()
+    {
+        // Arrange - two Directors each pushing a distinct session.
+        var store = NewStore();
+        store.RegisterConnection("dir-A", "conn-A");
+        store.RegisterConnection("dir-B", "conn-B");
+        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s-A") });
+        store.ApplySnapshot("dir-B", "conn-B", 0, new[] { Session("s-B") });
+
+        // Act
+        var located = store.TryLocate("s-B", _staleAfter);
+
+        // Assert - the session is resolved to its owning Director with zero HTTP pull.
+        Assert.NotNull(located);
+        Assert.Equal("dir-B", located.Value.DirectorId);
+        Assert.Equal("s-B", located.Value.Session.SessionId);
+    }
+
+    [Fact]
+    public void TryLocate_ReturnsDeepCopy_MutatingResultDoesNotAffectStore()
+    {
+        // Arrange
+        var store = NewStore();
+        store.RegisterConnection("dir-A", "conn-A");
+        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1", "Working") });
+
+        // Act - a caller stamps fields on the located copy.
+        var located = store.TryLocate("s1", _staleAfter);
+        Assert.NotNull(located);
+        located.Value.Session.EffectiveColor = "red";
+        located.Value.Session.DirectorId = "mutated";
+
+        // Assert - the cache is pristine on the next read.
+        var again = store.TryLocate("s1", _staleAfter);
+        Assert.NotNull(again);
+        Assert.Null(again.Value.Session.EffectiveColor);
+        Assert.Equal("", again.Value.Session.DirectorId);
+    }
+
+    [Fact]
+    public void TryLocate_WhenCacheStale_ReturnsNull()
+    {
+        // Arrange
+        var store = NewStore();
+        store.RegisterConnection("dir-A", "conn-A");
+        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+
+        // Act - advance past the stale window with no re-push.
+        _now = _now.AddSeconds(21);
+
+        // Assert - a stale cache cannot locate (matching TryGetFresh's staleness rule).
+        Assert.Null(store.TryLocate("s1", _staleAfter));
+    }
+
+    [Fact]
+    public void TryLocate_AfterUnregister_ReturnsNull()
+    {
+        // Arrange
+        var store = NewStore();
+        store.RegisterConnection("dir-A", "conn-A");
+        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+
+        // Act - the stream disconnects.
+        store.UnregisterConnection("dir-A", "conn-A");
+
+        // Assert - no active connection => no location from the cache.
+        Assert.Null(store.TryLocate("s1", _staleAfter));
+    }
+
+    [Fact]
+    public void TryLocate_ForUnknownSession_ReturnsNull()
+    {
+        var store = NewStore();
+        store.RegisterConnection("dir-A", "conn-A");
+        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+
+        Assert.Null(store.TryLocate("nobody", _staleAfter));
+        Assert.Null(store.TryLocate("", _staleAfter));
+    }
 }

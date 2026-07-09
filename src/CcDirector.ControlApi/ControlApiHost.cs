@@ -1,5 +1,6 @@
 using System.Net;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Fleet;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Wingman;
 using CcDirector.Core.Utilities;
@@ -383,7 +384,11 @@ public sealed class ControlApiHost : IAsyncDisposable
         // The fleet-relay endpoints (issue #705) read the _gatewayClient FIELD lazily via this
         // provider, so they always use the current client even after a settings-change rebuild
         // (the field is replaced, not this lambda). The client is built later in this method.
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient);
+        // The fleet-message steward (messaging.steward) - one instance per Director, guarding this
+        // Director's sessions' OUTGOING /fleet/* messages. Built from the Director's options, so it is
+        // default-on-generous and config-tunable, and inert (Allow) when disabled.
+        var messageSteward = new MessageSteward(_sessionManager.Options.MessageSteward);
+        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward);
         // Dictation key resolution: the Gateway vault when attached to a Gateway, the local key
         // vault when standalone (issue #839: the vault is the single key store). Pass
         // GatewayConfig.Load (not the snapshot above) so the resolver re-reads config.json on every
@@ -606,7 +611,15 @@ public sealed class ControlApiHost : IAsyncDisposable
     private GatewayStreamClient? BuildStreamClient(GatewayConfig gatewayConfig)
     {
         if (!gatewayConfig.IsEnabled || !gatewayConfig.StreamMode) return null;
-        return new GatewayStreamClient(gatewayConfig, DirectorId, _version, SnapshotFullSessions);
+        // Issue #1177 (Phase 1): the stream client's down-channel dispatcher reuses the SAME in-process
+        // SessionCommandExecutor the Control API endpoints call, so a command executed over the stream is
+        // byte-for-byte identical to the same command over HTTP.
+        return new GatewayStreamClient(gatewayConfig, DirectorId, _version, SnapshotFullSessions,
+            // The services are read per-command (inside the lambda) so they reflect the fields once
+            // StartAsync has initialized them - BuildStreamClient runs before _proactiveExplain /
+            // _turnSummaryCache are set. Additive: verbs that need no service ignore it (issue #1177 inc 6).
+            cmd => SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
+                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache }));
     }
 
     /// <summary>

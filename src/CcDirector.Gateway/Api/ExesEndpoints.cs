@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -72,6 +73,11 @@ internal static class ExesEndpoints
                             agent = s.Agent,
                             activityState = s.ActivityState,
                             statusColor = s.StatusColor,
+                            // Issue #1177 (Phase 2.3): stamp the Gateway fold so the Exes page renders the same
+                            // effectiveColor + stateLabel as every other client, instead of the raw Director
+                            // color (which is now just blue/red/gray after the Director overlay fold was retired).
+                            effectiveColor = SessionOrdering.EffectiveColor(s),
+                            stateLabel = SessionOrdering.StateLabel(s),
                             repoPath = s.RepoPath,
                         }).ToList(),
                     };

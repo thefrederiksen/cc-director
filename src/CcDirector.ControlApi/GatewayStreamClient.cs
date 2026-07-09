@@ -27,21 +27,39 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     private readonly string _directorId;
     private readonly string _version;
     private readonly Func<List<SessionDto>> _snapshot;
+    private readonly Func<DirectorCommand, Task<DirectorCommandResult>>? _commandDispatcher;
+    private readonly TimeSpan _rePushInterval;
 
     private HubConnection? _connection;
     private long _sequence;
     private int _started;
+    private int _rePushInFlight;
+    private Timer? _rePushTimer;
     private volatile bool _disposed;
 
     /// <summary>Reconnect backoff between long-outage restart attempts once auto-reconnect has given up.</summary>
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
-    public GatewayStreamClient(GatewayConfig config, string directorId, string version, Func<List<SessionDto>> snapshot)
+    /// <param name="commandDispatcher">
+    /// Issue #1177 (Phase 1): handler for commands the Gateway sends DOWN this stream. When null (or in
+    /// Phase 1a callers that pre-date it), the Director declines any command with an Error result; the
+    /// Gateway then falls back to its HTTP command path, so behaviour is unchanged.
+    /// </param>
+    /// <param name="rePushInterval">
+    /// Issue #1177 (Phase 4a): how often, while connected, the Director re-pushes its full snapshot so a
+    /// QUIET session's pushed cache never ages past the Gateway's stale window. Null uses half the default
+    /// stale window (comfortably under it). A test seam; production passes null.
+    /// </param>
+    public GatewayStreamClient(GatewayConfig config, string directorId, string version, Func<List<SessionDto>> snapshot,
+        Func<DirectorCommand, Task<DirectorCommandResult>>? commandDispatcher = null,
+        TimeSpan? rePushInterval = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _directorId = string.IsNullOrWhiteSpace(directorId) ? throw new ArgumentException("directorId is required", nameof(directorId)) : directorId;
         _version = version ?? "";
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
+        _commandDispatcher = commandDispatcher;
+        _rePushInterval = rePushInterval ?? TimeSpan.FromSeconds(GatewayConfig.DefaultStreamStaleAfterSeconds / 2.0);
     }
 
     /// <summary>True when stream mode is enabled for a configured Gateway. When false, <see cref="Start"/> is a no-op.</summary>
@@ -54,6 +72,38 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         if (Interlocked.Exchange(ref _started, 1) == 1) return;
         FileLog.Write($"[GatewayStreamClient] Start: dialing {_config.Url} for director {_directorId}");
         _ = SuperviseAsync();
+
+        // Issue #1177 (Phase 4a): keep the Gateway's pushed cache fresh for a QUIET session. A portless
+        // (remotely-unreachable) Director has no HTTP pull floor, so once the last push ages past the
+        // Gateway's stale window its sessions vanish from the roster and can no longer be located. A periodic
+        // full re-push - comfortably under that window - keeps TryGetFresh/TryLocate fresh. Best-effort, only
+        // while connected. Armed only here (inside the IsEnabled guard), so it is inert when stream mode off.
+        _rePushTimer = new Timer(_ => RePushTick(), null, _rePushInterval, _rePushInterval);
+    }
+
+    // Timer callback (a boundary): re-push the full snapshot so a quiet session's pushed cache stays fresh.
+    // Skips when disposed, when disconnected, or when a prior re-push is still in flight (no overlap).
+    private void RePushTick()
+    {
+        if (_disposed) return;
+        var conn = _connection;
+        if (conn is null || conn.State != HubConnectionState.Connected) return;
+        if (Interlocked.Exchange(ref _rePushInFlight, 1) == 1) return;
+        _ = RePushAsync();
+    }
+
+    private async Task RePushAsync()
+    {
+        try
+        {
+            // ReseedAsync sends Hello + a full PushSnapshot with an incrementing sequence (the same path used
+            // on connect/reconnect) and already swallows its own send faults, so a re-push is best-effort.
+            await ReseedAsync();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _rePushInFlight, 0);
+        }
     }
 
     // Owns the connection for its whole life: build once, keep it connected, and reseed on every
@@ -81,6 +131,32 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         // over the same connection (SignalR client results), demonstrating request-both-ways on one
         // outbound-dialed stream. A synthetic proof, not a production command handler.
         _connection.On<string, string>("Ping", message => $"pong:{message}");
+
+        // Issue #1177 (Phase 1): the production down-channel. The Gateway invokes "Command" with a
+        // DirectorCommand and awaits the DirectorCommandResult over the same connection (SignalR client
+        // results). This handler is a boundary, so it catches: a dispatcher fault becomes an Error result
+        // the Gateway can fall back on, never a faulted hub invocation.
+        _connection.On<DirectorCommand, DirectorCommandResult>("Command", async cmd =>
+        {
+            try
+            {
+                if (_commandDispatcher is null)
+                {
+                    FileLog.Write($"[GatewayStreamClient] Command declined (no dispatcher): verb={cmd?.Verb}, cmdId={cmd?.CommandId}");
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.Error, "director has no command dispatcher");
+                }
+                if (cmd is null)
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "command is required");
+
+                FileLog.Write($"[GatewayStreamClient] Command received: verb={cmd.Verb}, sid={cmd.SessionId}, cmdId={cmd.CommandId}");
+                return await _commandDispatcher(cmd);
+            }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayStreamClient] Command FAILED: verb={cmd?.Verb}, cmdId={cmd?.CommandId}, error={ex.Message}");
+                return DirectorCommandResult.Fail(DirectorCommandStatus.Error, ex.Message);
+            }
+        });
 
         while (!_disposed)
         {
@@ -173,6 +249,11 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     public async Task StopAsync()
     {
         _disposed = true;
+        if (_rePushTimer is not null)
+        {
+            await _rePushTimer.DisposeAsync();
+            _rePushTimer = null;
+        }
         if (_connection is not null)
         {
             try { await _connection.StopAsync(); }
@@ -183,6 +264,11 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        if (_rePushTimer is not null)
+        {
+            await _rePushTimer.DisposeAsync();
+            _rePushTimer = null;
+        }
         if (_connection is not null)
         {
             try { await _connection.DisposeAsync(); }

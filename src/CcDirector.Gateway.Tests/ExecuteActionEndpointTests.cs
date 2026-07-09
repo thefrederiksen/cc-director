@@ -45,7 +45,17 @@ internal sealed class ExecuteActionTestBackend : ISessionBackend
     public Task SendTextAsync(string text) => Task.CompletedTask;
     public Task SendEnterAsync() => Task.CompletedTask;
     public void Resize(short cols, short rows) { }
-    public Task GracefulShutdownAsync(int timeoutMs = 5000) => Task.CompletedTask;
+
+    /// <summary>The graceful-shutdown window the last kill passed, so tests can assert the fleet-stop path
+    /// escalates on the shorter FleetKillGraceMs window instead of the standard one.</summary>
+    public int? LastGracefulTimeoutMs { get; private set; }
+
+    public Task GracefulShutdownAsync(int timeoutMs = 5000)
+    {
+        LastGracefulTimeoutMs = timeoutMs;
+        return Task.CompletedTask;
+    }
+
     public void Dispose() { }
 }
 

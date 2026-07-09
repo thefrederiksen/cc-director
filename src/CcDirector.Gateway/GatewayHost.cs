@@ -8,6 +8,7 @@ using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Api;
 using CcDirector.Gateway.Briefing;
+using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
 using CcDirector.Gateway.Tailscale;
 using CcDirector.Gateway.Util;
@@ -918,7 +919,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1176 (Phase 1a): serve /sessions from the Director-push cache when the stream is
             // fresh; null when stream mode is off, keeping /sessions byte-identical to today.
             pushedSessions: _streamMode ? PushedSessions : null,
-            streamStaleAfter: _streamStaleAfter);
+            streamStaleAfter: _streamStaleAfter,
+            // Issue #1177 (Phase 1): route per-session commands DOWN the Director's stream when stream mode
+            // is on. Null when off, so every command endpoint stays on its HTTP path (byte-identical).
+            sendCommand: _streamMode ? SendCommandAsync : null);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1260,6 +1264,29 @@ public sealed class GatewayHost : IAsyncDisposable
             return null;
         }
         return await hub.Clients.Client(connectionId).InvokeAsync<string>("Ping", message, ct);
+    }
+
+    /// <summary>
+    /// Issue #1177 (Phase 1): send a command DOWN a Director's stream and await its result over the SAME
+    /// connection (SignalR client results), modeled exactly on <see cref="PingDirectorAsync"/>. Returns
+    /// null when that Director has no active stream connection (or the hub is unavailable), which the
+    /// caller treats as "no stream" and falls back to the HTTP command path. Any non-null result - success
+    /// OR a typed failure - means the stream handled the command and its outcome is authoritative.
+    /// </summary>
+    public async Task<DirectorCommandResult?> SendCommandAsync(string directorId, DirectorCommand command, CancellationToken ct = default)
+    {
+        if (command is null) throw new ArgumentNullException(nameof(command));
+
+        var connectionId = PushedSessions.GetActiveConnectionId(directorId);
+        var hub = _app?.Services.GetService(typeof(Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>))
+            as Microsoft.AspNetCore.SignalR.IHubContext<Streaming.DirectorHub>;
+        if (connectionId is null || hub is null)
+        {
+            FileLog.Write($"[GatewayHost] SendCommandAsync: no active stream for director={directorId}, verb={command.Verb}");
+            return null;
+        }
+        FileLog.Write($"[GatewayHost] SendCommandAsync: director={directorId}, verb={command.Verb}, sid={command.SessionId}, cmdId={command.CommandId}");
+        return await hub.Clients.Client(connectionId).InvokeAsync<DirectorCommandResult>("Command", command, ct);
     }
 
     public async Task StopAsync()

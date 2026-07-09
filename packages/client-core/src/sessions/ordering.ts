@@ -6,6 +6,7 @@ import type { SessionDto } from "../api/client";
 export type TriageBucket = "needsYou" | "active" | "onHold";
 type GatewayStampedSession = SessionDto & {
   effectiveColor?: string | null;
+  stateLabel?: string | null;
   triageBucket?: TriageBucket | string | null;
 };
 
@@ -35,16 +36,23 @@ export function effectiveColor(s: SessionDto): string {
   return requireGatewayField((s as GatewayStampedSession).effectiveColor, "effectiveColor", s.sessionId);
 }
 
+// The ONE human-readable state label every client renders, stamped by the Gateway from the same fold
+// as effectiveColor (so the dot color and its label never disagree). Clients render this instead of
+// re-deriving a label from the raw color or activity state.
+export function stateLabel(s: SessionDto): string {
+  return requireGatewayField((s as GatewayStampedSession).stateLabel, "stateLabel", s.sessionId);
+}
+
 // True while the agent is actively running a turn - the "working" state. Blue is the authoritative
-// working color (StatusColor.cs: blue = agent working / a turn is in progress); the raw activity /
-// assessed state is checked too so a session mid-turn still counts before its color settles. A
-// deferred (on-hold) session is never "working" - the user parked it. Used to retire a now-stale
-// Wingman voice cue: the roster play-triangle is shown only while a session is red / parked and is
-// removed the instant it starts working again (you no longer want to hear the finished-turn
-// narration).
+// working color (blue = agent working / a turn is in progress); the raw activity / assessed state is
+// checked too so a session mid-turn still counts before its color settles. A deferred (on-hold) session
+// is never "working" - the user parked it. Used to retire a now-stale Wingman voice cue: the roster
+// play-triangle is shown only while a session is red / parked and is removed the instant it starts
+// working again (you no longer want to hear the finished-turn narration). Issue #1177 (Phase 2.3): reads
+// the Gateway-owned effectiveColor, not the raw Director statusColor, so the client never re-derives.
 export function isWorking(s: SessionDto): boolean {
   if (s.onHold) return false;
-  if ((s.statusColor ?? "").toLowerCase() === "blue") return true;
+  if (effectiveColor(s).toLowerCase() === "blue") return true;
   const state = s.assessedState ?? s.activityState ?? "";
   return state === "Working";
 }
@@ -72,6 +80,7 @@ const COLORS: Record<string, string> = {
   supporting: "#64748B", // issue #815: controlled sub-agent, recessive slate
   error: "#B91C1C", // issue #959: the agent process crashed - deep red, distinct from needs-you red
   grey: "#6B7280",
+  unknown: "#6B7280", // indeterminate activity state (e.g. an unrecognized state) - rendered gray like grey
 };
 
 export function dotColor(color: string): string {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { gatewayErrorMessage, getRepos, type RepoInfo, type SessionDto } from "@devthrottle/client-core/api/client";
-import { dotColor, effectiveColor, inDesktopOrder } from "@devthrottle/client-core/sessions/ordering";
+import { dotColor, effectiveColor, inDesktopOrder, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import {
   getDirectorSettings,
   getFleetDirectors,
@@ -166,7 +166,10 @@ export function DirectorDetailView() {
                   <tbody>
                     {mine.map((s) => {
                       const sid = s.sessionId ?? "";
-                      const briefing = s.briefingState === "Briefing" && (s.statusColor ?? "").toLowerCase() === "red";
+                      // Issue #1177 (Phase 2.3): render the Gateway's fold, not a local re-derive from the
+                      // raw statusColor. "Wingman reading" is the Gateway's label for a briefing/auto-explain
+                      // read in flight (SessionOrdering.StateLabel), which is exactly when this sub-line shows.
+                      const briefing = stateLabel(s) === "Wingman reading";
                       return (
                         <tr key={sid} className="dtbl-rowlink" title="Session details"
                             onClick={() => navigate(`/session/${encodeURIComponent(sid)}`)}>

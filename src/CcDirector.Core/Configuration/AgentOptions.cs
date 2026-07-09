@@ -17,6 +17,28 @@ public class AgentOptions
     public int GracefulShutdownTimeoutSeconds { get; set; } = 5;
 
     /// <summary>
+    /// Faster-stop control for the FLEET/remote stop path only (a Gateway DELETE / stream "kill" verb,
+    /// i.e. the mobile + Cockpit stop button). The graceful window in MILLISECONDS the Director waits for a
+    /// clean exit (after sending Ctrl+C) before force-killing, when the stop arrives remotely. A remote stop
+    /// usually means "I want this gone now", and most agent TUIs ignore Ctrl+C entirely, so waiting the full
+    /// <see cref="GracefulShutdownTimeoutSeconds"/> (5s) is dead time; this escalates to force faster while
+    /// still trying graceful first.
+    ///
+    /// Tunable + safe: raise it toward 5000 to be more patient, or set it to null / a non-positive value to
+    /// DISABLE the fast path entirely - the fleet stop then uses the standard <see
+    /// cref="GracefulShutdownTimeoutSeconds"/>, byte-identical to before. The LOCAL desktop kill is never
+    /// affected: it always uses <see cref="GracefulShutdownTimeoutSeconds"/>.
+    /// </summary>
+    public int? FleetKillGraceMs { get; set; } = 1500;
+
+    /// <summary>
+    /// Fleet-message steward policy (flag: <c>messaging.steward</c>): dedupe + per-source rate limit +
+    /// broadcast throttle on a session's OUTGOING fleet messages, applied at its own Director's
+    /// <c>/fleet/*</c> handlers. Default-ON with generous limits; see <see cref="MessageStewardOptions"/>.
+    /// </summary>
+    public MessageStewardOptions MessageSteward { get; set; } = new();
+
+    /// <summary>
     /// Path to the Pi agent CLI (<c>pi.cmd</c> from <c>@earendil-works/pi-coding-agent</c>).
     /// Defaults to the standard npm global install location on Windows; users can override
     /// in config.json if pi is installed elsewhere.

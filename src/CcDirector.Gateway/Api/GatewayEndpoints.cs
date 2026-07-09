@@ -59,8 +59,19 @@ internal static class GatewayEndpoints
         // of pulling it, whenever that Director's stream is connected and its last push is within
         // streamStaleAfter. Null (stream mode off) keeps the pull-only behaviour byte-identical to today.
         Streaming.PushedSessionStore? pushedSessions = null,
-        TimeSpan? streamStaleAfter = null)
+        TimeSpan? streamStaleAfter = null,
+        // Issue #1177 (Phase 1): when non-null, per-session commands are first tried DOWN the Director's
+        // stream via this hook (GatewayHost.SendCommandAsync); a null return means the Director is not
+        // stream-connected, so the endpoint falls back to its existing HTTP call. Null here (stream mode
+        // off) keeps every command endpoint on the HTTP path, byte-identical to before.
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null)
     {
+        // Issue #1177 (Phase 4a): the freshness window used both by /sessions (pushed-cache serve) and by
+        // LocateSessionAsync (pushed-cache session location). Resolved once here so every session endpoint's
+        // owner lookup shares the exact window the roster uses. When stream mode is off pushedSessions is null,
+        // so this value is never consulted and location stays on the HTTP pull, byte-identical to today.
+        var streamStaleResolved = streamStaleAfter ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
+
         // Issue #376: async voice-turn submit/poll (the phone's reconnect-resilient voice
         // interface). Mapped first for readability; route precedence (literal segments win
         // over the catch-all session forwarder) does the actual dispatch.
@@ -391,7 +402,7 @@ internal static class GatewayEndpoints
                 .ToList();
 
             var includeExitedActual = includeExited ?? false;
-            var streamStale = streamStaleAfter ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
+            var streamStale = streamStaleResolved;
             var fanoutTasks = directors.Select(async d =>
             {
                 // Issue #1176 (Phase 1a): if this Director's stream is connected and its last push is fresh,
@@ -555,6 +566,9 @@ internal static class GatewayEndpoints
                     // phone/Cockpit do not need a second state machine that can drift from C#.
                     var effectiveColor = SessionOrdering.EffectiveColor(s);
                     s.EffectiveColor = effectiveColor;
+                    // Issue #1177 (Phase 2): stamp the ONE human-readable label from the same fold, so
+                    // every client renders a consistent label instead of hand-rolling its own.
+                    s.StateLabel = SessionOrdering.StateLabel(s);
                     s.TriageBucket = SessionOrdering.Classify(s) switch
                     {
                         SessionOrdering.TriageBucket.NeedsYou => "needsYou",
@@ -769,7 +783,7 @@ internal static class GatewayEndpoints
 
         app.MapGet("/sessions/{sid}", async (HttpContext ctx, string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var baseUrl = DeriveDirectorBaseUrl(ctx, director);
@@ -786,11 +800,17 @@ internal static class GatewayEndpoints
         // Director's own Control API, never through the Gateway.
         app.MapDelete("/sessions/{sid}", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
-            var ok = await client.KillSessionAsync(ep, sid);
+            // Issue #1177 (Phase 1): try the Director's stream first; on a null return (no stream) fall
+            // back to the HTTP DELETE, which uses the 30s action client (killing can exceed the 2s probe
+            // timeout - issue #545). A non-Ok stream result collapses to 502 like the HTTP path.
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "kill", sid, null, CancellationToken.None);
+            var ok = streamResult is not null
+                ? streamResult.Ok
+                : await client.KillSessionAsync(ep, sid);
             if (!ok)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(new { killed = true });
@@ -800,7 +820,7 @@ internal static class GatewayEndpoints
         // Session View on the gateway side can render WHY a dot is the color it is.
         app.MapGet("/sessions/{sid}/wingman", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
@@ -817,7 +837,7 @@ internal static class GatewayEndpoints
             var explain = string.Equals(req?.Mode, "explain", StringComparison.OrdinalIgnoreCase);
             if (req is null || (!explain && string.IsNullOrWhiteSpace(req.Question)))
                 return Results.BadRequest(new WingmanAskResult { Status = "bad_request", Error = "question is required" });
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
@@ -830,11 +850,18 @@ internal static class GatewayEndpoints
         // Forward "set the session goal" to the owning Director. Body forwards verbatim.
         app.MapPost("/sessions/{sid}/wingman/goal", async (string sid, WingmanGoalRequest req, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
-            var body = await client.SetWingmanGoalAsync(ep, sid, req ?? new WingmanGoalRequest(), ct);
+            var goalReq = req ?? new WingmanGoalRequest();
+            // Issue #1177 (Phase 1, increment 6): try the Director's stream first; on a null return (no
+            // stream) fall back to the HTTP call. The Ok stream body IS the { goal, goalSetAt, goalState }
+            // JSON, passed through exactly as the HTTP body; a non-Ok result collapses to 502.
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "wingman-goal", sid, goalReq, ct);
+            var body = streamResult is not null
+                ? (streamResult.Ok ? streamResult.BodyJson : null)
+                : await client.SetWingmanGoalAsync(ep, sid, goalReq, ct);
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Content(body, "application/json");
@@ -843,11 +870,18 @@ internal static class GatewayEndpoints
         // Forward the FIFO "park / un-park this session" (hold) call to the owning Director.
         app.MapPost("/sessions/{sid}/hold", async (string sid, HoldRequest req, CancellationToken ct) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
-            var body = await client.SetHoldAsync(ep, sid, req ?? new HoldRequest(), ct);
+            var holdReq = req ?? new HoldRequest();
+            // Issue #1177 (Phase 1): try the Director's stream first; on a null return (no stream) fall
+            // back to the HTTP SetHoldAsync. On the stream, the Ok result's body IS the { onHold } JSON,
+            // passed through exactly as the HTTP body would be; a non-Ok result collapses to 502.
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "hold", sid, holdReq, ct);
+            var body = streamResult is not null
+                ? (streamResult.Ok ? streamResult.BodyJson : null)
+                : await client.SetHoldAsync(ep, sid, holdReq, ct);
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Content(body, "application/json");
@@ -864,7 +898,7 @@ internal static class GatewayEndpoints
         {
             if (transcribingSessions is null)
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var transcribing = req?.Transcribing ?? false;
@@ -880,14 +914,29 @@ internal static class GatewayEndpoints
             if (req is null)
                 return Results.BadRequest(new { error = "request body is required" });
 
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
             FileLog.Write($"[GatewayEndpoints] PATCH /sessions/{sid}: name=\"{req.Name}\", director={director.DirectorId}");
 
-            var (ok, body, err) = await client.PatchSessionAsync(director.ControlEndpoint, sid, req);
-            if (!ok || body is null)
+            // Issue #1177 (Phase 1): try the Director's stream first; on a null return (no stream) fall
+            // back to the HTTP PATCH. Either way the DirectorId is stamped and the DTO is returned.
+            SessionDto? body;
+            string? err;
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "patch", sid, req, CancellationToken.None);
+            if (streamResult is not null)
+            {
+                body = streamResult.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(streamResult) : null;
+                err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
+            }
+            else
+            {
+                var http = await client.PatchSessionAsync(director.ControlEndpoint, sid, req);
+                body = http.body;
+                err = http.error;
+            }
+            if (body is null)
                 return Results.Problem(err ?? "patch failed", statusCode: StatusCodes.Status502BadGateway);
 
             body.DirectorId = director.DirectorId;
@@ -896,7 +945,7 @@ internal static class GatewayEndpoints
 
         app.MapGet("/sessions/{sid}/buffer", async (string sid, int? lines, bool? raw, long? since) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -912,13 +961,27 @@ internal static class GatewayEndpoints
             if (req is null || string.IsNullOrEmpty(req.Text))
                 return Results.BadRequest(new { error = "text is required" });
 
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
             FileLog.Write($"[GatewayEndpoints] POST prompt: sid={sid}, director={director.DirectorId}, waitForIdle={req.WaitForIdle}");
 
-            var (ok, body, err) = await client.PostPromptAsync(director.ControlEndpoint, sid, req);
+            // Issue #1177 (Phase 1): try the Director's stream first; a null return means no stream, so
+            // fall back to the existing HTTP call. The WaitForIdle poll below is unchanged either way -
+            // it observes the session regardless of how the prompt was delivered.
+            bool ok; PromptResponse? body; string? err;
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "prompt", sid, req, CancellationToken.None);
+            if (streamResult is not null)
+            {
+                ok = streamResult.Ok;
+                body = streamResult.Ok ? DirectorCommandRouter.ReadBody<PromptResponse>(streamResult) : null;
+                err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
+            }
+            else
+            {
+                (ok, body, err) = await client.PostPromptAsync(director.ControlEndpoint, sid, req);
+            }
             if (!ok || body is null)
                 return Results.Json(new PromptResponse
                 {
@@ -961,11 +1024,17 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/interrupt", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
-            var ok = await client.PostInterruptAsync(director.ControlEndpoint, sid);
+            // Issue #1177 (Phase 1): try the Director's stream first; a null return means no stream, so
+            // fall back to HTTP. A non-Ok stream result collapses to the same 502 the HTTP path returns
+            // for a refusing/failed interrupt, keeping this endpoint's contract identical either way.
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "interrupt", sid, null, CancellationToken.None);
+            var ok = streamResult is not null
+                ? streamResult.Ok
+                : await client.PostInterruptAsync(director.ControlEndpoint, sid);
             return ok
                 ? Results.Json(new { accepted = true })
                 : Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -973,11 +1042,15 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/escape", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
-            var ok = await client.PostEscapeAsync(director.ControlEndpoint, sid);
+            // Issue #1177 (Phase 1): stream-first with HTTP fallback (same pattern as interrupt).
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, director.DirectorId, "escape", sid, null, CancellationToken.None);
+            var ok = streamResult is not null
+                ? streamResult.Ok
+                : await client.PostEscapeAsync(director.ControlEndpoint, sid);
             return ok
                 ? Results.Json(new { accepted = true })
                 : Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -988,7 +1061,7 @@ internal static class GatewayEndpoints
         // folder (same machine as the session) and returns the saved absolute path.
         app.MapPost("/sessions/{sid}/upload-image", async (string sid, HttpContext ctx) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
 
@@ -1044,8 +1117,25 @@ internal static class GatewayEndpoints
                 return Results.BadRequest(new { error = "repoPath is required" });
 
             FileLog.Write($"[GatewayEndpoints] POST /directors/{id}/sessions: repo={req.RepoPath}, agent={req.Agent}");
-            var (ok, body, err) = await client.CreateSessionAsync(d.ControlEndpoint, req);
-            if (!ok)
+
+            // Issue #1177 (Phase 1): try the target Director's stream first; on a null return (no stream)
+            // fall back to the HTTP create. A non-Ok stream result (validation/creation failure) collapses
+            // to 502, exactly as the HTTP path surfaces a Director 4xx/5xx.
+            SessionDto? body;
+            string? err;
+            var streamResult = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "create", "", req, CancellationToken.None);
+            if (streamResult is not null)
+            {
+                body = streamResult.Ok ? DirectorCommandRouter.ReadBody<SessionDto>(streamResult) : null;
+                err = streamResult.Ok ? null : DirectorCommandRouter.DescribeFailure(streamResult);
+            }
+            else
+            {
+                var http = await client.CreateSessionAsync(d.ControlEndpoint, req);
+                body = http.ok ? http.body : null;
+                err = http.error;
+            }
+            if (body is null)
                 return Results.Problem(err ?? "failed", statusCode: StatusCodes.Status502BadGateway);
             return Results.Json(body, statusCode: 201);
         });
@@ -1219,7 +1309,7 @@ internal static class GatewayEndpoints
 
         app.MapGet("/sessions/{sid}/summary", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var summary = await client.GetSummaryAsync(director!.ControlEndpoint, sid);
@@ -1234,7 +1324,7 @@ internal static class GatewayEndpoints
         // is just routing.
         app.MapGet("/sessions/{sid}/recap", async (string sid) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var recap = await client.GetRecapAsync(director.ControlEndpoint, sid);
@@ -1245,7 +1335,7 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/recap", async (string sid, HttpContext ctx) =>
         {
-            var (director, session) = await LocateSessionAsync(registry, client, sid);
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
             var model = ctx.Request.Query["model"].ToString();
@@ -1271,7 +1361,7 @@ internal static class GatewayEndpoints
 
             FileLog.Write($"[GatewayEndpoints] POST /handover: from={req.FromSessionId} toSid={req.ToSessionId} toRepo={req.ToRepoPath} toDir={req.ToDirectorId}");
 
-            var (sourceDirector, sourceSession) = await LocateSessionAsync(registry, client, req.FromSessionId);
+            var (sourceDirector, sourceSession) = await LocateSessionAsync(registry, client, req.FromSessionId, pushedSessions, streamStaleResolved);
             if (sourceSession is null || sourceDirector is null)
                 return Results.NotFound(new { error = "source session not found across any director" });
 
@@ -1354,7 +1444,7 @@ internal static class GatewayEndpoints
             var directorBySession = new Dictionary<string, DirectorDto>();
             foreach (var sid in req.SessionIds)
             {
-                var (d, s) = await LocateSessionAsync(registry, client, sid);
+                var (d, s) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
                 if (d is not null && s is not null) directorBySession[sid] = d;
             }
 
@@ -1531,8 +1621,30 @@ internal static class GatewayEndpoints
     // so it fans out to all Directors in parallel rather than scanning them one-by-one:
     // total latency is bounded by the slowest single lookup (~the client timeout) instead
     // of summing one timeout per Director. Exactly one Director should own a given sid.
-    private static async Task<(DirectorDto? director, SessionDto? session)> LocateSessionAsync(DirectorRegistry registry, DirectorEndpointClient client, string sid)
+    private static async Task<(DirectorDto? director, SessionDto? session)> LocateSessionAsync(
+        DirectorRegistry registry, DirectorEndpointClient client, string sid,
+        Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale)
     {
+        // Issue #1177 (Phase 4a): resolve the owning Director from the pushed stream cache FIRST. A
+        // remotely-unreachable (portless) Director advertises an empty ControlEndpoint, so the HTTP-pull loop
+        // below can never locate its sessions; the pushed cache already records which Director pushed each
+        // session, so location works with zero remote reach. Only when no fresh pushed cache holds the session
+        // do we fall back to the HTTP pull (non-stream Directors and the stream-mode-off path, byte-identical).
+        if (pushedSessions is not null)
+        {
+            var located = pushedSessions.TryLocate(sid, streamStale);
+            if (located is not null)
+            {
+                var (directorId, pushedSession) = located.Value;
+                var owner = registry.Get(directorId);
+                if (owner is not null)
+                {
+                    FileLog.Write($"[GatewayEndpoints] LocateSessionAsync: sid={sid} located=pushed-cache, director={directorId}");
+                    return (owner, pushedSession);
+                }
+            }
+        }
+
         var lookups = registry.ListDirectors().Select(async d =>
         {
             var ep = (d.ControlEndpoint ?? "").TrimEnd('/');

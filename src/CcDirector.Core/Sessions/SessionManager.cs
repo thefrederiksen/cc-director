@@ -592,14 +592,31 @@ public sealed class SessionManager : IDisposable
     /// <summary>List all sessions.</summary>
     public IReadOnlyCollection<Session> ListSessions() => _sessions.Values.ToList().AsReadOnly();
 
-    /// <summary>Kill a session by ID.</summary>
-    public async Task KillSessionAsync(Guid id)
+    /// <summary>
+    /// Kill a session by ID. <paramref name="gracefulTimeoutMsOverride"/> (issue: faster STOP) lets the
+    /// FLEET stop path escalate to force sooner than the local desktop window: a positive value is the
+    /// graceful-wait in milliseconds; null (the default, used by every local caller) keeps the standard
+    /// <see cref="AgentOptions.GracefulShutdownTimeoutSeconds"/> window, byte-identical to before.
+    /// </summary>
+    public async Task KillSessionAsync(Guid id, int? gracefulTimeoutMsOverride = null)
     {
         if (!_sessions.TryGetValue(id, out var session))
             throw new KeyNotFoundException($"Session {id} not found.");
 
-        await session.KillAsync(_options.GracefulShutdownTimeoutSeconds * 1000);
+        var timeoutMs = gracefulTimeoutMsOverride is int o && o > 0
+            ? o
+            : _options.GracefulShutdownTimeoutSeconds * 1000;
+        await session.KillAsync(timeoutMs);
     }
+
+    /// <summary>
+    /// The graceful-shutdown window (milliseconds) the FLEET/remote stop path uses before force-killing.
+    /// Resolves <see cref="AgentOptions.FleetKillGraceMs"/>; a null or non-positive config disables the fast
+    /// path, falling back to the standard <see cref="AgentOptions.GracefulShutdownTimeoutSeconds"/> window
+    /// (so a disabled fast path is byte-identical to before). The LOCAL desktop kill never reads this.
+    /// </summary>
+    public int FleetKillGraceMs =>
+        _options.FleetKillGraceMs is int ms && ms > 0 ? ms : _options.GracefulShutdownTimeoutSeconds * 1000;
 
     /// <summary>Return PIDs of all tracked sessions that have live processes.</summary>
     public HashSet<int> GetTrackedProcessIds()

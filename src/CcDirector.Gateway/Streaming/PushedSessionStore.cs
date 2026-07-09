@@ -192,6 +192,41 @@ public sealed class PushedSessionStore
         }
     }
 
+    /// <summary>
+    /// Issue #1177 (Phase 4a): find the Director that currently owns <paramref name="sessionId"/> in a FRESH
+    /// pushed cache, without any HTTP pull. Scans each Director's cache (under its own lock) and returns the
+    /// first fresh match as (directorId, deep-copied session). Returns null when no stream-connected Director's
+    /// fresh cache holds the session, so the caller falls back to the HTTP-pull location path.
+    ///
+    /// This is the portless session-location primitive: a remotely-unreachable Director has an empty control
+    /// endpoint, so an HTTP pull can never locate its sessions, but the pushed cache already records which
+    /// Director pushed each session. Freshness and idle-clock recompute follow the same rules as
+    /// <see cref="TryGetFresh"/>.
+    /// </summary>
+    public (string DirectorId, SessionDto Session)? TryLocate(string sessionId, TimeSpan staleAfter)
+    {
+        if (string.IsNullOrEmpty(sessionId))
+            return null;
+
+        var now = _utcNow();
+        foreach (var kvp in _byDirector)
+        {
+            var entry = kvp.Value;
+            lock (entry.Gate)
+            {
+                if (entry.ActiveConnectionId is null)
+                    continue;
+                if (entry.ReceivedAtUtc == DateTime.MinValue)
+                    continue;
+                if (now - entry.ReceivedAtUtc > staleAfter)
+                    continue;
+                if (entry.Sessions.TryGetValue(sessionId, out var s))
+                    return (kvp.Key, RecomputeClocks(s.Clone(), now));
+            }
+        }
+        return null;
+    }
+
     /// <summary>True when this Director currently has an active stream connection (used for diagnostics).</summary>
     public bool IsStreamConnected(string directorId) =>
         _byDirector.TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;
