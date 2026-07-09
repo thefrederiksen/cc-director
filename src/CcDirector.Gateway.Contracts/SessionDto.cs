@@ -298,4 +298,19 @@ public sealed class SessionDto
     /// (queued / in_progress / completed / none). Empty for local sessions.
     /// </summary>
     public string RemoteRunStatus { get; set; } = "";
+
+    /// <summary>
+    /// Issue #1176 (Phase 1a): a copy safe to hand out from the Gateway's pushed-session cache. The
+    /// <c>/sessions</c> aggregation stamps scalar fields (EffectiveColor, DirectorId, MachineName,
+    /// voice/transcription overlays, etc.) on the object it serves, so callers must never receive the
+    /// cached instance itself or one request would contaminate the cache for later ones. Reference-type
+    /// members the aggregator could mutate in place are re-created here; <see cref="VoiceUnavailable"/>
+    /// is only ever replaced wholesale by the aggregator (never mutated), so sharing its reference is safe.
+    /// </summary>
+    public SessionDto Clone()
+    {
+        var copy = (SessionDto)MemberwiseClone();
+        copy.DriverCapabilities = new List<string>(DriverCapabilities);
+        return copy;
+    }
 }
