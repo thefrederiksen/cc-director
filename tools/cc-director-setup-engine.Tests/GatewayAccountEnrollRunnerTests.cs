@@ -63,6 +63,20 @@ public class GatewayAccountEnrollRunnerTests
 
     private static bool IsCloudRegister(HttpRequestMessage r) => r.RequestUri!.AbsolutePath.EndsWith("/devices/register");
     private static bool IsGatewayEnroll(HttpRequestMessage r) => r.RequestUri!.AbsolutePath == "/m/enroll";
+    // Issue #1206: the account device list the installer reads to discover gateways.
+    private static bool IsDeviceList(HttpRequestMessage r) =>
+        r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath.EndsWith("/api/v1/devices");
+
+    /// <summary>One masked account device record (id/name/device_type, plus endpoint_url when the gateway
+    /// published one). Matches the cloud's list shape the DeviceRegistryClient parses.</summary>
+    private static string DeviceRecord(string id, string name, string deviceType, string? endpointUrl) =>
+        endpointUrl is null
+            ? $"{{\"id\":\"{id}\",\"name\":\"{name}\",\"device_type\":\"{deviceType}\"}}"
+            : $"{{\"id\":\"{id}\",\"name\":\"{name}\",\"device_type\":\"{deviceType}\",\"endpoint_url\":\"{endpointUrl}\"}}";
+
+    /// <summary>The cloud's { data: [ ... ] } list envelope around the given device records.</summary>
+    private static string DeviceListJson(params string[] records) =>
+        "{\"data\":[" + string.Join(",", records) + "]}";
 
     private static (GatewayAccountEnrollRunner runner, List<(string url, string key)> saved, List<(string path, string body)> reqs)
         BuildRunner(Func<HttpRequestMessage, HttpResponseMessage> responder,
@@ -239,5 +253,126 @@ public class GatewayAccountEnrollRunnerTests
         Assert.Empty(saved);
         Assert.Empty(reqs);
         Assert.False(signInCalled);
+    }
+
+    // ---- Issue #1206: sign in, then discover the account's gateways (drop the manual Gateway URL box) ----
+
+    [Fact]
+    public async Task SignInAndDiscoverGateways_OneGatewayWithEndpoint_ReturnsItAndDoesNotPersist()
+    {
+        HttpResponseMessage Responder(HttpRequestMessage r) =>
+            IsDeviceList(r) ? Raw(HttpStatusCode.OK, DeviceListJson(DeviceRecord("g1", "GW-HOME", "gateway", "https://home.ts.net:7878")))
+            : new HttpResponseMessage(HttpStatusCode.NotFound);
+        var (runner, saved, _) = BuildRunner(Responder);
+
+        var result = await runner.SignInAndDiscoverGatewaysAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        var gw = Assert.Single(result.Value!);
+        Assert.Equal("GW-HOME", gw.Name);
+        Assert.Equal("https://home.ts.net:7878", gw.EndpointUrl);
+        Assert.Empty(saved); // discovery never persists - that waits for the enroll step
+    }
+
+    [Fact]
+    public async Task SignInAndDiscoverGateways_MultipleGateways_ReturnsAllByName_ExcludesNonGateways()
+    {
+        HttpResponseMessage Responder(HttpRequestMessage r) =>
+            IsDeviceList(r) ? Raw(HttpStatusCode.OK, DeviceListJson(
+                DeviceRecord("g1", "GW-HOME", "gateway", "https://home.ts.net:7878"),
+                DeviceRecord("w1", "LAPTOP", "workstation", "https://laptop.ts.net:7878"),
+                DeviceRecord("g2", "GW-OFFICE", "gateway", "https://office.ts.net:7878")))
+            : new HttpResponseMessage(HttpStatusCode.NotFound);
+        var (runner, _, _) = BuildRunner(Responder);
+
+        var result = await runner.SignInAndDiscoverGatewaysAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Value!.Count);
+        Assert.Contains(result.Value, g => g.Name == "GW-HOME");
+        Assert.Contains(result.Value, g => g.Name == "GW-OFFICE");
+        Assert.DoesNotContain(result.Value, g => g.Name == "LAPTOP");
+    }
+
+    [Fact]
+    public async Task SignInAndDiscoverGateways_NoGateway_FailsWithStartYourGatewayMessage()
+    {
+        HttpResponseMessage Responder(HttpRequestMessage r) =>
+            IsDeviceList(r) ? Raw(HttpStatusCode.OK, DeviceListJson(DeviceRecord("w1", "LAPTOP", "workstation", null)))
+            : new HttpResponseMessage(HttpStatusCode.NotFound);
+        var (runner, _, _) = BuildRunner(Responder);
+
+        var result = await runner.SignInAndDiscoverGatewaysAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("No reachable gateway", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task SignInAndDiscoverGateways_GatewayWithoutEndpoint_Excluded_Fails()
+    {
+        // A gateway that has not published an address yet is NOT offered - there is nowhere to enroll.
+        HttpResponseMessage Responder(HttpRequestMessage r) =>
+            IsDeviceList(r) ? Raw(HttpStatusCode.OK, DeviceListJson(DeviceRecord("g1", "GW-NOADDR", "gateway", null)))
+            : new HttpResponseMessage(HttpStatusCode.NotFound);
+        var (runner, _, _) = BuildRunner(Responder);
+
+        var result = await runner.SignInAndDiscoverGatewaysAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("No reachable gateway", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task SignInAndDiscoverGateways_SignInCancelled_Fails_NoHttp()
+    {
+        var (runner, _, reqs) = BuildRunner(
+            _ => throw new InvalidOperationException("no HTTP expected"),
+            signIn: _ => throw new OperationCanceledException());
+
+        var result = await runner.SignInAndDiscoverGatewaysAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("Sign-in was cancelled", result.ErrorMessage);
+        Assert.Empty(reqs);
+    }
+
+    [Fact]
+    public async Task EnrollWithDiscoveredGateway_AfterDiscover_RegistersEnrollsAndPersists()
+    {
+        HttpResponseMessage Responder(HttpRequestMessage r) =>
+            IsDeviceList(r) ? Raw(HttpStatusCode.OK, DeviceListJson(DeviceRecord("g1", "GW-HOME", "gateway", GatewayUrl)))
+            : IsCloudRegister(r) ? Raw(HttpStatusCode.Created, CloudRegisterJson("cloud-key-abc"))
+            : IsGatewayEnroll(r) ? Obj(HttpStatusCode.OK, new { deviceKey = "local-key-abc" })
+            : new HttpResponseMessage(HttpStatusCode.NotFound);
+        var (runner, saved, reqs) = BuildRunner(Responder);
+
+        var discover = await runner.SignInAndDiscoverGatewaysAsync(CancellationToken.None);
+        Assert.True(discover.Success);
+        var gw = Assert.Single(discover.Value!);
+
+        var result = await runner.EnrollWithDiscoveredGatewayAsync(gw.EndpointUrl, DeviceId, MachineName, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("local-key-abc", result.Value!.DeviceKey);
+        Assert.Single(saved);
+        Assert.Equal(GatewayUrl, saved[0].url);
+        Assert.Equal("local-key-abc", saved[0].key);
+        // It enrolled against the discovered gateway, presenting the CLOUD key (never the account token).
+        var enroll = Assert.Single(reqs, x => x.path == "/m/enroll");
+        Assert.Contains("cloud-key-abc", enroll.body);
+    }
+
+    [Fact]
+    public async Task EnrollWithDiscoveredGateway_WithoutSignIn_BlocksAndDoesNotPersist()
+    {
+        var (runner, saved, reqs) = BuildRunner(_ => throw new InvalidOperationException("no HTTP expected"));
+
+        var result = await runner.EnrollWithDiscoveredGatewayAsync(GatewayUrl, DeviceId, MachineName, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("sign in", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(saved);
+        Assert.Empty(reqs);
     }
 }

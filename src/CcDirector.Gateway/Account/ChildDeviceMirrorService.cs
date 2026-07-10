@@ -263,7 +263,9 @@ public sealed class ChildDeviceMirrorService
                     continue;
                 try
                 {
-                    var known = await _client.HeartbeatAsync(token, child.DeviceId, _appVersion, ct).ConfigureAwait(false);
+                    // A child device publishes no front-door address of its own (issue #1206), so endpoint_url
+                    // is omitted; ct is named because it now follows the optional endpointUrl parameter.
+                    var known = await _client.HeartbeatAsync(token, child.DeviceId, _appVersion, ct: ct).ConfigureAwait(false);
                     if (!known && _devices.Remove(child.DeviceId))
                         FileLog.Write($"[ChildDeviceMirrorService] ReconcileAsync: child id={child.DeviceId} unknown to the cloud on heartbeat (404) -> dropped its local pairing key");
                 }

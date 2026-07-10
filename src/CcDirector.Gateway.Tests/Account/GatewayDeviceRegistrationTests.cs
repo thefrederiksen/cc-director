@@ -58,6 +58,10 @@ public sealed class GatewayDeviceRegistrationTests
         public int HeartbeatCallCount { get; private set; }
         public string? LastAuthorization { get; private set; }
         public string? LastHeartbeatInstallId { get; private set; }
+        // Issue #1206: the endpoint_url the Gateway published on the last register/heartbeat, or null when
+        // the field was omitted (a device with no resolved address).
+        public string? LastRegisterEndpointUrl { get; private set; }
+        public string? LastHeartbeatEndpointUrl { get; private set; }
         public int FailRegisterTimes { get; set; }
         public int DeviceCount => _byInstall.Count;
 
@@ -75,6 +79,7 @@ public sealed class GatewayDeviceRegistrationTests
             if (request.Method == HttpMethod.Post && path == DeviceRegistryClient.RegisterPath)
             {
                 RegisterCallCount++;
+                LastRegisterEndpointUrl = (string?)body["endpoint_url"];
                 if (FailRegisterTimes > 0)
                 {
                     FailRegisterTimes--;
@@ -108,6 +113,7 @@ public sealed class GatewayDeviceRegistrationTests
             if (request.Method == HttpMethod.Post && path == DeviceRegistryClient.HeartbeatPath)
             {
                 HeartbeatCallCount++;
+                LastHeartbeatEndpointUrl = (string?)body["endpoint_url"];
                 var installId = (string)body["install_id"]!;
                 LastHeartbeatInstallId = installId;
                 if (!_byInstall.TryGetValue(installId, out var row))
@@ -363,5 +369,49 @@ public sealed class GatewayDeviceRegistrationTests
         await heartbeat.HeartbeatOnceAsync();
         Assert.True(reg.HasDeviceKey);
         Assert.Equal(1, stub.DeviceCount);
+    }
+
+    // Issue #1206: this Gateway publishes its own advertised front-door URL as endpoint_url on BOTH the
+    // register and every heartbeat, so an installer on another machine can discover the gateway address from
+    // the account (and an already-installed gateway backfills it via heartbeat).
+    [Fact]
+    public async Task EndpointUrl_PublishedOnRegisterAndHeartbeat()
+    {
+        const string endpointUrl = "https://gw.tailnet.ts.net:7878";
+        var account = MakeAccount(signedIn: true);
+        var stub = new StubCloudDeviceRegistry();
+        var client = ClientOver(stub);
+        var keyStore = TempKeyStore();
+        var reg = new GatewayDeviceRegistrationService(
+            account, client, keyStore, Machine, Platform, AppVersion,
+            installIdProvider: () => InstallId, endpointUrlProvider: () => endpointUrl);
+
+        await reg.EnsureRegisteredAsync();
+        Assert.Equal(endpointUrl, stub.LastRegisterEndpointUrl);
+
+        var heartbeat = new GatewayDeviceHeartbeatService(reg, account, client, AppVersion);
+        await heartbeat.HeartbeatOnceAsync();
+        Assert.Equal(endpointUrl, stub.LastHeartbeatEndpointUrl);
+    }
+
+    // Issue #1206: when the address cannot be resolved yet (provider returns null), no endpoint_url is sent -
+    // so the cloud never clears a value the user may have set by hand in the portal.
+    [Fact]
+    public async Task EndpointUrl_UnresolvedProvider_OmitsEndpointUrl()
+    {
+        var account = MakeAccount(signedIn: true);
+        var stub = new StubCloudDeviceRegistry();
+        var client = ClientOver(stub);
+        var keyStore = TempKeyStore();
+        var reg = new GatewayDeviceRegistrationService(
+            account, client, keyStore, Machine, Platform, AppVersion,
+            installIdProvider: () => InstallId, endpointUrlProvider: () => null);
+
+        await reg.EnsureRegisteredAsync();
+        Assert.Null(stub.LastRegisterEndpointUrl);
+
+        var heartbeat = new GatewayDeviceHeartbeatService(reg, account, client, AppVersion);
+        await heartbeat.HeartbeatOnceAsync();
+        Assert.Null(stub.LastHeartbeatEndpointUrl);
     }
 }

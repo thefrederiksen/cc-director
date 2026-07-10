@@ -9,6 +9,16 @@ using CcDirector.Gateway.Contracts;
 namespace CcDirector.Setup.Engine;
 
 /// <summary>
+/// One gateway the installer discovered on the signed-in account (issue #1206): its human-readable
+/// <paramref name="Name"/> (shown to the person - a raw URL is never shown) and its reachable front-door
+/// <paramref name="EndpointUrl"/> (used as the enroll target). Only gateways that have published an address
+/// are surfaced.
+/// </summary>
+/// <param name="Name">The gateway's device name, shown in the chooser when the account has more than one.</param>
+/// <param name="EndpointUrl">The gateway's reachable front-door URL, used as the enroll target.</param>
+public sealed record DiscoveredGateway(string Name, string EndpointUrl);
+
+/// <summary>
 /// The installer-time gateway-join gate for a Workstation install. A machine that joins an existing
 /// fleet as a Workstation MUST connect to its gateway before the install can finish: the gateway is the
 /// account authority, so a Workstation with no gateway connection is useless.
@@ -49,6 +59,10 @@ public sealed class GatewayAccountEnrollRunner
     /// distinct from the Gateway's own "gateway" type and the browser/phone types.</summary>
     public const string WorkstationDeviceType = "workstation";
 
+    /// <summary>The account device-registry device type a Gateway registers itself as (issue #1206). The
+    /// installer filters the account's devices to this type to discover which gateway to enroll against.</summary>
+    public const string GatewayDeviceType = "gateway";
+
     /// <summary>The platform string reported for a Windows Workstation install (a roster attribute).</summary>
     public const string WorkstationPlatform = "windows";
 
@@ -61,6 +75,11 @@ public sealed class GatewayAccountEnrollRunner
     private readonly Func<HttpMessageHandler> _handlerFactory;
     private readonly Action<string, string> _persist;
     private readonly TimeSpan _httpTimeout;
+
+    // The account token captured by SignInAndDiscoverGatewaysAsync, held in memory ONLY for the immediately
+    // following EnrollWithDiscoveredGatewayAsync call (issue #1206). A Workstation persists no account
+    // credential; this is never written to disk or logged. Single-use per install wizard instance.
+    private DevThrottleTokens? _pendingTokens;
 
     /// <summary>
     /// Build a runner. By default it drives a real browser loopback sign-in, makes real cloud/gateway HTTP
@@ -140,6 +159,135 @@ public sealed class GatewayAccountEnrollRunner
             return OperationResult<MobileEnrollmentResponse>.Fail(
                 "Sign-in did not return a usable credential. Please try again.");
 
+        return await RegisterAndEnrollAsync(tokens, url, deviceId, machineName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Sign in with the DevThrottle account and discover the account's gateways so the installer can enroll
+    /// against one WITHOUT the person typing a gateway URL (issue #1206). The account already knows which
+    /// gateways belong to the user: each signed-in Gateway publishes its own reachable front-door URL as its
+    /// device <c>endpoint_url</c>, so this signs in (the same browser loopback flow), lists the account's
+    /// devices, and returns the ones of type "gateway" that carry a non-empty <c>endpoint_url</c>.
+    ///
+    /// The captured token is held in memory only for the immediately-following
+    /// <see cref="EnrollWithDiscoveredGatewayAsync"/> call (a Workstation holds no account credential) and is
+    /// never persisted or logged. Returns the discovered gateways (one or more) on success, or a clear,
+    /// actionable reason when the sign-in did not complete or the account has NO reachable gateway yet - never
+    /// an empty list dressed as success and never a fabricated address.
+    /// </summary>
+    /// <param name="ct">Cancelled by the installer's Cancel button while the sign-in is in flight.</param>
+    public async Task<OperationResult<IReadOnlyList<DiscoveredGateway>>> SignInAndDiscoverGatewaysAsync(CancellationToken ct = default)
+    {
+        EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: starting account sign-in + gateway discovery");
+
+        DevThrottleTokens tokens;
+        try
+        {
+            tokens = await _signIn(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: sign-in cancelled before a credential arrived");
+            return OperationResult<IReadOnlyList<DiscoveredGateway>>.Fail(
+                "Sign-in was cancelled. Click \"Sign in to DevThrottle\" to try again.");
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: sign-in failed: {ex.Message}");
+            return OperationResult<IReadOnlyList<DiscoveredGateway>>.Fail(
+                "Sign-in did not complete. Please return to your browser and finish signing in, then try again.");
+        }
+
+        if (tokens is null || string.IsNullOrWhiteSpace(tokens.AccessToken))
+            return OperationResult<IReadOnlyList<DiscoveredGateway>>.Fail(
+                "Sign-in did not return a usable credential. Please try again.");
+
+        IReadOnlyList<CloudDeviceRecord> devices;
+        try
+        {
+            using var cloudHttp = new HttpClient(_handlerFactory(), disposeHandler: true) { Timeout = _httpTimeout };
+            var registry = new DeviceRegistryClient(cloudHttp);
+            devices = await registry.ListDevicesAsync(tokens.AccessToken, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: listing account devices failed: {ex.Message}");
+            return OperationResult<IReadOnlyList<DiscoveredGateway>>.Fail(
+                "Signed in, but your DevThrottle account devices could not be read. Please check your connection and try again.");
+        }
+
+        // A gateway the installer can enroll against is a device of type "gateway" that has published a
+        // reachable front-door URL. A gateway with no address yet is NOT offered (there is nowhere to enroll).
+        var gateways = new List<DiscoveredGateway>();
+        foreach (var device in devices)
+        {
+            if (string.Equals(device.DeviceType, GatewayDeviceType, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(device.EndpointUrl))
+            {
+                gateways.Add(new DiscoveredGateway(device.Name, device.EndpointUrl.Trim()));
+            }
+        }
+
+        if (gateways.Count == 0)
+        {
+            EngineLog.Write("[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: no reachable gateway on this account");
+            return OperationResult<IReadOnlyList<DiscoveredGateway>>.Fail(
+                "No reachable gateway is registered on your account yet. Start and sign in your gateway first, then run this installer.");
+        }
+
+        // Hold the token in memory for the enroll call that follows the person's gateway choice.
+        _pendingTokens = tokens;
+        EngineLog.Write($"[GatewayAccountEnrollRunner] SignInAndDiscoverGatewaysAsync: discovered {gateways.Count} reachable gateway(s) on the account");
+        return OperationResult<IReadOnlyList<DiscoveredGateway>>.Ok(gateways);
+    }
+
+    /// <summary>
+    /// Register this Workstation on the account and enroll it at the gateway discovered by
+    /// <see cref="SignInAndDiscoverGatewaysAsync"/>, using the token that call captured (issue #1206). This is
+    /// the second half of the drop-the-URL-box flow: the person never types the address - it is the
+    /// discovered gateway's own published <paramref name="gatewayUrl"/>. On success it persists the gateway
+    /// URL + issued local device key exactly as the manual path did.
+    ///
+    /// Must be called after a successful <see cref="SignInAndDiscoverGatewaysAsync"/> in the same run; if no
+    /// captured token is held it fails with a clear reason rather than silently signing in again.
+    /// </summary>
+    /// <param name="gatewayUrl">The discovered gateway's reachable front-door URL (never typed by the person).</param>
+    /// <param name="deviceId">This machine's stable device/install id.</param>
+    /// <param name="machineName">A human-readable device name shown in the account roster.</param>
+    /// <param name="ct">Cancels the register/enroll HTTP calls.</param>
+    public async Task<OperationResult<MobileEnrollmentResponse>> EnrollWithDiscoveredGatewayAsync(
+        string gatewayUrl, string deviceId, string machineName, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(gatewayUrl))
+            return OperationResult<MobileEnrollmentResponse>.Fail("The discovered gateway has no address.");
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return OperationResult<MobileEnrollmentResponse>.Fail("This machine has no device id.");
+        if (!Uri.TryCreate(gatewayUrl.Trim(), UriKind.Absolute, out var parsed)
+            || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "The discovered gateway address is not a valid URL.");
+
+        var tokens = _pendingTokens;
+        if (tokens is null || string.IsNullOrWhiteSpace(tokens.AccessToken))
+            return OperationResult<MobileEnrollmentResponse>.Fail(
+                "Please sign in to DevThrottle first.");
+
+        var url = gatewayUrl.Trim();
+        EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollWithDiscoveredGatewayAsync: gateway={url}, deviceId={deviceId}, machine={machineName}");
+        return await RegisterAndEnrollAsync(tokens, url, deviceId, machineName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The shared register-then-enroll-then-persist steps, run against an ALREADY-captured account token:
+    /// (2) register this machine as an account device so the cloud issues its per-device key, (3) exchange
+    /// that cloud key at the target gateway for a LOCAL device key via <c>/m/enroll</c>, and (4) persist the
+    /// gateway URL + local key to config.json. Returns the issued <see cref="MobileEnrollmentResponse"/> on
+    /// success, or a human-readable reason on any expected failure (no persist). The device keys are never
+    /// logged (security rule DT-05).
+    /// </summary>
+    private async Task<OperationResult<MobileEnrollmentResponse>> RegisterAndEnrollAsync(
+        DevThrottleTokens tokens, string url, string deviceId, string machineName, CancellationToken ct)
+    {
         // 2. Register THIS machine as a device on the account (the same call the Gateway self-registers
         // with), so the cloud issues its per-device key. The account access token authorizes the call.
         CloudDeviceRegistrationResult cloud;
@@ -154,7 +302,7 @@ public sealed class GatewayAccountEnrollRunner
         }
         catch (Exception ex)
         {
-            EngineLog.Write($"[GatewayAccountEnrollRunner] VerifyAndSaveAsync: cloud device registration failed: {ex.Message}");
+            EngineLog.Write($"[GatewayAccountEnrollRunner] RegisterAndEnrollAsync: cloud device registration failed: {ex.Message}");
             return OperationResult<MobileEnrollmentResponse>.Fail(
                 "Signed in, but this workstation could not be registered on your DevThrottle account. Please check your connection and try again.");
         }
@@ -170,7 +318,7 @@ public sealed class GatewayAccountEnrollRunner
             return enroll;
 
         _persist(url, enroll.Value.DeviceKey);
-        EngineLog.Write($"[GatewayAccountEnrollRunner] VerifyAndSaveAsync: persisted gateway url + local per-device key (machine={machineName})");
+        EngineLog.Write($"[GatewayAccountEnrollRunner] RegisterAndEnrollAsync: persisted gateway url + local per-device key (machine={machineName})");
         return OperationResult<MobileEnrollmentResponse>.Ok(enroll.Value);
     }
 

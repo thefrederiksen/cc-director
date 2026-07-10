@@ -33,12 +33,13 @@ public sealed class DeviceRegistryClientRegisterHeartbeatTests
         var record =
             "{\"id\":\"dev-857\",\"name\":\"GW-HOST\",\"platform\":\"windows\",\"device_type\":\"gateway\"," +
             "\"app_version\":\"9.9.9\",\"key_prefix\":\"dtk_\",\"key_last4\":\"ab12\"," +
-            "\"created_at\":\"2026-06-30T00:00:00Z\",\"last_seen_at\":\"2026-06-30T00:00:00Z\"}";
+            "\"created_at\":\"2026-06-30T00:00:00Z\",\"last_seen_at\":\"2026-06-30T00:00:00Z\"," +
+            "\"endpoint_url\":\"https://gw.tailnet.ts.net:7878\"}";
         var registerBody = $"{{\"data\":{{\"device_key\":\"{DeviceKeyMarker}\",\"record\":{record}}}}}";
         var handler = new CapturingHandler(HttpStatusCode.OK, registerBody);
         var client = ClientOver(handler);
 
-        var request = new CloudDeviceRegistrationRequest("install-abc", "windows", "GW-HOST", "gateway", "9.9.9");
+        var request = new CloudDeviceRegistrationRequest("install-abc", "windows", "GW-HOST", "gateway", "9.9.9", "https://gw.tailnet.ts.net:7878");
         var result = await client.RegisterAsync("access-xyz", request);
 
         Assert.Equal(HttpMethod.Post, handler.Request!.Method);
@@ -51,12 +52,34 @@ public sealed class DeviceRegistryClientRegisterHeartbeatTests
         Assert.Equal("GW-HOST", (string?)sent["name"]);
         Assert.Equal("gateway", (string?)sent["device_type"]);
         Assert.Equal("9.9.9", (string?)sent["app_version"]);
+        // Issue #1206: the Gateway's advertised front-door URL is sent as endpoint_url.
+        Assert.Equal("https://gw.tailnet.ts.net:7878", (string?)sent["endpoint_url"]);
 
         Assert.Equal(DeviceKeyMarker, result.DeviceKey);
         Assert.Equal("dev-857", result.Device.Id);
         Assert.Equal("GW-HOST", result.Device.Name);
         Assert.Equal("windows", result.Device.Platform);
         Assert.Equal("dtk_", result.Device.KeyPrefix);
+        // Issue #1206: the masked record's endpoint_url is parsed back onto the record.
+        Assert.Equal("https://gw.tailnet.ts.net:7878", result.Device.EndpointUrl);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_OmitsEndpointUrlWhenNull()
+    {
+        var registerBody = $"{{\"data\":{{\"device_key\":\"{DeviceKeyMarker}\",\"record\":{{\"id\":\"d\",\"name\":\"n\"}}}}}}";
+        var handler = new CapturingHandler(HttpStatusCode.OK, registerBody);
+        var client = ClientOver(handler);
+
+        // No endpoint_url on the request (a device with no advertised address) -> the field is not sent.
+        await client.RegisterAsync("access-xyz", new CloudDeviceRegistrationRequest("install-abc", "windows", "n", "gateway", "9.9.9"));
+
+        var sent = JsonNode.Parse(handler.Body!)!.AsObject();
+        Assert.False(sent.ContainsKey("endpoint_url"));
+
+        // A record without endpoint_url parses it as null (not an empty string, not a throw).
+        var parsedResult = await client.RegisterAsync("access-xyz", new CloudDeviceRegistrationRequest("install-abc", "windows", "n", "gateway", "9.9.9"));
+        Assert.Null(parsedResult.Device.EndpointUrl);
     }
 
     [Fact]
@@ -135,6 +158,22 @@ public sealed class DeviceRegistryClientRegisterHeartbeatTests
         var sent = JsonNode.Parse(handler.Body!)!.AsObject();
         Assert.Equal("install-abc", (string?)sent["install_id"]);
         Assert.Equal("9.9.9", (string?)sent["app_version"]);
+    }
+
+    [Fact]
+    public async Task HeartbeatAsync_SendsEndpointUrlWhenGiven_OmitsWhenNull()
+    {
+        // Issue #1206: an already-installed Gateway backfills/keeps-current its address on heartbeat.
+        var withUrl = new CapturingHandler(HttpStatusCode.OK, "{\"data\":{\"recorded\":true}}");
+        await ClientOver(withUrl).HeartbeatAsync("access-xyz", "install-abc", "9.9.9", "https://gw.tailnet.ts.net:7878");
+        var sentWith = JsonNode.Parse(withUrl.Body!)!.AsObject();
+        Assert.Equal("https://gw.tailnet.ts.net:7878", (string?)sentWith["endpoint_url"]);
+
+        // Omitted endpoint_url -> the field is not sent, so the cloud never clears a hand-set value.
+        var withoutUrl = new CapturingHandler(HttpStatusCode.OK, "{\"data\":{\"recorded\":true}}");
+        await ClientOver(withoutUrl).HeartbeatAsync("access-xyz", "install-abc", "9.9.9");
+        var sentWithout = JsonNode.Parse(withoutUrl.Body!)!.AsObject();
+        Assert.False(sentWithout.ContainsKey("endpoint_url"));
     }
 
     [Fact]

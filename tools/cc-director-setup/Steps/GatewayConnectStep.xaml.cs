@@ -8,19 +8,20 @@ using CcDirectorSetup.Services;
 namespace CcDirectorSetup.Steps;
 
 /// <summary>
-/// The mandatory gateway-join step for a Workstation install (issues #646, #1198). A machine that joins
-/// an existing fleet must connect to its gateway before the install can finish - the gateway is the
+/// The mandatory gateway-join step for a Workstation install (issues #646, #1198, #1206). A machine that
+/// joins an existing fleet must connect to its gateway before the install can finish - the gateway is the
 /// account authority, so a Workstation with no gateway connection is useless.
 ///
-/// Joining is now DevThrottle account sign-in, not a 4-digit pairing code: the user enters the gateway
-/// URL and clicks "Sign in to DevThrottle", which opens the system browser to sign in, registers this
-/// machine as an account device, exchanges its key at the gateway for a local per-device key, and
-/// persists the gateway URL + key to config.json (all in <see cref="GatewayAccountEnrollRunner"/>). The
-/// URL stays because the cloud never learns a fleet's private network address; only the authorization
-/// changed from a code to account sign-in (the same model the Gateway install already uses - epic #1069).
+/// Joining is DevThrottle account sign-in, and the person never types a gateway address (issue #1206): they
+/// click "Sign in to DevThrottle", which opens the system browser to sign in, then the installer reads the
+/// account's devices and discovers the gateway's own published front-door URL. With exactly one gateway it
+/// connects automatically; with more than one it shows a NAME-based chooser (never a raw URL); with none it
+/// shows a clear "start and sign in your gateway first" message. The chosen gateway's URL is used to
+/// register this machine as an account device, exchange its key at the gateway for a local per-device key,
+/// and persist the gateway URL + key to config.json (all in <see cref="GatewayAccountEnrollRunner"/>).
 ///
-/// Until the join succeeds the step stays unverified, so the wizard keeps Next/Finish disabled (mirrors
-/// the forced Sign-in gate, issue #657). A bad URL, a cancelled sign-in, a different account, or an
+/// Until the join succeeds the step stays unverified, so the wizard keeps Next/Finish disabled (mirrors the
+/// forced Sign-in gate, issue #657). A cancelled sign-in, no reachable gateway, a different account, or an
 /// unreachable gateway shows a clear message and does NOT mark the step verified, so the install cannot
 /// complete. The step raises <see cref="Connected"/> exactly once, when a local device key is issued and
 /// persisted.
@@ -48,8 +49,8 @@ public partial class GatewayConnectStep : UserControl
 
     /// <summary>Constructor seam so a test or proof harness can inject a runner (e.g. one with a fake
     /// sign-in and a fake HTTP handler). When no runner is supplied a default one is built that drives the
-    /// real browser sign-in, registers the account device, enrolls at the gateway, and persists the issued
-    /// local key to config.json.</summary>
+    /// real browser sign-in, discovers the account's gateways, registers the account device, enrolls at the
+    /// chosen gateway, and persists the issued local key to config.json.</summary>
     public GatewayConnectStep(GatewayAccountEnrollRunner? runner)
     {
         InitializeComponent();
@@ -61,18 +62,7 @@ public partial class GatewayConnectStep : UserControl
         _deviceId = Guid.NewGuid().ToString();
         _machineName = Environment.MachineName;
 
-        UrlBox.TextChanged += (_, _) => UpdateSignInEnabled();
-        UpdateSignInEnabled();
         SetupLog.Write($"[GatewayConnectStep] Created: machine={_machineName}");
-    }
-
-    /// <summary>Sign in enables only once the gateway URL is a valid http/https address - there is nothing
-    /// to sign in against without knowing which gateway to join.</summary>
-    private void UpdateSignInEnabled()
-    {
-        var url = (UrlBox.Text ?? "").Trim();
-        SignInButton.IsEnabled = Uri.TryCreate(url, UriKind.Absolute, out var parsed)
-            && (parsed.Scheme == Uri.UriSchemeHttp || parsed.Scheme == Uri.UriSchemeHttps);
     }
 
     private async void SignInButton_Click(object sender, RoutedEventArgs e)
@@ -80,16 +70,28 @@ public partial class GatewayConnectStep : UserControl
         SetupLog.Write("[GatewayConnectStep] SignInButton_Click");
         try
         {
-            EnterWaitingState();
-
-            var url = (UrlBox.Text ?? "").Trim();
+            EnterWaitingState("Waiting for you to sign in in your browser...", cancellable: true);
             _cts = new CancellationTokenSource();
 
-            // The runner opens the browser and awaits the loopback hand-back, then does the HTTP calls and
-            // the config.json write - all async, so the UI thread stays responsive and Cancel works.
-            var result = await _runner.VerifyAndSaveAsync(url, _deviceId, _machineName, _cts.Token);
+            // Sign in and discover the account's gateways. The browser opens and we await the loopback
+            // hand-back, then list the account devices - all async, so the UI stays responsive and Cancel works.
+            var discovered = await _runner.SignInAndDiscoverGatewaysAsync(_cts.Token);
+            if (!discovered.Success || discovered.Value is null)
+            {
+                ShowRetryable(discovered.ErrorMessage ?? "Could not find your gateway. Please try again.");
+                return;
+            }
 
-            ApplyResult(result);
+            var gateways = discovered.Value;
+            if (gateways.Count == 1)
+            {
+                // Exactly one gateway: connect automatically, no address to type and no chooser.
+                await ConnectToGatewayAsync(gateways[0]);
+                return;
+            }
+
+            // More than one: let the person choose by name (a raw URL is never shown).
+            ShowChooser(gateways);
         }
         catch (Exception ex)
         {
@@ -103,25 +105,82 @@ public partial class GatewayConnectStep : UserControl
         }
     }
 
+    private async void ChooseConnectButton_Click(object sender, RoutedEventArgs e)
+    {
+        SetupLog.Write("[GatewayConnectStep] ChooseConnectButton_Click");
+        try
+        {
+            if (GatewayList.SelectedItem is not DiscoveredGateway selected)
+                return;
+
+            _cts = new CancellationTokenSource();
+            await ConnectToGatewayAsync(selected);
+        }
+        catch (Exception ex)
+        {
+            SetupLog.Write($"[GatewayConnectStep] ChooseConnectButton_Click FAILED: {ex}");
+            ShowRetryable("Connecting to the gateway failed unexpectedly. Please try again.");
+        }
+        finally
+        {
+            _cts?.Dispose();
+            _cts = null;
+        }
+    }
+
+    /// <summary>Registers this machine on the account and enrolls it at the discovered gateway, then applies
+    /// the outcome. The connect call is not cancellable (the sign-in wait already completed), so the waiting
+    /// row hides Cancel here.</summary>
+    private async Task ConnectToGatewayAsync(DiscoveredGateway gateway)
+    {
+        SetupLog.Write($"[GatewayConnectStep] ConnectToGatewayAsync: gateway={gateway.Name}");
+        EnterWaitingState("Connecting to your gateway...", cancellable: false);
+
+        // _cts is set by the caller; the connect call honors it but the Cancel button is hidden here.
+        var token = _cts?.Token ?? CancellationToken.None;
+        var result = await _runner.EnrollWithDiscoveredGatewayAsync(gateway.EndpointUrl, _deviceId, _machineName, token);
+        ApplyResult(result);
+    }
+
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
         SetupLog.Write("[GatewayConnectStep] CancelButton_Click: cancelling the sign-in wait");
-        // Cancelling the wait makes VerifyAndSaveAsync return a cancelled result, which ApplyResult turns
-        // into a retryable state. The button itself stays disabled until the wait unwinds.
+        // Cancelling the wait makes the sign-in return a cancelled result, which ShowRetryable turns into a
+        // retryable state. The button itself stays disabled until the wait unwinds.
         CancelButton.IsEnabled = false;
         _cts?.Cancel();
     }
 
-    /// <summary>Shows the "waiting for sign-in..." state: hide any prior message/success, show the waiting
-    /// row with an enabled Cancel, and disable the inputs while the call is in flight.</summary>
-    private void EnterWaitingState()
+    /// <summary>Shows the waiting row with the given message: hide any prior chooser/message/success, disable
+    /// the Sign-in button, and enable Cancel only when the wait is cancellable (the sign-in wait).</summary>
+    private void EnterWaitingState(string message, bool cancellable)
     {
         SignInButton.IsEnabled = false;
-        UrlBox.IsEnabled = false;
         StatusText.Visibility = Visibility.Collapsed;
         SuccessPanel.Visibility = Visibility.Collapsed;
-        CancelButton.IsEnabled = true;
+        ChooserPanel.Visibility = Visibility.Collapsed;
+        WaitingText.Text = message;
+        CancelButton.IsEnabled = cancellable;
+        CancelButton.Visibility = cancellable ? Visibility.Visible : Visibility.Collapsed;
         WaitingPanel.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>Shows the name-based gateway chooser (issue #1206), hiding the Sign-in button and the waiting
+    /// row. The Connect button enables once a gateway is selected.</summary>
+    private void ShowChooser(IReadOnlyList<DiscoveredGateway> gateways)
+    {
+        SetupLog.Write($"[GatewayConnectStep] ShowChooser: {gateways.Count} gateways");
+        WaitingPanel.Visibility = Visibility.Collapsed;
+        StatusText.Visibility = Visibility.Collapsed;
+        SignInButton.IsEnabled = false;
+        GatewayList.ItemsSource = gateways;
+        ChooseConnectButton.IsEnabled = false;
+        ChooserPanel.Visibility = Visibility.Visible;
+    }
+
+    private void GatewayList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ChooseConnectButton.IsEnabled = GatewayList.SelectedItem is DiscoveredGateway;
     }
 
     private void ApplyResult(OperationResult<MobileEnrollmentResponse> result)
@@ -133,7 +192,7 @@ public partial class GatewayConnectStep : UserControl
             SetupLog.Write("[GatewayConnectStep] ApplyResult: connected");
             IsVerified = true;
             SignInButton.Visibility = Visibility.Collapsed;
-            UrlBox.IsEnabled = false;
+            ChooserPanel.Visibility = Visibility.Collapsed;
             SuccessText.Text = "Connected to the gateway. Click Next to continue.";
             SuccessPanel.Visibility = Visibility.Visible;
             Connected?.Invoke(this, EventArgs.Empty);
@@ -144,14 +203,15 @@ public partial class GatewayConnectStep : UserControl
         ShowRetryable(result.ErrorMessage ?? "The gateway did not accept the sign-in.");
     }
 
-    /// <summary>Returns the step to a retryable state with a message - the URL box and Sign-in button are
-    /// re-enabled so the user can correct the URL and try again. The step stays UNVERIFIED, so the wizard
-    /// keeps Next disabled and the install cannot complete.</summary>
+    /// <summary>Returns the step to a retryable state with a message - the chooser and waiting row are
+    /// hidden and the Sign-in button is re-enabled so the user can try again. The step stays UNVERIFIED, so
+    /// the wizard keeps Next disabled and the install cannot complete.</summary>
     private void ShowRetryable(string message)
     {
+        WaitingPanel.Visibility = Visibility.Collapsed;
+        ChooserPanel.Visibility = Visibility.Collapsed;
         StatusText.Text = message;
         StatusText.Visibility = Visibility.Visible;
-        UrlBox.IsEnabled = true;
-        UpdateSignInEnabled();
+        SignInButton.IsEnabled = true;
     }
 }
