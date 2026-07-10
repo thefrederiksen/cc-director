@@ -8,6 +8,7 @@ using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Contracts;
+using CcDirector.Gateway.Running;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -100,6 +101,64 @@ public sealed class StreamCommandTests : IAsyncLifetime
         Assert.True(result.Ok);
         Assert.Equal(command.CommandId, result.CommandId);
         Assert.Contains("over-the-stream", BufferText(session));
+    }
+
+    [Fact]
+    public async Task AutoDismiss_DoneVerdict_ClosesSessionOverTheStream_EndToEnd()
+    {
+        // Issue #1200 end-to-end: a real auto-dismiss session that declared "done" is closed by the Gateway's
+        // auto-dismiss sweep sending the "kill" verb DOWN the real SignalR stream. This proves the WHOLE loop
+        // over the live stream: the verdict rides UP on the pushed session DTO, the sweep addresses the owning
+        // Director from the pushed cache, the kill flows DOWN, and the Director actually kills+removes the
+        // session (no phantom - RemoveSession runs). No mocks of the channel; the same GatewayHost wiring.
+        var session = _directorSessions.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
+        session.AutoDismiss = true;
+        session.SetDismissVerdict("done");   // what the Director's verdict watcher stamps from the CC-DISMISS block
+
+        await using var client = NewClient(new CountingDispatcher(_directorSessions));
+        client.Start();
+        await WaitForStream();
+        await WaitForPushedSession(session.Id.ToString());
+
+        // The verdict actually reached the Gateway UP the stream, on the pushed DTO.
+        var pushed = _gateway.PushedSessions.SnapshotFresh(TimeSpan.FromSeconds(30));
+        var mine = pushed.Single(t => t.Session.SessionId == session.Id.ToString());
+        Assert.True(mine.Session.AutoDismiss);
+        Assert.Equal("done", mine.Session.DismissVerdict);
+
+        // The real Gateway sweep, wired exactly as GatewayHost wires it (pushed snapshot + SendCommandAsync).
+        var sweeper = new AutoDismissSweeper(
+            () => _gateway.PushedSessions.SnapshotFresh(TimeSpan.FromSeconds(30)),
+            _gateway.SendCommandAsync);
+
+        var closed = await sweeper.SweepAsync(CancellationToken.None);
+
+        Assert.Equal(1, closed);
+        // The kill executed on the Director over the stream: the session is gone from the roster (killed+removed).
+        Assert.Null(_directorSessions.GetSession(session.Id));
+    }
+
+    [Fact]
+    public async Task AutoDismiss_NeedsHumanVerdict_LeavesSessionOpen_EndToEnd()
+    {
+        // The mirror case: a "needs-human" verdict must NOT close the session, even over a live stream.
+        var session = _directorSessions.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
+        session.AutoDismiss = true;
+        session.SetDismissVerdict("needs-human");
+
+        await using var client = NewClient(new CountingDispatcher(_directorSessions));
+        client.Start();
+        await WaitForStream();
+        await WaitForPushedSession(session.Id.ToString());
+
+        var sweeper = new AutoDismissSweeper(
+            () => _gateway.PushedSessions.SnapshotFresh(TimeSpan.FromSeconds(30)),
+            _gateway.SendCommandAsync);
+
+        var closed = await sweeper.SweepAsync(CancellationToken.None);
+
+        Assert.Equal(0, closed);
+        Assert.NotNull(_directorSessions.GetSession(session.Id)); // still open
     }
 
     [Fact]
@@ -808,8 +867,11 @@ public sealed class StreamCommandTests : IAsyncLifetime
         return new GatewayStreamClient(config, DirectorId, "test", SnapshotDirectorSessions, dispatcher.DispatchAsync, rePushInterval);
     }
 
+    // Map with the SAME production mapper the Director uses to push its roster UP the stream
+    // (ControlApiHost.SnapshotFullSessions), so pushed DTOs carry every field a real Director sends -
+    // including Status and the issue #1200 AutoDismiss / DismissVerdict fields the auto-dismiss sweep reads.
     private List<SessionDto> SnapshotDirectorSessions() =>
-        _directorSessions.ListSessions().Select(s => new SessionDto { SessionId = s.Id.ToString(), ActivityState = s.ActivityState.ToString() }).ToList();
+        _directorSessions.ListSessions().Select(s => ControlEndpoints.Map(s, DirectorId)).ToList();
 
     private static DirectorCommand PromptCommand(string sessionId, PromptRequest req) => new()
     {
