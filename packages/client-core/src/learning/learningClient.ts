@@ -38,3 +38,32 @@ export async function askDevThrottle(text: string, signal?: AbortSignal): Promis
     return { spoken: null, error: gatewayErrorMessage(err) };
   }
 }
+
+/** The display outcome of an Ask-Wingman request for the Learning page: exactly one of `answer` or
+ *  `error` is set. `answer` is the speakable text to show on success; `error` is a human-readable
+ *  message to show in the page's error banner. */
+export interface WingmanAskOutcome {
+  answer: string | null;
+  error: string | null;
+}
+
+// Run one Ask-Wingman request and resolve it to a display outcome for the Learning page (issue #1250).
+// This NEVER throws: askDevThrottle already returns a handled { error } for a reachable-but-failing
+// Gateway, but if the request itself throws (an unexpected transport error) it is caught here and
+// surfaced as a message. That guarantee is what keeps the Learning page from ever failing silently -
+// the page had a try/finally with no catch, so a thrown ask showed nothing at all (the no-fallback
+// rule). Extracting the mapping here also makes the outcome logic unit-testable without a browser.
+export async function runWingmanAsk(text: string, signal?: AbortSignal): Promise<WingmanAskOutcome> {
+  try {
+    const result = await askDevThrottle(text, signal);
+    if (result.error !== null && result.error.length > 0) {
+      return { answer: null, error: result.error };
+    }
+    if (result.spoken === null || result.spoken.trim().length === 0) {
+      return { answer: null, error: "Wingman returned an empty answer." };
+    }
+    return { answer: result.spoken, error: null };
+  } catch (err) {
+    return { answer: null, error: gatewayErrorMessage(err) };
+  }
+}

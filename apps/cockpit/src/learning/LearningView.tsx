@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { askDevThrottle } from "@devthrottle/client-core/learning/learningClient";
+import { runWingmanAsk } from "@devthrottle/client-core/learning/learningClient";
+import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
 // The public GitHub repository link. github.com is a PUBLIC website (NOT a Director), so this external
 // link does not violate Gateway-only-ingress; it is the same kind of intended absolute-URL exception
@@ -29,14 +30,14 @@ export function LearningView() {
     setAskError(null);
     setAsking(true); // immediate visual feedback: button + loading line flip before the call
     try {
-      const result = await askDevThrottle(q);
-      if (result.error !== null && result.error.length > 0) {
-        setAskError(result.error);
-      } else if (result.spoken === null || result.spoken.trim().length === 0) {
-        setAskError("Wingman returned an empty answer.");
-      } else {
-        setAnswer(result.spoken);
-      }
+      const outcome = await runWingmanAsk(q);
+      // Exactly one of answer/error is set: this shows the answer or the error banner, never nothing.
+      setAskError(outcome.error);
+      setAnswer(outcome.answer);
+    } catch (err) {
+      // Defense in depth for the no-silent-failure rule (issue #1250): runWingmanAsk is built never to
+      // throw, but if it ever did the page must still show a message rather than nothing at all.
+      setAskError(gatewayErrorMessage(err));
     } finally {
       setAsking(false);
     }
@@ -95,9 +96,9 @@ export function LearningView() {
           </li>
           <li>
             Turn on Wingman in{" "}
-            <a className="lrn-link" href="/settings">
+            <Link className="lrn-link" to="/settings">
               Settings
-            </a>{" "}
+            </Link>{" "}
             so it can summarize sessions and answer questions like the one below.
           </li>
           <li>
