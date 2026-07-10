@@ -11,6 +11,7 @@ import {
   type RecordingListItem,
 } from "@devthrottle/client-core/recordings/recordingsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { ConfirmDialog, EmptyState, ErrorBanner, LoadingState } from "../components";
 
 // The Voice Recorder page (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Transcripts.razor(.css) (#183). Recordings are uploaded from the phone and transcribed on the
@@ -22,6 +23,10 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 // Audio playback (the one thing a server-rendered Blazor page needed a JS shim for) is native here: a
 // single HTMLAudioElement plays segment 0, then 1, ... in order. It authenticates via the
 // cc-gateway-token cookie the shell mirrors at startup, exactly like the live terminal WebSocket.
+//
+// This is one of the first three pages to adopt the shared user-interface kit (issue #1244): Delete
+// asks through the shared ConfirmDialog instead of a browser window.confirm/alert, and the load and
+// empty states use the shared LoadingState / EmptyState / ErrorBanner.
 
 // Per-recording view state (open/transcript/edit fields/transient messages), keyed by id.
 interface CardState {
@@ -66,6 +71,9 @@ export function TranscriptsView() {
   // Single audio-playback label (the page plays one clip at a time, mirroring the Blazor single-audio
   // model that set nowPlaying on every open card).
   const [nowPlaying, setNowPlaying] = useState("");
+  // The recording awaiting delete confirmation. Deleting a recording removes its local transcript and
+  // audio, so it asks through the shared ConfirmDialog (issue #1244) instead of a browser window.confirm.
+  const [pendingDelete, setPendingDelete] = useState<RecordingListItem | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const msgTimers = useRef<number[]>([]);
@@ -165,24 +173,17 @@ export function TranscriptsView() {
   };
 
   // ---- delete ----
-  const deleteItem = async (item: RecordingListItem) => {
-    const vaultNote = item.inVault ? "\n\nThis recording is saved in the vault; that copy is kept." : "";
-    const ok = window.confirm(
-      `Delete "${item.title}"?\n\nThis removes the local transcript and its audio.${vaultNote}\n\nThis cannot be undone.`,
-    );
-    if (!ok) return;
+  // The actual delete, run once the ConfirmDialog is confirmed. A failure is left to throw so the
+  // dialog surfaces it (fail loudly) rather than a browser window.alert.
+  const performDelete = async (item: RecordingListItem) => {
     stopAudio();
-    try {
-      await deleteRecording(item.recordingId);
-      setItems((prev) => (prev === null ? prev : prev.filter((x) => x.recordingId !== item.recordingId)));
-      setState((s) => {
-        const copy = { ...s };
-        delete copy[item.recordingId];
-        return copy;
-      });
-    } catch (err) {
-      window.alert(`Delete failed: ${gatewayErrorMessage(err)}`);
-    }
+    await deleteRecording(item.recordingId);
+    setItems((prev) => (prev === null ? prev : prev.filter((x) => x.recordingId !== item.recordingId)));
+    setState((s) => {
+      const copy = { ...s };
+      delete copy[item.recordingId];
+      return copy;
+    });
   };
 
   // ---- promote to vault ----
@@ -263,9 +264,13 @@ export function TranscriptsView() {
         </p>
 
         {items === null ? (
-          <p className="ts-empty">{error ?? "Loading..."}</p>
+          error !== null ? (
+            <ErrorBanner message={error} />
+          ) : (
+            <LoadingState />
+          )
         ) : items.length === 0 ? (
-          <p className="ts-empty">No recordings yet. Record something on the phone and it will appear here.</p>
+          <EmptyState message="No recordings yet. Record something on the phone and it will appear here." />
         ) : (
           items.map((item) => {
             const s = cardOf(item.recordingId);
@@ -332,7 +337,7 @@ export function TranscriptsView() {
                         className="ts-danger"
                         onClick={(e) => {
                           e.stopPropagation();
-                          void deleteItem(item);
+                          setPendingDelete(item);
                         }}
                       >
                         Delete
@@ -388,6 +393,24 @@ export function TranscriptsView() {
           })
         )}
       </div>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this recording?"
+        message={
+          pendingDelete === null
+            ? ""
+            : `Delete "${pendingDelete.title}"? This removes the local transcript and its audio.` +
+              (pendingDelete.inVault ? " This recording is saved in the vault; that copy is kept." : "") +
+              " This cannot be undone."
+        }
+        confirmLabel="Delete"
+        busyLabel="Deleting..."
+        onConfirm={async () => {
+          if (pendingDelete !== null) await performDelete(pendingDelete);
+        }}
+        onClose={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

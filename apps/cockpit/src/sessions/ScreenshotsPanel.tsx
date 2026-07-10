@@ -6,6 +6,7 @@ import {
   gatewayErrorMessage,
   type ScreenshotInfo,
 } from "@devthrottle/client-core/api/client";
+import { ConfirmDialog } from "../components";
 
 // The screenshots gallery panel (issue #972) - the React port of the Blazor Cockpit screenshots tab.
 // The folder lives on the owning Director's machine; the Cockpit asks in the context of the selected
@@ -34,6 +35,9 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadedOnce, setLoadedOnce] = useState(false);
+  // Deleting a screenshot removes the file from the Director's disk, so it asks through the shared
+  // ConfirmDialog (issue #1244); this holds the file name awaiting confirmation.
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -66,20 +70,14 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
     return () => controller.abort();
   }, [load]);
 
-  const onDelete = useCallback(
+  // The actual delete, run once the ConfirmDialog is confirmed. A failure is left to throw so the
+  // dialog surfaces it (fail loudly); on success the row drops from the gallery.
+  const performDelete = useCallback(
     async (fileName: string) => {
       if (!sessionId) return;
-      setBusy(true);
-      setError(null);
-      try {
-        await deleteScreenshot(sessionId, fileName);
-        setShots((cur) => cur.filter((s) => s.fileName !== fileName));
-        setTotal((t) => Math.max(0, t - 1));
-      } catch (err) {
-        setError(gatewayErrorMessage(err));
-      } finally {
-        setBusy(false);
-      }
+      await deleteScreenshot(sessionId, fileName);
+      setShots((cur) => cur.filter((s) => s.fileName !== fileName));
+      setTotal((t) => Math.max(0, t - 1));
     },
     [sessionId],
   );
@@ -123,7 +121,7 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
                   <button type="button" className="linkbtn" title="Insert path into the composer" onClick={() => onInsert(s.path)}>
                     Insert
                   </button>
-                  <button type="button" className="linkbtn del" disabled={busy} onClick={() => void onDelete(s.fileName)}>
+                  <button type="button" className="linkbtn del" disabled={busy} onClick={() => setPendingDelete(s.fileName)}>
                     Del
                   </button>
                 </div>
@@ -143,6 +141,18 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
           )}
         </>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this screenshot?"
+        message="This removes the image file from the Director's disk. This cannot be undone."
+        confirmLabel="Delete"
+        busyLabel="Deleting..."
+        onConfirm={async () => {
+          if (pendingDelete !== null) await performDelete(pendingDelete);
+        }}
+        onClose={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   gatewayErrorMessage,
   type QueueItem,
 } from "@devthrottle/client-core/api/client";
+import { ConfirmDialog } from "../components";
 
 // The prompt queue panel (issue #972) - the React port of the Blazor Cockpit queue tab. Every verb
 // goes to the owning Director through the Gateway and returns the authoritative queue, so the list is
@@ -28,6 +29,9 @@ export function QueuePanel({ sessionId, queue, onQueue, onPop }: QueuePanelProps
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  // Clearing the whole queue drops every queued prompt, so it asks through the shared ConfirmDialog
+  // (issue #1244) rather than firing on the first click.
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const run = useCallback(
     async (verb: () => Promise<QueueItem[]>) => {
@@ -68,7 +72,7 @@ export function QueuePanel({ sessionId, queue, onQueue, onPop }: QueuePanelProps
       <div className="qpanel-head">
         <span className="qpanel-title">Queue{queue.length > 0 ? ` (${queue.length})` : ""}</span>
         {queue.length > 0 && sessionId && (
-          <button type="button" className="linkbtn" disabled={busy} onClick={() => void run(() => clearQueue(sessionId))}>
+          <button type="button" className="linkbtn" disabled={busy} onClick={() => setConfirmClear(true)}>
             Clear
           </button>
         )}
@@ -155,6 +159,23 @@ export function QueuePanel({ sessionId, queue, onQueue, onPop }: QueuePanelProps
           })}
         </ul>
       )}
+
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear the prompt queue?"
+        message={`This removes ${
+          queue.length === 1 ? "the 1 queued prompt" : `all ${queue.length} queued prompts`
+        }. This cannot be undone.`}
+        confirmLabel="Clear queue"
+        busyLabel="Clearing..."
+        onConfirm={async () => {
+          if (sessionId === undefined) return;
+          // Let a failure throw so the dialog surfaces it (fail loudly); the Gateway returns the
+          // authoritative (now empty) queue on success.
+          onQueue(await clearQueue(sessionId));
+        }}
+        onClose={() => setConfirmClear(false)}
+      />
     </div>
   );
 }

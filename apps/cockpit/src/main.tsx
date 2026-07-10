@@ -29,6 +29,7 @@ import { AboutView } from "./about/AboutView";
 import { SettingsView } from "./settings/SettingsView";
 import { FeedbackView } from "./feedback/FeedbackView";
 import "./styles.css";
+import "./components/components.css";
 import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
 import "./schedule/schedule.css";

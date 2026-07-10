@@ -19,6 +19,7 @@ import {
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { clockLabel } from "../fleet/format";
+import { ConfirmDialog } from "../components";
 
 // The Schedule page (issue #976, epic #967) - the React port of the Blazor Cockpit Schedule.razor
 // (issue #488). The human's window into cron jobs: a pure CLIENT of the Gateway's /cron/jobs surface
@@ -116,6 +117,10 @@ export function ScheduleView() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // The cron job awaiting delete confirmation. Deleting a job removes the schedule permanently, so it
+  // asks through the shared ConfirmDialog (issue #1244) instead of firing on the first click.
+  const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null);
 
   // selectedRef mirrors selectedId so the poll can refetch the open job's runs without re-subscribing.
   const selectedRef = useRef<string | null>(null);
@@ -269,19 +274,17 @@ export function ScheduleView() {
     [refresh],
   );
 
+  // The actual delete, run once the ConfirmDialog is confirmed. A failure is left to throw so the
+  // dialog surfaces it (fail loudly) rather than being swallowed into the page banner.
   const remove = useCallback(
     async (job: CronJob) => {
       setActionError(null);
-      try {
-        await deleteCronJob(job.id);
-        if (selectedRef.current === job.id) {
-          setSelectedId(null);
-          setRuns([]);
-        }
-        await refresh();
-      } catch (err) {
-        setActionError(`Delete failed: ${gatewayErrorMessage(err)}`);
+      await deleteCronJob(job.id);
+      if (selectedRef.current === job.id) {
+        setSelectedId(null);
+        setRuns([]);
       }
+      await refresh();
     },
     [refresh],
   );
@@ -417,7 +420,7 @@ export function ScheduleView() {
                     <button className="sched-linkbtn" onClick={() => openEdit(job)}>
                       Edit
                     </button>
-                    <button className="sched-linkbtn del" onClick={() => void remove(job)}>
+                    <button className="sched-linkbtn del" onClick={() => setPendingDelete(job)}>
                       Delete
                     </button>
                   </td>
@@ -714,6 +717,23 @@ export function ScheduleView() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this cron job?"
+        message={
+          pendingDelete === null
+            ? ""
+            : `Delete "${pendingDelete.name}"? This removes the schedule permanently and stops it from ` +
+              "running again. This cannot be undone."
+        }
+        confirmLabel="Delete"
+        busyLabel="Deleting..."
+        onConfirm={async () => {
+          if (pendingDelete !== null) await remove(pendingDelete);
+        }}
+        onClose={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

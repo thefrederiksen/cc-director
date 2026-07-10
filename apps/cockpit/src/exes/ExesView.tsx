@@ -10,19 +10,34 @@ import {
 } from "@devthrottle/client-core/exes/exesClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { dotColor } from "@devthrottle/client-core/sessions/ordering";
+import { ConfirmDialog, EmptyState, ErrorBanner, LoadingState, StatusMessage, useFlash } from "../components";
 
 // The Exes management page (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Exes.razor(.css) (#183). It lists the Directors running on THIS computer + their sessions and the
 // 1-4 build slots, refreshes on a 3s timer that never fires over an in-flight build, and offers
 // Kill / Build & start / Delete against the same Gateway endpoints. It reads and drives same-origin
 // through the Gateway front door (client-core) - never a Director address.
+//
+// This page is one of the first three to adopt the shared user-interface kit (issue #1244): every
+// destructive action now asks through the shared ConfirmDialog instead of a blocking browser
+// window.confirm, and every action result is a StatusMessage instead of a browser window.alert.
 const REFRESH_MS = 3000;
+
+// The action awaiting confirmation. Exes has three heavy actions, so a discriminated union feeds the
+// single ConfirmDialog: killing a Director (destructive), deleting a slot build (destructive), and
+// building + starting a slot (heavy but not destructive - danger: false).
+type PendingAction =
+  | { kind: "kill"; dir: ExesDirector }
+  | { kind: "deleteSlot"; slot: number }
+  | { kind: "buildSlot"; slot: number };
 
 export function ExesView() {
   const [data, setData] = useState<ExesList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false); // never refresh over an in-flight build (mirrors state.busy)
   const [buildingSlot, setBuildingSlot] = useState<number | null>(null);
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  const result = useFlash();
 
   // busyRef mirrors busy so the interval callback reads the latest value without re-subscribing.
   const busyRef = useRef(false);
@@ -56,48 +71,29 @@ export function ExesView() {
       ? "loading..."
       : `${data.directors.length} director${data.directors.length === 1 ? "" : "s"} on ${data.machineName}`;
 
-  // ---- actions ----
+  // ---- actions (run once the ConfirmDialog is confirmed) ----
+  // Each leaves failures to throw so the dialog surfaces them (fail loudly); on success it flashes a
+  // StatusMessage. None uses a browser pop-up.
   const killDir = async (dir: ExesDirector) => {
-    const label = dir.slot != null ? `slot ${dir.slot}` : `PID ${dir.pid}`;
-    const ok = window.confirm(
-      `Kill Director ${label} (PID ${dir.pid})?\n\nThis terminates the process and ALL of its running sessions. Unsaved work in those sessions will be lost.`,
-    );
-    if (!ok) return;
-    try {
-      await killDirector(dir.directorId);
-    } catch (err) {
-      window.alert(`Kill failed: ${gatewayErrorMessage(err)}`);
-    }
+    await killDirector(dir.directorId);
     await new Promise((r) => window.setTimeout(r, 600));
     await refresh();
+    result.show(`Director ${dir.slot != null ? `slot ${dir.slot}` : `PID ${dir.pid}`} killed.`, "success");
   };
 
   const removeSlot = async (n: number) => {
-    const ok = window.confirm(
-      `Delete the slot ${n} build?\n\nThis removes local_builds/cc-director${n}.exe from disk. You can rebuild it with "Build & start".`,
-    );
-    if (!ok) return;
-    try {
-      await deleteSlot(n);
-    } catch (err) {
-      window.alert(`Delete failed: ${gatewayErrorMessage(err)}`);
-    }
+    await deleteSlot(n);
     await refresh();
+    result.show(`Slot ${n} build deleted.`, "success");
   };
 
   const buildStart = async (n: number) => {
-    const ok = window.confirm(
-      `Build slot ${n} and launch it?\n\nThis runs the build script (about a minute) and then starts cc-director${n}.exe. The slot must not already be running.`,
-    );
-    if (!ok) return;
     setBusy(true);
     busyRef.current = true;
     setBuildingSlot(n);
     try {
-      const result = await buildStartSlot(n);
-      window.alert(`Slot ${n} built and started (PID ${result.pid}).`);
-    } catch (err) {
-      window.alert(`Build & start failed:\n\n${gatewayErrorMessage(err)}`);
+      const built = await buildStartSlot(n);
+      result.show(`Slot ${n} built and started (PID ${built.pid}).`, "success");
     } finally {
       setBusy(false);
       busyRef.current = false;
@@ -106,11 +102,15 @@ export function ExesView() {
     await refresh();
   };
 
+  // Derive the ConfirmDialog's copy and confirmed action from the pending action.
+  const confirm = describePending(pending, { killDir, removeSlot, buildStart });
+
   return (
     <div className="ex-root">
       <header className="ex-header">
         <h1>DEVTHROTTLE &middot; EXES</h1>
         <span className="ex-stats">{statsText}</span>
+        <StatusMessage flash={result.flash} />
         <span className="ex-spacer" />
         <Link className="ex-link ex-link-accent" to="/">
           sessions
@@ -121,10 +121,10 @@ export function ExesView() {
       </header>
 
       <main className="ex-main">
-        {error !== null && <div className="ex-error">{error}</div>}
+        {error !== null && <ErrorBanner message={error} onRetry={() => void refresh()} />}
 
         {data === null ? (
-          <div className="ex-empty">Loading...</div>
+          <LoadingState />
         ) : (
           <>
             {!hasRepoRoot && (
@@ -141,7 +141,7 @@ export function ExesView() {
             </h2>
 
             {data.directors.length === 0 ? (
-              <div className="ex-empty">No Director processes are running on this computer.</div>
+              <EmptyState message="No Director processes are running on this computer." />
             ) : (
               data.directors.map((dir) => (
                 <div className="ex-dir" key={dir.directorId}>
@@ -159,7 +159,11 @@ export function ExesView() {
                         Director &rarr;
                       </a>
                     )}
-                    <button className="ex-btn ex-danger" onClick={() => void killDir(dir)} disabled={busy}>
+                    <button
+                      className="ex-btn ex-danger"
+                      onClick={() => setPending({ kind: "kill", dir })}
+                      disabled={busy}
+                    >
                       Kill
                     </button>
                   </div>
@@ -199,7 +203,7 @@ export function ExesView() {
             {/* ----- build slots ----- */}
             <h2 className="ex-section">Build slots (1-4)</h2>
             {!hasRepoRoot ? (
-              <div className="ex-empty">Unavailable (see notice above).</div>
+              <EmptyState message="Unavailable (see notice above)." />
             ) : (
               <div className="ex-slots">
                 {data.slots.map((sl) => {
@@ -225,12 +229,16 @@ export function ExesView() {
                         <div className="ex-sub">no exe in local_builds</div>
                       )}
                       <div className="ex-actions">
-                        <button className="ex-btn" onClick={() => void buildStart(sl.slot)} disabled={running || busy}>
+                        <button
+                          className="ex-btn"
+                          onClick={() => setPending({ kind: "buildSlot", slot: sl.slot })}
+                          disabled={running || busy}
+                        >
                           {buildingSlot === sl.slot ? "Building..." : "Build & start"}
                         </button>
                         <button
                           className="ex-btn ex-danger"
-                          onClick={() => void removeSlot(sl.slot)}
+                          onClick={() => setPending({ kind: "deleteSlot", slot: sl.slot })}
                           disabled={!sl.exists || running || busy}
                         >
                           Delete
@@ -244,8 +252,78 @@ export function ExesView() {
           </>
         )}
       </main>
+
+      {confirm !== null && (
+        <ConfirmDialog
+          open
+          title={confirm.title}
+          message={confirm.message}
+          confirmLabel={confirm.confirmLabel}
+          busyLabel={confirm.busyLabel}
+          danger={confirm.danger}
+          onConfirm={confirm.onConfirm}
+          onClose={() => setPending(null)}
+        />
+      )}
     </div>
   );
+}
+
+// Turn a pending action into the ConfirmDialog's copy and its confirmed handler. Kept as a plain
+// function (not inline JSX) so the three actions read as a single table.
+function describePending(
+  pending: PendingAction | null,
+  actions: {
+    killDir: (dir: ExesDirector) => Promise<void>;
+    removeSlot: (n: number) => Promise<void>;
+    buildStart: (n: number) => Promise<void>;
+  },
+): {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  busyLabel: string;
+  danger: boolean;
+  onConfirm: () => Promise<void>;
+} | null {
+  if (pending === null) return null;
+  switch (pending.kind) {
+    case "kill": {
+      const label = pending.dir.slot != null ? `slot ${pending.dir.slot}` : `PID ${pending.dir.pid}`;
+      return {
+        title: `Kill Director ${label}?`,
+        message:
+          `This terminates the process (PID ${pending.dir.pid}) and ALL of its running sessions. ` +
+          "Unsaved work in those sessions will be lost. This cannot be undone.",
+        confirmLabel: "Kill Director",
+        busyLabel: "Killing...",
+        danger: true,
+        onConfirm: () => actions.killDir(pending.dir),
+      };
+    }
+    case "deleteSlot":
+      return {
+        title: `Delete the slot ${pending.slot} build?`,
+        message:
+          `This removes local_builds/cc-director${pending.slot}.exe from disk. You can rebuild it ` +
+          'later with "Build & start".',
+        confirmLabel: "Delete",
+        busyLabel: "Deleting...",
+        danger: true,
+        onConfirm: () => actions.removeSlot(pending.slot),
+      };
+    case "buildSlot":
+      return {
+        title: `Build slot ${pending.slot} and launch it?`,
+        message:
+          `This runs the build script (about a minute) and then starts cc-director${pending.slot}.exe. ` +
+          "The slot must not already be running.",
+        confirmLabel: "Build & start",
+        busyLabel: "Building...",
+        danger: false,
+        onConfirm: () => actions.buildStart(pending.slot),
+      };
+  }
 }
 
 // ---- display helpers (mirroring exes.html / Exes.razor exactly) ----
