@@ -1162,6 +1162,23 @@ async function ackDictation(encodedUploadId: string): Promise<void> {
   }
 }
 
+// POST /dictation/{uploadId}/abandon (issue #1181, Task 5): the user gave up on this dictation. Tells the
+// Gateway to mark the durable upload ABANDONED - discarding the staged audio and clearing the session lock.
+// Unlike the fire-and-forget ack, this RETURNS whether the Gateway actually confirmed: the caller must know,
+// because if the marker is not cleared the session would stay locked/orange forever. Returns false when the
+// call could not reach a healthy Gateway, so the caller keeps the abandoning record and retries.
+export async function abandonDictation(uploadId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/dictation/${encodeURIComponent(uploadId)}/abandon`, {
+      method: "POST",
+      headers: { Accept: "application/json", ...authHeaders() },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // Turn a raw dictation-complete failure (any non-OK response from POST /dictation/{id}/complete) into a
 // short, honest, plain-English sentence for the status strip and the error banner.
 //

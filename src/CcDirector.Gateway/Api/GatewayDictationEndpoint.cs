@@ -215,6 +215,39 @@ internal static class GatewayDictationEndpoint
             FileLog.Write($"[GatewayDictation] ack uploadId={uploadId} retired={retired}");
             return Results.Json(new { ok = true, retired });
         });
+
+        // User-initiated ABANDON (issue #1181, Task 5): the user gives up on this dictation. Marks the
+        // durable record ABANDONED - a terminal tombstone that DISCARDS the staged audio and clears the
+        // session lock (the PENDING marker is gone, so IsSessionLocked is false and the session un-oranges).
+        // Idempotent and safe against a race with delivery: if the turn already DELIVERED we do NOT abandon
+        // (it landed) and say so; otherwise the id becomes ABANDONED. The client that still holds the audio
+        // reconciles on its next contact - a re-register / re-complete of an abandoned id returns dropped, so
+        // it drops its on-device copy with no resurrection and no duplicate. Abandon may target ANY surface's
+        // dictation because it addresses the durable upload id, not the caller.
+        app.MapPost("/dictation/{uploadId}/abandon", (string uploadId, HttpContext ctx) =>
+        {
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
+                return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            var existing = uploads.ReadRecord(uploadId);
+            if (existing is { State: DictationDeliveryState.Delivered })
+            {
+                FileLog.Write($"[GatewayDictation] abandon uploadId={uploadId}: already DELIVERED, not abandoning");
+                return Results.Json(new { ok = true, upload_id = uploadId, abandoned = false, already_delivered = true });
+            }
+
+            uploads.MarkAbandoned(uploadId, "user_abandoned");
+            // Clear the in-memory transcribing marks so the roster un-oranges at once (the durable PENDING
+            // marker - the "Uploading from phone" source - is already gone via MarkAbandoned).
+            var sid = existing?.SessionId;
+            if (!string.IsNullOrEmpty(sid))
+            {
+                EndTranscribing(transcribingSessions, sid);
+                transcribingSessions.ClearActivelyTranscribing(sid);
+            }
+            FileLog.Write($"[GatewayDictation] abandon uploadId={uploadId} sid={sid}: marked ABANDONED, staging discarded");
+            return Results.Json(new { ok = true, upload_id = uploadId, abandoned = true });
+        });
     }
 
     // Map a NON-Ok transcription result to the dictation outcome, or null when the result is Ok and the

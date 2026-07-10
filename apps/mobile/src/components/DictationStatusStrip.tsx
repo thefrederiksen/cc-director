@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { retryPendingDictation } from "@devthrottle/client-core/dictation/backgroundSend";
+import { abandonPendingDictation, retryPendingDictation } from "@devthrottle/client-core/dictation/backgroundSend";
 import { clearDictationStatus, useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 
 // The on-screen live-status strip for a dictation Send, shown on the Terminal, Chat, and Voice
@@ -49,6 +49,9 @@ export function DictationStatusStrip({ sessionId }: { sessionId: string | undefi
         <button type="button" className="dictate-strip-btn" onClick={() => void onUploadNow()} disabled={uploadingNow}>
           {uploadingNow ? "Uploading..." : "Upload now"}
         </button>
+        <button type="button" className="dictate-strip-btn dictate-strip-cancel" onClick={() => void abandonPendingDictation(status.uploadId)} disabled={uploadingNow}>
+          Cancel
+        </button>
       </div>
     );
   }
@@ -68,6 +71,9 @@ export function DictationStatusStrip({ sessionId }: { sessionId: string | undefi
         <span className="dictate-strip-text">{status.error ?? "Saved on your device - you can retry it."}</span>
         <button type="button" className="dictate-strip-btn" onClick={() => void onRetry()} disabled={uploadingNow}>
           {uploadingNow ? "Retrying..." : "Retry"}
+        </button>
+        <button type="button" className="dictate-strip-btn dictate-strip-cancel" onClick={() => void abandonPendingDictation(status.uploadId)} disabled={uploadingNow}>
+          Cancel
         </button>
       </div>
     );

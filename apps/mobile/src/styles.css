@@ -1977,6 +1977,13 @@ a.banner-btn {
   color: var(--text-dim);
   border: 1px solid var(--border);
 }
+/* Issue #1181, Task 5: Cancel a stuck dictation. Secondary/outlined so it reads as the "give up"
+   action next to the primary "Upload now" / "Retry". */
+.dictate-strip-cancel {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
 
 /* The roster row badge: same status, compact, on its own line under the meta line. */
 .row-dictate {

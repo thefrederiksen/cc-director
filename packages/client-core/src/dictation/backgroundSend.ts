@@ -1,4 +1,4 @@
-import { uploadDictationToSession } from "../api/client";
+import { abandonDictation, uploadDictationToSession } from "../api/client";
 import { deletePending, getPending, listPending, savePending, type PendingDictation } from "./pendingStore";
 import { clearDictationStatus, publishDictationStatus } from "./status";
 
@@ -199,6 +199,31 @@ export async function retryPendingDictation(uploadId: string): Promise<void> {
   await driveRecord(rec, { resumed: true, attempt: 0 });
 }
 
+// The user explicitly ABANDONS a dictation (issue #1181, Task 5). The strip clears IMMEDIATELY so cancel
+// feels instant, and the record is marked `abandoning` and driven: the loop tells the Gateway to abandon
+// (discarding the staged audio and clearing the session lock), then drops the on-device copy. If the
+// Gateway cannot be reached the record is kept and the abandon is retried silently, so the session can
+// never wedge locked - the cancel always reaches the durable marker eventually. A no-op for an id already
+// gone (delivered, or abandoned from another surface).
+export async function abandonPendingDictation(uploadId: string): Promise<void> {
+  clearScheduled(uploadId);
+  clearDictationStatus(uploadId); // instant: the user asked to cancel, so the strip goes away now
+  let rec: PendingDictation | null;
+  try {
+    rec = await getPending(uploadId);
+  } catch {
+    return;
+  }
+  if (rec === null) return; // already delivered or abandoned; nothing on device to drive
+  const abandoning: PendingDictation = { ...rec, abandoning: true };
+  try {
+    await savePending(abandoning); // durable, so a reload keeps abandoning it rather than resuming upload
+  } catch {
+    // Could not persist the flag: still drive the in-memory abandoning record below.
+  }
+  await driveRecord(abandoning, { resumed: true, attempt: 0 });
+}
+
 // ---- internals -------------------------------------------------------------------------------------
 
 interface DriveOptions {
@@ -217,6 +242,19 @@ async function driveRecord(rec: PendingDictation, opts: DriveOptions): Promise<v
   clearScheduled(rec.id); // we are driving now; cancel any waiting timer
 
   try {
+    if (rec.abandoning) {
+      // The user cancelled this clip (issue #1181, Task 5): do NOT upload it. Tell the Gateway to abandon
+      // the durable upload; on confirmation drop the on-device copy, otherwise retry silently (no strip -
+      // the cancel already cleared it) so the session's lock is always released eventually.
+      if (isOffline() || !(await abandonDictation(rec.id))) {
+        scheduleNext(rec, opts.attempt, false);
+        return;
+      }
+      await deletePending(rec.id);
+      clearDictationStatus(rec.id);
+      return;
+    }
+
     if (isOffline()) {
       // No point calling out with no network: show waiting-for-connection and lean on the `online`
       // listener, with a slow fallback timer so we still recover even if that event is missed.
