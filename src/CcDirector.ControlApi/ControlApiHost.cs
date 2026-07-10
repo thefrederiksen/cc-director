@@ -391,6 +391,15 @@ public sealed class ControlApiHost : IAsyncDisposable
         // Director's sessions' OUTGOING /fleet/* messages. Built from the Director's options, so it is
         // default-on-generous and config-tunable, and inert (Allow) when disabled.
         var messageSteward = new MessageSteward(_sessionManager.Options.MessageSteward);
+
+        // Issue #1181, Task 3b: the desktop-side enforced dictation lock. Project the durable PENDING
+        // delivery marker (issue #1188) from the shared dictation-uploads store into Session's send
+        // path, so a human typing on the desktop - or hitting this Director's control API without the
+        // authenticated delivery exemption - is refused while a dictation is inbound to that session.
+        // Same rule the Gateway front door enforces, now also closed on the Director's own in-process
+        // and control-API send paths. Idempotent to set on each start.
+        Core.Sessions.Session.DictationLockCheck = id => Core.Sessions.DictationLockReader.IsSessionLocked(id);
+
         ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore);
         // Dictation glossary resolution mirrors the key resolver (#253): the Gateway's shared
         // dictionary when attached, the local cache when standalone. GatewayConfig.Load (not the

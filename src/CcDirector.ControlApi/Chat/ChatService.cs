@@ -100,7 +100,8 @@ public sealed class ChatService
 
         try
         {
-            await session.SendTextAsync(req.Text);
+            // Chat is a framework-mediated surface; exempt from the dictation lock (issue #1181, Task 3b).
+            await session.SendTextAsync(req.Text, SendSource.Internal);
         }
         catch (Exception ex)
         {

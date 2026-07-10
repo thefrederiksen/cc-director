@@ -37,6 +37,13 @@ public enum DirectorCommandStatus
     NotFound = 2,
     Conflict = 3,
     Error = 4,
+
+    /// <summary>
+    /// The session is LOCKED because a dictation is inbound to it (issue #1181, Task 3b): human
+    /// input is refused until the dictation arrives or is cancelled. The REST layer maps this to
+    /// HTTP 423 Locked - the same status/message the Gateway front door returns (issue #1188).
+    /// </summary>
+    Locked = 5,
 }
 
 /// <summary>

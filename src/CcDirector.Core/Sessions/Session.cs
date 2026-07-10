@@ -1454,16 +1454,76 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// Host-injected predicate answering "is this session locked because a dictation is inbound to
+    /// it?" (issue #1181, Task 3b). The Director host wires this to <see cref="DictationLockReader"/>
+    /// at startup; left null (never locked) in any process that does not run dictation delivery, and
+    /// in unit tests. A single process-wide hook keeps the lock check on ONE fail-closed checkpoint
+    /// (<see cref="SendTextAsync(string, SendSource)"/>) without threading a dependency through every
+    /// session-creation path. Tests that set it must reset it to null in teardown.
+    /// </summary>
+    public static Func<Guid, bool>? DictationLockCheck { get; set; }
+
+    /// <summary>
+    /// True when a dictation is inbound to THIS session, so a human send into it is refused (issue
+    /// #1181, Task 3b). A pure projection of the durable PENDING delivery marker via the host-injected
+    /// <see cref="DictationLockCheck"/>; false when no host wired the check. This is the single
+    /// predicate both the in-process throw (in <see cref="SendTextAsync(string, SendSource)"/>) and the
+    /// control-API executor's explicit pre-check read, so the two paths cannot disagree.
+    /// </summary>
+    public bool IsDictationLocked => DictationLockCheck?.Invoke(Id) == true;
+
+    private bool _isReceivingDictation;
+
+    /// <summary>
+    /// Cached, change-notifying view of <see cref="IsDictationLocked"/> for the UI (issue #1181, Task 3b).
+    /// The roster reads THIS (a cheap bool) to paint the "receiving a dictation" orange, instead of doing a
+    /// disk read on every render. The host re-evaluates it on a timer via <see cref="RefreshReceivingDictation"/>;
+    /// this is the desktop presentation of the state (Task 4 will additionally surface it from the Gateway for
+    /// the phone and cockpit).
+    /// </summary>
+    public bool IsReceivingDictation => _isReceivingDictation;
+
+    /// <summary>Raised (with the new value) when <see cref="IsReceivingDictation"/> flips.</summary>
+    public event Action<bool>? OnReceivingDictationChanged;
+
+    /// <summary>
+    /// Recompute <see cref="IsReceivingDictation"/> from the durable dictation marker and raise
+    /// <see cref="OnReceivingDictationChanged"/> when it changes. Called on the host's roster-refresh tick
+    /// so the disk read happens once per tick, not once per render.
+    /// </summary>
+    public void RefreshReceivingDictation()
+    {
+        var now = IsDictationLocked;
+        if (now == _isReceivingDictation) return;
+        _isReceivingDictation = now;
+        FileLog.Write($"[Session] IsReceivingDictation -> {now}: session={Id}");
+        OnReceivingDictationChanged?.Invoke(now);
+    }
+
+    /// <summary>
     /// Send text + Enter through the shared terminal submit protocol. ConPTY sessions use one
     /// echo-verified implementation for every agent and route, with bracketed paste for large or
     /// multi-line blocks when the TUI has requested mode 2004; non-PTY transports keep their
     /// backend-specific whole-turn semantics.
+    ///
+    /// <paramref name="source"/> names who is sending (issue #1181, Task 3b). It DEFAULTS to
+    /// <see cref="SendSource.UserInput"/> (fail-closed): a human send into a session that is locked
+    /// because a dictation is inbound throws <see cref="SessionLockedException"/> so the arriving
+    /// dictation and the user's typing cannot collide. The dictation's own arrival
+    /// (<see cref="SendSource.Delivery"/>) and framework-authored sends
+    /// (<see cref="SendSource.Internal"/>) are exempt.
     /// </summary>
-    public async Task SendTextAsync(string text)
+    public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
 
-        FileLog.Write($"[Session] SendTextAsync: session={Id}, driver={Driver.Kind}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
+        if (source == SendSource.UserInput && IsDictationLocked)
+        {
+            FileLog.Write($"[Session] SendTextAsync REJECTED (dictation lock): session={Id}, len={text.Length}");
+            throw new SessionLockedException();
+        }
+
+        FileLog.Write($"[Session] SendTextAsync: session={Id}, source={source}, driver={Driver.Kind}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
         if (BackendType is SessionBackendType.ConPty)
         {
             await Drivers.TerminalSubmit.SharedSubmitAsync(
@@ -1485,12 +1545,13 @@ public sealed class Session : IDisposable
         SetActivityState(ActivityState.Working);
     }
 
-    /// <summary>Send text followed by Enter (sync wrapper).</summary>
-    public void SendText(string text)
+    /// <summary>Send text followed by Enter (sync wrapper). See
+    /// <see cref="SendTextAsync(string, SendSource)"/> for what <paramref name="source"/> means.</summary>
+    public void SendText(string text, SendSource source = SendSource.UserInput)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         // Fire and forget for sync API
-        _ = SendTextAsync(text);
+        _ = SendTextAsync(text, source);
     }
 
     /// <summary>Send just an Enter keystroke to the backend.</summary>

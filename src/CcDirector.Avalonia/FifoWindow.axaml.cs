@@ -397,7 +397,8 @@ public partial class FifoWindow : Window
         // The agent's reply lands in the terminal, so make sure it's visible to watch.
         if (!_terminalVisible) { _terminalVisible = true; ApplyTerminalVisibility(); }
         SetStatus("Sending to agent...", Yellow);
-        await _current.SendTextAsync(transcript + "\n");
+        // Desktop voice FIFO injection is framework-mediated; exempt from the dictation lock (issue #1181, Task 3b).
+        await _current.SendTextAsync(transcript + "\n", SendSource.Internal);
         SetText(ReplyText, $"Sent to {DisplayName(_current)}. Watch the terminal, then Next.");
         SetStatus("Sent - watch the terminal, then Next", Green);
     }
