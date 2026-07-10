@@ -467,27 +467,30 @@ public sealed class GatewayHost : IAsyncDisposable
             //   2. The Tailscale front door - only when Tailscale is actually available on this machine. The
             //      reliable cross-network path.
             //   3. The local network IP plus port - the last-resort path (least stable; the IP can change).
-            // So the list is three addresses when Tailscale is available and two when it is not. An explicit
-            // gateway.tailnetEndpoint override, when set (and not loopback), is the operator's hand-set
-            // reachable URL and ranks FIRST - it preserves the pre-#1233 single endpoint_url for operators who
-            // set it, and the client health-checks every candidate so a stale one is simply skipped. The
-            // single endpoint_url (issue #1206) is the first list entry, so existing readers keep working.
+            // So the list is three addresses when Tailscale is available and two when it is not, and every entry
+            // is a real Gateway front door on this Gateway's own port. The Gateway applies NO operator endpoint
+            // override here: gateway.tailnetEndpoint is the DIRECTOR's advertised-endpoint override and can
+            // legitimately point at a Director on a different port (for example 7883). Feeding it into the
+            // Gateway's published list ranked that Director URL FIRST, so item[0] was not reachable as a Gateway
+            // at all (issue #1237). If a Gateway-specific operator override is ever wanted, add a NEW
+            // gateway-only config key and pass it as overrideUrl - never reuse the Director's tailnetEndpoint.
+            // The single endpoint_url (issue #1206) is the first list entry, so existing readers keep working.
             // Re-resolved on each call (never cached) so an address that appears after start heals within one
             // heartbeat cycle; the resolvers never throw (they report an unresolved address as unresolved).
             var tailnetResolver = new Core.Network.TailnetIdentityResolver();
             var lanResolver = new Core.Network.LanIdentityResolver();
-            var endpointOverride = gatewayConfig.TailnetEndpoint;
             var gatewayPort = Port;
             Func<IReadOnlyList<string>> resolveEndpointUrls = () =>
             {
                 // Do the I/O here (probe Tailscale and the LAN), then hand the resolved pieces to the pure
                 // BuildOrderedEndpointUrls assembler so the ordering/dedup/loopback-skip logic is unit-tested
                 // without a real network. Passing no config override to the resolvers yields the PURE
-                // discovered address (the override is applied separately, ahead of everything, in the assembler).
+                // discovered address, and the assembler is given no override either (see #1237 above).
                 var tailnet = tailnetResolver.ResolveEndpoint(gatewayPort, configOverride: null);
                 var lan = lanResolver.ResolveEndpoint(gatewayPort, configOverride: null);
                 return BuildOrderedEndpointUrls(
-                    endpointOverride,
+                    // No operator override: gateway.tailnetEndpoint is the Director's key, not the Gateway's (#1237).
+                    overrideUrl: null,
                     Core.Network.TailscaleIdentity.BuildMachineNameUrl(Environment.MachineName, gatewayPort),
                     tailnet.IsResolved ? tailnet.Endpoint : null,
                     lan.IsResolved ? lan.Endpoint : null);
