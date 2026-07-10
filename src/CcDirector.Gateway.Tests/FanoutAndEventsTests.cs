@@ -116,6 +116,66 @@ public sealed class FanoutAndEventsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BroadcastGrant_requires_auth()
+    {
+        // Issue #1229: the grant-mint endpoint is behind the host-wide auth wall, so an unauthenticated
+        // caller (an agent that somehow reached the Gateway directly) cannot mint its own grant.
+        var resp = await _http.PostAsync("fleet/broadcast-grants", null);
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task BroadcastGrant_mints_a_grant_for_an_authenticated_caller()
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, "fleet/broadcast-grants");
+        req.Headers.Add("Authorization", "Bearer test-token");
+        var resp = await _http.SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("grantId", out var grantId));
+        Assert.False(string.IsNullOrWhiteSpace(grantId.GetString()));
+    }
+
+    [Fact]
+    public async Task Fanout_rate_limits_repeated_broadcasts_from_one_sender()
+    {
+        // Issue #1229: the Hub rate-limits how often any one session may broadcast (default 5 per 60s),
+        // so a runaway agent cannot storm the fleet in a loop. The denial round-trips as a 2xx
+        // FanoutResponse with Denied set - proving the FromSessionId flows to the Hub and the governor
+        // acts on it. (Target resolution is irrelevant to the rate limit, so no live PTY session needed.)
+        var sender = Guid.NewGuid().ToString();
+
+        async Task<FanoutResponse> Broadcast()
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, "fanout")
+            {
+                Content = JsonContent.Create(new FanoutRequest
+                {
+                    SessionIds = new() { Guid.NewGuid().ToString() },
+                    Text = "heads up",
+                    WaitForIdle = false,
+                    FromSessionId = sender,
+                }),
+            };
+            req.Headers.Add("Authorization", "Bearer test-token");
+            var resp = await _http.SendAsync(req);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            return (await resp.Content.ReadFromJsonAsync<FanoutResponse>())!;
+        }
+
+        for (var i = 0; i < 5; i++)
+        {
+            var ok = await Broadcast();
+            Assert.False(ok.Denied);
+        }
+
+        var sixth = await Broadcast();
+        Assert.True(sixth.Denied);
+        Assert.Contains("Too many broadcasts", sixth.DeniedReason);
+    }
+
+    [Fact]
     public async Task Events_endpoint_streams_director_events()
     {
         // Connect to the SSE stream and AWAIT the response headers BEFORE booting the

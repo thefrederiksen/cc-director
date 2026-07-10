@@ -265,8 +265,12 @@ public sealed class GatewayClient : IDisposable
     /// <summary>
     /// Relay a broadcast to many sessions via the Gateway's POST /fanout. Fire-and-forget
     /// (WaitForIdle=false). Throws when the Gateway is disabled or the call fails.
+    /// Issue #1229: carries the sender's id (so the Hub can decide the broadcast's scope from its own
+    /// fleet view) plus an optional reason and human-issued grant id for a fleet-wide broadcast. The
+    /// Hub may REFUSE on scope grounds, which comes back as a 2xx <see cref="FanoutResponse"/> with
+    /// <see cref="FanoutResponse.Denied"/> set - the caller surfaces that, it is not an error here.
     /// </summary>
-    public async Task<FanoutResponse> FanoutToFleetAsync(List<string> sessionIds, string text, CancellationToken ct = default)
+    public async Task<FanoutResponse> FanoutToFleetAsync(List<string> sessionIds, string text, string? fromSessionId = null, string? reason = null, string? grantId = null, CancellationToken ct = default)
     {
         if (!_config.IsEnabled)
             throw new InvalidOperationException("Gateway is not configured; cannot broadcast to the fleet.");
@@ -274,7 +278,16 @@ public sealed class GatewayClient : IDisposable
             throw new ArgumentException("At least one target session id is required", nameof(sessionIds));
 
         FileLog.Write($"[GatewayClient] FanoutToFleetAsync: POST /fanout to {sessionIds.Count} session(s)");
-        var body = new FanoutRequest { SessionIds = sessionIds, Text = text, AppendEnter = true, WaitForIdle = false };
+        var body = new FanoutRequest
+        {
+            SessionIds = sessionIds,
+            Text = text,
+            AppendEnter = true,
+            WaitForIdle = false,
+            FromSessionId = fromSessionId,
+            Reason = reason,
+            GrantId = grantId,
+        };
         using var resp = await _http.PostAsJsonAsync("fanout", body, ct);
         if (!resp.IsSuccessStatusCode)
             throw new InvalidOperationException($"Gateway fanout returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");

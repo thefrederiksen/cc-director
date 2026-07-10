@@ -19,6 +19,28 @@ public sealed class FanoutRequest
 
     /// <summary>Per-session timeout in milliseconds. Default 300000 (5 min).</summary>
     public int TimeoutMs { get; set; } = 300_000;
+
+    /// <summary>
+    /// The broadcasting session's own GUID (issue #1229). The Gateway looks the sender up in its
+    /// own aggregated fleet view to decide the broadcast's allowed scope; it never trusts a role or
+    /// mission claim carried in the body. Null when unknown - an unknown sender is treated as
+    /// out-of-scope for every target, so a fleet-wide fan-out from an unidentified caller is denied.
+    /// </summary>
+    public string? FromSessionId { get; set; }
+
+    /// <summary>
+    /// Why this broadcast reaches beyond the sender's own team/mission (issue #1229). Required when
+    /// the recipients cross the sender's scope; logged by the Hub and surfaced to the human. Ignored
+    /// for an in-scope fan-out.
+    /// </summary>
+    public string? Reason { get; set; }
+
+    /// <summary>
+    /// A human-issued broadcast grant id (issue #1229) that authorizes reaching beyond the sender's
+    /// team/mission. Minted only through the Hub's auth-guarded grant endpoint - there is no Director
+    /// relay for minting, so an agent cannot mint its own. Null for an ordinary in-scope fan-out.
+    /// </summary>
+    public string? GrantId { get; set; }
 }
 
 /// <summary>
@@ -34,6 +56,17 @@ public sealed class FanoutResponse
 
     /// <summary>UTC timestamp all results were collected (or timeouts hit).</summary>
     public DateTime FinishedAt { get; set; }
+
+    /// <summary>
+    /// True when the Hub REFUSED the fan-out on scope grounds (issue #1229): the recipients reach
+    /// beyond the sender's team/mission and no valid grant was presented, or the sender exceeded the
+    /// per-sender broadcast rate limit. When true, nothing was delivered and <see cref="Results"/> is
+    /// empty; <see cref="DeniedReason"/> carries the human-readable explanation.
+    /// </summary>
+    public bool Denied { get; set; }
+
+    /// <summary>The plain-English reason the Hub refused the fan-out, when <see cref="Denied"/> is true.</summary>
+    public string? DeniedReason { get; set; }
 }
 
 /// <summary>

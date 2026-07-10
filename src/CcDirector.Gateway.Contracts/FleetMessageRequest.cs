@@ -35,6 +35,22 @@ public sealed class FleetBroadcastRequest
     /// <summary>The calling session's own GUID (its CC_SESSION_ID); excluded from the recipients
     /// and used to stamp the sender header.</summary>
     public string? FromSessionId { get; set; }
+
+    /// <summary>
+    /// Issue #1229: when false (the default), the broadcast reaches only the sender's own team - the
+    /// sessions sharing its group, or (for a solo session) the sessions in the same repository on the
+    /// same machine. When true, the caller is explicitly asking to reach the WHOLE fleet, which the
+    /// Gateway Hub allows only with a valid <see cref="GrantId"/> and a <see cref="Reason"/>.
+    /// </summary>
+    public bool Everyone { get; set; }
+
+    /// <summary>Issue #1229: why a fleet-wide broadcast is warranted. Required (with a grant) when
+    /// <see cref="Everyone"/> is true; logged by the Hub and surfaced to the human.</summary>
+    public string? Reason { get; set; }
+
+    /// <summary>Issue #1229: a human-issued broadcast grant id authorizing a fleet-wide broadcast.
+    /// Null for the ordinary team-scoped broadcast.</summary>
+    public string? GrantId { get; set; }
 }
 
 /// <summary>Response from POST /fleet/send and POST /fleet/broadcast.</summary>
@@ -45,6 +61,10 @@ public sealed class FleetSendResponse
 
     /// <summary>How many sessions the message was delivered to.</summary>
     public int DeliveredCount { get; set; }
+
+    /// <summary>Non-blocking note for an accepted send - e.g. a team-scoped broadcast (issue #1229)
+    /// that matched no other team member. Null when there is nothing to note.</summary>
+    public string? Warning { get; set; }
 
     /// <summary>Error message when Accepted is false.</summary>
     public string? Error { get; set; }

@@ -34,16 +34,16 @@ public static class FleetPreamble
             "  cc-devthrottle session whoami        print your own id, name, machine, and repo",
             "  cc-devthrottle session rename \"name\" rename this session (uses CC_SESSION_ID)",
             "  cc-devthrottle message send <id> \"msg\"  message a specific session",
+            "  cc-devthrottle message send all \"msg\"   message your OWN TEAM (your mission / same repo)",
             "  cc-devthrottle message ask <id> \"question\"  ask a session and wait for its answer",
             "  cc-devthrottle session spawn <repo>  open a new session on this Director",
             "  cc-devthrottle schedule list       list Gateway schedules",
             "  cc-devthrottle setup status        show local setup status",
             "Address a session by a short prefix of its id or by its name. You reach the fleet through your",
             "own Director (CC_DIRECTOR_API); no Gateway address or token is needed.",
-            "Every message you send interrupts the receiving agent. Message only the specific sessions on",
-            "your own team or mission that need it. Do NOT broadcast to the whole fleet - a fleet-wide send",
-            "reaches every machine and repo, freezes them all, and the Gateway Hub refuses it without a",
-            "human's approval (issue #1229).",
+            "Every message you send interrupts the receiving agent. 'message send all' reaches only your own",
+            "team, which is what you want. Do NOT try to reach the WHOLE fleet ('--everyone') - it freezes",
+            "every session on every machine and repo; the Gateway Hub refuses it without a human grant (issue #1229).",
         };
 
         return string.Join("\n", lines);

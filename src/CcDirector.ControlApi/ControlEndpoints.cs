@@ -428,15 +428,48 @@ internal static class ControlEndpoints
                 try
                 {
                     var fleet = await gw.ListFleetSessionsAsync(ct);
-                    var targets = fleet
-                        .Select(s => s.SessionId)
-                        .Where(idStr => !string.IsNullOrWhiteSpace(idStr)
-                            && !string.Equals(idStr, req.FromSessionId, StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-                    if (targets.Count == 0)
-                        return Results.Json(new FleetSendResponse { Accepted = true, DeliveredCount = 0 });
 
-                    var resp = await gw.FanoutToFleetAsync(targets, framed, ct);
+                    // Issue #1229: by default a broadcast reaches only the sender's own team - the sessions
+                    // sharing its group, or (for a solo session) the sessions in the same repository on the
+                    // same machine. Only an explicit fleet-wide request (Everyone) targets every session,
+                    // and the Gateway Hub then gates that on a human-issued grant. Narrowing here is a
+                    // convenience; the Gateway enforces the same rule as the authority.
+                    var senderDto = fleet.FirstOrDefault(s =>
+                        string.Equals(s.SessionId, req.FromSessionId, StringComparison.OrdinalIgnoreCase));
+                    BroadcastScope? senderScope = senderDto is not null
+                        ? BroadcastScope.FromAggregatedSession(senderDto)
+                        : null;
+
+                    var targets = fleet
+                        .Where(s => !string.IsNullOrWhiteSpace(s.SessionId)
+                            && !string.Equals(s.SessionId, req.FromSessionId, StringComparison.OrdinalIgnoreCase))
+                        .Where(s => req.Everyone
+                            || (senderScope?.Includes(BroadcastScope.FromAggregatedSession(s)) ?? false))
+                        .Select(s => s.SessionId)
+                        .ToList();
+
+                    if (targets.Count == 0)
+                        return Results.Json(new FleetSendResponse
+                        {
+                            Accepted = true,
+                            DeliveredCount = 0,
+                            Warning = req.Everyone ? null : "No other sessions are on your team.",
+                        });
+
+                    var resp = await gw.FanoutToFleetAsync(
+                        targets, framed, req.FromSessionId,
+                        req.Everyone ? req.Reason : null,
+                        req.Everyone ? req.GrantId : null,
+                        ct);
+
+                    // The Hub refused on scope grounds (fleet-wide without a grant, or over the rate limit).
+                    if (resp.Denied)
+                    {
+                        FileLog.Write($"[ControlEndpoints] /fleet/broadcast DENIED by Hub: {resp.DeniedReason}");
+                        return Results.Json(new FleetSendResponse { Accepted = false, DeliveredCount = 0, Error = resp.DeniedReason },
+                            statusCode: StatusCodes.Status403Forbidden);
+                    }
+
                     var delivered = resp.Results.Count(r => r.Error is null);
                     return Results.Json(new FleetSendResponse { Accepted = true, DeliveredCount = delivered });
                 }
@@ -451,9 +484,22 @@ internal static class ControlEndpoints
                 }
             }
 
+            // Standalone (no Gateway): the "fleet" is only this Director's own sessions, so there is no
+            // cross-repo/cross-machine storm to guard and no Hub to mint grants. Still honor the team
+            // default (issue #1229): a plain broadcast reaches the sender's team; Everyone reaches all
+            // local sessions.
+            var senderLocal = Guid.TryParse(req.FromSessionId, out var senderGuid)
+                ? sessionManager.GetSession(senderGuid)
+                : null;
+            BroadcastScope? senderLocalScope = senderLocal is not null
+                ? new BroadcastScope(senderLocal.MissionId?.ToString(), senderLocal.GroupId?.ToString(), senderLocal.RepoPath, Environment.MachineName)
+                : null;
+
             var locals = sessionManager.ListSessions()
                 .Where(s => s.ActivityState != ActivityState.Exited)
                 .Where(s => !string.Equals(s.Id.ToString(), req.FromSessionId, StringComparison.OrdinalIgnoreCase))
+                .Where(s => req.Everyone
+                    || (senderLocalScope?.Includes(new BroadcastScope(s.MissionId?.ToString(), s.GroupId?.ToString(), s.RepoPath, Environment.MachineName)) ?? false))
                 .ToList();
             var count = 0;
             foreach (var s in locals)
