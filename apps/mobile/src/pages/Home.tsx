@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
-import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
+import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "../voice/clips";
@@ -54,7 +54,11 @@ export function Home() {
     };
   }, [load]);
 
-  const needsYou = sessions ? inBucket(sessions, "needsYou") : [];
+  // The "Needs you" group is a waiting line: the session that has been waiting for you the longest
+  // sits at the top, and a session that only just started needing you drops in at the bottom
+  // (inWaitingOrder). This keeps the list from reshuffling under you as sessions change state, and
+  // lets you work it top to bottom, dealing with the longest-neglected session first.
+  const needsYou = sessions ? inWaitingOrder(sessions) : [];
   // The bottom group is "the rest": every session that is NOT waiting on you, still in your manual
   // desktop order. A needs-you session shows only once, at the top - never duplicated down here.
   const others = sessions ? inDesktopOrder(sessions.filter((s) => classify(s) !== "needsYou")) : [];
