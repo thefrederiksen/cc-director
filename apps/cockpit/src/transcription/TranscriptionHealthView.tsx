@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  countFailedTurns,
   getTranscriptionStats,
   getTranscriptionTerms,
+  SUCCESS_OUTCOME,
   type TranscriptionStats,
   type TermFrequency,
 } from "@devthrottle/client-core/transcription/transcriptionAnalysisClient";
@@ -41,6 +43,7 @@ export function TranscriptionHealthView() {
   const [stats, setStats] = useState<TranscriptionStats | null>(null);
   const [terms, setTerms] = useState<TermFrequency[]>([]);
   const [loadError, setLoadError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (window: number | undefined, signal?: AbortSignal) => {
     try {
@@ -63,13 +66,34 @@ export function TranscriptionHealthView() {
     return () => controller.abort();
   }, [load, days]);
 
-  const failures = stats ? stats.totalTurns - stats.successfulTurns : 0;
+  // Refetch the current window on demand, so the page can be brought up to date without a full
+  // browser reload. Immediate visual feedback: the button reports "Refreshing..." while it runs.
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load(days);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load, days]);
+
+  // The failure count comes from the same byOutcome map the outcome breakdown renders, so the
+  // number, the banner, and the breakdown are one source and can never contradict each other.
+  const failures = stats ? countFailedTurns(stats) : 0;
   const healthy = stats !== null && stats.totalTurns > 0 && failures === 0;
 
   return (
     <div className="page txh">
       <div className="page-head">
         <h1>Transcription Health</h1>
+        <button
+          type="button"
+          className="txh-refresh"
+          onClick={() => void refresh()}
+          disabled={refreshing}
+        >
+          {refreshing ? "Refreshing..." : "Refresh"}
+        </button>
       </div>
       <p className="txh-lede">
         How fast and how well your voice dictation is working, from this machine only. Nothing here is
@@ -143,7 +167,7 @@ export function TranscriptionHealthView() {
               <h2>Why dictations failed</h2>
               <ul className="txh-outcomes">
                 {Object.entries(stats.byOutcome)
-                  .filter(([code]) => code !== "ok")
+                  .filter(([code]) => code !== SUCCESS_OUTCOME)
                   .map(([code, n]) => (
                     <li key={code}>
                       <span className="txh-count">{n}</span> {outcomeLabel(code)}
