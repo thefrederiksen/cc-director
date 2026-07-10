@@ -229,28 +229,49 @@ def _report_delivery(resp: Any, who: str) -> None:
     accepted = False
     count = 0
     err: Optional[str] = None
+    warning: Optional[str] = None
     if isinstance(resp, dict):
         accepted = bool(resp.get("accepted", resp.get("Accepted", False)))
         count = int(resp.get("deliveredCount", resp.get("DeliveredCount", 0)) or 0)
         err = resp.get("error") or resp.get("Error")
+        warning = resp.get("warning") or resp.get("Warning")
     if accepted:
         console.print(f"[green]Delivered[/green] to {who} ({count} session(s)).")
+        if warning:
+            console.print(f"[yellow]Note:[/yellow] {warning}")
     else:
         console.print(f"[red]Not delivered:[/red] {err or 'unknown error'}")
         raise typer.Exit(1)
 
 
-def send_message(target: str, message: str) -> None:
-    """Send a message to one session, or broadcast with target 'all'."""
+def send_message(
+    target: str,
+    message: str,
+    everyone: bool = False,
+    reason: str | None = None,
+    grant: str | None = None,
+) -> None:
+    """Send a message to one session, or broadcast with target 'all'.
+
+    A plain 'all' reaches only the sender's team (its Mission, or - solo - the same repository on the
+    same machine). --everyone asks to reach the whole fleet, which the Gateway Hub gates on a human
+    grant plus a reason (issue #1229)."""
     me = director.session_id()
 
     if target.strip().lower() == "all":
+        body = {"text": message, "fromSessionId": me}
+        if everyone:
+            body["everyone"] = True
+            if reason:
+                body["reason"] = reason
+            if grant:
+                body["grantId"] = grant
         try:
-            resp = director.post_json("fleet/broadcast", {"text": message, "fromSessionId": me})
+            resp = director.post_json("fleet/broadcast", body)
         except director.DirectorError as err:
             console.print(f"[red]Error:[/red] {err}")
             raise typer.Exit(1)
-        _report_delivery(resp, "everyone")
+        _report_delivery(resp, "the whole fleet" if everyone else "your team")
         return
 
     chosen = _resolve_target(target, command_name="cc-devthrottle message send")

@@ -90,6 +90,11 @@ internal static class GatewayEndpoints
         // so this value is never consulted and location stays on the HTTP pull, byte-identical to today.
         var streamStaleResolved = streamStaleAfter ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
 
+        // Issue #1229: the Hub's broadcast governance state - the human-issued grant store and the
+        // per-sender broadcast rate limiter. One instance per Gateway process, shared by the grant-mint
+        // endpoint and the /fanout guard below. The pure scope rule lives in FleetBroadcastPolicy.
+        var broadcastGovernor = new BroadcastGovernor();
+
         // Issue #376: async voice-turn submit/poll (the phone's reconnect-resilient voice
         // interface). Mapped first for readability; route precedence (literal segments win
         // over the catch-all session forwarder) does the actual dispatch.
@@ -1458,6 +1463,19 @@ internal static class GatewayEndpoints
             }, statusCode: 201);
         });
 
+        // Issue #1229: mint a human-issued broadcast grant. Reaching beyond a sender's own team needs
+        // one of these. This endpoint sits behind the host-wide auth middleware (the shared token or a
+        // per-device key) and has NO Director relay, so an agent - which can only reach its own Director,
+        // never the Gateway directly - cannot mint its own grant. A human tool holding the token mints
+        // one and hands the id to the broadcaster. (A dedicated human-approval surface can tighten who
+        // may mint in a later pass.)
+        app.MapPost("/fleet/broadcast-grants", () =>
+        {
+            var grantId = broadcastGovernor.MintGrant();
+            FileLog.Write("[GatewayEndpoints] POST /fleet/broadcast-grants: minted a broadcast grant");
+            return Results.Json(new { grantId, expiresInSeconds = (int)TimeSpan.FromMinutes(10).TotalSeconds });
+        });
+
         app.MapPost("/fanout", async (FanoutRequest req) =>
         {
             if (req is null || req.SessionIds is null || req.SessionIds.Count == 0)
@@ -1465,17 +1483,72 @@ internal static class GatewayEndpoints
             if (string.IsNullOrEmpty(req.Text))
                 return Results.BadRequest(new { error = "text is required" });
 
-            FileLog.Write($"[GatewayEndpoints] POST fanout: count={req.SessionIds.Count}, len={req.Text.Length}");
+            FileLog.Write($"[GatewayEndpoints] POST fanout: count={req.SessionIds.Count}, len={req.Text.Length}, from={req.FromSessionId}");
 
-            var startedAt = DateTime.UtcNow;
-
-            // Resolve all directors once up-front
+            // Resolve all directors once up-front, capturing each target's broadcast scope (issue #1229).
             var directorBySession = new Dictionary<string, DirectorDto>();
+            var targetScopes = new List<(string SessionId, BroadcastScope Scope)>();
             foreach (var sid in req.SessionIds)
             {
                 var (d, s) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
-                if (d is not null && s is not null) directorBySession[sid] = d;
+                if (d is not null && s is not null)
+                {
+                    directorBySession[sid] = d;
+                    targetScopes.Add((sid, BuildBroadcastScope(d, s)));
+                }
             }
+
+            // Issue #1229: the Hub decides whether this broadcast may reach every recipient. A broadcast
+            // that stays inside the sender's own team (its group, or - for a solo session - the same repo
+            // on the same machine) is free; one that reaches beyond it is refused unless a human grant
+            // (plus a reason) authorizes it. The sender's scope is read from the Gateway's OWN fleet view,
+            // never trusted from the request body.
+            BroadcastScope? senderScope = null;
+            if (!string.IsNullOrWhiteSpace(req.FromSessionId))
+            {
+                var (sd, ss) = await LocateSessionAsync(registry, client, req.FromSessionId, pushedSessions, streamStaleResolved);
+                if (sd is not null && ss is not null) senderScope = BuildBroadcastScope(sd, ss);
+            }
+
+            // Only resolve a grant when a recipient is genuinely out of team and a reason accompanies it,
+            // so a valid grant is not spent validating a malformed request.
+            var anyOutOfScope = senderScope is null
+                ? targetScopes.Count > 0
+                : targetScopes.Any(t => !senderScope.Value.Includes(t.Scope));
+            var hasValidGrant = anyOutOfScope
+                && !string.IsNullOrWhiteSpace(req.Reason)
+                && broadcastGovernor.IsGrantValid(req.GrantId);
+
+            var decision = FleetBroadcastPolicy.Evaluate(senderScope, targetScopes, hasValidGrant, req.Reason);
+            if (!decision.Allowed)
+            {
+                FileLog.Write($"[GatewayEndpoints] fanout DENIED ({decision.Outcome}): from={req.FromSessionId}, targets={req.SessionIds.Count}, outOfScope={decision.OutOfScopeTargetIds.Count}, reason='{req.Reason}'");
+                return Results.Json(new FanoutResponse
+                {
+                    Denied = true,
+                    DeniedReason = decision.DeniedReason,
+                    StartedAt = DateTime.UtcNow,
+                    FinishedAt = DateTime.UtcNow,
+                });
+            }
+
+            // Rate-limit even an in-team broadcast so a runaway agent cannot storm the fleet in a loop.
+            var rate = broadcastGovernor.TryRecordSend(req.FromSessionId);
+            if (!rate.Allowed)
+            {
+                FileLog.Write($"[GatewayEndpoints] fanout RATE-LIMITED: from={req.FromSessionId}, limit={rate.LimitPerWindow}/{rate.WindowSeconds}s");
+                return Results.Json(new FanoutResponse
+                {
+                    Denied = true,
+                    DeniedReason = $"Too many broadcasts in a short time (limit {rate.LimitPerWindow} per {rate.WindowSeconds} seconds). Wait a moment and try again. See issue #1229.",
+                    StartedAt = DateTime.UtcNow,
+                    FinishedAt = DateTime.UtcNow,
+                });
+            }
+
+            FileLog.Write($"[GatewayEndpoints] fanout ALLOWED ({decision.Outcome}): from={req.FromSessionId}, inScope={decision.InScopeTargetIds.Count}, outOfScope={decision.OutOfScopeTargetIds.Count}");
+
+            var startedAt = DateTime.UtcNow;
 
             // Send to all in parallel
             var sendTasks = req.SessionIds.Select(async sid =>
@@ -1703,6 +1776,16 @@ internal static class GatewayEndpoints
     // so it fans out to all Directors in parallel rather than scanning them one-by-one:
     // total latency is bounded by the slowest single lookup (~the client timeout) instead
     // of summing one timeout per Director. Exactly one Director should own a given sid.
+    // Issue #1229: build the broadcast scope for a session from the Gateway's aggregated view. The
+    // group id and repository come from the session record; the machine comes from the owning Director
+    // (a Director-local session record leaves MachineName empty). This is the ground truth the Hub keys
+    // its who-may-reach-whom decision on - never a role/mission claim carried in the request body.
+    private static BroadcastScope BuildBroadcastScope(DirectorDto director, SessionDto session)
+    {
+        var machine = string.IsNullOrWhiteSpace(session.MachineName) ? (director.MachineName ?? "") : session.MachineName;
+        return new BroadcastScope(session.MissionId?.ToString(), session.GroupId, session.RepoPath, machine);
+    }
+
     private static async Task<(DirectorDto? director, SessionDto? session)> LocateSessionAsync(
         DirectorRegistry registry, DirectorEndpointClient client, string sid,
         Streaming.PushedSessionStore? pushedSessions, TimeSpan streamStale)

@@ -425,11 +425,29 @@ def mission_list(
 
 @message_app.command("send")
 def message_send(
-    target: str = typer.Argument(..., help="Target session id, id prefix, or name - or 'all'."),
+    target: str = typer.Argument(..., help="Target session id, id prefix, or name - or 'all' for your team."),
     message: str = typer.Argument(..., help="The message text to send."),
+    everyone: bool = typer.Option(
+        False,
+        "--everyone",
+        help="Broadcast to the WHOLE fleet, not just your own team. Every message interrupts the "
+        "receiving agent, so this is gated by the Gateway Hub: it needs a human-issued grant (--grant) "
+        "and a --reason, and is refused otherwise (issue #1229). Without this flag, 'all' reaches only "
+        "your team - the sessions in your Mission, or (solo) the same repository on the same machine.",
+    ),
+    reason: Optional[str] = typer.Option(
+        None,
+        "--reason",
+        help="Why a fleet-wide broadcast is warranted. Required with --everyone; logged by the Hub.",
+    ),
+    grant: Optional[str] = typer.Option(
+        None,
+        "--grant",
+        help="A human-issued broadcast grant id authorizing a fleet-wide broadcast (--everyone).",
+    ),
 ) -> None:
-    """Send a message to one session, or every session when TARGET is 'all'."""
-    send_message(target, message)
+    """Send a message to one session, or to your team when TARGET is 'all' (add --everyone for the whole fleet)."""
+    send_message(target, message, everyone=everyone, reason=reason, grant=grant)
 
 
 @message_app.command("ask")
