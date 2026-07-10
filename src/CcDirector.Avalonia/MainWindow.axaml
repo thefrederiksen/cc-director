@@ -872,14 +872,6 @@
                                     Padding="12,4"
                                     FontSize="12"
                                     Click="SourceControlTabButton_Click" />
-                            <Button x:Name="VoiceTabButton"
-                                    Content="Voice"
-                                    IsVisible="False"
-                                    Background="Transparent"
-                                    Foreground="#888888"
-                                    Padding="12,4"
-                                    FontSize="12"
-                                    Click="VoiceTabButton_Click" />
                             <Button x:Name="WingmanTabButton"
                                     Content="Wingman"
                                     IsVisible="False"
@@ -888,13 +880,6 @@
                                     Padding="12,4"
                                     FontSize="12"
                                     Click="WingmanTabButton_Click" />
-                            <Button x:Name="HistoryTabButton"
-                                    Content="History"
-                                    Background="Transparent"
-                                    Foreground="#888888"
-                                    Padding="12,4"
-                                    FontSize="12"
-                                    Click="HistoryTabButton_Click" />
                             <!-- Separator between fixed tabs and document tabs -->
                             <Border x:Name="DocTabSeparator"
                                     Width="1" Height="16"
@@ -962,11 +947,6 @@
                     <!-- Source Control panel -->
                     <Panel x:Name="SourceControlPanel" IsVisible="False">
                         <controls:GitChangesView x:Name="GitChangesView" />
-                    </Panel>
-
-                    <!-- Voice panel (eyes-free: Ask Agent / Ask Wingman) -->
-                    <Panel x:Name="VoicePanel" IsVisible="False">
-                        <controls:VoiceView x:Name="VoiceView" />
                     </Panel>
 
                     <!-- Wingman panel: the clean output of the session (the agent's
@@ -1150,10 +1130,6 @@
                             </Border>
                             <controls:CleanView x:Name="CleanView" />
                         </DockPanel>
-                    </Panel>
-
-                    <Panel x:Name="HistoryPanel" IsVisible="False">
-                        <controls:HistoryView x:Name="HistoryView" />
                     </Panel>
 
                     <!-- Document viewer panel (dynamic content swapped per tab) -->

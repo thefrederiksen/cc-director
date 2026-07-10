@@ -151,10 +151,6 @@ public partial class MainWindow : Window
         TerminalHost.ScrollChanged += OnTerminalScrollChanged;
         TerminalHost.ViewFileRequested += OnTerminalViewFileRequested;
         TerminalHost.BrowserLaunchFailed += OnTerminalBrowserLaunchFailed;
-        // The History tab reuses the same link actions as the terminal (GitHub #735); these handlers
-        // are agent-agnostic (open a file in the viewer, surface a browser-launch error).
-        HistoryView.ViewFileRequested += OnTerminalViewFileRequested;
-        HistoryView.BrowserLaunchFailed += OnTerminalBrowserLaunchFailed;
         TerminalScrollBar.PropertyChanged += TerminalScrollBar_PropertyChanged;
 
         SessionList.AddHandler(DragDrop.DragOverEvent, SessionList_DragOver);
@@ -190,42 +186,35 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] ApplyAlphaFeatureVisibility: alphaFeatures={alpha}");
 
         // The Wingman tab and "Open Wingman" button are alpha-gated for the v1 default install
-        // (issue 559); the Voice tab is shown in v1 regardless of alpha mode. Re-evaluate them
-        // here so a live alpha toggle (AlphaMode.Changed) shows or hides them without a restart.
-        ApplyVoiceWingmanTabVisibility();
+        // (issue 559). Re-evaluate them here so a live alpha toggle (AlphaMode.Changed) shows or
+        // hides them without a restart.
+        ApplyWingmanTabVisibility();
     }
 
     /// <summary>
-    /// Single source of truth for the visibility of the Voice tab, the Wingman tab, and the
-    /// "Open Wingman" button. The Voice tab ships in v1 and only requires an active session.
-    /// Alpha mode remains a hard gate for the Wingman tab and the "Open Wingman" button: when it
-    /// is off they are hidden regardless of the per-session Wingman state; when it is on, the
-    /// Wingman tab additionally requires the session's Wingman experience to be enabled. When the
-    /// Voice or Wingman tab gets hidden out from under the active tab, fall back to Terminal so
-    /// the session view is never stuck on a hidden tab.
+    /// Single source of truth for the visibility of the Wingman tab and the "Open Wingman" button.
+    /// Alpha mode is a hard gate for both: when it is off they are hidden regardless of the
+    /// per-session Wingman state; when it is on, the Wingman tab additionally requires the session's
+    /// Wingman experience to be enabled. When the Wingman tab gets hidden out from under the active
+    /// tab, fall back to Terminal so the session view is never stuck on a hidden tab.
     /// </summary>
-    private void ApplyVoiceWingmanTabVisibility()
+    private void ApplyWingmanTabVisibility()
     {
         var alpha = AlphaMode.IsEnabled;
         var hasSession = _activeSession is not null;
 
         var openWingmanVisible = alpha && hasSession;
-        // Voice mode is a v1 feature (no longer alpha-gated); it only needs an active session.
-        var voiceVisible = hasSession;
         var wingmanVisible = alpha && hasSession && _activeSession is not null
             && _activeSession.Session.WingmanEnabled;
 
         TabBarOpenWingmanButton.IsVisible = openWingmanVisible;
-        VoiceTabButton.IsVisible = voiceVisible;
         WingmanTabButton.IsVisible = wingmanVisible;
 
         // Never leave the view on a tab whose button just disappeared.
-        if (!voiceVisible && string.Equals(_activeLeftTab, "Voice", StringComparison.Ordinal))
-            SwitchLeftTab("Terminal");
         if (!wingmanVisible && string.Equals(_activeLeftTab, "Wingman", StringComparison.Ordinal))
             SwitchLeftTab("Terminal");
 
-        FileLog.Write($"[MainWindow] ApplyVoiceWingmanTabVisibility: alpha={alpha}, hasSession={hasSession}, voice={voiceVisible}, wingman={wingmanVisible}, openWingman={openWingmanVisible}");
+        FileLog.Write($"[MainWindow] ApplyWingmanTabVisibility: alpha={alpha}, hasSession={hasSession}, wingman={wingmanVisible}, openWingman={openWingmanVisible}");
     }
 
     private void MainWindow_Activated(object? sender, EventArgs e)
@@ -1626,7 +1615,6 @@ public partial class MainWindow : Window
                     TerminalHost.Detach();
                     GitChangesView.Detach();
                     CleanView.Detach();
-            HistoryView.Detach();
                     _activeSession = null;
 
                     SetSessionHeaderVisible(false);
@@ -1796,7 +1784,6 @@ public partial class MainWindow : Window
             TerminalHost.Detach();
             GitChangesView.Detach();
             CleanView.Detach();
-            HistoryView.Detach();
         }
 
         _activeSession = vm;
@@ -1813,12 +1800,11 @@ public partial class MainWindow : Window
             PromptBarBorder.IsVisible = false;
             TabBarRefreshButton.IsVisible = false;
             TabBarCaptureButton.IsVisible = false;
-            // No active session: Voice/Wingman/"Open Wingman" are hidden. Centralized so the
-            // alpha gate stays the single source of truth (issue 559).
-            ApplyVoiceWingmanTabVisibility();
+            // No active session: the Wingman tab and "Open Wingman" button are hidden. Centralized
+            // so the alpha gate stays the single source of truth (issue 559).
+            ApplyWingmanTabVisibility();
             GitChangesView.Detach();
             CleanView.Detach();
-            HistoryView.Detach();
             return;
         }
 
@@ -1854,16 +1840,13 @@ public partial class MainWindow : Window
         // Attach clean view (legacy Agent tab)
         CleanView.Attach(vm.Session);
 
-        // Attach history view (canonical conversation thread)
-        HistoryView.Attach(vm.Session);
-
         // Show prompt bar
         PromptBarBorder.IsVisible = true;
 
-        // Voice tab, Wingman tab, and "Open Wingman" button are alpha-gated (issue 559).
-        // Centralized so the alpha flag and the per-session Wingman state are the single
-        // source of truth for this active session.
-        ApplyVoiceWingmanTabVisibility();
+        // Wingman tab and "Open Wingman" button are alpha-gated (issue 559). Centralized so the
+        // alpha flag and the per-session Wingman state are the single source of truth for this
+        // active session.
+        ApplyWingmanTabVisibility();
         // Render whatever cached briefing the ProactiveExplainService has produced so far
         // (or the brand-new greeting set on session creation) IMMEDIATELY for responsiveness,
         // then asynchronously upgrade to the richer Gateway turn brief if one exists. Reset the
@@ -1878,18 +1861,19 @@ public partial class MainWindow : Window
         PromptInput.Text = vm.Session.PendingPromptText ?? "";
         PromptInput.CaretIndex = PromptInput.Text.Length;
 
-        // Restore last selected tab. The Session/Agent tabs were removed; the
-        // wingman/voice view now opens in an external browser. Normalize any
-        // persisted values from older builds and default to Terminal. Also fall back
-        // to Terminal if the saved tab was Wingman but the session has it disabled.
+        // Restore last selected tab. The Session/Agent tabs and the Voice/History tabs were
+        // removed. Normalize any persisted values from older builds and default to Terminal.
+        // Also fall back to Terminal if the saved tab was Wingman but the session has it disabled.
         var tabName = vm.Session.SelectedTabName;
         if (string.Equals(tabName, "Session", StringComparison.Ordinal) ||
-            string.Equals(tabName, "Agent", StringComparison.Ordinal))
+            string.Equals(tabName, "Agent", StringComparison.Ordinal) ||
+            string.Equals(tabName, "Voice", StringComparison.Ordinal) ||
+            string.Equals(tabName, "History", StringComparison.Ordinal))
             tabName = "Terminal";
         if (string.Equals(tabName, "Wingman", StringComparison.Ordinal) && !vm.Session.WingmanEnabled)
             tabName = "Terminal";
         // When alpha mode is off, the Wingman tab is hidden (issue 559); never open the session
-        // view on a hidden tab. The Voice tab ships in v1, so a saved "Voice" tab is honored.
+        // view on a hidden tab.
         if (!AlphaMode.IsEnabled && string.Equals(tabName, "Wingman", StringComparison.Ordinal))
             tabName = "Terminal";
         if (string.IsNullOrEmpty(tabName)) tabName = "Terminal";
@@ -2022,7 +2006,6 @@ public partial class MainWindow : Window
         TerminalHost.Detach();
         GitChangesView.Detach();
         CleanView.Detach();
-        HistoryView.Detach();
         _activeSession = null;
 
         var snapshots = _sessions.ToList();
@@ -2355,7 +2338,7 @@ public partial class MainWindow : Window
             // Re-evaluate the Wingman tab against the new per-session state and the alpha gate
             // (issue 559). The centralized method also falls the view back to Terminal if the
             // Wingman tab disappears while it is the active tab.
-            ApplyVoiceWingmanTabVisibility();
+            ApplyWingmanTabVisibility();
         }
 
         ShowNotification(newState
@@ -2447,9 +2430,7 @@ public partial class MainWindow : Window
             {
                 UpdateSessionHeader();
                 CleanView.Detach();
-            HistoryView.Detach();
                 CleanView.Attach(vm.Session);
-            HistoryView.Attach(vm.Session);
             }
 
             ShowNotification($"Session relinked to {dialog.SelectedSessionId[..8]}...");
@@ -2499,7 +2480,6 @@ public partial class MainWindow : Window
             TerminalHost.Detach();
             GitChangesView.Detach();
             CleanView.Detach();
-            HistoryView.Detach();
             _activeSession = null;
 
             SetSessionHeaderVisible(false);
@@ -3944,24 +3924,11 @@ public partial class MainWindow : Window
         SwitchLeftTab("SourceControl");
     }
 
-    private void VoiceTabButton_Click(object? sender, RoutedEventArgs e)
-    {
-        // The Voice tab is hidden when there is no active session; ignore activation when hidden.
-        if (!VoiceTabButton.IsVisible) return;
-        SwitchLeftTab("Voice");
-    }
-
     private void WingmanTabButton_Click(object? sender, RoutedEventArgs e)
     {
         // The Wingman tab is alpha-gated (issue 559); ignore activation when it is hidden.
         if (!WingmanTabButton.IsVisible) return;
         SwitchLeftTab("Wingman");
-    }
-
-    private void HistoryTabButton_Click(object? sender, RoutedEventArgs e)
-    {
-        if (!HistoryTabButton.IsVisible) return;
-        SwitchLeftTab("History");
     }
 
     // The wingman annotation banner is a passive viewer of the structured briefing the
@@ -4350,8 +4317,7 @@ public partial class MainWindow : Window
     // Play the spoken-version field aloud through TTS. Opens a modal SpeakPlaybackDialog
     // with a Stop button instead of firing playback in the background: the modal blocks
     // this button while audio plays (no stacking repeated clicks) and gives the user an
-    // explicit way to stop listening. Uses the same DesktopTtsPlayer the Voice tab uses;
-    // lazily initialised on first click since the Voice tab may not have been opened yet.
+    // explicit way to stop listening. The DesktopTtsPlayer is lazily initialised on first click.
     private async void WingmanSpeakVoiceButton_Click(object? sender, RoutedEventArgs e)
     {
         try
@@ -4424,163 +4390,10 @@ public partial class MainWindow : Window
         }
     }
 
-    // Lazily wire the Voice tab the first time it is shown: it needs AgentOptions
-    // (for the in-process dictation engine), which are not available until the
+    // Text-to-speech player for the Wingman tab's "Play" button (spoken-briefing preview).
+    // Lazily created on first use; needs AgentOptions, which are not available until the
     // SessionManager is constructed.
-    private bool _voiceInitialized;
     private global::CcDirector.Avalonia.Voice.DesktopTtsPlayer? _ttsPlayer;
-
-    private void EnsureVoiceInitialized()
-    {
-        if (_voiceInitialized) return;
-        var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-        if (options is null) return;
-        VoiceView.Initialize(options);
-        VoiceView.AskAgentRequested += OnVoiceAskAgent;
-        VoiceView.AskWingmanRequested += OnVoiceAskWingman;
-        _ttsPlayer = new global::CcDirector.Avalonia.Voice.DesktopTtsPlayer(options);
-        _voiceInitialized = true;
-        FileLog.Write("[MainWindow] Voice tab initialized");
-    }
-
-    // Ask Agent: the dictated transcript goes to the working agent via the same
-    // send path the prompt bar uses (slash-command handling, Clean-view inject,
-    // Enter-retry). Then we follow the agent's turn to completion and speak its
-    // reply aloud, reusing the shared ChatService spoken-summary path the phone uses.
-    private async void OnVoiceAskAgent(string transcript)
-    {
-        var vm = _activeSession;
-        if (vm is null)
-        {
-            VoiceView.SetStatus("No session selected.", "#F44747");
-            return;
-        }
-        FileLog.Write($"[MainWindow] OnVoiceAskAgent: {transcript.Length} chars to {vm.Session.Id}");
-        PromptInput.Text = transcript;
-        SendPrompt();
-        try
-        {
-            await FollowAgentTurnAndSpeakAsync(vm);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OnVoiceAskAgent follow FAILED: {ex.Message}");
-            VoiceView.SetStatus("Voice follow error: " + ex.Message, "#F44747");
-        }
-    }
-
-    // Wait for the agent to finish the turn it just started, then read its reply +
-    // ear-friendly spoken summary via the shared ChatService poll path and speak it.
-    // We watch the session's ActivityState directly (in-process, no double-send): we
-    // first wait for it to ENTER Working so a fast poll cannot read the PREVIOUS
-    // reply, then wait for it to leave Working into a stopping state.
-    /// <summary>
-    /// Read-aloud (text-to-speech) on the Voice tab ran dry (issue #940): show the ONE shared
-    /// add-credits dialog instead of the failure being logged and silently swallowed. Queued on the UI
-    /// thread so the modal shows after the current text-to-speech call unwinds.
-    /// </summary>
-    private void VoiceUnavailable(HostedAiState state)
-        => Dispatcher.UIThread.Post(() => { _ = DesktopHostedAiGate.ShowAsync(this, state); });
-
-    private async Task FollowAgentTurnAndSpeakAsync(SessionViewModel vm)
-    {
-        var app = global::Avalonia.Application.Current as App;
-        var options = app?.SessionManager?.Options;
-        var sm = app?.SessionManager;
-        if (options is null || sm is null) return;
-        var session = vm.Session;
-
-        VoiceView.SetStatus("Agent working...", "#DCDCAA");
-
-        // Phase 1: wait briefly for the turn to actually start.
-        var startBy = DateTime.UtcNow.AddSeconds(6);
-        while (session.ActivityState != ActivityState.Working
-               && session.Status is not (SessionStatus.Exited or SessionStatus.Failed)
-               && DateTime.UtcNow < startBy)
-        {
-            await Task.Delay(250);
-        }
-
-        // Phase 2: wait for the turn to finish (cap at 10 minutes).
-        var finishBy = DateTime.UtcNow.AddMinutes(10);
-        while (session.ActivityState == ActivityState.Working
-               && session.Status is not (SessionStatus.Exited or SessionStatus.Failed)
-               && DateTime.UtcNow < finishBy)
-        {
-            await Task.Delay(750);
-        }
-
-        if (session.Status is SessionStatus.Exited or SessionStatus.Failed)
-        {
-            VoiceView.SetStatus("Session exited.", "#F44747");
-            return;
-        }
-
-        var chat = new global::CcDirector.ControlApi.Chat.ChatService(sm, options);
-        var resp = await chat.HandleAsync(new global::CcDirector.Gateway.Contracts.ChatRequest
-        {
-            SessionId = session.Id.ToString(),
-            PollOnly = true,
-            Voice = true,
-        });
-
-        var display = !string.IsNullOrWhiteSpace(resp.DisplayText) ? resp.DisplayText : (resp.Reply ?? "");
-        if (!string.IsNullOrWhiteSpace(display))
-            VoiceView.ShowReply(display);
-
-        var spoken = !string.IsNullOrWhiteSpace(resp.Summary) ? resp.Summary : display;
-        if (!string.IsNullOrWhiteSpace(spoken) && _ttsPlayer is not null)
-        {
-            VoiceView.SetStatus("Speaking...", "#2B6CB0");
-            await _ttsPlayer.SpeakAsync(spoken, onUnavailable: VoiceUnavailable);
-        }
-        VoiceView.SetStatus("Ready", "#5FD08A");
-    }
-
-    // Ask Wingman: answer the spoken question with the in-process WingmanService over
-    // the session's full cleaned terminal (read-only, verbatim - the same path the
-    // /sessions/{sid}/wingman/ask endpoint uses), show the answer as text, and speak
-    // it aloud. No turn-following: the wingman answers immediately.
-    private async void OnVoiceAskWingman(string transcript)
-    {
-        var vm = _activeSession;
-        if (vm is null)
-        {
-            VoiceView.SetStatus("No session selected.", "#F44747");
-            return;
-        }
-        var options = (global::Avalonia.Application.Current as App)?.SessionManager?.Options;
-        if (options is null)
-        {
-            VoiceView.SetStatus("Wingman not available: options not loaded.", "#F44747");
-            return;
-        }
-        try
-        {
-            FileLog.Write($"[MainWindow] OnVoiceAskWingman: {transcript.Length} chars for {vm.Session.Id}");
-            VoiceView.SetStatus("Asking the wingman...", "#2B6CB0");
-            var session = vm.Session;
-            var bytes = session.Buffer?.DumpAll() ?? Array.Empty<byte>();
-            var fullTerminal = global::CcDirector.ControlApi.AnsiCleaner.Clean(bytes);
-            var result = await global::CcDirector.Core.Wingman.WingmanService.AnswerViaSessionAsync(
-                transcript, fullTerminal, session.AgentKind.ToString(), session.RepoPath, options.ClaudePath);
-            var answer = string.IsNullOrWhiteSpace(result.Answer)
-                ? "The wingman had nothing to report."
-                : result.Answer;
-            VoiceView.ShowReply(answer);
-            if (_ttsPlayer is not null)
-            {
-                VoiceView.SetStatus("Speaking...", "#2B6CB0");
-                await _ttsPlayer.SpeakAsync(answer, onUnavailable: VoiceUnavailable);
-            }
-            VoiceView.SetStatus("Ready", "#5FD08A");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OnVoiceAskWingman FAILED: {ex.Message}");
-            VoiceView.SetStatus("Wingman error: " + ex.Message, "#F44747");
-        }
-    }
 
     private bool _commsInitialized;
 
@@ -4722,7 +4535,6 @@ public partial class MainWindow : Window
     private void SwitchLeftTab(string tab)
     {
         if (_activeLeftTab == tab) return;
-        var previousTab = _activeLeftTab;
         _activeLeftTab = tab;
         FileLog.Write($"[MainWindow] SwitchLeftTab: {tab}");
 
@@ -4735,8 +4547,6 @@ public partial class MainWindow : Window
         TerminalTabButton.Foreground = tab == "Terminal" ? whiteBrush : InactiveTextBrush;
         SourceControlTabButton.Background = tab == "SourceControl" ? accentBrush : TransparentBrush;
         SourceControlTabButton.Foreground = tab == "SourceControl" ? whiteBrush : InactiveTextBrush;
-        VoiceTabButton.Background = tab == "Voice" ? accentBrush : TransparentBrush;
-        VoiceTabButton.Foreground = tab == "Voice" ? whiteBrush : InactiveTextBrush;
         WingmanTabButton.Background = tab == "Wingman" ? accentBrush : TransparentBrush;
         WingmanTabButton.Foreground = tab == "Wingman" ? whiteBrush : InactiveTextBrush;
         // Update document tab button styles
@@ -4750,34 +4560,14 @@ public partial class MainWindow : Window
         // Show/hide panels
         TerminalPanel.IsVisible = tab == "Terminal";
         SourceControlPanel.IsVisible = tab == "SourceControl";
-        VoicePanel.IsVisible = tab == "Voice";
         WingmanPanel.IsVisible = tab == "Wingman";
-        HistoryPanel.IsVisible = tab == "History";
         DocumentPanel.IsVisible = isDocTab;
 
-        // Gate the History tab's polling + auto-scroll on its visibility (#744): it only follows the
-        // conversation while it is the visible tab, and snaps to the latest message on activation.
-        if (tab == "History")
-            HistoryView.OnShown();
-        else if (previousTab == "History")
-            HistoryView.OnHidden();
-
-        // The shared prompt bar belongs to the terminal-style tabs. The Voice and
-        // Wingman tabs have their own input affordances (push-to-talk buttons / a
-        // Speak+Send bar), so hide the shared bar there to avoid a duplicate input.
+        // The shared prompt bar belongs to the terminal-style tabs. The Wingman tab has its
+        // own input affordances (a Speak+Send bar), so hide the shared bar there to avoid a
+        // duplicate input.
         if (_activeSession != null)
-            PromptBarBorder.IsVisible = tab != "Voice" && tab != "Wingman";
-
-        if (tab == "Voice")
-        {
-            EnsureVoiceInitialized();
-            VoiceView.SetSession(_activeSession?.DisplayName);
-        }
-        else
-        {
-            // Leaving the Voice tab: cut off any reply still being spoken.
-            _ttsPlayer?.Stop();
-        }
+            PromptBarBorder.IsVisible = tab != "Wingman";
 
         // The Wingman tab is a passive viewer of Session.CachedExplainText. Just render
         // whatever is currently cached; OnCachedExplainChanged will keep it fresh.
@@ -6045,7 +5835,6 @@ public partial class MainWindow : Window
                     TerminalHost.Detach();
                     GitChangesView.Detach();
                     CleanView.Detach();
-            HistoryView.Detach();
                     _activeSession = null;
                 }
 
@@ -6085,7 +5874,6 @@ public partial class MainWindow : Window
                     TerminalHost.Detach();
                     GitChangesView.Detach();
                     CleanView.Detach();
-            HistoryView.Detach();
                     _activeSession = null;
                 }
 
@@ -6163,7 +5951,6 @@ public partial class MainWindow : Window
         TerminalHost.Detach();
         GitChangesView.Detach();
         CleanView.Detach();
-        HistoryView.Detach();
         _activeSession = null;
 
         // Stop git status polling
