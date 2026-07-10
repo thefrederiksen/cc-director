@@ -10,11 +10,11 @@ namespace CcDirectorSetup.Services;
 /// 4 Privacy, 5 Connect, 6 Skills, 7 Install, 8 Complete.
 ///
 /// Two steps are role-aware, and they are exact inverses of each other:
-///   - Sign-in (step 3) applies only to a Gateway install. A Workstation signs in through its
-///     gateway, not in the installer, so the wizard skips step 3 for the Workstation role (issue #679).
-///   - Connect (step 5) is the mandatory gateway-pairing step and applies only to a fresh Workstation
-///     install (issue #646). The Gateway role IS the gateway, and an update keeps its existing
-///     connection, so both skip step 5.
+///   - Sign-in (step 3) applies only to a Gateway install. A Workstation signs in at its Connect step
+///     instead (against its gateway), so the wizard skips step 3 for the Workstation role (issue #679).
+///   - Connect (step 5) is the mandatory gateway-join step - account sign-in, not a pairing code
+///     (issues #646, #1198) - and applies only to a fresh Workstation install. The Gateway role IS the
+///     gateway, and an update keeps its existing connection, so both skip step 5.
 ///
 /// Everything else is shown for every install. This type owns the single role-aware ordering so
 /// MainWindow has no parallel navigation logic.
@@ -24,8 +24,8 @@ public static class WizardStepFlow
     /// <summary>The Sign-in step id. Gateway-only; skipped for a Workstation.</summary>
     public const int StepSignIn = 3;
 
-    /// <summary>The Connect (gateway-pairing) step id. Fresh-Workstation-only; skipped for a Gateway
-    /// install and for any update.</summary>
+    /// <summary>The Connect (gateway-join by account sign-in) step id. Fresh-Workstation-only; skipped
+    /// for a Gateway install and for any update.</summary>
     public const int StepConnect = 5;
 
     private static readonly int[] AllSteps = [1, 2, StepSignIn, 4, StepConnect, 6, 7, 8];
@@ -33,8 +33,8 @@ public static class WizardStepFlow
     /// <summary>True when the in-wizard Sign-in step applies to the given role (Gateway only).</summary>
     public static bool SignInApplies(InstallRole role) => role == InstallRole.Gateway;
 
-    /// <summary>True when the mandatory gateway-pairing Connect step applies: a fresh Workstation
-    /// install. A Gateway install and any update skip it (issue #646).</summary>
+    /// <summary>True when the mandatory gateway-join Connect step applies: a fresh Workstation
+    /// install. A Gateway install and any update skip it (issues #646, #1198).</summary>
     public static bool ConnectApplies(InstallRole role, bool isUpdate) =>
         !isUpdate && role == InstallRole.Workstation;
 

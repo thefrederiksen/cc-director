@@ -7,7 +7,7 @@
                        Foreground="White"
                        FontSize="22"
                        FontWeight="SemiBold" />
-            <TextBlock Text="This machine joins an existing fleet, so it must connect to your gateway before we finish. Enter the gateway URL and the 4-digit pairing code shown on the gateway host."
+            <TextBlock Text="This machine joins an existing fleet, so it must connect to your gateway before we finish. Enter your gateway's URL, then sign in with the same DevThrottle account your gateway uses."
                        Foreground="{StaticResource TextForeground}"
                        FontSize="13"
                        TextWrapping="Wrap"
@@ -45,53 +45,40 @@
                            FontSize="11"
                            Margin="0,4,0,0" />
 
-                <!-- Pairing code -->
-                <TextBlock Text="Pairing code"
-                           Foreground="{StaticResource TextForeground}"
-                           FontSize="13"
-                           FontWeight="SemiBold"
-                           Margin="0,18,0,0" />
-                <TextBox x:Name="CodeBox"
-                         Margin="0,6,0,0"
-                         Width="140"
-                         Height="40"
-                         HorizontalAlignment="Left"
-                         MaxLength="4"
-                         VerticalContentAlignment="Center"
-                         Background="#1E1E1E"
-                         Foreground="#CCCCCC"
-                         CaretBrush="#CCCCCC"
-                         BorderBrush="#3C3C3C"
-                         BorderThickness="1"
-                         Padding="8,6"
-                         FontFamily="Cascadia Mono, Consolas, Courier New"
-                         FontSize="22" />
-                <TextBlock Text="4 digits, shown on the gateway host's screen."
-                           Foreground="{StaticResource DimText}"
-                           FontSize="11"
-                           Margin="0,4,0,0" />
-
-                <!-- Connect button -->
-                <Button x:Name="ConnectButton"
-                        Content="Connect to gateway"
+                <!-- Sign in: the browser opens for you to sign in to your DevThrottle account; on success
+                     this machine is registered and connected to the gateway above. No pairing code. -->
+                <Button x:Name="SignInButton"
+                        Content="Sign in to DevThrottle"
                         Width="220"
                         Height="40"
                         FontSize="15"
                         Margin="0,22,0,0"
                         HorizontalAlignment="Left"
                         Style="{StaticResource PrimaryButton}"
-                        Click="ConnectButton_Click" />
+                        Click="SignInButton_Click" />
+                <TextBlock Text="Your web browser opens to sign in. Use the same account your gateway is signed in to."
+                           Foreground="{StaticResource DimText}"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="0,8,0,0" />
 
-                <!-- Waiting state -->
+                <!-- Waiting state: the browser is open for sign-in; Cancel unwinds the wait. -->
                 <StackPanel x:Name="WaitingPanel"
                             Orientation="Horizontal"
                             Margin="0,18,0,0"
                             Visibility="Collapsed">
-                    <TextBlock Text="Verifying with the gateway..."
+                    <TextBlock Text="Waiting for you to sign in in your browser..."
                                Foreground="{StaticResource AccentBrush}"
                                FontSize="13"
                                FontWeight="SemiBold"
                                VerticalAlignment="Center" />
+                    <Button x:Name="CancelButton"
+                            Content="Cancel"
+                            Height="28"
+                            FontSize="12"
+                            Margin="16,0,0,0"
+                            VerticalAlignment="Center"
+                            Click="CancelButton_Click" />
                 </StackPanel>
 
                 <!-- Status message (error / blocked reason) -->

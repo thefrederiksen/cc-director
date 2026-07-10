@@ -48,8 +48,9 @@ public partial class MainWindow : Window
     // WizardStepFlow so it is unit-testable without this window):
     //   - Sign in (3) applies only to a Gateway install - a Workstation signs in through its gateway
     //     (issue #679).
-    //   - Connect (5), the mandatory gateway-pairing step (issue #646), applies only to a fresh
-    //     Workstation install - the Gateway IS the gateway, and an update keeps its connection.
+    //   - Connect (5), the mandatory gateway-join step (issues #646, #1198: account sign-in, not a
+    //     pairing code), applies only to a fresh Workstation install - the Gateway IS the gateway, and
+    //     an update keeps its connection.
     private const int StepSignIn = WizardStepFlow.StepSignIn;
     private const int StepPrivacy = 4;
     private const int StepConnect = WizardStepFlow.StepConnect;
@@ -146,14 +147,14 @@ public partial class MainWindow : Window
         return new PrivacyStep(() => _signInStep?.CapturedAccessToken);
     }
 
-    /// <summary>Build the mandatory gateway-pairing step (issue #646) and wire its verification to
-    /// enable Next. Next stays disabled on this step until the gateway verifies the pairing and issues
-    /// a device key - there is no skip, so a Workstation install cannot finish without a gateway. On a
-    /// return visit via Back, IsVerified is still true so Next stays enabled.</summary>
+    /// <summary>Build the mandatory gateway-join step (issues #646, #1198) and wire its completion to
+    /// enable Next. Next stays disabled on this step until the account sign-in connects to the gateway and
+    /// a device key is issued - there is no skip, so a Workstation install cannot finish without a gateway.
+    /// On a return visit via Back, IsVerified is still true so Next stays enabled.</summary>
     private GatewayConnectStep BuildGatewayConnectStep()
     {
         var step = new GatewayConnectStep();
-        step.PairingVerified += (_, _) =>
+        step.Connected += (_, _) =>
         {
             if (_currentStep == StepConnect)
                 NextButton.IsEnabled = true;
@@ -353,10 +354,10 @@ public partial class MainWindow : Window
         }
         else if (_currentStep == StepConnect)
         {
-            // Mandatory gateway pairing (issue #646): a Workstation install cannot finish without a
-            // verified gateway connection, so Next is disabled until the pairing verifies and a device
-            // key is issued + persisted - there is no skip. On a return visit via Back, IsVerified is
-            // still true so Next stays enabled. (This step is only reached on the Workstation path.)
+            // Mandatory gateway join (issues #646, #1198): a Workstation install cannot finish without a
+            // connected gateway, so Next is disabled until the account sign-in connects and a device key
+            // is issued + persisted - there is no skip. On a return visit via Back, IsVerified is still
+            // true so Next stays enabled. (This step is only reached on the Workstation path.)
             NextButton.Content = "Next";
             NextButton.IsEnabled = _gatewayConnectStep?.IsVerified == true;
         }
