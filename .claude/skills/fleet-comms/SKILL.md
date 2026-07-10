@@ -48,13 +48,28 @@ repository folder name, is rejected - pass something meaningful or a purpose.
 ```
 cc-devthrottle message send 4c810000 "I finished the API layer - you can start the frontend."
 cc-devthrottle message send docs "Please update the API page when you get a chance."
-cc-devthrottle message send all "Heads up: I am about to merge to main in 5 minutes."
 cc-devthrottle message ask 9b2f "What database schema is loaded in your repo?"
 cc-devthrottle message ask docs "What is the title of the API page?" --timeout-ms 60000
 ```
 
-`message send all` is the only broadcast form. `message ask` is always single-target and waits for
-the target's answer.
+Send to the specific sessions that need to hear from you - by id prefix or name. `message ask` is
+always single-target and waits for the target's answer.
+
+## Who you may message, and the broadcast rule
+
+Every incoming fleet message interrupts the receiving agent: it is typed into that agent's composer
+and starts a turn. So a message you send is a demand on someone else's attention. Keep it scoped.
+
+- Default scope is your own mission or team: a manager and its workers, and workers with their
+  siblings on the same piece of work. Message those sessions freely.
+- Do NOT broadcast to the whole fleet. `message send all` reaches every session on every machine
+  and in every repository - almost all of which have nothing to do with your work - and freezes
+  each one. Do not reach for it as a convenience.
+- For a notice your own team needs, message the specific sessions on your team, not the fleet.
+- For git coordination on a shared working tree, message only the sessions that share that exact
+  checkout - not the fleet. Sessions in other repositories cannot be affected by your git.
+- A true fleet-wide message needs a human's approval first. The Gateway Hub enforces these limits
+  and refuses an unjustified fleet-wide send (see issue #1229); do not try to route around it.
 
 ## Health check
 
