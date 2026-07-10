@@ -739,6 +739,14 @@ body {
   gap: 8px;
 }
 
+/* Drag-and-drop an image onto the composer (issue #1210): a clear accent affordance while a file is
+   dragged over, distinct from the focus state, so it reads as "drop here". */
+.composer-dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--surface-2);
+}
+
 .composer-input {
   width: 100%;
   resize: vertical;
