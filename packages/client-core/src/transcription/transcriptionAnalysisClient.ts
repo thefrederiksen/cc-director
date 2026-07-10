@@ -38,6 +38,26 @@ export interface TermFrequency {
   count: number;
 }
 
+/** The outcome code the Gateway records for a dictation that transcribed successfully. Every other
+ * code in byOutcome is a failure. This is the one place that defines what "success" means, so the
+ * failure count, the success banner, and the outcome breakdown all agree. */
+export const SUCCESS_OUTCOME = "ok";
+
+/**
+ * How many dictations did not succeed in the window, counted as the sum of every non-success entry
+ * of the byOutcome map. This is the single authority for the failure count: the outcome breakdown
+ * on the page also reads byOutcome, so the failure number, the success banner, and that breakdown
+ * can never disagree. Deriving it here - rather than as totalTurns minus successfulTurns - removes
+ * the second, separately-computed number that could drift from the map the page renders.
+ */
+export function countFailedTurns(stats: TranscriptionStats): number {
+  let failed = 0;
+  for (const [code, count] of Object.entries(stats.byOutcome)) {
+    if (code !== SUCCESS_OUTCOME) failed += count;
+  }
+  return failed;
+}
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, {
     method: "GET",

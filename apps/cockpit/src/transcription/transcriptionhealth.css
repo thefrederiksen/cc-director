@@ -6,10 +6,29 @@
   max-width: 860px;
 }
 
+.txh .page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .txh .page-head h1 {
   margin: 0;
   font-size: 22px;
   font-weight: 600;
+}
+.txh-refresh {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.txh-refresh:disabled {
+  color: var(--text-dim);
+  cursor: default;
 }
 .txh-lede {
   color: var(--text-dim);
