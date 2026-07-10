@@ -10,6 +10,24 @@ streaming/fold tree and is noted where it will land.
 You reach only your OWN Director, at the base URL in env `CC_DIRECTOR_API` (loopback). No Gateway
 address, no token. Cross-machine is the Gateway's job, not the caller's.
 
+MULTI-COMPUTER START/STOP (SETTLED design - Soren 2026-07-09; authority = the Architect's
+`mission-as-first-class-unit-of-work.md` "Multi-computer start/stop (design)" section; this recipe
+folds in the operational mechanics):
+- (a) TARGET COMPUTER is an OPTIONAL param, DEFAULT = LOCAL (the machine the requesting agent is
+  on). No computer needed for the common case.
+- (b) LOCAL start = direct POST to your own Director. REMOTE start = via the Gateway to a Director
+  on the target machine (first available there), cron-style machine targeting.
+- (c) Address the target by MACHINE NAME.
+- (d) If the target machine has NO Director running, the Gateway auto-launches one via the
+  cc-launcher (requires the launcher-persistent-JOIN - my priority 2; until that lands, remote
+  start to a Director-less machine cannot work).
+- (e) STOP takes NO computer param - it follows the session's home machine.
+- (f) Cross-machine pods work under the existing fleet-wide attention model.
+- (g) OFFLINE / unreachable target => FAIL FAST + FAIL LOUD immediately ("computer X is
+  off/unreachable"), no queue, no silent local fallback.
+Design is settled; the remote / auto-launch path is gated on the launcher-persistent-JOIN
+(priority 2). (More additions from Soren may still follow.)
+
 ### Spawn (one call)
 
 `POST {CC_DIRECTOR_API}/sessions`  ->  body is `NewSessionRequest`:
