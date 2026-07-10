@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
-using System.Text;
-using CcDirector.Core.Input;
+using CcDirector.Core.Drivers;
 using CcDirector.Core.Memory;
 using CcDirector.Core.UnixPty;
 using CcDirector.Core.Utilities;
@@ -82,42 +81,7 @@ public sealed class UnixPtyBackend : ISessionBackend
     public async Task SendTextAsync(string text)
     {
         if (_disposed || _processHost == null) return;
-
-        // Strip a single trailing submit newline before evaluating "is this multi-line / large?".
-        // Callers (MainWindow, REST API, Quick Actions) sometimes append "\n" as a submit
-        // signal -- we don't want that to trip the multi-line heuristic and punt short
-        // prompts through a temp file. The backend sends LF explicitly below.
-        var textForCheck = text.TrimEnd('\r', '\n');
-
-        string textToSend;
-        if (LargeInputHandler.IsLargeInput(textForCheck) && !string.IsNullOrEmpty(_workingDir))
-        {
-            // Write to temp file and send @filepath
-            var tempPath = LargeInputHandler.CreateTempFile(textForCheck, _workingDir);
-            textToSend = $"@{tempPath}";
-            FileLog.Write($"[UnixPtyBackend] Large input ({textForCheck.Length} chars), using temp file reference: {textToSend}");
-        }
-        else
-        {
-            textToSend = textForCheck;
-        }
-
-        var textBytes = Encoding.UTF8.GetBytes(textToSend);
-        _processHost.Write(textBytes);
-
-        // Brief delay so TUI processes text before Enter
-        await Task.Delay(50);
-
-        // Submit with CR (0x0D), NOT LF. Pressing Enter in a terminal sends CR, and
-        // TUIs like Claude Code treat CR as "submit" but LF as "insert a newline".
-        // This matches ConPtyBackend on Windows; sending LF here only added a blank
-        // line in Claude's input box instead of submitting the prompt.
-        _processHost.Write(new byte[] { 0x0D }); // CR = Enter/submit
-
-        // Same unreliable @-reference Enter as ConPtyBackend (issue #212): watch for
-        // submission evidence and keep nudging while the TUI stays dead.
-        if (textToSend.StartsWith('@'))
-            await AtReferenceSubmitVerifier.EnsureSubmittedAsync(Buffer, Write, textToSend);
+        await TerminalSubmit.SharedSubmitAsync(this, text, "UnixPtyBackend");
     }
 
     public Task SendEnterAsync()

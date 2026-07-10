@@ -398,7 +398,7 @@ public partial class FifoWindow : Window
         if (!_terminalVisible) { _terminalVisible = true; ApplyTerminalVisibility(); }
         SetStatus("Sending to agent...", Yellow);
         // Desktop voice FIFO injection is framework-mediated; exempt from the dictation lock (issue #1181, Task 3b).
-        await _current.SendTextAsync(transcript + "\n", SendSource.Internal);
+        await _current.SendTextAsync(transcript, SendSource.Internal);
         SetText(ReplyText, $"Sent to {DisplayName(_current)}. Watch the terminal, then Next.");
         SetStatus("Sent - watch the terminal, then Next", Green);
     }
