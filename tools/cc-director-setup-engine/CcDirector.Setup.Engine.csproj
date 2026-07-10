@@ -15,9 +15,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The Workstation gateway-pairing gate (issue #646) reuses the existing /devices/register
-         contract (Gateway.Contracts) and persists the issued device key via GatewayCredentialStore
-         (Core), exactly as the Director's Connect-to-Gateway dialog does - no new pairing mechanism. -->
+    <!-- The Workstation gateway-join gate (issues #646, #1198) reuses the account sign-in + device
+         enrollment already built in Core (LoopbackLoginListener, DeviceRegistryClient) and the
+         /m/enroll contract (Gateway.Contracts), persisting the issued local device key via
+         GatewayCredentialStore (Core) - no new pairing mechanism and no new cloud endpoint. -->
     <ProjectReference Include="..\..\src\CcDirector.Core\CcDirector.Core.csproj" />
     <ProjectReference Include="..\..\src\CcDirector.Gateway.Contracts\CcDirector.Gateway.Contracts.csproj" />
   </ItemGroup>
