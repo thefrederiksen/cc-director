@@ -1352,6 +1352,29 @@ internal static class GatewayEndpoints
             return Results.Json(summary);
         });
 
+        // Read-only source-control snapshot proxy (issue #1266): forwards to whichever Director owns the
+        // session and returns its GET /sessions/{sid}/git response (branch, ahead/behind, last commit, and
+        // the additive per-file staged/unstaged lists) for the Cockpit's Source Control tab. This route is
+        // READ-ONLY: it does not proxy any git WRITE route (stage / unstage / discard / commit stay
+        // desktop-only). It self-checks HasValidToken(ctx, token, devices) so a phone or browser per-device
+        // key is accepted, not only the shared machine token - the same 401-avoidance every browser-facing
+        // session route needs (the device-blind check once bit the dictation route, issue #1045) - and so
+        // the route stays gated even when the host-wide auth middleware is off.
+        app.MapGet("/sessions/{sid}/git", async (string sid, HttpContext ctx) =>
+        {
+            if (!AuthMiddleware.HasValidToken(ctx, token, devices))
+                return Results.Json(new { error = "missing or invalid token" }, statusCode: StatusCodes.Status401Unauthorized);
+            // Issue #1240: pass the owner cache so a warm session is resolved with ONE Director probe
+            // instead of a full fleet fan-out (the same fast path every other per-session route now uses).
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved, owners);
+            if (session is null || director is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+            var snap = await client.GetGitAsync(director.ControlEndpoint, sid, ctx.RequestAborted);
+            if (snap is null)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(snap);
+        });
+
         // Recap proxy. Both endpoints transparently forward to whichever Director owns the
         // session. The Director side does the heavy lifting (claude --print + cache); this
         // is just routing.
