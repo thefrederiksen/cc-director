@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   - a genuinely permanent failure PARKS the clip (keeps the audio, stops the auto-loop) and only an
 //     explicit Retry re-drives it, while transient failures still auto-retry (issue #1184).
 
-vi.mock("../api/client", () => ({ uploadDictationToSession: vi.fn() }));
+vi.mock("../api/client", () => ({ uploadDictationToSession: vi.fn(), abandonDictation: vi.fn() }));
 vi.mock("./pendingStore", () => ({
   savePending: vi.fn(),
   deletePending: vi.fn(),
@@ -23,8 +23,9 @@ vi.mock("./pendingStore", () => ({
   listPending: vi.fn(),
 }));
 
-import { uploadDictationToSession, type DictationSubmitResult } from "../api/client";
+import { abandonDictation, uploadDictationToSession, type DictationSubmitResult } from "../api/client";
 import {
+  abandonPendingDictation,
   backgroundTranscribeAndSend,
   resumePendingDictations,
   retryPendingDictation,
@@ -82,6 +83,7 @@ beforeEach(() => {
   vi.mocked(deletePending).mockResolvedValue(undefined);
   vi.mocked(getPending).mockResolvedValue(null);
   vi.mocked(listPending).mockResolvedValue([]);
+  vi.mocked(abandonDictation).mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -281,5 +283,47 @@ describe("parking permanently-failed clips (#1184)", () => {
     // A transient outcome never parks the record.
     const parkedSave = vi.mocked(savePending).mock.calls.find((c) => c[0].parkedReason);
     expect(parkedSave).toBeUndefined();
+  });
+});
+
+// Issue #1181, Task 5: the user explicitly abandons a stuck dictation from the phone.
+describe("abandonPendingDictation", () => {
+  it("tells the Gateway to abandon, drops the on-device copy, and never uploads", async () => {
+    vi.mocked(getPending).mockResolvedValue(makeRecord("id-abandon"));
+
+    await abandonPendingDictation("id-abandon");
+
+    // Marked abandoning durably (so a reload does not resume uploading it)...
+    const abandoningSave = vi.mocked(savePending).mock.calls.find((c) => c[0].id === "id-abandon");
+    expect(abandoningSave?.[0].abandoning).toBe(true);
+    // ...the Gateway was told to abandon the durable upload...
+    expect(abandonDictation).toHaveBeenCalledWith("id-abandon");
+    // ...the on-device copy was dropped on confirmation...
+    expect(deletePending).toHaveBeenCalledWith("id-abandon");
+    // ...and it never uploaded the clip.
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+    expect(statusFor("id-abandon")).toBeUndefined();
+  });
+
+  it("when the Gateway is unreachable, keeps the record (retries) and still never uploads", async () => {
+    vi.mocked(getPending).mockResolvedValue(makeRecord("id-abandon-offline"));
+    vi.mocked(abandonDictation).mockResolvedValue(false); // could not reach the Gateway
+
+    await abandonPendingDictation("id-abandon-offline");
+
+    // The abandon was attempted, but the on-device copy is NOT dropped (or the session would wedge locked)...
+    expect(abandonDictation).toHaveBeenCalledWith("id-abandon-offline");
+    expect(deletePending).not.toHaveBeenCalled();
+    // ...and a cancelled clip is never uploaded, even while the abandon is still being retried.
+    expect(uploadDictationToSession).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op for an id already gone (delivered, or abandoned from another surface)", async () => {
+    vi.mocked(getPending).mockResolvedValue(null);
+
+    await abandonPendingDictation("id-missing");
+
+    expect(abandonDictation).not.toHaveBeenCalled();
+    expect(deletePending).not.toHaveBeenCalled();
   });
 });

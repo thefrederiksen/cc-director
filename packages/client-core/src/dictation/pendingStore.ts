@@ -38,6 +38,11 @@ export interface PendingDictation {
    *  timer) - the forever-loop stops. It is cleared only by an explicit user Retry, which moves the record
    *  back to active. Absent for a normal, still-auto-retrying clip. */
   parkedReason?: string;
+  /** Set when the user ABANDONED this clip (issue #1181, Task 5). The record is kept ONLY to carry the
+   *  abandon through to the Gateway: while set, the retry loop no longer uploads it - it calls
+   *  /dictation/{id}/abandon instead, and deletes the on-device copy once the Gateway confirms (retrying
+   *  silently if the Gateway is unreachable, so the session never wedges locked). Absent for a normal clip. */
+  abandoning?: boolean;
 }
 
 const DB_NAME = "dt-dictation";
