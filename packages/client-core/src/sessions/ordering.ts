@@ -68,6 +68,37 @@ export function inBucket(sessions: SessionDto[], bucket: TriageBucket): SessionD
   return inDesktopOrder(sessions.filter((s) => classify(s) === bucket));
 }
 
+// The "waiting line" order for the needs-you group (the mobile roster's top group). The session that
+// has been asking for you the LONGEST sits at the top; a session that only just started needing you
+// drops in at the BOTTOM. This keeps the list from reshuffling under you as new work arrives and
+// makes it a natural first-in, first-handled queue when you work from the top down. Ordered by
+// needsYouSince ascending - the earliest stamp is the oldest wait. A session with no parseable stamp
+// sorts to the bottom, and createdAt then sessionId break ties so equal waits never jitter between
+// polls. This intentionally ignores the drag-to-reorder desktop SortOrder: the needs-you group is a
+// queue by wait time, not the user's manual arrangement.
+export function inWaitingOrder(sessions: SessionDto[]): SessionDto[] {
+  return sessions
+    .filter((s) => classify(s) === "needsYou")
+    .sort((a, b) => {
+      const wa = waitingSinceMs(a);
+      const wb = waitingSinceMs(b);
+      if (wa !== wb) return wa - wb;
+      const created = String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""));
+      if (created !== 0) return created;
+      return String(a.sessionId ?? "").localeCompare(String(b.sessionId ?? ""));
+    });
+}
+
+// The needsYouSince stamp parsed to epoch milliseconds for the waiting-line sort. A missing or
+// unparseable stamp returns positive infinity so that session sorts to the bottom of the queue
+// (we cannot place it in the line, so it never jumps ahead of a session with a real wait time).
+function waitingSinceMs(s: SessionDto): number {
+  const raw = String(s.needsYouSince ?? "").trim();
+  if (raw.length === 0) return Number.POSITIVE_INFINITY;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+}
+
 // Map an effective color to its dot hex. Mirrors the m.js palette so the mobile roster's dots
 // match the existing prototype and the desktop rail.
 const COLORS: Record<string, string> = {

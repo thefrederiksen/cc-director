@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionDto } from "../api/client";
-import { classify, dotColor, effectiveColor, inBucket, isWorking, stateLabel } from "./ordering";
+import { classify, dotColor, effectiveColor, inBucket, inWaitingOrder, isWorking, stateLabel } from "./ordering";
 
 function session(fields: Partial<SessionDto> & { sessionId?: string } = {}): SessionDto {
   return {
@@ -73,5 +73,39 @@ describe("Gateway-stamped session presentation state", () => {
     expect(isWorking(session({ effectiveColor: "red", activityState: "WaitingForInput" }))).toBe(false);
     // On-hold is never working, even if blue.
     expect(isWorking(session({ effectiveColor: "blue", onHold: true }))).toBe(false);
+  });
+});
+
+describe("needs-you waiting-line order", () => {
+  const needsYou = (id: string, needsYouSince?: string, extra: Partial<SessionDto> = {}) =>
+    session({ sessionId: id, effectiveColor: "red", triageBucket: "needsYou", needsYouSince, ...extra } as Partial<SessionDto>);
+
+  it("puts the longest wait at the top and the newest wait at the bottom", () => {
+    const sessions = [
+      needsYou("new", "2026-07-09T12:00:00Z"),
+      needsYou("oldest", "2026-07-09T09:00:00Z"),
+      needsYou("middle", "2026-07-09T10:30:00Z"),
+    ];
+
+    expect(inWaitingOrder(sessions).map((s) => s.sessionId)).toEqual(["oldest", "middle", "new"]);
+  });
+
+  it("keeps only needs-you sessions and ignores manual desktop sortOrder", () => {
+    const sessions = [
+      needsYou("waited-most", "2026-07-09T08:00:00Z", { sortOrder: 99 }),
+      session({ sessionId: "active", effectiveColor: "blue", triageBucket: "active" }),
+      needsYou("waited-least", "2026-07-09T11:00:00Z", { sortOrder: 1 }),
+    ];
+
+    expect(inWaitingOrder(sessions).map((s) => s.sessionId)).toEqual(["waited-most", "waited-least"]);
+  });
+
+  it("sorts a session with no wait stamp to the bottom", () => {
+    const sessions = [
+      needsYou("no-stamp", undefined),
+      needsYou("has-stamp", "2026-07-09T09:00:00Z"),
+    ];
+
+    expect(inWaitingOrder(sessions).map((s) => s.sessionId)).toEqual(["has-stamp", "no-stamp"]);
   });
 });
