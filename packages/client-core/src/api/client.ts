@@ -685,13 +685,22 @@ export async function getRepos(directorId: string, signal?: AbortSignal): Promis
 // and wingmanEnabled=false, type omitted, exactly like the Android NewSessionPanel
 // (FleetParser.BuildCreateBody). Returns the created SessionDto so the caller can open it. The
 // Gateway answers 201 on success; throws GatewayError on non-2xx with the server's reason.
+//
+// launchArgs is the exact command-line argument string the Director passes to the agent (for example
+// "--model opus --dangerously-skip-permissions"). Session launch applies no defaults, so a session
+// created with no launchArgs comes up on the default model and blocked on a permission prompt - the
+// caller decides. An empty or whitespace-only launchArgs sends no "args" at all, matching the
+// historic behavior; callers that do not care (the mobile NewSession flow) simply omit it.
 export async function createSession(
   directorId: string,
   repoPath: string,
+  launchArgs?: string | null,
   signal?: AbortSignal,
 ): Promise<SessionDto> {
   const id = encodeURIComponent(directorId);
   const body: NewSessionRequest = { repoPath: repoPath.trim(), agent: "ClaudeCode", wingmanEnabled: false };
+  const trimmedArgs = (launchArgs ?? "").trim();
+  if (trimmedArgs.length > 0) body.args = trimmedArgs;
   const res = await fetch(`/directors/${id}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },

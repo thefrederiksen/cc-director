@@ -27,6 +27,62 @@ export interface NewSessionDialogProps {
   onCreated: (sessionId: string) => void;
 }
 
+// A launch choice: the value we remember (key), what the user reads (label), and the exact command-line
+// fragment it contributes (arg - empty string means "add nothing", which is the Director's own default).
+interface LaunchChoice {
+  key: string;
+  label: string;
+  arg: string;
+}
+
+// Model choices. "Default" adds no argument, so the Director launches the agent's built-in default model;
+// the others pass "--model <name>" exactly (issue #1243).
+const MODEL_CHOICES: LaunchChoice[] = [
+  { key: "default", label: "Default", arg: "" },
+  { key: "opus", label: "Opus", arg: "--model opus" },
+  { key: "sonnet", label: "Sonnet", arg: "--model sonnet" },
+];
+
+// Permission choices. "Ask for permissions" adds no argument (the agent stops for each permission prompt);
+// "Skip permission prompts" passes --dangerously-skip-permissions so the session starts working at once.
+// We do not steer the user toward either - the default selection is simply their last-used choice.
+const PERMISSION_CHOICES: LaunchChoice[] = [
+  { key: "ask", label: "Ask for permissions", arg: "" },
+  { key: "skip", label: "Skip permission prompts", arg: "--dangerously-skip-permissions" },
+];
+
+const MODEL_STORAGE_KEY = "cockpit.newSession.model";
+const PERMISSION_STORAGE_KEY = "cockpit.newSession.permission";
+
+// Read the last-used choice key from localStorage, falling back to the first choice when nothing was
+// stored or the stored key no longer matches a known choice.
+function loadChoiceKey(storageKey: string, choices: LaunchChoice[]): string {
+  try {
+    const saved = window.localStorage.getItem(storageKey);
+    if (saved && choices.some((c) => c.key === saved)) return saved;
+  } catch {
+    /* localStorage can be unavailable (private mode); fall back to the first choice */
+  }
+  return choices[0].key;
+}
+
+// Save the chosen key so the next open of the dialog pre-selects it.
+function saveChoiceKey(storageKey: string, key: string): void {
+  try {
+    window.localStorage.setItem(storageKey, key);
+  } catch {
+    /* localStorage can be unavailable (private mode); remembering the choice is best-effort */
+  }
+}
+
+// Assemble the launch-argument string from the two chosen fragments, dropping the empty ("default")
+// ones. Returns "" when both are default, so createSession sends no "args" at all.
+function buildLaunchArgs(modelKey: string, permissionKey: string): string {
+  const model = MODEL_CHOICES.find((c) => c.key === modelKey);
+  const permission = PERMISSION_CHOICES.find((c) => c.key === permissionKey);
+  return [model?.arg ?? "", permission?.arg ?? ""].filter((a) => a.length > 0).join(" ");
+}
+
 function directorLabel(d: DirectorInfo): string {
   if (d.machineName.trim()) return d.machineName.trim();
   return d.directorId || "director";
@@ -49,6 +105,14 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
   const [manualPath, setManualPath] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
+  // Launch options, pre-selected from the last-used choice (issue #1243). Lazy initial state reads
+  // localStorage exactly once.
+  const [modelKey, setModelKey] = useState(() => loadChoiceKey(MODEL_STORAGE_KEY, MODEL_CHOICES));
+  const [permissionKey, setPermissionKey] = useState(() =>
+    loadChoiceKey(PERMISSION_STORAGE_KEY, PERMISSION_CHOICES),
+  );
+  const launchArgs = buildLaunchArgs(modelKey, permissionKey);
 
   // Guards against a stale repo response landing after the user switched machines.
   const reposReqRef = useRef(0);
@@ -120,8 +184,11 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
       }
       setCreating(true);
       setCreateError(null);
+      // Remember the choices so the next open pre-selects them (issue #1243).
+      saveChoiceKey(MODEL_STORAGE_KEY, modelKey);
+      saveChoiceKey(PERMISSION_STORAGE_KEY, permissionKey);
       try {
-        const session = await createSession(selectedId, path);
+        const session = await createSession(selectedId, path, launchArgs);
         const sid = session.sessionId;
         if (!sid) throw new Error("The created session had no id.");
         onCreated(sid);
@@ -132,7 +199,7 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
         setCreating(false);
       }
     },
-    [creating, selectedId, onCreated],
+    [creating, selectedId, onCreated, launchArgs, modelKey, permissionKey],
   );
 
   return (
@@ -227,6 +294,52 @@ export function NewSessionDialog({ onClose, onCreated }: NewSessionDialogProps) 
                   }
                 }}
               />
+            </div>
+          </div>
+
+          {/* Step 3: launch options (model and permission mode), remembered across uses */}
+          <div className="newsess-step">
+            <div className="newsess-step-label">3. Launch options</div>
+
+            <div className="newsess-opt-label" id="newsess-model-label">
+              Model
+            </div>
+            <div className="newsess-seg" role="group" aria-labelledby="newsess-model-label">
+              {MODEL_CHOICES.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  className={`newsess-seg-btn${c.key === modelKey ? " sel" : ""}`}
+                  aria-pressed={c.key === modelKey}
+                  disabled={creating}
+                  onClick={() => setModelKey(c.key)}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="newsess-opt-label" id="newsess-permission-label">
+              Permission mode
+            </div>
+            <div className="newsess-seg" role="group" aria-labelledby="newsess-permission-label">
+              {PERMISSION_CHOICES.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  className={`newsess-seg-btn${c.key === permissionKey ? " sel" : ""}`}
+                  aria-pressed={c.key === permissionKey}
+                  disabled={creating}
+                  onClick={() => setPermissionKey(c.key)}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="newsess-opt-label">Arguments passed to the session</div>
+            <div className="newsess-args mono" aria-live="polite">
+              {launchArgs.length > 0 ? launchArgs : "(none - default model, asks for permissions)"}
             </div>
           </div>
 
