@@ -149,12 +149,16 @@ public sealed class GatewayDeviceHeartbeatService : IDisposable
                 return;
             }
 
-            // Issue #1206: publish this Gateway's own advertised front-door URL on every heartbeat. This is
-            // what lets an already-installed Gateway (which registers only once per install, then only
-            // heartbeats) keep its address current and backfill it after updating to this version. Resolved
-            // fresh each tick, so an address that comes up after start heals within one heartbeat cycle.
-            var endpointUrl = _registration.ResolveEndpointUrl();
-            var advanced = await _client.HeartbeatAsync(token, _registration.InstallId, _appVersion, endpointUrl, CancellationToken.None).ConfigureAwait(false);
+            // Issue #1233 (following #1206), with the #334 publish refinement: publish this Gateway's own
+            // advertised front-door URLs only when the computed set has CHANGED since we last published this
+            // run (an IP change, Tailscale coming or going, a hostname change). A routine heartbeat where
+            // nothing changed returns an empty list and omits the field entirely, so the account leaves the
+            // stored value untouched instead of re-writing the same list every few minutes. An address that
+            // comes up after start still heals within one heartbeat cycle (it is a change). The single
+            // endpoint_url stays the first entry when we do publish (non-breaking).
+            var endpointUrls = _registration.NextEndpointUrlsToPublish();
+            var endpointUrl = endpointUrls.Count > 0 ? endpointUrls[0] : null;
+            var advanced = await _client.HeartbeatAsync(token, _registration.InstallId, _appVersion, endpointUrl, endpointUrls, CancellationToken.None).ConfigureAwait(false);
             if (advanced)
             {
                 FileLog.Write($"[GatewayDeviceHeartbeatService] HeartbeatOnceAsync: heartbeat sent for install_id={_registration.InstallId}; last-seen advanced");

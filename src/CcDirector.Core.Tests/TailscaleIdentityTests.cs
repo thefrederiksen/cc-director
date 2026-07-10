@@ -159,6 +159,33 @@ public class TailscaleIdentityTests
     }
 
     [Fact]
+    public void BuildMachineNameUrl_MachineNameAndPort_ComposesHttpUrl()
+    {
+        // Issue #1233: the machine-name path is a plain http hostname URL (NOT a Tailscale address).
+        var url = TailscaleIdentity.BuildMachineNameUrl("SOREN-NORTH", 7878);
+
+        Assert.Equal("http://SOREN-NORTH:7878", url);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void BuildMachineNameUrl_EmptyMachineName_Throws(string machineName)
+    {
+        Assert.Throws<ArgumentException>(() => TailscaleIdentity.BuildMachineNameUrl(machineName, 7878));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(65536)]
+    public void BuildMachineNameUrl_InvalidPort_Throws(int port)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => TailscaleIdentity.BuildMachineNameUrl("SOREN-NORTH", port));
+    }
+
+    [Fact]
     public void FormatAdvertisedControlApiEndpoint_WithFrontDoor_ReturnsFrontDoorUnchanged()
     {
         var endpoint = TailscaleIdentity.FormatAdvertisedControlApiEndpoint(

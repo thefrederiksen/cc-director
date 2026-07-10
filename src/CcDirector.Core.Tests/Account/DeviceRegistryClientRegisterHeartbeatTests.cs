@@ -83,6 +83,54 @@ public sealed class DeviceRegistryClientRegisterHeartbeatTests
     }
 
     [Fact]
+    public async Task RegisterAsync_SendsEndpointUrlsArrayInOrder_AndParsesItBack()
+    {
+        // Issue #1233: the ordered address list is sent as a JSON array and parsed back onto the record.
+        var record =
+            "{\"id\":\"dev-1233\",\"name\":\"GW-HOST\"," +
+            "\"endpoint_url\":\"http://GW-HOST:7878\"," +
+            "\"endpoint_urls\":[\"http://GW-HOST:7878\",\"https://gw.tailnet.ts.net:7878\",\"http://192.168.1.20:7878\"]}";
+        var registerBody = $"{{\"data\":{{\"device_key\":\"{DeviceKeyMarker}\",\"record\":{record}}}}}";
+        var handler = new CapturingHandler(HttpStatusCode.OK, registerBody);
+        var client = ClientOver(handler);
+
+        var urls = new[] { "http://GW-HOST:7878", "https://gw.tailnet.ts.net:7878", "http://192.168.1.20:7878" };
+        var request = new CloudDeviceRegistrationRequest("install-abc", "windows", "GW-HOST", "gateway", "9.9.9", urls[0], urls);
+        var result = await client.RegisterAsync("access-xyz", request);
+
+        // Sent as an ordered JSON array under endpoint_urls.
+        var sent = JsonNode.Parse(handler.Body!)!.AsObject();
+        var sentArray = sent["endpoint_urls"]!.AsArray().Select(n => (string)n!).ToArray();
+        Assert.Equal(urls, sentArray);
+        // endpoint_url is still sent as the first entry (non-breaking).
+        Assert.Equal("http://GW-HOST:7878", (string?)sent["endpoint_url"]);
+
+        // Parsed back onto the record as an ordered list.
+        Assert.Equal(urls, result.Device.EndpointUrls);
+        Assert.Equal("http://GW-HOST:7878", result.Device.EndpointUrl);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_OmitsEndpointUrlsWhenNullOrEmpty_AndParsesNullWhenAbsent()
+    {
+        var registerBody = $"{{\"data\":{{\"device_key\":\"{DeviceKeyMarker}\",\"record\":{{\"id\":\"d\",\"name\":\"n\"}}}}}}";
+
+        // Null list -> field not sent.
+        var nullHandler = new CapturingHandler(HttpStatusCode.OK, registerBody);
+        var nullResult = await ClientOver(nullHandler).RegisterAsync("access-xyz",
+            new CloudDeviceRegistrationRequest("install-abc", "windows", "n", "gateway", "9.9.9", null, null));
+        Assert.False(JsonNode.Parse(nullHandler.Body!)!.AsObject().ContainsKey("endpoint_urls"));
+        // A record with no endpoint_urls parses it as null (not an empty list, not a throw).
+        Assert.Null(nullResult.Device.EndpointUrls);
+
+        // Empty list -> field not sent (never an empty array on the wire).
+        var emptyHandler = new CapturingHandler(HttpStatusCode.OK, registerBody);
+        await ClientOver(emptyHandler).RegisterAsync("access-xyz",
+            new CloudDeviceRegistrationRequest("install-abc", "windows", "n", "gateway", "9.9.9", null, Array.Empty<string>()));
+        Assert.False(JsonNode.Parse(emptyHandler.Body!)!.AsObject().ContainsKey("endpoint_urls"));
+    }
+
+    [Fact]
     public async Task RegisterAsync_OmitsOptionalFieldsWhenNull()
     {
         // Enveloped real-cloud shape: { data: { device_key, record } }.
@@ -174,6 +222,28 @@ public sealed class DeviceRegistryClientRegisterHeartbeatTests
         await ClientOver(withoutUrl).HeartbeatAsync("access-xyz", "install-abc", "9.9.9");
         var sentWithout = JsonNode.Parse(withoutUrl.Body!)!.AsObject();
         Assert.False(sentWithout.ContainsKey("endpoint_url"));
+    }
+
+    [Fact]
+    public async Task HeartbeatAsync_SendsEndpointUrlsWhenGiven_OmitsWhenNullOrEmpty()
+    {
+        // Issue #1233: a Gateway keeps its whole ordered address list current on every heartbeat.
+        var urls = new[] { "http://GW-HOST:7878", "https://gw.tailnet.ts.net:7878" };
+        var withUrls = new CapturingHandler(HttpStatusCode.OK, "{\"data\":{\"recorded\":true}}");
+        await ClientOver(withUrls).HeartbeatAsync("access-xyz", "install-abc", "9.9.9", urls[0], urls);
+        var sentWith = JsonNode.Parse(withUrls.Body!)!.AsObject();
+        Assert.Equal(urls, sentWith["endpoint_urls"]!.AsArray().Select(n => (string)n!).ToArray());
+        Assert.Equal("http://GW-HOST:7878", (string?)sentWith["endpoint_url"]);
+
+        // Omitted list (null) -> the field is not sent, so the account never clears a hand-set value.
+        var withoutUrls = new CapturingHandler(HttpStatusCode.OK, "{\"data\":{\"recorded\":true}}");
+        await ClientOver(withoutUrls).HeartbeatAsync("access-xyz", "install-abc", "9.9.9");
+        Assert.False(JsonNode.Parse(withoutUrls.Body!)!.AsObject().ContainsKey("endpoint_urls"));
+
+        // Empty list -> the field is not sent either (never an empty array on the wire).
+        var emptyUrls = new CapturingHandler(HttpStatusCode.OK, "{\"data\":{\"recorded\":true}}");
+        await ClientOver(emptyUrls).HeartbeatAsync("access-xyz", "install-abc", "9.9.9", null, Array.Empty<string>());
+        Assert.False(JsonNode.Parse(emptyUrls.Body!)!.AsObject().ContainsKey("endpoint_urls"));
     }
 
     [Fact]
