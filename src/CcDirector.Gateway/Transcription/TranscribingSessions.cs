@@ -89,4 +89,31 @@ public sealed class TranscribingSessions
             FileLog.Write($"[TranscribingSessions] sid={sessionId}: mark idle for over {IdleTimeout.TotalSeconds:0}s, cleared");
         return false;
     }
+
+    // ===== Issue #1181, Task 4: the actual transcription-run phase =====
+    // The marks above cover the WHOLE mobile-Speak window (upload + transcribe) and carry an idle
+    // backstop. Task 4 splits the presentation into "Uploading from phone" (from the durable PENDING
+    // marker) vs "Transcribing" (the server actively turning audio into text). This second set is the
+    // "actively transcribing" signal: set for the duration of the assemble+transcribe+deliver run and
+    // cleared in a finally. No idle timeout is needed - it is bounded by the run; if a crash leaks an
+    // entry, the Gateway restart clears it (in-memory) and the durable marker still shows "Uploading".
+    private readonly ConcurrentDictionary<string, byte> _activelyTranscribing = new();
+
+    /// <summary>Mark a session as ACTIVELY transcribing (the complete-run is assembling/transcribing).</summary>
+    public void MarkActivelyTranscribing(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        _activelyTranscribing[sessionId] = 1;
+    }
+
+    /// <summary>Clear the actively-transcribing mark (called in the complete-run's finally).</summary>
+    public void ClearActivelyTranscribing(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        _activelyTranscribing.TryRemove(sessionId, out _);
+    }
+
+    /// <summary>True while the server is actively transcribing this session's uploaded audio.</summary>
+    public bool IsActivelyTranscribing(string sessionId)
+        => !string.IsNullOrEmpty(sessionId) && _activelyTranscribing.ContainsKey(sessionId);
 }

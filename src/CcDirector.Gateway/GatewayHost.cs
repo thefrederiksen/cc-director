@@ -915,6 +915,14 @@ public sealed class GatewayHost : IAsyncDisposable
             // Stamp the orange "Transcribing..." flag while a dictated utterance is being uploaded
             // and transcribed in the background for this session (mobile Speak -> Send).
             transcribingFor: sid => _transcribingSessions.IsTranscribing(sid),
+            // Issue #1181, Task 4: the honest phase label. "Transcribing" while the server is actively
+            // turning the uploaded audio into text (a bounded run); otherwise "Uploading from phone" while
+            // the durable PENDING delivery marker stands (the phone is still sending, and this never wedges
+            // because the marker clears only on delivery/abandon); null when no dictation is inbound.
+            dictationStatusFor: sid =>
+                _transcribingSessions.IsActivelyTranscribing(sid) ? "Transcribing"
+                : _dictationUploads.IsSessionLocked(sid) ? "Uploading from phone"
+                : null,
             // The mobile Speak flow marks/clears this via POST /sessions/{sid}/transcribing.
             transcribingSessions: _transcribingSessions,
             // Issue #212 W3: enrich the Interrupted sessions list from the durable brief store. Always
