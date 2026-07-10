@@ -5290,6 +5290,7 @@ export interface components {
             voiceGenerating?: boolean;
             voiceAudioReady?: boolean;
             transcribing?: boolean;
+            dictationStatus?: null | string;
             wingmanEnabled?: boolean;
             remoteRepo?: string;
             remoteThreadUrl?: string;

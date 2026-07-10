@@ -295,6 +295,18 @@ public sealed class SessionDto
     public bool Transcribing { get; set; }
 
     /// <summary>
+    /// Issue #1181, Task 4: the phone-dictation presentation sub-state - which PHASE an inbound
+    /// dictation is in, so a client can show the honest label instead of one blanket "Transcribing...".
+    /// One of: <c>"Uploading from phone"</c> (the phone is still sending the audio up - computed from the
+    /// durable PENDING delivery marker, so it never wedges); <c>"Transcribing"</c> (the audio is up and
+    /// the server is turning it into text - computed from an active transcription run, NOT the 90-second
+    /// idle mark); or <c>null</c> when no dictation is inbound. Stamped by the Gateway aggregator only
+    /// (always null in Director-local responses). Both non-null values drive the orange roster color; the
+    /// clients render this string as the label.
+    /// </summary>
+    public string? DictationStatus { get; set; }
+
+    /// <summary>
     /// Whether the Wingman experience is enabled for this session: auto-explain briefing on
     /// turn-end, Voice + Wingman tabs visible, Yellow "Wingman is reading" state available.
     /// Default OFF. When false the session behaves as a plain terminal -- clients hide the

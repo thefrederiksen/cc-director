@@ -94,9 +94,10 @@ public static class SessionOrdering
     /// </summary>
     public static string EffectiveColor(SessionDto s) =>
         s.OnHold ? "grey"
-        // Transcribing orange fires for EITHER source: the Gateway flag (mobile Speak, s.Transcribing) OR
-        // the Director raw fact (desktop dictation, s.IsTranscribing). Both yield orange today.
-        : (s.Transcribing || s.IsTranscribing) ? "orange"
+        // Transcribing orange fires for ANY dictation source: the Task 4 phase label (mobile Speak -
+        // "Uploading from phone" or "Transcribing", s.DictationStatus), the legacy Gateway flag
+        // (s.Transcribing), OR the Director raw fact (desktop dictation, s.IsTranscribing). All orange.
+        : (s.DictationStatus != null || s.Transcribing || s.IsTranscribing) ? "orange"
         // The Gateway user-initiated deep dive (issue #217) is orange, ungated.
         : IsExplaining(s) ? "orange"
         : IsBriefing(s) ? "yellow"
@@ -184,6 +185,10 @@ public static class SessionOrdering
     public static string StateLabel(SessionDto s)
     {
         if (s.OnHold) return "On hold";
+        // Issue #1181, Task 4: the honest phase label wins - "Uploading from phone" while the phone is still
+        // sending the audio, "Transcribing" while the server turns it into text. Falls back to the blanket
+        // "Transcribing" for the legacy flag / the desktop's own dictation.
+        if (s.DictationStatus is { } dictationPhase) return dictationPhase;
         if (s.Transcribing || s.IsTranscribing) return "Transcribing";
         if (IsExplaining(s)) return "Explaining";
         if (IsBriefing(s)) return "Wingman reading";

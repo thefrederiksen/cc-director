@@ -168,7 +168,7 @@ internal static class GatewayDictationEndpoint
             // from then on, so there is no age-swept cache window.
             var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
                 new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
-                    id, req, uploads, registry, client, owners, transcription))));
+                    id, req, uploads, registry, client, owners, transcription, transcribingSessions))));
 
             DictationOutcome outcome;
             try
@@ -270,9 +270,14 @@ internal static class GatewayDictationEndpoint
 
     private static async Task<DictationOutcome> RunCompleteCoreAsync(
         string uploadId, DictationCompleteRequest req, VoiceUploadStore uploads, DirectorRegistry registry,
-        DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription)
+        DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription,
+        TranscribingSessions transcribingSessions)
     {
         var sid = req.SessionId!;
+        // Issue #1181, Task 4: this run assembles + transcribes + delivers, so mark the session ACTIVELY
+        // transcribing for its duration. The aggregator reads this to show "Transcribing" (vs the durable
+        // PENDING marker's "Uploading from phone"). Cleared in the finally so it never outlives the run.
+        transcribingSessions.MarkActivelyTranscribing(sid);
         try
         {
             // The configured mode's key must be present before we pay the reassembly + transcribe cost.
@@ -361,6 +366,12 @@ internal static class GatewayDictationEndpoint
         {
             FileLog.Write($"[GatewayDictation] complete sid={sid} uploadId={uploadId} FAILED: {ex.Message}");
             return DictationOutcome.Error(StatusCodes.Status502BadGateway, ex.Message);
+        }
+        finally
+        {
+            // Issue #1181, Task 4: the transcription run is over (delivered, failed, or threw), so drop the
+            // "Transcribing" mark. The durable PENDING/DELIVERED marker now owns the session's state.
+            transcribingSessions.ClearActivelyTranscribing(sid);
         }
     }
 
