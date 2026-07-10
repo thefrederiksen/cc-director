@@ -62,6 +62,10 @@ public sealed class GatewayDeviceRegistrationTests
         // the field was omitted (a device with no resolved address).
         public string? LastRegisterEndpointUrl { get; private set; }
         public string? LastHeartbeatEndpointUrl { get; private set; }
+        // Issue #1233: the WHOLE ordered endpoint_urls list the Gateway published on the last
+        // register/heartbeat, or null when the field was omitted (a device with no resolved addresses).
+        public IReadOnlyList<string>? LastRegisterEndpointUrls { get; private set; }
+        public IReadOnlyList<string>? LastHeartbeatEndpointUrls { get; private set; }
         public int FailRegisterTimes { get; set; }
         public int DeviceCount => _byInstall.Count;
 
@@ -80,6 +84,7 @@ public sealed class GatewayDeviceRegistrationTests
             {
                 RegisterCallCount++;
                 LastRegisterEndpointUrl = (string?)body["endpoint_url"];
+                LastRegisterEndpointUrls = ReadEndpointUrls(body);
                 if (FailRegisterTimes > 0)
                 {
                     FailRegisterTimes--;
@@ -114,6 +119,7 @@ public sealed class GatewayDeviceRegistrationTests
             {
                 HeartbeatCallCount++;
                 LastHeartbeatEndpointUrl = (string?)body["endpoint_url"];
+                LastHeartbeatEndpointUrls = ReadEndpointUrls(body);
                 var installId = (string)body["install_id"]!;
                 LastHeartbeatInstallId = installId;
                 if (!_byInstall.TryGetValue(installId, out var row))
@@ -128,6 +134,17 @@ public sealed class GatewayDeviceRegistrationTests
 
         private static HttpResponseMessage Json(HttpStatusCode status, string body) =>
             new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+        // Issue #1233: read the endpoint_urls array off a request body, or null when the field was omitted.
+        private static IReadOnlyList<string>? ReadEndpointUrls(JsonObject body)
+        {
+            if (body["endpoint_urls"] is not JsonArray array)
+                return null;
+            var list = new List<string>(array.Count);
+            foreach (var item in array)
+                list.Add((string)item!);
+            return list;
+        }
 
         private sealed class Row
         {
@@ -371,33 +388,120 @@ public sealed class GatewayDeviceRegistrationTests
         Assert.Equal(1, stub.DeviceCount);
     }
 
-    // Issue #1206: this Gateway publishes its own advertised front-door URL as endpoint_url on BOTH the
-    // register and every heartbeat, so an installer on another machine can discover the gateway address from
-    // the account (and an already-installed gateway backfills it via heartbeat).
+    // Issue #1233 (following #1206): this Gateway publishes its own advertised front-door URLs as the ordered
+    // endpoint_urls list on register, so an installer on another machine can discover the gateway addresses
+    // from the account and try them in priority order. The single endpoint_url stays the FIRST list entry
+    // (non-breaking for readers of the single field).
     [Fact]
-    public async Task EndpointUrl_PublishedOnRegisterAndHeartbeat()
+    public async Task EndpointUrls_PublishedOnRegister_InOrder_WithEndpointUrlAsFirstEntry()
     {
-        const string endpointUrl = "https://gw.tailnet.ts.net:7878";
+        var ordered = new[]
+        {
+            "http://GW-TEST-857:7878",           // machine name (first, most stable)
+            "https://gw.tailnet.ts.net:7878",    // tailscale (present)
+            "http://192.168.1.20:7878",          // local network IP (last resort)
+        };
         var account = MakeAccount(signedIn: true);
         var stub = new StubCloudDeviceRegistry();
         var client = ClientOver(stub);
         var keyStore = TempKeyStore();
         var reg = new GatewayDeviceRegistrationService(
             account, client, keyStore, Machine, Platform, AppVersion,
-            installIdProvider: () => InstallId, endpointUrlProvider: () => endpointUrl);
+            installIdProvider: () => InstallId, endpointUrlsProvider: () => ordered);
 
         await reg.EnsureRegisteredAsync();
-        Assert.Equal(endpointUrl, stub.LastRegisterEndpointUrl);
 
-        var heartbeat = new GatewayDeviceHeartbeatService(reg, account, client, AppVersion);
-        await heartbeat.HeartbeatOnceAsync();
-        Assert.Equal(endpointUrl, stub.LastHeartbeatEndpointUrl);
+        Assert.Equal(ordered, stub.LastRegisterEndpointUrls);
+        // endpoint_url stays the first list entry so existing single-field readers keep working.
+        Assert.Equal(ordered[0], stub.LastRegisterEndpointUrl);
     }
 
-    // Issue #1206: when the address cannot be resolved yet (provider returns null), no endpoint_url is sent -
-    // so the cloud never clears a value the user may have set by hand in the portal.
+    // Issue #334 publish refinement: a routine heartbeat where the address set has NOT changed since the last
+    // publish omits endpoint_urls (and endpoint_url) entirely, so the account leaves the stored value
+    // untouched instead of re-writing the same list every few minutes. The heartbeat itself still fires.
     [Fact]
-    public async Task EndpointUrl_UnresolvedProvider_OmitsEndpointUrl()
+    public async Task EndpointUrls_UnchangedHeartbeat_OmitsBothFields()
+    {
+        var ordered = new[] { "http://GW-TEST-857:7878", "http://192.168.1.20:7878" };
+        var account = MakeAccount(signedIn: true);
+        var stub = new StubCloudDeviceRegistry();
+        var client = ClientOver(stub);
+        var keyStore = TempKeyStore();
+        var reg = new GatewayDeviceRegistrationService(
+            account, client, keyStore, Machine, Platform, AppVersion,
+            installIdProvider: () => InstallId, endpointUrlsProvider: () => ordered);
+
+        await reg.EnsureRegisteredAsync();               // publishes the list (and caches it)
+        Assert.Equal(ordered, stub.LastRegisterEndpointUrls);
+
+        var heartbeat = new GatewayDeviceHeartbeatService(reg, account, client, AppVersion);
+        await heartbeat.HeartbeatOnceAsync();            // nothing changed -> omit
+
+        Assert.Equal(1, stub.HeartbeatCallCount);        // the heartbeat still fired (last-seen advanced)...
+        Assert.Null(stub.LastHeartbeatEndpointUrls);     // ...but carried NO address list
+        Assert.Null(stub.LastHeartbeatEndpointUrl);
+    }
+
+    // Issue #334 publish refinement: when the computed set actually changes (for example the LAN IP changes),
+    // the next heartbeat republishes the whole new ordered list; a subsequent unchanged heartbeat omits again.
+    [Fact]
+    public async Task EndpointUrls_ChangedSet_RepublishedOnNextHeartbeat()
+    {
+        var current = new[] { "http://GW-TEST-857:7878", "http://192.168.1.20:7878" };
+        var account = MakeAccount(signedIn: true);
+        var stub = new StubCloudDeviceRegistry();
+        var client = ClientOver(stub);
+        var keyStore = TempKeyStore();
+        var reg = new GatewayDeviceRegistrationService(
+            account, client, keyStore, Machine, Platform, AppVersion,
+            installIdProvider: () => InstallId, endpointUrlsProvider: () => current);
+
+        await reg.EnsureRegisteredAsync();               // publishes [machine, .20]
+        var heartbeat = new GatewayDeviceHeartbeatService(reg, account, client, AppVersion);
+
+        await heartbeat.HeartbeatOnceAsync();            // unchanged -> omit
+        Assert.Null(stub.LastHeartbeatEndpointUrls);
+
+        // The LAN IP changes.
+        current = new[] { "http://GW-TEST-857:7878", "http://192.168.1.55:7878" };
+        await heartbeat.HeartbeatOnceAsync();            // changed -> republish the whole new list
+
+        Assert.Equal(current, stub.LastHeartbeatEndpointUrls);
+        Assert.Equal(current[0], stub.LastHeartbeatEndpointUrl);
+
+        // A further heartbeat with the set unchanged omits again (the stub overwrites its capture each tick).
+        await heartbeat.HeartbeatOnceAsync();
+        Assert.Null(stub.LastHeartbeatEndpointUrls);
+    }
+
+    // Issue #1233: two addresses when Tailscale is not present (machine name + LAN IP), and the single
+    // endpoint_url is still the first entry.
+    [Fact]
+    public async Task EndpointUrls_TwoAddressesWhenNoTailscale()
+    {
+        var ordered = new[]
+        {
+            "http://GW-TEST-857:7878",   // machine name
+            "http://192.168.1.20:7878",  // local network IP
+        };
+        var account = MakeAccount(signedIn: true);
+        var stub = new StubCloudDeviceRegistry();
+        var client = ClientOver(stub);
+        var keyStore = TempKeyStore();
+        var reg = new GatewayDeviceRegistrationService(
+            account, client, keyStore, Machine, Platform, AppVersion,
+            installIdProvider: () => InstallId, endpointUrlsProvider: () => ordered);
+
+        await reg.EnsureRegisteredAsync();
+        Assert.Equal(ordered, stub.LastRegisterEndpointUrls);
+        Assert.Equal(ordered[0], stub.LastRegisterEndpointUrl);
+    }
+
+    // Issue #1233: when no address can be resolved yet (provider returns an empty list), neither endpoint_urls
+    // nor endpoint_url is sent - so the account never clears a value the user may have set by hand (issue #334
+    // heartbeat rule: an omitted/empty list leaves the stored value untouched).
+    [Fact]
+    public async Task EndpointUrls_UnresolvedProvider_OmitsBothFields()
     {
         var account = MakeAccount(signedIn: true);
         var stub = new StubCloudDeviceRegistry();
@@ -405,13 +509,30 @@ public sealed class GatewayDeviceRegistrationTests
         var keyStore = TempKeyStore();
         var reg = new GatewayDeviceRegistrationService(
             account, client, keyStore, Machine, Platform, AppVersion,
-            installIdProvider: () => InstallId, endpointUrlProvider: () => null);
+            installIdProvider: () => InstallId, endpointUrlsProvider: () => Array.Empty<string>());
 
         await reg.EnsureRegisteredAsync();
         Assert.Null(stub.LastRegisterEndpointUrl);
+        Assert.Null(stub.LastRegisterEndpointUrls);
 
         var heartbeat = new GatewayDeviceHeartbeatService(reg, account, client, AppVersion);
         await heartbeat.HeartbeatOnceAsync();
         Assert.Null(stub.LastHeartbeatEndpointUrl);
+        Assert.Null(stub.LastHeartbeatEndpointUrls);
+    }
+
+    // Issue #1233: with no provider wired at all (the pre-#1206 default), nothing is published.
+    [Fact]
+    public async Task EndpointUrls_NoProvider_PublishesNothing()
+    {
+        var account = MakeAccount(signedIn: true);
+        var stub = new StubCloudDeviceRegistry();
+        var client = ClientOver(stub);
+        var keyStore = TempKeyStore();
+        var reg = MakeRegistration(account, client, keyStore); // no endpointUrlsProvider
+
+        await reg.EnsureRegisteredAsync();
+        Assert.Null(stub.LastRegisterEndpointUrl);
+        Assert.Null(stub.LastRegisterEndpointUrls);
     }
 }

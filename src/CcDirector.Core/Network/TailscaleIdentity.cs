@@ -222,6 +222,24 @@ public static class TailscaleIdentity
     }
 
     /// <summary>
+    /// Compose the machine-name endpoint URL <c>http://&lt;machineName&gt;:&lt;port&gt;</c> - the local-network
+    /// path a Gateway advertises FIRST in its address list (issue #1233). This is a plain hostname URL, NOT a
+    /// Tailscale address: on a local network the machine name is the most stable and most direct way to reach
+    /// the host (it survives an IP change), which is why it ranks ahead of the Tailscale front door and the
+    /// raw local network IP. It lives beside the other endpoint-URL builders here so the address builders sit
+    /// together. Pure - unit-tested.
+    /// </summary>
+    public static string BuildMachineNameUrl(string machineName, int port)
+    {
+        if (string.IsNullOrWhiteSpace(machineName))
+            throw new ArgumentException("Machine name is required", nameof(machineName));
+        if (port is <= 0 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port), port, "Port must be 1-65535");
+
+        return $"http://{machineName}:{port}";
+    }
+
+    /// <summary>
     /// The Control API endpoint string to advertise to a REMOTE consumer (the session
     /// "Copy Handover Info" clipboard block, the Help/About dialog's "Control endpoint" row)
     /// for this Director's local Control API <paramref name="port"/>. Prefers the Tailscale

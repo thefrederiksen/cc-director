@@ -458,24 +458,39 @@ public sealed class GatewayHost : IAsyncDisposable
         if (Account is not null)
         {
             var deviceRegistryClient = new Core.Account.DeviceRegistryClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
-            // Issue #1206: resolve THIS Gateway's own advertised front-door URL the same way Directors
-            // advertise theirs - the Tailscale MagicDNS front door (or the LAN IP under LAN addressing mode,
-            // issue #457), keyed on this Gateway's own port and gateway.tailnetEndpoint override. Published
-            // as endpoint_url on register and every heartbeat so an installer on another machine discovers
-            // the gateway address from the account instead of the person typing it. Re-resolved on each call
-            // (never cached) so an address that appears after start heals within one heartbeat cycle; an
-            // unresolved address (for example Tailscale not up) returns null and simply sends no address.
+            // Issue #1233 (following #1206): resolve THIS Gateway's own reachable front-door URLs as an
+            // ORDERED LIST and publish the whole list (endpoint_urls) on register and every heartbeat, so a
+            // joining machine can try them in order and use the first that answers rather than being stuck on
+            // one address. Priority order (the reasoning in issue #1233):
+            //   1. Machine name plus port (http://<MachineName>:<port>) - ALWAYS. The most stable and most
+            //      direct name on a local network (it survives an IP change).
+            //   2. The Tailscale front door - only when Tailscale is actually available on this machine. The
+            //      reliable cross-network path.
+            //   3. The local network IP plus port - the last-resort path (least stable; the IP can change).
+            // So the list is three addresses when Tailscale is available and two when it is not. An explicit
+            // gateway.tailnetEndpoint override, when set (and not loopback), is the operator's hand-set
+            // reachable URL and ranks FIRST - it preserves the pre-#1233 single endpoint_url for operators who
+            // set it, and the client health-checks every candidate so a stale one is simply skipped. The
+            // single endpoint_url (issue #1206) is the first list entry, so existing readers keep working.
+            // Re-resolved on each call (never cached) so an address that appears after start heals within one
+            // heartbeat cycle; the resolvers never throw (they report an unresolved address as unresolved).
             var tailnetResolver = new Core.Network.TailnetIdentityResolver();
             var lanResolver = new Core.Network.LanIdentityResolver();
-            var endpointAddressingMode = gatewayConfig.AddressingMode;
             var endpointOverride = gatewayConfig.TailnetEndpoint;
             var gatewayPort = Port;
-            Func<string?> resolveEndpointUrl = () =>
+            Func<IReadOnlyList<string>> resolveEndpointUrls = () =>
             {
-                var resolution = endpointAddressingMode == Core.Configuration.AddressingMode.Lan
-                    ? lanResolver.ResolveEndpoint(gatewayPort, endpointOverride)
-                    : tailnetResolver.ResolveEndpoint(gatewayPort, endpointOverride);
-                return resolution.IsResolved ? resolution.Endpoint : null;
+                // Do the I/O here (probe Tailscale and the LAN), then hand the resolved pieces to the pure
+                // BuildOrderedEndpointUrls assembler so the ordering/dedup/loopback-skip logic is unit-tested
+                // without a real network. Passing no config override to the resolvers yields the PURE
+                // discovered address (the override is applied separately, ahead of everything, in the assembler).
+                var tailnet = tailnetResolver.ResolveEndpoint(gatewayPort, configOverride: null);
+                var lan = lanResolver.ResolveEndpoint(gatewayPort, configOverride: null);
+                return BuildOrderedEndpointUrls(
+                    endpointOverride,
+                    Core.Network.TailscaleIdentity.BuildMachineNameUrl(Environment.MachineName, gatewayPort),
+                    tailnet.IsResolved ? tailnet.Endpoint : null,
+                    lan.IsResolved ? lan.Endpoint : null);
             };
             _deviceRegistration = new Account.GatewayDeviceRegistrationService(
                 Account,
@@ -484,7 +499,7 @@ public sealed class GatewayHost : IAsyncDisposable
                 machineName: Environment.MachineName,
                 platform: ResolvePlatform(),
                 appVersion: AppVersion.Semver,
-                endpointUrlProvider: resolveEndpointUrl);
+                endpointUrlsProvider: resolveEndpointUrls);
             _childMirror = new Account.ChildDeviceMirrorService(
                 Account,
                 deviceRegistryClient,
@@ -568,6 +583,64 @@ public sealed class GatewayHost : IAsyncDisposable
         if (OperatingSystem.IsMacOS()) return "macos";
         if (OperatingSystem.IsLinux()) return "linux";
         return "unknown";
+    }
+
+    /// <summary>
+    /// Assembles this Gateway's reachable front-door URLs into the ordered, de-duplicated list published as
+    /// <c>endpoint_urls</c> (issue #1233). Pure and side-effect free (the caller does the probing and passes
+    /// the resolved pieces), so the priority order and de-duplication are unit-tested without a real network.
+    /// Order:
+    /// <list type="number">
+    /// <item>An explicit, non-loopback <paramref name="overrideUrl"/> (gateway.tailnetEndpoint) - the
+    /// operator's hand-set reachable address - first; a loopback override is dropped (never advertised).</item>
+    /// <item><paramref name="machineNameUrl"/> - the machine name plus port, always present, the most stable
+    /// local-network name.</item>
+    /// <item><paramref name="tailscaleUrl"/> - the Tailscale front door, only when it was resolved (null when
+    /// Tailscale is unavailable), the reliable cross-network path.</item>
+    /// <item><paramref name="lanUrl"/> - the local network IP plus port, only when it was resolved (null when
+    /// no routable LAN IPv4 exists), the last-resort path.</item>
+    /// </list>
+    /// Blank entries are skipped and duplicates are collapsed case-insensitively (for example when the
+    /// override equals the machine-name URL), so the list carries each distinct reachable address once.
+    /// The operator's <paramref name="overrideUrl"/> is the one caller-supplied value, so it is additionally
+    /// validated as a real http/https URL before being published (issue #334 contract: any non-http(s) or
+    /// unparseable entry would make the account reject the WHOLE register/heartbeat with 400) - a malformed
+    /// override is simply dropped, never sent, so it can never break device registration. The three
+    /// discovered addresses are always well-formed by construction.
+    /// </summary>
+    internal static IReadOnlyList<string> BuildOrderedEndpointUrls(
+        string? overrideUrl, string machineNameUrl, string? tailscaleUrl, string? lanUrl)
+    {
+        var urls = new List<string>();
+        void Add(string? url)
+        {
+            if (!string.IsNullOrWhiteSpace(url) && !urls.Contains(url, StringComparer.OrdinalIgnoreCase))
+                urls.Add(url);
+        }
+
+        // Only a valid, non-loopback http/https override is publishable. A loopback address is a lie to every
+        // remote caller; a non-http(s) or unparseable string would 400 the whole request (issue #334).
+        if (IsPublishableHttpUrl(overrideUrl) && !Core.Network.TailnetIdentityResolver.IsLoopback(overrideUrl))
+            Add(overrideUrl);
+        Add(machineNameUrl);
+        Add(tailscaleUrl);
+        Add(lanUrl);
+        return urls;
+    }
+
+    /// <summary>
+    /// True when <paramref name="url"/> is a publishable front-door address for the account endpoint_urls
+    /// list (issue #334 contract): a non-blank, absolute http or https URL of at most 200 characters. Used to
+    /// keep a malformed operator override out of the published list so it can never 400 the whole request.
+    /// Pure - unit-tested.
+    /// </summary>
+    internal static bool IsPublishableHttpUrl([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.Length > 200)
+            return false;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return false;
+        return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
     }
 
     /// <summary>

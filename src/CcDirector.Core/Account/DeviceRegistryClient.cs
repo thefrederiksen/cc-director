@@ -25,7 +25,13 @@ namespace CcDirector.Core.Account;
 /// <param name="LastSeenAt">When the device was last seen, or null when omitted.</param>
 /// <param name="EndpointUrl">The device's reachable front-door URL (for example a gateway's advertised
 /// tailnet address), or null when the device has none. For a "gateway" device this is what the installer
-/// discovers to enroll a Workstation against, so the person never types the gateway address (issue #1206).</param>
+/// discovers to enroll a Workstation against, so the person never types the gateway address (issue #1206).
+/// Kept equal to the first entry of <see cref="EndpointUrls"/> so a reader of this single field keeps
+/// working unchanged (issue #1233, non-breaking).</param>
+/// <param name="EndpointUrls">The device's reachable front-door URLs in priority order (issue #1233), or
+/// null when the device published none. A Gateway publishes machine name first, then its Tailscale address
+/// (only when Tailscale is available), then its local network IP - so a joining machine can try them in
+/// order and use the first that answers. <see cref="EndpointUrl"/> holds the first entry.</param>
 public sealed record CloudDeviceRecord(
     string Id,
     string Name,
@@ -36,7 +42,8 @@ public sealed record CloudDeviceRecord(
     string? KeyLast4,
     string? CreatedAt,
     string? LastSeenAt,
-    string? EndpointUrl);
+    string? EndpointUrl,
+    IReadOnlyList<string>? EndpointUrls = null);
 
 /// <summary>
 /// The request body for registering THIS device with the DevThrottle account:
@@ -52,14 +59,18 @@ public sealed record CloudDeviceRecord(
 /// <param name="AppVersion">The reporting app version, or null when omitted.</param>
 /// <param name="EndpointUrl">This device's reachable front-door URL, or null when it has none. A Gateway
 /// publishes its own advertised address here so an installer on another machine can discover it (issue
-/// #1206); other device types leave it null.</param>
+/// #1206); other device types leave it null. Kept equal to the first entry of <see cref="EndpointUrls"/>.</param>
+/// <param name="EndpointUrls">This device's reachable front-door URLs in priority order (issue #1233), or
+/// null/empty when it has none. A Gateway publishes machine name first, then its Tailscale address (only
+/// when Tailscale is available), then its local network IP; other device types leave it null.</param>
 public sealed record CloudDeviceRegistrationRequest(
     string InstallId,
     string Platform,
     string? Name,
     string? DeviceType,
     string? AppVersion,
-    string? EndpointUrl = null);
+    string? EndpointUrl = null,
+    IReadOnlyList<string>? EndpointUrls = null);
 
 /// <summary>
 /// The result of a device registration: the per-device key the cloud issues ONCE (in plain text, only
@@ -259,6 +270,13 @@ public sealed class DeviceRegistryClient
         // machine can discover it. Sent only when present, so a device with no address never sends the field.
         if (!string.IsNullOrWhiteSpace(request.EndpointUrl))
             body["endpoint_url"] = request.EndpointUrl;
+        // Issue #1233: a Gateway also publishes the WHOLE ordered list of the ways it can be reached (machine
+        // name, then Tailscale when present, then local network IP) so a joining machine tries them in order.
+        // Sent only when non-empty, so a device with no addresses never sends the field. The single
+        // endpoint_url above stays the first entry (non-breaking for readers of the single field).
+        var endpointUrlsArray = BuildEndpointUrlsArray(request.EndpointUrls);
+        if (endpointUrlsArray is not null)
+            body["endpoint_urls"] = endpointUrlsArray;
 
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
@@ -301,8 +319,10 @@ public sealed class DeviceRegistryClient
     /// <param name="installId">This device's stable install id (identifies the row to advance). Required.</param>
     /// <param name="appVersion">The reporting app version, or null when omitted.</param>
     /// <param name="endpointUrl">This device's reachable front-door URL to publish, or null to omit it.</param>
+    /// <param name="endpointUrls">This device's reachable front-door URLs in priority order to publish (issue
+    /// #1233), or null/empty to omit them. When present, the first entry equals <paramref name="endpointUrl"/>.</param>
     /// <param name="ct">Cancels the request.</param>
-    public async Task<bool> HeartbeatAsync(string accessToken, string installId, string? appVersion = null, string? endpointUrl = null, CancellationToken ct = default)
+    public async Task<bool> HeartbeatAsync(string accessToken, string installId, string? appVersion = null, string? endpointUrl = null, IReadOnlyList<string>? endpointUrls = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(accessToken))
             throw new ArgumentException("Access token is required", nameof(accessToken));
@@ -317,6 +337,11 @@ public sealed class DeviceRegistryClient
             body["app_version"] = appVersion;
         if (!string.IsNullOrWhiteSpace(endpointUrl))
             body["endpoint_url"] = endpointUrl;
+        // Issue #1233: keep the whole ordered address list current on every heartbeat (the single
+        // endpoint_url above stays the first entry). Omitted when empty, so the cloud never clears a value.
+        var endpointUrlsArray = BuildEndpointUrlsArray(endpointUrls);
+        if (endpointUrlsArray is not null)
+            body["endpoint_urls"] = endpointUrlsArray;
 
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
@@ -439,7 +464,44 @@ public sealed class DeviceRegistryClient
             StringField(obj, "key_last4"),
             StringField(obj, "created_at"),
             StringField(obj, "last_seen_at"),
-            StringField(obj, "endpoint_url"));
+            StringField(obj, "endpoint_url"),
+            StringArrayField(obj, "endpoint_urls"));
+    }
+
+    /// <summary>
+    /// Builds the JSON array to send for <c>endpoint_urls</c> (issue #1233), skipping null/blank entries so
+    /// only real addresses are published. Returns null when the source is null or holds no usable address, so
+    /// the caller omits the field entirely rather than sending an empty array.
+    /// </summary>
+    private static JsonArray? BuildEndpointUrlsArray(IReadOnlyList<string>? urls)
+    {
+        if (urls is null || urls.Count == 0)
+            return null;
+
+        var array = new JsonArray();
+        foreach (var url in urls)
+            if (!string.IsNullOrWhiteSpace(url))
+                array.Add((JsonNode)url);
+
+        return array.Count == 0 ? null : array;
+    }
+
+    /// <summary>
+    /// Reads a string-array field from the object as an ordered list (issue #1233), skipping any non-string
+    /// or blank entry. Returns null when the field is absent or not an array, and null when it holds no
+    /// usable string, so a caller reads "no addresses" as null (never an empty list, never a throw).
+    /// </summary>
+    private static IReadOnlyList<string>? StringArrayField(JsonObject obj, string name)
+    {
+        if (!obj.TryGetPropertyValue(name, out var node) || node is not JsonArray array)
+            return null;
+
+        var values = new List<string>(array.Count);
+        foreach (var item in array)
+            if (item is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text))
+                values.Add(text);
+
+        return values.Count == 0 ? null : values;
     }
 
     /// <summary>Reads a string field from the object, or null when absent or not a string value.</summary>
