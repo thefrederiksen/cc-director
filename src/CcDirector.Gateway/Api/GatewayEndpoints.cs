@@ -829,6 +829,34 @@ internal static class GatewayEndpoints
             return Results.Json(new { killed = true });
         });
 
+        // Forward "flag this session for deletion" to the owning Director, so a session on ONE
+        // machine (or a remote client) can request the async teardown of a session on another. The
+        // owning Director's reaper does the actual removal. Body is optional ({ "reason": "..." }).
+        app.MapPost("/sessions/{sid}/request-deletion", async (string sid, SessionDeletionRequest? body) =>
+        {
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
+            if (session is null || director is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+            var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
+            var ok = await client.RequestSessionDeletionAsync(ep, sid, body?.Reason);
+            if (!ok)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(new { pendingDeletion = true });
+        });
+
+        // Forward "cancel the pending deletion" to the owning Director (grace-window undo).
+        app.MapDelete("/sessions/{sid}/request-deletion", async (string sid) =>
+        {
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
+            if (session is null || director is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+            var ep = (director.ControlEndpoint ?? "").TrimEnd('/');
+            var ok = await client.CancelSessionDeletionAsync(ep, sid);
+            if (!ok)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(new { pendingDeletion = false });
+        });
+
         // Phase 4b: forward wingman observability through the Gateway so the merged
         // Session View on the gateway side can render WHY a dot is the color it is.
         app.MapGet("/sessions/{sid}/wingman", async (string sid) =>

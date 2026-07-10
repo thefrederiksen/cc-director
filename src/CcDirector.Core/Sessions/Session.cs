@@ -801,6 +801,26 @@ public sealed class Session : IDisposable
     /// <summary>UTC time <see cref="LastUserPrompt"/> was captured, or null if none.</summary>
     public DateTime? LastUserPromptAt { get; private set; }
 
+    /// <summary>
+    /// UTC time this session was flagged for deletion via the Control API
+    /// (POST /sessions/{id}/request-deletion), or null if it is not flagged. When set, the
+    /// Director's deletion reaper removes the session on its next sweep once the grace window
+    /// has elapsed AND the session is not actively Working. Set/cleared via
+    /// <see cref="MarkForDeletion"/> / <see cref="CancelDeletion"/>. The common case is a session
+    /// flagging ITSELF: an unattended run that has nothing left for the user asks to be reaped and
+    /// then finishes its turn normally - the reaper does the removal asynchronously, so the calling
+    /// process is never yanked out from under an in-flight request. In-memory only (not persisted):
+    /// a session is reaped within ~a minute, so it effectively never survives to a Director restart.
+    /// </summary>
+    public DateTime? DeletionRequestedAt { get; private set; }
+
+    /// <summary>Short human reason captured when <see cref="DeletionRequestedAt"/> was set
+    /// (e.g. "jobs-auto: nothing to report"), surfaced in the roster tooltip. Null when not flagged.</summary>
+    public string? DeletionReason { get; private set; }
+
+    /// <summary>True when this session has been flagged for deletion and is awaiting the reaper.</summary>
+    public bool PendingDeletion => DeletionRequestedAt.HasValue;
+
     /// <summary>Fires when StatusColor changes. Args: (oldColor, newColor, reason).</summary>
     public event Action<string, string, string>? OnStatusColorChanged;
 
@@ -1064,6 +1084,39 @@ public sealed class Session : IDisposable
         }
 
         OnStatusColorChanged?.Invoke(old, color, LastStatusReason);
+    }
+
+    /// <summary>
+    /// Flag this session for deletion. Idempotent: re-flagging refreshes the reason but keeps the
+    /// ORIGINAL request time, so the grace window is always measured from the first request. Paints a
+    /// sticky grey badge (the "unknown" colour every client already renders as gray) with a "Marked
+    /// for deletion" reason, so the row visibly winds down on the desktop, phone, and CLI with no
+    /// client change. The actual removal is done asynchronously by the Director's deletion reaper -
+    /// this call never touches the process, so a session can safely flag ITSELF and still finish its
+    /// turn. Uses <see cref="StatusColorSource.PositiveEvidence"/> so the wingman's activity mapping
+    /// cannot repaint over the winding-down badge before the reaper removes it.
+    /// </summary>
+    public void MarkForDeletion(string? reason)
+    {
+        if (_disposed) return;
+        var trimmed = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        DeletionReason = trimmed;
+        DeletionRequestedAt ??= DateTime.UtcNow;
+        var why = trimmed is null
+            ? "Marked for deletion - reaping shortly"
+            : $"Marked for deletion - {trimmed}";
+        SetStatusColor(Wingman.StatusColor.Unknown, why, source: StatusColorSource.PositiveEvidence);
+        FileLog.Write($"[Session] MarkForDeletion: session={Id} reason={trimmed ?? "(none)"}");
+    }
+
+    /// <summary>Clear a pending-deletion flag (an operator cancelled the reap during the grace
+    /// window). No-op when the session was not flagged.</summary>
+    public void CancelDeletion()
+    {
+        if (DeletionRequestedAt is null) return;
+        DeletionRequestedAt = null;
+        DeletionReason = null;
+        FileLog.Write($"[Session] CancelDeletion: session={Id}");
     }
 
     /// <summary>

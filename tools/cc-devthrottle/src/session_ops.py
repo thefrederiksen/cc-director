@@ -225,6 +225,31 @@ def rename_session(target: Optional[str], new_name: str) -> Dict[str, Any]:
     return resp
 
 
+def mark_done(target: Optional[str], reason: Optional[str]) -> Dict[str, Any]:
+    """Flag a session for deletion, defaulting to the current session.
+
+    The session is not killed synchronously - it is flagged, and the owning Director's
+    deletion reaper removes it within about a minute, once a short grace has elapsed and the
+    session is no longer working. This is how an unattended run tears ITSELF down when it has
+    nothing left for the user, instead of lingering as a dead session in the fleet.
+    """
+    sid = resolve_target_or_current(target)
+    body: Dict[str, Any] = {}
+    if reason and reason.strip():
+        body["reason"] = reason.strip()
+    try:
+        resp = director.post_json(f"sessions/{sid}/request-deletion", body)
+    except director.DirectorError as err:
+        console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]Marked[/green] {director.short_id(sid)} for deletion; "
+        "the Director will reap it shortly."
+    )
+    return resp if isinstance(resp, dict) else {}
+
+
 def _report_delivery(resp: Any, who: str) -> None:
     accepted = False
     count = 0

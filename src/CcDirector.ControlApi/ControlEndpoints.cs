@@ -3134,6 +3134,50 @@ internal static class ControlEndpoints
             }
         });
 
+        // ===== REST: Ask to be deleted (self-requested teardown) =====
+        // Flag a session for asynchronous removal instead of killing it now. The owning Director's
+        // deletion reaper removes it on its next ~30s sweep, once a short grace has elapsed and the
+        // session is no longer Working. This is the SAFE self-delete: an agent flags its OWN session
+        // (id = CC_SESSION_ID) and then finishes its turn - unlike DELETE /sessions/{sid}, it does not
+        // kill the caller's process mid-request. Body is optional ({ "reason": "..." }).
+        app.MapPost("/sessions/{sid}/request-deletion", (HttpContext ctx, string sid, SessionDeletionRequest? body) =>
+        {
+            var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
+            FileLog.Write($"[ControlEndpoints] POST /sessions/{sid}/request-deletion caller={caller} reason=\"{body?.Reason}\"");
+
+            if (!Guid.TryParse(sid, out var guid))
+                return Results.BadRequest(new { error = "invalid session id format" });
+
+            var session = sessionManager.GetSession(guid);
+            if (session is null)
+                return Results.NotFound(new { error = "session not found" });
+
+            session.MarkForDeletion(body?.Reason);
+            return Results.Json(new
+            {
+                pendingDeletion = true,
+                requestedAt = session.DeletionRequestedAt,
+                reason = session.DeletionReason,
+            });
+        });
+
+        // Cancel a pending deletion during the grace window (operator changed their mind).
+        app.MapDelete("/sessions/{sid}/request-deletion", (HttpContext ctx, string sid) =>
+        {
+            var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
+            FileLog.Write($"[ControlEndpoints] DELETE /sessions/{sid}/request-deletion caller={caller}");
+
+            if (!Guid.TryParse(sid, out var guid))
+                return Results.BadRequest(new { error = "invalid session id format" });
+
+            var session = sessionManager.GetSession(guid);
+            if (session is null)
+                return Results.NotFound(new { error = "session not found" });
+
+            session.CancelDeletion();
+            return Results.Json(new { pendingDeletion = false });
+        });
+
         // ===== Crash recovery (issue #212 W3) =====
         // This machine's claimed dirty crash journals - Directors that died abnormally here,
         // with their recoverable session rosters. The Gateway aggregates these across the fleet
@@ -3451,6 +3495,8 @@ internal static class ControlEndpoints
             QuietThresholdSeconds = CcDirector.Core.Wingman.TerminalStateDetector.QuietThreshold.TotalSeconds,
             VoiceMode = s.VoiceMode,
             OnHold = s.OnHold,
+            PendingDeletion = s.PendingDeletion,
+            DeletionReason = s.DeletionReason,
             WingmanEnabled = s.WingmanEnabled,
             // Raw local facts for the Gateway color fold (issue #1177, Phase 2). Reported straight from
             // the Session; the Director does NOT fold them into a color here (StatusColor is unchanged).
