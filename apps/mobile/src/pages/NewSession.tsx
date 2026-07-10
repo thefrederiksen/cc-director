@@ -74,6 +74,15 @@ function directorLabel(d: DirectorInfo): string {
   return d.directorId || "director";
 }
 
+// The Control API port for a Director, parsed from its controlEndpoint (e.g. "http://127.0.0.1:7880"
+// or "https://host.ts.net:7881" -> "7880" / "7881"). This is what tells apart several cc-director
+// slots running on the SAME machine, so it is shown on every picker row and is the number to quote to
+// an agent to say which cc-director a session was started on. Empty when the endpoint carries no port.
+function directorPort(d: DirectorInfo): string {
+  const match = /:(\d+)(?:\/|$)/.exec(d.controlEndpoint ?? "");
+  return match ? match[1] : "";
+}
+
 function repoLabel(r: RepoInfo): string {
   if (r.name.trim()) return r.name.trim();
   const parts = r.path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
@@ -192,7 +201,10 @@ export function NewSession() {
               <li key={d.directorId} className={`row${d.directorId === selectedId ? " row-selected" : ""}`}>
                 <button type="button" className="picker-link" onClick={() => setSelectedId(d.directorId)}>
                   <span className="row-body">
-                    <span className="row-name">{directorLabel(d)}</span>
+                    <span className="row-name">
+                      {directorLabel(d)}
+                      {directorPort(d) !== "" && <span className="row-port"> port {directorPort(d)}</span>}
+                    </span>
                     <span className="row-context">{directorSubtitle(d, now)}</span>
                   </span>
                   {d.directorId === selectedId && <span className="picker-check" aria-hidden="true">selected</span>}

@@ -35,6 +35,18 @@ export interface DirectorInfo {
   startedAt: string;
   /** When the Gateway last heard from this Director (ISO 8601), or empty. Used to default-select. */
   lastSeen: string;
+  /** The Director's Control API endpoint, e.g. "http://127.0.0.1:7880" or a tailnet URL. Carries the
+   *  PORT, which is what distinguishes several Directors (slots) on the SAME machine in the picker. */
+  controlEndpoint: string;
+}
+
+/** GET /healthz - what the running Gateway reports about itself. Backs the mobile About screen. */
+export interface GatewayHealth {
+  status: string;
+  directors: number;
+  sessions: number;
+  version: string;
+  serverTime: string;
 }
 
 // One recently-used repository on a Director, projected from GET /directors/{id}/repos. Also not in
@@ -598,6 +610,20 @@ export async function uploadImage(sessionId: string, file: File, signal?: AbortS
 // owner's Hold/Remove decision. Every call carries the same Bearer the rest of the client uses, so
 // the whole flow works with global Gateway auth on or off.
 
+// GET /healthz - the running Gateway's own status and version. No auth needed. Backs the mobile
+// About screen so the user can confirm which build they are on.
+export async function getGatewayHealth(signal?: AbortSignal): Promise<GatewayHealth> {
+  const res = await fetch("/healthz", {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET /healthz failed: ${res.status}`);
+  }
+  return (await res.json()) as GatewayHealth;
+}
+
 // GET /directors - the fleet's machines (Directors). Sorted most-recently-seen first so the picker
 // can default-select the top one (matching FleetParser.ParseDirectors), tie-broken by machine name.
 // Entries with no directorId are dropped (they cannot be addressed). Throws GatewayError on non-2xx
@@ -619,6 +645,7 @@ export async function getDirectors(signal?: AbortSignal): Promise<DirectorInfo[]
       version: String(d.version ?? ""),
       startedAt: String(d.startedAt ?? ""),
       lastSeen: String(d.lastSeen ?? ""),
+      controlEndpoint: String(d.controlEndpoint ?? ""),
     }))
     .filter((d) => d.directorId.length > 0);
   list.sort((a, b) => {
