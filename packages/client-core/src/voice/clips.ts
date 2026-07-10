@@ -13,7 +13,7 @@
 // layer beneath it (a cold start re-reads bytes from the cache with no network).
 
 import { useEffect, useState } from "react";
-import { fetchWingmanVoiceAudio, getWingmanVoice, type SessionDto, type WingmanVoice } from "@devthrottle/client-core/api/client";
+import { fetchWingmanVoiceAudio, getWingmanVoice, type SessionDto, type WingmanVoice } from "../api/client";
 
 export type ClipPhase = "none" | "downloading" | "ready" | "error";
 
