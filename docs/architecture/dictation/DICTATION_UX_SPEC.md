@@ -235,41 +235,32 @@ submits instantly with no background step and no Transcribing state. Insert alwa
 waits for the transcript, on every surface, because Insert exists to hand back
 editable text.
 
-### Desktop durability: a Send can never lose the recording (issue #1130)
+### Desktop Send: deliver now or fail loudly - no queue
 
-Fire-and-forget must never mean fire-and-forget-the-audio. On the desktop the
-recorded clip used to live only in memory, so when the one background transcription
-call failed - most often the DevThrottle proxy returning `504 upstream_timeout`
-because the speech provider was briefly slow - the audio was discarded with only a
-log line and nothing submitted. That is fixed by making the desktop Send durable,
-mirroring the mobile server-owned durable upload (issues #1006/#1056):
+A desktop Send/Speak dictation either goes into its session at once or reports the
+failure at once. There is **no durable queue and no background retry**: the clip is
+transcribed once, and if the target session is idle at its prompt it is submitted; if
+transcription fails, or the session is not accepting input, the words are dropped and
+the failure is surfaced with a modal the user cannot miss. Any text the user had typed
+is put back so it is never lost.
 
-1. **Persist before any network.** The instant Send is pressed, the whole recorded
-   clip is written to disk as a WAV under
-   `%LOCALAPPDATA%\cc-director\pending-dictations\<id>.wav` with a JSON sidecar
-   (target session, the PAUSED prefix, the typed text before/after the caret,
-   attempt count, last error). The transcription call happens only after the audio
-   is safely on disk.
-2. **Delete only on delivery.** The saved clip is removed only once its words have
-   been transcribed and submitted into the session. Every failure keeps it.
-3. **Retry automatically, no restart needed.** A background sweeper retries every
-   saved clip whose session is present on a timer (every 30 seconds), so a transient
-   outage recovers on its own. A transient failure (a 5xx/429, a timeout, a dropped
-   connection - the 504 included) stays eligible for retry; a "needs the user"
-   failure (out of credits, no transcription key) is parked so the retry does not
-   hammer a call that will keep failing.
-4. **Re-drive on the next launch.** On startup any clip parked for "needs you" is
-   promoted back to retryable (in case the user has since fixed it) and every saved
-   clip is re-driven into its session once that session is loaded, so even an
-   application crash mid-transcribe recovers.
-5. **Never silent.** While any clip is held, a persistent notice tells the user
-   their words are saved and being sent automatically. The single path that can
-   still lose a clip - the local disk being unwritable AND the immediate
-   transcription failing - is reported loudly, never silently.
-6. **Stale prune.** A clip is discarded undelivered only when it is older than seven
-   days (its session is certainly gone by then) - generous because on the desktop
-   the saved audio is the only copy.
+This deliberately replaced an earlier hold-and-retry design (a `pending-dictations`
+disk store plus a 30-second sweeper) whose persistent "your words are saved and being
+sent automatically" notice sat quietly at the bottom of the window. In practice
+everyone missed that notice, and undeliverable clips - a session that never became
+ready, a missing transcription key - piled up in the store retrying forever. A loud
+immediate failure is clearer than a quiet promise of eventual delivery, so the queue
+and its notice were removed:
 
-The orange **Transcribing** roster flag still shows only for the immediate attempt;
-a held clip is surfaced by the persistent notice instead, so the user is never
-blocked from carrying on.
+1. **Transcribe once.** The recorded clip is transcribed off the UI thread while the
+   session shows the orange **Transcribing** flag. A transcription failure is reported
+   immediately and the clip is discarded - it is not saved or retried.
+2. **Deliver only into an idle session.** The dictation is submitted only when the
+   target session is idle at its prompt. Typing into a busy, streaming composer is what
+   piled up duplicate copies of the sentence (issue #1135); a not-ready session fails
+   loudly ("the session was not accepting input") instead of being typed into or held.
+3. **Never silent.** Every failure path pops a modal ("Dictation not sent: <reason>")
+   and restores the typed text. Nothing is queued behind the user's back.
+
+The orange **Transcribing** roster flag shows for the one transcription attempt; when
+it clears, the dictation has either been delivered or the user has been told why not.

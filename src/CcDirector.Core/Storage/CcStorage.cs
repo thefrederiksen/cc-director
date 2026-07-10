@@ -116,18 +116,6 @@ public static class CcStorage
     public static string DictationUploads() => Ensure(Path.Combine(Base(), "dictation-uploads"));
 
     /// <summary>
-    /// Durable pending-dictation store for the DESKTOP fire-and-forget Send (issue #1130):
-    /// base/pending-dictations/. The instant Send is pressed the recorded audio is written here as
-    /// &lt;id&gt;.wav with a &lt;id&gt;.json sidecar (target session, prefix text, attempt count, last error),
-    /// BEFORE any transcription call. It is deleted only once the dictation is transcribed and
-    /// delivered into its session, so a failed or slow transcription, an app crash, or an unreachable
-    /// transcription server can never lose recorded speech - it is retried live and re-driven on the
-    /// next launch. This is the desktop peer of the mobile server-owned durable upload
-    /// (<see cref="DictationUploads"/>, issue #1006). Owned by the desktop app.
-    /// </summary>
-    public static string PendingDictations() => Ensure(Path.Combine(Base(), "pending-dictations"));
-
-    /// <summary>
     /// Wingman training data (issue #531 follow-up): base/wingman-training/. When the
     /// "wingman_training_capture" setting is on, every wingman summary appends one JSON-lines record
     /// here holding up to 20,000 characters of the session terminal, the agent reply + context the

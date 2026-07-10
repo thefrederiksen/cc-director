@@ -243,14 +243,6 @@ public partial class MainWindow : Window
         var app = (App)global::Avalonia.Application.Current!;
         _sessionManager = app.SessionManager;
 
-        // Durable dictation recovery (issue #1130): retry and re-drive any dictations saved from a
-        // previous run or a failed send, so a transient transcription outage or a crash never loses
-        // recorded audio. Kicks a background scan now and starts the retry timer; the disk scan runs
-        // off the UI thread.
-        var dictationOptions = _sessionManager.Options;
-        if (dictationOptions is not null)
-            StartDictationRecovery(dictationOptions);
-
         SessionList.ItemsSource = _sessions;
         SlimSessionList.ItemsSource = _sessions;
         QueueItemsList.ItemsSource = _queueItems;
@@ -1528,10 +1520,6 @@ public partial class MainWindow : Window
 
             progress.SetComplete();
             FileLog.Write($"[MainWindow] LoadWorkspaceAsync: workspace '{workspace.Name}' loaded");
-
-            // Now that this workspace's sessions are live, re-drive any dictations saved for them from a
-            // previous run (issue #1130) instead of waiting for the next timer sweep.
-            _ = SweepDictationsAsync();
         }
         finally
         {
@@ -2997,24 +2985,22 @@ public partial class MainWindow : Window
                 var recorder = dlg.BackgroundRecorder;
                 var composerText = existingTextBefore;
                 var caret = caretBefore;
-                // Split the typed text at the caret so the durable record can reproduce the exact
-                // composed turn on any retry, dropping neither the typed part nor the dictation.
+                // Split the typed text at the caret so the dictation lands exactly where the user's
+                // caret was, dropping neither the typed part nor the spoken part.
                 var before = composerText[..caret];
                 var after = composerText[caret..];
                 PromptInput.Text = "";
                 EnsureDictationInfra(options);
-                FileLog.Write($"[MainWindow] BtnSpeak_Click: durable background dictation send to session {target.Id}, composer chars={composerText.Length}, caret={caret}");
+                FileLog.Write($"[MainWindow] BtnSpeak_Click: background dictation send to session {target.Id}, composer chars={composerText.Length}, caret={caret}");
                 _ = global::CcDirector.Avalonia.Voice.BackgroundDictationSend.RunAsync(
-                    recorder, dlg.BackgroundPrefix, target,
-                    _pendingDictationStore!, _dictationSweeper!, _dictationTranscriber!,
+                    recorder, dlg.BackgroundPrefix, target, _dictationTranscriber!,
                     submit: text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
                         () => SubmitDictatedTextAsync(target, text)),
+                    isSessionReady: () => global::CcDirector.Core.Dictation.DictationReadiness.IsReadyForDelivery(target.ActivityState),
                     before: before,
                     after: after,
-                    onResult: result => global::Avalonia.Threading.Dispatcher.UIThread.Post(
-                        () => OnDictationDeliveryResult(result)),
-                    onLost: err => global::Avalonia.Threading.Dispatcher.UIThread.Post(
-                        () => OnDictationLost(target, composerText, err)));
+                    onFailed: err => global::Avalonia.Threading.Dispatcher.UIThread.Post(
+                        () => OnDictationFailed(target, composerText, err)));
                 return;
             }
 
@@ -3100,131 +3086,36 @@ public partial class MainWindow : Window
         await target.SendTextAsync(text);
     }
 
-    // ===== Durable dictation delivery (issue #1130) =====
+    // ===== Fire-and-forget dictation delivery =====
     //
-    // The desktop fire-and-forget Send saves its recorded audio to disk BEFORE any transcription call
-    // and deletes it ONLY once the words are delivered, so a failed or slow transcription (the 504
-    // upstream_timeout that lost the user's audio), an unreachable server, or a crash can never lose a
-    // recording. The immediate attempt runs in BackgroundDictationSend; anything it does not deliver
-    // stays saved and is retried by _dictationSweeper on a timer and re-driven at the next launch.
+    // A desktop Send/Speak dictation either goes into its session now or fails loudly at once - there is
+    // NO durable queue and NO background retry. BackgroundDictationSend transcribes off the UI thread and
+    // submits into the session if it is idle at its prompt; if transcription fails or the session is not
+    // accepting input, the words are reported with a modal and dropped (the typed text is restored). This
+    // replaced the old silent hold-and-retry store whose reassurance banner everyone missed.
 
-    private global::CcDirector.Core.Dictation.PendingDictationStore? _pendingDictationStore;
-    private global::CcDirector.Core.Dictation.PendingDictationSweeper? _dictationSweeper;
     private global::CcDirector.Core.Transcription.IDictationTranscriber? _dictationTranscriber;
-    private global::Avalonia.Threading.DispatcherTimer? _dictationSweepTimer;
     private bool _dictationInfraReady;
-    private bool _heldNoticeShown;
-
-    /// <summary>How often the background sweep retries any saved-but-undelivered dictation, so a
-    /// transient transcription outage recovers on its own without the user restarting Director.</summary>
-    private static readonly TimeSpan DictationSweepInterval = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Build the durable-dictation store, transcriber, and sweeper once (idempotent). Needs
-    /// <see cref="AgentOptions"/> for the transcriber's method/dictionary resolution, so it is built the
-    /// first time a dictation is sent or when the window finishes loading, whichever comes first.
+    /// Build the dictation transcriber once (idempotent). Needs <see cref="AgentOptions"/> for the
+    /// transcriber's method/dictionary resolution, so it is built the first time a dictation is sent.
     /// </summary>
     private void EnsureDictationInfra(AgentOptions options)
     {
         if (_dictationInfraReady) return;
-        _pendingDictationStore = new global::CcDirector.Core.Dictation.PendingDictationStore();
         _dictationTranscriber = new global::CcDirector.Core.Transcription.DictationTranscriber(options);
-        var delivery = new global::CcDirector.Core.Dictation.DictationDeliveryService(_dictationTranscriber, _pendingDictationStore);
-        _dictationSweeper = new global::CcDirector.Core.Dictation.PendingDictationSweeper(_pendingDictationStore, delivery);
         _dictationInfraReady = true;
-        FileLog.Write("[MainWindow] durable dictation infrastructure ready");
+        FileLog.Write("[MainWindow] dictation transcriber ready");
     }
 
     /// <summary>
-    /// Start the background dictation recovery: promote any clip parked for "needs credits / needs a
-    /// key" back to retryable (the user may have fixed it since), run one sweep now (for sessions
-    /// already loaded), and start the timer that keeps retrying held clips so a transient outage
-    /// recovers without a restart. Called from the window-loaded hook, off the UI thread for the disk scan.
+    /// A fire-and-forget dictation could not be delivered: transcription failed, or the target session
+    /// was not accepting input. There is no queue and no retry - restore any typed text so it is never
+    /// lost, and report it with a modal so the failure is impossible to miss (the old silent hold-notice
+    /// everyone missed is gone). Runs on the UI thread.
     /// </summary>
-    private void StartDictationRecovery(AgentOptions options)
-    {
-        EnsureDictationInfra(options);
-        _ = Task.Run(() =>
-        {
-            try { _dictationSweeper!.PromoteParkedToPending(); }
-            catch (Exception ex) { FileLog.Write($"[MainWindow] PromoteParked FAILED: {ex.Message}"); }
-        }).ContinueWith(_ => SweepDictationsAsync());
-
-        if (_dictationSweepTimer is null)
-        {
-            _dictationSweepTimer = new global::Avalonia.Threading.DispatcherTimer { Interval = DictationSweepInterval };
-            _dictationSweepTimer.Tick += (_, _) => _ = SweepDictationsAsync();
-            _dictationSweepTimer.Start();
-        }
-    }
-
-    /// <summary>
-    /// One background sweep: re-drive every saved dictation whose session is currently loaded, leave the
-    /// rest for a later sweep, and refresh the held notice. Runs off the UI thread (disk + network);
-    /// each submit marshals back to the UI thread. Safe to call concurrently - the sweeper's in-flight
-    /// guard prevents double-delivery.
-    /// </summary>
-    private async Task SweepDictationsAsync()
-    {
-        var sweeper = _dictationSweeper;
-        if (sweeper is null) return;
-        try
-        {
-            await Task.Run(() => sweeper.SweepAsync(
-                resolveSubmit: sessionId =>
-                {
-                    if (!Guid.TryParse(sessionId, out var gid)) return null;
-                    var session = _sessionManager?.GetSession(gid);
-                    if (session is null) return null;
-                    return text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
-                        () => SubmitDictatedTextAsync(session, text));
-                },
-                isSessionReady: sessionId =>
-                {
-                    // Only deliver into a session idle at its prompt (issue #1135): typing a dictation
-                    // into a Working, streaming composer is what piled up duplicate copies of the sentence.
-                    // A session wedged at Claude Code's startup splash also reads as ready here, but the
-                    // pile-up it caused is stopped at the clip level instead: the first submit probe that
-                    // the composer never echoes parks the clip ComposerBlocked, and the sweep skips a
-                    // non-Pending clip, so it is never re-typed (DictationDeliveryService.DeliverAsync).
-                    if (!Guid.TryParse(sessionId, out var gid)) return false;
-                    var session = _sessionManager?.GetSession(gid);
-                    return session is not null
-                        && global::CcDirector.Core.Dictation.DictationReadiness.IsReadyForDelivery(session.ActivityState);
-                }));
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] SweepDictationsAsync FAILED: {ex.Message}");
-        }
-        global::Avalonia.Threading.Dispatcher.UIThread.Post(RefreshHeldDictationNotice);
-    }
-
-    /// <summary>
-    /// Handle the immediate result of a fire-and-forget Send. Success is silent. A held clip refreshes
-    /// the persistent notice so the user knows their words are saved and retrying. A "needs the user"
-    /// outcome adds a specific note. Runs on the UI thread.
-    /// </summary>
-    private void OnDictationDeliveryResult(global::CcDirector.Core.Dictation.DictationDeliveryResult result)
-    {
-        try
-        {
-            if (result.Outcome == global::CcDirector.Core.Dictation.DictationDeliveryOutcome.LostNoAudio)
-                FileLog.Write($"[MainWindow] dictation delivery reported LostNoAudio: {result.Error}");
-            RefreshHeldDictationNotice();
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OnDictationDeliveryResult FAILED: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// The single lossy path (issue #1130): the audio could not be saved to disk AND the immediate
-    /// transcription failed, so the dictation is lost. Put any typed compose text back so at least that
-    /// survives, and tell the user loudly - never silent. Runs on the UI thread.
-    /// </summary>
-    private void OnDictationLost(Session target, string composerText, string error)
+    private async void OnDictationFailed(Session target, string composerText, string error)
     {
         try
         {
@@ -3235,57 +3126,13 @@ public partial class MainWindow : Window
                 else
                     target.PendingPromptText = global::CcDirector.Avalonia.Voice.DictationText.Join(composerText, target.PendingPromptText ?? "");
             }
-            ShowNotification($"Dictation could not be saved to disk or transcribed and was lost: {error}. Please try again.");
+            await MessageBox.ShowAsync(this, "Dictation not sent",
+                $"Your dictation was not sent: {error}\n\nNothing was queued. Any text you had typed has been put back - dictate again when you are ready.");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[MainWindow] OnDictationLost FAILED: {ex.Message}");
+            FileLog.Write($"[MainWindow] OnDictationFailed FAILED: {ex.Message}");
         }
-    }
-
-    /// <summary>
-    /// Show or clear the persistent held-dictation notice from the current store contents. Any saved
-    /// clip means recorded words are safe and will be delivered automatically; the notice reassures the
-    /// user they will not lose them. Only clears a notice this method itself set, so it never wipes an
-    /// unrelated notification. Runs on the UI thread.
-    /// </summary>
-    private void RefreshHeldDictationNotice()
-    {
-        var store = _pendingDictationStore;
-        if (store is null) return;
-        int total, parked, composerBlocked;
-        try
-        {
-            var all = store.LoadAll();
-            total = all.Count;
-            parked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.NeedsAttention);
-            composerBlocked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.ComposerBlocked);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] RefreshHeldDictationNotice FAILED: {ex.Message}");
-            return;
-        }
-
-        if (total == 0)
-        {
-            if (_heldNoticeShown) { ClearNotification(); _heldNoticeShown = false; }
-            return;
-        }
-
-        var noun = total == 1 ? "dictation is" : "dictations are";
-        string message;
-        if (parked == total)
-            message = $"{total} {noun} saved and waiting - transcription needs your attention (add credits or set a key). They will be sent automatically once resolved; you will not lose them.";
-        else if (composerBlocked == total)
-            // A real submit probe already failed against the session's composer (it is starting up or
-            // wedged), so the words are held rather than re-typed over and over (issue #1135). They will
-            // be delivered when the session is accepting input again.
-            message = $"{total} {noun} saved - the target session is not accepting input yet (starting up or stuck). They will be sent automatically once the session is ready; you will not lose them.";
-        else
-            message = $"{total} {noun} saved and being sent automatically as soon as the session is ready for input. You will not lose them.";
-        ShowNotification(message);
-        _heldNoticeShown = true;
     }
 
     private void BtnOpenInBrowser_Click(object? sender, RoutedEventArgs e)
