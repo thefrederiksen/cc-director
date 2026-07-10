@@ -169,8 +169,8 @@ function RosterRow({ session, selectedId }: { session: SessionDto; selectedId: s
         <span className="roster-dot" style={{ backgroundColor: dotColor(color) }} aria-hidden="true" />
         <span className="roster-body">
           <span className="roster-name">
-            {hasNum && <span className="roster-num">{num}</span>}
-            {name}
+            {hasNum && <span className="num-badge">{num}</span>}
+            <span className="roster-name-text">{name}</span>
           </span>
           <span className="roster-meta">
             <span className="roster-state">{contextLine(session)}</span>

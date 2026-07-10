@@ -55,6 +55,26 @@
   flex-wrap: wrap;
 }
 
+/* title search (issue #1211) */
+.fmap-search {
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  min-width: 180px;
+}
+
+.fmap-search::placeholder {
+  color: var(--text-dim);
+}
+
+.fmap-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* pivot switch */
 .fmap-pivot {
   display: inline-flex;
