@@ -1393,6 +1393,44 @@ internal static class ControlEndpoints
             }
         });
 
+        // ===== REST: Handover info (issue #1214) =====
+        // The small identity/locate block the desktop app's "Copy Handover Info" menu item shows for a
+        // session (name, session id, repo, director id, machine, version). Deliberately does NOT include
+        // this Director's Control API endpoint: the Gateway proxies this to a browser, and issue #1214
+        // requires the browser to talk only to the Gateway and never learn a Director address. This is a
+        // pure read of the live session record - no transcript parsing, no I/O.
+        app.MapGet("/sessions/{sid}/handover", (string sid) =>
+        {
+            FileLog.Write($"[ControlEndpoints] /handover: sid={sid}");
+            if (!Guid.TryParse(sid, out var guid))
+                return Results.BadRequest(new { error = "invalid session id format" });
+
+            var session = sessionManager.GetSession(guid);
+            if (session is null)
+            {
+                FileLog.Write($"[ControlEndpoints] /handover: session not found sid={sid}");
+                return Results.NotFound(new { error = "session not found" });
+            }
+
+            // Issue #800: the display name goes through the single composer so it is never the bare
+            // folder name (legacy sessions with no CustomName get folder + type + disambiguator).
+            var name = SessionName.DisplayName(session.CustomName,
+                SessionName.FolderName(session.RepoPath),
+                SessionName.Disambiguator(session.Id));
+
+            var dto = new HandoverInfoDto
+            {
+                SessionId = sid,
+                DisplayName = name,
+                RepoPath = session.RepoPath,
+                DirectorId = directorId,
+                MachineName = Environment.MachineName,
+                Version = version,
+            };
+            FileLog.Write($"[ControlEndpoints] /handover: ok sid={sid}, director={directorId}");
+            return Results.Json(dto);
+        });
+
         // ===== REST: Brief - the Cockpit's full-page session view (ASK / DID / NEEDS YOU) =====
         // Sourced from the Claude JSONL transcript, never the terminal screen. The DID bullets
         // and verbatim NEEDS-YOU extraction come from a cached OpenAI condensation (one call

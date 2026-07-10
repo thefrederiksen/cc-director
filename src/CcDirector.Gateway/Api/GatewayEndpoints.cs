@@ -1347,6 +1347,25 @@ internal static class GatewayEndpoints
             return Results.Json(summary);
         });
 
+        // Handover info proxy (issue #1214). Forwards to whichever Director owns the session and returns
+        // the desktop "Handover info" identity block (name, session id, repo, director id, machine,
+        // version) for a browser. Gated by the same Bearer/device-key auth as every other session route
+        // (the global AuthMiddleware 401s a credential-less request before it reaches here). The Director
+        // address is never leaked: this returns HandoverInfoDto, which carries no Control API endpoint,
+        // and the resolved ControlEndpoint stays server-side. 404 when the session is unknown to every
+        // Director; 502 when the owning Director is unreachable (never a silent empty body).
+        app.MapGet("/sessions/{sid}/handover", async (string sid) =>
+        {
+            var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved);
+            if (session is null || director is null)
+                return Results.NotFound(new { error = "session not found across any director" });
+            var handover = await client.GetHandoverAsync(director.ControlEndpoint, sid);
+            if (handover is null)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            handover.DirectorId = director.DirectorId;
+            return Results.Json(handover);
+        });
+
         // Recap proxy. Both endpoints transparently forward to whichever Director owns the
         // session. The Director side does the heavy lifting (claude --print + cache); this
         // is just routing.
