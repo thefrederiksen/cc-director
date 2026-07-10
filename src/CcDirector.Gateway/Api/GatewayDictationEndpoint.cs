@@ -337,10 +337,13 @@ internal static class GatewayDictationEndpoint
             }
 
             // The Gateway injects the dictation by calling the owning Director's control API DIRECTLY, which
-            // BYPASSES the Gateway's own /sessions/{sid}/prompt front door. So this delivery is naturally
-            // EXEMPT from the enforced session lock (issue #1188) - the lock (which is on while this upload is
-            // PENDING) blocks other surfaces from typing into the session, never this dictation's own arrival.
-            var (ok, _, err) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = message, AppendEnter = true });
+            // BYPASSES the Gateway's own /sessions/{sid}/prompt front door (issue #1188). That front door
+            // blocks OTHER surfaces from typing into the PENDING session. The Director now ALSO enforces the
+            // lock on its own control API (issue #1181, Task 3b), so this delivery is no longer implicitly
+            // exempt there: it names its upload id via the X-Dictation-Delivery header (deliveryUploadId), and
+            // the Director exempts exactly this send - the dictation's own arrival, which is what the lock is
+            // held for. The header rides the fleet-authenticated call, so it cannot be forged from outside.
+            var (ok, _, err) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = message, AppendEnter = true }, deliveryUploadId: uploadId);
             if (!ok)
                 return DictationOutcome.Error(StatusCodes.Status502BadGateway, err ?? "submit to session failed");
 

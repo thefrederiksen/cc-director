@@ -358,7 +358,9 @@ internal static class ControlEndpoints
             {
                 try
                 {
-                    await local.SendTextAsync(framed);
+                    // Fleet message delivery is framework-mediated, not a human racing the dictation, so it
+                    // is exempt from the dictation lock (issue #1181, Task 3b).
+                    await local.SendTextAsync(framed, SendSource.Internal);
                     return Results.Json(new FleetSendResponse { Accepted = true, DeliveredCount = 1 });
                 }
                 catch (Exception ex)
@@ -459,7 +461,7 @@ internal static class ControlEndpoints
                 // Best effort per target: one failing session must not abort the rest of a broadcast.
                 try
                 {
-                    await s.SendTextAsync(framed);
+                    await s.SendTextAsync(framed, SendSource.Internal);
                     count++;
                 }
                 catch (Exception ex)
@@ -486,7 +488,7 @@ internal static class ControlEndpoints
                     .Count(m => m.Role == CcDirector.Core.History.ConversationRole.Assistant)
                 : 0;
 
-            await target.SendTextAsync(framed);
+            await target.SendTextAsync(framed, SendSource.Internal);
 
             // Give the target a moment to leave Idle, then wait for it to settle back to Idle.
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -2093,7 +2095,7 @@ internal static class ControlEndpoints
                 if (existing.Status is SessionStatus.Exited or SessionStatus.Failed)
                     return Results.StatusCode(StatusCodes.Status409Conflict);
                 target = existing;
-                await target.SendTextAsync(contextText);
+                await target.SendTextAsync(contextText, SendSource.Internal);
             }
             else
             {
@@ -2132,7 +2134,7 @@ internal static class ControlEndpoints
                         if (st is ActivityState.Exited) { FileLog.Write($"[ControlEndpoints] /handover target exited before idle, sid={capturedTarget.Id}"); return; }
                         await Task.Delay(500);
                     }
-                    try { await capturedTarget.SendTextAsync(capturedText); }
+                    try { await capturedTarget.SendTextAsync(capturedText, SendSource.Internal); }
                     catch (Exception ex) { FileLog.Write($"[ControlEndpoints] /handover dispatch FAILED: {ex.Message}"); }
                 });
             }
@@ -2154,9 +2156,17 @@ internal static class ControlEndpoints
             }, statusCode: 201);
         });
 
-        app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req) =>
+        app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req, HttpContext httpCtx) =>
         {
-            FileLog.Write($"[ControlEndpoints] POST prompt: sid={sid}, len={req?.Text?.Length ?? 0}");
+            // Issue #1181, Task 3b: the Gateway's OWN dictation delivery reaches a LOCKED session through
+            // this control API (it bypasses the Gateway front door), so it carries the X-Dictation-Delivery
+            // header naming the inbound upload id. The call already arrives with the fleet Bearer token
+            // (DirectorEndpointClient), so the header is only present on an authenticated Gateway call and
+            // cannot be forged from outside the fleet. Its presence marks this send as the dictation's own
+            // arrival (Delivery, exempt); every other caller defaults to UserInput and is checked.
+            var deliveryUploadId = httpCtx.Request.Headers["X-Dictation-Delivery"].ToString();
+            var source = string.IsNullOrWhiteSpace(deliveryUploadId) ? SendSource.UserInput : SendSource.Delivery;
+            FileLog.Write($"[ControlEndpoints] POST prompt: sid={sid}, len={req?.Text?.Length ?? 0}, source={source}");
 
             // Issue #1177 (Phase 1): the prompt body is executed through the shared SessionCommandExecutor
             // so this REST path and the Gateway stream down-channel run identical logic. The executor's
@@ -2167,7 +2177,7 @@ internal static class ControlEndpoints
                 SessionId = sid,
                 PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
             };
-            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, source: source);
 
             return result.Status switch
             {
@@ -2175,6 +2185,7 @@ internal static class ControlEndpoints
                 DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
                 DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
                 DirectorCommandStatus.Conflict => Results.StatusCode(StatusCodes.Status409Conflict),
+                DirectorCommandStatus.Locked => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status423Locked),
                 _ => Results.Problem(result.Error ?? "prompt command failed"),
             };
         });
@@ -2291,7 +2302,9 @@ internal static class ControlEndpoints
 
             var text = item.Text;
             session.PromptQueue.Remove(itemGuid);
-            await session.SendTextAsync(text);
+            // Queue drain is an explicit, ordered mechanism (issue #1181, Task 3b lists it exempt): the
+            // user asked to release this queued item, so it is not blocked by the dictation lock.
+            await session.SendTextAsync(text, SendSource.Internal);
             return Results.Json(new { items = ProjectQueue(session) });
         });
 

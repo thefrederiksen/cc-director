@@ -202,7 +202,8 @@ internal static class VoiceTurnEndpoint
                 FileLog.Write($"[VoiceTurnEndpoint] sid={guid}: sending text len={inputText.Length}, transcriptOffsetBefore={offsetBefore}");
                 try
                 {
-                    await session.SendTextAsync(inputText);
+                    // Voice-turn injection is framework-mediated; exempt from the dictation lock (issue #1181, Task 3b).
+                    await session.SendTextAsync(inputText, SendSource.Internal);
                 }
                 catch (Exception ex)
                 {

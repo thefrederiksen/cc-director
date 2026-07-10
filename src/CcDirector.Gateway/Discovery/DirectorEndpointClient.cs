@@ -542,12 +542,25 @@ public sealed class DirectorEndpointClient : IDisposable
         return widgets;
     }
 
-    public async Task<(bool ok, PromptResponse? body, string? error)> PostPromptAsync(string endpoint, string sessionId, PromptRequest req, CancellationToken ct = default)
+    /// <param name="deliveryUploadId">
+    /// When set (issue #1181, Task 3b), this prompt is the Gateway's OWN dictation delivery for that upload
+    /// id, so it is sent with the <c>X-Dictation-Delivery</c> header. The Director reads that header to
+    /// exempt this send from the enforced dictation lock - the delivery is what the lock is waiting for. The
+    /// header rides the same fleet-authenticated call, so it cannot be forged from outside the fleet. Left
+    /// null for every ordinary (human) prompt, which the Director checks against the lock.
+    /// </param>
+    public async Task<(bool ok, PromptResponse? body, string? error)> PostPromptAsync(string endpoint, string sessionId, PromptRequest req, CancellationToken ct = default, string? deliveryUploadId = null)
     {
         try
         {
             // Director side ignores WaitForIdle - that's a Gateway-side concern.
-            var resp = await _actionHttp.PostAsJsonAsync($"{endpoint}/sessions/{sessionId}/prompt", req, ct);
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/sessions/{sessionId}/prompt")
+            {
+                Content = JsonContent.Create(req),
+            };
+            if (!string.IsNullOrWhiteSpace(deliveryUploadId))
+                request.Headers.TryAddWithoutValidation("X-Dictation-Delivery", deliveryUploadId);
+            var resp = await _actionHttp.SendAsync(request, ct);
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);

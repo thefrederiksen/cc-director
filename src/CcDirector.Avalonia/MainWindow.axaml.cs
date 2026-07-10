@@ -82,6 +82,7 @@ public partial class MainWindow : Window
     // Session git status polling
     private readonly CcDirector.Core.Git.GitStatusProvider _gitStatusProvider = new();
     private global::Avalonia.Threading.DispatcherTimer? _sessionGitTimer;
+    private global::Avalonia.Threading.DispatcherTimer? _dictationLockTimer;
     private bool _sessionGitRefreshRunning;
 
     // Interactive TUI mode
@@ -326,6 +327,21 @@ public partial class MainWindow : Window
             await RefreshSessionGitStatusAsync();
         };
         _sessionGitTimer.Start();
+
+        // Issue #1181, Task 3b: refresh each session's "receiving a dictation" flag once a second so the
+        // rail can paint it orange while a phone dictation is inbound. One cheap disk read per session per
+        // tick (the durable marker), NOT per render; the Session raises a change event only when it flips,
+        // so the rail repaints just on the edges. (Task 4 will additionally compute this at the Gateway so
+        // the phone and cockpit show the same state.)
+        _dictationLockTimer = new global::Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        _dictationLockTimer.Tick += (_, _) =>
+        {
+            foreach (var vm in _sessions) vm.Session.RefreshReceivingDictation();
+        };
+        _dictationLockTimer.Start();
 
         // Scheduler-leader indicator: show "LEADER" pill on the sidebar and
         // append " -- Leader" to the window title while this Director holds
@@ -3063,6 +3079,17 @@ public partial class MainWindow : Window
 
         FileLog.Write($"[MainWindow] SubmitDictatedTextAsync: {text.Length} chars to session {target.Id}");
 
+        // Issue #1181, Task 3b: refuse a desktop-dictated Send while a mobile dictation is already
+        // inbound to this session, so the two dictations cannot collide (same rule as the typed Send).
+        if (target.IsDictationLocked)
+        {
+            FileLog.Write($"[MainWindow] SubmitDictatedTextAsync ignored: session {target.Id} dictation-locked");
+            await MessageBox.ShowAsync(this, "A dictation is arriving",
+                "This session is already receiving a dictation from your phone. Your spoken message was NOT sent, "
+                + "so the two cannot collide. Try again once the first dictation lands.");
+            return;
+        }
+
         // Rewind point, exactly like SendPrompt.
         target.InitializeHistory();
         target.History?.TakeSnapshot();
@@ -5217,6 +5244,23 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Issue #1181, Task 3b: also refuse a typed Send while a MOBILE dictation is inbound to this
+        // session (a durable PENDING delivery marker exists for it - issue #1188). The transcribing
+        // guard above only covers a DESKTOP-initiated dictation, which sets the local IsTranscribing
+        // flag; a mobile dictation does not, so it needs this separate check. Checked before the
+        // compose box is consumed, so the user's text is preserved. A modal pop-up (not the small
+        // notification line, which is easy to miss and gets overwritten by the queue banner) makes it
+        // unmissable; typing and Queue stay fully usable - only an immediate Send is intercepted.
+        if (_activeSession.Session.IsDictationLocked)
+        {
+            FileLog.Write("[MainWindow] SendPrompt ignored: session dictation-locked (mobile dictation inbound)");
+            await MessageBox.ShowAsync(this, "A dictation is arriving",
+                "This session is receiving a dictation from your phone. Your message was NOT sent, so it can't "
+                + "collide with the arriving text.\n\nYour text is still in the box - press Send again once the "
+                + "dictation lands, or press Queue to send it automatically when the session is ready.");
+            return;
+        }
+
         // Strip newlines -- Claude Code prompt expects single-line input
         var text = PromptInput.Text.ReplaceLineEndings(" ").Trim();
         if (string.IsNullOrEmpty(text)) return;
@@ -5495,7 +5539,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _activeSession.Session.SendText("/handover\n");
+        _activeSession.Session.SendText("/handover\n", SendSource.Internal);
         FileLog.Write($"[MainWindow] BtnHandover_Click: sent /handover to session {_activeSession.Session.Id}");
     }
 
@@ -6457,7 +6501,7 @@ public partial class MainWindow : Window
             + "and what you think we should work on next. Show the scope of remaining work "
             + "and suggest priorities.";
 
-        await session.SendTextAsync(prompt);
+        await session.SendTextAsync(prompt, SendSource.Internal);
         FileLog.Write($"[MainWindow] InjectHandoverPromptAsync: sent handover prompt for session {session.Id}");
     }
 

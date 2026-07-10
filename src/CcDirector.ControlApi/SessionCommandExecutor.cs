@@ -51,16 +51,16 @@ internal static class SessionCommandExecutor
     /// Execute a command by verb. Resolves the payload and target session with the shared guards, then
     /// dispatches to the matching verb handler. An unknown verb is a <see cref="DirectorCommandStatus.BadRequest"/>.
     /// </summary>
-    public static async Task<DirectorCommandResult> DispatchAsync(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services = null)
+    public static async Task<DirectorCommandResult> DispatchAsync(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services = null, SendSource source = SendSource.UserInput)
     {
         if (sessionManager is null) throw new ArgumentNullException(nameof(sessionManager));
         if (command is null) throw new ArgumentNullException(nameof(command));
 
-        FileLog.Write($"[SessionCommandExecutor] DispatchAsync: verb={command.Verb}, sid={command.SessionId}, cmdId={command.CommandId}, director={directorId}");
+        FileLog.Write($"[SessionCommandExecutor] DispatchAsync: verb={command.Verb}, sid={command.SessionId}, cmdId={command.CommandId}, source={source}, director={directorId}");
 
         var result = command.Verb switch
         {
-            "prompt" => await PromptAsync(sessionManager, command),
+            "prompt" => await PromptAsync(sessionManager, command, source),
             "interrupt" => await InterruptAsync(sessionManager, command),
             "escape" => await EscapeAsync(sessionManager, command),
             "hold" => Hold(sessionManager, command),
@@ -84,7 +84,7 @@ internal static class SessionCommandExecutor
     /// BadRequest, missing session -&gt; NotFound, Exited/Failed -&gt; Conflict - and returns a serialized
     /// <see cref="PromptResponse"/> on success.
     /// </summary>
-    internal static async Task<DirectorCommandResult> PromptAsync(SessionManager sessionManager, DirectorCommand command)
+    internal static async Task<DirectorCommandResult> PromptAsync(SessionManager sessionManager, DirectorCommand command, SendSource source = SendSource.UserInput)
     {
         if (!Guid.TryParse(command.SessionId, out var guid))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
@@ -97,14 +97,20 @@ internal static class SessionCommandExecutor
         if (session is null)
             return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
 
-        return await SendPromptAsync(session, request);
+        return await SendPromptAsync(session, request, source);
     }
 
     /// <summary>
-    /// The prompt core, past the id/session guards: reject an exited session, capture the pre-send buffer
-    /// cursor, then deliver the text. Shared by the verb handler and directly testable against a session.
+    /// The prompt core, past the id/session guards: reject an exited session, refuse human input while a
+    /// dictation is inbound (issue #1181, Task 3b), capture the pre-send buffer cursor, then deliver the
+    /// text. Shared by the verb handler and directly testable against a session. <paramref name="source"/>
+    /// names who is sending: <see cref="SendSource.UserInput"/> (the default, checked against the lock) or
+    /// the exempt <see cref="SendSource.Delivery"/> (the dictation's own arrival) / <see cref="SendSource.Internal"/>.
+    /// The lock is checked explicitly here (this executor is not a boundary, so it validates and returns a
+    /// status rather than letting <see cref="SessionLockedException"/> bubble); the same predicate backs the
+    /// in-process throw for the desktop send path.
     /// </summary>
-    internal static async Task<DirectorCommandResult> SendPromptAsync(Session session, PromptRequest request)
+    internal static async Task<DirectorCommandResult> SendPromptAsync(Session session, PromptRequest request, SendSource source = SendSource.UserInput)
     {
         if (session is null) throw new ArgumentNullException(nameof(session));
         if (request is null) throw new ArgumentNullException(nameof(request));
@@ -112,10 +118,13 @@ internal static class SessionCommandExecutor
         if (session.Status is SessionStatus.Exited or SessionStatus.Failed)
             return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "session has exited");
 
+        if (source == SendSource.UserInput && session.IsDictationLocked)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.Locked, SessionLockedException.LockMessage);
+
         var bufferCursor = session.Buffer?.TotalBytesWritten ?? 0;
 
         if (request.AppendEnter)
-            await session.SendTextAsync(request.Text);
+            await session.SendTextAsync(request.Text, source);
         else
             session.SendInput(Encoding.UTF8.GetBytes(request.Text));
 
@@ -443,7 +452,8 @@ internal static class SessionCommandExecutor
                         await Task.Delay(750);
                     }
                     FileLog.Write($"[SessionCommandExecutor] PrePrompt: dispatching to sid={capturedSession.Id}, len={prePrompt.Length}");
-                    await capturedSession.SendTextAsync(prePrompt);
+                    // Framework pre-prompt (not a human racing the dictation): exempt (issue #1181, Task 3b).
+                    await capturedSession.SendTextAsync(prePrompt, SendSource.Internal);
                 }
                 catch (Exception ex)
                 {

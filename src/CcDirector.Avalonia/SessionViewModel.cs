@@ -83,12 +83,24 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnCachedExplainChanged += OnCachedExplainChangedVm;
         session.OnHoldChanged += OnHoldChangedVm;
         session.OnViewModeChanged += OnViewModeChangedVm;
+        session.OnReceivingDictationChanged += OnReceivingDictationChangedVm;
 
         if (session.PromptQueue != null)
         {
             _queueCount = session.PromptQueue.Count;
             session.PromptQueue.OnQueueChanged += OnQueueChanged;
         }
+    }
+
+    // Issue #1181, Task 3b: the session started or stopped receiving a phone dictation - repaint the
+    // rail strip (orange while receiving) and refresh its reason text.
+    private void OnReceivingDictationChangedVm(bool receiving)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(StatusColorBrush));
+            OnPropertyChanged(nameof(StatusReason));
+        });
     }
 
     private void OnStatusColorChanged(string oldColor, string newColor, string reason)
@@ -117,6 +129,10 @@ public class SessionViewModel : INotifyPropertyChanged
         get
         {
             if (Session.OnHold) return OnHoldStatusBrush;
+            // Issue #1181, Task 3b: a session receiving a dictation from the phone shows ORANGE, so the
+            // "a dictation is arriving" state is obvious at a glance in the rail (it overrides the base
+            // red "needs you", which would otherwise hide the fact that input is temporarily locked).
+            if (Session.IsReceivingDictation) return OrangeStatusBrush;
             return (Session.StatusColor?.ToLowerInvariant()) switch
             {
                 "green"  => GreenStatusBrush,
@@ -140,7 +156,9 @@ public class SessionViewModel : INotifyPropertyChanged
     /// override when set, otherwise the wingman's reason for <see cref="Session.StatusColor"/>.</summary>
     public string StatusReason => Session.OnHold
         ? "On hold (set aside by you)"
-        : Session.LastStatusReason ?? "";
+        : Session.IsReceivingDictation
+            ? "Receiving a dictation from your phone"
+            : Session.LastStatusReason ?? "";
 
     private void OnHoldChangedVm(bool onHold)
     {
