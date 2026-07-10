@@ -36,6 +36,9 @@ export function NavDrawer() {
             <Link className="drawer-item" to="/settings" onClick={close}>
               AI settings
             </Link>
+            <Link className="drawer-item" to="/about" onClick={close}>
+              About
+            </Link>
           </nav>
         </div>
       )}
