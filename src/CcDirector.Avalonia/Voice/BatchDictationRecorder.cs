@@ -22,7 +22,8 @@ namespace CcDirector.Avalonia.Voice;
 ///   var rec = new BatchDictationRecorder(options);
 ///   rec.OnAudioBands     += bands => /* drive equalizer */ ;
 ///   rec.OnInputRms       += rms   => /* low-level hint */ ;
-///   rec.OnCaptureStarted += ()    => /* flip the UI to RECORDING */ ;
+///   rec.OnCaptureStarted += ()    => /* driver asked to start (setup done) */ ;
+///   rec.OnCaptureLive    += ()    => /* first real audio in: flip to RECORDING + ready cue */ ;
 ///   await rec.StartAsync();   // mic opens, audio buffers locally
 ///   // user talks (no text appears - no live preview)
 ///   var result = await rec.TranscribeAsync();  // ONE batch transcription call
@@ -81,12 +82,28 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
     public event Action<double>? OnInputRms;
 
     /// <summary>
-    /// Fires the instant the microphone actually starts capturing. The UI anchors
-    /// its recording timer to this and flips to the RECORDING state. There is no
-    /// separate "connected" event because there is no network connect before
-    /// capture - transcription happens once, after the user stops.
+    /// Fires the instant the microphone is asked to start capturing (right after
+    /// <c>StartRecording</c> returns). This is the SETUP moment, before any audio has
+    /// actually been delivered by the driver. There is no separate "connected" event
+    /// because there is no network connect before capture - transcription happens once,
+    /// after the user stops.
     /// </summary>
     public event Action? OnCaptureStarted;
+
+    /// <summary>
+    /// Fires exactly ONCE, when the first buffer of real audio actually lands in the
+    /// capture buffer - the honest "the microphone is now hearing your voice" moment,
+    /// as opposed to <see cref="OnCaptureStarted"/> which only means the driver was
+    /// asked to start. The desktop dialog holds its "GETTING READY" state until this
+    /// fires, then flips to RECORDING and plays the ready cue together, so neither the
+    /// red state nor the sound ever claims the mic is live before audio is flowing.
+    /// May fire on NAudio's worker thread, so a UI handler must marshal to the UI thread.
+    /// </summary>
+    public event Action? OnCaptureLive;
+
+    // One-shot latch for OnCaptureLive: set the first time a non-empty chunk is
+    // appended, so the "mic is live" signal is raised once per recorder, not per chunk.
+    private bool _captureLiveRaised;
 
     /// <summary>
     /// Fires as transcription progresses with (completedParts, totalParts). A long recording is split
@@ -335,6 +352,16 @@ public sealed class BatchDictationRecorder : IAsyncDisposable
         lock (_audioLock)
         {
             _audio.Write(chunk, 0, chunk.Length);
+        }
+
+        // The first non-empty chunk is the first real audio the driver delivered:
+        // the honest "microphone is now capturing your voice" moment. Raise it once,
+        // OUTSIDE the audio lock so a UI handler can never stall capture. AppendChunk
+        // runs on NAudio's single capture thread, so the latch needs no synchronization.
+        if (!_captureLiveRaised)
+        {
+            _captureLiveRaised = true;
+            OnCaptureLive?.Invoke();
         }
     }
 
