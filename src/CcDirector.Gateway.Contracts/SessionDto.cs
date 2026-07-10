@@ -303,6 +303,23 @@ public sealed class SessionDto
     /// </summary>
     public bool WingmanEnabled { get; set; } = false;
 
+    /// <summary>
+    /// Scheduled-run auto-dismiss (issue #1200): true when this session is an AUTOMATED run that should
+    /// close itself when it finishes with nothing needing a human (mirrors <c>Session.AutoDismiss</c>).
+    /// Only sessions carrying this flag are ever auto-closed; human-started sessions leave it false and are
+    /// never touched. Rides the existing snapshot/delta path; defaults false on Directors that predate it.
+    /// </summary>
+    public bool AutoDismiss { get; set; } = false;
+
+    /// <summary>
+    /// Scheduled-run auto-dismiss (issue #1200): the agent's explicit end-of-run verdict parsed from its
+    /// final message (mirrors <c>Session.DismissVerdict</c>). <c>"done"</c> = nothing needs the human, safe
+    /// to auto-close; <c>"needs-human"</c> = keep the session open. Null when the run has not yet emitted a
+    /// verdict (the conservative default - a session is never auto-closed without an explicit <c>done</c>).
+    /// Only meaningful when <see cref="AutoDismiss"/> is true.
+    /// </summary>
+    public string? DismissVerdict { get; set; }
+
     // ===== Raw local facts for the Gateway color fold (issue #1177, Phase 2) =====
     // These are RAW FACTS the Director reports straight from the Session - it does NOT fold them into a
     // color. The Gateway is the single fold: it computes EffectiveColor / TriageBucket / StateLabel from

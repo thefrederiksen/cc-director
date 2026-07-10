@@ -3393,6 +3393,11 @@ internal static class ControlEndpoints
             VoiceMode = s.VoiceMode,
             OnHold = s.OnHold,
             WingmanEnabled = s.WingmanEnabled,
+            // Scheduled-run auto-dismiss (issue #1200): the flag + the agent's parsed verdict ride the
+            // snapshot/delta path up to the Gateway's auto-dismiss sweep, which closes the session over the
+            // stream on "done". Reported straight from the Session; the Gateway is the actor.
+            AutoDismiss = s.AutoDismiss,
+            DismissVerdict = s.DismissVerdict,
             // Raw local facts for the Gateway color fold (issue #1177, Phase 2). Reported straight from
             // the Session; the Director does NOT fold them into a color here (StatusColor is unchanged).
             IsBrandNew = s.IsBrandNew,

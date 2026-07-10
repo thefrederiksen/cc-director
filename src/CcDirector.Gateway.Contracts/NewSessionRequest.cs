@@ -114,6 +114,16 @@ public sealed class NewSessionRequest
     /// target Director.
     /// </summary>
     public string? Machine { get; set; }
+
+    /// <summary>
+    /// Scheduled-run auto-dismiss (issue #1200). When true, this session is an AUTOMATED run that should
+    /// close ITSELF once it finishes with nothing that needs a human: the agent ends its run by emitting a
+    /// <c>CC-DISMISS</c> verdict block (see <c>Session.DismissVerdict</c>), and on <c>done</c> the Gateway
+    /// closes the session over the Director stream so it never lingers in the rail. On <c>needs-human</c>
+    /// (or no verdict) it stays open exactly like a normal session. Default false: a human-started session
+    /// is NEVER auto-closed. Set true only by the cron starter for scheduled seed runs.
+    /// </summary>
+    public bool AutoDismiss { get; set; } = false;
 }
 
 /// <summary>
