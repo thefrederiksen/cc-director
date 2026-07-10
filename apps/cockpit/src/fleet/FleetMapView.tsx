@@ -21,12 +21,15 @@ import { repoBasename, relativeTime } from "./format";
 // FleetView so the two pages agree on the fleet at all times.
 const ROSTER_POLL_MS = 2000;
 
-type Pivot = "machine" | "repo" | "agent";
+type Pivot = "machine" | "repo" | "agent" | "list";
 
 const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = [
   { key: "machine", label: "By machine", kindLabel: "Machine" },
   { key: "repo", label: "By repository", kindLabel: "Repository" },
   { key: "agent", label: "By agent", kindLabel: "Agent" },
+  // The flat "Fleet list" pivot (issue #1212) absorbs the retired Fleet page: every session once, as
+  // the same node card, no lane grouping (machines are already their own pivot).
+  { key: "list", label: "Fleet list", kindLabel: "Session" },
 ];
 
 // A group of sessions that share a team (SessionDto.groupId), rendered as a lead/worker cluster.
@@ -87,8 +90,9 @@ export function FleetMapView() {
   const list = useMemo(() => sessions ?? [], [sessions]);
   // Build the lanes from the WHOLE fleet first, so lane order and each card's slot are fixed. The title
   // search then only removes non-matching cards from within those fixed lanes and drops lanes that go
-  // empty - a matching card never moves and the lanes never reorder (issue #1211).
-  const allLanes = useMemo(() => buildLanes(list, pivot), [list, pivot]);
+  // empty - a matching card never moves and the lanes never reorder (issue #1211). The flat "list"
+  // pivot does not use lanes.
+  const allLanes = useMemo(() => (pivot === "list" ? [] : buildLanes(list, pivot)), [list, pivot]);
   const lanes = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q.length === 0) return allLanes;
@@ -96,7 +100,17 @@ export function FleetMapView() {
       .map((lane) => ({ ...lane, sessions: lane.sessions.filter((s) => (s.name ?? "").toLowerCase().includes(q)) }))
       .filter((lane) => lane.sessions.length > 0);
   }, [allLanes, query]);
-  const matchCount = useMemo(() => lanes.reduce((n, lane) => n + lane.sessions.length, 0), [lanes]);
+  // The flat "Fleet list" pivot (issue #1212): every session once, filtered by the same title search,
+  // in a stable session-number order (the identity the owner reads), so matches never move.
+  const flatSessions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q.length === 0 ? list : list.filter((s) => (s.name ?? "").toLowerCase().includes(q));
+    return [...filtered].sort(flatSort);
+  }, [list, query]);
+  const matchCount = useMemo(
+    () => (pivot === "list" ? flatSessions.length : lanes.reduce((n, lane) => n + lane.sessions.length, 0)),
+    [pivot, flatSessions, lanes],
+  );
 
   const machineCount = useMemo(() => {
     const set = new Set<string>();
@@ -186,23 +200,33 @@ export function FleetMapView() {
         </div>
       )}
 
-      {sessions !== null && list.length > 0 && lanes.length === 0 && query.trim().length > 0 && (
-        <div className="fmap-empty">
-          <p>No sessions match &ldquo;{query.trim()}&rdquo;.</p>
-          <p className="fmap-empty-sub">Clear the search to see the whole fleet.</p>
-        </div>
-      )}
+      {sessions !== null &&
+        list.length > 0 &&
+        matchCount === 0 &&
+        query.trim().length > 0 && (
+          <div className="fmap-empty">
+            <p>No sessions match &ldquo;{query.trim()}&rdquo;.</p>
+            <p className="fmap-empty-sub">Clear the search to see the whole fleet.</p>
+          </div>
+        )}
 
-      {lanes.length > 0 && (
-        <Canvas
-          lanes={lanes}
-          pivot={pivot}
-          wingman={wingman}
-          sessionCount={query.trim().length > 0 ? matchCount : list.length}
-          machineCount={machineCount}
-          onOpen={(sid) => navigate(`/session/${encodeURIComponent(sid)}`)}
-        />
-      )}
+      {pivot === "list"
+        ? flatSessions.length > 0 && (
+            <FleetList
+              sessions={flatSessions}
+              onOpen={(sid) => navigate(`/session/${encodeURIComponent(sid)}`)}
+            />
+          )
+        : lanes.length > 0 && (
+            <Canvas
+              lanes={lanes}
+              pivot={pivot}
+              wingman={wingman}
+              sessionCount={query.trim().length > 0 ? matchCount : list.length}
+              machineCount={machineCount}
+              onOpen={(sid) => navigate(`/session/${encodeURIComponent(sid)}`)}
+            />
+          )}
 
       <div className="fmap-legend" aria-hidden="true">
         <LegendDot color="blue" label="Working" />
@@ -363,6 +387,19 @@ function LanePanel({ lane, pivot, onOpen, headRef }: LanePanelProps) {
   );
 }
 
+// The flat "Fleet list" pivot body (issue #1212): every session as the same NodeCard, in a responsive
+// grid, no lane grouping. Reuses the exact card the lane pivots render, so the number badge and the
+// title search apply identically.
+function FleetList({ sessions, onOpen }: { sessions: SessionDto[]; onOpen: (sid: string) => void }) {
+  return (
+    <div className="fmap-list">
+      {sessions.map((s) => (
+        <NodeCard key={s.sessionId ?? s.number} session={s} pivot="list" onOpen={onOpen} />
+      ))}
+    </div>
+  );
+}
+
 function LaneCards({ sessions, pivot, onOpen }: { sessions: SessionDto[]; pivot: Pivot; onOpen: (sid: string) => void }) {
   const { teams, loose } = splitTeams(sessions);
   return (
@@ -516,6 +553,18 @@ function sessionSort(a: SessionDto, b: SessionDto): number {
   return String(a.sessionId ?? "").localeCompare(String(b.sessionId ?? ""));
 }
 
+// Stable order for the flat "Fleet list" pivot: by session number ascending (the identity the owner
+// reads), numbers before the unnumbered, then session id - so a card never jumps on a color change.
+function flatSort(a: SessionDto, b: SessionDto): number {
+  const na = Number(a.number);
+  const nb = Number(b.number);
+  const aHas = Number.isFinite(na);
+  const bHas = Number.isFinite(nb);
+  if (aHas && bHas && na !== nb) return na - nb;
+  if (aHas !== bHas) return aHas ? -1 : 1;
+  return String(a.sessionId ?? "").localeCompare(String(b.sessionId ?? ""));
+}
+
 function groupByDirector(sessions: SessionDto[]): Array<{ key: string; label: string; sessions: SessionDto[] }> {
   const byDir = new Map<string, SessionDto[]>();
   for (const s of sessions) {
@@ -590,7 +639,7 @@ function cardTags(s: SessionDto, pivot: Pivot): Array<{ k: string; v: string }> 
     if (machine.length > 0) out.push({ k: machine, v: dir.length > 0 ? shortDir(dir) : "-" });
     return out;
   }
-  // Lane = agent; show machine + repo.
+  // Lane = agent, or the flat Fleet list (no lane at all); show machine + repo.
   const out: Array<{ k: string; v: string }> = [];
   if (machine.length > 0) out.push({ k: machine, v: repoBasename(s.repoPath) });
   return out;
