@@ -610,3 +610,20 @@
     transition: none;
   }
 }
+
+/* Fleet sweep reachability (issue #1215): a Wobbly/Offline machine dims its node cards in place and
+   shows a "last seen" line; the layout never reflows. */
+.fmap-card-wobbly {
+  opacity: 0.62;
+}
+
+.fmap-card-offline {
+  opacity: 0.42;
+}
+
+.fmap-card-lastseen {
+  margin-top: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--warn);
+}

@@ -1,9 +1,21 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import { dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
-import { getSessionsEnvelope, type MachineError } from "@devthrottle/client-core/fleet/fleetClient";
+import {
+  getSessionsEnvelope,
+  reachabilityFor,
+  reachabilityLastSeen,
+  REACHABILITY_OFFLINE,
+  REACHABILITY_WOBBLY,
+  type DirectorReachability,
+  type MachineError,
+} from "@devthrottle/client-core/fleet/fleetClient";
 import { repoBasename, relativeTime } from "./format";
+
+// Per-Director reachability for the Online / Wobbly / Offline node rendering (issue #1215), provided at
+// the Fleet Map root and read by each NodeCard so the cards dim in place without prop-drilling.
+const ReachabilityContext = createContext<DirectorReachability[]>([]);
 
 // The Fleet Map (issue #1109): a live, spatial view of everything running across the tailnet. Where
 // the Fleet page (FleetView) is a list of cards grouped by machine, this is a node canvas - a root
@@ -52,6 +64,7 @@ export function FleetMapView() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
   const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
+  const [directors, setDirectors] = useState<DirectorReachability[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [pivot, setPivot] = useState<Pivot>("machine");
   // Title search (issue #1211): a case-insensitive substring filter over the session name. It hides
@@ -69,6 +82,7 @@ export function FleetMapView() {
       const env = await getSessionsEnvelope(signal);
       setSessions(env.sessions);
       setMachineErrors(env.machineErrors);
+      setDirectors(env.directors);
       setLastError(null);
     } catch (err) {
       if (signal?.aborted === true) return;
@@ -126,6 +140,7 @@ export function FleetMapView() {
   const workingCount = list.filter((s) => effectiveColor(s) === "blue").length;
 
   return (
+    <ReachabilityContext.Provider value={directors}>
     <div className="fmap">
       <header className="fmap-head">
         <h1 className="fmap-title">Fleet Map</h1>
@@ -238,6 +253,7 @@ export function FleetMapView() {
         <LegendDot color="grey" label="On hold" />
       </div>
     </div>
+    </ReachabilityContext.Provider>
   );
 }
 
@@ -423,17 +439,25 @@ function LaneCards({ sessions, pivot, onOpen }: { sessions: SessionDto[]; pivot:
 }
 
 function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: Pivot; onOpen: (sid: string) => void }) {
+  const directors = useContext(ReachabilityContext);
   const color = effectiveColor(s);
   const sid = s.sessionId ?? "";
   const unnamed = (s.name ?? "").trim().length === 0;
   const num = s.number;
   const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;
   const role = (s.groupRole ?? "").toLowerCase();
+  // Reachability of the owning Director (issue #1215): a Wobbly/Offline machine dims its cards in place.
+  const reach = reachabilityFor(directors, s.directorId);
+  const wobbly = reach?.state === REACHABILITY_WOBBLY;
+  const offline = reach?.state === REACHABILITY_OFFLINE;
+  const lastSeen = wobbly || offline ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
   const cls =
     "fmap-card" +
     (color === "red" ? " needs" : "") +
     (role === "lead" ? " lead" : "") +
-    (role === "worker" ? " worker" : "");
+    (role === "worker" ? " worker" : "") +
+    (wobbly ? " fmap-card-wobbly" : "") +
+    (offline ? " fmap-card-offline" : "");
   const rail = (s.railLine ?? "").trim();
 
   // The card tags carry the two hierarchy coordinates NOT already implied by the lane the card sits in.
@@ -481,6 +505,10 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
         {stateLabel(s)}
         <span className="fmap-card-idle">{relativeTime(s.lastActivityAt)}</span>
       </div>
+
+      {lastSeen.length > 0 && (
+        <div className="fmap-card-lastseen">{offline ? "Offline" : "Wobbly"} - {lastSeen}</div>
+      )}
 
       {rail.length > 0 && (
         <div className="fmap-rail">

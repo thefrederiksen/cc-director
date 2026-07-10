@@ -136,6 +136,26 @@ export async function getSessionsEnvelope(signal?: AbortSignal): Promise<Session
   };
 }
 
+// Join a session to its Director's reachability (issue #1215). Returns undefined when the envelope
+// carries no reachability for that Director (an older Gateway, or a Director that is fully Online with
+// no entry) - the caller then renders the session normally (Online). This is how a session's card
+// changes appearance IN PLACE (dimmed while Wobbly) instead of the list reflowing on a transient miss.
+export function reachabilityFor(
+  directors: DirectorReachability[],
+  directorId: string | null | undefined,
+): DirectorReachability | undefined {
+  if (!directorId) return undefined;
+  return directors.find((d) => d.directorId === directorId);
+}
+
+// The "last seen N ago" age label for a Wobbly/Offline card. Empty while Online (age 0 or missing).
+export function reachabilityLastSeen(ageSeconds: number | null | undefined): string {
+  if (ageSeconds === null || ageSeconds === undefined || ageSeconds <= 0) return "";
+  if (ageSeconds < 60) return `last seen ${Math.round(ageSeconds)}s ago`;
+  if (ageSeconds < 3600) return `last seen ${Math.floor(ageSeconds / 60)}m ago`;
+  return `last seen ${Math.floor(ageSeconds / 3600)}h ago`;
+}
+
 // PATCH /sessions/{sid} { name } - rename a session; the Gateway routes to the owning Director and
 // returns the updated SessionDto (with the new name). Empties/whitespace are the caller's business;
 // the Gateway trims and echoes the applied name.
