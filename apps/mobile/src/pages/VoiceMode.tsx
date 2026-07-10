@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type SyntheticEvent } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import {
+  GatewayError,
   getWingmanVoice,
   listSessions,
   markVoiceAndExplain,
@@ -98,6 +99,7 @@ export function VoiceMode() {
   const [enabling, setEnabling] = useState(false);
   const [enableNote, setEnableNote] = useState<string>(""); // "nothing to summarize yet" message
   const [responding, setResponding] = useState(false);
+  const [regenerating, setRegenerating] = useState(false); // the manual "Generate narration now" recovery is running
 
   // Re-render this screen when a clip download completes (phone-ready).
   useVoiceClips();
@@ -293,6 +295,37 @@ export function VoiceMode() {
       setError(err instanceof Error ? err.message : "Could not turn voice off");
     }
   }, [sid]);
+
+  // Manual recovery when the screen is stuck on "Voice unavailable": generate the narration on
+  // demand. This is the SAME proven server path entering voice mode uses (POST /wingman/explain) -
+  // the Gateway reads this session's latest completed turn, translates it, synthesizes the audio,
+  // and caches it, so the next poll finds it ready and plays it. Nothing is sent into the session.
+  // It exists because the automatic turn-end/idle-sweep generation can silently produce nothing -
+  // the owning Director was unreachable, the session had not produced a turn yet, or a transient
+  // text-to-speech failure - and there was no way to ask for it again (see the voice-unavailable
+  // troubleshooting issue).
+  const onGenerateNow = useCallback(async () => {
+    if (sid.length === 0 || regenerating) return;
+    setRegenerating(true);
+    setError(null);
+    try {
+      const explained = await markVoiceAndExplain(sid);
+      // Nothing to narrate yet (a fresh/text-only session): show the truthful note, which moves the
+      // screen to the working card. Otherwise the clip is now cached and the poll picks it up.
+      setEnableNote(explained.nothingYet ? explained.spoken : "");
+    } catch (err) {
+      // A 402 (out of credits / no key) already raised the shared app-level credits notice and its
+      // message is the shared copy. An offline owning Director resolves to 404 here - say so plainly
+      // instead of leaking the raw status, because it is the most common reason generation fails.
+      if (err instanceof GatewayError && err.status === 404) {
+        setError("This session's computer looks offline. Voice can't be generated until it reconnects.");
+      } else {
+        setError(err instanceof Error ? err.message : "Could not generate narration");
+      }
+    } finally {
+      setRegenerating(false);
+    }
+  }, [sid, regenerating]);
 
   // The whole second we last persisted, so onTimeUpdate saves the position roughly once a second
   // rather than on every ~4Hz tick (issue #1003 per-session resume).
@@ -506,15 +539,25 @@ export function VoiceMode() {
               <span className="voice-state voice-state-red">Voice unavailable</span>
             </div>
             <div className="voice-narr">
-              <div className="voice-narr-title">No playable narration is available.</div>
+              <div className="voice-narr-title">No narration is ready to play.</div>
               <div className="voice-narr-body">
                 {clip.phase === "error"
-                  ? "The phone could not download the spoken audio for this turn."
+                  ? "The phone could not download the spoken audio for this turn. Tap Generate narration to make it again."
                   : narrative.length > 0
                     ? narrative
-                    : "The Gateway is not generating audio for this turn, and no audio is ready to play."}
+                    : "There is no spoken summary for this session's latest turn yet - the Gateway has not made one, or this session's computer is offline. Tap Generate narration to make one now."}
               </div>
             </div>
+            {/* The minimum recovery: while voice is on but nothing was produced, let the person ask
+                the Gateway to generate the narration right now instead of being stuck. */}
+            <button
+              type="button"
+              className="voice-switch"
+              onClick={() => void onGenerateNow()}
+              disabled={regenerating}
+            >
+              {regenerating ? "Generating narration..." : "Generate narration now"}
+            </button>
           </>
         )}
 
