@@ -654,6 +654,45 @@ export async function uploadImage(sessionId: string, file: File, signal?: AbortS
   return body.path ?? "";
 }
 
+// GET /sessions/{sid}/handover (issue #1214): the desktop app's "Handover info" identity block for a
+// session - what a person or another agent needs to locate the session and talk to it. Mirrors the
+// desktop "Copy Handover Info" block, minus the Director's Control API endpoint (the browser talks only
+// to the Gateway and never learns a Director address). Not declared in the generated OpenAPI schema
+// (the Gateway returns it via Results.Json without a [Produces] annotation), so it is read with this
+// narrow local shape - the exact subset the Cockpit Handover info view renders. The C# source of truth
+// is CcDirector.Gateway.Contracts.HandoverInfoDto.
+export interface SessionHandover {
+  sessionId: string;
+  displayName: string;
+  repoPath: string;
+  directorId: string;
+  machineName: string;
+  version: string;
+}
+
+// A non-2xx is surfaced as a GatewayError so the caller shows a visible error (never a silent empty
+// panel): 404 when the session is unknown to every Director, 502 when the owning Director is offline.
+export async function getHandover(sessionId: string, signal?: AbortSignal): Promise<SessionHandover> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/handover`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET handover failed: ${res.status}`);
+  }
+  const body = (await res.json().catch(() => ({}))) as Partial<SessionHandover>;
+  return {
+    sessionId: body.sessionId ?? "",
+    displayName: body.displayName ?? "",
+    repoPath: body.repoPath ?? "",
+    directorId: body.directorId ?? "",
+    machineName: body.machineName ?? "",
+    version: body.version ?? "",
+  };
+}
+
 // ===== Session management (issue #812): the add-session flow + Hold/Resume + Remove =====
 // A faithful 1:1 of the Android (MAUI) phone/CcDirectorClient "+ New session" flow and the
 // owner's Hold/Remove decision. Every call carries the same Bearer the rest of the client uses, so
