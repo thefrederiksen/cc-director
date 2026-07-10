@@ -66,7 +66,12 @@ internal static class GatewayEndpoints
         // stream via this hook (GatewayHost.SendCommandAsync); a null return means the Director is not
         // stream-connected, so the endpoint falls back to its existing HTTP call. Null here (stream mode
         // off) keeps every command endpoint on the HTTP path, byte-identical to before.
-        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null)
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null,
+        // Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. When non-null, a single
+        // failed Director poll no longer drops that Director's sessions - the cache serves the last-known-good
+        // snapshot marked stale (Wobbly) through a short grace window, and only declares the Director Offline
+        // once the grace window is exhausted. Null keeps the old drop-on-first-failure behaviour.
+        FleetRosterCache? rosterCache = null)
     {
         // Issue #1188: the enforced session lock. A session is LOCKED for human input exactly while a PENDING
         // dictation record exists for it (a pure projection of the durable record - it never auto-releases;
@@ -476,35 +481,105 @@ internal static class GatewayEndpoints
 
             var all = new List<SessionDto>();
             var machineErrors = new List<MachineErrorDto>();
+            var reachability = new List<DirectorReachabilityDto>();
 
+            // Issue #1215 (Cockpit plan phase 6): first pass - decide, per Director, WHAT to serve and
+            // its reachability state, before any per-session enrichment runs. A successful read is served
+            // as Online. A failed read is handed to the last-known-good cache, which either keeps serving
+            // that Director's stored snapshot marked stale (Wobbly, inside the grace window) or, once the
+            // grace window is exhausted, declares it Offline and drops its sessions. Serving the stale
+            // snapshot through the SAME enrichment below is what makes a transient miss change the entries'
+            // appearance in place instead of removing them, so the roster never reflows.
+            var served = new List<(DirectorDto Director, List<SessionDto> Sessions, bool Stale)>();
             foreach (var (d, sessions, error) in results)
             {
-                if (error is not null)
+                if (error is null && sessions is not null)
+                {
+                    if (rosterCache is not null)
+                        rosterCache.RecordReachable(d.DirectorId, sessions);
+                    reachability.Add(new DirectorReachabilityDto
+                    {
+                        DirectorId = d.DirectorId,
+                        MachineName = d.MachineName ?? "",
+                        State = DirectorReachabilityDto.StateOnline,
+                        LastSeenUtc = DateTime.UtcNow,
+                        LastSeenAgeSeconds = 0,
+                        Error = null,
+                    });
+                    served.Add((d, sessions, Stale: false));
+                    continue;
+                }
+
+                // A failed read. Without the last-known-good cache, keep the historical behaviour: drop
+                // the Director's sessions and surface it as a machine error immediately.
+                var reason = error ?? "unreachable";
+                if (rosterCache is null)
                 {
                     machineErrors.Add(new MachineErrorDto
                     {
                         DirectorId = d.DirectorId,
                         MachineName = d.MachineName,
-                        Error = error,
+                        Error = reason,
                     });
                     continue;
                 }
-                if (sessions is null) continue;
 
-                // Issue #291: this Director just answered (reachable), so its returned list is the
-                // authoritative live set for it. Prune any session the cache still attributes to this
-                // Director that is no longer live here - it exited or disappeared - so the per-session
-                // WS proxy reverts to 404 instead of #288's 503 "owner offline". Computed from the raw
-                // returned list (before the per-session view filters below) and excluding Exited rows
-                // (a Director may include them when includeExited=true). Owners on OTHER Directors are
-                // untouched, so an offline owner's sessions stay cached -> still 503 (#288 unchanged).
-                var liveIds = new HashSet<string>(
-                    sessions
-                        .Where(x => !string.IsNullOrEmpty(x.SessionId)
-                                 && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
-                        .Select(x => x.SessionId),
-                    StringComparer.Ordinal);
-                owners?.RetainForDirector(d.DirectorId, liveIds);
+                var projection = rosterCache.RecordUnreachable(d.DirectorId, reason);
+                if (projection.State == FleetReachabilityState.Wobbly && projection.StaleSessions is not null)
+                {
+                    reachability.Add(new DirectorReachabilityDto
+                    {
+                        DirectorId = d.DirectorId,
+                        MachineName = d.MachineName ?? "",
+                        State = DirectorReachabilityDto.StateWobbly,
+                        LastSeenUtc = projection.LastSeenUtc,
+                        LastSeenAgeSeconds = projection.LastSeenAgeSeconds,
+                        Error = reason,
+                    });
+                    served.Add((d, projection.StaleSessions.ToList(), Stale: true));
+                    continue;
+                }
+
+                // Offline: the grace window is exhausted (or the Director was never reachable). Drop its
+                // sessions exactly as before, and record the Offline reachability entry.
+                reachability.Add(new DirectorReachabilityDto
+                {
+                    DirectorId = d.DirectorId,
+                    MachineName = d.MachineName ?? "",
+                    State = DirectorReachabilityDto.StateOffline,
+                    LastSeenUtc = projection.LastSeenUtc,
+                    LastSeenAgeSeconds = projection.LastSeenAgeSeconds,
+                    Error = reason,
+                });
+                machineErrors.Add(new MachineErrorDto
+                {
+                    DirectorId = d.DirectorId,
+                    MachineName = d.MachineName ?? "",
+                    Error = reason,
+                });
+            }
+
+            foreach (var (d, sessions, stale) in served)
+            {
+                // Issue #291: a reachable Director's returned list is the authoritative live set for it.
+                // Prune any session the cache still attributes to this Director that is no longer live here
+                // - it exited or disappeared - so the per-session WS proxy reverts to 404 instead of #288's
+                // 503 "owner offline". Computed from the raw returned list (before the per-session view
+                // filters below) and excluding Exited rows (a Director may include them when
+                // includeExited=true). Owners on OTHER Directors are untouched, so an offline owner's
+                // sessions stay cached -> still 503 (#288 unchanged).
+                // Issue #1215: SKIP this prune for a Wobbly (stale) serve - the Director did NOT answer, so
+                // the stale snapshot is not authoritative and must not evict live ownership records.
+                if (!stale)
+                {
+                    var liveIds = new HashSet<string>(
+                        sessions
+                            .Where(x => !string.IsNullOrEmpty(x.SessionId)
+                                     && !string.Equals(x.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase))
+                            .Select(x => x.SessionId),
+                        StringComparer.Ordinal);
+                    owners?.RetainForDirector(d.DirectorId, liveIds);
+                }
 
                 var baseUrl = DeriveDirectorBaseUrl(ctx, d);
                 var gatewayBaseUrl = DeriveGatewayBaseUrl(ctx);
@@ -605,7 +680,10 @@ internal static class GatewayEndpoints
 
             if (envelope == true)
             {
-                return Results.Json(new { sessions = all, machineErrors });
+                // Issue #1215: the envelope also carries the per-Director reachability (Online / Wobbly /
+                // Offline with a last-seen age), so the Cockpit renders the three states in place. machineErrors
+                // is retained unchanged for back-compat (an Offline Director appears in both).
+                return Results.Json(new { sessions = all, machineErrors, directors = reachability });
             }
             return Results.Json(all);
         })
