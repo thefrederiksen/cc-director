@@ -345,6 +345,103 @@ public sealed class WingmanTranslatorTests
         Assert.Equal(korean, WingmanTranslator.CleanupForSpeech(korean));
     }
 
+    [Fact]
+    public void CleanupForSpeech_StripsBoldAndItalicAsterisks_SoTtsDoesNotSayStarStar()
+    {
+        // The exact bug: **BPMN Studio** was voiced as "star star BPMN Studio star star". The
+        // deterministic pass removes the emphasis wrappers but keeps the words.
+        var cleaned = WingmanTranslator.CleanupForSpeech("**BPMN Studio** is the *best* option here.");
+
+        Assert.DoesNotContain("*", cleaned);
+        Assert.Contains("BPMN Studio", cleaned);
+        Assert.Contains("best", cleaned);
+    }
+
+    [Fact]
+    public void CleanupForSpeech_StripsHeadingHashMarks_KeepingTheHeadingWords()
+    {
+        var cleaned = WingmanTranslator.CleanupForSpeech("## Root cause\nThe panel path was wrong.");
+
+        Assert.DoesNotContain("#", cleaned);
+        Assert.Contains("Root cause", cleaned);
+        Assert.Contains("The panel path was wrong.", cleaned);
+    }
+
+    [Fact]
+    public void CleanupForSpeech_StripsBulletAndNumberedListMarkers()
+    {
+        var input = "Here is the plan:\n- First, patch the auth flow.\n- Then rerun the tests.\n1. Build.\n2) Ship.";
+        var cleaned = WingmanTranslator.CleanupForSpeech(input);
+
+        Assert.Contains("First, patch the auth flow.", cleaned);
+        Assert.Contains("Then rerun the tests.", cleaned);
+        Assert.Contains("Build.", cleaned);
+        Assert.Contains("Ship.", cleaned);
+        // No line still begins with a bullet or list marker.
+        foreach (var line in cleaned.Split('\n'))
+            Assert.False(System.Text.RegularExpressions.Regex.IsMatch(line, @"^\s*(?:[-*+]\s|\d+[.)]\s)"),
+                $"A list marker survived: '{line}'");
+    }
+
+    [Fact]
+    public void CleanupForSpeech_KeepsUnderscoresInsideIdentifiers_ButStripsItalicUnderscores()
+    {
+        // snake_case is an identifier - its underscores are content and must survive. A word wrapped
+        // in underscores for italics (_emphasis_) is a mark and must go.
+        var cleaned = WingmanTranslator.CleanupForSpeech("The _urgent_ fix touches snake_case_name.");
+
+        Assert.Contains("snake_case_name", cleaned); // identifier underscores preserved
+        Assert.Contains("urgent", cleaned);
+        Assert.DoesNotContain("_urgent_", cleaned);   // italic wrapper removed
+    }
+
+    [Fact]
+    public void CleanupForSpeech_StripsMarkdownLinks_KeepingTheLinkText()
+    {
+        var cleaned = WingmanTranslator.CleanupForSpeech("See [the release notes](https://example.com/notes) for details.");
+
+        Assert.Contains("the release notes", cleaned);
+        Assert.DoesNotContain("https://example.com/notes", cleaned);
+        Assert.DoesNotContain("](", cleaned);
+    }
+
+    [Fact]
+    public void CleanupForSpeech_LeavesNumbersUntouched_FidelityIsNotChanged()
+    {
+        // The pass changes how text is spoken, never the facts. Numbers - including long ones - are
+        // the answer's content and must pass through exactly.
+        const string input = "All 73 tests passed and the id is 1204987654321.";
+        var cleaned = WingmanTranslator.CleanupForSpeech(input);
+
+        Assert.Contains("73", cleaned);
+        Assert.Contains("1204987654321", cleaned);
+    }
+
+    [Fact]
+    public void CleanupForSpeech_ReplyLikeTheBugReport_ComesOutFullyClean()
+    {
+        // A representative Markdown-heavy reply of the kind the Fast tier still leaks despite the
+        // prompt. After the pass, none of the formatting characters that get voiced literally remain.
+        const string input =
+            "## Summary\n" +
+            "**BPMN Studio** is option 1. Use the `PanelPath` setting.\n" +
+            "- Fix the `auth` flow\n" +
+            "1. Run `dotnet test`\n" +
+            "See [the docs](https://example.com).\n" +
+            "| Col A | Col B |\n| --- | --- |\n| x | y |";
+        var cleaned = WingmanTranslator.CleanupForSpeech(input);
+
+        Assert.DoesNotContain("*", cleaned);
+        Assert.DoesNotContain("#", cleaned);
+        Assert.DoesNotContain("`", cleaned);
+        Assert.DoesNotContain("|", cleaned);
+        Assert.DoesNotContain("](", cleaned);
+        // The words survive.
+        Assert.Contains("BPMN Studio", cleaned);
+        Assert.Contains("PanelPath", cleaned);
+        Assert.Contains("the docs", cleaned);
+    }
+
     /// <summary>
     /// Proves the only dependency of a translation is a real-session <see cref="IAgentBrain"/>.
     /// The whole pipeline runs to completion against a pure in-memory fake - no process is

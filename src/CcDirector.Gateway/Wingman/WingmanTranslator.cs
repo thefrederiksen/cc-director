@@ -563,18 +563,72 @@ public sealed class WingmanTranslator
     }
 
     /// <summary>
-    /// Light safety net for speech: the model is already told to speak for the ear, so this
-    /// only strips code fences the model may have echoed and collapses blank runs. Inline
-    /// identifiers in backticks keep their inner text (issue #368) - they are often the
-    /// answer's content. Public so a test can prove non-Latin text passes through untouched.
+    /// Deterministic sanitize-for-speech pass (issue #1157 follow-up). The wingman's output is the
+    /// exact string handed to text-to-speech, so any Markdown mark the model leaves in is voiced
+    /// literally - "star star", "hashtag", "dash". The fidelity prompt asks the model not to emit
+    /// Markdown, but a prompt is not a guarantee (the narration runs on the cheaper Fast tier, which
+    /// disobeys it often), so this is the belt to the prompt's suspenders: it removes the FORMATTING
+    /// characters that are never valid spoken words while leaving the real words - including all
+    /// non-Latin scripts and every number - completely untouched. It changes how text is spoken,
+    /// never WHAT is said, so it does not touch the fidelity of the answer.
+    ///
+    /// Stripped/normalized: fenced and inline code, Markdown links and images (kept as their text),
+    /// bold/italic/strikethrough emphasis, hash-mark headings, blockquote markers, bullet and
+    /// numbered-list markers, horizontal rules, and table pipes. Word-internal underscores
+    /// (identifiers like snake_case) are deliberately preserved - only underscores that wrap a word
+    /// as emphasis are removed. Public so tests can prove both the stripping and the passthrough.
     /// </summary>
     public static string CleanupForSpeech(string text)
     {
         if (string.IsNullOrEmpty(text)) return string.Empty;
-        text = Regex.Replace(text, @"```[\s\S]*?```", "");
+
+        // Fenced code blocks are never spoken - drop them whole (both ``` and ~~~ fences).
+        text = Regex.Replace(text, @"```[\s\S]*?```", " ");
+        text = Regex.Replace(text, @"~~~[\s\S]*?~~~", " ");
+
+        // Images before links so the alt text survives: ![alt](url) -> alt, [text](url) -> text.
+        text = Regex.Replace(text, @"!\[([^\]]*)\]\([^)]*\)", "$1");
+        text = Regex.Replace(text, @"\[([^\]]+)\]\([^)]*\)", "$1");
+
+        // Inline code keeps its inner text (issue #368) - it is often the answer's content; then
+        // remove any stray unpaired backtick so none is read as "backtick".
         text = Regex.Replace(text, @"`([^`]+)`", "$1");
+        text = text.Replace("`", "");
+
+        // Line-leading block markers: headings, blockquotes, bullets, numbered lists, and rules.
+        // Handled per line so a marker is only stripped where Markdown puts it - at the line start -
+        // and a mid-sentence "step 1." or "a - b" is left alone.
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            // A horizontal rule is a line of only -, * or _ (three or more) - drop it entirely.
+            if (Regex.IsMatch(line, @"^\s*([-*_])(?:\s*\1){2,}\s*$")) { lines[i] = ""; continue; }
+            line = Regex.Replace(line, @"^\s*#{1,6}\s+", "");     // ## Heading -> Heading
+            line = Regex.Replace(line, @"^\s*>+\s?", "");          // > quote -> quote
+            line = Regex.Replace(line, @"^\s*[-*+]\s+", "");       // - bullet -> bullet
+            line = Regex.Replace(line, @"^\s*\d{1,3}[.)]\s+", ""); // 1. item / 2) item -> item
+            lines[i] = line;
+        }
+        text = string.Join("\n", lines);
+
+        // Tables: drop separator rows (|---|:--:|) and turn remaining cell pipes into a light pause
+        // so "pipe" is never voiced.
+        text = Regex.Replace(text, @"^\s*\|?[\s:|-]{3,}\|?\s*$", "", RegexOptions.Multiline);
+        text = text.Replace("|", ", ");
+
+        // Emphasis marks. Asterisks: strip the wrappers around bold/italic (**x**, *x*, ***x***),
+        // then any leftover stray asterisk. Underscores: only when they wrap a word at a boundary,
+        // so identifiers like snake_case and file_name keep their underscores. Strikethrough ~~x~~.
+        text = Regex.Replace(text, @"\*{1,3}([^*\n]+?)\*{1,3}", "$1");
+        text = text.Replace("*", "");
+        text = Regex.Replace(text, @"(?<=^|\s)_{1,3}([^_\n]+?)_{1,3}(?=$|\s|[.,!?;:])", "$1");
+        text = Regex.Replace(text, @"~~([^~\n]+?)~~", "$1");
+
+        // Collapse the whitespace the stripping left behind.
+        text = Regex.Replace(text, @"[ \t]{2,}", " ");
+        text = Regex.Replace(text, @"[ \t]+\n", "\n");
         text = Regex.Replace(text, @"\n{3,}", "\n\n");
-        text = Regex.Replace(text, @"[ ]{2,}", " ");
         return text.Trim();
     }
 }
