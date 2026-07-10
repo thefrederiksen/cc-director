@@ -10,6 +10,7 @@ import {
   type AccountDevicesResponse,
 } from "@devthrottle/client-core/account/accountClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { ErrorBanner, LoadingState, PageHeader } from "../components";
 
 // The Account page (issue #978, epic #967) - the React port of the Blazor Cockpit Account.razor
 // (#853/#648/#854). A pure client of the Gateway account endpoints: the credential lives on the
@@ -227,18 +228,21 @@ export function AccountView() {
 
   return (
     <div className="page acct">
-      <div className="page-head">
-        <h1>DevThrottle Account</h1>
-      </div>
-      <p className="acct-lede">
-        The DevThrottle identity this Gateway is signed in as, and the devices registered to the account.
-        The credential lives on the Gateway; this page never sees the raw token.
-      </p>
+      <PageHeader
+        title="DevThrottle Account"
+        subtitle={
+          "The DevThrottle identity this Gateway is signed in as, and the devices registered to the " +
+          "account. The credential lives on the Gateway; this page never sees the raw token."
+        }
+      />
 
       {error !== null ? (
-        <div className="acct-error">Could not load account status from the Gateway: {error}</div>
+        <ErrorBanner
+          message={`Could not load account status from the Gateway: ${error}`}
+          onRetry={() => void loadStatus()}
+        />
       ) : status === null ? (
-        <p className="acct-loading">Loading...</p>
+        <LoadingState />
       ) : status.signedIn ? (
         <>
           <div className="acct-card">
@@ -278,16 +282,12 @@ export function AccountView() {
             </p>
 
             {devicesLoading ? (
-              <p className="acct-devices-loading">Loading devices...</p>
+              <LoadingState message="Loading devices..." />
             ) : devicesError !== null ? (
-              <div className="acct-devices-error">
-                Could not load your devices from the Gateway: {devicesError}
-                <div className="acct-devices-retry-row">
-                  <button className="acct-btn" onClick={() => void loadDevices()}>
-                    Try again
-                  </button>
-                </div>
-              </div>
+              <ErrorBanner
+                message={`Could not load your devices from the Gateway: ${devicesError}`}
+                onRetry={() => void loadDevices()}
+              />
             ) : devices !== null && !devices.signedIn ? (
               <div className="acct-devices-signedout">
                 The Gateway reports it is no longer signed in, so the device list is unavailable. Sign in

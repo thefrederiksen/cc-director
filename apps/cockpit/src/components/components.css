@@ -1,0 +1,228 @@
+/* The shared Cockpit user-interface kit stylesheet (issue #1244). Every rule here uses the app theme
+   tokens from styles.css (:root) - nothing hard-codes a color outside that token block, exactly as the
+   rest of the Cockpit does. See docs/CockpitVisualStyle.md for the written palette these tokens define.
+   Class names are prefixed "ui-" so the kit never collides with a page's own classes. */
+
+/* ===== Button (four variants) ================================================================== */
+.ui-btn {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 6px 14px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.ui-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* secondary - the default supporting action: a bordered navy button. */
+.ui-btn-secondary {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+.ui-btn-secondary:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* primary - the main action on a surface: accent blue. */
+.ui-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+.ui-btn-primary:hover:not(:disabled) {
+  color: #ffffff;
+  filter: brightness(1.1);
+}
+
+/* danger - a destructive action: red. Always the confirm button of a ConfirmDialog. */
+.ui-btn-danger {
+  background: var(--attention);
+  border-color: var(--attention);
+  color: #ffffff;
+  font-weight: 600;
+}
+.ui-btn-danger:hover:not(:disabled) {
+  color: #ffffff;
+  filter: brightness(1.1);
+}
+
+/* ghost - a borderless, link-like inline action that blends into its surface. */
+.ui-btn-ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--accent);
+  padding: 4px 8px;
+}
+.ui-btn-ghost:hover:not(:disabled) {
+  color: var(--text);
+}
+
+/* ===== PageHeader ============================================================================== */
+.ui-page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.ui-page-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ui-page-subtitle {
+  margin: 6px 0 0;
+  max-width: 70ch;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.ui-page-header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ===== LoadingState =========================================================================== */
+.ui-loading {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 8px 2px;
+}
+
+/* ===== EmptyState ============================================================================= */
+.ui-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 12px 2px;
+}
+
+.ui-empty-title {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.ui-empty-message {
+  max-width: 60ch;
+}
+
+.ui-empty-action {
+  margin-top: 12px;
+}
+
+/* ===== ErrorBanner ============================================================================ */
+.ui-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--attention);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ui-error-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-error-banner-retry {
+  flex: 0 0 auto;
+}
+
+/* ===== ConfirmDialog =========================================================================== */
+/* The modal backdrop is shared by the kit; it matches the app's existing modal dimming (the new-session
+   and Schedule dialogs use the same look). */
+.ui-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
+
+.ui-confirm {
+  width: 440px;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ui-confirm-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ui-confirm-message {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+.ui-confirm-error {
+  background: rgba(241, 76, 76, 0.1);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--attention);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.ui-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* ===== StatusMessage ========================================================================== */
+.ui-status {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.ui-status-info {
+  color: var(--text-dim);
+}
+.ui-status-success {
+  color: var(--accent);
+}
+.ui-status-error {
+  color: var(--attention);
+}

@@ -6,6 +6,7 @@ import {
   sendInterrupt,
   gatewayErrorMessage,
 } from "@devthrottle/client-core/api/client";
+import { ConfirmDialog } from "../components";
 
 // The driver action bar (issue #972) - the React port of the Blazor Cockpit action bar / desktop
 // SessionActionBar. Each button is rendered from the SELECTED session's declared driver capabilities
@@ -27,6 +28,9 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
   const [acting, setActing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Clear context resets the session's whole conversation in place; it is destructive, so it asks
+  // through the shared ConfirmDialog (issue #1244) instead of firing on the first click.
+  const [confirmClear, setConfirmClear] = useState(false);
   const statusTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -89,7 +93,7 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
           type="button"
           className="act-btn"
           disabled={acting}
-          onClick={() => sessionId && void act(() => sendClearContext(sessionId), "context cleared", "Clear context failed")}
+          onClick={() => setConfirmClear(true)}
           title="Reset the conversation in place (/clear) - the process keeps running"
         >
           Clear context
@@ -108,6 +112,24 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
       )}
       {status !== null && <span className="action-status">{status}</span>}
       {error !== null && <span className="action-error">{error}</span>}
+
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear this session's context?"
+        message={
+          "This resets the conversation in place (/clear). The running process keeps going, but the " +
+          "agent loses the current conversation. This cannot be undone."
+        }
+        confirmLabel="Clear context"
+        busyLabel="Clearing..."
+        onConfirm={async () => {
+          if (sessionId === undefined) return;
+          // Let a failure throw so the dialog surfaces it (fail loudly); flash on success.
+          await sendClearContext(sessionId);
+          flash("context cleared");
+        }}
+        onClose={() => setConfirmClear(false)}
+      />
     </div>
   );
 }
