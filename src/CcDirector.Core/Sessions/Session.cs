@@ -1500,6 +1500,32 @@ public sealed class Session : IDisposable
         OnReceivingDictationChanged?.Invoke(now);
     }
 
+    private int _pendingDictationCount;
+
+    /// <summary>
+    /// How many recorded-but-not-yet-delivered desktop dictations are currently held on disk for this
+    /// session (the durable <c>PendingDictationStore</c>). Distinct from <see cref="IsReceivingDictation"/>,
+    /// which is the phone-dictation arrival lock (issue #1181): this is the desktop Speak queue that the
+    /// background sweeper is still delivering. The roster paints the rail ORANGE while it is greater than
+    /// zero so a session with dictations waiting reads busy-with-dictation for the whole time - not just
+    /// the brief immediate transcription attempt. Transient (in-memory only); the host's held-dictation
+    /// refresh keeps it in step with the store, and <see cref="OnPendingDictationCountChanged"/> notifies
+    /// the roster so it can repaint the rail.
+    /// </summary>
+    public int PendingDictationCount
+    {
+        get => _pendingDictationCount;
+        set
+        {
+            if (_pendingDictationCount == value) return;
+            _pendingDictationCount = value;
+            OnPendingDictationCountChanged?.Invoke(value);
+        }
+    }
+
+    /// <summary>Raised (with the new value) when <see cref="PendingDictationCount"/> changes.</summary>
+    public event Action<int>? OnPendingDictationCountChanged;
+
     /// <summary>
     /// Send text + Enter through the shared terminal submit protocol. ConPTY sessions use one
     /// echo-verified implementation for every agent and route, with bracketed paste for large or

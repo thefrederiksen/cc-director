@@ -84,6 +84,7 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnHoldChanged += OnHoldChangedVm;
         session.OnViewModeChanged += OnViewModeChangedVm;
         session.OnReceivingDictationChanged += OnReceivingDictationChangedVm;
+        session.OnPendingDictationCountChanged += OnPendingDictationCountChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -95,6 +96,17 @@ public class SessionViewModel : INotifyPropertyChanged
     // Issue #1181, Task 3b: the session started or stopped receiving a phone dictation - repaint the
     // rail strip (orange while receiving) and refresh its reason text.
     private void OnReceivingDictationChangedVm(bool receiving)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(StatusColorBrush));
+            OnPropertyChanged(nameof(StatusReason));
+        });
+    }
+
+    // Held desktop dictations queued for this session changed - repaint the rail strip (orange while
+    // any are waiting) and refresh its reason text, the same way the phone-dictation lock does above.
+    private void OnPendingDictationCountChangedVm(int count)
     {
         Dispatcher.UIThread.Post(() =>
         {
@@ -133,6 +145,9 @@ public class SessionViewModel : INotifyPropertyChanged
             // "a dictation is arriving" state is obvious at a glance in the rail (it overrides the base
             // red "needs you", which would otherwise hide the fact that input is temporarily locked).
             if (Session.IsReceivingDictation) return OrangeStatusBrush;
+            // Desktop dictations held/queued for this session (Speak Send, delivered by the background
+            // sweeper) keep the rail orange for the whole wait, not just the brief immediate attempt.
+            if (Session.PendingDictationCount > 0) return OrangeStatusBrush;
             return (Session.StatusColor?.ToLowerInvariant()) switch
             {
                 "green"  => GreenStatusBrush,
@@ -158,7 +173,9 @@ public class SessionViewModel : INotifyPropertyChanged
         ? "On hold (set aside by you)"
         : Session.IsReceivingDictation
             ? "Receiving a dictation from your phone"
-            : Session.LastStatusReason ?? "";
+            : Session.PendingDictationCount > 0
+                ? "Dictation queued - sending when the session is ready"
+                : Session.LastStatusReason ?? "";
 
     private void OnHoldChangedVm(bool onHold)
     {

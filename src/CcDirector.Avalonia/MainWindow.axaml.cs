@@ -3256,19 +3256,40 @@ public partial class MainWindow : Window
     {
         var store = _pendingDictationStore;
         if (store is null) return;
-        int total, parked, composerBlocked;
+        System.Collections.Generic.IReadOnlyList<global::CcDirector.Core.Dictation.PendingDictation> all;
         try
         {
-            var all = store.LoadAll();
-            total = all.Count;
-            parked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.NeedsAttention);
-            composerBlocked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.ComposerBlocked);
+            all = store.LoadAll();
         }
         catch (Exception ex)
         {
             FileLog.Write($"[MainWindow] RefreshHeldDictationNotice FAILED: {ex.Message}");
             return;
         }
+
+        // Keep each session's rail orange while it has held dictations (issue: only the phone-arrival
+        // lock and the brief immediate transcription attempt were orange, so a queued/held desktop clip
+        // read red). The durable store is the single source of truth; sessions with no held clips are
+        // zeroed so the overlay clears the moment their queue drains. Runs on the UI thread.
+        try
+        {
+            var perSession = all
+                .GroupBy(r => r.SessionId, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+            foreach (var vm in _sessions)
+            {
+                var sid = vm.Session.Id.ToString();
+                vm.Session.PendingDictationCount = perSession.TryGetValue(sid, out var n) ? n : 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] pending-dictation rail sync FAILED: {ex.Message}");
+        }
+
+        var total = all.Count;
+        var parked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.NeedsAttention);
+        var composerBlocked = all.Count(r => r.Status == global::CcDirector.Core.Dictation.PendingDictationStatus.ComposerBlocked);
 
         if (total == 0)
         {
