@@ -458,13 +458,33 @@ public sealed class GatewayHost : IAsyncDisposable
         if (Account is not null)
         {
             var deviceRegistryClient = new Core.Account.DeviceRegistryClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
+            // Issue #1206: resolve THIS Gateway's own advertised front-door URL the same way Directors
+            // advertise theirs - the Tailscale MagicDNS front door (or the LAN IP under LAN addressing mode,
+            // issue #457), keyed on this Gateway's own port and gateway.tailnetEndpoint override. Published
+            // as endpoint_url on register and every heartbeat so an installer on another machine discovers
+            // the gateway address from the account instead of the person typing it. Re-resolved on each call
+            // (never cached) so an address that appears after start heals within one heartbeat cycle; an
+            // unresolved address (for example Tailscale not up) returns null and simply sends no address.
+            var tailnetResolver = new Core.Network.TailnetIdentityResolver();
+            var lanResolver = new Core.Network.LanIdentityResolver();
+            var endpointAddressingMode = gatewayConfig.AddressingMode;
+            var endpointOverride = gatewayConfig.TailnetEndpoint;
+            var gatewayPort = Port;
+            Func<string?> resolveEndpointUrl = () =>
+            {
+                var resolution = endpointAddressingMode == Core.Configuration.AddressingMode.Lan
+                    ? lanResolver.ResolveEndpoint(gatewayPort, endpointOverride)
+                    : tailnetResolver.ResolveEndpoint(gatewayPort, endpointOverride);
+                return resolution.IsResolved ? resolution.Endpoint : null;
+            };
             _deviceRegistration = new Account.GatewayDeviceRegistrationService(
                 Account,
                 deviceRegistryClient,
                 new Account.GatewayDeviceKeyStore(),
                 machineName: Environment.MachineName,
                 platform: ResolvePlatform(),
-                appVersion: AppVersion.Semver);
+                appVersion: AppVersion.Semver,
+                endpointUrlProvider: resolveEndpointUrl);
             _childMirror = new Account.ChildDeviceMirrorService(
                 Account,
                 deviceRegistryClient,

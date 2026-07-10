@@ -37,6 +37,7 @@ public sealed class GatewayDeviceRegistrationService
     private readonly DeviceRegistryClient _client;
     private readonly GatewayDeviceKeyStore _keyStore;
     private readonly Func<string> _installIdProvider;
+    private readonly Func<string?>? _endpointUrlProvider;
     private readonly string _machineName;
     private readonly string _platform;
     private readonly string? _appVersion;
@@ -59,6 +60,13 @@ public sealed class GatewayDeviceRegistrationService
     /// Tests inject a fixed provider so they never touch the real config root. Resolved lazily on first
     /// use (never at construction) and cached, so constructing this service does no disk I/O.
     /// </param>
+    /// <param name="endpointUrlProvider">
+    /// Resolves THIS Gateway's own reachable front-door URL to publish as the device's <c>endpoint_url</c>
+    /// (issue #1206), so an installer on another machine discovers the gateway address from the account
+    /// instead of the person typing it. Returns null when the address cannot be resolved yet (for example
+    /// Tailscale not up), in which case no address is sent - a heartbeat later backfills it. Null (the
+    /// default, and the pre-#1206 behavior) publishes no address at all.
+    /// </param>
     public GatewayDeviceRegistrationService(
         DevThrottleAccountService account,
         DeviceRegistryClient client,
@@ -66,7 +74,8 @@ public sealed class GatewayDeviceRegistrationService
         string machineName,
         string platform,
         string? appVersion = null,
-        Func<string>? installIdProvider = null)
+        Func<string>? installIdProvider = null,
+        Func<string?>? endpointUrlProvider = null)
     {
         _account = account ?? throw new ArgumentNullException(nameof(account));
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -75,6 +84,19 @@ public sealed class GatewayDeviceRegistrationService
         _platform = platform ?? throw new ArgumentNullException(nameof(platform));
         _appVersion = appVersion;
         _installIdProvider = installIdProvider ?? GatewayInstallId.LoadOrCreate;
+        _endpointUrlProvider = endpointUrlProvider;
+    }
+
+    /// <summary>
+    /// THIS Gateway's own reachable front-door URL to publish as <c>endpoint_url</c> (issue #1206), or null
+    /// when no provider is wired or it cannot resolve the address yet. Read fresh on every register and
+    /// heartbeat so an address that appears (or changes) after start is picked up without a restart. The
+    /// resolver never throws (it reports an unresolved address as null), so this is safe on any path.
+    /// </summary>
+    public string? ResolveEndpointUrl()
+    {
+        var url = _endpointUrlProvider?.Invoke();
+        return string.IsNullOrWhiteSpace(url) ? null : url;
     }
 
     /// <summary>This Gateway's stable install id, resolved lazily and cached (no disk I/O at construction).</summary>
@@ -128,8 +150,12 @@ public sealed class GatewayDeviceRegistrationService
             return;
         }
 
-        FileLog.Write($"[GatewayDeviceRegistrationService] EnsureRegisteredAsync: registering this Gateway as a device, install_id={installId}, name={_machineName}, platform={_platform}");
-        var request = new CloudDeviceRegistrationRequest(installId, _platform, _machineName, GatewayDeviceType, _appVersion);
+        // Issue #1206: publish this Gateway's own advertised front-door URL so an installer on another
+        // machine can discover the gateway address from the account. Null when it cannot resolve yet - a
+        // heartbeat backfills it later.
+        var endpointUrl = ResolveEndpointUrl();
+        FileLog.Write($"[GatewayDeviceRegistrationService] EnsureRegisteredAsync: registering this Gateway as a device, install_id={installId}, name={_machineName}, platform={_platform}, endpoint_url={endpointUrl ?? "(unresolved)"}");
+        var request = new CloudDeviceRegistrationRequest(installId, _platform, _machineName, GatewayDeviceType, _appVersion, endpointUrl);
         var result = await _client.RegisterAsync(token, request, ct).ConfigureAwait(false);
 
         _keyStore.Save(installId, result.DeviceKey);

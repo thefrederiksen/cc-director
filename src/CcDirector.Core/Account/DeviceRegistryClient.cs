@@ -23,6 +23,9 @@ namespace CcDirector.Core.Account;
 /// <param name="KeyLast4">The masked key last-four for display, or null when omitted.</param>
 /// <param name="CreatedAt">When the device was registered, or null when omitted.</param>
 /// <param name="LastSeenAt">When the device was last seen, or null when omitted.</param>
+/// <param name="EndpointUrl">The device's reachable front-door URL (for example a gateway's advertised
+/// tailnet address), or null when the device has none. For a "gateway" device this is what the installer
+/// discovers to enroll a Workstation against, so the person never types the gateway address (issue #1206).</param>
 public sealed record CloudDeviceRecord(
     string Id,
     string Name,
@@ -32,7 +35,8 @@ public sealed record CloudDeviceRecord(
     string? KeyPrefix,
     string? KeyLast4,
     string? CreatedAt,
-    string? LastSeenAt);
+    string? LastSeenAt,
+    string? EndpointUrl);
 
 /// <summary>
 /// The request body for registering THIS device with the DevThrottle account:
@@ -46,12 +50,16 @@ public sealed record CloudDeviceRecord(
 /// <param name="Name">A human-readable device name (typically the machine name), or null to let the cloud default it.</param>
 /// <param name="DeviceType">The device type (for example "gateway"), or null when omitted.</param>
 /// <param name="AppVersion">The reporting app version, or null when omitted.</param>
+/// <param name="EndpointUrl">This device's reachable front-door URL, or null when it has none. A Gateway
+/// publishes its own advertised address here so an installer on another machine can discover it (issue
+/// #1206); other device types leave it null.</param>
 public sealed record CloudDeviceRegistrationRequest(
     string InstallId,
     string Platform,
     string? Name,
     string? DeviceType,
-    string? AppVersion);
+    string? AppVersion,
+    string? EndpointUrl = null);
 
 /// <summary>
 /// The result of a device registration: the per-device key the cloud issues ONCE (in plain text, only
@@ -247,6 +255,10 @@ public sealed class DeviceRegistryClient
             body["device_type"] = request.DeviceType;
         if (!string.IsNullOrWhiteSpace(request.AppVersion))
             body["app_version"] = request.AppVersion;
+        // Issue #1206: a Gateway publishes its own reachable front-door URL so an installer on another
+        // machine can discover it. Sent only when present, so a device with no address never sends the field.
+        if (!string.IsNullOrWhiteSpace(request.EndpointUrl))
+            body["endpoint_url"] = request.EndpointUrl;
 
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
@@ -279,12 +291,18 @@ public sealed class DeviceRegistryClient
     /// cloud advanced last-seen (200), false when it does not know this install id (404) - the signal that
     /// the device must be (re-)registered. Throws on any other non-success status (so an unreachable or
     /// erroring cloud surfaces as a clear failure the best-effort caller logs, never a silent success).
+    ///
+    /// Issue #1206: an optional <paramref name="endpointUrl"/> is sent so an already-installed Gateway (which
+    /// registers only once per install, then only heartbeats) keeps its published front-door address current
+    /// and backfills it after updating to this version. The cloud never CLEARS a hand-set value when the
+    /// field is omitted, so a device that has no address simply sends nothing.
     /// </summary>
     /// <param name="accessToken">The Bearer access token the Gateway holds. Never logged.</param>
     /// <param name="installId">This device's stable install id (identifies the row to advance). Required.</param>
     /// <param name="appVersion">The reporting app version, or null when omitted.</param>
+    /// <param name="endpointUrl">This device's reachable front-door URL to publish, or null to omit it.</param>
     /// <param name="ct">Cancels the request.</param>
-    public async Task<bool> HeartbeatAsync(string accessToken, string installId, string? appVersion = null, CancellationToken ct = default)
+    public async Task<bool> HeartbeatAsync(string accessToken, string installId, string? appVersion = null, string? endpointUrl = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(accessToken))
             throw new ArgumentException("Access token is required", nameof(accessToken));
@@ -297,6 +315,8 @@ public sealed class DeviceRegistryClient
         var body = new JsonObject { ["install_id"] = installId };
         if (!string.IsNullOrWhiteSpace(appVersion))
             body["app_version"] = appVersion;
+        if (!string.IsNullOrWhiteSpace(endpointUrl))
+            body["endpoint_url"] = endpointUrl;
 
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
@@ -418,7 +438,8 @@ public sealed class DeviceRegistryClient
             StringField(obj, "key_prefix"),
             StringField(obj, "key_last4"),
             StringField(obj, "created_at"),
-            StringField(obj, "last_seen_at"));
+            StringField(obj, "last_seen_at"),
+            StringField(obj, "endpoint_url"));
     }
 
     /// <summary>Reads a string field from the object, or null when absent or not a string value.</summary>

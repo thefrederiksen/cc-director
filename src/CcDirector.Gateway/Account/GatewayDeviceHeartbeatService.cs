@@ -149,7 +149,12 @@ public sealed class GatewayDeviceHeartbeatService : IDisposable
                 return;
             }
 
-            var advanced = await _client.HeartbeatAsync(token, _registration.InstallId, _appVersion, CancellationToken.None).ConfigureAwait(false);
+            // Issue #1206: publish this Gateway's own advertised front-door URL on every heartbeat. This is
+            // what lets an already-installed Gateway (which registers only once per install, then only
+            // heartbeats) keep its address current and backfill it after updating to this version. Resolved
+            // fresh each tick, so an address that comes up after start heals within one heartbeat cycle.
+            var endpointUrl = _registration.ResolveEndpointUrl();
+            var advanced = await _client.HeartbeatAsync(token, _registration.InstallId, _appVersion, endpointUrl, CancellationToken.None).ConfigureAwait(false);
             if (advanced)
             {
                 FileLog.Write($"[GatewayDeviceHeartbeatService] HeartbeatOnceAsync: heartbeat sent for install_id={_registration.InstallId}; last-seen advanced");

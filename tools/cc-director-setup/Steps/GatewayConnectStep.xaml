@@ -7,14 +7,14 @@
                        Foreground="White"
                        FontSize="22"
                        FontWeight="SemiBold" />
-            <TextBlock Text="This machine joins an existing fleet, so it must connect to your gateway before we finish. Enter your gateway's URL, then sign in with the same DevThrottle account your gateway uses."
+            <TextBlock Text="This machine joins an existing fleet, so it must connect to your gateway before we finish. Sign in with the same DevThrottle account your gateway uses - we find your gateway for you, so there is no address to type."
                        Foreground="{StaticResource TextForeground}"
                        FontSize="13"
                        TextWrapping="Wrap"
                        Margin="0,8,0,0" />
         </StackPanel>
 
-        <!-- Centered pairing card -->
+        <!-- Centered join card -->
         <Border Background="#252526"
                 CornerRadius="6"
                 Padding="32"
@@ -24,35 +24,13 @@
                 MinWidth="440">
             <StackPanel>
 
-                <!-- Gateway URL -->
-                <TextBlock Text="Gateway URL"
-                           Foreground="{StaticResource TextForeground}"
-                           FontSize="13"
-                           FontWeight="SemiBold" />
-                <TextBox x:Name="UrlBox"
-                         Margin="0,6,0,0"
-                         Height="34"
-                         VerticalContentAlignment="Center"
-                         Background="#1E1E1E"
-                         Foreground="#CCCCCC"
-                         CaretBrush="#CCCCCC"
-                         BorderBrush="#3C3C3C"
-                         BorderThickness="1"
-                         Padding="8,6"
-                         FontSize="13" />
-                <TextBlock Text="e.g. http://gateway.your-tailnet.ts.net:7878"
-                           Foreground="{StaticResource DimText}"
-                           FontSize="11"
-                           Margin="0,4,0,0" />
-
-                <!-- Sign in: the browser opens for you to sign in to your DevThrottle account; on success
-                     this machine is registered and connected to the gateway above. No pairing code. -->
+                <!-- Sign in: the browser opens for you to sign in to your DevThrottle account; on success we
+                     read your account's gateways and connect this machine automatically. No address to type. -->
                 <Button x:Name="SignInButton"
                         Content="Sign in to DevThrottle"
                         Width="220"
                         Height="40"
                         FontSize="15"
-                        Margin="0,22,0,0"
                         HorizontalAlignment="Left"
                         Style="{StaticResource PrimaryButton}"
                         Click="SignInButton_Click" />
@@ -62,12 +40,50 @@
                            TextWrapping="Wrap"
                            Margin="0,8,0,0" />
 
-                <!-- Waiting state: the browser is open for sign-in; Cancel unwinds the wait. -->
+                <!-- Gateway chooser (issue #1206): shown only when the account has more than one gateway.
+                     Gateways are listed by NAME - a raw URL is never shown. -->
+                <StackPanel x:Name="ChooserPanel"
+                            Margin="0,18,0,0"
+                            Visibility="Collapsed">
+                    <TextBlock Text="Choose your gateway"
+                               Foreground="{StaticResource TextForeground}"
+                               FontSize="13"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="Your account has more than one gateway. Pick the one this machine should join."
+                               Foreground="{StaticResource DimText}"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Margin="0,4,0,0" />
+                    <ListBox x:Name="GatewayList"
+                             Margin="0,8,0,0"
+                             MaxHeight="150"
+                             Background="#1E1E1E"
+                             Foreground="#CCCCCC"
+                             BorderBrush="#3C3C3C"
+                             BorderThickness="1"
+                             DisplayMemberPath="Name"
+                             SelectionChanged="GatewayList_SelectionChanged" />
+                    <Button x:Name="ChooseConnectButton"
+                            Content="Connect to selected gateway"
+                            Width="260"
+                            Height="36"
+                            FontSize="14"
+                            Margin="0,12,0,0"
+                            HorizontalAlignment="Left"
+                            IsEnabled="False"
+                            Style="{StaticResource PrimaryButton}"
+                            Click="ChooseConnectButton_Click" />
+
+                </StackPanel>
+
+                <!-- Waiting state: the browser is open for sign-in (or the connect is in flight); Cancel
+                     unwinds a sign-in wait. -->
                 <StackPanel x:Name="WaitingPanel"
                             Orientation="Horizontal"
                             Margin="0,18,0,0"
                             Visibility="Collapsed">
-                    <TextBlock Text="Waiting for you to sign in in your browser..."
+                    <TextBlock x:Name="WaitingText"
+                               Text="Waiting for you to sign in in your browser..."
                                Foreground="{StaticResource AccentBrush}"
                                FontSize="13"
                                FontWeight="SemiBold"
