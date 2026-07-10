@@ -55,10 +55,7 @@ public interface ISessionBackend : IDisposable
     /// </summary>
     Task SendTextAsync(string text);
 
-    /// <summary>
-    /// Send just an Enter keystroke to the process.
-    /// Used by the Enter retry mechanism when the initial Enter doesn't register.
-    /// </summary>
+    /// <summary>Send just an Enter keystroke to the process for raw terminal-control scenarios.</summary>
     Task SendEnterAsync() => Task.CompletedTask;
 
     /// <summary>

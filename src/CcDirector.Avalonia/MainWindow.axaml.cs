@@ -2538,8 +2538,6 @@ public partial class MainWindow : Window
         });
     }
 
-    private CancellationTokenSource? _enterRetryCts;
-
     private const int PersistDebounceMs = 250;
     private CancellationTokenSource? _persistDebounceCts;
 
@@ -3069,7 +3067,7 @@ public partial class MainWindow : Window
     /// targets the session the user dictated into (captured when the Speak dialog opened), so it lands
     /// in the right session even if the user has since switched away or typed something else. Keeps
     /// the important parts of the normal send: a history snapshot (a rewind point), the Clean-view
-    /// echo when that session is on screen, and the Enter retry. Runs on the UI thread.
+    /// echo when that session is on screen, and the shared submit path. Runs on the UI thread.
     /// </summary>
     private async Task SubmitDictatedTextAsync(Session target, string text)
     {
@@ -3100,7 +3098,6 @@ public partial class MainWindow : Window
             CleanView.InjectUserPrompt(text);
 
         await target.SendTextAsync(text);
-        ScheduleEnterRetry(target);
     }
 
     // ===== Durable dictation delivery (issue #1130) =====
@@ -5308,11 +5305,6 @@ public partial class MainWindow : Window
         // and route short single-line prompts through a temp file.
         await _activeSession.Session.SendTextAsync(text);
 
-        if (!isInteractiveCommand)
-        {
-            ScheduleEnterRetry(_activeSession.Session);
-        }
-
         if (isInteractiveCommand)
         {
             EnterInteractiveTuiMode(_activeSession.Session);
@@ -5320,41 +5312,6 @@ public partial class MainWindow : Window
         else
         {
             PromptInput.Focus();
-        }
-    }
-
-    private void ScheduleEnterRetry(Session session)
-    {
-        _enterRetryCts?.Cancel();
-        _enterRetryCts = new CancellationTokenSource();
-        var cts = _enterRetryCts;
-
-        void OnStateChanged(ActivityState oldState, ActivityState newState)
-        {
-            if (newState == ActivityState.Working)
-            {
-                cts.Cancel();
-                session.OnActivityStateChanged -= OnStateChanged;
-            }
-        }
-
-        session.OnActivityStateChanged += OnStateChanged;
-        _ = RetryEnterAfterDelay(session, cts, OnStateChanged);
-    }
-
-    private async Task RetryEnterAfterDelay(Session session, CancellationTokenSource cts,
-        Action<ActivityState, ActivityState> handler)
-    {
-        try
-        {
-            await Task.Delay(3000, cts.Token);
-            await session.SendEnterAsync();
-            FileLog.Write("[MainWindow] Enter retry: sent extra Enter (no activity within 3s)");
-        }
-        catch (TaskCanceledException) { /* Activity arrived - no retry needed */ }
-        finally
-        {
-            session.OnActivityStateChanged -= handler;
         }
     }
 
@@ -5368,9 +5325,6 @@ public partial class MainWindow : Window
     {
         FileLog.Write("[MainWindow] EnterInteractiveTuiMode: focusing terminal for interactive TUI");
         _isInteractiveTuiMode = true;
-
-        // Cancel any pending Enter retry - interactive TUIs must not receive stray Enters
-        _enterRetryCts?.Cancel();
 
         // Focus the terminal so keystrokes go to the ConPTY process
         SwitchLeftTab("Terminal");
@@ -5530,7 +5484,7 @@ public partial class MainWindow : Window
         UpdateQueueButtonStyle();
     }
 
-    private void BtnHandover_Click(object? sender, RoutedEventArgs e)
+    private async void BtnHandover_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write("[MainWindow] BtnHandover_Click");
         if (_activeSession == null)
@@ -5539,7 +5493,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _activeSession.Session.SendText("/handover\n", SendSource.Internal);
+        await _activeSession.Session.SendTextAsync("/handover", SendSource.Internal);
         FileLog.Write($"[MainWindow] BtnHandover_Click: sent /handover to session {_activeSession.Session.Id}");
     }
 
