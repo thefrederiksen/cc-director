@@ -459,6 +459,61 @@ body {
   border-color: var(--accent);
 }
 
+.newsess-opt-label {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin: 10px 0 5px;
+}
+
+.newsess-opt-label:first-child {
+  margin-top: 0;
+}
+
+.newsess-seg {
+  display: flex;
+  gap: 4px;
+}
+
+.newsess-seg-btn {
+  flex: 1;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.newsess-seg-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.newsess-seg-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.newsess-seg-btn.sel {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent);
+}
+
+.newsess-args {
+  background: var(--code-bg);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.newsess-args.mono {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
 .newsess-error {
   padding: 8px 10px;
   background: rgba(241, 76, 76, 0.1);
