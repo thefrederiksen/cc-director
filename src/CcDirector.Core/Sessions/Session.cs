@@ -217,11 +217,29 @@ public sealed class Session : IDisposable
     /// <summary>
     /// The session's short, human-friendly three-digit number (100-999), or null when the session
     /// has no number (allocated before this feature ran, or the Director's number pool was exhausted
-    /// at creation). Issue #820. Assigned once by the <see cref="SessionManager"/> at creation (or
+    /// at creation). Issue #820. Assigned by the <see cref="SessionManager"/> at creation (or
     /// re-applied from persistence on restore) and stable for the life of the session - a rename
     /// never changes it because the number is a separate field from the display name.
+    ///
+    /// Issue #1292: the number is now handed out by the Gateway (unique across the whole fleet), so
+    /// for a brand-new session it may be assigned a moment AFTER creation - once the Gateway answers.
+    /// Set through <see cref="SetNumber"/> so <see cref="OnNumberChanged"/> fires and the rail shows
+    /// the number when it arrives.
     /// </summary>
     public int? Number { get; internal set; }
+
+    /// <summary>Raised when <see cref="Number"/> changes, so a view (the desktop rail) can show the
+    /// number when the Gateway assigns it after creation (issue #1292).</summary>
+    public event Action? OnNumberChanged;
+
+    /// <summary>Set <see cref="Number"/> and notify listeners. No-op when the value is unchanged.</summary>
+    internal void SetNumber(int? number)
+    {
+        if (Number == number) return;
+        Number = number;
+        try { OnNumberChanged?.Invoke(); }
+        catch (Exception ex) { FileLog.Write($"[Session] {Id} OnNumberChanged handler threw: {ex.Message}"); }
+    }
 
     public string RepoPath { get; }
     public string WorkingDirectory { get; }

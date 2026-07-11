@@ -271,6 +271,39 @@ public sealed class GatewayHostTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Unauthorized, replay.StatusCode);
     }
 
+    // ===== Issue #1292: the fleet-wide session-number endpoint over the wire =====
+
+    [Fact]
+    public async Task SessionNumberAllocate_GivesDistinctNumbersAcrossDirectors_AndIsIdempotent()
+    {
+        // Two sessions on two different Directors, both reaching THIS Gateway, get distinct numbers.
+        var a = await _http.PostAsJsonAsync("session-numbers/allocate",
+            new SessionNumberAllocateRequest { SessionId = "sess-A", DirectorId = "dir-1" });
+        var b = await _http.PostAsJsonAsync("session-numbers/allocate",
+            new SessionNumberAllocateRequest { SessionId = "sess-B", DirectorId = "dir-2" });
+        Assert.Equal(HttpStatusCode.OK, a.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, b.StatusCode);
+
+        var na = (await a.Content.ReadFromJsonAsync<SessionNumberAllocateResponse>())!.Number;
+        var nb = (await b.Content.ReadFromJsonAsync<SessionNumberAllocateResponse>())!.Number;
+        Assert.NotNull(na);
+        Assert.NotNull(nb);
+        Assert.NotEqual(na, nb);
+        // Both come from the coordinated low band (issue #1292 refinement).
+        Assert.InRange(na!.Value, Discovery.FleetSessionNumberAllocator.MinNumber, Discovery.FleetSessionNumberAllocator.CoordinatedMaxNumber);
+
+        // Asking again for the SAME session returns the SAME number (idempotent).
+        var again = await _http.PostAsJsonAsync("session-numbers/allocate",
+            new SessionNumberAllocateRequest { SessionId = "sess-A", DirectorId = "dir-1" });
+        var naAgain = (await again.Content.ReadFromJsonAsync<SessionNumberAllocateResponse>())!.Number;
+        Assert.Equal(na, naAgain);
+
+        // Releasing frees it for reuse.
+        var del = await _http.DeleteAsync("session-numbers/sess-A");
+        Assert.Equal(HttpStatusCode.NoContent, del.StatusCode);
+        Assert.Null(_gateway.SessionNumbers.NumberFor("sess-A"));
+    }
+
     private async Task WaitForDirectorCount(int target, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;

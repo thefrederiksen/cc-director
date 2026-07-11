@@ -36,6 +36,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public DirectorRegistry Registry { get; }
 
     /// <summary>
+    /// Issue #1292: the fleet-wide authority for the short three-digit session numbers. One instance for
+    /// the whole Gateway, so a number names exactly one session across every Director on every machine.
+    /// Directors ask it for a number at session creation (POST /session-numbers/allocate) and free it at
+    /// session end; the /sessions aggregation adopts every observed number so the in-use set survives a
+    /// Gateway restart.
+    /// </summary>
+    public Discovery.FleetSessionNumberAllocator SessionNumbers { get; } = new();
+
+    /// <summary>
     /// Issue #1176 (Phase 1a): the Gateway's cache of session state pushed up by stream-connected
     /// Directors. The <c>/sessions</c> aggregation serves a Director from here (instead of pulling it)
     /// when that Director's stream is connected and fresh. Empty until Directors connect and push.
@@ -329,6 +338,10 @@ public sealed class GatewayHost : IAsyncDisposable
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
+        // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
+        // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
+        // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
+        Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
         RosterCache = new Discovery.FleetRosterCache();
         // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
@@ -1067,7 +1080,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache absorbs a transient poll
             // failure as Wobbly (served stale through a short grace window) instead of blinking the
             // Director's sessions out of the roster; only a sustained failure reads as Offline.
-            rosterCache: RosterCache);
+            rosterCache: RosterCache,
+            // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
+            // (Directors ask here at session creation) and the /sessions adopt-reconcile.
+            sessionNumbers: SessionNumbers);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and

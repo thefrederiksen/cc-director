@@ -71,7 +71,12 @@ internal static class GatewayEndpoints
         // failed Director poll no longer drops that Director's sessions - the cache serves the last-known-good
         // snapshot marked stale (Wobbly) through a short grace window, and only declares the Director Offline
         // once the grace window is exhausted. Null keeps the old drop-on-first-failure behaviour.
-        FleetRosterCache? rosterCache = null)
+        FleetRosterCache? rosterCache = null,
+        // Issue #1292: the fleet-wide session-number authority. When non-null, the Director-facing
+        // /session-numbers/* endpoints are mapped and the /sessions aggregation adopts every observed
+        // number so the in-use set survives a Gateway restart. Null (old callers, tests) maps nothing
+        // and leaves each Director to number locally.
+        Discovery.FleetSessionNumberAllocator? sessionNumbers = null)
     {
         // Issue #1188: the enforced session lock. A session is LOCKED for human input exactly while a PENDING
         // dictation record exists for it (a pure projection of the durable record - it never auto-releases;
@@ -107,6 +112,27 @@ internal static class GatewayEndpoints
         // check accepts a phone's per-device key, not only the shared machine token.
         if (turnJobs is not null)
             GatewayVoiceTurnEndpoint.Map(app, turnJobs, registry, client, owners, token, devices);
+
+        // Issue #1292: the fleet-wide session-number authority. A Director asks for a number when it
+        // creates a session (so the number is unique across every Director on every machine) and frees
+        // it when the session ends. Guarded by the same auth middleware as every other Director-facing
+        // route, so the Director's own fleet credential is required.
+        if (sessionNumbers is not null)
+        {
+            app.MapPost("/session-numbers/allocate", (SessionNumberAllocateRequest req) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.SessionId))
+                    return Results.BadRequest(new { error = "sessionId is required" });
+                var number = sessionNumbers.Allocate(req.SessionId, req.DirectorId ?? "");
+                return Results.Ok(new SessionNumberAllocateResponse { Number = number });
+            });
+
+            app.MapDelete("/session-numbers/{sessionId}", (string sessionId) =>
+            {
+                sessionNumbers.Release(sessionId);
+                return Results.NoContent();
+            });
+        }
 
         // Issue #469 closed the secret-embedding phone-pairing QR endpoints (/pair/qr.png and
         // /pair/payload) that put the shared fleet token directly in a QR/link - a full compromise
@@ -682,6 +708,17 @@ internal static class GatewayEndpoints
             // stamp the presentation fold (which reads the role to suppress a live Worker's red toward the
             // human). Done here, once, because the role needs the full fleet view.
             StampFleetRolesAndFold(all, needsYouStampFor);
+
+            // Issue #1292: adopt every observed number into the fleet allocator's in-use set. This is how
+            // the Gateway learns numbers it did not hand out - a number a Director assigned offline, or any
+            // number still live after a Gateway restart - so it never hands the same number to a new
+            // session. Adopt only ever marks a number in use (never frees one), so doing it from this
+            // possibly-filtered view is safe: a Director that is momentarily absent from the aggregation
+            // can never lose its numbers here.
+            if (sessionNumbers is not null)
+                foreach (var s in all)
+                    if (s.Number is int num)
+                        sessionNumbers.Adopt(s.SessionId, s.DirectorId, num);
 
             if (envelope == true)
             {

@@ -20,14 +20,40 @@ public sealed class SessionManager : IDisposable
     private readonly AgentOptions _options;
 
     /// <summary>
-    /// Allocates the short three-digit session numbers (issue #820). One allocator per Director,
-    /// so a session number is unique among THIS Director's active sessions. The Director always
-    /// numbers locally - it never depends on the Gateway being reachable.
+    /// Tracks which three-digit session numbers THIS Director currently shows (issue #820), so a
+    /// number is not reused for two live sessions on this box and is freed when a session ends. Issue
+    /// #1292: the AUTHORITY for the number is now the Gateway (see <see cref="FleetNumberSource"/>);
+    /// this allocator only reserves whatever number a session ends up with (a Gateway hand-out, a
+    /// persisted number, or a local offline pick) and hands out the OFFLINE fallback number when the
+    /// Gateway cannot be reached.
     /// </summary>
     private readonly SessionNumberAllocator _numberAllocator = new();
 
     /// <summary>The Director-local session-number allocator (issue #820). Exposed for tests.</summary>
     internal SessionNumberAllocator NumberAllocator => _numberAllocator;
+
+    /// <summary>
+    /// Issue #1292: asks the Gateway for a session's fleet-unique three-digit number. Set by the host
+    /// (ControlApiHost) to call the Gateway; returns the number, or null when the Gateway is disabled,
+    /// unreachable, or its pool is exhausted - the Director then assigns a local offline number. Null
+    /// (tests, a Director with no host wiring) skips the Gateway entirely and numbers offline.
+    /// </summary>
+    public Func<Guid, CancellationToken, Task<int?>>? FleetNumberSource { get; set; }
+
+    /// <summary>
+    /// Issue #1292: tells the Gateway a session's number is free again when the session ends. Set by
+    /// the host to call the Gateway. Null (tests, no host) is a no-op.
+    /// </summary>
+    public Action<Guid>? FleetNumberRelease { get; set; }
+
+    /// <summary>
+    /// Issue #1292: true only while a Gateway is CONFIGURED (gateway.url set). When true, a new
+    /// session's number is requested from the Gateway asynchronously (creation never blocks on the
+    /// network - the number appears when the Gateway answers). When false - no Gateway configured, and
+    /// in tests - the session is numbered locally and synchronously at creation, so it always has a
+    /// number the instant it is created. The host keeps this in step with the gateway config.
+    /// </summary>
+    public bool FleetNumberingActive { get; set; }
 
     private readonly Action<string>? _log;
 
@@ -109,19 +135,59 @@ public sealed class SessionManager : IDisposable
 
         if (session.Number is int preferred)
         {
+            // Restore path: keep the persisted number when it is still free on this Director. The
+            // Gateway adopts it via the /sessions aggregation, so it stays fleet-unique across a restart.
             if (_numberAllocator.TryReserve(preferred))
             {
                 _log?.Invoke($"[SessionManager] Reserved persisted session number {preferred} for {session.Id}.");
                 return;
             }
             _log?.Invoke($"[SessionManager] Persisted session number {preferred} for {session.Id} is taken; allocating a fresh one.");
-            session.Number = null;
+            session.SetNumber(null);
         }
 
-        var assigned = _numberAllocator.Allocate();
-        session.Number = assigned;
+        // No Gateway configured (tests, or a local-only Director): number offline immediately and
+        // synchronously so the session always has a number the moment it is created.
+        if (!FleetNumberingActive || FleetNumberSource is null)
+        {
+            AssignOfflineNumber(session);
+            return;
+        }
+
+        // Issue #1292: ask the Gateway for a fleet-unique number. Done off the creation path so session
+        // creation never blocks on the network - the number appears a moment later when the Gateway
+        // answers (SetNumber raises OnNumberChanged so the rail shows it). On no answer (Gateway
+        // disabled/unreachable/exhausted) assign a local offline number instead.
+        var source = FleetNumberSource;
+        _ = Task.Run(async () =>
+        {
+            int? fromGateway = null;
+            try { fromGateway = await source(session.Id, CancellationToken.None); }
+            catch (Exception ex) { _log?.Invoke($"[SessionManager] Gateway number request for {session.Id} failed: {ex.Message}"); }
+
+            if (fromGateway is int gw && _numberAllocator.TryReserve(gw))
+            {
+                session.SetNumber(gw);
+                _log?.Invoke($"[SessionManager] Gateway assigned fleet session number {gw} to {session.Id}.");
+            }
+            else
+            {
+                AssignOfflineNumber(session);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Assign a LOCAL offline number in the high band (issue #1292) - the best guess used when the
+    /// Gateway did not hand one out. Uses <see cref="Session.SetNumber"/> so a listener (the rail)
+    /// updates even when this runs after creation.
+    /// </summary>
+    private void AssignOfflineNumber(Session session)
+    {
+        var assigned = _numberAllocator.AllocateOffline();
+        session.SetNumber(assigned);
         if (assigned is int n)
-            _log?.Invoke($"[SessionManager] Assigned session number {n} to {session.Id}.");
+            _log?.Invoke($"[SessionManager] Assigned local offline session number {n} to {session.Id} (Gateway unavailable).");
         else
             _log?.Invoke($"[SessionManager] No session number available for {session.Id} (number pool exhausted).");
     }
@@ -130,7 +196,9 @@ public sealed class SessionManager : IDisposable
     /// Assign a three-digit number to every tracked session that lacks one (issue #820 backfill).
     /// Run once at Director startup so already-active sessions that predate this feature - or were
     /// restored without a number - become numbered in a single pass, not only sessions created
-    /// afterward. Returns the count of sessions newly numbered.
+    /// afterward. Returns the count of sessions newly numbered. Issue #1292: these get a local offline
+    /// number (the high band); the Gateway adopts each one via the /sessions aggregation, so a restart
+    /// backfill never collides with a coordinated low-band number.
     /// </summary>
     public int BackfillNumbers()
     {
@@ -141,10 +209,10 @@ public sealed class SessionManager : IDisposable
             if (session.Number.HasValue)
                 continue;
 
-            var n = _numberAllocator.Allocate();
+            var n = _numberAllocator.AllocateOffline();
             if (n is int num)
             {
-                session.Number = num;
+                session.SetNumber(num);
                 assigned++;
                 FileLog.Write($"[SessionManager] BackfillNumbers: assigned {num} to {session.Id}");
             }
@@ -704,10 +772,12 @@ public sealed class SessionManager : IDisposable
             try { OnSessionRemoved?.Invoke(session); }
             catch (Exception ex) { _log?.Invoke($"OnSessionRemoved handler threw: {ex.Message}"); }
 
-            // Issue #820: return the session's three-digit number to the pool so it is no longer
-            // reported as in use and a later session can reuse it.
+            // Issue #820: return the session's three-digit number to the LOCAL pool so it is no longer
+            // reported as in use and a later session can reuse it. Issue #1292: also tell the Gateway
+            // (the fleet authority) to free it so it can be reused across the fleet.
             if (session.Number is int number)
                 _numberAllocator.Release(number);
+            FleetNumberRelease?.Invoke(id);
 
             session.Dispose();
             _log?.Invoke($"Session {id} removed.");

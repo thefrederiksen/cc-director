@@ -153,4 +153,63 @@ public class SessionNumberAllocatorTests
 
         Assert.Equal(0, allocator.InUseCount);
     }
+
+    // ===== Offline allocation (issue #1292): the Gateway-unreachable fallback =====
+
+    [Fact]
+    public void AllocateOffline_PicksFromTheHighBand_AndReserves()
+    {
+        var allocator = new SessionNumberAllocator();
+
+        for (int i = 0; i < 50; i++)
+        {
+            var n = allocator.AllocateOffline();
+            Assert.NotNull(n);
+            Assert.InRange(n!.Value, SessionNumberAllocator.OfflineBandStart, SessionNumberAllocator.MaxNumber);
+            Assert.True(allocator.IsReserved(n.Value));
+        }
+    }
+
+    [Fact]
+    public void AllocateOffline_ManyNumbers_AreAllDistinct()
+    {
+        var allocator = new SessionNumberAllocator();
+        var seen = new HashSet<int>();
+
+        // The high band holds exactly (Max - OfflineBandStart + 1) numbers; take them all.
+        var bandSize = SessionNumberAllocator.MaxNumber - SessionNumberAllocator.OfflineBandStart + 1;
+        for (int i = 0; i < bandSize; i++)
+        {
+            var n = allocator.AllocateOffline();
+            Assert.NotNull(n);
+            Assert.True(seen.Add(n!.Value), $"offline number {n.Value} was handed out twice");
+        }
+    }
+
+    [Fact]
+    public void AllocateOffline_WhenHighBandFull_SpillsToAnyFreeNumber()
+    {
+        var allocator = new SessionNumberAllocator();
+
+        // Fill the whole high band.
+        for (int n = SessionNumberAllocator.OfflineBandStart; n <= SessionNumberAllocator.MaxNumber; n++)
+            Assert.True(allocator.TryReserve(n));
+
+        // The next offline pick must spill below the band rather than fail.
+        var spill = allocator.AllocateOffline();
+        Assert.NotNull(spill);
+        Assert.InRange(spill!.Value, SessionNumberAllocator.MinNumber, SessionNumberAllocator.OfflineBandStart - 1);
+    }
+
+    [Fact]
+    public void AllocateOffline_WhenPoolExhausted_ReturnsNull()
+    {
+        var allocator = new SessionNumberAllocator();
+
+        for (int i = 0; i < SessionNumberAllocator.PoolCapacity; i++)
+            Assert.NotNull(allocator.AllocateOffline());
+
+        Assert.Equal(SessionNumberAllocator.PoolCapacity, allocator.InUseCount);
+        Assert.Null(allocator.AllocateOffline());
+    }
 }

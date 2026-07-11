@@ -471,6 +471,19 @@ public sealed class ControlApiHost : IAsyncDisposable
         _sessionManager.ControlApiBaseUrl = $"http://127.0.0.1:{Port}";
         _sessionManager.DirectorId = DirectorId;
 
+        // Issue #1292: the Gateway is the authority for the fleet-unique session number. Wire the
+        // SessionManager to ask the CURRENT GatewayClient (read the FIELD lazily so a settings change
+        // that replaces the client via ReapplyGatewayAsync is picked up without re-wiring). A null /
+        // failed answer (Gateway disabled or unreachable) makes the Director fall back to a local
+        // offline number. Release rides the same client when a session ends.
+        _sessionManager.FleetNumberSource = (sessionId, ct) =>
+            _gatewayClient?.AllocateSessionNumberAsync(sessionId.ToString(), ct) ?? Task.FromResult<int?>(null);
+        _sessionManager.FleetNumberRelease = sessionId =>
+            _gatewayClient?.ReleaseSessionNumber(sessionId.ToString());
+        // Only ask the Gateway (asynchronously) when one is configured; otherwise number locally and
+        // synchronously. Kept in step with the config in ReapplyGatewayAsync.
+        _sessionManager.FleetNumberingActive = gatewayConfig.IsEnabled;
+
         _registration = new InstanceRegistration(DirectorId, Port, _version, _instancesDirectory);
         _registration.Register();
 
@@ -741,6 +754,8 @@ public sealed class ControlApiHost : IAsyncDisposable
             _gatewayClient.Start();
             _streamClient = BuildStreamClient(gatewayConfig);
             _streamClient?.Start();
+            // Issue #1292: keep the async-vs-local numbering decision in step with the new config.
+            _sessionManager.FleetNumberingActive = gatewayConfig.IsEnabled;
         }
         finally
         {
