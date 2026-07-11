@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from . import __version__
+from . import email_ops
 from . import mission_ops
 from . import schedule_ops
 from . import settings_ops
@@ -47,12 +48,16 @@ schedule_app = typer.Typer(
 setup_app = typer.Typer(
     help="Install, update, and repair DevThrottle.", add_completion=False, no_args_is_help=True
 )
+email_app = typer.Typer(
+    help="Send email to the account owner.", add_completion=False, no_args_is_help=True
+)
 app.add_typer(session_app, name="session")
 app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
 app.add_typer(settings_app, name="settings")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(setup_app, name="setup")
+app.add_typer(email_app, name="email")
 console = Console()
 
 _ACTIONS = [
@@ -228,6 +233,18 @@ _ACTIONS = [
         "command": "cc-devthrottle schedule endpoint",
         "mutatesState": False,
         "args": [],
+    },
+    {
+        "id": "email-owner",
+        "description": "Email the account owner (single recipient); optional file attachments. The escalation channel for unattended runs.",
+        "command": 'cc-devthrottle email owner --subject "<subject>" --body "<text>" [--attach <file>]',
+        "mutatesState": True,
+        "args": [
+            {"name": "subject", "required": True},
+            {"name": "body", "required": False},
+            {"name": "html", "required": False},
+            {"name": "attach", "required": False},
+        ],
     },
     {
         "id": "setup-status",
@@ -699,6 +716,41 @@ def setup_doctor(
 ) -> None:
     """Show setup diagnostics."""
     setup_ops.doctor(json_output)
+
+
+@email_app.callback()
+def email_main(
+    gateway: Optional[str] = typer.Option(
+        None,
+        "--gateway",
+        help="Override the Gateway base URL.",
+    ),
+) -> None:
+    """Send email to the account owner."""
+    email_ops.set_gateway_override(gateway)
+
+
+@email_app.command("owner")
+def email_owner(
+    subject: str = typer.Option(..., "--subject", help="The email subject line."),
+    body: Optional[str] = typer.Option(
+        None, "--body", help="Plain-text body. Provide --body, --html, and/or --attach."
+    ),
+    html: Optional[str] = typer.Option(
+        None, "--html", help="HTML body. Provide --body, --html, and/or --attach."
+    ),
+    attach: Optional[List[str]] = typer.Option(
+        None, "--attach", help="Attach a file (repeatable), e.g. an HTML report to read offline."
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output the send result as JSON."),
+) -> None:
+    """Send ONE email to the account owner (single recipient - no way to address anyone else).
+
+    Passes only a subject, body, and any attachments to the Gateway, which relays it to the cloud
+    with your account token; the cloud resolves the owner and sends. Use it to escalate from an
+    unattended or scheduled run, or to send yourself a report to read offline.
+    """
+    email_ops.send_owner(subject, body, html, attach, json_output)
 
 
 if __name__ == "__main__":
