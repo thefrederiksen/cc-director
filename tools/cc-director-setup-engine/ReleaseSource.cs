@@ -9,11 +9,15 @@ public sealed record ResolvedRelease(ReleaseManifest Manifest, IReadOnlyDictiona
 
 /// <summary>
 /// Resolves the release a plan is computed against. Shared by both front-ends
-/// (the WPF installer UI and the CLI). Three modes:
+/// (the WPF installer UI and the CLI). Modes:
 ///   - a local manifest file (LoadLocalManifest): plan/dry-run only, no URLs.
 ///   - a local release directory (LoadLocalReleaseDir): offline install/update.
-///   - "latest" (FetchLatestAsync): the GitHub latest release, mapping asset
-///     download URLs and parsing release-manifest.json.
+///   - "latest" (FetchLatestAsync): the GitHub latest STABLE release, mapping asset
+///     download URLs and parsing release-manifest.json. Used by the silent auto-updater.
+///   - "for this setup exe" (FetchReleaseForSetupAsync): the release the running setup
+///     executable was BUILT for. A stable setup exe resolves the latest stable (identical to
+///     FetchLatestAsync); a pre-release setup exe resolves its matching pre-release from the
+///     full release list, which /releases/latest hides (issue #1294).
 /// </summary>
 public sealed class ReleaseSource
 {
@@ -75,21 +79,69 @@ public sealed class ReleaseSource
     }
 
     /// <summary>
-    /// Fetch the GitHub latest release, hardened against the shared-network-address
-    /// rate limit that dead-ended first-run installs (issue #266):
-    ///   - sends a conditional request (If-None-Match) when a cached entity tag exists;
-    ///     a 304 Not Modified serves the cached body and does NOT consume the rate-limit
-    ///     budget;
-    ///   - on a 403/429 rate-limit response, retries with bounded backoff that honours
-    ///     GitHub's reset hint (Retry-After or X-RateLimit-Reset) within a sane cap, then
-    ///     raises a classified <see cref="GitHubRateLimitException"/> rather than a raw
-    ///     "status code does not indicate success: 403".
+    /// Fetch the GitHub latest STABLE release (the /releases/latest endpoint, which excludes
+    /// pre-releases and drafts). Used by the silent auto-updater and by a stable setup exe.
+    /// The request is hardened against the shared-network-address rate limit (issue #266) - see
+    /// <see cref="GetReleaseBodyAsync"/>.
     /// </summary>
     /// <exception cref="GitHubRateLimitException">The fetch was rate-limited and retries were exhausted.</exception>
     public async Task<ResolvedRelease> FetchLatestAsync(CancellationToken ct)
     {
         var url = $"https://api.github.com/repos/{GitHubRepositoryDefaults.Slug}/releases/latest";
-        var cached = _cache.Read();
+        var body = await GetReleaseBodyAsync(url, useCache: true, ct);
+        return await BuildResolvedReleaseAsync(body, ct);
+    }
+
+    /// <summary>
+    /// Resolve the release the running setup executable was BUILT for, decided in memory from the
+    /// setup exe's own stamped version - nothing is written to disk and no channel file is used
+    /// (issue #1294).
+    ///
+    /// A stable setup exe (version with no pre-release suffix, or an unreadable stamp) resolves the
+    /// latest stable release - identical to <see cref="FetchLatestAsync"/> and unchanged for stable
+    /// users. A pre-release setup exe (for example "1.1.0-rc4") resolves its MATCHING pre-release
+    /// from the full <c>/releases</c> list, because GitHub's <c>/releases/latest</c> hides
+    /// pre-releases and would otherwise hand a pre-release installer the newest stable build.
+    /// </summary>
+    /// <param name="setupVersion">
+    /// The setup exe's stamped version. Null reads it from the entry assembly
+    /// (<see cref="SetupExecutableVersion.Read"/>); tests pass it explicitly.
+    /// </param>
+    /// <exception cref="GitHubRateLimitException">The fetch was rate-limited and retries were exhausted.</exception>
+    public async Task<ResolvedRelease> FetchReleaseForSetupAsync(CancellationToken ct, string? setupVersion = null)
+    {
+        setupVersion ??= SetupExecutableVersion.Read();
+
+        if (!VersionUtil.HasPreReleaseSuffix(setupVersion))
+        {
+            EngineLog.Write($"[ReleaseSource] Setup version '{setupVersion}' is stable; installing the latest stable release.");
+            return await FetchLatestAsync(ct);
+        }
+
+        EngineLog.Write($"[ReleaseSource] Setup version '{setupVersion}' is a pre-release; resolving from the full release list.");
+        var url = $"https://api.github.com/repos/{GitHubRepositoryDefaults.Slug}/releases";
+        // The list body is not cached: the ETag cache is keyed to the single /releases/latest entity,
+        // and the list is only consulted on the rare pre-release install path.
+        var listBody = await GetReleaseBodyAsync(url, useCache: false, ct);
+        var releaseJson = SelectPreRelease(listBody, setupVersion);
+        return await BuildResolvedReleaseAsync(releaseJson, ct);
+    }
+
+    /// <summary>
+    /// GET a GitHub release resource, hardened against the shared-network-address rate limit that
+    /// dead-ended first-run installs (issue #266):
+    ///   - when <paramref name="useCache"/> and a cached entity tag exists, sends a conditional
+    ///     request (If-None-Match); a 304 Not Modified serves the cached body and does NOT consume
+    ///     the rate-limit budget;
+    ///   - on a 403/429 rate-limit response, retries with bounded backoff that honours GitHub's
+    ///     reset hint (Retry-After or X-RateLimit-Reset) within a sane cap, then raises a classified
+    ///     <see cref="GitHubRateLimitException"/> rather than a raw
+    ///     "status code does not indicate success: 403".
+    /// Returns the raw response body; the caller parses it (a single release object or a list).
+    /// </summary>
+    private async Task<string> GetReleaseBodyAsync(string url, bool useCache, CancellationToken ct)
+    {
+        var cached = useCache ? _cache.Read() : null;
         DateTimeOffset? lastResetHint = null;
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
@@ -107,17 +159,20 @@ public sealed class ReleaseSource
                 if (cached is not { } hit)
                     throw new InvalidOperationException(
                         "GitHub returned 304 Not Modified but no cached release info is available.");
-                EngineLog.Write("[ReleaseSource] FetchLatest: 304 Not Modified, serving cached release info");
-                return await BuildResolvedReleaseAsync(hit.Body, ct);
+                EngineLog.Write("[ReleaseSource] Fetch: 304 Not Modified, serving cached release info");
+                return hit.Body;
             }
 
             if (resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);
-                var etag = resp.Headers.ETag?.ToString();
-                if (!string.IsNullOrEmpty(etag))
-                    _cache.Write(etag, body);
-                return await BuildResolvedReleaseAsync(body, ct);
+                if (useCache)
+                {
+                    var etag = resp.Headers.ETag?.ToString();
+                    if (!string.IsNullOrEmpty(etag))
+                        _cache.Write(etag, body);
+                }
+                return body;
             }
 
             if (IsRateLimited(resp))
@@ -128,7 +183,7 @@ public sealed class ReleaseSource
 
                 var wait = ComputeBackoff(attempt, lastResetHint);
                 EngineLog.Write(
-                    $"[ReleaseSource] FetchLatest: 403 rate-limit, retry {attempt}/{MaxAttempts - 1} after {wait.TotalSeconds:0}s");
+                    $"[ReleaseSource] Fetch: 403 rate-limit, retry {attempt}/{MaxAttempts - 1} after {wait.TotalSeconds:0}s");
                 await _delay(wait, ct);
                 continue;
             }
@@ -141,9 +196,52 @@ public sealed class ReleaseSource
             ? $" GitHub says the limit resets at {r.UtcDateTime:u}."
             : "";
         EngineLog.Write(
-            $"[ReleaseSource] FetchLatest: rate-limit retries exhausted after {MaxAttempts} attempts.{hint}");
+            $"[ReleaseSource] Fetch: rate-limit retries exhausted after {MaxAttempts} attempts.{hint}");
         throw new GitHubRateLimitException(
             "GitHub rate limit exceeded while fetching release info." + hint, MaxAttempts, lastResetHint);
+    }
+
+    /// <summary>
+    /// From a GitHub <c>/releases</c> list body, pick the release a pre-release setup exe should
+    /// install: the release whose tag matches the setup exe's own version exactly, else the newest
+    /// pre-release in the list (GitHub returns releases newest-first). Returns that release's JSON,
+    /// ready for <see cref="BuildResolvedReleaseAsync"/>. Throws when the list carries no pre-release.
+    /// </summary>
+    private static string SelectPreRelease(string listJson, string setupVersion)
+    {
+        using var doc = JsonDocument.Parse(listJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("GitHub /releases did not return a JSON array.");
+
+        var wanted = VersionUtil.CanonicalTag(setupVersion);
+        JsonElement? newestPreRelease = null;
+
+        foreach (var rel in doc.RootElement.EnumerateArray())
+        {
+            var tag = rel.TryGetProperty("tag_name", out var t) ? t.GetString() : null;
+
+            // An exact version match is exactly what this setup exe is, so it wins outright -
+            // the rc4 installer installs rc4 even when a newer rc5 exists.
+            if (!string.IsNullOrEmpty(tag) && VersionUtil.CanonicalTag(tag) == wanted)
+            {
+                EngineLog.Write($"[ReleaseSource] SelectPreRelease: matched release tagged '{tag}'.");
+                return rel.GetRawText();
+            }
+
+            var isPreRelease = rel.TryGetProperty("prerelease", out var p) && p.ValueKind == JsonValueKind.True;
+            if (isPreRelease)
+                newestPreRelease ??= rel.Clone(); // first pre-release seen == newest (list is newest-first)
+        }
+
+        if (newestPreRelease is { } fallback)
+        {
+            var tag = fallback.TryGetProperty("tag_name", out var t) ? t.GetString() : "(untagged)";
+            EngineLog.Write($"[ReleaseSource] SelectPreRelease: no release tagged '{setupVersion}'; using newest pre-release '{tag}'.");
+            return fallback.GetRawText();
+        }
+
+        throw new InvalidOperationException(
+            $"Setup executable is a pre-release ({setupVersion}) but the GitHub release list contains no pre-release to install.");
     }
 
     /// <summary>Parse a release JSON body into the resolved release (asset URLs + manifest).</summary>

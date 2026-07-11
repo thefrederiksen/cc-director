@@ -193,11 +193,13 @@ public partial class MainWindow : Window
 
     private async Task FetchLatestVersionAsync()
     {
-        SetupLog.Write("[MainWindow] FetchLatestVersionAsync: checking for latest release");
+        SetupLog.Write("[MainWindow] FetchLatestVersionAsync: checking the release for this setup executable");
 
         try
         {
-            var release = await new ReleaseSource().FetchLatestAsync(CancellationToken.None);
+            // Show the version this setup exe will actually install (its matching pre-release when
+            // this is a pre-release build), so the welcome screen is not misleading (issue #1294).
+            var release = await new ReleaseSource().FetchReleaseForSetupAsync(CancellationToken.None);
             _latestVersion = release.Manifest.Version;
             SetupLog.Write($"[MainWindow] FetchLatestVersionAsync: latestVersion={_latestVersion}");
             _welcomeStep?.UpdateVersionInfo(_installedVersion, _latestVersion);

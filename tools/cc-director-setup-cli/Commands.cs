@@ -414,7 +414,10 @@ internal static class Commands
 
         var manifest = args.Option("manifest", "latest");
         if (manifest.Equals("latest", StringComparison.OrdinalIgnoreCase))
-            return await new ReleaseSource().FetchLatestAsync(CancellationToken.None);
+            // The CLI ships inside the setup bundle and does the real install work, so it resolves
+            // the release its OWN stamped version was built for: a pre-release CLI installs its
+            // matching pre-release, a stable CLI installs the latest stable (issue #1294).
+            return await new ReleaseSource().FetchReleaseForSetupAsync(CancellationToken.None);
         return ReleaseSource.LoadLocalManifest(manifest);
     }
 

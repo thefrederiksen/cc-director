@@ -46,4 +46,40 @@ public class VersionUtilTests
         Assert.False(VersionUtil.IsNewer(null, "0.3.0"));
         Assert.False(VersionUtil.IsNewer("garbage", "0.3.0"));
     }
+
+    [Theory]
+    [InlineData("1.1.0-rc4", true)]
+    [InlineData("v1.1.0-rc4", true)]
+    [InlineData("1.1.0-rc4+abc123", true)]
+    [InlineData("1.1.0", false)]
+    [InlineData("v1.1.0", false)]
+    [InlineData("1.1.0+abc123", false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    [InlineData(null, false)]
+    public void HasPreReleaseSuffix_DetectsSuffixAfterStrippingDecoration(string? input, bool expected)
+    {
+        Assert.Equal(expected, VersionUtil.HasPreReleaseSuffix(input));
+    }
+
+    [Theory]
+    [InlineData("v1.1.0-rc4", "1.1.0-rc4")]
+    [InlineData("1.1.0-rc4", "1.1.0-rc4")]
+    [InlineData("1.1.0-RC4+abc123", "1.1.0-rc4")]
+    [InlineData("V1.0.7", "1.0.7")]
+    [InlineData("1.0.7", "1.0.7")]
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    public void CanonicalTag_KeepsSuffixDropsDecorationAndLowercases(string? input, string expected)
+    {
+        Assert.Equal(expected, VersionUtil.CanonicalTag(input));
+    }
+
+    [Fact]
+    public void CanonicalTag_PreReleaseAndStableDoNotCollide()
+    {
+        // The pre-release suffix must survive so an rc build never compares equal to its stable line.
+        Assert.NotEqual(VersionUtil.CanonicalTag("1.1.0-rc4"), VersionUtil.CanonicalTag("1.1.0"));
+        Assert.Equal(VersionUtil.CanonicalTag("v1.1.0-rc4"), VersionUtil.CanonicalTag("1.1.0-rc4"));
+    }
 }

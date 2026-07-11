@@ -27,8 +27,10 @@ public sealed class EngineInstallRunner
     /// <summary>Fetch the latest release and build the two UI rows (Director + the Python tools bundle).</summary>
     public async Task<Prep> PrepareAsync(CancellationToken ct = default)
     {
-        SetupLog.Write("[EngineInstallRunner] PrepareAsync: fetching latest release");
-        var release = await _source.FetchLatestAsync(ct);
+        SetupLog.Write("[EngineInstallRunner] PrepareAsync: resolving the release for this setup executable");
+        // Install the release this setup exe was built for: a pre-release build installs its
+        // matching pre-release, a stable build installs the latest stable (issue #1294).
+        var release = await _source.FetchReleaseForSetupAsync(ct);
         var version = release.Manifest.Version;
 
         var items = new List<ToolDownloadItem>();
