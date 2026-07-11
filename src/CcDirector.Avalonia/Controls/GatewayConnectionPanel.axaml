@@ -1,12 +1,12 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="CcDirector.Avalonia.Controls.GatewayConnectionPanel"
-             MinWidth="460">
+             MinWidth="480">
 
     <UserControl.Styles>
         <Style Selector="TextBlock.title">
-            <Setter Property="Foreground" Value="#CCCCCC" />
-            <Setter Property="FontSize" Value="16" />
+            <Setter Property="Foreground" Value="#E4E4E4" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="SemiBold" />
         </Style>
         <Style Selector="TextBlock.body">
@@ -40,79 +40,105 @@
             <Setter Property="Padding" Value="12,8" />
             <Setter Property="CornerRadius" Value="2" />
         </Style>
-        <!-- A found-Gateway pick: a full-width clickable row. -->
-        <Style Selector="Button.pick">
-            <Setter Property="Background" Value="#161616" />
-            <Setter Property="Foreground" Value="#E8E8E8" />
-            <Setter Property="BorderBrush" Value="#3C3C3C" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="3" />
-            <Setter Property="Padding" Value="12,10" />
-            <Setter Property="HorizontalAlignment" Value="Stretch" />
-            <Setter Property="HorizontalContentAlignment" Value="Left" />
-            <Setter Property="Margin" Value="0,0,0,6" />
-        </Style>
-        <Style Selector="Button.pick:pointerover /template/ ContentPresenter">
-            <Setter Property="Background" Value="#242424" />
-        </Style>
-        <Style Selector="TextBlock.link">
-            <Setter Property="Foreground" Value="#4EA1F2" />
+        <!-- A borderless link-style button (Scan again). -->
+        <Style Selector="Button.link">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#6C79A0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="2,4" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Cursor" Value="Hand" />
         </Style>
+        <Style Selector="Button.link:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="TextBlock.Foreground" Value="#9FB0D6" />
+        </Style>
     </UserControl.Styles>
 
-    <Grid Margin="20" MinHeight="220">
+    <!-- Scrolls so the panel never clips when a host (Settings tab, status-box window, onboarding) is
+         shorter than the content. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <Grid Margin="22" MinHeight="240">
 
-        <!-- STEP 1a: scanning -->
-        <StackPanel x:Name="ScanningPanel" Spacing="6" VerticalAlignment="Top">
-            <TextBlock Classes="title" Text="Connect to your Gateway" />
-            <TextBlock Classes="body"
-                       Text="Looking for a Gateway on this machine, your tailnet, and your local network..." />
-            <ProgressBar IsIndeterminate="True" Height="3" Margin="0,10,0,0"
-                         Foreground="#007ACC" Background="#2A2A2A" />
-        </StackPanel>
+        <!-- STEP 1: Connect (scanning and found share one header; the pill and body swap) -->
+        <StackPanel x:Name="ConnectPanel" Spacing="0" VerticalAlignment="Top">
 
-        <!-- STEP 1b: results (found picks and/or manual entry) -->
-        <StackPanel x:Name="FoundPanel" Spacing="4" VerticalAlignment="Top" IsVisible="False">
-            <TextBlock Classes="title" Text="Connect to your Gateway" />
+            <!-- Header: title + count pill -->
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+                <TextBlock Grid.Column="0" Classes="title" Text="Connect to your Gateway"
+                           VerticalAlignment="Center" />
+                <Border Grid.Column="1" x:Name="CountPill" Background="#16283F" CornerRadius="11"
+                        Padding="9,4" VerticalAlignment="Center">
+                    <TextBlock x:Name="CountPillText" Text="SCANNING..." Foreground="#5AA9F0"
+                               FontSize="10.5" FontWeight="Bold" />
+                </Border>
+            </Grid>
 
-            <StackPanel x:Name="FoundListSection" IsVisible="False" Margin="0,6,0,0">
-                <TextBlock Classes="fieldLabel" Text="FOUND" />
-                <ItemsControl x:Name="FoundList">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Button Classes="pick" Click="Pick_Click" Tag="{Binding}">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <TextBlock Text="{Binding Label}" FontSize="13" VerticalAlignment="Center" />
-                                    <TextBlock Text="&gt;" Foreground="#777777" VerticalAlignment="Center"
-                                               HorizontalAlignment="Right" />
-                                </StackPanel>
-                            </Button>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </StackPanel>
+            <!-- Teaching intro (muted blue, key phrases emphasized) -->
+            <TextBlock x:Name="IntroText" Foreground="#6C79A0" FontSize="12.5" TextWrapping="Wrap"
+                       Margin="0,4,0,18" MaxWidth="540" HorizontalAlignment="Left">
+                <Run Text="Your Gateway is the hub this Director connects to for voice, the fleet view, cross-machine sessions, and shared keys. Pick " />
+                <Run Text="how this Director should reach it" Foreground="#9FB0D6" FontWeight="SemiBold" />
+                <Run Text=" - we looked on this computer and over Tailscale. Not sure? Start with the one marked " />
+                <Run Text="Recommended" Foreground="#9FB0D6" FontWeight="SemiBold" />
+                <Run Text="." />
+            </TextBlock>
 
-            <TextBlock x:Name="NoneFoundText" Classes="body" IsVisible="False" Margin="0,6,0,0"
-                       Text="No Gateway found automatically. Enter the address manually below." />
+            <!-- While scanning -->
+            <ProgressBar x:Name="ScanningProgress" IsIndeterminate="True" Height="3"
+                         Foreground="#007ACC" Background="#2A2A2A" Margin="0,2,0,0" />
 
-            <Button x:Name="RescanButton" Classes="secondaryButton" Content="Scan again"
-                    HorizontalAlignment="Left" Margin="0,8,0,0" Click="Rescan_Click" />
+            <!-- After scanning -->
+            <StackPanel x:Name="ResultsArea" Spacing="0" IsVisible="False">
+                <TextBlock x:Name="SectionLabel" Text="FOUND ON YOUR NETWORK" Foreground="#888888"
+                           FontSize="10.5" FontWeight="Bold" Margin="2,0,0,10" />
 
-            <!-- Advanced: manual entry fallback (collapsed by default, decisions 5 and 6) -->
-            <Expander x:Name="AdvancedExpander" Header="Enter the address manually" Margin="0,12,0,0"
-                      Background="Transparent" Foreground="#4EA1F2">
-                <StackPanel Spacing="2" Margin="0,6,0,0">
-                    <TextBlock Classes="fieldLabel" Text="GATEWAY ADDRESS (computer name plus port, or a full address)" />
-                    <TextBox x:Name="ManualUrlBox" Classes="input"
-                             Watermark="e.g. SOREN_NORTH:7878  or  https://host.tailnet.ts.net" />
-                    <TextBlock x:Name="ManualErrorText" FontSize="11" Foreground="#E07A7A"
-                               TextWrapping="Wrap" IsVisible="False" Margin="0,4,0,0" />
-                    <Button x:Name="ManualConnectButton" Classes="primaryButton" Content="Connect"
-                            HorizontalAlignment="Left" Margin="0,8,0,0" Click="ManualConnect_Click" />
+                <!-- Found option rows are built in code to match the mockup exactly. -->
+                <StackPanel x:Name="OptionsHost" Spacing="10" />
+
+                <TextBlock x:Name="NoneFoundText" Classes="body" IsVisible="False"
+                           Text="No Gateway found automatically. Enter the address manually below."
+                           Margin="0,2,0,0" />
+
+                <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                    <Button x:Name="RescanButton" Classes="link" Click="Rescan_Click" Content="Scan again" />
                 </StackPanel>
-            </Expander>
+
+                <!-- Advanced: manual entry fallback, collapsed by default (decisions 5, 6) -->
+                <Border Margin="0,14,0,0" Background="#202021" BorderBrush="#3C3C3C" BorderThickness="1"
+                        CornerRadius="9">
+                    <Expander x:Name="AdvancedExpander" Background="Transparent" BorderThickness="0"
+                              Padding="4,0">
+                        <Expander.Header>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="Enter the address manually" Foreground="#AAAAAA"
+                                           FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock Text="- computer name plus port, or a full address"
+                                           Foreground="#666666" FontSize="11.5" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Expander.Header>
+                        <StackPanel Spacing="2" Margin="0,6,4,10">
+                            <TextBlock Classes="fieldLabel"
+                                       Text="GATEWAY ADDRESS (computer name plus port, or a full address)" />
+                            <TextBox x:Name="ManualUrlBox" Classes="input"
+                                     Watermark="e.g. SOREN_NORTH:7878  or  https://host.tailnet.ts.net" />
+                            <TextBlock x:Name="ManualErrorText" FontSize="11" Foreground="#E07A7A"
+                                       TextWrapping="Wrap" IsVisible="False" Margin="0,4,0,0" />
+                            <Button x:Name="ManualConnectButton" Classes="primaryButton" Content="Connect"
+                                    HorizontalAlignment="Left" Margin="0,8,0,0" Click="ManualConnect_Click" />
+                        </StackPanel>
+                    </Expander>
+                </Border>
+
+                <!-- Footnote: the no-hidden-test rule -->
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,16,0,0">
+                    <Path Data="M20,6 L9,17 L4,12" Stroke="#2E7D50" StrokeThickness="2"
+                          StrokeLineCap="Round" StrokeJoin="Round" Width="14" Height="14"
+                          Stretch="Uniform" VerticalAlignment="Top" Margin="0,2,0,0" />
+                    <TextBlock Foreground="#6C79A0" FontSize="11.5" TextWrapping="Wrap" MaxWidth="500"
+                               Text="Picking an option connects right away and checks the two-way connection - there is no separate Test step." />
+                </StackPanel>
+            </StackPanel>
         </StackPanel>
 
         <!-- STEP 1c: connecting (the click IS the test) -->
@@ -167,4 +193,5 @@
         </StackPanel>
 
     </Grid>
+    </ScrollViewer>
 </UserControl>
