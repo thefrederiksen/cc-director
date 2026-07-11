@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeUtterance } from "../api/client";
 import type { CapturedUtterance } from "./backgroundSend";
 import { logCaptureHealth } from "./captureHealth";
+import { playReadyCue } from "./readyCue";
 import { MicRecorder } from "./recorder";
 import { joinText } from "./transcript";
 import { blobToWav16kMono } from "./wav";
@@ -22,7 +23,15 @@ import { blobToWav16kMono } from "./wav";
 // by the single dictionary-correction engine; this component only displays them, lets the user
 // hand-edit, and joins segments with a single space. It never rewrites the words.
 
-type Stage = "recording" | "transcribing" | "paused" | "error";
+// "connecting" = the GETTING READY warm-up: the mic is opening but has not delivered audio yet, so
+// the dialog is deliberately NOT in the red RECORDING look and plays no cue. It flips to "recording"
+// (and plays the ready bloop) only when the first real audio chunk arrives, so neither the red state
+// nor the sound ever precedes real audio - the desktop SpeakDialog does the same.
+type Stage = "connecting" | "recording" | "transcribing" | "paused" | "error";
+
+// Backstop for the GETTING READY state: if the mic never delivers a first chunk, fail loud with a
+// "check your microphone" message rather than stranding the user on GETTING READY forever.
+const READY_TIMEOUT_MS = 6000;
 
 export interface DictationDialogProps {
   /** Commit the transcript WITHOUT submitting (drop into the view's text box for editing). Required
@@ -64,12 +73,52 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
   const segmentStartRef = useRef<number>(0);
   const elapsedBeforeRef = useRef<number>(0);
 
-  const [stage, setStage] = useState<Stage>("recording");
+  const [stage, setStage] = useState<Stage>("connecting");
+  // Mirror of the current stage for use inside timers/callbacks without stale closures.
+  const stageRef = useRef<Stage>("connecting");
+  useEffect(() => {
+    stageRef.current = stage;
+  }, [stage]);
+
+  // Pending GETTING READY backstop timer (window.setTimeout handle), or null when disarmed.
+  const readyTimeoutRef = useRef<number | null>(null);
+
   const [transcript, setTranscript] = useState<string>("");
   const [hint, setHint] = useState<string>("");
   const [errorText, setErrorText] = useState<string>("");
   const [elapsed, setElapsed] = useState<number>(0);
   const [levels, setLevels] = useState<number[]>(() => new Array(BAR_COUNT).fill(0));
+
+  const clearReadyBackstop = useCallback(() => {
+    if (readyTimeoutRef.current !== null) {
+      window.clearTimeout(readyTimeoutRef.current);
+      readyTimeoutRef.current = null;
+    }
+  }, []);
+
+  const armReadyBackstop = useCallback(() => {
+    clearReadyBackstop();
+    readyTimeoutRef.current = window.setTimeout(() => {
+      readyTimeoutRef.current = null;
+      if (stageRef.current !== "connecting") return;
+      setErrorText(
+        "The microphone did not start capturing. Check that it is connected, not muted, and that this site is allowed to use it, then try again.",
+      );
+      setStage("error");
+    }, READY_TIMEOUT_MS);
+  }, [clearReadyBackstop]);
+
+  // The honest "mic is now capturing your voice" moment (first real audio chunk). Anchor the
+  // segment timer here, flip to RECORDING, and play the ready cue together - so the red and the
+  // sound land exactly when audio starts flowing, never before. elapsedBeforeRef is left untouched
+  // so a Resume keeps its accumulated time; only a fresh open resets it (in the mount effect).
+  const onCaptureLive = useCallback(() => {
+    clearReadyBackstop();
+    if (stageRef.current !== "connecting") return;
+    segmentStartRef.current = performance.now();
+    setStage("recording");
+    playReadyCue();
+  }, [clearReadyBackstop]);
 
   // ----- equalizer + timer animation (display only) -----
   useEffect(() => {
@@ -97,24 +146,32 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
   useEffect(() => {
     const recorder = recorderRef.current;
     let cancelled = false;
+    // Flip to RECORDING + play the cue only when the first real audio chunk arrives (not merely
+    // when start() returns). The same handler serves every segment on this recorder instance.
+    recorder.onCaptureLive = () => {
+      if (cancelled) return;
+      onCaptureLive();
+    };
     (async () => {
       try {
-        await recorder.start();
-        if (cancelled) return;
-        segmentStartRef.current = performance.now();
+        // A fresh open starts the running total from zero; hold GETTING READY until audio flows.
         elapsedBeforeRef.current = 0;
-        setStage("recording");
+        armReadyBackstop();
+        await recorder.start();
+        // Intentionally do NOT flip to RECORDING here - onCaptureLive does, once audio is real.
       } catch (err) {
         if (cancelled) return;
+        clearReadyBackstop();
         setErrorText(err instanceof Error ? err.message : "Could not start the microphone.");
         setStage("error");
       }
     })();
     return () => {
       cancelled = true;
+      clearReadyBackstop();
       recorder.dispose();
     };
-  }, []);
+  }, [onCaptureLive, armReadyBackstop, clearReadyBackstop]);
 
   // Stop the current segment, transcode to WAV, and transcribe it. Returns the segment text, or
   // null when there was no audio / transcription failed (the reason is shown). The recorder is
@@ -170,18 +227,21 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
       busyRef.current = false;
     } else if (stage === "paused") {
       // Resume: re-seed from the (possibly edited) box so edits survive, start a fresh segment.
+      // Hold GETTING READY until the mic delivers audio again; onCaptureLive flips to RECORDING
+      // (and re-cues), keeping the accumulated elapsed time.
       accumulatedRef.current = transcript;
+      setHint("");
+      setStage("connecting");
+      armReadyBackstop();
       try {
         await recorderRef.current.start();
-        segmentStartRef.current = performance.now();
-        setHint("");
-        setStage("recording");
       } catch (err) {
+        clearReadyBackstop();
         setHint("Could not resume - your text is kept. " + (err instanceof Error ? err.message : ""));
         setStage("paused");
       }
     }
-  }, [stage, transcript, transcribeCurrentSegment]);
+  }, [stage, transcript, transcribeCurrentSegment, armReadyBackstop, clearReadyBackstop]);
 
   const commit = useCallback(
     async (action: (text: string) => void) => {
@@ -271,8 +331,20 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
   const isError = stage === "error";
   const isPaused = stage === "paused";
   const isTranscribing = stage === "transcribing";
+  const isConnecting = stage === "connecting";
+  // Nothing is captured yet while GETTING READY (and nothing is mid-transcription), so the
+  // commit/checkpoint actions are not actionable then.
+  const actionsDisabled = isTranscribing || isConnecting;
   const statusLabel =
-    stage === "recording" ? "RECORDING" : stage === "transcribing" ? "TRANSCRIBING" : stage === "paused" ? "PAUSED" : "ERROR";
+    stage === "connecting"
+      ? "GETTING READY"
+      : stage === "recording"
+        ? "RECORDING"
+        : stage === "transcribing"
+          ? "TRANSCRIBING"
+          : stage === "paused"
+            ? "PAUSED"
+            : "ERROR";
 
   return (
     <div className="dictate-overlay" role="dialog" aria-modal="true" aria-label="Dictate">
@@ -318,7 +390,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
               type="button"
               className="dictate-btn dictate-pause"
               onClick={onPauseResume}
-              disabled={isTranscribing}
+              disabled={actionsDisabled}
             >
               {isPaused ? "Resume" : <span className="dictate-pause-glyph"><i /><i /></span>}
             </button>
@@ -331,7 +403,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
                   type="button"
                   className="dictate-btn dictate-insert"
                   onClick={() => commit(onInsert)}
-                  disabled={isTranscribing}
+                  disabled={actionsDisabled}
                 >
                   Insert
                 </button>
@@ -340,7 +412,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
                 type="button"
                 className="dictate-btn dictate-send"
                 onClick={onSendClick}
-                disabled={isTranscribing}
+                disabled={actionsDisabled}
               >
                 Send
               </button>
