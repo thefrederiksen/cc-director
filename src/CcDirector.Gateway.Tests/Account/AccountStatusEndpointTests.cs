@@ -77,7 +77,7 @@ public sealed class AccountStatusEndpointTests
     /// <see cref="AuthMiddleware"/> the real Gateway uses is applied, so the 401 path is exercised
     /// against the production gate, not a stand-in.
     /// </summary>
-    private static async Task<(WebApplication app, HttpClient http)> StartAsync(DevThrottleAccountService? account, bool authEnabled)
+    private static async Task<(WebApplication app, HttpClient http)> StartAsync(DevThrottleAccountService? account, bool authEnabled, AccountNicknameClient? nickname = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -90,7 +90,7 @@ public sealed class AccountStatusEndpointTests
             app.Use(async (ctx, next) => await AuthMiddleware.Run(ctx, requireToken, next));
         }
 
-        AccountStatusEndpoint.Map(app, account);
+        AccountStatusEndpoint.Map(app, account, nickname);
         await app.StartAsync();
 
         var baseUrl = app.Urls.First();
@@ -131,6 +131,72 @@ public sealed class AccountStatusEndpointTests
             http.Dispose();
             await app.DisposeAsync();
         }
+    }
+
+    // Issue #1357: when a nickname client is wired and the signed-in account has a nickname, the status
+    // response carries it (resolved via the cloud client, cached). The token is never in the body.
+    [Fact]
+    public async Task SignedIn_WithNicknameClient_Returns200_WithNickname()
+    {
+        var jwt = GatewayTestJwt.CreateWithIdentity(DateTime.UtcNow.AddHours(1), "star@example.com", "google");
+        var account = MakeAccount(new DevThrottleTokens(jwt, "refresh-1"));
+        var nickname = new AccountNicknameClient(
+            new HttpClient(new StubNicknameHandler("{\"data\":{\"nickname\":\"Starlord\"}}")), baseUrl: "https://example.test");
+
+        var (app, http) = await StartAsync(account, authEnabled: false, nickname: nickname);
+        try
+        {
+            var resp = await http.GetAsync("/account/status");
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+            var body = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+
+            Assert.True(root.GetProperty("signedIn").GetBoolean());
+            Assert.Equal("star@example.com", root.GetProperty("email").GetString());
+            Assert.Equal("Starlord", root.GetProperty("nickname").GetString());
+            Assert.DoesNotContain(jwt, body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            http.Dispose();
+            await app.DisposeAsync();
+        }
+    }
+
+    // Issue #1357: no nickname client wired -> the response simply omits nickname (identity path unchanged).
+    [Fact]
+    public async Task SignedIn_NoNicknameClient_OmitsNickname()
+    {
+        var jwt = GatewayTestJwt.CreateWithIdentity(DateTime.UtcNow.AddHours(1), "star@example.com", "google");
+        var account = MakeAccount(new DevThrottleTokens(jwt, "refresh-1"));
+
+        var (app, http) = await StartAsync(account, authEnabled: false);
+        try
+        {
+            var resp = await http.GetAsync("/account/status");
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            Assert.True(doc.RootElement.GetProperty("signedIn").GetBoolean());
+            Assert.False(doc.RootElement.TryGetProperty("nickname", out _), "nickname omitted when no client is wired");
+        }
+        finally
+        {
+            http.Dispose();
+            await app.DisposeAsync();
+        }
+    }
+
+    /// <summary>Returns a fixed body for the cloud nickname endpoint so no real network call is made.</summary>
+    private sealed class StubNicknameHandler : HttpMessageHandler
+    {
+        private readonly string _body;
+        public StubNicknameHandler(string body) { _body = body; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent(_body, System.Text.Encoding.UTF8, "application/json"),
+            });
     }
 
     // Acceptance criterion 2: no stored credential -> 200, signedIn:false, and NO identity fields present.

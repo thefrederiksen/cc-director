@@ -21,4 +21,11 @@ public sealed class AccountStatusDto
 
     /// <summary>The authentication provider, or null when not signed in / unavailable.</summary>
     public string? Provider { get; set; }
+
+    /// <summary>
+    /// The signed-in user's chosen account nickname (issue #1357), or null when not signed in, when the
+    /// user has not set one, or when it could not be resolved. Present so a session preamble can name the
+    /// human by their nickname; consumers fall back to <see cref="Email"/> when this is null.
+    /// </summary>
+    public string? Nickname { get; set; }
 }

@@ -162,6 +162,14 @@ Two related endpoints:
 Do not self-close while something still needs the user (a pending decision, an approval, an
 unanswered question). Reap only when the queue is truly empty.
 
+## Who the user is
+
+Every session is started for one signed-in DevThrottle user. The session-start preamble names that
+user - both their email and, when they set one, their chosen nickname. Treat that named person as the
+user of this session: unless they explicitly say otherwise, "me", "my account", and "email me" mean
+that user. Do NOT guess who the user is from usage patterns or by searching the database for a name -
+use the identity the preamble gave you. If no user is named (nobody signed in), do not invent one.
+
 ## When this skill is the right thing to consult
 
 - "What cc-* tools do I have for X?" - look in the tool list above; run the tool with `--help` for syntax.
@@ -175,7 +183,8 @@ unanswered question). Reap only when the queue is truly empty.
 
 ---
 
-**Skill Version:** 4.2 (end-user, DevThrottle rebrand)
+**Skill Version:** 4.3 (end-user, DevThrottle rebrand)
 **Last Updated:** 2026-07-11
+**Changes in 4.3:** Added "Who the user is" - the session-start preamble names the signed-in DevThrottle user (email + nickname); "me / my account / email me" means that user unless they say otherwise, and identity must not be guessed from usage or the database (issue #1357).
 **Changes in 4.2:** Added "Closing a session (including closing yourself)" - a session can reap itself with `POST /sessions/{sid}/request-deletion` against its own Director (`CC_DIRECTOR_API` + `CC_SESSION_ID`), the graceful self-delete that does not kill the process mid-turn. Documented the Gateway forward of the same call, the cancel-during-grace endpoint, and that immediate `DELETE /sessions/{sid}` must not be used on yourself. Added these three endpoints to the Control API table.
 **Changes in 4.1:** Added "Creating a session correctly (always name it)" - a created session MUST carry a meaningful Name, the normal permission preset + model in Args (--dangerously-skip-permissions --model opus[1m]), a PrePrompt for its first task, and a verify/PATCH of the name afterwards (the Control API applies no defaults; some running builds do not honor create-time Name).
