@@ -10,6 +10,8 @@ import {
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import { isSettingsDirty, prettyPrintSettings } from "@devthrottle/client-core/fleet/settingsEditor";
+import { ConfirmDialog } from "../components";
 import { clockLabel, humanizeState, portLabel, relativeTime, repoBasename, uptime } from "./format";
 
 // The standalone Director page (issue #975) - the React port of the Blazor DirectorDetail.razor:
@@ -271,10 +273,17 @@ export function DirectorDetailView() {
 // reaches the wire, and the Director re-applies live.
 function DirectorSettings({ directorId, reachable }: { directorId: string; reachable: boolean }) {
   const [text, setText] = useState<string>("");
+  // The last-loaded (or last-saved) text: the baseline the current text is compared against for dirty
+  // tracking (issue #1255). Save is disabled while the text matches it, and Reload asks before
+  // discarding when the text differs.
+  const [baseline, setBaseline] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmReload, setConfirmReload] = useState(false);
+
+  const dirty = loaded && isSettingsDirty(text, baseline);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -282,14 +291,11 @@ function DirectorSettings({ directorId, reachable }: { directorId: string; reach
     setStatus(null);
     try {
       const raw = await getDirectorSettings(directorId);
-      // Pretty-print for editing; keep the raw text if it is not valid JSON so nothing is lost.
-      let pretty = raw;
-      try {
-        pretty = JSON.stringify(JSON.parse(raw), null, 2);
-      } catch {
-        pretty = raw;
-      }
+      // Pretty-print for editing; keep the raw text if it is not valid JSON so nothing is lost. The
+      // same value becomes the dirty-tracking baseline, so a freshly-loaded editor reads as clean.
+      const pretty = prettyPrintSettings(raw);
       setText(pretty);
+      setBaseline(pretty);
       setLoaded(true);
       setStatus("Loaded");
     } catch (err) {
@@ -313,11 +319,23 @@ function DirectorSettings({ directorId, reachable }: { directorId: string; reach
     setBusy(true);
     try {
       await putDirectorSettings(directorId, normalized);
+      // The saved text is now the clean baseline, so the editor goes clean and Save disables again.
+      setBaseline(text);
       setStatus("Saved - the Director re-applied it live.");
     } catch (err) {
       setError(gatewayErrorMessage(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Reload replaces the current text with the Director's stored settings. When there are unsaved edits,
+  // route it through the shared confirmation so a stray Reload can never silently drop them (#1255).
+  const requestReload = () => {
+    if (dirty) {
+      setConfirmReload(true);
+    } else {
+      void load();
     }
   };
 
@@ -344,15 +362,30 @@ function DirectorSettings({ directorId, reachable }: { directorId: string; reach
             onChange={(e) => setText(e.target.value)}
           />
           <div className="ddet-settings-actions">
-            <button type="button" className="ddet-btn ddet-btn-primary" onClick={() => void save()} disabled={busy}>
+            <button
+              type="button"
+              className="ddet-btn ddet-btn-primary"
+              onClick={() => void save()}
+              disabled={busy || !dirty}
+            >
               {busy ? "Saving..." : "Save"}
             </button>
-            <button type="button" className="ddet-btn" onClick={() => void load()} disabled={busy}>Reload</button>
-            {status !== null && <span className="ddet-settings-status">{status}</span>}
+            <button type="button" className="ddet-btn" onClick={requestReload} disabled={busy}>Reload</button>
+            {dirty && <span className="ddet-settings-dirty">Unsaved changes</span>}
+            {status !== null && !dirty && <span className="ddet-settings-status">{status}</span>}
           </div>
         </div>
       )}
       {error !== null && <div className="ddet-settings-error">{error}</div>}
+      <ConfirmDialog
+        open={confirmReload}
+        title="Discard unsaved changes?"
+        message="Reloading replaces your edits with the Director's stored settings. This cannot be undone."
+        confirmLabel="Discard and reload"
+        cancelLabel="Keep editing"
+        onConfirm={() => void load()}
+        onClose={() => setConfirmReload(false)}
+      />
     </section>
   );
 }
