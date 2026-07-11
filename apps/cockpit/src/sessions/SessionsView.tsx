@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useMatch, useNavigate } from "react-router-dom";
-import { gatewayErrorMessage, listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
+import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
+import { getSessionsEnvelope, type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
 import { SessionRoster, type RosterView } from "./SessionRoster";
 import { NewSessionDialog } from "./NewSessionDialog";
 
@@ -26,10 +27,13 @@ function initialView(): RosterView {
 /** The selected session, for the detail region to read (driver capabilities, name, hold state). */
 export interface SessionsOutletContext {
   sessions: SessionDto[] | null;
+  /** Per-Director reachability for the Online / Wobbly / Offline rendering (issue #1215). */
+  directors: DirectorReachability[];
 }
 
 export function SessionsView() {
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
+  const [directors, setDirectors] = useState<DirectorReachability[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<RosterView>(initialView);
   const [showNew, setShowNew] = useState(false);
@@ -44,8 +48,9 @@ export function SessionsView() {
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const data = await listSessions(signal);
-      setSessions(data);
+      const env = await getSessionsEnvelope(signal);
+      setSessions(env.sessions);
+      setDirectors(env.directors);
       setError(null);
       loadedOnce.current = true;
     } catch (err) {
@@ -88,12 +93,13 @@ export function SessionsView() {
     [load, navigate],
   );
 
-  const context: SessionsOutletContext = { sessions };
+  const context: SessionsOutletContext = { sessions, directors };
 
   return (
     <div className="sessions-screen">
       <SessionRoster
         sessions={sessions}
+        directors={directors}
         selectedId={selectedId}
         view={view}
         onView={onView}

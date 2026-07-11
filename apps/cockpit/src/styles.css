@@ -2029,3 +2029,21 @@ body {
   font-family: "Cascadia Mono", Consolas, Menlo, monospace;
   font-size: 12px;
 }
+
+/* ===== Fleet sweep reachability (issue #1215): Wobbly / Offline dimming, in place ===== */
+/* A transient miss (Wobbly) dims the rail row and shows a "last seen" age; a sustained outage
+   (Offline) dims it further. The row never moves - only its appearance changes. */
+.roster-row-wobbly {
+  opacity: 0.6;
+}
+
+.roster-row-offline {
+  opacity: 0.4;
+}
+
+.roster-lastseen {
+  flex: 0 0 auto;
+  color: var(--warn);
+  font-size: 10.5px;
+  font-weight: 600;
+}
