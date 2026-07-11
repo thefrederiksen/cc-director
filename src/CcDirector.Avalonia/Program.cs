@@ -103,7 +103,7 @@ internal static class Program
         if (UpdateInstaller.TryApplyStagedUpdateAtStartup(out var updateNotice))
             return 0;
         if (updateNotice is not null)
-            MessageBoxW(IntPtr.Zero, updateNotice, "Director - Update", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            ShowStartupNotice(updateNotice, "Director - Update", MB_ICONWARNING);
 
         using var guard = SingleInstanceGuard.TryAcquire();
         if (guard is null)
@@ -124,7 +124,7 @@ internal static class Program
                 "Only one instance per install location can run at a time. " +
                 "Identity, ports, and state files are keyed by the exe path -- " +
                 "running a second copy would collide with the existing one.";
-            MessageBoxW(IntPtr.Zero, msg, "Director", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            ShowStartupNotice(msg, "Director", MB_ICONWARNING);
             return 1;
         }
 
@@ -138,10 +138,10 @@ internal static class Program
         {
             FileLog.Write($"[Program] FATAL startup error: {ex}");
             var crashPath = WriteCrashFile("startup", ex);
-            MessageBoxW(IntPtr.Zero,
+            ShowStartupNotice(
                 $"Director failed to start:\n\n{ex.Message}\n\n" +
                 (crashPath is null ? "" : $"Details written to:\n{crashPath}"),
-                "Director - Startup error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                "Director - Startup error", MB_ICONERROR);
             return 1;
         }
     }
@@ -181,8 +181,31 @@ internal static class Program
     /// existing window instead of silently exiting. Returns true when a window was raised.
     /// Best-effort; never throws.
     /// </summary>
+    /// <summary>
+    /// Show a pre-UI startup notice (update warning, single-instance, fatal startup error). On Windows
+    /// this is a native <c>MessageBoxW</c> so the message is visible even though no Avalonia window exists
+    /// yet. On macOS/Linux there is no user32; the process has no window at this point, so the notice goes
+    /// to the crash log and stderr. Calling MessageBoxW off Windows would throw <c>DllNotFoundException</c>
+    /// and mask the real startup error (the crash file written by the caller already holds the details).
+    /// </summary>
+    private static void ShowStartupNotice(string text, string caption, uint icon)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            MessageBoxW(IntPtr.Zero, text, caption, MB_OK | icon | MB_TOPMOST);
+            return;
+        }
+        FileLog.Write($"[Program] {caption}: {text.Replace('\n', ' ')}");
+        Console.Error.WriteLine($"{caption}: {text}");
+    }
+
     private static bool TryRaiseExistingWindow()
     {
+        // The window-raising path is Win32-only (MainWindowHandle + user32 SetForegroundWindow/ShowWindow).
+        // On macOS/Linux there is no window handle to raise, so report "not raised" and let the caller fall
+        // back to its explanatory notice rather than touch user32.
+        if (!OperatingSystem.IsWindows())
+            return false;
         try
         {
             var self = Environment.ProcessPath;

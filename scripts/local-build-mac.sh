@@ -76,11 +76,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_PATH="$REPO_ROOT/src/CcDirector.Avalonia/CcDirector.Avalonia.csproj"
 CORE_PATH="$REPO_ROOT/src/CcDirector.Core/CcDirector.Core.csproj"
+VERSION_PROPS="$REPO_ROOT/Directory.Build.props"
 
-# Read <Version> from the csproj (first non-empty match).
-VERSION="$(grep -oE '<Version>[^<]+</Version>' "$PROJECT_PATH" | head -1 | sed -E 's/<\/?Version>//g' || true)"
+# Read <Version> from Directory.Build.props (the single source of truth; no .csproj may declare its
+# own <Version> or it would silently override the centralized one). The project files therefore have
+# no <Version>, so we must read the props file here.
+VERSION="$(grep -oE '<Version>[^<]+</Version>' "$VERSION_PROPS" | head -1 | sed -E 's/<\/?Version>//g' || true)"
 if [[ -z "$VERSION" ]]; then
-    echo "ERROR: could not read <Version> from $PROJECT_PATH" >&2
+    echo "ERROR: could not read <Version> from $VERSION_PROPS" >&2
     exit 1
 fi
 
@@ -145,6 +148,14 @@ EXE_NAME="cc-director-mac${SLOT}"
 DEST_PATH="$DEST_DIR/$EXE_NAME"
 cp -f "$EXE_PATH" "$DEST_PATH"
 chmod +x "$DEST_PATH"
+
+# Re-apply an ad-hoc signature to the copy. A single-file macOS binary is signed by the SDK at
+# publish time, but the app bundle is appended into the host AFTER signing and `cp` does not carry
+# the signature across intact - so the copied slot binary is seen as having an invalid/adhoc-rejected
+# signature and macOS SIGKILLs it at exec ("Killed: 9"; `spctl` reports "rejected"), with no output.
+# Forcing a fresh ad-hoc signature on the destination makes the slot binary launchable.
+xattr -cr "$DEST_PATH" 2>/dev/null || true
+codesign --force --sign - "$DEST_PATH"
 
 EXE_SIZE_MB="$(echo "scale=1; $(stat -f%z "$DEST_PATH") / 1048576" | bc)"
 echo ""
