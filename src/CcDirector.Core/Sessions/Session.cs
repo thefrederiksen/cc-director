@@ -1634,7 +1634,8 @@ public sealed class Session : IDisposable
                 text,
                 Driver.Kind.ToString(),
                 BracketedPasteEnabled,
-                requireEcho: Driver.Kind != Agents.AgentKind.Copilot);
+                requireEcho: Driver.Kind != Agents.AgentKind.Copilot,
+                screenSnapshot: SnapshotScreenRows);
         }
         else
         {
