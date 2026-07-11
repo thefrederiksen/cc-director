@@ -2534,6 +2534,70 @@ a.banner-btn {
   border: 1px solid var(--attention);
 }
 
+/* Live microphone level meter: an equalizer of bars that rise with the input level, so the owner can
+   SEE his voice is picked up. Green while capturing (active), dim otherwise. */
+.car-meter {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+  height: 56px;
+  width: 100%;
+  max-width: 26ch;
+}
+.car-meter-well {
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  max-width: 12px;
+}
+.car-meter-bar {
+  width: 100%;
+  border-radius: 3px;
+  background: var(--text-dim);
+  transition: height 0.06s linear;
+}
+.car-meter-active .car-meter-bar {
+  background: #22c55e;
+}
+
+/* Touch equivalents of the two spoken control phrases. "Over and out" is the primary (green) action;
+   "Stop" is the interrupt. Both grey out when their phase rule makes them a no-op, matching the voice. */
+.car-touch {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+}
+.car-overandout,
+.car-interrupt {
+  flex: 1 1 0;
+  padding: 18px 12px;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+}
+.car-overandout {
+  flex: 2 1 0;
+  background: #22c55e;
+  color: #06210f;
+}
+.car-interrupt {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.car-overandout:disabled,
+.car-interrupt:disabled {
+  background: #26314e;
+  color: #6b7391;
+  border-color: transparent;
+  cursor: default;
+}
+
 .car-history {
   margin: 0 16px 20px;
   color: var(--text-dim);

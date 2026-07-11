@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
 import { playReadyCue, playYourTurnCue } from "../dictation/readyCue";
-import { decideControlAction, detectEndPhrase } from "./controlPhrases";
+import { decideControlAction, detectEndPhrase, END_PHRASE, INTERRUPT_WORDS } from "./controlPhrases";
 import { ControlWordListener, isControlRecognitionSupported } from "./speechRecognition";
 import { speakCarModeText, transcribeCarModeAudio, type CarModeAction } from "./carModeApi";
 import { gatewayErrorMessage } from "../api/client";
@@ -72,6 +72,16 @@ export interface CarModeView {
   /** The recognizer's last error line, or null when it has not errored. Distinct from `error` (which is
    *  the loud, user-facing failure); this is the raw diagnostic detail. */
   recognizerError: string | null;
+  /** The current microphone input level in 0..1, sampled live from the capture stream's AnalyserNode,
+   *  for the on-screen level meter. Read on an animation frame; returns 0 when not capturing. This is a
+   *  polled getter (not React state) so the meter can animate without re-rendering the whole page. */
+  getMicLevel: () => number;
+  /** End the current turn by TOUCH, through the EXACT same path as the spoken "over and out" (the button
+   *  feeds the phrase into the same control handler). A no-op outside Listening, matching the voice rule. */
+  endTurn: () => void;
+  /** Interrupt the assistant by TOUCH, through the EXACT same path as the spoken "stop". A no-op unless
+   *  the assistant is Speaking, matching the voice rule. */
+  interrupt: () => void;
   start: () => Promise<void>;
   stop: () => void;
 }
@@ -265,6 +275,25 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     [takeTurn, enterListening],
   );
 
+  // Touch controls (Architect direction: the app must be fully usable by touch so testing the rest is
+  // not blocked by spoken "over and out"). Both feed the phrase text into the SAME control handler the
+  // recognizer uses, so a tap and the spoken phrase are literally the same code path - the button cannot
+  // drift from the voice behavior.
+  const endTurn = useCallback(() => {
+    console.log('[CarMode] "over and out" tapped -> same path as the spoken phrase');
+    onControlTranscript(END_PHRASE);
+  }, [onControlTranscript]);
+
+  const interrupt = useCallback(() => {
+    console.log('[CarMode] "stop" tapped -> same path as the spoken interrupt');
+    onControlTranscript(INTERRUPT_WORDS[0]);
+  }, [onControlTranscript]);
+
+  // The live microphone level for the on-screen meter, polled by the page on an animation frame. Reads
+  // the capture stream's AnalyserNode (display only; it never touches the captured audio) and returns 0
+  // when the microphone is not currently capturing.
+  const getMicLevel = useCallback(() => recorderRef.current?.level() ?? 0, []);
+
   const start = useCallback(async () => {
     if (started) return;
     if (unsupported) {
@@ -363,6 +392,9 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     liveTranscript,
     recognizerState,
     recognizerError,
+    getMicLevel,
+    endTurn,
+    interrupt,
     start,
     stop,
   };

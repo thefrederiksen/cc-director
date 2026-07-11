@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCarMode, type CarModeReply } from "@devthrottle/client-core/carmode/useCarMode";
 import { carModeTurn } from "@devthrottle/client-core/carmode/carModeApi";
@@ -72,6 +72,9 @@ export function CarMode() {
     liveTranscript,
     recognizerState,
     recognizerError,
+    getMicLevel,
+    endTurn,
+    interrupt,
     start,
     stop,
   } = useCarMode({ respond });
@@ -114,6 +117,11 @@ export function CarMode() {
         <p className="car-status" aria-live="polite">
           {started ? statusText : "Tap Start, then just talk."}
         </p>
+
+        {/* Live microphone level meter (Architect direction): visibly shows the owner his voice is being
+            picked up. Reads the capture stream's AnalyserNode via getMicLevel on an animation frame. It
+            only moves while the microphone is actually capturing (the Listening phase); flat otherwise. */}
+        {started && <MicMeter getLevel={getMicLevel} active={phase === "listening"} />}
 
         {pendingConfirmation && (
           <p className="car-confirm" role="status">
@@ -167,7 +175,30 @@ export function CarMode() {
           <>
             <p className="car-hint">
               Say <strong>"over and out"</strong> to send. Say <strong>"stop"</strong> to cut me off.
+              Or use the buttons below.
             </p>
+            {/* Touch equivalents of the two spoken control phrases (Architect direction: the app must be
+                fully usable by touch, so testing is never blocked by the spoken "over and out"). Each
+                runs the EXACT same code path as the phrase. "Over and out" is the primary action, live
+                only while Listening; "Stop" only cuts off while Speaking - matching the voice rules. */}
+            <div className="car-touch">
+              <button
+                type="button"
+                className="car-overandout"
+                onClick={endTurn}
+                disabled={phase !== "listening"}
+              >
+                Over and out
+              </button>
+              <button
+                type="button"
+                className="car-interrupt"
+                onClick={interrupt}
+                disabled={phase !== "speaking"}
+              >
+                Stop
+              </button>
+            </div>
             <button type="button" className="car-stop" onClick={stop}>
               End Car Mode
             </button>
@@ -188,6 +219,48 @@ export function CarMode() {
           </ul>
         </details>
       )}
+    </div>
+  );
+}
+
+// The live microphone level meter: a row of bars whose heights follow the input level, so the owner can
+// SEE his voice is picked up (Architect direction). It runs its own animation-frame loop reading the
+// polled level getter and holds the bar heights in local state, so only the meter re-renders each frame,
+// never the whole Car Mode page. The centre bars react most, so it reads as an equalizer (the same shape
+// as the dictation meter). When not capturing (getLevel returns 0, or between turns) the bars rest flat.
+const METER_BAR_COUNT = 11;
+
+function MicMeter({ getLevel, active }: { getLevel: () => number; active: boolean }) {
+  const [levels, setLevels] = useState<number[]>(() => new Array(METER_BAR_COUNT).fill(0));
+  // Read `active` from a ref inside the animation loop so the long-lived loop is not re-created each time
+  // the phase flips; the loop itself is started once and torn down on unmount.
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const level = activeRef.current ? getLevel() : 0;
+      const centre = (METER_BAR_COUNT - 1) / 2;
+      setLevels(
+        new Array(METER_BAR_COUNT).fill(0).map((_, i) => {
+          const falloff = 1 - Math.abs(i - centre) / (centre + 1);
+          return Math.min(1, level * (0.55 + falloff));
+        }),
+      );
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, [getLevel]);
+
+  return (
+    <div className={`car-meter ${active ? "car-meter-active" : ""}`} aria-hidden="true">
+      {levels.map((v, i) => (
+        <span key={i} className="car-meter-well">
+          <span className="car-meter-bar" style={{ height: `${8 + v * 84}%` }} />
+        </span>
+      ))}
     </div>
   );
 }
