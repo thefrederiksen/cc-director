@@ -34,7 +34,7 @@ internal static class SessionHistoryEndpoint
             try
             {
                 var dto = BuildHistory(session, sid);
-                FileLog.Write($"[SessionHistoryEndpoint] history: sid={sid} agent={dto.Agent} messages={dto.Messages.Count} state={dto.HistoryState ?? "(none)"}");
+                FileLog.Write($"[SessionHistoryEndpoint] history: sid={sid} agent={dto.Agent} status={dto.Status} messages={dto.Messages.Count} state={dto.HistoryState ?? "(none)"}");
                 return Results.Json(dto);
             }
             catch (Exception ex)
@@ -65,6 +65,26 @@ internal static class SessionHistoryEndpoint
         {
             dto.Status = "unsupported";
             return dto;
+        }
+
+        // Fail loudly, not silently: a Claude session whose transcript file cannot be located
+        // would otherwise return an EMPTY history with Status "ok" - indistinguishable from a
+        // genuinely empty conversation, which starves every consumer (Cockpit history, Gateway
+        // voice mode) with no diagnosable signal. Typical cause: the session-pointer hook has
+        // not reported yet, so the Director only holds the launch-time session id, which goes
+        // stale on /clear and auto-compaction.
+        if (session.AgentKind == AgentKind.ClaudeCode)
+        {
+            var transcriptPath = SessionHistoryReader.ResolveTranscriptPath(session);
+            if (transcriptPath is null || !File.Exists(transcriptPath))
+            {
+                dto.Status = "transcript-not-found";
+                dto.Error = transcriptPath is null
+                    ? "No transcript path is known for this session yet (the session-pointer hook has not reported)."
+                    : $"The transcript file this session points at does not exist: {transcriptPath}";
+                FileLog.Write($"[SessionHistoryEndpoint] transcript-not-found: sid={sid} triedPath={transcriptPath ?? "(null)"}");
+                return dto;
+            }
         }
 
         var history = SessionHistoryReader.Read(session);

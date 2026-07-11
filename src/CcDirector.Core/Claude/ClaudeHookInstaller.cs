@@ -19,14 +19,18 @@ namespace CcDirector.Core.Claude;
 /// Director already injects, so nothing per-session is baked into them. Passing this
 /// settings file via <c>--settings</c> MERGES with the user's own hooks (it never replaces
 /// them - see Claude Code issue #11392), so the user's hooks keep running too.
+///
+/// The hook command is per-platform: PowerShell on Windows, POSIX shell + curl on
+/// macOS/Linux (where PowerShell does not exist, which used to silently disable
+/// transcript tracking and leave session history permanently empty on those platforms).
 /// </summary>
 public static class ClaudeHookInstaller
 {
-    // PowerShell: read the hook event JSON on stdin, report the current session id +
-    // transcript path to the owning Director. Must never block or fail the session - it
-    // swallows all errors and exits 0. Only SessionStart fires it, so the PowerShell
+    // PowerShell (Windows): read the hook event JSON on stdin, report the current session
+    // id + transcript path to the owning Director. Must never block or fail the session -
+    // it swallows all errors and exits 0. Only SessionStart fires it, so the PowerShell
     // startup cost is paid at session boundaries (clear/compact/startup), not per turn.
-    private const string ScriptContent =
+    private const string PowerShellScriptContent =
         "$ErrorActionPreference = 'SilentlyContinue'\r\n" +
         "try {\r\n" +
         "    $raw = [Console]::In.ReadToEnd()\r\n" +
@@ -59,6 +63,29 @@ public static class ClaudeHookInstaller
         "} catch { }\r\n" +
         "exit 0\r\n";
 
+    // POSIX shell (macOS/Linux): the same contract as the PowerShell script, but curl-only,
+    // because parsing or building JSON safely in shell is not possible with the tools
+    // guaranteed to exist on a stock machine. Instead the hook event JSON on stdin is
+    // forwarded VERBATIM to the Director (which parses Claude's raw snake_case fields
+    // server-side), and the fleet preamble is fetched as READY-MADE hook output JSON that
+    // the script just prints. Must never block or fail the session - every step is
+    // best-effort and the script always exits 0.
+    private const string ShellScriptContent =
+        "#!/bin/sh\n" +
+        "# Claude Code SessionStart hook, written by CC Director (ClaudeHookInstaller).\n" +
+        "# Reports the current Claude session id + transcript path to the owning Director\n" +
+        "# and injects the fleet preamble as additionalContext. Best-effort: always exits 0.\n" +
+        "api=\"$CC_DIRECTOR_API\"\n" +
+        "sid=\"$CC_SESSION_ID\"\n" +
+        "[ -n \"$api\" ] && [ -n \"$sid\" ] || exit 0\n" +
+        "raw=\"$(cat 2>/dev/null || true)\"\n" +
+        "if [ -n \"$raw\" ]; then\n" +
+        "    printf '%s' \"$raw\" | curl -s -m 3 -X POST -H \"Content-Type: application/json\" \\\n" +
+        "        --data-binary @- \"$api/sessions/$sid/claude-hook\" >/dev/null 2>&1 || true\n" +
+        "fi\n" +
+        "curl -s -m 3 \"$api/sessions/$sid/fleet-preamble-hook-output\" 2>/dev/null || true\n" +
+        "exit 0\n";
+
     /// <summary>The hook event sources we register a SessionStart hook for. These are the
     /// moments Claude can switch to a new session id / transcript file.</summary>
     private static readonly string[] SessionStartMatchers = { "startup", "resume", "clear", "compact" };
@@ -69,20 +96,29 @@ public static class ClaudeHookInstaller
     /// Returns null if the files could not be written, in which case the caller launches the
     /// session without hook-based pointer tracking (the session still starts).
     /// </summary>
-    public static string? EnsureInstalled() => EnsureInstalled(DefaultDirectory());
+    public static string? EnsureInstalled() => EnsureInstalled(DefaultDirectory(), OperatingSystem.IsWindows());
 
     /// <summary>Testable overload that writes the hook files under <paramref name="directory"/>.</summary>
-    public static string? EnsureInstalled(string directory)
+    public static string? EnsureInstalled(string directory) => EnsureInstalled(directory, OperatingSystem.IsWindows());
+
+    /// <summary>
+    /// Testable overload that also pins the platform flavour. Windows gets the PowerShell
+    /// script; everything else gets the POSIX shell script (issue: the PowerShell command
+    /// can never run on macOS/Linux, which silently killed transcript tracking there).
+    /// </summary>
+    public static string? EnsureInstalled(string directory, bool forWindows)
     {
         try
         {
             Directory.CreateDirectory(directory);
 
-            var scriptPath = Path.Combine(directory, "report-session.ps1");
-            File.WriteAllText(scriptPath, ScriptContent);
+            var scriptPath = forWindows
+                ? Path.Combine(directory, "report-session.ps1")
+                : Path.Combine(directory, "report-session.sh");
+            File.WriteAllText(scriptPath, forWindows ? PowerShellScriptContent : ShellScriptContent);
 
             var settingsPath = Path.Combine(directory, "hooks-settings.json");
-            File.WriteAllText(settingsPath, BuildSettingsJson(scriptPath));
+            File.WriteAllText(settingsPath, BuildSettingsJson(scriptPath, forWindows));
 
             return settingsPath;
         }
@@ -98,12 +134,15 @@ public static class ClaudeHookInstaller
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "cc-director", "claude-hooks");
 
-    private static string BuildSettingsJson(string scriptPath)
+    private static string BuildSettingsJson(string scriptPath, bool forWindows)
     {
         // Shell form (single command string), which works whether Claude runs hooks through
-        // cmd.exe or sh on Windows. The script path is quoted; System.Text.Json escapes the
-        // backslashes when it serializes the string.
-        var command = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"";
+        // cmd.exe or sh. The script path is quoted (per-user data dirs contain spaces, e.g.
+        // "Application Support" on macOS); System.Text.Json escapes any backslashes when it
+        // serializes the string.
+        var command = forWindows
+            ? $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\""
+            : $"/bin/sh \"{scriptPath}\"";
         var hook = new { type = "command", command, timeout = 10 };
 
         var sessionStart = new object[SessionStartMatchers.Length];

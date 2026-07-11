@@ -273,6 +273,38 @@ internal static class ControlEndpoints
             return Results.Text(text, "text/plain");
         });
 
+        // The fleet preamble pre-wrapped as ready-to-print SessionStart hook output. The
+        // macOS/Linux shell hook cannot safely BUILD JSON (escaping arbitrary preamble text in
+        // POSIX shell), so the Director serializes the whole hookSpecificOutput envelope and the
+        // script just prints this response body to stdout. Empty body when there is no preamble,
+        // so the hook emits nothing rather than an empty envelope.
+        app.MapGet("/sessions/{sid}/fleet-preamble-hook-output", (string sid) =>
+        {
+            if (!Guid.TryParse(sid, out var guid))
+                return Results.BadRequest(new { error = "invalid session id format" });
+
+            var session = sessionManager.GetSession(guid);
+            if (session is null)
+                return Results.NotFound(new { error = "session not found" });
+
+            var name = SessionName.DisplayName(session.CustomName,
+                SessionName.FolderName(session.RepoPath),
+                SessionName.Disambiguator(session.Id));
+
+            var text = FleetPreamble.Build(session.Id.ToString(), name, Environment.MachineName, session.RepoPath);
+            if (string.IsNullOrWhiteSpace(text))
+                return Results.Text("", "text/plain");
+
+            return Results.Json(new
+            {
+                hookSpecificOutput = new
+                {
+                    hookEventName = "SessionStart",
+                    additionalContext = text,
+                },
+            });
+        });
+
         // ===== REST: Fleet messaging (issue #705) =====
         // A session can only reach its OWN Director (CC_DIRECTOR_API); it never holds the Gateway
         // URL or the fleet token. These endpoints let a session list and message other sessions
@@ -2517,7 +2549,9 @@ internal static class ControlEndpoints
         // Claude session id + transcript path here. This is the authoritative, push-based pointer
         // update that keeps the Director tracking the right transcript across /clear and
         // auto-compaction, instead of the best-effort relink scan above. The hook script swallows
-        // all errors, so this endpoint just records what it is given and returns 200.
+        // all errors, so this endpoint just records what it is given and returns 200. Accepts both
+        // the mapped camelCase body (Windows PowerShell hook) and Claude's raw snake_case hook
+        // event (forwarded verbatim by the macOS/Linux shell hook) - see ClaudeHookEventParser.
         app.MapPost("/sessions/{sid}/claude-hook", async (string sid, HttpContext httpCtx) =>
         {
             if (!Guid.TryParse(sid, out var guid))
@@ -2527,15 +2561,13 @@ internal static class ControlEndpoints
             if (session is null)
                 return Results.NotFound(new { error = "session not found" });
 
-            ClaudeHookRequest? req;
-            try
-            {
-                req = await httpCtx.Request.ReadFromJsonAsync<ClaudeHookRequest>();
-            }
-            catch
-            {
+            string body;
+            using (var reader = new StreamReader(httpCtx.Request.Body))
+                body = await reader.ReadToEndAsync();
+
+            var req = ClaudeHookEventParser.Parse(body);
+            if (req is null)
                 return Results.BadRequest(new { error = "invalid json body" });
-            }
 
             FileLog.Write($"[ControlEndpoints] POST claude-hook: sid={guid} event={req?.HookEvent} source={req?.Source} claudeId={req?.ClaudeSessionId} transcript={req?.TranscriptPath}");
             session.UpdateClaudeSessionPointer(req?.ClaudeSessionId, req?.TranscriptPath, req?.Source);
