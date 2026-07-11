@@ -451,6 +451,10 @@ internal static class SettingsEndpoints
             // so models picked on the AI tab round-trip across a reload.
             wingmanModel = Core.Configuration.WingmanModelConfig.Resolve(mode),
             wingmanFastModel = Core.Configuration.WingmanModelConfig.ResolveFast(mode),
+            // Car Mode runs its OWN model, separate from the Wingman (a fast tier + tool_choice=required).
+            // The snapshot shows the user's saved setting (or the Qwen2.5-72B default); the env override
+            // is not reflected here because it is a per-install debug switch, not the user's choice.
+            carModeModel = Core.Configuration.CarModeModelConfig.Get(),
             transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
             ttsModel = Core.Configuration.TtsModelConfig.Resolve(mode),
             ttsVoice = Core.Configuration.TtsVoiceConfig.Resolve(mode),

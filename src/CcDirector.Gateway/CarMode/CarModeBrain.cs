@@ -93,13 +93,16 @@ public sealed class CarModeBrain
             var messagesJson = JsonSerializer.Serialize(messages);
             var turn = await _chat.CompleteAsync(messagesJson, ToolCatalogJson, ct);
 
+            // Under tool_choice=required the model normally calls a tool every turn, and says its final
+            // words by calling speak_answer. Defensive path: if a model still answers in plain content with
+            // no tool call, take that content as the final spoken reply so the loop degrades gracefully.
             if (turn.ToolCalls.Count == 0)
             {
                 var spoken = (turn.Content ?? "").Trim();
                 if (spoken.Length == 0)
                     throw new InvalidOperationException("The model returned an empty spoken reply.");
                 _conversations.Append(deviceKey, userText, spoken);
-                _log($"[CarModeBrain] turn done in {round + 1} round(s): actions={actions.Count}, pending={armedThisTurn}");
+                _log($"[CarModeBrain] turn done in {round + 1} round(s) via content: actions={actions.Count}, pending={armedThisTurn}");
                 return new CarModeTurnResponse { Spoken = spoken, Actions = actions, PendingConfirmation = armedThisTurn };
             }
 
@@ -117,12 +120,39 @@ public sealed class CarModeBrain
                 }).ToList(),
             });
 
+            string? finalSpoken = null;
             foreach (var call in turn.ToolCalls)
             {
+                if (string.Equals(call.Name, "speak_answer", StringComparison.Ordinal))
+                {
+                    // This is how the model says its final words under tool_choice=required.
+                    var words = (ReadStringArg(call.ArgumentsJson, "text") ?? "").Trim();
+                    if (words.Length > 0)
+                    {
+                        finalSpoken = words;
+                        messages.Add(new { role = "tool", tool_call_id = call.Id, content = "{\"status\":\"spoken\"}" });
+                    }
+                    else
+                    {
+                        // A model occasionally calls speak_answer with no words (a glitch under
+                        // tool_choice=required). Do NOT fail the whole turn - hand it back a nudge so it
+                        // speaks proper words on the next round; the round cap still bounds it.
+                        _log("[CarModeBrain] speak_answer called with no words; asking the model to retry");
+                        messages.Add(new { role = "tool", tool_call_id = call.Id, content = "{\"error\":\"speak_answer needs the exact words to say. Call it again with the words.\"}" });
+                    }
+                    continue;
+                }
                 var outcome = await ExecuteToolAsync(deviceKey, call, ct);
                 if (outcome.Action is not null) actions.Add(outcome.Action);
                 if (outcome.ArmedConfirmation) armedThisTurn = true;
                 messages.Add(new { role = "tool", tool_call_id = call.Id, content = outcome.ResultJson });
+            }
+
+            if (finalSpoken is not null)
+            {
+                _conversations.Append(deviceKey, userText, finalSpoken);
+                _log($"[CarModeBrain] turn done in {round + 1} round(s) via speak_answer: actions={actions.Count}, pending={armedThisTurn}");
+                return new CarModeTurnResponse { Spoken = finalSpoken, Actions = actions, PendingConfirmation = armedThisTurn };
             }
         }
 
@@ -247,20 +277,44 @@ public sealed class CarModeBrain
         }
     }
 
-    /// <summary>Read one string argument from a tool call's JSON arguments, tolerating an absent/garbled
-    ///  body (the model occasionally emits an empty object) by returning null.</summary>
+    /// <summary>
+    /// Read one string argument from a tool call's JSON arguments. Model output is a BOUNDARY, so this is
+    /// defensively tolerant of the malformed shapes a model occasionally emits under tool_choice=required:
+    /// an empty object, an argument that is a number/bool rather than a string, or the whole arguments body
+    /// wrapped in a one-element ARRAY (observed intermittently). It never throws - anything it cannot read
+    /// as the named string returns null, so the tool returns a "provide X" result the model can recover from
+    /// on the next round rather than crashing the turn.
+    /// </summary>
     internal static string? ReadStringArg(string argumentsJson, string name)
     {
         if (string.IsNullOrWhiteSpace(argumentsJson)) return null;
         try
         {
             using var doc = JsonDocument.Parse(argumentsJson);
-            return doc.RootElement.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String
-                ? el.GetString()
-                : null;
+            var root = doc.RootElement;
+            // Some models wrap the arguments object in a one-element array; unwrap to the first object.
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in root.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object) { root = item; break; }
+                }
+            }
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (!root.TryGetProperty(name, out var el)) return null;
+            // Accept a string; coerce a number/bool to its text so a stray non-string value is still usable.
+            return el.ValueKind switch
+            {
+                JsonValueKind.String => el.GetString(),
+                JsonValueKind.Number => el.GetRawText(),
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                _ => null,
+            };
         }
-        catch (JsonException)
+        catch (Exception)
         {
+            // Any parse/type surprise from the model boundary degrades to null (no-crash), never propagates.
             return null;
         }
     }
@@ -291,7 +345,12 @@ public sealed class CarModeBrain
         + "confirmation_required result. Then tell him exactly what will be deleted and ask him to say "
         + "\"confirm\" to proceed or \"cancel\" to stop, and call no more tools. The system handles the "
         + "actual deletion once he confirms out loud - you never delete without that confirmation.\n"
-        + "- When you have the answer or have acted, reply with the final spoken sentence and call no more tools.";
+        + "\n\nHow you speak:\n"
+        + "- To SAY anything to the owner - an answer, a clarifying question, or an acknowledgement of what you "
+        + "did - you MUST call the speak_answer tool with the exact words to say out loud. Do not put your reply "
+        + "in the message content; only speak_answer is heard.\n"
+        + "- A normal turn is: call the tools you need to get facts or act, then call speak_answer once with the "
+        + "final spoken sentence. Keep it to one or two short spoken sentences.";
 
     // The tool catalog. Standard chat-completions function tools: reads, ordinary acts, and the
     // destructive delete (which the loop holds for a spoken confirmation - the model just requests it).
@@ -373,6 +432,20 @@ public sealed class CarModeBrain
                   "session": { "type": "string", "description": "The session to delete: a human name, a repository, or a number." }
                 },
                 "required": ["session"]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "speak_answer",
+              "description": "Say words out loud to the owner. Call this for EVERY answer, clarifying question, or acknowledgement - it is the only thing the owner hears. Call it once, last, with the final spoken sentence.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "text": { "type": "string", "description": "The exact words to say out loud, in one or two short spoken sentences." }
+                },
+                "required": ["text"]
               }
             }
           }

@@ -114,6 +114,21 @@ internal static class AiModelsEndpoint
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
         });
 
+        app.MapPut("/gateway/ai/car-mode-model", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<ModelBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body is null || string.IsNullOrWhiteSpace(body.Model))
+                    return Results.BadRequest(new { error = "body { \"model\": \"<id>\" } is required" });
+                var model = body.Model.Trim();
+                CarModeModelConfig.Set(model);
+                FileLog.Write($"[AiModelsEndpoint] car mode model set: {model}");
+                return Results.Json(new { model });
+            }
+            catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
+        });
+
         app.MapPut("/gateway/ai/tts-model", async (HttpContext ctx) =>
         {
             try

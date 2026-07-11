@@ -68,8 +68,11 @@ public sealed class HostedCarModeChat : ICarModeChat
                 "No DevThrottle account key is configured. Sign in to DevThrottle so Car Mode can reach the model.");
 
         // Assemble the request with the messages + tools verbatim (the brain owns their shape) so this
-        // layer stays a thin transport.
-        var body = $"{{\"model\":{JsonSerializer.Serialize(model)},\"messages\":{messagesJson},\"tools\":{toolsJson},\"tool_choice\":\"auto\",\"stream\":false}}";
+        // layer stays a thin transport. tool_choice is "required" (validated 2026-07-11): forcing a tool
+        // call every turn is what makes a fast model choose tools RELIABLY instead of hallucinating an
+        // action it never took. Conversational turns still work because the tool catalog carries an
+        // explicit speak_answer tool the model calls to say anything - so "required" never traps it.
+        var body = $"{{\"model\":{JsonSerializer.Serialize(model)},\"messages\":{messagesJson},\"tools\":{toolsJson},\"tool_choice\":\"required\",\"stream\":false}}";
 
         var url = baseUrl.TrimEnd('/') + "/chat/completions";
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
@@ -128,25 +131,22 @@ public sealed class HostedCarModeChat : ICarModeChat
     }
 
     /// <summary>
-    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + the THINKING wingman
-    /// model (GLM). The fast tier was validated against the real fleet and REJECTED with evidence (mission
-    /// model risk, resolved 2026-07-11): the fast model called the read tools and message/delete correctly
-    /// but SKIPPED start_session entirely and hallucinated "I started a session" with no tool call and no
-    /// session created - unacceptable for a command-and-control agent, where a false "done" is broken, not
-    /// merely slow. The thinking model chooses tools reliably. The optional <c>CC_CARMODE_MODEL</c>
-    /// environment override remains the switch (e.g. to try the fast model again with tool_choice=required,
-    /// a stronger prompt, or a read-vs-act split - a deliberate later latency fast-follow, not a v1 blocker).
+    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + the effective Car Mode
+    /// model from <see cref="CarModeModelConfig"/> (the <c>CC_CARMODE_MODEL</c> env override, then the user's
+    /// saved AI-Settings choice, then the Qwen2.5-72B default). Read fresh each call so a settings change is
+    /// honoured on the next turn. Paired with <c>tool_choice=required</c> + <c>speak_answer</c> (see
+    /// <see cref="CompleteAsync"/> and the brain's tool catalog), which is what makes a fast model choose
+    /// tools reliably.
     /// </summary>
     public static Func<(string BaseUrl, string Model, string Key)> DefaultResolver(Func<string, string?> vaultGet)
     {
         return () =>
         {
             var mode = TranscriptionModeConfig.Get();
+            // Same base URL + vault key as the wingman endpoint; only the model differs for Car Mode.
             var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
-            var overrideModel = Environment.GetEnvironmentVariable("CC_CARMODE_MODEL");
-            var model = string.IsNullOrWhiteSpace(overrideModel) ? ep.Model : overrideModel.Trim();
             var key = vaultGet(ep.KeyName) ?? "";
-            return (ep.BaseUrl, model, key);
+            return (ep.BaseUrl, CarModeModelConfig.Resolve(), key);
         };
     }
 }

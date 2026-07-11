@@ -206,8 +206,78 @@ public sealed class CarModeBrainTests
     [InlineData("{}", "session", null)]
     [InlineData("not json", "session", null)]
     [InlineData("{\"other\":1}", "session", null)]
+    // Defensive against the malformed shapes a model occasionally emits (must never crash the turn):
+    [InlineData("[{\"repo\":\"cc-consult\"}]", "repo", "cc-consult")] // arguments wrapped in a one-element array
+    [InlineData("{\"n\":5}", "n", "5")]                                // a number coerced to its text
+    [InlineData("[\"just a string\"]", "repo", null)]                 // array of non-objects -> null, no throw
+    [InlineData("[]", "repo", null)]                                   // empty array -> null, no throw
     public void ReadStringArg_ParsesOrDegradesToNull(string args, string name, string? expected)
         => Assert.Equal(expected, CarModeBrain.ReadStringArg(args, name));
+
+    // ---- speak_answer (tool_choice=required): the model says its final words by calling a tool ----
+
+    [Fact]
+    public async Task RunTurn_SpeakAnswerTool_IsTheFinalReply()
+    {
+        // A pure conversational turn under tool_choice=required: the model calls only speak_answer.
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"Nothing needs you right now.\"}") }));
+        var brain = new CarModeBrain(chat, new FakeFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "anything for me", CancellationToken.None);
+
+        Assert.Equal("Nothing needs you right now.", result.Spoken);
+        Assert.Empty(result.Actions);
+        Assert.False(result.PendingConfirmation);
+    }
+
+    [Fact]
+    public async Task RunTurn_ListThenSpeakAnswer_ExecutesToolThenSpeaks()
+    {
+        var fleet = new FakeFleet { Sessions = new[] { Session("Local Files Manager", true) } };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("list_sessions") }),
+            new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"One session needs you: Local Files Manager.\"}") }));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "who needs me", CancellationToken.None);
+
+        Assert.Equal(1, fleet.ListCalls);
+        Assert.Contains("Local Files Manager", result.Spoken);
+    }
+
+    [Fact]
+    public async Task RunTurn_DeleteThenSpeakAnswer_ArmsAndSpeaksTheQuestion()
+    {
+        var fleet = new FakeFleet { ResolveResult = Info("Old Worker", "s-9") };
+        var pending = new CarModePendingStore(_ => { });
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("delete_session", "{\"session\":\"old worker\"}") }),
+            new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"Deleting Old Worker is permanent. Say confirm to proceed.\"}") }));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), pending, _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "delete old worker", CancellationToken.None);
+
+        Assert.Empty(fleet.Deleted);          // not deleted - only armed
+        Assert.True(result.PendingConfirmation);
+        Assert.Contains("permanent", result.Spoken);
+        Assert.NotNull(pending.Get("device-a"));
+    }
+
+    [Fact]
+    public async Task RunTurn_EmptySpeakAnswer_RetriesInLoopRatherThanFailing()
+    {
+        // A model occasionally calls speak_answer with no words. The loop must NOT fail the turn - it
+        // nudges the model, which speaks proper words on the next round.
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"  \"}") }),
+            new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"All set.\"}") }));
+        var brain = new CarModeBrain(chat, new FakeFleet(), new CarModeConversationStore(), new CarModePendingStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "hi", CancellationToken.None);
+
+        Assert.Equal("All set.", result.Spoken);
+    }
 
     // ---- Phase 3: the ordinary act tools run immediately ----
 
