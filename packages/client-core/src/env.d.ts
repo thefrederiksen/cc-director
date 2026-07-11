@@ -8,3 +8,8 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// Side-effect stylesheet imports (issue #1288): a shared component can import its own .css so its
+// styles travel with it into every shell. Declared here so the package type-checks on its own with
+// noUncheckedSideEffectImports, without depending on the Vite client types each shell owns.
+declare module "*.css" {}

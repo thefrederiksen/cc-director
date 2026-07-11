@@ -1,0 +1,201 @@
+/* ===== Dictation dialog (issue #817) =====
+   The shared Speak control: a phone-sized modal that captures the mic, shows a live RECORDING /
+   TRANSCRIBING / PAUSED state with an equalizer + timer, then an editable transcript and the four
+   actions Cancel / Pause-Resume / Insert / Send. Colours come from the theme tokens; the recording
+   red reuses --attention and the commit accent reuses --accent.
+
+   These rules live next to the DictationDialog component and are imported by it (issue #1288), so
+   every shell that mounts the dialog - the mobile PWA and the desktop Cockpit - gets its styling
+   automatically from one copy. The theme tokens below (--surface, --border, --attention, --accent,
+   --text, --text-dim, --surface-2) are provided by each host shell's own theme. */
+.dictate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.66);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.dictate-card {
+  width: 100%;
+  max-width: 460px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.dictate-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dictate-status {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.dictate-status-recording {
+  color: var(--attention);
+}
+
+.dictate-status-connecting,
+.dictate-status-transcribing,
+.dictate-status-paused {
+  color: #dcdcaa;
+}
+
+.dictate-status-error {
+  color: var(--attention);
+}
+
+.dictate-timer {
+  margin-left: auto;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.dictate-eq {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  height: 72px;
+  margin: 14px 0 6px;
+}
+
+.dictate-eq-well {
+  width: 10px;
+  height: 100%;
+  background: var(--surface-2);
+  border-radius: 3px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.dictate-eq-bar {
+  width: 100%;
+  background: var(--attention);
+  border-radius: 3px;
+  transition: height 60ms linear;
+}
+
+.dictate-eq-bar-idle {
+  background: #6a6a6a;
+}
+
+.dictate-hint {
+  min-height: 18px;
+  text-align: center;
+  font-size: 12px;
+  color: #dcdcaa;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+
+.dictate-transcript {
+  width: 100%;
+  min-height: 96px;
+  max-height: 200px;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
+.dictate-transcript::placeholder {
+  color: var(--text-dim);
+}
+
+.dictate-transcript[readonly] {
+  color: var(--text-dim);
+}
+
+.dictate-error {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(241, 76, 76, 0.12);
+  border: 1px solid rgba(241, 76, 76, 0.4);
+  border-radius: 8px;
+  color: #ffb4b4;
+  font-size: 13px;
+}
+
+.dictate-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dictate-spacer {
+  flex: 1 1 auto;
+}
+
+.dictate-btn {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.dictate-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dictate-cancel {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.dictate-pause {
+  background: var(--surface-2);
+  color: var(--text);
+  min-width: 64px;
+}
+
+.dictate-insert {
+  background: #16a34a;
+  color: #ffffff;
+  border-color: #16a34a;
+}
+
+.dictate-send {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+}
+
+.dictate-pause-glyph {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+}
+
+.dictate-pause-glyph i {
+  width: 4px;
+  height: 14px;
+  background: var(--text);
+  display: block;
+  border-radius: 1px;
+}

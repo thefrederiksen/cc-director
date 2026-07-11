@@ -6,6 +6,11 @@ import { playReadyCue } from "./readyCue";
 import { MicRecorder } from "./recorder";
 import { joinText } from "./transcript";
 import { blobToWav16kMono } from "./wav";
+// The dialog carries its own styles (issue #1288): every shell that mounts this component gets the
+// dictate-* rules from one copy, so the Cockpit renders it as a centered overlay just like the phone
+// instead of unstyled elements at the page bottom. The rules formerly lived only in the mobile
+// stylesheet (apps/mobile/src/styles.css); they now live beside this component.
+import "./dictation.css";
 
 // The ONE shared mobile dictation dialog (issue #817), used by the Terminal view (#810) and, when
 // it lands, the Chat view (#811) - both mount this same component and pass their own onInsert /
