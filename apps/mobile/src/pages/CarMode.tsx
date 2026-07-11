@@ -69,9 +69,9 @@ export function CarMode() {
     error,
     unsupported,
     history,
-    liveTranscript,
-    recognizerState,
-    recognizerError,
+    lastHeard,
+    captureState,
+    captureError,
     getMicLevel,
     endTurn,
     interrupt,
@@ -160,10 +160,10 @@ export function CarMode() {
       <section className="car-debug" aria-label="Car Mode diagnostics">
         <DebugRow label="Client build" value={CLIENT_BUILD_ID} />
         <DebugRow label="Gateway" value={gatewayVersion} />
-        <DebugRow label="Speech recognition" value={unsupported ? "NOT supported" : "supported"} />
-        <DebugRow label="Recognizer" value={started ? recognizerState : "not started"} />
-        <DebugRow label="Last recognizer error" value={recognizerError ?? "none"} />
-        <DebugRow label="Hearing now" value={liveTranscript.length > 0 ? liveTranscript : "(silence)"} />
+        <DebugRow label="Audio capture" value={unsupported ? "NOT supported" : "supported"} />
+        <DebugRow label="State" value={started ? captureState : "not started"} />
+        <DebugRow label="Last transcribe error" value={captureError ?? "none"} />
+        <DebugRow label="Heard" value={lastHeard.length > 0 ? lastHeard : "(nothing yet)"} />
       </section>
 
       <footer className="car-foot">
