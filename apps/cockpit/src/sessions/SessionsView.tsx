@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useMatch, useNavigate } from "react-router-dom";
 import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import { getSessionsEnvelope, type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
+import { inBucket } from "@devthrottle/client-core/sessions/ordering";
+import { reconcileBadge } from "@devthrottle/client-core/push/register";
 import { SessionRoster, type RosterView } from "./SessionRoster";
 import { NewSessionDialog } from "./NewSessionDialog";
 
@@ -53,6 +55,11 @@ export function SessionsView() {
       setDirectors(env.directors);
       setError(null);
       loadedOnce.current = true;
+      // Keep the browser-notification state in sync while the Cockpit is open (issue #1257): when the
+      // roster shows nothing waiting, close any standing "needs you" desktop notification and clear the
+      // app badge. The Gateway pushes a single zero on the falling edge too, but this clears it the
+      // instant the user resolves the last session in the foreground, without waiting for that push.
+      void reconcileBadge(inBucket(env.sessions, "needsYou").length);
     } catch (err) {
       if (signal?.aborted) return;
       // Keep the last-known roster on screen; only raise the stale banner (the roster component

@@ -1,14 +1,22 @@
-// Web Push subscription + app-icon badge control for the mobile PWA (the "needs you" dot).
+// Web Push subscription + app-icon badge control, shared by BOTH client shells (the mobile PWA and
+// the desktop Cockpit). One copy of the subscribe/unsubscribe contract so the two shells never drift
+// (issue #1257: the Cockpit reuses the exact plumbing the phone shipped with in #905).
 //
-// The flow: the user taps "Enable notifications" (a user gesture, required by iOS/Android to prompt),
-// we ask for Notification permission, subscribe the browser's push manager against the Gateway's VAPID
-// public key, and register that subscription with the Gateway. From then on the Gateway pushes the
-// current "needs you" count while the app is closed, and the service worker (public/push-sw.js) draws
-// the dot. While the app is OPEN, the roster page keeps the badge in sync directly via reconcileBadge()
-// and clears it when nothing is waiting - the Gateway never pushes a zero (a push must show a
-// notification), so clearing the dot is the client's job.
+// The flow: the user turns notifications on (a user gesture - a button tap or a settings checkbox,
+// required by the browser to prompt), we ask for Notification permission, subscribe the browser's
+// push manager against the Gateway's VAPID public key, and register that subscription with the
+// Gateway. From then on the Gateway pushes the current "needs you" count while the app is closed, and
+// each shell's own service worker draws the notification (mobile: public/push-sw.js -> the app-icon
+// dot; Cockpit: public/sw.js -> a desktop notification). While the app is OPEN, the roster keeps the
+// state in sync via reconcileBadge() and clears it when nothing is waiting - the Gateway never pushes
+// a zero except the single falling-edge clear, so foreground clearing is the client's job.
+//
+// This module is shell-neutral: it only talks to the root-relative /push/* endpoints and to
+// navigator.serviceWorker.ready (whichever service worker the shell registered). The shell-specific
+// bits - the notification icon and the click-target URL - live in each shell's service worker, never
+// here.
 
-import { authHeaders } from "@devthrottle/client-core/api/client";
+import { authHeaders } from "../api/client";
 
 // Kept in sync with the tag public/push-sw.js uses, so the page can close the same notification.
 const NEEDS_YOU_TAG = "devthrottle-needs-you";
@@ -66,6 +74,15 @@ async function postSubscription(subscription: PushSubscription): Promise<void> {
   if (!res.ok) throw new Error(`POST /push/subscribe failed: ${res.status}`);
 }
 
+async function postUnsubscribe(endpoint: string): Promise<void> {
+  const res = await fetch("/push/unsubscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ endpoint }),
+  });
+  if (!res.ok) throw new Error(`POST /push/unsubscribe failed: ${res.status}`);
+}
+
 // Ensure the browser has a push subscription and the Gateway knows about it. Idempotent: reuses an
 // existing subscription and re-registers it (a cheap upsert on the Gateway).
 async function subscribeAndRegister(): Promise<void> {
@@ -91,6 +108,35 @@ export async function enablePush(): Promise<"granted" | "denied" | "unsupported"
   if (permission !== "granted") return "denied";
   await subscribeAndRegister();
   return "granted";
+}
+
+/**
+ * Turn notifications OFF for THIS browser only: drop the browser's push subscription and tell the
+ * Gateway to forget it, so the notifier stops pushing to this device. Per-device by construction -
+ * a phone or another browser stays subscribed and keeps getting the "needs you" push (issue #1257).
+ * A no-op when this browser has no subscription. Throws on a failed Gateway call so the caller can
+ * surface the real reason (no silent success).
+ */
+export async function disablePush(): Promise<void> {
+  if (!("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.getSubscription();
+  if (subscription === null) return;
+  const { endpoint } = subscription;
+  await subscription.unsubscribe();
+  await postUnsubscribe(endpoint);
+}
+
+/**
+ * Whether THIS browser currently has a live push subscription (permission granted AND a push manager
+ * subscription present). Used to render the notifications toggle in its true state on load, so the
+ * checkbox reflects reality rather than a guess. Returns false when push is unsupported.
+ */
+export async function isPushSubscribed(): Promise<boolean> {
+  if (!pushSupported()) return false;
+  if (Notification.permission !== "granted") return false;
+  const registration = await navigator.serviceWorker.ready;
+  return (await registration.pushManager.getSubscription()) !== null;
 }
 
 /**

@@ -12,7 +12,7 @@ import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { ensureGatewayCookie, configureUnauthorizedRedirect, mobileSignInRedirect } from "@devthrottle/client-core/api/client";
-import { ensurePushSubscribed } from "./push/register";
+import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";

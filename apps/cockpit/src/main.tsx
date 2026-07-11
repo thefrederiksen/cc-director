@@ -6,6 +6,8 @@ import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { configureEnrollment, COCKPIT_ENROLLMENT_PROFILE } from "@devthrottle/client-core/auth/enrollRequest";
+import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
+import { registerCockpitServiceWorker } from "./push/registerSw";
 import { AppShell } from "./AppShell";
 import { NotFound } from "./panes/NotFound";
 import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
@@ -64,6 +66,14 @@ ensureGatewayCookie();
 // instead of the retired /login token wall (issue #1088: a revoke returns the browser to the shared
 // sign-in flow, never to login.html).
 configureUnauthorizedRedirect(cockpitSignInRedirect);
+
+// Browser notifications (issue #1257): register the Cockpit's push service worker, then - only if the
+// user already granted notification permission on a previous visit - silently refresh this browser's
+// push subscription so the Gateway's record stays current across subscription rotations. Neither call
+// prompts (that needs a user gesture: the Settings > Notifications toggle). Both are fire-and-forget and
+// non-fatal - the Cockpit works fully without notifications. This reuses the exact plumbing the phone
+// shipped with (#905); there is no new Gateway code.
+void registerCockpitServiceWorker().then(() => ensurePushSubscribed());
 
 // The auth gate (issue #1088, the desktop analog of the mobile gate from #908): every real screen
 // requires an enrolled device key. Without one, the browser is sent to the shared Sign in screen with
