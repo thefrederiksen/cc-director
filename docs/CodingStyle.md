@@ -849,6 +849,48 @@ In voice-**conversation** mode, summarizing the **agent's reply** for text-to-sp
 
 ---
 
+## 17. Git workflow - trunk-based development
+
+We do **trunk-based development**: the industry norm for high-performing teams, calibrated
+for a one-person shop driving a fleet of agents (no required reviews, no release trains, no
+ceremony - just five hard rules and merge-on-green).
+
+There are three states of work and only one counts as **done**:
+
+1. Committed or pushed to a side branch - still IN PROGRESS.
+2. An open pull request - still IN PROGRESS.
+3. **Merged to origin/main - DONE.** Tracked, visible to every agent, carrying its pull
+   request record so it can be QA'd or reverted later.
+
+### The five rules
+
+1. **Merged to origin/main is the only "done."** Committing still requires the user's
+   explicit ask, but once approved the commit drives ALL THE WAY to a merged pull request,
+   then the branch is deleted and the checkout is parked back on main. "I committed and
+   pushed" is an unfinished job. Merge first, QA after.
+2. **A branch lives less than a day.** The limit is AGE, not count. If it cannot merge
+   today, the work is too big - split it. Nothing sits unmerged overnight without a written
+   reason on the pull request.
+3. **Soft cap of 3 open pull requests at once.** A habit, not a git rule: at 3, finish one
+   before opening a fourth.
+4. **One checkout per concurrent activity.** Never two workstreams - two agents, two builds -
+   in one working tree. Each concurrent activity uses its own worktree off origin/main,
+   removed the moment its pull request merges. Never commit directly on main.
+5. **Converge daily.** The repo returns to its resting state (checkout on main = origin/main,
+   clean tree, zero side branches, zero worktrees, zero aging pull requests) several times a
+   day. The `/repo-hygiene` skill drives a repo back to this state.
+
+### How it is enforced
+
+- The **`/commit` skill** carries rules 1 and 4 end to end: it branches (or uses an isolated
+  worktree on a shared checkout), commits the named files, opens the pull request, merges on
+  green (squash + delete branch), and parks the checkout on main.
+- The **`/repo-hygiene` skill** is the daily backstop and audits GIT STATE (branches, trees,
+  worktrees, pull requests), converging drift back to main.
+- The **CenCon Development Method** (`docs/cencon/DEVELOPMENT_METHOD.md`) requires each
+  change to be an isolated worktree off main that ends merged to main.
+- `delete_branch_on_merge` is ON so merged pull requests self-clean.
+
 ## When in Doubt
 
 1. Log more, not less
