@@ -15,28 +15,25 @@ public sealed record BrowserDefault(string ExePath, string ProfileFolder);
 /// Reads and writes the remembered <see cref="BrowserDefault"/> in <c>config.json</c> (via
 /// <see cref="CcDirectorConfigService"/>, so other config sections are preserved), and resolves a
 /// stored exe path back to a live <see cref="BrowserInfo"/>.
+///
+/// Two levels of default are kept: the application-wide default at <c>browser.default</c> and a
+/// per-repository default at <c>browser.repoDefaults[&lt;repoKey&gt;]</c>. A plain "Open in Browser"
+/// resolves in the order repository default -&gt; application-wide default -&gt; operating-system
+/// default (see <see cref="Resolve"/>).
 /// </summary>
 public static class BrowserDefaultStore
 {
     /// <summary>
-    /// Returns the remembered default, or null if the user has never chosen a browser+profile.
-    /// A null result legitimately means "use the OS default" - it is not an error.
+    /// Returns the remembered application-wide default, or null if the user has never chosen a
+    /// browser+profile. A null result legitimately means "use the OS default" - it is not an error.
     /// </summary>
     public static BrowserDefault? Load()
     {
         var root = CcDirectorConfigService.ReadRaw();
-        if (root["browser"]?["default"] is not JsonObject def)
-            return null;
-
-        var exePath = (string?)def["exePath"];
-        var profileFolder = (string?)def["profileFolder"];
-        if (string.IsNullOrWhiteSpace(exePath) || string.IsNullOrWhiteSpace(profileFolder))
-            return null;
-
-        return new BrowserDefault(exePath, profileFolder);
+        return ReadDefaultObject(root["browser"]?["default"]);
     }
 
-    /// <summary>Persists <paramref name="value"/> as the remembered default in config.json.</summary>
+    /// <summary>Persists <paramref name="value"/> as the remembered application-wide default in config.json.</summary>
     public static void Save(BrowserDefault value)
     {
         if (value is null) throw new ArgumentNullException(nameof(value));
@@ -54,6 +51,100 @@ public static class BrowserDefaultStore
             }
         };
         CcDirectorConfigService.MergePatch(patch);
+    }
+
+    /// <summary>
+    /// Returns the browser+profile remembered for <paramref name="repoPath"/>, or null when that
+    /// repository has never set one. Null is not an error - the caller should then fall back to the
+    /// application-wide default (see <see cref="Resolve"/>).
+    /// </summary>
+    public static BrowserDefault? LoadForRepo(string repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath))
+            return null;
+
+        var root = CcDirectorConfigService.ReadRaw();
+        if (root["browser"]?["repoDefaults"] is not JsonObject repoDefaults)
+            return null;
+
+        return ReadDefaultObject(repoDefaults[NormalizeRepoKey(repoPath)]);
+    }
+
+    /// <summary>
+    /// Persists <paramref name="value"/> as the remembered default for <paramref name="repoPath"/>.
+    /// Uses <see cref="CcDirectorConfigService.MergePatch"/>, so the application-wide default and any
+    /// other repositories' defaults are left untouched.
+    /// </summary>
+    public static void SaveForRepo(string repoPath, BrowserDefault value)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath))
+            throw new ArgumentException("Repository path is required", nameof(repoPath));
+        if (value is null) throw new ArgumentNullException(nameof(value));
+
+        var key = NormalizeRepoKey(repoPath);
+        FileLog.Write($"[BrowserDefaultStore] SaveForRepo: repo={key}, exe={value.ExePath}, profile={value.ProfileFolder}");
+        var patch = new JsonObject
+        {
+            ["browser"] = new JsonObject
+            {
+                ["repoDefaults"] = new JsonObject
+                {
+                    [key] = new JsonObject
+                    {
+                        ["exePath"] = value.ExePath,
+                        ["profileFolder"] = value.ProfileFolder,
+                    }
+                }
+            }
+        };
+        CcDirectorConfigService.MergePatch(patch);
+    }
+
+    /// <summary>
+    /// Resolves the effective "Open in Browser" default for a session in <paramref name="repoPath"/>,
+    /// applying the order: the repository's own default first, then the application-wide default. A
+    /// null result means neither is set, so the caller should open the operating-system default
+    /// browser. <paramref name="repoPath"/> may be null (a link with no owning repository), in which
+    /// case only the application-wide default is consulted.
+    /// </summary>
+    public static BrowserDefault? Resolve(string? repoPath)
+    {
+        if (!string.IsNullOrWhiteSpace(repoPath))
+        {
+            var repoDefault = LoadForRepo(repoPath);
+            if (repoDefault is not null)
+                return repoDefault;
+        }
+
+        return Load();
+    }
+
+    /// <summary>
+    /// Reads an <c>{exePath, profileFolder}</c> object into a <see cref="BrowserDefault"/>, or null
+    /// when the node is absent or either field is missing/blank.
+    /// </summary>
+    private static BrowserDefault? ReadDefaultObject(JsonNode? node)
+    {
+        if (node is not JsonObject def)
+            return null;
+
+        var exePath = (string?)def["exePath"];
+        var profileFolder = (string?)def["profileFolder"];
+        if (string.IsNullOrWhiteSpace(exePath) || string.IsNullOrWhiteSpace(profileFolder))
+            return null;
+
+        return new BrowserDefault(exePath, profileFolder);
+    }
+
+    /// <summary>
+    /// Normalizes a repository path into a stable config.json key: separators unified to backslash and
+    /// trailing separators trimmed, then lowercased on Windows (where paths are case-insensitive) so
+    /// the same repository always maps to the same stored entry regardless of how the path was typed.
+    /// </summary>
+    private static string NormalizeRepoKey(string repoPath)
+    {
+        var normalized = repoPath.Trim().Replace('/', '\\').TrimEnd('\\');
+        return OperatingSystem.IsWindows() ? normalized.ToLowerInvariant() : normalized;
     }
 
     /// <summary>

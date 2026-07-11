@@ -157,9 +157,13 @@ public static class LinkContextMenuBuilder
 
     /// <summary>
     /// Builds the "Open in Browser" menu item for <paramref name="target"/> (a URL or a local file
-    /// path). A plain click reopens the remembered default; hovering expands a submenu of "System
-    /// default" plus each installed browser with its real profiles (re-read from each browser's Local
-    /// State so newly added profiles appear without a restart).
+    /// path). A plain click reopens the resolved default (this repository's default, then the
+    /// application-wide default, then the OS default); hovering expands a submenu of "System default"
+    /// plus each installed browser with its real profiles (re-read from each browser's Local State so
+    /// newly added profiles appear without a restart). Each profile in turn expands into explicit
+    /// intents - "Open once", "Set as default for this repository" (only when the link belongs to a
+    /// repository), and "Set as application-wide default" - so a click is never ambiguous about which
+    /// default, if any, it is setting.
     /// </summary>
     private static MenuItem BuildOpenInBrowserMenuItem(ContextMenu menu, LinkMenuContext context, string target)
     {
@@ -208,14 +212,42 @@ public static class LinkContextMenuBuilder
                         ? profile.DisplayName
                         : $"{profile.DisplayName} ({profile.Account})";
 
-                    var profileItem = new MenuItem { Header = header };
                     var capturedBrowser = browser;
                     var capturedFolder = profile.FolderName;
-                    profileItem.Click += (_, e) =>
+
+                    // Each profile expands into explicit intents so a click is never ambiguous about
+                    // WHAT it sets: open once (remember nothing), remember for THIS repository (the
+                    // common case, only when the link belongs to a repository), or remember as the
+                    // application-wide default.
+                    var profileItem = new MenuItem { Header = header };
+
+                    var openOnceItem = new MenuItem { Header = "Open once" };
+                    openOnceItem.Click += (_, e) =>
                     {
                         e.Handled = true;
-                        OpenInBrowserProfile(context, target, capturedBrowser, capturedFolder);
+                        OpenInBrowserProfileOnce(context, target, capturedBrowser, capturedFolder);
                     };
+                    profileItem.Items.Add(openOnceItem);
+
+                    if (!string.IsNullOrWhiteSpace(context.RepoPath))
+                    {
+                        var repoItem = new MenuItem { Header = "Set as default for this repository" };
+                        repoItem.Click += (_, e) =>
+                        {
+                            e.Handled = true;
+                            OpenInBrowserProfileForRepo(context, target, capturedBrowser, capturedFolder);
+                        };
+                        profileItem.Items.Add(repoItem);
+                    }
+
+                    var appWideItem = new MenuItem { Header = "Set as application-wide default" };
+                    appWideItem.Click += (_, e) =>
+                    {
+                        e.Handled = true;
+                        OpenInBrowserProfileAppWide(context, target, capturedBrowser, capturedFolder);
+                    };
+                    profileItem.Items.Add(appWideItem);
+
                     browserItem.Items.Add(profileItem);
                 }
             }
@@ -230,7 +262,9 @@ public static class LinkContextMenuBuilder
     {
         try
         {
-            var remembered = BrowserDefaultStore.Load();
+            // Resolve order: this repository's default, then the application-wide default, then the OS
+            // default (a null result). A repo with no default behaves exactly as it did before.
+            var remembered = BrowserDefaultStore.Resolve(context.RepoPath);
             if (remembered is null)
             {
                 FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserDefault: no remembered default, using system default: {target}");
@@ -263,17 +297,52 @@ public static class LinkContextMenuBuilder
         }
     }
 
-    private static void OpenInBrowserProfile(LinkMenuContext context, string target, BrowserInfo browser, string profileFolder)
+    /// <summary>Opens the link in a specific browser+profile once, remembering nothing.</summary>
+    private static void OpenInBrowserProfileOnce(LinkMenuContext context, string target, BrowserInfo browser, string profileFolder)
+    {
+        try
+        {
+            BrowserLauncher.OpenWithProfile(target, browser, profileFolder);
+            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileOnce: opened {target} in {browser.DisplayName}/{profileFolder}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileOnce FAILED: {ex.Message}");
+            context.OnBrowserError?.Invoke($"Could not open in {browser.DisplayName}.\n\n{ex.Message}");
+        }
+    }
+
+    /// <summary>Opens the link and remembers this browser+profile as the owning repository's default.</summary>
+    private static void OpenInBrowserProfileForRepo(LinkMenuContext context, string target, BrowserInfo browser, string profileFolder)
+    {
+        try
+        {
+            BrowserLauncher.OpenWithProfile(target, browser, profileFolder);
+            if (string.IsNullOrWhiteSpace(context.RepoPath))
+                throw new InvalidOperationException("This link has no owning repository, so it has no repository default to set.");
+
+            BrowserDefaultStore.SaveForRepo(context.RepoPath, new BrowserDefault(browser.ExePath, profileFolder));
+            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileForRepo: opened {target} in {browser.DisplayName}/{profileFolder}, repo={context.RepoPath}");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileForRepo FAILED: {ex.Message}");
+            context.OnBrowserError?.Invoke($"Could not open in {browser.DisplayName}.\n\n{ex.Message}");
+        }
+    }
+
+    /// <summary>Opens the link and remembers this browser+profile as the application-wide default.</summary>
+    private static void OpenInBrowserProfileAppWide(LinkMenuContext context, string target, BrowserInfo browser, string profileFolder)
     {
         try
         {
             BrowserLauncher.OpenWithProfile(target, browser, profileFolder);
             BrowserDefaultStore.Save(new BrowserDefault(browser.ExePath, profileFolder));
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfile: opened {target} in {browser.DisplayName}/{profileFolder}");
+            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileAppWide: opened {target} in {browser.DisplayName}/{profileFolder}");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfile FAILED: {ex.Message}");
+            FileLog.Write($"[LinkContextMenuBuilder] OpenInBrowserProfileAppWide FAILED: {ex.Message}");
             context.OnBrowserError?.Invoke($"Could not open in {browser.DisplayName}.\n\n{ex.Message}");
         }
     }
