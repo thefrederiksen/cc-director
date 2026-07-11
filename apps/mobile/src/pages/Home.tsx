@@ -2,10 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
+import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
+import { SessionFilterPanel } from "../components/SessionFilterPanel";
+import { useSessionFilter } from "../hooks/useSessionFilter";
 import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "@devthrottle/client-core/push/register";
 
 // Home / roster. A "needs you" group first (when any session wants attention), then an "other
@@ -18,6 +21,10 @@ export function Home() {
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadedOnce = useRef(false);
+  // The roster filter (by machine and/or repo) and whether its full-screen panel is open. The filter
+  // is persisted across navigations and restarts by the hook; the panel is transient UI state.
+  const [filter, setFilter] = useSessionFilter();
+  const [showFilter, setShowFilter] = useState(false);
 
   // Re-render the roster when a voice clip finishes downloading (a card flips from the yellow
   // working state to the play-triangle the moment its audio is phone-ready).
@@ -54,15 +61,29 @@ export function Home() {
     };
   }, [load]);
 
+  // Drop any filter selection whose machine or repo is no longer in the live roster, so a filter pinned
+  // to a machine that went away cannot silently hide everything. pruneFilter returns the same reference
+  // when nothing changed, so this only writes through (and re-renders) on a real change.
+  useEffect(() => {
+    if (!sessions) return;
+    const pruned = pruneFilter(filter, sessions);
+    if (pruned !== filter) setFilter(pruned);
+  }, [sessions, filter, setFilter]);
+
+  // The roster narrowed to the active machine/repo filter. Facet lists in the panel and the total
+  // count in the app bar come from the FULL roster; only the displayed groups below are narrowed.
+  const filtered = sessions ? applyFilter(sessions, filter) : sessions;
   // The "Needs you" group is a waiting line: the session that has been waiting for you the longest
   // sits at the top, and a session that only just started needing you drops in at the bottom
   // (inWaitingOrder). This keeps the list from reshuffling under you as sessions change state, and
   // lets you work it top to bottom, dealing with the longest-neglected session first.
-  const needsYou = sessions ? inWaitingOrder(sessions) : [];
+  const needsYou = filtered ? inWaitingOrder(filtered) : [];
   // The bottom group is "the rest": every session that is NOT waiting on you, still in your manual
   // desktop order. A needs-you session shows only once, at the top - never duplicated down here.
-  const others = sessions ? inDesktopOrder(sessions.filter((s) => classify(s) !== "needsYou")) : [];
+  const others = filtered ? inDesktopOrder(filtered.filter((s) => classify(s) !== "needsYou")) : [];
   const total = sessions ? sessions.length : 0;
+  const shownTotal = filtered ? filtered.length : 0;
+  const active = filterIsActive(filter);
 
   return (
     <div className="screen">
@@ -70,12 +91,48 @@ export function Home() {
         <NavDrawer />
         <h1>DevThrottle</h1>
         <span className="app-bar-sub">Mission Control</span>
+        {/* The funnel opens the full-screen filter panel and doubles as the "filter active" indicator
+            (a dot appears when a machine/repo filter is applied), so it is both the one-tap entry point
+            and the status light - no separate menu item needed. */}
+        <button
+          type="button"
+          className={`filter-btn${active ? " filter-btn-on" : ""}`}
+          aria-label={active ? "Sessions filtered - edit filter" : "Filter sessions"}
+          onClick={() => setShowFilter(true)}
+        >
+          <span className="filter-funnel" aria-hidden="true" />
+        </button>
       </header>
+
+      {/* When a filter is applied, a thin strip under the app bar names it and offers a one-tap Clear,
+          so the filter can be seen and removed without reopening the panel. */}
+      {active && (
+        <div className="filter-strip" role="status">
+          <span className="filter-funnel filter-strip-icon" aria-hidden="true" />
+          <span className="filter-strip-text">{filterSummary(filter)}</span>
+          <span className="filter-strip-count">{shownTotal} of {total}</span>
+          <button type="button" className="filter-strip-clear" onClick={() => setFilter({ machines: [], repos: [] })}>
+            Clear
+          </button>
+        </div>
+      )}
 
       {error !== null && (
         <div className="banner banner-error" role="alert">
           {loadedOnce.current ? "Offline - showing last-known roster" : error}
         </div>
+      )}
+
+      {showFilter && sessions !== null && (
+        <SessionFilterPanel
+          sessions={sessions}
+          filter={filter}
+          onApply={(next) => {
+            setFilter(next);
+            setShowFilter(false);
+          }}
+          onClose={() => setShowFilter(false)}
+        />
       )}
 
       <EnableAlerts />
@@ -98,6 +155,17 @@ export function Home() {
 
       {sessions !== null && total === 0 && (
         <p className="status-line">No sessions running.</p>
+      )}
+
+      {/* Sessions exist but the active filter hides them all: say so plainly and offer a way back,
+          instead of an empty screen that reads like "no sessions running". */}
+      {sessions !== null && total > 0 && shownTotal === 0 && (
+        <p className="status-line">
+          No sessions match this filter.{" "}
+          <button type="button" className="link-btn" onClick={() => setFilter({ machines: [], repos: [] })}>
+            Clear filter
+          </button>
+        </p>
       )}
 
       {needsYou.length > 0 && (
@@ -169,6 +237,7 @@ function SessionRow({ session }: { session: SessionDto }) {
   const color = effectiveColor(session);
   const name = session.name && session.name.trim().length > 0 ? session.name : "(unnamed session)";
   const repo = repoLeaf(session);
+  const machine = machineName(session);
   const attention = classify(session) === "needsYou";
   // Issue #844: the session's short three-digit number (SessionDto.Number, #820) read from the
   // regenerated typed client. Null on sessions/Directors without a number - then no prefix shows.
@@ -192,15 +261,22 @@ function SessionRow({ session }: { session: SessionDto }) {
             {hasNum && <span className="row-num">{num}</span>}
             {name}
           </span>
-          {/* The status / what-is-happening text and the repo share one line BELOW the name,
-              separated by a thin divider, with the repo kept visually secondary. On a needs-you
+          {/* The status / what-is-happening text sits on its own line below the name. On a needs-you
               card the live "waiting <dur>" is pinned to the right of this same line (issue #844). */}
           <span className="row-meta">
             <span className="row-context">{contextLine(session)}</span>
-            {repo && <span className="row-divider" aria-hidden="true" />}
-            {repo && <span className="row-repo">{repo}</span>}
             {attention && session.needsYouSince && <WaitingTime since={String(session.needsYouSince)} />}
           </span>
+          {/* The facts you navigate and filter by - the machine the session runs on and its repo - are
+              a bottom row of small chips, so a fleet spread across several machines is legible at a
+              glance without crowding the status line. The machine chip is accent-tinted; the repo chip
+              is neutral. Either is omitted when the Gateway did not stamp it. */}
+          {(machine || repo) && (
+            <span className="row-chips">
+              {machine && <span className="row-chip row-chip-machine">{machine}</span>}
+              {repo && <span className="row-chip row-chip-repo">{repo}</span>}
+            </span>
+          )}
           {/* A dictation started on this session's screen keeps showing here once the user walks back
               to the roster (#1139): in-flight while it uploads/transcribes, a sticky red pill if it
               failed - so a dropped transcription is visible from the list, never silent. */}
