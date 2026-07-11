@@ -5,8 +5,12 @@ using CcDirector.Gateway.Discovery;
 
 namespace CcDirector.Gateway.Briefing;
 
-/// <summary>One observed turn boundary: the session and the Director that owns it.</summary>
-public sealed record TurnEndSignal(string SessionId, string DirectorEndpoint);
+/// <summary>One observed turn boundary: the session and the Director that owns it. <paramref
+/// name="IsNewTurn"/> is true only for a live Working -> Waiting boundary (a genuinely new turn the
+/// user is now waiting on); it is false when a session is FIRST seen already waiting (a startup
+/// catch-up of a turn that ended earlier). Voice generation uses it to show the yellow "wingman
+/// reading" hold only for a new turn and stay quiet on a catch-up refresh (issue #1322).</summary>
+public sealed record TurnEndSignal(string SessionId, string DirectorEndpoint, bool IsNewTurn = false);
 
 /// <summary>
 /// The brief agent's turn-boundary tracker (issues #185/#186). PUSH-fed since #186:
@@ -102,7 +106,12 @@ public sealed class TurnEndWatcher : IDisposable
         }
 
         if (IsTurnEnd(hadPrev ? prev : null, activityState))
-            _onTurnEnd(new TurnEndSignal(sessionId, directorEndpoint));
+        {
+            // A live boundary (previous state was Working) is a genuinely new turn; a first sighting
+            // of an already-waiting session (no previous state) is a catch-up of an earlier turn.
+            var isNewTurn = hadPrev && prev == "Working";
+            _onTurnEnd(new TurnEndSignal(sessionId, directorEndpoint, isNewTurn));
+        }
     }
 
     // Timer callbacks must never overlap (a slow Director would stack) and never throw.

@@ -299,10 +299,34 @@ public sealed class WingmanVoiceService
     /// Regenerate the voice for a session from its latest turn: read the last reply, translate it,
     /// synthesize audio, store. Called on every turn-end for voice sessions (background, best-effort
     /// - it swallows its own failures so a turn is never blocked on voice).
+    ///
+    /// Issue #1322: a re-narration must never interrupt a client that is already listening to this
+    /// turn's narration. Two guards make it "prepare quietly": it does nothing when the current turn
+    /// already has a fresh, playable narration (regenerating it would only mint a new clip and pull
+    /// the rug on an active listener), and it shows the yellow "wingman reading" window ONLY for a
+    /// brand-new turn (<paramref name="showReadingWindow"/>). A background refresh / catch-up of an
+    /// already-ended turn stays quiet, because a phone may be playing this turn from its own local
+    /// cache and flipping the session yellow would drop it out of the speaking screen mid-play.
     /// </summary>
-    public async Task GenerateAsync(string sid, string endpoint, CancellationToken ct = default)
+    /// <param name="showReadingWindow">True for a genuinely new turn (a live Working -> Waiting
+    /// boundary): show the yellow "wingman reading" hold until the summary lands. False for a
+    /// background refresh, a startup catch-up, or an idle pre-build sweep: generate silently so a
+    /// session a client is already listening to is never flipped yellow.</param>
+    public async Task GenerateAsync(string sid, string endpoint, CancellationToken ct = default, bool showReadingWindow = true)
     {
         Mark(sid);
+
+        // Do not re-narrate a turn that already has a fresh, current narration. A genuinely new turn
+        // clears this cache first (OnSessionWorking on the Working transition), so a cache that is
+        // still present means the current turn is already narrated - regenerating it would only flip
+        // the session yellow again and mint a new generatedAt, restarting the clip a listening client
+        // is already playing (issue #1322). The idle sweep already skips cached sessions this way; the
+        // turn-end path must too. Checked before the backpressure gates - a no-op costs nothing.
+        if (HasVoice(sid))
+        {
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync skip (current turn already narrated): sid={sid}");
+            return;
+        }
 
         // Backpressure #1 (issue #1324) - respect a provider rate-limit cooldown. A 429 means "stop
         // calling", so while the cooldown is in effect we skip the model call entirely. Both callers
@@ -330,7 +354,7 @@ public sealed class WingmanVoiceService
             }
             try
             {
-                await GenerateOnceAsync(sid, endpoint, ct);
+                await GenerateOnceAsync(sid, endpoint, ct, showReadingWindow);
                 _rateGate.OnSuccess();   // reaching the provider clears any cooldown/backoff ramp
             }
             finally { _genGate.Release(); }
@@ -355,7 +379,7 @@ public sealed class WingmanVoiceService
     /// coalescing) stays readable and this stays the pure "make the voice" step. A rate-limit surfaces
     /// as <see cref="WingmanModelRateLimitedException"/> for the wrapper's cooldown to catch.
     /// </summary>
-    private async Task GenerateOnceAsync(string sid, string endpoint, CancellationToken ct)
+    private async Task GenerateOnceAsync(string sid, string endpoint, CancellationToken ct, bool showReadingWindow)
     {
         var turns = await _client.GetTurnsAsync(endpoint, sid, ct);
         var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
@@ -363,8 +387,10 @@ public sealed class WingmanVoiceService
         if (string.IsNullOrWhiteSpace(lastReply)) return;  // nothing to say yet
         // Recent conversation so the wingman can add context to a short/terse latest reply.
         var recentContext = WingmanTranslator.BuildRecentContext(widgets);
-        // The wingman is now running for this session - show it yellow until the summary lands.
-        BeginGenerating(sid);
+        // The wingman is now running for this session - show it yellow until the summary lands, but
+        // only for a brand-new turn. A background refresh / catch-up stays quiet so a session a phone
+        // may be listening to is never flipped yellow mid-play (issue #1322).
+        if (showReadingWindow) BeginGenerating(sid);
         try
         {
             var t = await _translator.TranslateAsync(recentContext, lastReply, ct);
@@ -381,7 +407,7 @@ public sealed class WingmanVoiceService
             // delays the turn. CancellationToken.None so a captured turn is not lost on shutdown.
             _ = _training.CaptureAsync(_client, endpoint, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
         }
-        finally { EndGenerating(sid); }
+        finally { if (showReadingWindow) EndGenerating(sid); }
     }
 
     /// <summary>
