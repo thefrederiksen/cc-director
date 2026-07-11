@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import {
   getFleetDirectors,
-  getSessionsEnvelope,
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
+import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
+import { useNow } from "@devthrottle/client-core/polling/useNow";
 import { DataTable, PageHeader, type DataTableColumn } from "../components";
 import { clockLabel, relativeTime } from "./format";
 import { directorStatus, epochOf, repoNamesOf } from "./directorsFormat";
@@ -18,47 +20,43 @@ import { directorStatus, epochOf, repoNamesOf } from "./directorsFormat";
 // answer "which machine, is it healthy, how busy, what version, when last seen" stay here; every other
 // registration fact (process id, discovery, endpoints, start time) lives on the Director detail page's
 // Registration panel, one click away. Both reads are same-origin through the Gateway - never a Director
-// address.
+// address. The session counts and unreachable flags come from the ONE shared roster store (issue #1239),
+// so this page never runs its own roster fan-out; only the Director registry list is polled here, and it
+// goes quiet on a hidden tab.
 const POLL_MS = 5000;
 
 export function DirectorsView() {
   const navigate = useNavigate();
+  // Session counts and per-machine unreachable flags come from the shared roster store.
+  const roster = useSharedRoster();
+  const sessions: SessionDto[] = roster.sessions ?? [];
+  const machineErrors: MachineError[] = roster.machineErrors;
+
+  // The Director registry list (GET /directors) is only this page's concern, so it stays a local poll -
+  // now visibility-aware via the shared hook (stops when hidden, refetches on return to visible).
   const [directors, setDirectors] = useState<FleetDirector[]>([]);
-  const [sessions, setSessions] = useState<SessionDto[]>([]);
-  const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
-  const [lastError, setLastError] = useState<string | null>(null);
+  const [registryError, setRegistryError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  // Tick the "last seen" cell each second between the 5s polls, so the relative times stay live
-  // without re-fetching.
-  const [, setNow] = useState(Date.now());
-  const nowRef = useRef(0);
-  nowRef.current = Date.now();
+  // Live "last seen" cells re-render off the ONE shared 1-second ticker (issue #1239), not a per-page
+  // timer; read the tick time here and hand it to relativeTime.
+  const now = useNow();
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [ds, env] = await Promise.all([getFleetDirectors(signal), getSessionsEnvelope(signal)]);
+      const ds = await getFleetDirectors(signal);
       setDirectors(ds);
-      setSessions(env.sessions);
-      setMachineErrors(env.machineErrors);
-      setLastError(null);
+      setRegistryError(null);
       setLastRefresh(new Date());
     } catch (err) {
       if (signal?.aborted === true) return;
-      setLastError(gatewayErrorMessage(err));
+      setRegistryError(gatewayErrorMessage(err));
     }
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const poll = window.setInterval(() => void refresh(controller.signal), POLL_MS);
-    const clock = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => {
-      controller.abort();
-      window.clearInterval(poll);
-      window.clearInterval(clock);
-    };
-  }, [refresh]);
+  useVisiblePolling(refresh, POLL_MS);
+
+  // One banner for the page: the registry fetch failure if any, otherwise the shared roster's.
+  const lastError = registryError ?? roster.error;
 
   // Sessions grouped by their owning Director, so a session count and the repositories a Director hosts
   // are one lookup each rather than a full scan per row.
@@ -159,12 +157,12 @@ export function DirectorsView() {
         sortValue: (d) => epochOf(d.lastSeen),
         render: (d) => (
           <span title={d.lastSeen ?? undefined}>
-            {relativeTime(d.lastSeen, { withAgo: true, now: nowRef.current })}
+            {relativeTime(d.lastSeen, { withAgo: true, now })}
           </span>
         ),
       },
     ],
-    [statusOf, sessionCount],
+    [statusOf, sessionCount, now],
   );
 
   return (

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   getWingmanQueue,
   type WingmanQueueSnapshot,
 } from "@devthrottle/client-core/wingman/queueClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { clockLabel, shortId } from "../fleet/format";
 
 // The fleet-level Wingman Pipeline page (issue #976, epic #967) - the React port of the Blazor
@@ -15,6 +16,9 @@ import { clockLabel, shortId } from "../fleet/format";
 //
 // Since issue #549 retired the always-on stamping machine, current Gateways answer an honest idle
 // snapshot with brain.status "Disabled"; the page renders that faithfully (idle, empty queue).
+//
+// The 3s refresh is visibility-aware (issue #1239): a hidden tab stops polling the queue and resumes,
+// refetching at once, when it returns to the foreground.
 const POLL_MS = 3000;
 
 export function WingmanQueueView() {
@@ -34,15 +38,7 @@ export function WingmanQueueView() {
     }
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const timer = window.setInterval(() => void refresh(controller.signal), POLL_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [refresh]);
+  useVisiblePolling(refresh, POLL_MS);
 
   const degradedCount = snapshot?.recent.filter((r) => r.degraded).length ?? 0;
 

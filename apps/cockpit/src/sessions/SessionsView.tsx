@@ -1,18 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Outlet, useMatch, useNavigate } from "react-router-dom";
-import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
-import { getSessionsEnvelope, type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
+import { type SessionDto } from "@devthrottle/client-core/api/client";
+import { type DirectorReachability } from "@devthrottle/client-core/fleet/fleetClient";
+import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { inBucket } from "@devthrottle/client-core/sessions/ordering";
 import { reconcileBadge } from "@devthrottle/client-core/push/register";
 import { SessionRoster, type RosterView } from "./SessionRoster";
 import { NewSessionDialog } from "./NewSessionDialog";
 
 // The Sessions experience (issue #972): the core driving loop - see every session, select one,
-// answer it. This layout route owns the fleet roster poll and the ordering-view state, renders the
-// roster on the left, and routes the selected session's detail (terminal + reply/action bar) into
-// the right region via <Outlet>. The roster stays mounted while you switch sessions, so the poll and
-// the selection persist across navigations.
-const POLL_INTERVAL_MS = 3000;
+// answer it. This layout route renders the roster on the left and routes the selected session's detail
+// (terminal + reply/action bar) into the right region via <Outlet>. It reads the ONE shared fleet
+// roster store (issue #1239) rather than running its own poll, so Sessions, Fleet Map, and Directors
+// all read the identical roster from a single poll loop and a hidden tab goes quiet. The roster stays
+// mounted while you switch sessions, so the selection persists across navigations.
 const VIEW_STORAGE_KEY = "cockpit.rosterView";
 
 // The default ordering is "My order" (the session-rail ordering decision): attention-first is opt-in,
@@ -34,12 +35,12 @@ export interface SessionsOutletContext {
 }
 
 export function SessionsView() {
-  const [sessions, setSessions] = useState<SessionDto[] | null>(null);
-  const [directors, setDirectors] = useState<DirectorReachability[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // The roster (sessions + per-Director reachability + the keep-last error banner) comes from the ONE
+  // shared store. sessions is null until the first load, so the roster can tell "loading" from an empty
+  // fleet, and the error is the friendly transport message (issue #1028) the store maps for us.
+  const { sessions, directors, error, refreshNow } = useSharedRoster();
   const [view, setView] = useState<RosterView>(initialView);
   const [showNew, setShowNew] = useState(false);
-  const loadedOnce = useRef(false);
   const navigate = useNavigate();
 
   // The selected session id comes from the child route (/session/:sessionId). This layout route is an
@@ -48,37 +49,15 @@ export function SessionsView() {
   const match = useMatch("/session/:sessionId");
   const selectedId = match?.params.sessionId;
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const env = await getSessionsEnvelope(signal);
-      setSessions(env.sessions);
-      setDirectors(env.directors);
-      setError(null);
-      loadedOnce.current = true;
-      // Keep the browser-notification state in sync while the Cockpit is open (issue #1257): when the
-      // roster shows nothing waiting, close any standing "needs you" desktop notification and clear the
-      // app badge. The Gateway pushes a single zero on the falling edge too, but this clears it the
-      // instant the user resolves the last session in the foreground, without waiting for that push.
-      void reconcileBadge(inBucket(env.sessions, "needsYou").length);
-    } catch (err) {
-      if (signal?.aborted) return;
-      // Keep the last-known roster on screen; only raise the stale banner (the roster component
-      // decides how to show it based on whether it already has data). Map to the friendly transport
-      // message so a cold start with the backend down shows "Can't reach the Gateway - retrying."
-      // instead of the browser's raw "Failed to fetch" (issue #1028).
-      setError(gatewayErrorMessage(err));
-    }
-  }, []);
-
+  // Keep the browser-notification state in sync while the Cockpit is open (issue #1257): when the
+  // roster shows nothing waiting, close any standing "needs you" desktop notification and clear the
+  // app badge. The Gateway pushes a single zero on the falling edge too, but this clears it the
+  // instant the user resolves the last session in the foreground, without waiting for that push.
+  // The shared roster store (issue #1239) owns the poll now; this effect reacts to each roster update.
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    const timer = window.setInterval(() => void load(controller.signal), POLL_INTERVAL_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [load]);
+    if (sessions) void reconcileBadge(inBucket(sessions, "needsYou").length);
+  }, [sessions]);
+
 
   const onView = useCallback((next: RosterView) => {
     setView(next);
@@ -94,10 +73,10 @@ export function SessionsView() {
   const onCreated = useCallback(
     (sessionId: string) => {
       setShowNew(false);
-      void load();
+      refreshNow();
       navigate(`/session/${encodeURIComponent(sessionId)}`);
     },
-    [load, navigate],
+    [refreshNow, navigate],
   );
 
   const context: SessionsOutletContext = { sessions, directors };

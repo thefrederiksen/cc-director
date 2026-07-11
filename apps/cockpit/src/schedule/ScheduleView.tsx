@@ -18,6 +18,7 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { clockLabel, relativeTime, repoBasename } from "../fleet/format";
 import { Button, ConfirmDialog, DataTable, PageHeader, type DataTableColumn } from "../components";
 import {
@@ -163,15 +164,9 @@ export function ScheduleView() {
     }
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const timer = window.setInterval(() => void refresh(controller.signal), POLL_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [refresh]);
+  // The schedule list refresh is visibility-aware (issue #1239): a hidden tab stops polling and resumes,
+  // refetching at once, when it returns to the foreground.
+  useVisiblePolling(refresh, POLL_MS);
 
   const selectJob = useCallback(async (id: string) => {
     setSelectedId(id);

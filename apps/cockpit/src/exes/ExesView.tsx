@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   buildStartSlot,
@@ -9,15 +9,17 @@ import {
   type ExesList,
 } from "@devthrottle/client-core/exes/exesClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { dotColor } from "@devthrottle/client-core/sessions/ordering";
 import { ConfirmDialog, EmptyState, ErrorBanner, LoadingState, StatusMessage, useFlash } from "../components";
 import { portOf, repoBasename, uptime } from "../fleet/format";
 
 // The Exes management page (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Exes.razor(.css) (#183). It lists the Directors running on THIS computer + their sessions and the
-// 1-4 build slots, refreshes on a 3s timer that never fires over an in-flight build, and offers
-// Kill / Build & start / Delete against the same Gateway endpoints. It reads and drives same-origin
-// through the Gateway front door (client-core) - never a Director address.
+// 1-4 build slots, refreshes on a visibility-aware 3s timer that never fires over an in-flight build
+// (issue #1239: a hidden tab stops polling and resumes on return), and offers Kill / Build & start /
+// Delete against the same Gateway endpoints. It reads and drives same-origin through the Gateway front
+// door (client-core) - never a Director address.
 //
 // This page is one of the first three to adopt the shared user-interface kit (issue #1244): every
 // destructive action now asks through the shared ConfirmDialog instead of a blocking browser
@@ -56,15 +58,7 @@ export function ExesView() {
     }
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const timer = window.setInterval(() => void refresh(controller.signal), REFRESH_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [refresh]);
+  useVisiblePolling(refresh, REFRESH_MS);
 
   const hasRepoRoot = data !== null && data.repoRoot.trim().length > 0;
   const statsText =

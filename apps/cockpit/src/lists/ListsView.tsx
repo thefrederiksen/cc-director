@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   appendWorkListItem,
   createWorkList,
@@ -10,6 +10,7 @@ import {
 } from "@devthrottle/client-core/lists/listsClient";
 import { resolveItemStatus, type WorkItemInfo, type WorkItemStatus } from "@devthrottle/client-core/api/itemStatus";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
 import { clockLabel } from "../fleet/format";
 
 // The Lists page (issue #977, epic #967) - the React port of the Blazor Cockpit Lists.razor (#275).
@@ -155,15 +156,9 @@ export function ListsView() {
     [resolveInfo],
   );
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const timer = window.setInterval(() => void refresh(controller.signal), POLL_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [refresh]);
+  // The lists refresh is visibility-aware (issue #1239): a hidden tab stops polling and resumes,
+  // refetching at once, when it returns to the foreground.
+  useVisiblePolling(refresh, POLL_MS);
 
   const infoFor = (item: WorkListItemRef): WorkItemInfo => info[keyOf(item)] ?? RESOLVING;
 
