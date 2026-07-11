@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { playReadyCue } from "./readyCue";
+import { playReadyCue, playYourTurnCue } from "./readyCue";
 
 // The ready cue is best-effort audio: it must play the right shape when Web Audio is available and
 // must never throw when it is not. These tests inject a fake AudioContext (the tests run in Node,
@@ -125,6 +125,40 @@ describe("playReadyCue", () => {
   it("does nothing and never throws when Web Audio is unavailable", () => {
     g.window = {}; // no AudioContext
     expect(() => playReadyCue()).not.toThrow();
+    expect(FakeAudioContext.last).toBeNull();
+  });
+});
+
+describe("playYourTurnCue", () => {
+  it("is a distinct FALLING square-wave double-pulse (unmistakable vs the rising sine water-drop)", () => {
+    g.window = { AudioContext: FakeAudioContext };
+
+    playYourTurnCue();
+
+    const ctx = FakeAudioContext.last;
+    expect(ctx).not.toBeNull();
+    const osc = ctx!.osc;
+    // Square, not sine - a different timbre from the "my turn" water-drop.
+    expect(osc.type).toBe("square");
+    expect(osc.started).toBe(true);
+    expect(osc.stopped).toBe(true);
+
+    // Pitch steps DOWN across the two pulses (the opposite of the water-drop's rising glide).
+    const steps = osc.frequency.ramps.filter((r) => r.method === "setValueAtTime");
+    expect(steps.length).toBeGreaterThanOrEqual(2);
+    expect(steps[1].value).toBeLessThan(steps[0].value);
+
+    // Two amplitude pulses: the gain envelope rises to the peak, falls to the floor, and rises again.
+    const gains = ctx!.gainNode.gain.ramps;
+    const peak = Math.max(...gains.map((r) => r.value));
+    expect(peak).toBeGreaterThan(0.1);
+    const peakHits = gains.filter((r) => r.value >= peak - 1e-9).length;
+    expect(peakHits).toBeGreaterThanOrEqual(2); // one peak per pulse
+  });
+
+  it("never throws when Web Audio is unavailable", () => {
+    g.window = {}; // no AudioContext
+    expect(() => playYourTurnCue()).not.toThrow();
     expect(FakeAudioContext.last).toBeNull();
   });
 });

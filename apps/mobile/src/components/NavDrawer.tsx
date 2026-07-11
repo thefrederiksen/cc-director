@@ -32,6 +32,9 @@ export function NavDrawer() {
             <Link className="drawer-item" to="/new" onClick={close}>
               New session
             </Link>
+            <Link className="drawer-item" to="/car" onClick={close}>
+              Car Mode
+            </Link>
             <div className="drawer-sep" />
             <Link className="drawer-item" to="/settings" onClick={close}>
               AI settings

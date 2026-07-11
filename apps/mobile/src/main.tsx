@@ -6,6 +6,7 @@ import { NewSession } from "./pages/NewSession";
 import { Terminal } from "./pages/Terminal";
 import { Chat } from "./pages/Chat";
 import { VoiceMode } from "./pages/VoiceMode";
+import { CarMode } from "./pages/CarMode";
 import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
@@ -78,6 +79,9 @@ const router = createBrowserRouter(
           element: <RequireDeviceKey />,
           children: [
             { path: "/", element: <Home /> },
+            // Car Mode (Car Mode mission): its own chrome-less, full-screen route, NOT nested in any
+            // tabbed session view. Hands-free voice control of the whole fleet with a screen wake-lock.
+            { path: "/car", element: <CarMode /> },
             { path: "/settings", element: <AiSettings /> },
             { path: "/about", element: <About /> },
             { path: "/new", element: <NewSession /> },

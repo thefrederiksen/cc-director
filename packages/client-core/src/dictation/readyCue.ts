@@ -48,3 +48,58 @@ export function playReadyCue(): void {
     // Best-effort courtesy cue; never disrupt dictation if audio output is unavailable.
   }
 }
+
+/**
+ * Play the Car Mode "your turn" cue once - the second, deliberately DIFFERENT turn-boundary tone
+ * (Car Mode mission, "The audible handshake"). It fires when the assistant finishes speaking (or is
+ * interrupted) and the microphone is live again for the owner, so - eyes-free, phone in pocket - he
+ * can tell whose turn it is by sound alone. It must be unmistakably distinct from the rising water-drop
+ * "my turn" cue (playReadyCue): this is a LOWER, FALLING two-pulse tone on a square wave, so it differs
+ * in pitch direction, rhythm, and timbre all at once. Same best-effort contract as playReadyCue - it is
+ * synthesized with the Web Audio API (no bundled asset) and never throws; an unavailable audio output is
+ * skipped silently.
+ */
+export function playYourTurnCue(): void {
+  try {
+    const AudioCtor =
+      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtor) return;
+
+    const ctx = new AudioCtor();
+    if (ctx.state === "suspended") void ctx.resume();
+
+    const now = ctx.currentTime;
+
+    // Two short pulses (a "your turn, go ahead" double-blip). The rhythm alone already separates it
+    // from the single water-drop; the pitch and timbre below make it unambiguous.
+    const pulse = 0.09;
+    const gap = 0.06;
+    const total = pulse + gap + pulse;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    // A square wave reads as a flatter, "electronic" blip - clearly not the pure-sine droplet plink.
+    osc.type = "square";
+
+    // Pitch steps DOWN across the two pulses (falling), the opposite of the water-drop's rising glide.
+    osc.frequency.setValueAtTime(660, now);
+    osc.frequency.setValueAtTime(440, now + pulse + gap);
+
+    // Gate the amplitude into two clean pulses with a silent gap between them.
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.4, now + 0.01);
+    gain.gain.setValueAtTime(0.4, now + pulse - 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + pulse);
+    gain.gain.setValueAtTime(0.0001, now + pulse + gap);
+    gain.gain.exponentialRampToValueAtTime(0.4, now + pulse + gap + 0.01);
+    gain.gain.setValueAtTime(0.4, now + total - 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + total);
+
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + total + 0.02);
+    osc.onended = () => void ctx.close();
+  } catch {
+    // Best-effort courtesy cue; never disrupt the turn if audio output is unavailable.
+  }
+}
