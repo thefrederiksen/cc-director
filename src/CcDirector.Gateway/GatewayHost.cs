@@ -264,6 +264,10 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Running.WorkListRunnerManager _runnerManager = new();
     // Issue #218: Gateway-owned clock for when each session entered the red / NEEDS-YOU state.
     private readonly NeedsYouClock _needsYouClock = new();
+    // Car Mode (Car Mode mission): the server-side, per-device conversation context behind the fleet
+    // tool-calling brain (POST /carmode/turn), so multi-turn references ("the latest one") resolve.
+    // In-memory by design; one instance for the whole Gateway.
+    private readonly CarMode.CarModeConversationStore _carModeConversations = new();
     // Gateway-owned set of sessions whose dictated utterance is being transcribed in the background
     // (the phone released the Speak dialog and the audio is uploading/transcribing). Stamps the
     // orange "Transcribing..." roster color so nobody else grabs the session mid-dictation.
@@ -1116,6 +1120,17 @@ public sealed class GatewayHost : IAsyncDisposable
         // plus the direct-to-wingman path. Backed by the same warm Brain the brief agent uses.
         _voiceService ??= new Wingman.WingmanVoiceService(WingmanBrainAsync, _keyVault, _client, training: _trainingStore, instructionsProvider: () => _instructionsStore.ActiveContent);
         GatewayWingmanVoiceEndpoint.Map(_app, Registry, _client, WingmanBrainAsync, _keyVault, _voiceService, instructionsProvider: () => _instructionsStore.ActiveContent);
+
+        // Car Mode brain (Car Mode mission, New build A): the fleet tool-calling loop behind
+        // POST /carmode/turn. The chat transport resolves the fast wingman model + the vault key at CALL
+        // time (a settings change applies on the next turn, no restart); the fleet tools reach THIS
+        // Gateway's own endpoints over loopback (the same aggregated roster every client sees); the
+        // conversation context is kept server-side per device. Inherits the host-wide auth gate (the
+        // caller's per-device key), like every other data route.
+        var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get));
+        var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
+        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations);
+        Api.CarModeEndpoint.Map(_app, carModeBrain);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);
