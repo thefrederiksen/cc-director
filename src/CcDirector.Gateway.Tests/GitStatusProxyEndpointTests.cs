@@ -129,6 +129,30 @@ public sealed class GitStatusProxyEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_git_write_is_denied_and_never_forwarded_even_with_a_device_key()
+    {
+        // Issue #1266 acceptance: the Gateway exposes NO git write route. Even an enrolled device key
+        // (a valid credential) cannot POST a commit through the Gateway - the catch-all denies the "git"
+        // segment before any owner resolution, so the write never reaches the Director.
+        var deviceKey = _gateway.Devices.Register("browser-1266-write", "Chrome on Windows", "browser", "browser").DeviceKey;
+
+        _director = new GitStubDirector("git-session-5");
+        await _director.StartAsync();
+        await RegisterDirectorAsync();
+
+        using var msg = new HttpRequestMessage(HttpMethod.Post, "sessions/git-session-5/git/commit")
+        {
+            Content = JsonContent.Create(new { message = "should never land" }),
+        };
+        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceKey);
+        var resp = await _http.SendAsync(msg);
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Contains("git write actions are not available", await resp.Content.ReadAsStringAsync());
+        Assert.False(_director.GitWriteForwarded, "a git write must never be forwarded to the Director");
+    }
+
+    [Fact]
     public async Task No_credential_is_rejected_even_with_the_host_gate_off()
     {
         var resp = await GetGitAsync("git-session-3", bearer: null);
@@ -156,6 +180,9 @@ public sealed class GitStatusProxyEndpointTests : IAsyncLifetime
     {
         public string DirectorId { get; } = Guid.NewGuid().ToString();
         public string BaseUrl { get; private set; } = "";
+
+        /// <summary>Tripwire: set if the Gateway ever forwards a git WRITE subpath here (it must not).</summary>
+        public volatile bool GitWriteForwarded;
 
         private readonly string _sessionId;
         private WebApplication? _app;
@@ -190,6 +217,13 @@ public sealed class GitStatusProxyEndpointTests : IAsyncLifetime
                 StagedChanges = { new GitChangeEntry { Path = "src/Added.cs", ChangeKind = "A" } },
                 UnstagedChanges = { new GitChangeEntry { Path = "src/Modified.cs", ChangeKind = "M" } },
             }));
+
+            // The Director's real git WRITE routes; the tripwire proves the Gateway never forwards to them.
+            _app.Map("/sessions/{sid}/git/{**rest}", () =>
+            {
+                GitWriteForwarded = true;
+                return Results.Json(new { accepted = true });
+            });
 
             await _app.StartAsync();
         }

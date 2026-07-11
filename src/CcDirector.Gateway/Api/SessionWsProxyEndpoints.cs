@@ -100,6 +100,22 @@ internal static class SessionWsProxyEndpoints
         // catch-all only carries the remainder. Same ownership resolution and 404/503 semantics.
         app.Map("/sessions/{sid}/{**rest}", async (string sid, string? rest, HttpContext ctx) =>
         {
+            // Issue #1266: the Gateway is a READ-ONLY window on a session's source control. The git WRITE
+            // routes (/git/stage, /git/unstage, /git/discard, /git/commit) must never be reachable from the
+            // browser, so this generic forwarder refuses the "git" path segment outright rather than proxy a
+            // write to the Director. The read-only GET /sessions/{sid}/git is a LITERAL route that shadows
+            // this catch-all, so it never reaches here and nothing legitimate is lost; only the write verbs
+            // (and any other method on /git) are denied. Matched on the exact "git" segment so a sibling read
+            // route such as /sessions/{sid}/github-urls is untouched.
+            if (rest is not null
+                && (string.Equals(rest, "git", StringComparison.OrdinalIgnoreCase)
+                    || rest.StartsWith("git/", StringComparison.OrdinalIgnoreCase)))
+            {
+                ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+                await ctx.Response.WriteAsJsonAsync(new { error = "git write actions are not available through the Gateway" });
+                return;
+            }
+
             var directorPath = string.IsNullOrEmpty(rest) ? $"/sessions/{sid}" : $"/sessions/{sid}/{rest}";
             // fastPath: this leg carries high-frequency calls (per-keystroke input POSTs), so try the
             // cached owner before a fleet fan-out. The WS/screenshot legs are long-lived/low-frequency
