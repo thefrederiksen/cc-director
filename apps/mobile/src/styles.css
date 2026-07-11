@@ -2561,3 +2561,77 @@ a.banner-btn {
 .car-history-said {
   color: var(--text-dim);
 }
+
+/* ===== Your Throttle (devthrottle-stats mission) - the in-app port of the Gateway /stats page ===== */
+.thr-note {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 20px 14px;
+}
+.thr-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 12px 14px 0;
+}
+.thr-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 8px;
+  text-align: center;
+}
+.thr-card-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.1;
+}
+.thr-card-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.thr-caption {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 10px 14px 0;
+}
+.thr-list {
+  padding: 16px 14px 0;
+}
+.thr-list-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.thr-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.thr-row-label {
+  color: var(--text);
+}
+.thr-row-value {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.thr-caveats {
+  padding: 16px 14px 24px;
+}
+.thr-caveats ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.thr-caveats li {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
