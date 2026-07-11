@@ -537,10 +537,15 @@ a.banner-btn {
 /* Button colours match the Android tab (TalkPage.xaml). */
 .term-speak { background: #0e7c6b; color: #ffffff; }
 .term-send  { background: #2b6cb0; color: #ffffff; }
+.term-attach { background: #4a5568; color: #ffffff; }
 .term-enter { background: #5fd08a; color: #06210f; }
 .term-esc   { background: #e8b339; color: #221a06; }
 .term-stop  { background: #e5484d; color: #ffffff; }
 .term-arrow { background: #1a2236; color: var(--text); font-weight: 600; }
+
+/* The image picker is triggered by the Attach button; the native <input type=file> is kept out of
+   the layout (issue #1316). */
+.term-file { display: none; }
 
 /* ===== Terminal/Chat/Voice mode view toggle (issue #811) =====
    A segmented control that switches one session id between the Terminal raw mirror (#817), the Chat

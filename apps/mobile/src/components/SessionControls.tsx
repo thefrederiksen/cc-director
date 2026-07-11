@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { sendEscape, sendInterrupt, sendPrompt } from "@devthrottle/client-core/api/client";
+import { gatewayErrorMessage, sendEscape, sendInterrupt, sendPrompt, uploadImage } from "@devthrottle/client-core/api/client";
 import { backgroundTranscribeAndSend, type CapturedUtterance } from "@devthrottle/client-core/dictation/backgroundSend";
 import { DictationDialog } from "@devthrottle/client-core/dictation/DictationDialog";
 import { insertAt, joinText } from "@devthrottle/client-core/dictation/transcript";
@@ -22,6 +22,11 @@ import {
 // POST /interrupt; arrows -> ESC[A/B/C/D via /prompt AppendEnter=false; Speak = dictation, Insert
 // drops the transcript into the box (no submit), Send submits it via the same /prompt path.
 //
+// Attach (issue #1316): pick an image from the phone (the native picker offers the camera AND the
+// photo library), upload it through the shared uploadImage -> POST /sessions/{sid}/upload-image, and
+// insert the Director-side saved path into the box - the same one upload path the Cockpit composer
+// uses (issue #1210). The user then adds a sentence and Sends; the agent reads the image from disk.
+//
 // The host owns status/error display: onFlash shows a transient "Sent" style note, onError raises a
 // banner. showKeyRows lets a host hide the Enter/Esc/Stop + arrow rows while keeping the input row
 // (the Terminal hides the whole panel behind its Keys toggle; the Chat keeps the input row visible).
@@ -39,7 +44,9 @@ export interface SessionControlsProps {
 export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: SessionControlsProps) {
   const [input, setInput] = useState("");
   const [dictating, setDictating] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   // The caret position in the composer, snapshotted when Speak is pressed (the dialog is modal, so the
   // box cannot change while it is open). Dictation is inserted here, exactly like the desktop Insert
   // button, instead of being appended at the end.
@@ -114,6 +121,46 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
       onError(err instanceof Error ? err.message : "Stop failed");
     }
   }, [sessionId, onFlash, onError]);
+
+  // Attach (issue #1316): upload each picked image through the shared uploadImage (the ONE upload
+  // path, same as the Cockpit composer, issue #1210) and insert the Director-side saved path at the
+  // caret inside any typed text - the user then adds a sentence and Sends. The <input type="file"
+  // accept="image/*"> native picker on a phone offers both the camera and the photo library, which
+  // covers a screenshot and a fresh photo out and about. Fails loud (onError), never silently.
+  const onAttach = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      // Reset the input immediately so picking the same image twice fires onChange again.
+      if (fileRef.current) fileRef.current.value = "";
+      if (!sessionId || files.length === 0 || uploading) return;
+      setUploading(true);
+      onFlash(files.length === 1 ? "Uploading image..." : `Uploading ${files.length} images...`);
+      try {
+        const paths: string[] = [];
+        for (const file of files) {
+          const path = await uploadImage(sessionId, file);
+          if (path) paths.push(path);
+        }
+        if (paths.length === 0) throw new Error("Upload returned no image path");
+        // Insert the path(s) at the snapshotted caret, exactly like a dictation Insert, so the box
+        // reads "<before> <paths> <after>". The paths are space-joined with a trailing space.
+        const caret = caretRef.current;
+        const chunk = `${paths.join(" ")} `;
+        setInput((cur) => {
+          const composed = insertAt(cur, caret, chunk);
+          const clamped = caret < 0 || caret > cur.length ? cur.length : caret;
+          pendingCaretRef.current = composed.length - (cur.length - clamped);
+          return composed;
+        });
+        onFlash(paths.length === 1 ? "Image attached" : `${paths.length} images attached`);
+      } catch (err) {
+        onError(gatewayErrorMessage(err));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [sessionId, uploading, onFlash, onError],
+  );
 
   // Speak opens the dictation dialog. Insert drops the transcript into the input at the caret (no
   // submit); Send inserts it at the caret and submits via the same POST /prompt path the Send button
@@ -221,6 +268,26 @@ export function SessionControls({ sessionId, onFlash, onError, showKeyRows }: Se
         >
           Speak
         </button>
+        <button
+          type="button"
+          className="term-btn term-attach"
+          onClick={() => {
+            // Snapshot the caret so the uploaded path lands where the cursor was, not at the end.
+            caretRef.current = inputRef.current?.selectionStart ?? input.length;
+            fileRef.current?.click();
+          }}
+          disabled={uploading || !sessionId}
+          title="Attach an image (camera or photo library)"
+        >
+          {uploading ? "Uploading..." : "Attach"}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="term-file"
+          onChange={(e) => void onAttach(e)}
+        />
       </div>
 
       {showKeyRows && (
