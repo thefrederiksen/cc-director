@@ -9,6 +9,7 @@ import {
   inDesktopOrder,
 } from "@devthrottle/client-core/sessions/ordering";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
+import { SessionMenu } from "./SessionMenu";
 
 // The fleet-wide session roster (issue #972) - the React port of the Blazor SessionRail. It lists
 // EVERY session the Gateway roster aggregation (GET /sessions) returns, across every Director, with
@@ -159,7 +160,7 @@ function RosterRow({ session, selectedId }: { session: SessionDto; selectedId: s
   const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;
   const machine = (session.machineName ?? "").trim();
   return (
-    <li>
+    <li className="roster-li">
       <Link
         className={`roster-row${selected ? " roster-row-selected" : ""}${attention ? " roster-row-attention" : ""}`}
         style={{ borderLeftColor: dotColor(color) }}
@@ -184,6 +185,9 @@ function RosterRow({ session, selectedId }: { session: SessionDto; selectedId: s
           )}
         </span>
       </Link>
+      {/* The same session menu as the session page (issue #1214), pinned to the card's top-right. It
+          sits OUTSIDE the Link so opening the menu never navigates into the session. */}
+      <SessionMenu session={session} variant="rail" />
     </li>
   );
 }

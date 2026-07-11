@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { useOutletContext, useParams } from "react-router-dom";
+import { useNavigate, useOutletContext, useParams } from "react-router-dom";
 import { getQueue, type QueueItem } from "@devthrottle/client-core/api/client";
 import { TerminalPane } from "../panes/TerminalPane";
 import type { SessionsOutletContext } from "./SessionsView";
 import { SessionActionBar } from "./SessionActionBar";
 import { SessionComposer } from "./SessionComposer";
+import { SessionMenu } from "./SessionMenu";
 import { ChatTab } from "./ChatTab";
 import { VoiceTab } from "./VoiceTab";
 import { QueuePanel } from "./QueuePanel";
@@ -24,6 +25,7 @@ type MainTab = "terminal" | "chat" | "voice";
 
 export function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   const { sessions } = useOutletContext<SessionsOutletContext>();
   const selected = sessions?.find((s) => s.sessionId === sessionId);
 
@@ -83,6 +85,9 @@ export function SessionDetail() {
           >
             Voice
           </button>
+          {/* The session menu (issue #1214): Rename, Hold/Resume, Handover info, Close - top right of
+              the session header, driving the shared Gateway calls. */}
+          {selected && <SessionMenu session={selected} variant="page" onClosed={() => navigate("/")} />}
         </div>
 
         <div className="session-content">

@@ -599,7 +599,8 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 9px;
+  /* Extra right padding reserves the top-right corner for the session menu (issue #1214). */
+  padding: 8px 24px 8px 9px;
   border-radius: 8px;
   border-left: 3px solid transparent;
   text-decoration: none;
@@ -1790,4 +1791,241 @@ body {
   color: #ffffff;
   background: #0e7c6b;
   cursor: pointer;
+}
+
+/* ===== Session menu (issue #1214): Rename / Hold-Resume / Handover info / Close ===== */
+.session-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* On the session header, push the menu to the far right of the tab row. */
+.session-menu.page {
+  margin-left: auto;
+}
+
+/* On a rail card, pin it to the top-right corner (the card reserves room via roster-row padding). */
+.roster-li {
+  position: relative;
+}
+
+/* When a rail card's menu is open, lift the WHOLE card above its siblings so the dropdown is not
+   painted under the next card (a later positioned sibling would otherwise cover it). */
+.roster-li:has(.session-menu.open) {
+  z-index: 50;
+}
+
+.session-menu.rail {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 2;
+}
+
+/* An open menu lifts above every other rail card so its dropdown is never covered by a lower card. */
+.session-menu.open {
+  z-index: 50;
+}
+
+.session-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.session-menu.rail .session-menu-btn {
+  min-width: 20px;
+  height: 18px;
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+.roster-li:hover .session-menu.rail .session-menu-btn,
+.session-menu-btn:hover,
+.session-menu-btn[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+  opacity: 1;
+}
+
+.session-menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 168px;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 18px 44px -22px rgba(0, 0, 0, 0.9);
+}
+
+.session-menu-item {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.session-menu-item:hover {
+  background: var(--surface-2);
+}
+
+.session-menu-item.danger {
+  color: var(--attention);
+}
+
+.session-menu-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  max-width: 240px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--attention);
+  background: var(--surface);
+  border: 1px solid var(--attention);
+  border-radius: 6px;
+}
+
+/* The modal dialogs (rename, close-confirm, handover info). */
+.session-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.session-dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.9);
+}
+
+.session-dialog-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.session-dialog-text {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.session-dialog-text strong {
+  color: var(--text);
+}
+
+.session-dialog-input {
+  width: 100%;
+  padding: 9px 11px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.session-dialog-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.session-dialog-error {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--attention);
+}
+
+.session-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.session-dialog-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.session-dialog-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.session-dialog-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.session-dialog-btn.danger {
+  background: var(--attention);
+  border-color: var(--attention);
+  color: #fff;
+}
+
+.session-dialog-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.session-handover {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+
+.session-handover dt {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.session-handover dd {
+  margin: 0;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.session-handover dd.mono {
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
 }
