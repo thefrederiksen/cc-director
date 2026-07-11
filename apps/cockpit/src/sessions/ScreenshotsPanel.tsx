@@ -6,6 +6,12 @@ import {
   gatewayErrorMessage,
   type ScreenshotInfo,
 } from "@devthrottle/client-core/api/client";
+import {
+  NO_BROKEN_IMAGES,
+  isImageBroken,
+  markImageBroken,
+  type BrokenImageSet,
+} from "@devthrottle/client-core/sessions/screenshotGallery";
 import { ConfirmDialog } from "../components";
 
 // The screenshots gallery panel (issue #972) - the React port of the Blazor Cockpit screenshots tab.
@@ -38,6 +44,10 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
   // Deleting a screenshot removes the file from the Director's disk, so it asks through the shared
   // ConfirmDialog (issue #1244); this holds the file name awaiting confirmation.
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Thumbnails whose bytes failed to load (the file vanished on disk). These render the "image
+  // unavailable" placeholder instead of the browser's broken-image glyph (issue #1254). A fresh
+  // list load clears this back to NO_BROKEN_IMAGES so a re-appeared file gets a fresh chance.
+  const [brokenImages, setBrokenImages] = useState<BrokenImageSet>(NO_BROKEN_IMAGES);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -49,6 +59,7 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
         setShots(result.items);
         setTotal(result.total > 0 ? result.total : result.items.length);
         setShown(INITIAL_SHOWN);
+        setBrokenImages(NO_BROKEN_IMAGES);
         setLoadedOnce(true);
       } catch (err) {
         if (signal?.aborted) return;
@@ -65,21 +76,23 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
     const controller = new AbortController();
     setShots([]);
     setTotal(0);
+    setBrokenImages(NO_BROKEN_IMAGES);
     setLoadedOnce(false);
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
 
   // The actual delete, run once the ConfirmDialog is confirmed. A failure is left to throw so the
-  // dialog surfaces it (fail loudly); on success the row drops from the gallery.
+  // dialog surfaces it (fail loudly) and the list is never touched. On success the gallery is
+  // re-synchronized from the Director's disk with a re-fetch rather than an optimistic local edit
+  // (issue #1254), so the count and thumbnails stay honest even if other files changed meanwhile.
   const performDelete = useCallback(
     async (fileName: string) => {
       if (!sessionId) return;
       await deleteScreenshot(sessionId, fileName);
-      setShots((cur) => cur.filter((s) => s.fileName !== fileName));
-      setTotal((t) => Math.max(0, t - 1));
+      await load();
     },
-    [sessionId],
+    [sessionId, load],
   );
 
   return (
@@ -111,11 +124,22 @@ export function ScreenshotsPanel({ sessionId, onInsert }: ScreenshotsPanelProps)
           <div className="gallery">
             {shots.slice(0, shown).map((s) => (
               <div className="shot-card" key={s.fileName}>
-                {sessionId && (
-                  <a href={screenshotFileUrl(sessionId, s.fileName)} target="_blank" rel="noreferrer" title="View full size">
-                    <img className="shot-thumb" src={screenshotFileUrl(sessionId, s.fileName)} alt={s.fileName} loading="lazy" />
-                  </a>
-                )}
+                {sessionId &&
+                  (isImageBroken(brokenImages, s.fileName) ? (
+                    <div className="shot-thumb-missing" role="img" aria-label={`${s.fileName} (image unavailable)`}>
+                      Image unavailable
+                    </div>
+                  ) : (
+                    <a href={screenshotFileUrl(sessionId, s.fileName)} target="_blank" rel="noreferrer" title="View full size">
+                      <img
+                        className="shot-thumb"
+                        src={screenshotFileUrl(sessionId, s.fileName)}
+                        alt={s.fileName}
+                        loading="lazy"
+                        onError={() => setBrokenImages((prev) => markImageBroken(prev, s.fileName))}
+                      />
+                    </a>
+                  ))}
                 <div className="shot-row">
                   <span className="shot-time">{s.timeLabel}</span>
                   <button type="button" className="linkbtn" title="Insert path into the composer" onClick={() => onInsert(s.path)}>
