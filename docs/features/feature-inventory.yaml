@@ -197,17 +197,6 @@ features:
     screenshot: wingman-tab.png
     summary: Clean structured briefing of what Claude wants you to do next - verbatim validation, synthesized actions, tap-to-answer buttons, a voice preview, and the final reply rendered as markdown.
 
-  - id: voice-tab
-    title: Voice Tab
-    category: voice-wingman
-    status: implemented
-    screen: main-window
-    source:
-      - src/CcDirector.Avalonia/Controls/VoiceView.axaml
-      - src/CcDirector.Avalonia/Controls/VoiceView.axaml.cs
-    screenshot: voice-tab.png
-    summary: Eyes-free panel with Ask Agent / Ask Wingman buttons and transcript-plus-reply display.
-
   - id: fifo-window
     title: FIFO Full-Screen Mode
     category: voice-wingman
