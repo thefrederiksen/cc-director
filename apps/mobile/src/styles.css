@@ -2320,6 +2320,49 @@ a.banner-btn {
 .car-bar-spacer {
   width: 34px;
 }
+/* The build-id badge in the header corner: tiny, monospace, dim - a glance confirms the live page. */
+.car-build {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The always-visible diagnostic readout: which page/Gateway is live, and whether the phone is hearing
+   the owner. Compact and monospace so it stays out of the way but is legible at a glance. */
+.car-debug {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.car-debug-row {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.car-debug-label {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.car-debug-value {
+  color: var(--text);
+  text-align: right;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
 .car-error {
   margin: 12px 16px 0;
   padding: 12px 14px;

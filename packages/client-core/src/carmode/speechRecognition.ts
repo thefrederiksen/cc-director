@@ -75,10 +75,24 @@ export class ControlWordListener {
   private active = false;
   private onTranscript: (text: string) => void = () => {};
   private onError: (message: string) => void = () => {};
+  private onLifecycle: (state: string) => void = () => {};
 
   /** True while the listener is meant to be running (survives the browser's internal segment restarts). */
   get isActive(): boolean {
     return this.active;
+  }
+
+  /** Log a lifecycle transition AND surface it to the caller so Car Mode can show the recognizer's live
+   *  state on screen (Car Mode diagnostic: the owner must be able to SEE whether the phone is hearing
+   *  him). The console line stays for chrome://inspect (mission decision 9); the on-screen readout is the
+   *  eyes-free-when-parked equivalent. */
+  private note(state: string): void {
+    console.log(`[CarMode.recognizer] ${state}`);
+    try {
+      this.onLifecycle(state);
+    } catch {
+      // The lifecycle sink is a diagnostic courtesy; never let it throw back into the recognizer loop.
+    }
   }
 
   /**
@@ -86,7 +100,11 @@ export class ControlWordListener {
    * caller surfaces the reason (no silent fallback). Safe to call once; call stop() before start()
    * to restart cleanly.
    */
-  start(onTranscript: (text: string) => void, onError: (message: string) => void): void {
+  start(
+    onTranscript: (text: string) => void,
+    onError: (message: string) => void,
+    onLifecycle?: (state: string) => void,
+  ): void {
     const Ctor = resolveConstructor();
     if (Ctor === null) {
       throw new Error("This browser does not support speech recognition. Car Mode needs Chrome/Chromium.");
@@ -94,9 +112,10 @@ export class ControlWordListener {
     if (this.active) return;
     this.onTranscript = onTranscript;
     this.onError = onError;
+    this.onLifecycle = onLifecycle ?? (() => {});
     this.active = true;
     this.spawn(Ctor);
-    console.log("[CarMode.recognizer] started");
+    this.note("started");
   }
 
   /**
@@ -114,7 +133,7 @@ export class ControlWordListener {
     } catch {
       // already ending; onend will still restart while active
     }
-    console.log("[CarMode.recognizer] reset");
+    this.note("reset");
   }
 
   /** Stop spotting and release the recognizer. Idempotent. */
@@ -132,7 +151,7 @@ export class ControlWordListener {
         // already stopping; nothing to release beyond clearing handlers above
       }
     }
-    console.log("[CarMode.recognizer] stopped");
+    this.note("stopped");
   }
 
   private spawn(Ctor: SpeechRecognitionCtor): void {
@@ -158,16 +177,16 @@ export class ControlWordListener {
       // as he likes - decision, no silence timer), so they are NOT surfaced as failures; onend restarts
       // the segment. A "not-allowed" (microphone permission) is fatal and must be spoken.
       if (e.error === "no-speech" || e.error === "aborted") {
-        console.log(`[CarMode.recognizer] transient: ${e.error}`);
+        this.note(`transient: ${e.error}`);
         return;
       }
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        console.log(`[CarMode.recognizer] FATAL: ${e.error}`);
+        this.note(`FATAL: ${e.error}`);
         this.active = false;
         this.onError("Microphone access is blocked. Allow the microphone for Car Mode and try again.");
         return;
       }
-      console.log(`[CarMode.recognizer] error (will retry): ${e.error}`);
+      this.note(`error (will retry): ${e.error}`);
     };
 
     r.onend = () => {
@@ -176,15 +195,17 @@ export class ControlWordListener {
       if (!this.active) return;
       const Again = resolveConstructor();
       if (Again === null) return;
+      this.note("segment restart");
       this.spawn(Again);
     };
 
     this.recognition = r;
     try {
       r.start();
+      this.note("listening");
     } catch (err) {
       // start() throws if called too soon after the previous segment; the onend restart loop recovers.
-      console.log(`[CarMode.recognizer] start deferred: ${err instanceof Error ? err.message : String(err)}`);
+      this.note(`start deferred: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

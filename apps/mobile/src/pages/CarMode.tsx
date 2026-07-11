@@ -1,8 +1,16 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCarMode, type CarModeReply } from "@devthrottle/client-core/carmode/useCarMode";
 import { carModeTurn } from "@devthrottle/client-core/carmode/carModeApi";
+import { getGatewayHealth, gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
+
+// The client build id, inlined by Vite's `define` at build time (git short sha + build timestamp; see
+// vite.config.ts). Shown on the screen so the owner can confirm at a glance he is on the latest page,
+// not an old cached bundle. Vite substitutes this constant in both dev and production builds, so it is
+// always a real string in the app; the typeof guard only prevents a ReferenceError if this module is
+// ever imported outside a Vite build (for example a unit test), and is not a build-time fallback.
+const CLIENT_BUILD_ID = typeof __CLIENT_BUILD_ID__ === "string" ? __CLIENT_BUILD_ID__ : "no-build-id";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -24,6 +32,20 @@ export function CarMode() {
   // Car Mode is eyes-free with the phone in a pocket: keep the screen awake the whole time (mission
   // Phase 1: a standalone page under /m with a screen wake-lock).
   useScreenWakeLock();
+
+  // The live Gateway version, read once from /healthz, so the on-screen indicator pairs the CLIENT
+  // build id (which page bundle) with the SERVER version (which Gateway build) - together they tell the
+  // owner exactly what he is talking to. A read failure shows the specific reason, never a silent blank.
+  const [gatewayVersion, setGatewayVersion] = useState("loading...");
+  useEffect(() => {
+    const controller = new AbortController();
+    getGatewayHealth(controller.signal)
+      .then((h) => setGatewayVersion(h.version))
+      .catch((err) => {
+        if (!controller.signal.aborted) setGatewayVersion(gatewayErrorMessage(err));
+      });
+    return () => controller.abort();
+  }, []);
 
   // The injected brain responder. Phase 2+: the real fleet brain. The stand-in (below) just echoes the
   // heard command so Phase 1's barge-in proof needs no server and no credits.
@@ -47,6 +69,9 @@ export function CarMode() {
     error,
     unsupported,
     history,
+    liveTranscript,
+    recognizerState,
+    recognizerError,
     start,
     stop,
   } = useCarMode({ respond });
@@ -60,7 +85,11 @@ export function CarMode() {
           Exit
         </Link>
         <span className="car-title">Car Mode</span>
-        <span className="car-bar-spacer" aria-hidden="true" />
+        {/* The client build id in the corner: the owner glances here to confirm he is on the latest page,
+            not an old cached bundle. The full build id + Gateway version are in the debug readout below. */}
+        <span className="car-build" title={`Client build ${CLIENT_BUILD_ID}`}>
+          {shortBuild(CLIENT_BUILD_ID)}
+        </span>
       </header>
 
       {error !== null && (
@@ -117,6 +146,18 @@ export function CarMode() {
         )}
       </main>
 
+      {/* Diagnostic readout (always visible). This is the eyes-on channel for confirming, at a glance,
+          which page/Gateway is live and whether the phone is actually hearing the owner - the exact
+          things a cached-bundle or dead-microphone failure would hide. Kept compact and monospace. */}
+      <section className="car-debug" aria-label="Car Mode diagnostics">
+        <DebugRow label="Client build" value={CLIENT_BUILD_ID} />
+        <DebugRow label="Gateway" value={gatewayVersion} />
+        <DebugRow label="Speech recognition" value={unsupported ? "NOT supported" : "supported"} />
+        <DebugRow label="Recognizer" value={started ? recognizerState : "not started"} />
+        <DebugRow label="Last recognizer error" value={recognizerError ?? "none"} />
+        <DebugRow label="Hearing now" value={liveTranscript.length > 0 ? liveTranscript : "(silence)"} />
+      </section>
+
       <footer className="car-foot">
         {!started ? (
           <button type="button" className="car-start" onClick={() => void start()} disabled={unsupported}>
@@ -149,6 +190,23 @@ export function CarMode() {
       )}
     </div>
   );
+}
+
+// One label/value line in the diagnostic readout.
+function DebugRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="car-debug-row">
+      <span className="car-debug-label">{label}</span>
+      <span className="car-debug-value">{value}</span>
+    </div>
+  );
+}
+
+// The short form of the build id for the header corner: just the git short sha (the first token), so
+// the badge stays tiny. The full "sha timestamp" is in the title tooltip and the debug readout.
+function shortBuild(buildId: string): string {
+  const firstSpace = buildId.indexOf(" ");
+  return firstSpace < 0 ? buildId : buildId.substring(0, firstSpace);
 }
 
 // The plain-English status line for each phase, the words that pair with the color orb and the cues.

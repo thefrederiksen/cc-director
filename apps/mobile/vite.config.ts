@@ -1,6 +1,22 @@
+import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+
+// The client build id, injected at build time so a page can show at a glance which bundle it is
+// running (Car Mode diagnostic: the owner must be able to tell a fresh page from an old cached one).
+// The build timestamp alone proves a fresh build (it changes every time); the git short commit sha
+// pins the bundle to an exact commit so it can be matched against the Gateway version from /healthz.
+//
+// No fallback (CLAUDE.md): the mobile app is only ever built from a git checkout - the redeploy
+// script builds from an isolated git worktree, and the release builds from a git clone - so reading
+// the commit sha MUST succeed. A missing git is a broken build environment, surfaced loudly here
+// rather than shipping an "unknown" marker that would defeat the whole point of the indicator.
+function resolveClientBuildId(): string {
+  const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+  const builtAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  return `${sha} ${builtAt}`;
+}
 
 // The app is served by the Gateway under /m, so every asset URL must be /m-rooted.
 // The PWA service worker caches the app shell (Issue 1, AC7) so the roster opens offline
@@ -8,6 +24,11 @@ import { VitePWA } from "vite-plugin-pwa";
 // MSBuild target copies into wwwroot/m/.
 export default defineConfig({
   base: "/m/",
+  // Compile-time constant read by the app (see apps/mobile/src/vite-env.d.ts for its type). Stringified
+  // so it is inlined as a literal, exactly like Vite's own import.meta.env values.
+  define: {
+    __CLIENT_BUILD_ID__: JSON.stringify(resolveClientBuildId()),
+  },
   plugins: [
     react(),
     VitePWA({
@@ -39,6 +60,16 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Update promptly on reload (Car Mode diagnostic): a new service worker takes control of the
+        // page as soon as it installs (skipWaiting) and claims the already-open clients (clientsClaim),
+        // and the stale precache from the previous build is deleted (cleanupOutdatedCaches). Combined
+        // with registerType "autoUpdate" above, this means a single refresh actually replaces the cached
+        // bundle instead of serving the old one until every tab is closed. These are the autoUpdate
+        // defaults; they are set explicitly here so the update behavior is visible and cannot silently
+        // regress.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         // Web Push (app-icon "needs you" dot): import the hand-written push handler into the
         // generated service worker. It only adds push/notificationclick/message listeners and does
         // not touch Workbox's precache/offline behavior. The file ships verbatim from public/ and is

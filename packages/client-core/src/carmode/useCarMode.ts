@@ -62,6 +62,16 @@ export interface CarModeView {
   unsupported: boolean;
   /** Recent exchanges, newest last, for the on-screen scrollback. */
   history: CarModeExchange[];
+  /** The raw live transcript the control-word recognizer is emitting right now, before any phrase
+   *  parsing (Car Mode diagnostic: lets the owner SEE whether the phone is hearing him and what it
+   *  thinks he said). Empty until the recognizer emits its first result. */
+  liveTranscript: string;
+  /** The recognizer's last lifecycle state ("started", "listening", "reset", "segment restart",
+   *  "transient: no-speech", ...) surfaced for the on-screen debug readout. */
+  recognizerState: string;
+  /** The recognizer's last error line, or null when it has not errored. Distinct from `error` (which is
+   *  the loud, user-facing failure); this is the raw diagnostic detail. */
+  recognizerError: string | null;
   start: () => Promise<void>;
   stop: () => void;
 }
@@ -83,6 +93,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const [pendingConfirmation, setPendingConfirmation] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<CarModeExchange[]>([]);
+  // Diagnostic surface (Car Mode diagnostic): the raw live transcript, the recognizer's last lifecycle
+  // state, and its last error - shown on screen so the owner can SEE whether the phone is hearing him.
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [recognizerState, setRecognizerState] = useState("not started");
+  const [recognizerError, setRecognizerError] = useState<string | null>(null);
   const unsupported = !isControlRecognitionSupported();
 
   // Long-lived collaborators, held in refs so the effect wiring never re-creates them mid-session.
@@ -226,6 +241,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // the turn is already committed).
   const onControlTranscript = useCallback(
     (text: string) => {
+      // Diagnostic: mirror every raw recognizer emission to the on-screen readout, in EVERY phase, so
+      // the owner can watch what the phone is hearing even while it thinks or speaks. This is display
+      // only; the control decision below still branches on the live phase.
+      setLiveTranscript(text);
       const current = phaseRef.current;
       if (current === "thinking" || current === "idle") return;
       const action = decideControlAction(current, text);
@@ -264,7 +283,16 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     const listener = new ControlWordListener();
     listenerRef.current = listener;
     try {
-      listener.start(onControlTranscript, (message) => announceError(message));
+      listener.start(
+        onControlTranscript,
+        (message) => announceError(message),
+        (state) => {
+          // Surface the recognizer's lifecycle for the on-screen debug readout. A line beginning with
+          // "FATAL" or "error" is also mirrored to recognizerError as the last raw diagnostic detail.
+          setRecognizerState(state);
+          if (state.startsWith("FATAL") || state.startsWith("error")) setRecognizerError(state);
+        },
+      );
     } catch (err) {
       announceError(err instanceof Error ? err.message : "Could not start the recognizer.");
       setStarted(false);
@@ -332,6 +360,9 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     error,
     unsupported,
     history,
+    liveTranscript,
+    recognizerState,
+    recognizerError,
     start,
     stop,
   };
