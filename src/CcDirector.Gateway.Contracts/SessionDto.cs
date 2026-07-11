@@ -171,7 +171,7 @@ public sealed class SessionDto
     /// <summary>
     /// Gateway-owned human-readable state label after the same fold (issue #1177, Phase 2):
     /// e.g. "Needs you" | "Working" | "Ready" | "Wingman reading" | "Preparing voice" |
-    /// "Transcribing" | "Explaining" | "Sub-agent" | "Background" | "On hold" | "Exited".
+    /// "Transcribing" | "Explaining" | "Sub-agent" | "Background" | "Snoozed" | "Exited".
     /// Computed by <see cref="SessionOrdering.StateLabel"/> from the same raw facts + overlays as
     /// <see cref="EffectiveColor"/>, so every client renders ONE consistent label instead of each
     /// hand-rolling its own. Stamped by the Gateway aggregator; Director-local responses may leave it null.

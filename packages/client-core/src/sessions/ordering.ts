@@ -123,7 +123,7 @@ export function dotColor(color: string): string {
 // One short context line per row: the on-hold note, else the latest status reason, else the
 // activity state. Never empty so every row reads cleanly.
 export function contextLine(s: SessionDto): string {
-  if (s.onHold) return "On hold";
+  if (s.onHold) return "Snoozed";
   // Issue #1181, Task 4: the honest phase - "Uploading from phone" while the phone is still sending the
   // audio up, "Transcribing" while the server turns it into text. Falls back to the old blanket flag.
   if (s.dictationStatus) return s.dictationStatus;

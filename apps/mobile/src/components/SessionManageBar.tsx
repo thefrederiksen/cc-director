@@ -111,7 +111,7 @@ export function SessionManageBar({ sessionId }: SessionManageBarProps) {
           onClick={toggleHold}
           disabled={busy || onHold === null}
         >
-          {held ? "Resume" : "Hold"}
+          {held ? "Unsnooze" : "Snooze"}
         </button>
         <button
           type="button"
@@ -122,7 +122,7 @@ export function SessionManageBar({ sessionId }: SessionManageBarProps) {
           Remove
         </button>
       </div>
-      {held && <span className="manage-held-pill">On hold</span>}
+      {held && <span className="manage-held-pill">Snoozed</span>}
 
       {confirming && (
         <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label="Remove session">

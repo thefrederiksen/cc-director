@@ -184,7 +184,7 @@ public static class SessionOrdering
     /// </summary>
     public static string StateLabel(SessionDto s)
     {
-        if (s.OnHold) return "On hold";
+        if (s.OnHold) return "Snoozed";
         // Issue #1181, Task 4: the honest phase label wins - "Uploading from phone" while the phone is still
         // sending the audio, "Transcribing" while the server turns it into text. Falls back to the blanket
         // "Transcribing" for the legacy flag / the desktop's own dictation.

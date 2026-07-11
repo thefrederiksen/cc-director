@@ -2168,10 +2168,10 @@ public partial class MainWindow : Window
 
         // On-hold toggle: parks the session out of the FIFO rotation and paints its
         // list strip dark blue so you can see at a glance which sessions you've set aside.
-        var hold = new MenuItem { Header = vm.IsOnHold ? "Take Off Hold" : "Hold" };
+        var hold = new MenuItem { Header = vm.IsOnHold ? "Unsnooze" : "Snooze" };
         ToolTip.SetTip(hold, vm.IsOnHold
-            ? "Return this session to the \"Your Turn\" rotation."
-            : "Park this session out of the \"Your Turn\" rotation and mark it dark blue.");
+            ? "Unsnooze this session and return it to the \"Your Turn\" rotation."
+            : "Snooze this session so it drops out of the \"Your Turn\" rotation and is marked dark blue.");
         hold.Click += (_, _) => ToggleSessionHold(vm);
 
         // Wingman toggle is an alpha-only feature (issue #559): the Voice/Wingman tabs are

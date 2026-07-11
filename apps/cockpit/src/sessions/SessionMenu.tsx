@@ -10,7 +10,7 @@ import {
 } from "@devthrottle/client-core/api/client";
 import { renameSession } from "@devthrottle/client-core/fleet/fleetClient";
 
-// The session menu (issue #1214): a three-dot control with Rename, Put on hold / Resume, Handover info,
+// The session menu (issue #1214): a three-dot control with Rename, Snooze / Unsnooze, Handover info,
 // and Close session. It is the SAME component on the session page and on every rail card. Every action
 // goes Cockpit -> Gateway with relative URLs through the shared client (renameSession, holdSession,
 // killSession, getHandover) - the browser never learns a Director address. Close asks for confirmation
@@ -204,7 +204,7 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
               Rename
             </button>
             <button type="button" role="menuitem" className="session-menu-item" onClick={() => void doHold()}>
-              {session.onHold ? "Resume" : "Put on hold"}
+              {session.onHold ? "Unsnooze" : "Snooze"}
             </button>
             <button type="button" role="menuitem" className="session-menu-item" onClick={openHandover}>
               Handover info
