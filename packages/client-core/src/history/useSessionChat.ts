@@ -1,0 +1,98 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getSessionHistory } from "../api/client";
+import type { HistoryBubbleFilter } from "./bubbleMapper";
+import type { SessionHistoryDto } from "./types";
+import {
+  buildChatSignature,
+  loadChatFilter,
+  persistChatFilter,
+  renderChatHistory,
+  type RenderedBubble,
+} from "./chatView";
+
+// The shared Session Chat hook (hoisted for issue #1213). It drives the live conversation-history view
+// for BOTH the mobile Chat page and the Cockpit Chat tab: it polls GET /sessions/{sid}/history every
+// 2.5s, applies the desktop "Show:" filter (persisted per browser), and only commits a new bubble list
+// when the change-signature actually changes, so a steady poll never re-renders or yanks a scrolled-up
+// reader. Every call carries the Bearer token (via the shared client), so Chat works with global
+// Gateway auth on or off. The view owns only the DOM: the scroll element and its sticky-bottom follow.
+
+const CHAT_POLL_MS = 2500;
+
+export interface SessionChat {
+  bubbles: RenderedBubble[];
+  emptyText: string;
+  loadFailed: boolean;
+  filter: HistoryBubbleFilter;
+  /** Flip a "Show:" category; the choice is persisted and the cached history re-rendered immediately. */
+  setFilter: (next: HistoryBubbleFilter) => void;
+}
+
+export function useSessionChat(sessionId: string | undefined): SessionChat {
+  const [filter, setFilterState] = useState<HistoryBubbleFilter>(loadChatFilter);
+  const [bubbles, setBubbles] = useState<RenderedBubble[]>([]);
+  const [emptyText, setEmptyText] = useState("Waiting for the conversation to start...");
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  const signatureRef = useRef("");
+  const lastHistoryRef = useRef<SessionHistoryDto | null>(null);
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+
+  // Map the given history through the current filter and commit it - unless the signature is unchanged
+  // (the guard that keeps a steady poll from yanking the scroll). `force` bypasses the guard for a
+  // filter change (the filter is part of the signature).
+  const renderHistory = useCallback((history: SessionHistoryDto | null, force: boolean) => {
+    const f = filterRef.current;
+    const rendered = renderChatHistory(history, f);
+    setEmptyText(rendered.emptyText);
+
+    const mappedForSignature = rendered.bubbles.map((r) => r.bubble);
+    const signature = buildChatSignature(mappedForSignature, history?.historyState, f);
+    if (!force && signature === signatureRef.current) return; // unchanged - do not re-render
+    signatureRef.current = signature;
+    setBubbles(rendered.bubbles);
+  }, []);
+
+  // Live poll every 2.5s. AbortController cancels the in-flight fetch on unmount/session switch.
+  useEffect(() => {
+    if (!sessionId) return;
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const history = await getSessionHistory(sessionId, controller.signal);
+        if (cancelled) return;
+        setLoadFailed(false);
+        lastHistoryRef.current = history;
+        renderHistory(history, false);
+      } catch {
+        if (cancelled || controller.signal.aborted) return;
+        setLoadFailed(true);
+      }
+    };
+
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), CHAT_POLL_MS);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [sessionId, renderHistory]);
+
+  // A "Show:" checkbox flipped: remember the choice and re-render the cached history immediately
+  // through the new filter (force, since the filter is part of the signature).
+  const setFilter = useCallback(
+    (next: HistoryBubbleFilter) => {
+      setFilterState(next);
+      filterRef.current = next;
+      persistChatFilter(next);
+      renderHistory(lastHistoryRef.current, true);
+    },
+    [renderHistory],
+  );
+
+  return { bubbles, emptyText, loadFailed, filter, setFilter };
+}

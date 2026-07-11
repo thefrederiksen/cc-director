@@ -1,0 +1,104 @@
+import { anyHidden, mapHistory, type HistoryBubble, type HistoryBubbleFilter } from "./bubbleMapper";
+import { cleanForReading } from "./historyText";
+import { markdownToHtml } from "./historyMarkdown";
+import { extractLinks, type HistoryLink } from "./historyLinks";
+import type { SessionHistoryDto } from "./types";
+
+// The shared Session Chat model (hoisted from apps/mobile/src/pages/Chat.tsx for issue #1213 so both
+// the mobile Chat page and the Cockpit Chat tab render thin views over the same code). It carries the
+// pure logic that turns GET /sessions/{sid}/history into rendered conversation bubbles: the desktop
+// History-tab "Show:" filter persistence, the cheap change-signature (so a steady poll never yanks a
+// scrolled-up reader), the per-bubble clean + Markdown + link extraction, and the empty-state text.
+// Transcript integrity (CodingStyle.md s16): the server already returned the user's words corrected by
+// the single dictionary-correction engine; this only displays them - it never rewrites the words.
+
+export const CHAT_FILTER_STORAGE_KEY = "ccHistoryFilter";
+
+export interface RenderedBubble {
+  bubble: HistoryBubble;
+  html: string;
+  links: HistoryLink[];
+}
+
+export interface RenderedHistory {
+  bubbles: RenderedBubble[];
+  emptyText: string;
+}
+
+// Read the persisted "Show:" filter; defaults to all hidden (the desktop HistoryFilterConfig default -
+// just the conversation). Format matches the desktop's comma-joined booleans.
+export function loadChatFilter(): HistoryBubbleFilter {
+  const fallback: HistoryBubbleFilter = { showToolCalls: false, showToolResults: false, showThinking: false };
+  try {
+    const raw = window.localStorage.getItem(CHAT_FILTER_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parts = raw.split(",");
+    if (parts.length === 3) {
+      return {
+        showToolCalls: parts[0] === "true",
+        showToolResults: parts[1] === "true",
+        showThinking: parts[2] === "true",
+      };
+    }
+  } catch {
+    /* localStorage unavailable - fall back to the hidden-machinery default */
+  }
+  return fallback;
+}
+
+export function persistChatFilter(filter: HistoryBubbleFilter): void {
+  try {
+    window.localStorage.setItem(
+      CHAT_FILTER_STORAGE_KEY,
+      `${filter.showToolCalls},${filter.showToolResults},${filter.showThinking}`,
+    );
+  } catch {
+    /* localStorage unavailable - the choice simply will not persist this session */
+  }
+}
+
+// Cheap change signature: count + total chars + last bubble tail + history state + filter. Mirrors the
+// desktop HistoryPane.BuildSignature so an unchanged poll never disturbs a scrolled-up reader.
+export function buildChatSignature(
+  bubbles: HistoryBubble[],
+  state: string | null | undefined,
+  filter: HistoryBubbleFilter,
+): string {
+  const f = `${filter.showToolCalls}${filter.showToolResults}${filter.showThinking}`;
+  if (bubbles.length === 0) return `0|${state ?? ""}|${f}`;
+  let total = 0;
+  for (const b of bubbles) total += b.body.length;
+  const last = bubbles[bubbles.length - 1].body;
+  const tail = last.length <= 64 ? last : last.slice(-64);
+  return `${bubbles.length}|${total}|${tail}|${state ?? ""}|${f}`;
+}
+
+// A link label, truncated in the middle for long URLs/paths (mirrors HistoryPane.LinkLabel).
+export function chatLinkLabel(text: string): string {
+  return text.length <= 60 ? text : text.slice(0, 28) + "..." + text.slice(-28);
+}
+
+// Map the given history through the filter, clean + render each bubble, and derive the empty-state
+// text. Pure: no state, no scroll - the caller decides whether the signature changed before committing.
+export function renderChatHistory(history: SessionHistoryDto | null, filter: HistoryBubbleFilter): RenderedHistory {
+  const mapped = mapHistory(history, filter);
+
+  let emptyText = "Waiting for the conversation to start...";
+  if (history && history.isSupported === false) emptyText = "History is not available for this agent yet.";
+  else if (mapped.length === 0 && anyHidden(filter) && history && history.messages.length > 0)
+    emptyText = "No messages match the current filters.";
+
+  const bubbles: RenderedBubble[] = [];
+  for (const b of mapped) {
+    // Raw terminal scrollback (Gemini) is shown verbatim; everything else is cleaned of transcript
+    // machinery (command wrapper tags, system-reminder blocks, ANSI codes) before Markdown.
+    if (b.isRawText) {
+      bubbles.push({ bubble: b, html: "", links: [] });
+      continue;
+    }
+    const clean = cleanForReading(b.body);
+    if (clean.length === 0) continue; // the whole message was machinery - drop the empty bubble
+    bubbles.push({ bubble: { ...b, body: clean }, html: markdownToHtml(clean), links: extractLinks(clean) });
+  }
+  return { bubbles, emptyText };
+}

@@ -58,7 +58,9 @@ public sealed class TerminalPromptInjectionChokepointTests
         var client = File.ReadAllText(Path.Combine(root, "packages", "client-core", "src", "api", "client.ts"));
         var cockpit = File.ReadAllText(Path.Combine(root, "apps", "cockpit", "src", "sessions", "SessionComposer.tsx"));
         var mobileControls = File.ReadAllText(Path.Combine(root, "apps", "mobile", "src", "components", "SessionControls.tsx"));
-        var mobileVoice = File.ReadAllText(Path.Combine(root, "apps", "mobile", "src", "pages", "VoiceMode.tsx"));
+        // Mobile Voice mode's submit was hoisted into the shared client-core hook (issue #1213), so the
+        // chokepoint assertion follows it there; it still funnels through sendPrompt, never raw terminal input.
+        var mobileVoice = File.ReadAllText(Path.Combine(root, "packages", "client-core", "src", "voice", "useVoiceMode.ts"));
         var interactive = File.ReadAllText(Path.Combine(root, "packages", "client-core", "src", "terminal", "interactive.ts"));
         var gateway = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Gateway", "Api", "GatewayEndpoints.cs"));
         var directorClient = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Gateway", "Discovery", "DirectorEndpointClient.cs"));

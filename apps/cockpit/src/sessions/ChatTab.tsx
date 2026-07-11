@@ -1,49 +1,24 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { listSessions } from "@devthrottle/client-core/api/client";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useSessionChat } from "@devthrottle/client-core/history/useSessionChat";
 import { chatLinkLabel } from "@devthrottle/client-core/history/chatView";
-import { DictationStatusStrip } from "../components/DictationStatusStrip";
-import { SessionControls } from "../components/SessionControls";
-import { SessionManageBar } from "../components/SessionManageBar";
-import { ViewTabs } from "../components/ViewTabs";
 
-// Session Chat mode (issue #811): the SAME screen and SAME controls as the Terminal (#817), with ONLY
-// the display different - instead of the raw PTY mirror it shows the cleaned conversation HISTORY, a
-// faithful 1:1 translation of the desktop History tab. The data logic (poll, "Show:" filter, change
-// signature, per-bubble clean + Markdown + link extraction) lives in the shared client-core hook
-// useSessionChat (hoisted in issue #1213 so the Cockpit Chat tab renders the same code); this page is a
-// thin view that owns only the DOM: the sticky-bottom scroll, copy buttons, and the shared controls.
+// The Cockpit Chat tab (issue #1213): a thin view over the SAME shared client-core hook the mobile Chat
+// page uses (useSessionChat), so the two apps render the cleaned conversation history from one source.
+// The composer at the bottom of SessionDetail drives replies for every tab, so this tab is the read
+// view only: the desktop-History "Show:" filter and the live bubble list. The terminal socket is never
+// touched (the TerminalPane stays mounted-hidden in SessionDetail while this tab is active).
 
-const STATUS_BASE = "Conversation history (live)";
 const BOTTOM_THRESHOLD_PX = 40;
 
-export function Chat() {
-  const { sessionId } = useParams<{ sessionId: string }>();
-
-  const [name, setName] = useState<string | null>(null);
+export function ChatTab({ sessionId }: { sessionId: string | undefined }) {
   const { bubbles, emptyText, loadFailed, filter, setFilter } = useSessionChat(sessionId);
-  const [status, setStatus] = useState(STATUS_BASE);
-  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
 
-  // One-shot fetch of the session's display name for the header.
-  useEffect(() => {
-    const controller = new AbortController();
-    listSessions(controller.signal)
-      .then((all) => {
-        const match = all.find((s) => s.sessionId === sessionId) ?? null;
-        if (match?.name && match.name.trim()) setName(match.name.trim());
-      })
-      .catch(() => { /* header label is best-effort */ });
-    return () => controller.abort();
-  }, [sessionId]);
-
-  // Sticky-bottom: after the bubble list changes, stick to the bottom ONLY if the reader is already
-  // at the bottom. A scrolled-up reader is never moved.
+  // Sticky-bottom: stick to the bottom after the list changes ONLY if the reader is already there.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
@@ -53,11 +28,6 @@ export function Chat() {
     const el = scrollRef.current;
     if (!el) return;
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD_PX;
-  }, []);
-
-  const flash = useCallback((message: string) => {
-    setStatus(message);
-    window.setTimeout(() => setStatus((cur) => (cur === message ? STATUS_BASE : cur)), 1500);
   }, []);
 
   const copyLink = useCallback(async (text: string) => {
@@ -71,23 +41,8 @@ export function Chat() {
   }, []);
 
   return (
-    <div className="terminal-screen">
-      <header className="app-bar">
-        <h1 className="term-title">{name ?? "Session"}</h1>
-      </header>
-
-      <ViewTabs sessionId={sessionId} active="chat" />
-
-      {/* Hold/Resume + Remove management buttons on the session screen (issue #812). */}
-      <SessionManageBar sessionId={sessionId} />
-
-      <div className="term-statusbar">
-        <span className="term-status" role="status">{status}</span>
-        <span className="chat-live">live</span>
-      </div>
-
-      {/* Compact "Show:" filter, mirroring the desktop History tab: reveal tool calls, tool results,
-          or thinking. All three hidden by default; the choice is remembered per browser. */}
+    <div className="chat-tab">
+      {/* Compact "Show:" filter, mirroring the desktop History tab and the mobile Chat page. */}
       <div className="chat-filter">
         <span className="chat-filter-label">Show:</span>
         <label>
@@ -114,12 +69,10 @@ export function Chat() {
           />{" "}
           Thinking
         </label>
+        <span className="chat-live">live</span>
       </div>
 
-      {error !== null && <div className="banner banner-error" role="alert">{error}</div>}
-
-      {/* Live dictation status so a Speak Send from Chat is never silent (#1139). */}
-      <DictationStatusStrip sessionId={sessionId} />
+      {error !== null && <div className="composer-error" role="alert">{error}</div>}
 
       <div className="chat-stage">
         {loadFailed && bubbles.length === 0 ? (
@@ -153,7 +106,7 @@ export function Chat() {
                         ) : (
                           <span className="chat-link-text" title={link.text}>{chatLinkLabel(link.text)}</span>
                         )}
-                        <button type="button" className="chat-link-copy" onClick={() => copyLink(link.text)}>
+                        <button type="button" className="chat-link-copy" onClick={() => void copyLink(link.text)}>
                           {link.isUrl ? "Copy URL" : "Copy path"}
                         </button>
                         {copied === link.text && <span className="chat-link-copied">copied</span>}
@@ -166,10 +119,6 @@ export function Chat() {
           </div>
         )}
       </div>
-
-      {/* The SAME controls as Terminal (shared SessionControls). The input row + Speak + Send is
-          always visible for replying; a Keys toggle reveals the Enter/Esc/Stop + arrow rows. */}
-      <SessionControls sessionId={sessionId} onFlash={flash} onError={setError} showKeyRows />
     </div>
   );
 }

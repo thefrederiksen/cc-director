@@ -5,6 +5,8 @@ import { TerminalPane } from "../panes/TerminalPane";
 import type { SessionsOutletContext } from "./SessionsView";
 import { SessionActionBar } from "./SessionActionBar";
 import { SessionComposer } from "./SessionComposer";
+import { ChatTab } from "./ChatTab";
+import { VoiceTab } from "./VoiceTab";
 import { QueuePanel } from "./QueuePanel";
 import { ScreenshotsPanel } from "./ScreenshotsPanel";
 
@@ -15,9 +17,10 @@ import { ScreenshotsPanel } from "./ScreenshotsPanel";
 // the composer text, and the queue are all per-session).
 
 type DockTab = "queue" | "shots";
-// The session-main view shows only the live terminal (issue #971). The former Brief, History, and
-// Awareness views (issues #973/#974) were removed for the release; the session page is Terminal-only.
-type MainTab = "terminal";
+// The session-main view (issue #1213): Terminal, Chat, Voice. Terminal is the live PTY mirror (issue
+// #971); Chat is the cleaned conversation history and Voice is the hands-free narration - both ported
+// from the mobile pages through the shared client-core code, not rewritten.
+type MainTab = "terminal" | "chat" | "voice";
 
 export function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -62,15 +65,42 @@ export function SessionDetail() {
           >
             Terminal
           </button>
-          {/* Brief / History / Awareness tabs are hidden for now - being replaced by Chat and Voice. */}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mainTab === "chat"}
+            className={`session-tab ${mainTab === "chat" ? "on" : ""}`}
+            onClick={() => setMainTab("chat")}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mainTab === "voice"}
+            className={`session-tab ${mainTab === "voice" ? "on" : ""}`}
+            onClick={() => setMainTab("voice")}
+          >
+            Voice
+          </button>
         </div>
 
         <div className="session-content">
-          {/* The terminal is always mounted (hidden, not unmounted, on the Brief tab) so its live
-              WebSocket is never torn down while the Brief catches up over its own fetch. */}
+          {/* The terminal is ALWAYS mounted (hidden, not unmounted, when Chat or Voice is active) so its
+              live WebSocket is never torn down on a tab switch (issue #1213). */}
           <div className={`session-pane ${mainTab === "terminal" ? "" : "session-pane-off"}`}>
             <TerminalPane />
           </div>
+          {mainTab === "chat" && (
+            <div className="session-pane">
+              <ChatTab sessionId={sessionId} />
+            </div>
+          )}
+          {mainTab === "voice" && (
+            <div className="session-pane">
+              <VoiceTab sessionId={sessionId} />
+            </div>
+          )}
         </div>
 
         <SessionActionBar sessionId={sessionId} capabilities={selected?.driverCapabilities} />

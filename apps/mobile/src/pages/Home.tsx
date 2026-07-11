@@ -4,7 +4,7 @@ import { listSessions, type SessionDto } from "@devthrottle/client-core/api/clie
 import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
-import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "../voice/clips";
+import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
 import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "../push/register";
 
