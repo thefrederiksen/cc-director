@@ -74,6 +74,9 @@ Key endpoints:
 | POST | `/voice/command` | Voice command input |
 | GET | `/repos` | Registered repositories |
 | POST | `/sessions` | Create a new session |
+| POST | `/sessions/{sid}/request-deletion` | Flag a session for graceful async removal (the safe self-close) |
+| DELETE | `/sessions/{sid}/request-deletion` | Cancel a pending deletion during the grace window |
+| DELETE | `/sessions/{sid}` | Kill and remove a session immediately (do NOT use on yourself) |
 
 ## Sample API calls
 
@@ -123,6 +126,42 @@ curl -X PATCH http://localhost:7879/sessions/<sid> \
   -H "Content-Type: application/json" -d "{\"Name\":\"myrepo - fix auth bug #123\"}"
 ```
 
+## Closing a session (including closing yourself)
+
+A session can close itself. When an agent has finished its work and nothing is waiting on the
+user, it should reap its own session rather than leaving an idle entry in Mission Control.
+
+**Use the graceful self-delete: `POST /sessions/{sid}/request-deletion`.** This flags the session
+for asynchronous removal. The owning Director's deletion reaper removes it on its next sweep
+(about every 30 seconds) once a short grace has passed and the session is no longer working. It
+does NOT kill the caller's process mid-request, so the agent can flag itself and then finish its
+turn normally. The request body is optional: `{ "reason": "..." }`.
+
+Every session already knows how to reach its own Director without any Gateway address or token:
+the environment variable `CC_DIRECTOR_API` holds the local Director's base URL (for example
+`http://127.0.0.1:7879`), and `CC_SESSION_ID` holds the session's own id. So to close yourself:
+
+```
+# Close THIS session gracefully (run at the very end of your turn)
+curl -X POST "$CC_DIRECTOR_API/sessions/$CC_SESSION_ID/request-deletion" \
+  -H "Content-Type: application/json" \
+  -d "{\"reason\": \"work complete, nothing waiting on the user\"}"
+```
+
+The same call works through the Gateway (`POST {gateway}/sessions/{sid}/request-deletion`), which
+forwards it to the owning Director. That matters when the session you want to reap lives on another
+machine; to close your OWN session, going straight to `CC_DIRECTOR_API` is simplest and needs no
+Gateway token.
+
+Two related endpoints:
+- `DELETE /sessions/{sid}/request-deletion` cancels a pending deletion during the grace window (you
+  changed your mind before the reaper ran).
+- `DELETE /sessions/{sid}` kills and removes a session immediately. Do NOT call this on your own
+  session - it tears down your process mid-request. It is for force-removing OTHER sessions.
+
+Do not self-close while something still needs the user (a pending decision, an approval, an
+unanswered question). Reap only when the queue is truly empty.
+
 ## When this skill is the right thing to consult
 
 - "What cc-* tools do I have for X?" - look in the tool list above; run the tool with `--help` for syntax.
@@ -136,6 +175,7 @@ curl -X PATCH http://localhost:7879/sessions/<sid> \
 
 ---
 
-**Skill Version:** 4.1 (end-user, DevThrottle rebrand)
-**Last Updated:** 2026-06-28
+**Skill Version:** 4.2 (end-user, DevThrottle rebrand)
+**Last Updated:** 2026-07-11
+**Changes in 4.2:** Added "Closing a session (including closing yourself)" - a session can reap itself with `POST /sessions/{sid}/request-deletion` against its own Director (`CC_DIRECTOR_API` + `CC_SESSION_ID`), the graceful self-delete that does not kill the process mid-turn. Documented the Gateway forward of the same call, the cancel-during-grace endpoint, and that immediate `DELETE /sessions/{sid}` must not be used on yourself. Added these three endpoints to the Control API table.
 **Changes in 4.1:** Added "Creating a session correctly (always name it)" - a created session MUST carry a meaningful Name, the normal permission preset + model in Args (--dangerously-skip-permissions --model opus[1m]), a PrePrompt for its first task, and a verify/PATCH of the name afterwards (the Control API applies no defaults; some running builds do not honor create-time Name).
