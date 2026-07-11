@@ -267,7 +267,8 @@ public class VoiceModeController : IDisposable
 
             State = VoiceState.WaitingForClaude;
             // Voice-mode injection is framework-mediated; exempt from the dictation lock (issue #1181, Task 3b).
-            await _activeSession.SendTextAsync(transcription, SendSource.Internal);
+            // DevThrottle Stats: desktop voice-mode is spoken input from the desktop - count it as one voice turn.
+            await _activeSession.SendTextAsync(transcription, SendSource.Internal, InputOrigin.DesktopVoice);
 
             // Wait for Claude to finish (ActivityState becomes WaitingForInput)
             await WaitForClaudeResponseAsync(ct);

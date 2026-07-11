@@ -119,10 +119,25 @@ internal static class SessionCommandExecutor
 
         var bufferCursor = session.Buffer?.TotalBytesWritten ?? 0;
 
+        // DevThrottle Stats: build the origin for the Director's choke-point tally. Modality is voice for a
+        // dictation delivery (SendSource.Delivery, set from the X-Dictation-Delivery marker) and typed
+        // otherwise. Surface comes from the Gateway-authoritative request.Surface. Count when this is an
+        // operator prompt - marked by a NON-NULL request.Surface, which the operator front doors (the
+        // Gateway prompt handler and the dictation delivery) always set, stamping "unknown" when the device
+        // key did not resolve. A phone/cockpit key maps to that surface; "unknown" maps to the Unknown
+        // bucket the dashboard shows (decision 9: excluded volume is surfaced, never silently dropped).
+        // A framework send (SendSource.Internal) and machine-to-machine traffic (fanout/broadcast, which
+        // never sets Surface, so it is null) are correctly NOT counted.
+        InputOrigin? origin = (source != SendSource.Internal && request.Surface is not null)
+            ? new InputOrigin(
+                source == SendSource.Delivery ? InputModality.Voice : InputModality.Typed,
+                InputOrigin.RemoteSurfaceFromDeviceType(request.Surface))
+            : null;
+
         if (request.AppendEnter)
-            await session.SendTextAsync(request.Text, source);
+            await session.SendTextAsync(request.Text, source, origin);
         else
-            session.SendInput(Encoding.UTF8.GetBytes(request.Text));
+            session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin);
 
         var response = new PromptResponse
         {

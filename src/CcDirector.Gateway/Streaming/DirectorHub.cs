@@ -1,6 +1,7 @@
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Stats;
 using Microsoft.AspNetCore.SignalR;
 
 namespace CcDirector.Gateway.Streaming;
@@ -28,11 +29,13 @@ public sealed class DirectorHub : Hub
 
     private readonly PushedSessionStore _store;
     private readonly DirectorRegistry _registry;
+    private readonly GatewayInputStatsAggregator _inputStats;
 
-    public DirectorHub(PushedSessionStore store, DirectorRegistry registry)
+    public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats)
     {
         _store = store;
         _registry = registry;
+        _inputStats = inputStats;
     }
 
     /// <summary>Bind this connection to a Director. Must be the first message; aborts the connection on a bad id.</summary>
@@ -64,7 +67,10 @@ public sealed class DirectorHub : Hub
     public void PushSnapshot(long sequence, SessionDto[] sessions)
     {
         var directorId = RequireBoundDirector();
-        _store.ApplySnapshot(directorId, Context.ConnectionId, sequence, sessions ?? Array.Empty<SessionDto>());
+        var set = sessions ?? Array.Empty<SessionDto>();
+        _store.ApplySnapshot(directorId, Context.ConnectionId, sequence, set);
+        // DevThrottle Stats: fold each session's input tally into the always-available aggregate.
+        _inputStats.ObserveSnapshot(set);
     }
 
     /// <summary>A single-session delta: upserts one session for the bound Director.</summary>
@@ -77,6 +83,8 @@ public sealed class DirectorHub : Hub
             return;
         }
         _store.ApplyDelta(directorId, Context.ConnectionId, sequence, session);
+        // DevThrottle Stats: fold this session's tally into the always-available aggregate.
+        _inputStats.Observe(session);
     }
 
     /// <summary>A remove/tombstone: drops one session from the bound Director's set.</summary>
@@ -89,6 +97,8 @@ public sealed class DirectorHub : Hub
             return;
         }
         _store.ApplyRemove(directorId, Context.ConnectionId, sequence, sessionId);
+        // DevThrottle Stats: its contribution stays in the totals; drop only its high-water entry.
+        _inputStats.Forget(sessionId);
     }
 
     public override Task OnConnectedAsync()

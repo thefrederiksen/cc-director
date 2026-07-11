@@ -1528,12 +1528,24 @@ public sealed class Session : IDisposable
         return result;
     }
 
-    /// <summary>Send raw bytes to the backend.</summary>
-    public void SendInput(byte[] data)
+    /// <summary>
+    /// The DevThrottle Stats per-session input tally (submitted turns + character volume by modality and
+    /// surface). Recorded at THIS choke point so desktop-local input is counted too; read by the Director
+    /// mapper for flow-up and by the Director stats store for persistence. Always present; empty until the
+    /// first counted input.
+    /// </summary>
+    public SessionInputStats InputStats { get; } = new();
+
+    /// <summary>Send raw bytes to the backend. <paramref name="origin"/> tags this input for the
+    /// DevThrottle Stats tally as typed CHARACTER volume for its surface (never a turn - a bare keystroke
+    /// is the user composing, not a submitted turn). Null origin = framework-internal, not counted.</summary>
+    public void SendInput(byte[] data, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         FileLog.Write($"[Session] SendInput: session={Id}, bytes={data.Length}, firstByte=0x{(data.Length > 0 ? data[0].ToString("X2") : "00")}");
         _backend.Write(data);
+        if (origin is InputOrigin o)
+            InputStats.RecordCharacters(o, CountPrintable(data));
         // Only promote to Working when the write contains an actual submission
         // (CR or LF). A bare keystroke is the user composing at the prompt --
         // Claude Code hasn't received a turn yet. Treating every byte as Working
@@ -1554,6 +1566,21 @@ public sealed class Session : IDisposable
         for (int i = 0; i < data.Length; i++)
             if (data[i] == 0x0D || data[i] == 0x0A) return true;
         return false;
+    }
+
+    /// <summary>
+    /// Count the printable bytes in a raw keystroke buffer for the DevThrottle Stats character tally:
+    /// every byte at or above 0x20 except DEL (0x7F). Control bytes (Enter, arrows' leading ESC, Backspace)
+    /// do not count. This is an honest approximation of typed character volume - an escape sequence's
+    /// trailing letters (e.g. "[A" from an arrow key) count as a couple of characters of navigation
+    /// activity, which the secondary character metric tolerates; the headline metric is TURNS, not chars.
+    /// </summary>
+    private static int CountPrintable(byte[] data)
+    {
+        int n = 0;
+        for (int i = 0; i < data.Length; i++)
+            if (data[i] >= 0x20 && data[i] != 0x7F) n++;
+        return n;
     }
 
     /// <summary>
@@ -1616,7 +1643,7 @@ public sealed class Session : IDisposable
     /// single-operator tool, and a collision between the operator's own phone dictation and their
     /// own typed send is theirs to make, not the Director's to police.
     /// </summary>
-    public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput)
+    public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
 
@@ -1641,15 +1668,21 @@ public sealed class Session : IDisposable
         // setter no-ops + skips OnHoldChanged when already false.
         OnHold = false;
         SetActivityState(ActivityState.Working);
+        // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
+        // volume) for the tagged origin. Null origin = framework-internal (handover, queue drain) - not
+        // counted, even though it still submits a turn to the agent.
+        if (origin is InputOrigin o)
+            InputStats.RecordTurn(o, text?.Length ?? 0);
     }
 
     /// <summary>Send text followed by Enter (sync wrapper). See
-    /// <see cref="SendTextAsync(string, SendSource)"/> for what <paramref name="source"/> means.</summary>
-    public void SendText(string text, SendSource source = SendSource.UserInput)
+    /// <see cref="SendTextAsync(string, SendSource, InputOrigin?)"/> for what <paramref name="source"/> and
+    /// <paramref name="origin"/> mean.</summary>
+    public void SendText(string text, SendSource source = SendSource.UserInput, InputOrigin? origin = null)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
         // Fire and forget for sync API
-        _ = SendTextAsync(text, source);
+        _ = SendTextAsync(text, source, origin);
     }
 
     /// <summary>Send just an Enter keystroke to the backend.</summary>

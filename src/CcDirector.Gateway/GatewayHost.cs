@@ -52,6 +52,14 @@ public sealed class GatewayHost : IAsyncDisposable
     public Streaming.PushedSessionStore PushedSessions { get; }
 
     /// <summary>
+    /// DevThrottle Stats: the always-available aggregate of every session's input tally (turns + character
+    /// volume by modality and surface). Fed by the director-stream hub from the pushed
+    /// <see cref="Contracts.SessionDto.InputStats"/> and read by the private Gateway dashboard at
+    /// <c>/stats</c> with no cloud round-trip.
+    /// </summary>
+    public Stats.GatewayInputStatsAggregator InputStats { get; }
+
+    /// <summary>
     /// Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. The <c>/sessions</c>
     /// aggregation uses it so a single failed Director poll no longer drops that Director's sessions -
     /// they are served stale (Wobbly) through a short grace window and only dropped (Offline) once the
@@ -349,7 +357,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
@@ -359,6 +367,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
         Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
+        InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
         RosterCache = new Discovery.FleetRosterCache();
         // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
         // roster too so the cache does not grow without bound; a re-registering Director starts clean.
@@ -897,6 +906,9 @@ public sealed class GatewayHost : IAsyncDisposable
         // /sessions aggregation (wired explicitly below) share the one PushedSessionStore instance.
         builder.Services.AddSignalR();
         builder.Services.AddSingleton(PushedSessions);
+        // DevThrottle Stats: the hub (constructed per-invocation by SignalR) folds each pushed session's
+        // tally into this one aggregator instance, which the /stats dashboard reads.
+        builder.Services.AddSingleton(InputStats);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
@@ -1369,6 +1381,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // before the mobile shell so the explicit POST route wins over the shell's GET catch-all.
         var mobileEnrollmentClient = new Core.Account.DeviceRegistryClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
         Api.MobileEnrollmentEndpoint.Map(_app, new Account.MobileDeviceEnrollmentService(Account, mobileEnrollmentClient, Devices));
+
+        // DevThrottle Stats: the always-available private dashboard (/stats) and its JSON (/stats/data).
+        // A self-contained embedded page, so it works even on a plain dev build with no React wwwroot.
+        // Mapped before the mobile/cockpit catch-alls so the explicit routes win.
+        Stats.StatsPageEndpoint.Map(_app, InputStats);
 
         Mobile.MobileApp.Map(_app, Token);
 

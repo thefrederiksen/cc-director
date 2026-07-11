@@ -214,7 +214,12 @@ internal static class TerminalStreamEndpoint
                 var bytes = message.ToArray();
                 message.SetLength(0);
 
-                sessionManager.GetSession(guid)?.SendInput(bytes);
+                // DevThrottle Stats: raw keystrokes over the live terminal stream are real operator typing,
+                // but the Director cannot resolve which surface the stream came from (the device registry is
+                // Gateway-side). Count them as typed CHARACTER volume with an Unknown surface - surfaced on
+                // the dashboard, never silently dropped (decision 9) - and never as turns (raw keystrokes are
+                // composing, not a submitted turn).
+                sessionManager.GetSession(guid)?.SendInput(bytes, InputOrigin.Typed(InputSurface.Unknown));
             }
         }
         catch

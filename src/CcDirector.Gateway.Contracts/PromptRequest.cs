@@ -19,6 +19,17 @@ public sealed class PromptRequest
 
     /// <summary>Wait timeout in milliseconds. Default 120000 (2 min). Only used when WaitForIdle=true.</summary>
     public int TimeoutMs { get; set; } = 120_000;
+
+    /// <summary>
+    /// DevThrottle Stats surface tag: which surface this remote prompt came from - "phone", "cockpit",
+    /// or null when unknown. GATEWAY-AUTHORITATIVE: the Gateway resolves it from the verified per-device
+    /// key and OVERWRITES any client-supplied value before forwarding, so it cannot be forged from a
+    /// client. Null on a direct Director call (there is no device key to resolve). Rides both prompt
+    /// delivery paths (the HTTP body and the SignalR command payload), so the Director's choke-point tally
+    /// gets the surface without a separate header. The modality (typed vs voice) is NOT carried here - it
+    /// comes from the existing X-Dictation-Delivery marker (a voice delivery) via <c>SendSource</c>.
+    /// </summary>
+    public string? Surface { get; set; }
 }
 
 /// <summary>

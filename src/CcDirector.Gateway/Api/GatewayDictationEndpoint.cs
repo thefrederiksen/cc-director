@@ -139,6 +139,13 @@ internal static class GatewayDictationEndpoint
             // transcribe so a slow transcribe cannot let it age out mid-flight (issue #1126).
             transcribingSessions.Refresh(req.SessionId!);
 
+            // DevThrottle Stats: this dictation is a VOICE turn; resolve WHICH surface recorded it from the
+            // verified device key that authenticated this complete (the phone that recorded it, or the
+            // cockpit browser for a cockpit Speak) so the tally does not mislabel cockpit voice as phone.
+            // Captured here (in request context) and threaded into the cached single-flight run; all completes
+            // for one upload id come from the same device, so the value is stable across retries.
+            var deliverySurface = ctx.Items.TryGetValue(AuthMiddleware.DeviceTypeItemKey, out var dt) ? dt as string : null;
+
             // Durable de-dupe (issue #1183): a DELIVERED or ABANDONED upload id has a terminal tombstone on
             // disk. Return its cached outcome and NEVER inject a second turn - even past the old one-hour
             // window and even after a Gateway restart (the record and this check both live on disk). This
@@ -168,7 +175,7 @@ internal static class GatewayDictationEndpoint
             // from then on, so there is no age-swept cache window.
             var entry = _completes.GetOrAdd(uploadId, id => new CompleteEntry(
                 new Lazy<Task<DictationOutcome>>(() => RunCompleteCoreAsync(
-                    id, req, uploads, registry, client, owners, transcription, transcribingSessions))));
+                    id, req, uploads, registry, client, owners, transcription, transcribingSessions, deliverySurface))));
 
             DictationOutcome outcome;
             try
@@ -304,7 +311,7 @@ internal static class GatewayDictationEndpoint
     private static async Task<DictationOutcome> RunCompleteCoreAsync(
         string uploadId, DictationCompleteRequest req, VoiceUploadStore uploads, DirectorRegistry registry,
         DirectorEndpointClient client, SessionOwnerCache? owners, GatewayTranscriptionService transcription,
-        TranscribingSessions transcribingSessions)
+        TranscribingSessions transcribingSessions, string? deliverySurface)
     {
         var sid = req.SessionId!;
         // Issue #1181, Task 4: this run assembles + transcribes + delivers, so mark the session ACTIVELY
@@ -381,7 +388,12 @@ internal static class GatewayDictationEndpoint
             // exempt there: it names its upload id via the X-Dictation-Delivery header (deliveryUploadId), and
             // the Director exempts exactly this send - the dictation's own arrival, which is what the lock is
             // held for. The header rides the fleet-authenticated call, so it cannot be forged from outside.
-            var (ok, _, err) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = message, AppendEnter = true }, deliveryUploadId: uploadId);
+            // DevThrottle Stats: Surface tags which surface recorded this voice turn (phone / cockpit);
+            // deliveryUploadId marks it a voice Delivery at the Director. Together the Director counts it as
+            // one voice turn from the resolved surface. A dictation is always a real operator turn, so when
+            // the device key did not resolve we stamp "unknown" (never null) - it is counted into the honest
+            // "unknown" surface bucket, never silently dropped (decision 9).
+            var (ok, _, err) = await client.PostPromptAsync(endpoint, sid, new PromptRequest { Text = message, AppendEnter = true, Surface = deliverySurface ?? "unknown" }, deliveryUploadId: uploadId);
             if (!ok)
                 return DictationOutcome.Error(StatusCodes.Status502BadGateway, err ?? "submit to session failed");
 

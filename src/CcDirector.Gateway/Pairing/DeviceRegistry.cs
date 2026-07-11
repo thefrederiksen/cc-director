@@ -168,6 +168,29 @@ public sealed class DeviceRegistry
         return false;
     }
 
+    /// <summary>
+    /// The <c>DeviceType</c> ("phone" / "browser" / "workstation" / ...) of the active device whose
+    /// per-device key matches <paramref name="key"/>, or null when no active device matches. Used by the
+    /// DevThrottle Stats surface resolution to tag a remote prompt with the surface it came from, from the
+    /// SAME verified key that already authenticated the call (no client change, no forgeable header). The
+    /// compare is constant-time, mirroring <see cref="IsValidDeviceKey"/>, so a near-miss reveals nothing
+    /// through timing.
+    /// </summary>
+    public string? DeviceTypeForKey(string? key)
+    {
+        if (string.IsNullOrEmpty(key)) return null;
+        var supplied = System.Text.Encoding.ASCII.GetBytes(key);
+        foreach (var record in _byDeviceId.Values)
+        {
+            if (!string.Equals(record.Status, StatusActive, StringComparison.Ordinal)) continue;
+            var stored = System.Text.Encoding.ASCII.GetBytes(record.DeviceKey);
+            if (stored.Length == supplied.Length &&
+                CryptographicOperations.FixedTimeEquals(stored, supplied))
+                return record.DeviceType;
+        }
+        return null;
+    }
+
     /// <summary>The host-readable list of registered devices, newest first. Keys are never included.</summary>
     public IReadOnlyList<RegisteredDeviceDto> List()
     {
