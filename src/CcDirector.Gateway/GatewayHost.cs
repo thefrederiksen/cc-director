@@ -1114,7 +1114,11 @@ public sealed class GatewayHost : IAsyncDisposable
             rosterCache: RosterCache,
             // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
             // (Directors ask here at session creation) and the /sessions adopt-reconcile.
-            sessionNumbers: SessionNumbers);
+            sessionNumbers: SessionNumbers,
+            // DevThrottle Stats: feed the input-tally aggregator from the assembled /sessions roster, so
+            // "Your Throttle" is populated whether stream mode is on or off (the DirectorHub push fold only
+            // runs in stream mode, which is off in production).
+            inputStats: InputStats);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and

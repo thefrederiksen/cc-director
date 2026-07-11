@@ -75,7 +75,12 @@ internal static class GatewayEndpoints
         // /session-numbers/* endpoints are mapped and the /sessions aggregation adopts every observed
         // number so the in-use set survives a Gateway restart. Null (old callers, tests) maps nothing
         // and leaves each Director to number locally.
-        Discovery.FleetSessionNumberAllocator? sessionNumbers = null)
+        Discovery.FleetSessionNumberAllocator? sessionNumbers = null,
+        // DevThrottle Stats: the always-available input-tally aggregator. Folded from the assembled
+        // /sessions roster (the path that carries SessionDto.InputStats whether stream mode is on or off),
+        // so "Your Throttle" is fed by the same roster the fleet already reads, not only by the SignalR
+        // push path (which is unmapped when stream mode is off). Null (old callers, tests) folds nothing.
+        Stats.GatewayInputStatsAggregator? inputStats = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -697,6 +702,14 @@ internal static class GatewayEndpoints
             // stamp the presentation fold (which reads the role to suppress a live Worker's red toward the
             // human). Done here, once, because the role needs the full fleet view.
             StampFleetRolesAndFold(all, needsYouStampFor);
+
+            // DevThrottle Stats: fold the assembled roster's per-session input tallies into the always-
+            // available aggregate that backs "Your Throttle". This is the ONE path that carries
+            // SessionDto.InputStats on the live Gateway regardless of stream mode (the SignalR DirectorHub
+            // fold only runs when stream mode is on, which it is not in production). The aggregator's
+            // per-session high-water logic makes folding the full roster on every read idempotent - only a
+            // genuine increase is added, so repeated /sessions polls never double-count.
+            inputStats?.ObserveSnapshot(all);
 
             // Issue #1292: adopt every observed number into the fleet allocator's in-use set. This is how
             // the Gateway learns numbers it did not hand out - a number a Director assigned offline, or any
