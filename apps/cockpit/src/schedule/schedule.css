@@ -384,11 +384,28 @@
 }
 
 .sched-modal-foot {
-  padding: 12px 18px;
+  padding: 10px 18px;
   border-top: 1px solid var(--border);
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+/* "Unsaved changes" hint (issue #1289 / #1255): pushed to the left so the Save and Cancel buttons
+   stay right. */
+.sched-modal-dirty {
+  margin-right: auto;
+  color: var(--warn);
+  font-size: 12px;
+}
+
+/* A save error takes its own full-width line above the buttons so a long Gateway message is readable
+   from either tab. */
+.sched-modal-foot-error {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 .sched-modal-error {
@@ -434,6 +451,121 @@
   border-color: var(--accent);
 }
 
+/* ---- large two-tab editor (issue #1289) ----
+   The create / edit dialog is roughly 70 percent of the viewport (bounded so it never gets absurd on
+   an ultra-wide monitor or smaller than usable), split into a Settings tab and an Instructions tab.
+   The dialog is a flex column - head (title + tabs), body (the active tab, which flexes to fill), and
+   a shared footer whose Save and Cancel are reachable from either tab. */
+.sched-modal-large {
+  width: 70vw;
+  min-width: 620px;
+  max-width: 1200px;
+  height: 82vh;
+  min-height: 520px;
+  max-height: 92vh;
+}
+
+/* Title on the left, the two tabs on the right, all on one compact row - so the head takes as little
+   vertical space as possible and the Instructions text area gets the rest of the dialog. */
+.sched-modal-head-tabbed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sched-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.sched-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.sched-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sched-tab:hover:not(.active) {
+  color: var(--text);
+}
+
+.sched-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.sched-tab-warn {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--attention);
+  font-weight: 700;
+}
+
+/* The body holds the tab panels; it flexes to fill the dialog and delegates padding/scroll to each
+   panel so the Instructions text area can own the whole height. */
+.sched-modal-body-tabbed {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.sched-tabpanel {
+  flex: 1;
+  min-height: 0;
+}
+
+/* A panel's own display rule (the Instructions panel is a flex column) would otherwise beat the
+   [hidden] attribute, so force the inactive tab fully out of the layout. */
+.sched-tabpanel[hidden] {
+  display: none;
+}
+
+.sched-tabpanel-settings {
+  padding: 18px;
+  overflow-y: auto;
+}
+
+/* The wider dialog lays the settings out in two comfortable columns; a few fields span the full
+   width (the repository path and the optional webhook). */
+.sched-settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 20px;
+}
+
+.sched-fld-wide {
+  grid-column: 1 / -1;
+}
+
+.sched-tabpanel-instructions {
+  padding: 10px 16px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact the label and help around the editor so almost all of the tab is the text area itself. */
+.sched-tabpanel-instructions .sched-fld-label {
+  margin-bottom: 2px;
+}
+
+.sched-tabpanel-instructions .sched-fld-help {
+  margin-top: 6px;
+}
+
 /* ---- multi-line prompt editor (issue #1245): a real resizable monospace text area ---- */
 .sched-prompt {
   width: 100%;
@@ -447,6 +579,15 @@
   font-family: "Cascadia Mono", Consolas, Menlo, monospace;
   resize: vertical;
   min-height: 96px;
+}
+
+/* On the Instructions tab the editor fills the room: it flexes to take the whole tab height (giving
+   the prompt at least three quarters of the dialog), and still drags taller if the person wants more
+   (issue #1289). */
+.sched-prompt-large {
+  flex: 1;
+  min-height: 240px;
+  margin-top: 4px;
 }
 
 .sched-fld-help {
