@@ -91,6 +91,13 @@ public sealed class HostedInferenceBrain : IAgentBrain
             var detail = resp.StatusCode == System.Net.HttpStatusCode.PaymentRequired
                 ? HostedAiMessages.For(HostedAiErrorMapper.Map402(text)).Text
                 : "Check the AI provider settings and that the account/key is valid.";
+            // Rate limited (issue #1324): surface a TYPED signal carrying the provider's Retry-After so
+            // the caller can back off for exactly as long as asked instead of hammering it into a 429
+            // storm. It extends InvalidOperationException, so every existing catch stays unchanged.
+            if ((int)resp.StatusCode == 429)
+                throw new WingmanModelRateLimitedException(
+                    $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail,
+                    ParseRetryAfter(resp.Headers.RetryAfter));
             throw new InvalidOperationException(
                 $"The wingman model call failed: {(int)resp.StatusCode} {resp.StatusCode}. " + detail);
         }
@@ -102,6 +109,23 @@ public sealed class HostedInferenceBrain : IAgentBrain
 
         _log($"[HostedInferenceBrain] chat/completions model={_model} OK: {content.Length} chars in {sw.Elapsed.TotalSeconds:F1}s");
         return new AskResult { Text = content, ReplySeconds = sw.Elapsed.TotalSeconds };
+    }
+
+    /// <summary>
+    /// Read the provider's Retry-After header into a positive wait, or null when it gave none
+    /// (issue #1324). Accepts both header forms: a delta in seconds and an absolute HTTP date. A
+    /// past date or non-positive delta is treated as "no hint" so the caller falls back to its own backoff.
+    /// </summary>
+    private static TimeSpan? ParseRetryAfter(RetryConditionHeaderValue? header)
+    {
+        if (header is null) return null;
+        if (header.Delta is { } delta && delta > TimeSpan.Zero) return delta;
+        if (header.Date is { } when)
+        {
+            var wait = when - DateTimeOffset.UtcNow;
+            if (wait > TimeSpan.Zero) return wait;
+        }
+        return null;
     }
 
     /// <summary>

@@ -95,6 +95,64 @@ public sealed class HostedInferenceBrainTests
         Assert.Contains(Core.HostedAi.HostedAiMessages.For(Core.HostedAi.HostedAiState.CapReached).Text, ex.Message);
     }
 
+    /// <summary>A stub that returns a status plus a Retry-After header, to drive the 429 path (issue #1324).</summary>
+    private sealed class RetryAfterStub : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _status;
+        private readonly string _body;
+        private readonly TimeSpan? _retryAfter;
+        public RetryAfterStub(HttpStatusCode status, string body, TimeSpan? retryAfter)
+        { _status = status; _body = body; _retryAfter = retryAfter; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var resp = new HttpResponseMessage(_status) { Content = new StringContent(_body, Encoding.UTF8, "application/json") };
+            if (_retryAfter is { } ra)
+                resp.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(ra);
+            return Task.FromResult(resp);
+        }
+    }
+
+    [Fact]
+    public async Task AskAsync_429_ThrowsRateLimited_WithRetryAfterFromHeader()
+    {
+        // Issue #1324: a 429 surfaces as the typed rate-limit exception carrying the provider's
+        // Retry-After hint, so the caller can back off for exactly that long instead of guessing.
+        var stub = new RetryAfterStub(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}", TimeSpan.FromSeconds(12));
+        using var http = new HttpClient(stub);
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { });
+
+        var ex = await Assert.ThrowsAsync<WingmanModelRateLimitedException>(() => brain.AskAsync("hi"));
+        Assert.Equal(TimeSpan.FromSeconds(12), ex.RetryAfter);
+        Assert.Contains("429", ex.Message);
+    }
+
+    [Fact]
+    public async Task AskAsync_429_NoRetryAfter_ThrowsRateLimited_WithNullHint()
+    {
+        // No Retry-After header: still the typed exception, but with no hint - the caller then uses
+        // its own exponential backoff.
+        var stub = new RetryAfterStub(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}", retryAfter: null);
+        using var http = new HttpClient(stub);
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { });
+
+        var ex = await Assert.ThrowsAsync<WingmanModelRateLimitedException>(() => brain.AskAsync("hi"));
+        Assert.Null(ex.RetryAfter);
+    }
+
+    [Fact]
+    public async Task RateLimited429_IsStillAnInvalidOperationException_SoExistingCatchesHold()
+    {
+        // It extends InvalidOperationException, so every existing catch of the general wingman-call
+        // failure keeps catching a 429 unchanged (issue #1324).
+        var stub = new RetryAfterStub(HttpStatusCode.TooManyRequests, "{}", retryAfter: null);
+        using var http = new HttpClient(stub);
+        var brain = new HostedInferenceBrain("https://devthrottle.com/api/v1", "dt_live_abc", "glm-5.2", http, _ => { });
+
+        await Assert.ThrowsAsync<WingmanModelRateLimitedException>(() => brain.AskAsync("hi"));
+        var caught = await Record.ExceptionAsync(() => brain.AskAsync("hi"));
+        Assert.IsAssignableFrom<InvalidOperationException>(caught);
+    }
+
     [Fact]
     public async Task AskAsync_EmptyContent_Throws()
     {
