@@ -36,12 +36,13 @@
 
         <!-- Status row -->
         <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,12">
-            <!-- Opens in the CONNECTING state (yellow): the mic is already
-                 capturing (capture-first pipeline) but the transcription
-                 backend is not connected yet. SwitchToRecording flips these
-                 red once the session is live. -->
+            <!-- Opens in the GETTING READY state (yellow): the mic is warming up
+                 and has not delivered audio yet. SwitchToRecording flips these red -
+                 and plays the water-drop ready cue - only once the microphone
+                 actually starts capturing, so the red and the sound never precede
+                 real audio. -->
             <TextBlock x:Name="StatusLabel" Grid.Column="0"
-                       Text="CONNECTING"
+                       Text="GETTING READY"
                        FontFamily="Cascadia Mono,Consolas,monospace"
                        FontSize="20" FontWeight="Bold"
                        Foreground="#DCDCAA"

@@ -48,11 +48,21 @@ namespace CcDirector.Avalonia.Voice;
 /// </summary>
 public partial class SpeakDialog : Window
 {
-    private enum Stage { Recording, Transcribing, Paused, Failed }
+    private enum Stage { Connecting, Recording, Transcribing, Paused, Failed }
 
     private readonly AgentOptions _options;
     private readonly Border[] _bars;
     private readonly double[] _barTargets = new double[9];
+
+    // Plays the water-drop "ready" cue the instant the mic goes live. Best-effort:
+    // a failed sound never disrupts the dictation turn.
+    private readonly DesktopAudioCue _audioCue = new();
+
+    // Backstop for the GETTING READY state: if the selected mic never delivers a
+    // first audio buffer, we must not strand the user on "GETTING READY" forever.
+    // On expiry we fail loud with a clear "check your microphone" message instead of
+    // silently pretending to record. Cancelled the moment real audio arrives.
+    private readonly DispatcherTimer _readyTimeout;
 
     // Decaying peak of the raw int16 input RMS, tracked while recording.
     private double _recentPeakRms;
@@ -66,9 +76,11 @@ public partial class SpeakDialog : Window
     private DateTime _t0;
     private TimeSpan _elapsedBeforeSegment = TimeSpan.Zero;
 
-    // The dialog opens straight into recording: capture starts immediately
-    // (capture-first; no network connect precedes capture in the batch flow).
-    private Stage _stage = Stage.Recording;
+    // The dialog opens into GETTING READY and holds there until the microphone
+    // actually delivers its first audio buffer; only then does it flip to RECORDING
+    // (and play the ready cue). So neither the red state nor the sound ever claims
+    // the mic is live before audio is really flowing.
+    private Stage _stage = Stage.Connecting;
     private BatchDictationRecorder? _service;
 
     // The accumulated, dictionary-corrected transcript across every checkpointed
@@ -131,6 +143,13 @@ public partial class SpeakDialog : Window
         // OnAudioBands sets per-bar target heights; this timer animates toward them.
         _eqTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
         _eqTimer.Tick += (_, _) => StepEqualizer();
+
+        // One-shot backstop for the GETTING READY state (restarted on each entry).
+        // A healthy mic delivers its first buffer in well under 100 ms; six seconds
+        // with nothing means the device is not capturing, so fail loud rather than
+        // hang on GETTING READY.
+        _readyTimeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+        _readyTimeout.Tick += (_, _) => OnReadyTimeout();
 
         Opened += async (_, _) => await OnDialogOpenedAsync();
         Closed += (_, _) => _ = OnDialogClosedAsync();
@@ -197,8 +216,10 @@ public partial class SpeakDialog : Window
             // very first frame. Then show the device list in the selector.
             _selectedDeviceNumber = MicDevices.ResolveByName(LoadPersistedMicName());
             PopulateMicSelector();
+            // Show GETTING READY immediately (responsive), then open the mic. The flip
+            // to RECORDING + ready cue happens later, when real audio actually arrives.
+            SwitchToConnecting();
             await StartNewServiceAsync();
-            SwitchToRecording();
         }
         catch (Exception ex)
         {
@@ -211,6 +232,7 @@ public partial class SpeakDialog : Window
     {
         _timer.Stop();
         _eqTimer.Stop();
+        _readyTimeout.Stop();
         await DisposeServiceAsync();
     }
 
@@ -220,6 +242,7 @@ public partial class SpeakDialog : Window
         svc.OnAudioBands += OnAudioBands;
         svc.OnInputRms += OnInputRms;
         svc.OnCaptureStarted += OnServiceCaptureStarted;
+        svc.OnCaptureLive += OnServiceCaptureLive;
         svc.OnTranscriptionProgress += OnServiceTranscriptionProgress;
         await svc.StartAsync("default");
         _service = svc;
@@ -284,10 +307,11 @@ public partial class SpeakDialog : Window
         _selectedDeviceNumber = deviceNumber;
         FileLog.Write($"[SpeakDialog] ChangeDevice: {deviceNumber} ({MicDevices.DescribeDevice(deviceNumber)})");
         await DisposeServiceAsync();
-        // Fresh device = fresh segment capture and fresh segment timer origin.
+        // Fresh device = fresh segment capture and fresh segment timer origin. Show
+        // GETTING READY until the new device delivers audio, then flip + cue.
         _t0 = DateTime.UtcNow;
+        SwitchToConnecting();
         await StartNewServiceAsync();
-        SwitchToRecording();
     }
 
     /// <summary>
@@ -296,6 +320,7 @@ public partial class SpeakDialog : Window
     /// </summary>
     private void SwitchToFailed(string message)
     {
+        _readyTimeout.Stop();
         _stage = Stage.Failed;
         TranscriptText.Text = message;
         TranscriptText.Foreground = new SolidColorBrush(Color.FromRgb(0xF4, 0x47, 0x47));
@@ -404,6 +429,42 @@ public partial class SpeakDialog : Window
     }
 
     /// <summary>
+    /// Fired the instant the microphone delivers its FIRST real audio buffer - the
+    /// honest "ready to speak" moment. This is where the dialog flips from GETTING
+    /// READY to RECORDING, anchors the timer to the true first-audio instant, and
+    /// plays the water-drop ready cue - all together, so neither the red state nor the
+    /// sound ever precedes real audio. Arrives on NAudio's worker thread. Guarded on
+    /// the Connecting stage so it is a no-op if the state has already moved on (e.g. a
+    /// mic switch mid-warmup) - and the recorder raises it only once regardless.
+    /// </summary>
+    private void OnServiceCaptureLive()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_stage != Stage.Connecting) return;
+            _readyTimeout.Stop();
+            _t0 = DateTime.UtcNow;
+            SwitchToRecording();
+            _audioCue.PlayReady();
+        });
+    }
+
+    /// <summary>
+    /// Backstop: the microphone never delivered a first audio buffer within the
+    /// GETTING READY window. Rather than strand the user on GETTING READY, fail loud
+    /// with a specific "check your microphone" message so they know what to fix. A
+    /// no-op if audio has since arrived and the stage moved on.
+    /// </summary>
+    private void OnReadyTimeout()
+    {
+        _readyTimeout.Stop();
+        if (_stage != Stage.Connecting) return;
+        FileLog.Write("[SpeakDialog] microphone delivered no audio within the ready window");
+        SwitchToFailed("The microphone did not start capturing. Check that it is connected, "
+            + "not muted, and that DevThrottle is allowed to use it, then try again.");
+    }
+
+    /// <summary>
     /// Fired as the segment transcribes. A long segment is split into several bounded transcription
     /// requests, so show which part is running instead of a silent "Transcribing..." wait. A short
     /// segment reports a single part and keeps the plain message. May arrive off the UI thread.
@@ -501,6 +562,7 @@ public partial class SpeakDialog : Window
         svc.OnAudioBands -= OnAudioBands;
         svc.OnInputRms -= OnInputRms;
         svc.OnCaptureStarted -= OnServiceCaptureStarted;
+        svc.OnCaptureLive -= OnServiceCaptureLive;
         svc.OnTranscriptionProgress -= OnServiceTranscriptionProgress;
         BackgroundRecorder = svc;
         BackgroundPrefix = _accumulatedText;
@@ -594,14 +656,15 @@ public partial class SpeakDialog : Window
         // speech appends onto the edited text rather than the pre-edit transcript.
         _accumulatedText = TranscriptText.Text ?? "";
 
-        // Anchor the new segment's origin BEFORE capture starts; OnServiceCaptureStarted
-        // re-anchors it to the real capture instant once the mic is live.
+        // Anchor the new segment's origin BEFORE capture starts; OnServiceCaptureLive
+        // re-anchors it to the real capture instant once the mic delivers audio.
         _t0 = DateTime.UtcNow;
 
         try
         {
+            // Hold GETTING READY until the resumed mic is actually capturing again.
+            SwitchToConnecting();
             await StartNewServiceAsync();
-            SwitchToRecording();
         }
         catch (Exception ex)
         {
@@ -646,6 +709,7 @@ public partial class SpeakDialog : Window
 
     private void SwitchToTranscribing()
     {
+        _readyTimeout.Stop();
         _stage = Stage.Transcribing;
         StatusLabel.Text = "TRANSCRIBING";
         StatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xAA));
@@ -668,6 +732,7 @@ public partial class SpeakDialog : Window
 
     private void SwitchToPaused()
     {
+        _readyTimeout.Stop();
         _stage = Stage.Paused;
         StatusLabel.Text = "PAUSED - reviewing";
         StatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xAA));
@@ -692,8 +757,43 @@ public partial class SpeakDialog : Window
         LevelHint.Text = "";
     }
 
+    /// <summary>
+    /// The warm-up state shown from the moment the dialog opens (or a segment resumes /
+    /// the mic is switched) until the microphone actually delivers audio. Yellow
+    /// "GETTING READY", a still timer at zero, and idle gray bars - deliberately NOT the
+    /// red RECORDING look and NO cue, because the mic is not confirmed live yet. Commit
+    /// actions are disabled (there is nothing captured to send); the mic selector stays
+    /// enabled so the user can pick a different device while it warms up. Starts the
+    /// no-audio backstop timer.
+    /// </summary>
+    private void SwitchToConnecting()
+    {
+        _stage = Stage.Connecting;
+        StatusLabel.Text = "GETTING READY";
+        StatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xAA));
+        TimerLabel.Text = "0:00.0";
+        TimerLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xAA));
+        TranscriptText.Text = "";
+        TranscriptText.IsReadOnly = true;
+        // Nothing is captured yet, so the commit/checkpoint actions are not actionable.
+        PrimaryButton.IsEnabled = false;
+        StopButton.IsEnabled = false;
+        PauseButton.Content = BuildPauseIcon();
+        PauseButton.IsEnabled = false;
+        MicSelector.IsEnabled = true;
+        // Idle gray bars: the meter must not dance before any audio is flowing.
+        for (int i = 0; i < _barTargets.Length; i++) _barTargets[i] = 8.0;
+        foreach (var bar in _bars) bar.Background = new SolidColorBrush(Color.FromRgb(0x6A, 0x6A, 0x6A));
+        LevelHint.Text = "";
+        _recentPeakRms = 0.0;
+        // Restart the backstop for this warm-up window.
+        _readyTimeout.Stop();
+        _readyTimeout.Start();
+    }
+
     private void SwitchToRecording()
     {
+        _readyTimeout.Stop();
         _stage = Stage.Recording;
         StatusLabel.Text = "RECORDING";
         StatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xF4, 0x47, 0x47));
