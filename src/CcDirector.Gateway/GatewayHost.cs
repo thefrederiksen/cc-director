@@ -1214,6 +1214,15 @@ public sealed class GatewayHost : IAsyncDisposable
         // ever holding the token. Signed-out -> explicit signedIn:false; unreachable cloud -> clear 502.
         AccountCreditsEndpoint.Map(_app, Account, new Core.Account.AccountCreditsClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }));
 
+        // "DevThrottle emails me" relay (issue #1318 consumer): POST /account/email. A session or scheduled
+        // run passes a subject + body (+ optional attachments); the Gateway injects its own stored account
+        // token and forwards to the cloud primitive (POST /api/v1/account/notify-owner, devthrottle_internal
+        // #338), which resolves the recipient from the token and sends via Resend. The Gateway holds NO
+        // Resend key and runs no email code - it only relays the account's own token. Single-recipient by
+        // construction (no recipient field). Signed-out -> 401; cloud failure -> clear 502. Inherits the
+        // host-wide token middleware above like the other /account routes.
+        AccountEmailEndpoint.Map(_app, Account, new Core.Account.AccountNotifyClient(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }));
+
         // Start the browser loopback sign-in from a web request (issue #853): POST /account/sign-in. The
         // Cockpit Account page's signed-out state needs a real "Sign in" action, but the loopback flow that
         // captures the credential lives here on the Gateway (issue #637, GatewaySignInService = SignIn). So

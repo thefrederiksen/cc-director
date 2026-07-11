@@ -1,0 +1,182 @@
+"""Owner-email operations for cc-devthrottle (issue #1318 consumer).
+
+'cc-devthrottle email owner' sends ONE email to the account owner on file. It passes only a subject,
+body, and optional attachments - there is no recipient argument, so the send is single-recipient by
+construction. The escalation channel an unattended or scheduled run uses to reach the human before it
+self-reaps, and the way to send yourself a report (e.g. an HTML file) to read offline.
+
+The send is server-side: this verb POSTs to the local Gateway's /account/email relay, which injects the
+account token it holds and forwards to the cloud primitive (POST /api/v1/account/notify-owner). No Resend
+key ever touches this machine.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import mimetypes
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+import requests
+import typer
+from rich.console import Console
+
+_tools_dir = str(Path(__file__).resolve().parent.parent.parent)
+if _tools_dir not in sys.path:
+    sys.path.insert(0, _tools_dir)
+
+from cc_shared.config import CCDirectorConfig  # noqa: E402
+
+LOOPBACK_DEFAULT = "http://127.0.0.1:7878"
+TIMEOUT_SECONDS = 45
+
+console = Console()
+err_console = Console(stderr=True)
+gateway_override: Optional[str] = None
+
+
+class GatewayError(Exception):
+    """A handled, user-facing failure talking to the Gateway."""
+
+
+def set_gateway_override(value: Optional[str]) -> None:
+    global gateway_override
+    gateway_override = value.rstrip("/") if value else None
+
+
+def resolve_base_url() -> str:
+    config = CCDirectorConfig().load()
+    url = (config.gateway.url or "").strip()
+    return url.rstrip("/") if url else LOOPBACK_DEFAULT
+
+
+def _auth_token() -> str:
+    config = CCDirectorConfig().load()
+    return (config.gateway.token or "").strip()
+
+
+def _is_loopback(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+def _read_attachment(path_text: str) -> Dict[str, str]:
+    """Read one file into the wire shape { filename, content(base64), contentType }."""
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        raise GatewayError(f"attachment not found: {path}")
+    data = path.read_bytes()
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return {
+        "filename": path.name,
+        "content": base64.b64encode(data).decode("ascii"),
+        "contentType": content_type,
+    }
+
+
+class EmailClient:
+    """Talks to one Gateway's owner-email relay (POST /account/email)."""
+
+    def __init__(self, base_url: Optional[str] = None) -> None:
+        self.base_url = (base_url or resolve_base_url()).rstrip("/")
+        self._token = _auth_token()
+        if not self._token and not _is_loopback(self.base_url):
+            raise GatewayError(
+                f"Gateway URL {self.base_url} is remote but gateway.token is not set. "
+                "Set it with 'cc-devthrottle settings set gateway.token <token>' "
+                "(a loopback Gateway on this machine needs no token)."
+            )
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        return headers
+
+    def send_owner(
+        self,
+        subject: str,
+        body_text: Optional[str],
+        body_html: Optional[str],
+        attachments: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"subject": subject}
+        if body_text:
+            payload["bodyText"] = body_text
+        if body_html:
+            payload["bodyHtml"] = body_html
+        if attachments:
+            payload["attachments"] = attachments
+
+        url = f"{self.base_url}/account/email"
+        try:
+            resp = requests.post(url, json=payload, headers=self._headers(), timeout=TIMEOUT_SECONDS)
+        except requests.exceptions.ConnectionError as exc:
+            raise GatewayError(
+                f"Gateway not reachable at {self.base_url}. "
+                "Is the Gateway tray app running on this machine? "
+                "If you target a remote Gateway, set gateway.url with "
+                "'cc-devthrottle settings set gateway.url <url>'."
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise GatewayError(
+                f"Gateway at {self.base_url} did not respond within {TIMEOUT_SECONDS}s."
+            ) from exc
+
+        if 200 <= resp.status_code < 300:
+            return resp.json() if resp.content else {}
+        raise GatewayError(_gateway_message(resp))
+
+
+def _gateway_message(resp: requests.Response) -> str:
+    try:
+        data = resp.json()
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"])
+    except ValueError:
+        pass
+    text = (resp.text or "").strip()
+    return text if text else f"Gateway returned HTTP {resp.status_code}"
+
+
+def _fail(message: str) -> None:
+    err_console.print(f"[red]Error:[/red] {message}")
+    raise typer.Exit(1)
+
+
+def send_owner(
+    subject: str,
+    body: Optional[str],
+    html: Optional[str],
+    attach: Optional[List[str]],
+    json_output: bool,
+) -> None:
+    """Send one email to the account owner via the Gateway relay."""
+    if not subject or not subject.strip():
+        _fail("--subject is required.")
+        return
+    if not (body and body.strip()) and not (html and html.strip()) and not attach:
+        _fail("provide a body: --body <text>, --html <html>, and/or --attach <file>.")
+        return
+
+    try:
+        attachments = [_read_attachment(p) for p in (attach or [])]
+        result = EmailClient(base_url=gateway_override).send_owner(subject.strip(), body, html, attachments)
+    except GatewayError as ex:
+        _fail(str(ex))
+        return
+
+    if json_output:
+        print(json.dumps(result, indent=2))
+        return
+
+    provider_id = result.get("providerId")
+    count = len(attach or [])
+    suffix = f" with {count} attachment(s)" if count else ""
+    if provider_id:
+        console.print(f"[green]Sent[/green] email to the account owner{suffix} (id {provider_id}).")
+    else:
+        console.print(f"[green]Sent[/green] email to the account owner{suffix}.")
