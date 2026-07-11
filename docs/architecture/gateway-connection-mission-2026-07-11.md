@@ -23,11 +23,12 @@ three things: click the amber box, click Connect, type the pairing code.
 
 Source document (read it before starting):
 
-- docs/reviews/gateway-connection-redesign-2026-07-11.html - the full design: the two-state
-  model, rendered mockups of every screen and state, the three flows (first-time, re-sign-in,
+- docs/reviews/gateway-connection-redesign-2026-07-11.md - the full design: the two-state
+  model, ASCII wireframes of every screen and state, the three flows (first-time, re-sign-in,
   Gateway moved), the deletion list, the implementation map with file locations, and the
   five-phase plan with proof requirements. That document is the specification; this brief is
-  the handover wrapper around it.
+  the handover wrapper around it. (The original HTML draft was lost in a session move on
+  2026-07-11; this markdown specification, grounded in the current code, supersedes it.)
 
 The design was verified against the working tree on 2026-07-11 by the Architect: the two
 verification sources already exist (GatewayConnectionMonitor for the handshake,
