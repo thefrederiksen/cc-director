@@ -42,6 +42,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.Gateway/Api/RecordingEndpoints.cs"] = "Local recording paths.",
         ["src/CcDirector.Gateway/Api/MachineEndpoints.cs"] = "Same-machine relay/launcher wiring.",
         ["src/CcDirector.Gateway/Running/IDirectorLauncher.cs"] = "RelayDirectorLauncher posts to the local Gateway's own loopback port to relay a Director start request (same-machine self-call to the Gateway's own /machines/{machine}/director/start endpoint).",
+        ["src/CcDirector.Gateway/CarMode/LoopbackCarModeFleet.cs"] = "The Car Mode brain's fleet tools call THIS Gateway's own endpoints over http://127.0.0.1:{port} (same-machine self-call), the same pattern the Web Push needs-you notifier uses to read its own /sessions - so the brain sees the identical aggregated roster every client sees with no re-implementation.",
         ["src/CcDirector.GatewayApp/Program.cs"] = "Local Gateway bootstrap.",
         ["src/CcDirector.GatewayApp/GatewayTrayController.cs"] = "Probes its own Gateway port on loopback (same machine); the Cockpit is served in-process by that Gateway.",
         ["src/CcDirector.Launcher/DirectorSupervisor.cs"] = "Supervises a local Director over loopback.",
