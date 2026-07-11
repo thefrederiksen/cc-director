@@ -55,6 +55,15 @@
   flex-wrap: wrap;
 }
 
+/* the flat "Fleet list" pivot (issue #1212): the same node cards in a responsive grid */
+.fmap-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+  padding: 4px 2px 28px;
+  align-content: start;
+}
+
 /* title search (issue #1211) */
 .fmap-search {
   font-size: 12.5px;

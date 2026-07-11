@@ -18,7 +18,6 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 // because "/directors/:id" already shares the "/directors" prefix NavLink matches by default).
 const NAV_ITEMS: ReadonlyArray<{ to: string; label: string; subtree?: string }> = [
   { to: "/", label: "Sessions", subtree: "/session" },
-  { to: "/fleet", label: "Fleet" },
   { to: "/fleet-map", label: "Fleet Map" },
   { to: "/directors", label: "Directors" },
   { to: "/schedule", label: "Schedule" },

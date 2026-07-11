@@ -11,7 +11,6 @@ import { NotFound } from "./panes/NotFound";
 import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
 import { SessionDetail } from "./sessions/SessionDetail";
 import { SessionRedirect } from "./sessions/SessionRedirect";
-import { FleetView } from "./fleet/FleetView";
 import { FleetMapView } from "./fleet/FleetMapView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
@@ -121,7 +120,9 @@ const router = createBrowserRouter(
             // The fleet + machine views (issue #975): the Fleet cards dashboard, the Directors registry
             // table, and the standalone Director-detail page. Ported one-to-one from the Blazor
             // Fleet.razor / Directors.razor / DirectorDetail.razor over the same Gateway REST surface.
-            { path: "/fleet", element: <FleetView /> },
+            // The Fleet page was removed (issue #1212); its content is the Fleet Map's "Fleet list"
+            // pivot now. Keep the old route working for bookmarks by redirecting to the Fleet Map.
+            { path: "/fleet", element: <Navigate to="/fleet-map" replace /> },
             // The Fleet Map (issue #1109): the spatial node-canvas view of the same roster the Fleet
             // page lists, pivotable by machine / repository / agent, with a Wingman narration overlay.
             // Reads the same GET /sessions envelope through client-core.
