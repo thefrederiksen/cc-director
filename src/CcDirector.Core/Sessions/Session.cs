@@ -598,6 +598,38 @@ public sealed class Session : IDisposable
     public bool WingmanEnabled { get; set; } = false;
 
     /// <summary>
+    /// Scheduled-run auto-dismiss (issue #1200): true when this session is an AUTOMATED run (a cron seed)
+    /// that should close itself when it finishes with nothing needing a human. Only sessions with this set
+    /// are ever auto-closed; a human-started session leaves it false and is never touched. Set once at birth
+    /// from <see cref="Gateway.Contracts.NewSessionRequest.AutoDismiss"/>. See <see cref="DismissVerdict"/>.
+    /// </summary>
+    public bool AutoDismiss { get; set; } = false;
+
+    /// <summary>
+    /// Scheduled-run auto-dismiss (issue #1200): the agent's explicit end-of-run verdict, parsed from the
+    /// finished turn's final message (a <c>CC-DISMISS</c> block, see <see cref="Wingman.DismissVerdictSignal"/>).
+    /// <c>"done"</c> = nothing needs the human (safe to auto-close); <c>"needs-human"</c> = keep it open.
+    /// Null until a verdict is seen - the conservative default that guarantees a session is never auto-closed
+    /// without an explicit <c>done</c>. Set on the Director via <see cref="SetDismissVerdict"/>; flows to the
+    /// Gateway on <see cref="Gateway.Contracts.SessionDto.DismissVerdict"/>.
+    /// </summary>
+    public string? DismissVerdict { get; private set; }
+
+    /// <summary>
+    /// Record the agent's parsed end-of-run verdict for auto-dismiss (issue #1200). Idempotent per value:
+    /// only logs on a change. A null/blank argument clears it (a fresh turn that produced no verdict). This
+    /// is the only writer of <see cref="DismissVerdict"/>.
+    /// </summary>
+    public void SetDismissVerdict(string? verdict)
+    {
+        var normalized = string.IsNullOrWhiteSpace(verdict) ? null : verdict.Trim().ToLowerInvariant();
+        if (string.Equals(normalized, DismissVerdict, StringComparison.Ordinal))
+            return;
+        DismissVerdict = normalized;
+        FileLog.Write($"[Session] SetDismissVerdict: session={Id} verdict={normalized ?? "(cleared)"}");
+    }
+
+    /// <summary>
     /// The <see cref="WingmanEnabled"/> value captured just before voice mode was enabled
     /// for this session, so the prior state can be restored when voice mode ends. Null when
     /// voice mode is not active (the value is transient and is not persisted). Voice mode

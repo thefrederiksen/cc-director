@@ -116,6 +116,15 @@ public sealed class CronJobAction
     /// starting a single seeded session. Null/empty = a seed action.
     /// </summary>
     public string? WorkListName { get; set; }
+
+    /// <summary>
+    /// Scheduled-run auto-dismiss (issue #1200): when true (the default for a seed action), the session the
+    /// fire starts is launched with <see cref="NewSessionRequest.AutoDismiss"/> so it closes itself once it
+    /// finishes with nothing needing a human (the agent's <c>CC-DISMISS: done</c> verdict), instead of
+    /// lingering in the rail. Set false to keep a scheduled run open like a normal interactive session. Only
+    /// consulted for seed actions; a work-list drain manages its own sessions.
+    /// </summary>
+    public bool AutoDismiss { get; set; } = true;
 }
 
 /// <summary>

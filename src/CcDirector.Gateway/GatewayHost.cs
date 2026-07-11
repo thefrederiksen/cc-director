@@ -252,6 +252,15 @@ public sealed class GatewayHost : IAsyncDisposable
     // StartAsync, disposed in StopAsync.
     private System.Threading.Timer? _cronTimer;
     private static readonly TimeSpan CronSweepInterval = TimeSpan.FromMinutes(1);
+
+    // Scheduled-run auto-dismiss (issue #1200): wakes ~every 15s and closes automated runs that declared
+    // themselves done, over the Director stream. Created in StartAsync only when stream mode is on (the
+    // feature has no REST fallback), disposed in StopAsync. Freshness matches the aggregation's pushed-cache
+    // staleness so a session whose Director stopped pushing is not acted on from a stale snapshot.
+    private System.Threading.Timer? _autoDismissTimer;
+    private Running.AutoDismissSweeper? _autoDismissSweeper;
+    private static readonly TimeSpan AutoDismissSweepInterval = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan AutoDismissStaleAfter = TimeSpan.FromSeconds(30);
     private readonly Running.WorkListRunnerManager _runnerManager = new();
     // Issue #218: Gateway-owned clock for when each session entered the red / NEEDS-YOU state.
     private readonly NeedsYouClock _needsYouClock = new();
@@ -1351,6 +1360,18 @@ public sealed class GatewayHost : IAsyncDisposable
         _cronTimer = new System.Threading.Timer(_ => SweepCron(), null, CronSweepInterval, CronSweepInterval);
         FileLog.Write($"[GatewayHost] cron sweep started: every {CronSweepInterval.TotalSeconds:0}s");
 
+        // Scheduled-run auto-dismiss (issue #1200): close automated runs that declared themselves done, by
+        // sending the kill verb DOWN the Director stream. Only when stream mode is on - the close has no REST
+        // fallback by design (the Gateway owns session lifecycle and reaches the Director through its stream).
+        if (_streamMode)
+        {
+            _autoDismissSweeper = new Running.AutoDismissSweeper(
+                () => PushedSessions.SnapshotFresh(AutoDismissStaleAfter),
+                SendCommandAsync);
+            _autoDismissTimer = new System.Threading.Timer(_ => SweepAutoDismiss(), null, AutoDismissSweepInterval, AutoDismissSweepInterval);
+            FileLog.Write($"[GatewayHost] auto-dismiss sweep started: every {AutoDismissSweepInterval.TotalSeconds:0}s");
+        }
+
         // Issue #629: start the durable telemetry retry-queue flusher. It drains any events restored
         // from disk on construction (so a backend outage that spanned the previous run's lifetime now
         // delivers) and every event the relay enqueues going forward, in FIFO order, retrying with
@@ -1412,6 +1433,23 @@ public sealed class GatewayHost : IAsyncDisposable
         catch (Exception ex)
         {
             FileLog.Write($"[GatewayHost] cron sweep FAILED: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The auto-dismiss sweep timer callback (issue #1200; a boundary - it owns the try/catch so a sweep
+    /// failure never crashes the timer thread). Closes automated runs that declared themselves done, over the
+    /// Director stream. Fire-and-forget: the async sweep runs on the thread pool so the timer thread returns.
+    /// </summary>
+    private void SweepAutoDismiss()
+    {
+        try
+        {
+            _ = _autoDismissSweeper?.SweepAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayHost] auto-dismiss sweep FAILED: {ex.Message}");
         }
     }
 
@@ -1489,6 +1527,8 @@ public sealed class GatewayHost : IAsyncDisposable
 
         try { _cronTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] cron timer dispose error: {ex.Message}"); }
         _cronTimer = null;
+        try { _autoDismissTimer?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] auto-dismiss timer dispose error: {ex.Message}"); }
+        _autoDismissTimer = null;
 
         try { _endpointMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] endpoint monitor dispose error: {ex.Message}"); }
         _endpointMonitor = null;

@@ -31,6 +31,10 @@ public sealed class DirectorCronSessionStarter : ICronSessionStarter
             RepoPath = job.Action.RepoPath,
             Agent = "ClaudeCode",
             PrePrompt = job.Action.Seed,
+            // Scheduled-run auto-dismiss (issue #1200): a seed run defaults to closing itself when it
+            // finishes with nothing needing a human, so an hourly job stops piling leftover sessions into
+            // the rail. The job can opt out (AutoDismiss=false) to keep the run open like a normal session.
+            AutoDismiss = job.Action.AutoDismiss,
         };
 
         FileLog.Write($"[DirectorCronSessionStarter] start: job={job.Id}, machine={job.Target.Machine}, repo={job.Action.RepoPath}, seed={job.Action.Seed}");

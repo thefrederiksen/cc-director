@@ -405,6 +405,18 @@ internal static class SessionCommandExecutor
         session.WingmanEnabled = req.WingmanEnabled;
         FileLog.Write($"[SessionCommandExecutor] create: sid={session.Id} wingmanEnabled={session.WingmanEnabled}");
 
+        // Scheduled-run auto-dismiss (issue #1200): a cron seed marks the session auto-dismiss so it closes
+        // itself when it finishes with nothing needing a human. Only then attach the verdict watcher, which
+        // parses the agent's CC-DISMISS sentinel off the transcript at each turn-end and stamps the verdict
+        // (which flows up to the Gateway's auto-dismiss sweep). A human-started session leaves this false and
+        // is never watched or auto-closed.
+        session.AutoDismiss = req.AutoDismiss;
+        if (session.AutoDismiss)
+        {
+            new AutoDismissVerdictWatcher().Attach(session);
+            FileLog.Write($"[SessionCommandExecutor] create: sid={session.Id} autoDismiss=true (verdict watcher attached)");
+        }
+
         // Automatic session roles (chunk 3): the name was AUTO-composed unless the caller gave an explicit
         // --name. Marking it lets a later explicit rename win and never be re-auto-named.
         session.IsAutoNamed = string.IsNullOrWhiteSpace(explicitName);

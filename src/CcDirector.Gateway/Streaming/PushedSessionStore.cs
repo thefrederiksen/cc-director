@@ -227,6 +227,35 @@ public sealed class PushedSessionStore
         return null;
     }
 
+    /// <summary>
+    /// Issue #1200 (auto-dismiss sweep): enumerate every FRESH pushed session across all stream-connected
+    /// Directors, each paired with its owning directorId so the caller can address a command DOWN that
+    /// Director's stream. Applies the same active-connection + freshness rules as <see cref="TryGetFresh"/>
+    /// and returns deep COPIES with recomputed idle clocks, so a caller may inspect them without touching the
+    /// cache. A Director with no active connection or a stale cache contributes nothing.
+    /// </summary>
+    public IReadOnlyList<(string DirectorId, SessionDto Session)> SnapshotFresh(TimeSpan staleAfter)
+    {
+        var now = _utcNow();
+        var result = new List<(string, SessionDto)>();
+        foreach (var kvp in _byDirector)
+        {
+            var entry = kvp.Value;
+            lock (entry.Gate)
+            {
+                if (entry.ActiveConnectionId is null)
+                    continue;
+                if (entry.ReceivedAtUtc == DateTime.MinValue)
+                    continue;
+                if (now - entry.ReceivedAtUtc > staleAfter)
+                    continue;
+                foreach (var s in entry.Sessions.Values)
+                    result.Add((kvp.Key, RecomputeClocks(s.Clone(), now)));
+            }
+        }
+        return result;
+    }
+
     /// <summary>True when this Director currently has an active stream connection (used for diagnostics).</summary>
     public bool IsStreamConnected(string directorId) =>
         _byDirector.TryGetValue(directorId, out var entry) && entry.ActiveConnectionId is not null;

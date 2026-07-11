@@ -43,6 +43,36 @@ public sealed class PushedSessionStoreTests
     }
 
     [Fact]
+    public void SnapshotFresh_ReturnsSessionsFromAllFreshConnections_WithDirectorId()
+    {
+        // Issue #1200: the auto-dismiss sweep enumerates every fresh session paired with its Director.
+        var store = NewStore();
+        store.RegisterConnection("dir-A", "conn-A");
+        store.RegisterConnection("dir-B", "conn-B");
+        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+        store.ApplySnapshot("dir-B", "conn-B", 0, new[] { Session("s2") });
+
+        var all = store.SnapshotFresh(_staleAfter);
+
+        Assert.Equal(2, all.Count);
+        Assert.Contains(all, t => t.DirectorId == "dir-A" && t.Session.SessionId == "s1");
+        Assert.Contains(all, t => t.DirectorId == "dir-B" && t.Session.SessionId == "s2");
+    }
+
+    [Fact]
+    public void SnapshotFresh_ExcludesStaleAndDisconnectedDirectors()
+    {
+        var store = NewStore();
+        store.RegisterConnection("dir-A", "conn-A");
+        store.ApplySnapshot("dir-A", "conn-A", 0, new[] { Session("s1") });
+
+        // Advance past the stale window: the cache is now stale, so the sweep must not act on it.
+        _now = _now.Add(_staleAfter).AddSeconds(1);
+
+        Assert.Empty(store.SnapshotFresh(_staleAfter));
+    }
+
+    [Fact]
     public void ApplySnapshot_FromNonActiveConnection_IsRejected()
     {
         // Arrange
