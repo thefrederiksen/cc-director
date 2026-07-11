@@ -1,23 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
 import {
-  ENDPOINT_STATE_UNREACHABLE_BY_NAME,
   getFleetDirectors,
   getSessionsEnvelope,
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
-import { Pager } from "./Pager";
-import { clockLabel, portLabel, relativeTime, uptime } from "./format";
+import { DataTable, PageHeader, type DataTableColumn } from "../components";
+import { clockLabel, relativeTime } from "./format";
+import { directorStatus, epochOf, repoNamesOf } from "./directorsFormat";
 
-// The Director registry table (issue #975) - the React port of the Blazor Directors.razor. A plain
-// paged table over GET /directors, enriched with live session counts and unreachable flags from the
-// roster envelope (GET /sessions?envelope=true). A row click opens the Director-detail page; the
-// status cell distinguishes unreachable-by-name, fully unreachable, terminal-stream-down, and OK.
-// Both reads are same-origin through the Gateway (client-core) - never a Director address.
+// The Director registry table (issue #975; rebuilt on the shared DataTable in #1246) - the React view
+// over GET /directors, enriched with live session counts and unreachable flags from the roster
+// envelope (GET /sessions?envelope=true). It now uses the shared sortable, searchable DataTable
+// (issue #1245) so the registry fits a laptop without horizontal scrolling: only the five columns that
+// answer "which machine, is it healthy, how busy, what version, when last seen" stay here; every other
+// registration fact (process id, discovery, endpoints, start time) lives on the Director detail page's
+// Registration panel, one click away. Both reads are same-origin through the Gateway - never a Director
+// address.
 const POLL_MS = 5000;
-const PAGE_SIZE = 25;
 
 export function DirectorsView() {
   const navigate = useNavigate();
@@ -26,9 +28,8 @@ export function DirectorsView() {
   const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [page, setPage] = useState(1);
-  // Tick the "up <uptime>" / "last seen" cells each second between the 5s polls, so the relative
-  // times stay live without re-fetching.
+  // Tick the "last seen" cell each second between the 5s polls, so the relative times stay live
+  // without re-fetching.
   const [, setNow] = useState(Date.now());
   const nowRef = useRef(0);
   nowRef.current = Date.now();
@@ -59,114 +60,144 @@ export function DirectorsView() {
     };
   }, [refresh]);
 
-  const ordered = [...directors].sort((a, b) => {
-    const byName = (a.machineName ?? "").toLowerCase().localeCompare((b.machineName ?? "").toLowerCase());
-    if (byName !== 0) return byName;
-    return String(a.startedAt ?? "").localeCompare(String(b.startedAt ?? ""));
-  });
-  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
-  const clampedPage = Math.min(page, pageCount);
-  const pageItems = ordered.slice((clampedPage - 1) * PAGE_SIZE, clampedPage * PAGE_SIZE);
+  // Sessions grouped by their owning Director, so a session count and the repositories a Director hosts
+  // are one lookup each rather than a full scan per row.
+  const sessionsByDirector = useMemo(() => {
+    const map = new Map<string, SessionDto[]>();
+    for (const s of sessions) {
+      const key = (s.directorId ?? "").toLowerCase();
+      const list = map.get(key);
+      if (list === undefined) map.set(key, [s]);
+      else list.push(s);
+    }
+    return map;
+  }, [sessions]);
 
-  const sessionCount = (d: FleetDirector) =>
-    sessions.filter((s) => (s.directorId ?? "").toLowerCase() === d.directorId.toLowerCase()).length;
-  const errorFor = (d: FleetDirector): MachineError | undefined =>
-    machineErrors.find((e) => (e.directorId ?? "").toLowerCase() === d.directorId.toLowerCase());
+  const errorByDirector = useMemo(() => {
+    const map = new Map<string, MachineError>();
+    for (const e of machineErrors) map.set((e.directorId ?? "").toLowerCase(), e);
+    return map;
+  }, [machineErrors]);
+
+  const sessionCount = useCallback(
+    (d: FleetDirector) => sessionsByDirector.get(d.directorId.toLowerCase())?.length ?? 0,
+    [sessionsByDirector],
+  );
+
+  const statusOf = useCallback(
+    (d: FleetDirector) => directorStatus(d, errorByDirector.get(d.directorId.toLowerCase())),
+    [errorByDirector],
+  );
+
+  // The searchable text of a Director row: machine name, the user, the version, and the repositories it
+  // hosts - so the search box finds a Director by its machine or by a repository running on it.
+  const searchableText = useCallback(
+    (d: FleetDirector): string => {
+      const repos = repoNamesOf(sessionsByDirector.get(d.directorId.toLowerCase()) ?? []);
+      return [d.machineName ?? "", d.directorId, d.user ?? "", d.version ?? "", ...repos].join(" ");
+    },
+    [sessionsByDirector],
+  );
+
+  // Five columns only, so the registry fits a 1366-wide window with no horizontal scroll. Everything
+  // else moved to the Director detail page's Registration panel.
+  const columns = useMemo<DataTableColumn<FleetDirector>[]>(
+    () => [
+      {
+        key: "machine",
+        header: "Machine",
+        sortable: true,
+        sortValue: (d) => (d.machineName ?? d.directorId).toLowerCase(),
+        render: (d) => (
+          <span className="dcell-machine">
+            <span className="dcell-name">
+              {(d.machineName ?? "").trim().length > 0 ? d.machineName : d.directorId}
+            </span>
+            {(d.user ?? "").trim().length > 0 && <span className="ddim"> {d.user}</span>}
+          </span>
+        ),
+      },
+      {
+        key: "status",
+        header: "Status",
+        width: "220px",
+        sortable: true,
+        sortValue: (d) => statusOf(d).rank,
+        render: (d) => {
+          const status = statusOf(d);
+          return (
+            <span className={status.className} title={status.title}>
+              {status.label}
+            </span>
+          );
+        },
+      },
+      {
+        key: "sessions",
+        header: "Sessions",
+        width: "100px",
+        align: "right",
+        sortable: true,
+        sortValue: (d) => sessionCount(d),
+        render: (d) => sessionCount(d),
+      },
+      {
+        key: "version",
+        header: "Version",
+        width: "120px",
+        className: "dmono",
+        sortable: true,
+        sortValue: (d) => d.version ?? "",
+        render: (d) => d.version ?? "-",
+      },
+      {
+        key: "lastseen",
+        header: "Last seen",
+        width: "150px",
+        className: "ddim",
+        sortable: true,
+        sortValue: (d) => epochOf(d.lastSeen),
+        render: (d) => (
+          <span title={d.lastSeen ?? undefined}>
+            {relativeTime(d.lastSeen, { withAgo: true, now: nowRef.current })}
+          </span>
+        ),
+      },
+    ],
+    [statusOf, sessionCount],
+  );
 
   return (
     <div className="dpage">
-      <header className="dpage-head">
-        <h1 className="dpage-h1">Directors</h1>
-        <span className="dpage-sub">{directors.length} registered director{directors.length === 1 ? "" : "s"}</span>
-        <span className="dpage-refreshed">
-          {lastRefresh === null ? "connecting..." : `updated ${clockLabel(lastRefresh)}`}
-        </span>
-      </header>
+      <PageHeader
+        title="Directors"
+        subtitle={`${directors.length} registered director${directors.length === 1 ? "" : "s"} across the fleet. Click a row for the full registration and its sessions.`}
+      />
 
       {lastError !== null && <div className="dpage-error">{lastError}</div>}
 
-      {directors.length === 0 && lastError === null && lastRefresh !== null ? (
-        <div className="dtbl-empty">
-          No Directors registered with this Gateway. A Director appears here when it starts on this machine,
-          or registers over HTTP with <code>gateway.url</code> configured.
-        </div>
-      ) : directors.length > 0 ? (
-        <>
-          <div className="dtbl-scroll">
-            <table className="dtbl">
-              <thead>
-                <tr>
-                  <th>Machine</th>
-                  <th>Director</th>
-                  <th>Version</th>
-                  <th>Discovery</th>
-                  <th>Endpoint</th>
-                  <th>Started</th>
-                  <th>Last seen</th>
-                  <th>Sessions</th>
-                  <th className="dcol-status">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageItems.map((d) => {
-                  const err = errorFor(d);
-                  const endpoint = d.tailnetEndpoint ?? d.controlEndpoint ?? "";
-                  return (
-                    <tr key={d.directorId} className="dtbl-rowlink" title="Director details"
-                        onClick={() => navigate(`/directors/${encodeURIComponent(d.directorId)}`)}>
-                      {/* The machine name is a real in-row link so keyboard users can Tab to it and press
-                          Enter to open the Director detail; the row onClick stays for the mouse. stopPropagation
-                          avoids a double navigate when the link itself is clicked (issue #1032). */}
-                      <td>
-                        <Link
-                          className="dcell-namelink"
-                          to={`/directors/${encodeURIComponent(d.directorId)}`}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {(d.machineName ?? "").trim().length > 0 ? d.machineName : d.directorId}
-                        </Link>{" "}
-                        <span className="ddim">{d.user}</span>
-                      </td>
-                      <td className="dmono" title={d.directorId}>
-                        {portLabel(d.controlEndpoint, d.tailnetEndpoint, d.directorId)} <span className="ddim">pid {d.pid}</span>
-                      </td>
-                      <td className="dmono">{d.version}</td>
-                      <td className="ddim">{d.source === "http" ? "push (http)" : "local (file)"}</td>
-                      <td className="dmono dcell-ellipsis" title={endpoint}>{endpoint}</td>
-                      <td className="ddim" title={d.startedAt}>
-                        {relativeTime(d.startedAt, { withAgo: true, now: nowRef.current })} <span className="ddim">(up {uptime(d.startedAt, nowRef.current)})</span>
-                      </td>
-                      <td className="ddim" title={d.lastSeen ?? undefined}>{relativeTime(d.lastSeen, { withAgo: true, now: nowRef.current })}</td>
-                      <td>{sessionCount(d)}</td>
-                      <td className="dcol-status">
-                        {d.advertisedEndpointState === ENDPOINT_STATE_UNREACHABLE_BY_NAME ? (
-                          <span className="dstat-err" title={endpointTooltip(d)}>UNREACHABLE BY NAME</span>
-                        ) : err !== undefined ? (
-                          <span className="dstat-warn" title={err.error}>UNREACHABLE</span>
-                        ) : (d.streamVerifyError ?? null) !== null ? (
-                          <span className="dstat-err" title={d.streamVerifyError ?? undefined}>TERMINAL STREAM DOWN</span>
-                        ) : (
-                          <span className="dstat-ok">OK</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <Pager page={clampedPage} pageSize={PAGE_SIZE} totalCount={ordered.length} onPageChange={setPage} />
-        </>
-      ) : null}
+      {lastRefresh !== null && (
+        <DataTable<FleetDirector>
+          columns={columns}
+          rows={directors}
+          rowKey={(d) => d.directorId}
+          searchableText={searchableText}
+          searchPlaceholder="Search by machine or repository"
+          defaultSort={{ columnKey: "machine", direction: "asc" }}
+          emptyMessage={
+            <>
+              No Directors registered with this Gateway. A Director appears here when it starts on this
+              machine, or registers over HTTP with <code>gateway.url</code> configured.
+            </>
+          }
+          toolbarExtra={
+            <span className="dpage-refreshed">
+              {lastRefresh === null ? "connecting..." : `updated ${clockLabel(lastRefresh)}`}
+            </span>
+          }
+          onRowActivate={(d) => navigate(`/directors/${encodeURIComponent(d.directorId)}`)}
+        />
+      )}
     </div>
   );
-}
-
-// The unreachable-by-name tooltip (issue #325): the Director is alive (heartbeating) - it is the
-// advertised NAME that stopped answering - plus since-when and why.
-function endpointTooltip(d: FleetDirector): string {
-  const since = (d.advertisedEndpointUnreachableSince ?? "").length > 0
-    ? ` (${relativeTime(d.advertisedEndpointUnreachableSince, { withAgo: true })})`
-    : "";
-  return `Director is alive (heartbeating) but its advertised endpoint stopped answering${since}: ${d.advertisedEndpointError ?? ""}`;
 }

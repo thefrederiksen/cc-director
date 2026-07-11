@@ -581,6 +581,15 @@
   font-weight: 600;
 }
 
+/* The machine cell in the Directors DataTable (issue #1246): the bold machine name plus a dim user,
+   kept on one line so every row stays the same fixed height. The DataTable cell already truncates. */
+.dcell-machine {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The machine-name link that makes each Director row keyboard-operable (issue #1032). Looks like the
    plain .dcell-name text until focused/hovered, with a clear focus ring for keyboard users. */
 .dcell-namelink {
