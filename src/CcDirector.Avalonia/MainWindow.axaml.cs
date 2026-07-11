@@ -2958,8 +2958,8 @@ public partial class MainWindow : Window
             // the dictation is dropped at the caret we snapshotted, inside any typed text (via the same
             // DictationText.InsertAt the Insert button uses), then submitted. The dialog was modal, so
             // the box could not change since we snapshotted it; clear it now so the user does not see -
-            // or re-send - already-committed text. On a transcription FAILURE the typed text is put back
-            // (RestoreDictatedComposerText) so it is never lost.
+            // or re-send - already-committed text. On ANY failure the words are put back in the compose
+            // box (OnDictationFailed) so they are never lost.
             if (dlg.IsBackgroundSend && dlg.BackgroundRecorder is not null && target is not null)
             {
                 var recorder = dlg.BackgroundRecorder;
@@ -2976,11 +2976,10 @@ public partial class MainWindow : Window
                     recorder, dlg.BackgroundPrefix, target, _dictationTranscriber!,
                     submit: text => global::Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
                         () => SubmitDictatedTextAsync(target, text)),
-                    isSessionReady: () => global::CcDirector.Core.Dictation.DictationReadiness.IsReadyForDelivery(target.ActivityState),
                     before: before,
                     after: after,
-                    onFailed: err => global::Avalonia.Threading.Dispatcher.UIThread.Post(
-                        () => OnDictationFailed(target, composerText, err)));
+                    onFailed: (err, composedText) => global::Avalonia.Threading.Dispatcher.UIThread.Post(
+                        () => OnDictationFailed(target, composerText, composedText, err)));
                 return;
             }
 
@@ -3043,17 +3042,6 @@ public partial class MainWindow : Window
 
         FileLog.Write($"[MainWindow] SubmitDictatedTextAsync: {text.Length} chars to session {target.Id}");
 
-        // Issue #1181, Task 3b: refuse a desktop-dictated Send while a mobile dictation is already
-        // inbound to this session, so the two dictations cannot collide (same rule as the typed Send).
-        if (target.IsDictationLocked)
-        {
-            FileLog.Write($"[MainWindow] SubmitDictatedTextAsync ignored: session {target.Id} dictation-locked");
-            await MessageBox.ShowAsync(this, "A dictation is arriving",
-                "This session is already receiving a dictation from your phone. Your spoken message was NOT sent, "
-                + "so the two cannot collide. Try again once the first dictation lands.");
-            return;
-        }
-
         // Rewind point, exactly like SendPrompt.
         target.InitializeHistory();
         target.History?.TakeSnapshot();
@@ -3069,10 +3057,12 @@ public partial class MainWindow : Window
     // ===== Fire-and-forget dictation delivery =====
     //
     // A desktop Send/Speak dictation either goes into its session now or fails loudly at once - there is
-    // NO durable queue and NO background retry. BackgroundDictationSend transcribes off the UI thread and
-    // submits into the session if it is idle at its prompt; if transcription fails or the session is not
-    // accepting input, the words are reported with a modal and dropped (the typed text is restored). This
-    // replaced the old silent hold-and-retry store whose reassurance banner everyone missed.
+    // NO durable queue, NO background retry, and NO readiness pre-check. BackgroundDictationSend
+    // transcribes off the UI thread and submits straight through the echo-verified terminal submit; that
+    // submit itself is the only arbiter of "the session took the text" (the old ActivityState gate
+    // rejected healthy idle sessions because that state lags real silence by 10 seconds - see issue
+    // #1308). On failure the words are put back in the compose box and reported with a modal, so
+    // nothing the user said is ever lost.
 
     private global::CcDirector.Core.Transcription.IDictationTranscriber? _dictationTranscriber;
     private bool _dictationInfraReady;
@@ -3090,24 +3080,31 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// A fire-and-forget dictation could not be delivered: transcription failed, or the target session
-    /// was not accepting input. There is no queue and no retry - restore any typed text so it is never
-    /// lost, and report it with a modal so the failure is impossible to miss (the old silent hold-notice
-    /// everyone missed is gone). Runs on the UI thread.
+    /// A fire-and-forget dictation could not be delivered: transcription failed, or the submit into the
+    /// session's composer failed. There is no queue and no retry - put the words back in the compose box
+    /// so nothing is lost, and report it with a modal so the failure is impossible to miss (the old
+    /// silent hold-notice everyone missed is gone). <paramref name="composedText"/> is the full composed
+    /// turn (typed text with the transcript inserted at the caret) when transcription succeeded but the
+    /// submit failed; null when the failure happened before a transcript existed, in which case only the
+    /// typed <paramref name="composerText"/> can be restored. Runs on the UI thread.
     /// </summary>
-    private async void OnDictationFailed(Session target, string composerText, string error)
+    private async void OnDictationFailed(Session target, string composerText, string? composedText, string error)
     {
         try
         {
-            if (!string.IsNullOrEmpty(composerText))
+            var restore = composedText ?? composerText;
+            if (!string.IsNullOrEmpty(restore))
             {
                 if (_activeSession?.Session == target)
-                    InsertIntoPromptInputAt(composerText, 0);
+                    InsertIntoPromptInputAt(restore, 0);
                 else
-                    target.PendingPromptText = global::CcDirector.Avalonia.Voice.DictationText.Join(composerText, target.PendingPromptText ?? "");
+                    target.PendingPromptText = global::CcDirector.Avalonia.Voice.DictationText.Join(restore, target.PendingPromptText ?? "");
             }
+            var whatSurvived = composedText is not null
+                ? "The transcribed text has been put in the message box - review it and press Send when you are ready."
+                : "Any text you had typed has been put back - dictate again when you are ready.";
             await MessageBox.ShowAsync(this, "Dictation not sent",
-                $"Your dictation was not sent: {error}\n\nNothing was queued. Any text you had typed has been put back - dictate again when you are ready.");
+                $"Your dictation was not sent: {error}\n\nNothing was queued. {whatSurvived}");
         }
         catch (Exception ex)
         {
@@ -4875,23 +4872,6 @@ public partial class MainWindow : Window
         if (IsActiveSessionTranscribing())
         {
             FileLog.Write("[MainWindow] SendPrompt ignored: session transcribing");
-            return;
-        }
-
-        // Issue #1181, Task 3b: also refuse a typed Send while a MOBILE dictation is inbound to this
-        // session (a durable PENDING delivery marker exists for it - issue #1188). The transcribing
-        // guard above only covers a DESKTOP-initiated dictation, which sets the local IsTranscribing
-        // flag; a mobile dictation does not, so it needs this separate check. Checked before the
-        // compose box is consumed, so the user's text is preserved. A modal pop-up (not the small
-        // notification line, which is easy to miss and gets overwritten by the queue banner) makes it
-        // unmissable; typing and Queue stay fully usable - only an immediate Send is intercepted.
-        if (_activeSession.Session.IsDictationLocked)
-        {
-            FileLog.Write("[MainWindow] SendPrompt ignored: session dictation-locked (mobile dictation inbound)");
-            await MessageBox.ShowAsync(this, "A dictation is arriving",
-                "This session is receiving a dictation from your phone. Your message was NOT sent, so it can't "
-                + "collide with the arriving text.\n\nYour text is still in the box - press Send again once the "
-                + "dictation lands, or press Queue to send it automatically when the session is ready.");
             return;
         }
 

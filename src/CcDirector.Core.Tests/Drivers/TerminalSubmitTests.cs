@@ -224,6 +224,65 @@ public sealed class TerminalSubmitTests
         Assert.Equal(new byte[] { 0x0D }, backend.WrittenBytes[1]);
     }
 
+    // ===== screen-grid fallback (issue #1308) ======================================================
+    // A long dictation that WRAPS across composer rows is repainted interleaved with box borders and
+    // footer hints, so the byte stream may never carry the typed text as one contiguous run even
+    // though it is sitting in the composer. The rendered screen is consulted as a second opinion
+    // before Escape/retype/throw.
+
+    [Fact]
+    public async Task EchoVerifiedSubmit_EchoTornInByteStream_ScreenSnapshotRescuesAndPressesEnter()
+    {
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+        var text = "Do you understand what it is I am talking about? And can you please also rename this session";
+        // The byte stream only ever shows torn fragments interleaved with the footer hint.
+        backend.EchoScript.UseDefault(RecordingEchoStep.CustomEcho("bypasspermissionson esc again to clear"));
+        // The rendered screen shows the text wrapped across two composer rows, with borders and padding.
+        var screen = new[]
+        {
+            "| Do you understand what it is I am talking       |",
+            "| about? And can you please also rename this      |",
+            "| session                                         |",
+            "  bypass permissions on (shift+tab to cycle)",
+        };
+
+        await TerminalSubmit.EchoVerifiedSubmitAsync(
+            backend,
+            text,
+            "Test",
+            echoTimeout: TimeSpan.FromMilliseconds(30),
+            pollInterval: TimeSpan.FromMilliseconds(5),
+            enterSettleDelay: TimeSpan.FromMilliseconds(1),
+            screenSnapshot: () => screen);
+
+        // Rescued on attempt 1: text typed once, Enter pressed, and no Escape ever disturbed the composer.
+        Assert.Equal(1, backend.EnterCount);
+        Assert.Equal(new byte[] { 0x0D }, backend.WrittenBytes[^1]);
+        Assert.DoesNotContain(backend.WrittenBytes, b => b.Length == 1 && b[0] == 0x1B);
+        Assert.Equal([text], backend.SubmittedTexts);
+    }
+
+    [Fact]
+    public async Task EchoVerifiedSubmit_ScreenSnapshotWithoutTheText_StillFailsLoudly()
+    {
+        var backend = new RecordingSessionBackend { Buffer = new CircularTerminalBuffer() };
+        backend.EchoScript.UseDefault(RecordingEchoStep.Withheld());
+        var screen = new[] { "Some unrelated conversation output", "> ", "esc to interrupt" };
+
+        var error = await Assert.ThrowsAsync<ComposerNotAcceptingInputException>(
+            () => TerminalSubmit.EchoVerifiedSubmitAsync(
+                backend,
+                "these words never reached the composer",
+                "Test",
+                echoTimeout: TimeSpan.FromMilliseconds(20),
+                pollInterval: TimeSpan.FromMilliseconds(5),
+                enterSettleDelay: TimeSpan.FromMilliseconds(1),
+                screenSnapshot: () => screen));
+
+        Assert.Contains("never echoed", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, backend.EnterCount);
+    }
+
     [Fact]
     public void StripAnsi_RemovesCsiSequences()
     {

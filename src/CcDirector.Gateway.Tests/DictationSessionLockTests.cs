@@ -4,23 +4,23 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using CcDirector.Core.Storage;
 using CcDirector.Gateway.Voice;
-using Microsoft.AspNetCore.Http;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// The Gateway-side enforced session lock (issue #1188): a session is LOCKED for human input at the Gateway
-/// front door exactly while a PENDING dictation record exists for it. The lock is a pure projection of the
-/// durable PENDING marker - it never auto-releases and it survives a Gateway restart (the marker + session id
-/// are on disk). These tests drive a real <see cref="GatewayHost"/> over the HTTP front door with no Director
-/// present: a locked session is rejected BEFORE the session lookup, so the 423 is observable without one.
+/// The Gateway front door never refuses human input because a dictation is inbound. The old issue
+/// #1188 "session lock" (423 Locked on /prompt, /upload-image and /recap while a PENDING dictation
+/// record existed) was removed deliberately (issue #1308): this is a single-operator tool, so a
+/// collision between the operator's own phone dictation and their own typed send is theirs to make -
+/// and a wedged PENDING marker used to falsely block every send for its whole lifetime. These tests
+/// drive a real <see cref="GatewayHost"/> over the HTTP front door with no Director present: a request
+/// that proceeds past any lock reaches the session lookup and returns 404, which is exactly the
+/// "was not refused" signal.
 /// </summary>
 public sealed class DictationSessionLockTests : IAsyncLifetime
 {
     private const string GatewayToken = "test-token";
-    private const string LockMessage =
-        "This session is receiving a dictation. You cannot send input until it arrives or is cancelled.";
 
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
@@ -50,7 +50,7 @@ public sealed class DictationSessionLockTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RegisteringADictation_LocksTheSession_PromptRejectedWith423AndTheMessage()
+    public async Task PromptWhileDictationInbound_IsNotRefused()
     {
         var sessionId = Guid.NewGuid().ToString();
 
@@ -63,81 +63,22 @@ public sealed class DictationSessionLockTests : IAsyncLifetime
         var regResp = await _http.SendAsync(reg);
         Assert.Equal(HttpStatusCode.OK, regResp.StatusCode);
 
-        var (status, body) = await PromptAsync(sessionId);
-
-        Assert.Equal(StatusCodes.Status423Locked, (int)status);
-        Assert.Equal(LockMessage, body.GetProperty("error").GetString());
+        // The typed prompt proceeds past any lock to the session lookup (404: no Director is running).
+        var (status, _) = await PromptAsync(sessionId);
+        Assert.Equal(HttpStatusCode.NotFound, status);
     }
 
     [Fact]
-    public async Task DeliveredClearsTheLock()
-    {
-        await AssertLockClearsWhen(id => Store().MarkDelivered(id, submitted: true, movedOn: false, transcript: "hi"));
-    }
-
-    [Fact]
-    public async Task AbandonedClearsTheLock()
-    {
-        await AssertLockClearsWhen(id => Store().MarkAbandoned(id, "cancelled"));
-    }
-
-    [Fact]
-    public async Task FailedClearsTheLock()
-    {
-        await AssertLockClearsWhen(id => Store().MarkFailed(id, "audio_too_large"));
-    }
-
-    [Fact]
-    public async Task LockSurvivesAFreshGatewayInstance()
-    {
-        var sessionId = Guid.NewGuid().ToString();
-        Store().MarkPending(Guid.NewGuid().ToString(), sessionId);
-
-        // A fresh GatewayHost over the SAME on-disk root recomputes the lock from disk and still rejects.
-        var restarted = NewGateway();
-        await restarted.StartAsync();
-        try
-        {
-            using var http2 = NewClient(restarted.Port);
-            var (status, body) = await PromptAsync(sessionId, http2);
-            Assert.Equal(StatusCodes.Status423Locked, (int)status);
-            Assert.Equal(LockMessage, body.GetProperty("error").GetString());
-        }
-        finally
-        {
-            await restarted.StopAsync();
-        }
-    }
-
-    [Fact]
-    public async Task UploadImageAndRecap_AreAlsoRejectedWhenLocked()
+    public async Task UploadImageAndRecap_AreNotRefusedWhileDictationInbound()
     {
         var sessionId = Guid.NewGuid().ToString();
         Store().MarkPending(Guid.NewGuid().ToString(), sessionId);
 
         var image = await _http.PostAsync($"/sessions/{sessionId}/upload-image", content: null);
-        Assert.Equal(StatusCodes.Status423Locked, (int)image.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, image.StatusCode);
 
         var recap = await _http.PostAsync($"/sessions/{sessionId}/recap", content: null);
-        Assert.Equal(StatusCodes.Status423Locked, (int)recap.StatusCode);
-    }
-
-    // Seed a PENDING marker for a fresh session (locked), confirm /prompt is 423, then apply the terminal
-    // transition and confirm the lock is gone (/prompt is no longer 423 - here 404, since there is no
-    // Director to locate, which is exactly the "proceeded past the lock" signal).
-    private async Task AssertLockClearsWhen(Action<string> transition)
-    {
-        var sessionId = Guid.NewGuid().ToString();
-        var uploadId = Guid.NewGuid().ToString();
-        Store().MarkPending(uploadId, sessionId);
-
-        Assert.Equal(StatusCodes.Status423Locked, (int)(await PromptAsync(sessionId)).status);
-
-        transition(uploadId);
-
-        var (status, _) = await PromptAsync(sessionId);
-        Assert.NotEqual(StatusCodes.Status423Locked, (int)status);
-        Assert.Equal(HttpStatusCode.NotFound, status); // lock cleared -> proceeded to the (absent) session lookup
+        Assert.Equal(HttpStatusCode.NotFound, recap.StatusCode);
     }
 
     // ===== helpers =================================================================================

@@ -1609,22 +1609,16 @@ public sealed class Session : IDisposable
     /// multi-line blocks when the TUI has requested mode 2004; non-PTY transports keep their
     /// backend-specific whole-turn semantics.
     ///
-    /// <paramref name="source"/> names who is sending (issue #1181, Task 3b). It DEFAULTS to
-    /// <see cref="SendSource.UserInput"/> (fail-closed): a human send into a session that is locked
-    /// because a dictation is inbound throws <see cref="SessionLockedException"/> so the arriving
-    /// dictation and the user's typing cannot collide. The dictation's own arrival
-    /// (<see cref="SendSource.Delivery"/>) and framework-authored sends
-    /// (<see cref="SendSource.Internal"/>) are exempt.
+    /// <paramref name="source"/> names who is sending: a human (<see cref="SendSource.UserInput"/>,
+    /// the default), an arriving dictation (<see cref="SendSource.Delivery"/>), or the framework
+    /// itself (<see cref="SendSource.Internal"/>). It is diagnostic only - sends are never refused
+    /// by source. The old dictation-lock rejection here was removed deliberately: this is a
+    /// single-operator tool, and a collision between the operator's own phone dictation and their
+    /// own typed send is theirs to make, not the Director's to police.
     /// </summary>
     public async Task SendTextAsync(string text, SendSource source = SendSource.UserInput)
     {
         if (_disposed || Status is SessionStatus.Exited or SessionStatus.Failed) return;
-
-        if (source == SendSource.UserInput && IsDictationLocked)
-        {
-            FileLog.Write($"[Session] SendTextAsync REJECTED (dictation lock): session={Id}, len={text.Length}");
-            throw new SessionLockedException();
-        }
 
         FileLog.Write($"[Session] SendTextAsync: session={Id}, source={source}, driver={Driver.Kind}, text=\"{(text.Length > 60 ? text[..60] + "..." : text)}\", len={text.Length}");
         if (BackendType is SessionBackendType.ConPty)
@@ -1634,7 +1628,8 @@ public sealed class Session : IDisposable
                 text,
                 Driver.Kind.ToString(),
                 BracketedPasteEnabled,
-                requireEcho: Driver.Kind != Agents.AgentKind.Copilot);
+                requireEcho: Driver.Kind != Agents.AgentKind.Copilot,
+                screenSnapshot: SnapshotScreenRows);
         }
         else
         {

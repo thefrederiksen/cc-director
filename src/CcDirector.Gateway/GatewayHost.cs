@@ -1077,11 +1077,6 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1045: pass the per-device-key registry so the voice-turn routes' own token
             // check (issue #369) accepts a phone's enrolled device key, not just the shared token.
             devices: Devices,
-            // Issue #1188: the same durable dictation upload store the dictation endpoint writes to, so the
-            // front-door human-input endpoints can enforce the session lock (reject input while a PENDING
-            // dictation record exists for the session). One store instance per Gateway, so the lock reads
-            // this host's own on-disk root.
-            dictationUploads: _dictationUploads,
             // Issue #1176 (Phase 1a): serve /sessions from the Director-push cache when the stream is
             // fresh; null when stream mode is off, keeping /sessions byte-identical to today.
             pushedSessions: _streamMode ? PushedSessions : null,

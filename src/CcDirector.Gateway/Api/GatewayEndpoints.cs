@@ -56,7 +56,6 @@ internal static class GatewayEndpoints
         Gateway.Events.DirectorEventLog? directorEvents = null,
         Voice.GatewayTurnJobStore? turnJobs = null,
         Pairing.DeviceRegistry? devices = null,
-        Voice.VoiceUploadStore? dictationUploads = null,
         // Issue #1176 (Phase 1a): when non-null, /sessions serves a Director from this push cache instead
         // of pulling it, whenever that Director's stream is connected and its last push is within
         // streamStaleAfter. Null (stream mode off) keeps the pull-only behaviour byte-identical to today.
@@ -78,21 +77,11 @@ internal static class GatewayEndpoints
         // and leaves each Director to number locally.
         Discovery.FleetSessionNumberAllocator? sessionNumbers = null)
     {
-        // Issue #1188: the enforced session lock. A session is LOCKED for human input exactly while a PENDING
-        // dictation record exists for it (a pure projection of the durable record - it never auto-releases;
-        // it clears only when the record leaves PENDING). The front-door human-text entry points below reject
-        // with 423 Locked while locked. The Gateway's OWN dictation injection reaches the Director directly
-        // (GatewayDictationEndpoint.RunCompleteCoreAsync -> client.PostPromptAsync), which BYPASSES this
-        // Gateway endpoint, so the dictation being delivered is naturally exempt from its own lock.
-        // Guarded human-text entry points: POST /sessions/{sid}/prompt (the primary), /sessions/{sid}/upload-image,
-        // and POST /sessions/{sid}/recap. DEFERRED (voice features, not plain human text - a later task if
-        // wanted): the voice-turn submit and the wingman ask/goal paths.
-        IResult? DictationLock(string sid) =>
-            dictationUploads?.IsSessionLocked(sid) == true
-                ? Results.Json(
-                    new { error = "This session is receiving a dictation. You cannot send input until it arrives or is cancelled." },
-                    statusCode: StatusCodes.Status423Locked)
-                : null;
+        // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
+        // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
+        // between the operator's own inbound dictation and their own typed send is theirs to make, not
+        // the Gateway's to police - and a wedged PENDING marker used to falsely block every send for its
+        // whole lifetime. The marker itself stays (it paints the roster's orange "receiving a dictation").
 
         // Issue #1177 (Phase 4a): the freshness window used both by /sessions (pushed-cache serve) and by
         // LocateSessionAsync (pushed-cache session location). Resolved once here so every session endpoint's
@@ -1132,7 +1121,6 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req) =>
         {
-            if (DictationLock(sid) is { } locked) return locked; // issue #1188: reject human input while a dictation is arriving
             if (req is null || string.IsNullOrEmpty(req.Text))
                 return Results.BadRequest(new { error = "text is required" });
 
@@ -1236,7 +1224,6 @@ internal static class GatewayEndpoints
         // folder (same machine as the session) and returns the saved absolute path.
         app.MapPost("/sessions/{sid}/upload-image", async (string sid, HttpContext ctx) =>
         {
-            if (DictationLock(sid) is { } locked) return locked; // issue #1188
             var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
@@ -1554,7 +1541,6 @@ internal static class GatewayEndpoints
 
         app.MapPost("/sessions/{sid}/recap", async (string sid, HttpContext ctx) =>
         {
-            if (DictationLock(sid) is { } locked) return locked; // issue #1188
             var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)
                 return Results.NotFound(new { error = "session not found across any director" });
