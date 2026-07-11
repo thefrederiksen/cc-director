@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { MutableRefObject } from "react";
 import {
   enqueuePrompt,
   sendPrompt,
@@ -34,9 +35,15 @@ export interface SessionComposerProps {
   onChange: (value: string) => void;
   /** Replace the queue with the server's authoritative list after a Queue action. */
   onQueued: (items: QueueItem[]) => void;
+  /**
+   * When set, the composer publishes a function into this ref that focuses its textarea. The Source
+   * Control tab (issue #1266) calls it after inserting a clicked file's path so the reader can type the
+   * matching instruction straight away. Cleared on unmount so a stale focuser is never called.
+   */
+  focusHandleRef?: MutableRefObject<(() => void) | null>;
 }
 
-export function SessionComposer({ sessionId, value, onChange, onQueued }: SessionComposerProps) {
+export function SessionComposer({ sessionId, value, onChange, onQueued, focusHandleRef }: SessionComposerProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +55,16 @@ export function SessionComposer({ sessionId, value, onChange, onQueued }: Sessio
   // change while it is open). Dictation is inserted here, exactly like the desktop Insert button and
   // the mobile SessionControls, instead of always at the end.
   const caretRef = useRef(0);
+
+  // Publish a focuser for the composer textarea into the parent-owned ref (issue #1266), and clear it on
+  // unmount so the Source Control tab never calls into a torn-down composer.
+  useEffect(() => {
+    if (!focusHandleRef) return;
+    focusHandleRef.current = () => textareaRef.current?.focus();
+    return () => {
+      focusHandleRef.current = null;
+    };
+  }, [focusHandleRef]);
 
   const send = useCallback(async () => {
     if (!sessionId || busy) return;
