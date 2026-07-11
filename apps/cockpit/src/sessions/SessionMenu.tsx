@@ -38,14 +38,26 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
   // The dropdown is rendered in a portal on document.body so it can never be clipped by the scrolling
-  // rail or covered by a later card; its position tracks the button (issue #1214).
-  const [popPos, setPopPos] = useState<{ top: number; right: number } | null>(null);
+  // rail or covered by a later card; its position tracks the button (issue #1214). It anchors from
+  // the top (opening downward) when there is room below, and flips to anchor from the bottom (opening
+  // upward) for a button near the bottom of the window, so it never runs off the bottom of the screen.
+  const [popPos, setPopPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
 
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
       const r = btnRef.current?.getBoundingClientRect();
-      if (r) setPopPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+      if (!r) return;
+      const right = Math.max(8, window.innerWidth - r.right);
+      // The menu holds a fixed set of items; this height covers all of them plus padding. If the
+      // space below the button cannot fit it, open upward from the button's top instead.
+      const MENU_HEIGHT = 184;
+      const spaceBelow = window.innerHeight - r.bottom;
+      if (spaceBelow < MENU_HEIGHT + 8) {
+        setPopPos({ bottom: Math.max(8, window.innerHeight - r.top + 4), right });
+      } else {
+        setPopPos({ top: r.bottom + 4, right });
+      }
     };
     place();
     window.addEventListener("resize", place);
@@ -178,7 +190,15 @@ export function SessionMenu({ session, onClosed, variant = "page" }: SessionMenu
             ref={popRef}
             className="session-menu-pop"
             role="menu"
-            style={{ position: "fixed", top: popPos.top, right: popPos.right }}
+            style={{
+              position: "fixed",
+              right: popPos.right,
+              // Always set BOTH top and bottom (one to a value, the other to "auto") so that when the
+              // menu flips upward (bottom-anchored) no stray top from CSS can leave both set at once,
+              // which would break the menu's position.
+              top: popPos.top ?? "auto",
+              bottom: popPos.bottom ?? "auto",
+            }}
           >
             <button type="button" role="menuitem" className="session-menu-item" onClick={openRename}>
               Rename
