@@ -9,6 +9,7 @@ import { VoiceMode } from "./pages/VoiceMode";
 import { CarMode } from "./pages/CarMode";
 import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
+import { YourThrottle } from "./pages/YourThrottle";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
@@ -84,6 +85,9 @@ const router = createBrowserRouter(
             { path: "/car", element: <CarMode /> },
             { path: "/settings", element: <AiSettings /> },
             { path: "/about", element: <About /> },
+            // Your Throttle (devthrottle-stats mission): the in-app port of the standalone Gateway
+            // /stats page, reading the same GET /stats/data feed through client-core.
+            { path: "/throttle", element: <YourThrottle /> },
             { path: "/new", element: <NewSession /> },
             { path: "/session/:sessionId", element: <Chat /> },
             { path: "/session/:sessionId/chat", element: <Chat /> },

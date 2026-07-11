@@ -1,0 +1,133 @@
+/* Your Throttle page (devthrottle-stats mission) - the in-Cockpit port of the standalone Gateway
+   /stats page. Rendered as normal scrolling content inside the padded main pane. Every color is a
+   token from the app theme (src/styles.css :root); nothing hard-codes a color so the page reads as one
+   product in both light and dark. */
+.thr {
+  max-width: 860px;
+}
+
+.thr .page-head {
+  margin-bottom: 16px;
+}
+.thr .page-head h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+}
+.thr .page-sub {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin: 0;
+  max-width: 640px;
+}
+
+.thr-banner {
+  background: var(--needsyou-bg);
+  color: var(--needsyou-text);
+  border: 1px solid var(--attention);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.thr-loading,
+.thr-empty {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 24px 0;
+}
+
+/* Headline metric cards */
+.thr-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.thr-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.thr-card-value {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.1;
+}
+.thr-card-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 6px;
+}
+.thr-card-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* Breakdown tables */
+.thr-section {
+  margin-bottom: 24px;
+}
+.thr-section h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.thr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.thr-table th,
+.thr-table td {
+  text-align: left;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.thr-table thead th {
+  color: var(--text-dim);
+  font-weight: 600;
+  background: var(--surface-2);
+}
+.thr-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.thr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.thr-muted {
+  color: var(--text-dim);
+}
+
+/* Honesty caveats */
+.thr-caveats {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-top: 8px;
+}
+.thr-caveats h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.thr-caveats ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.thr-caveats li {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
