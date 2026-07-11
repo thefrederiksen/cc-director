@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 // The real 404 page for the desktop Cockpit. A hard navigation to a client-side route the router
 // does not know (a stale bookmark, a mistyped path) lands here instead of a developer placeholder.
-// It states plainly that the page does not exist and offers the way back to Sessions (the "/" index).
+// It states plainly that the page does not exist and offers the way back to Sessions (the /sessions home).
 export function NotFound() {
   return (
     <section className="pane">
@@ -11,7 +11,7 @@ export function NotFound() {
         The page you were looking for does not exist. It may have moved, or the link may be out of
         date.
       </p>
-      <Link className="pane-link" to="/">
+      <Link className="pane-link" to="/sessions">
         Go to Sessions
       </Link>
     </section>

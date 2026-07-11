@@ -44,6 +44,21 @@ const PIVOTS: ReadonlyArray<{ key: Pivot; label: string; kindLabel: string }> = 
   { key: "list", label: "Fleet list", kindLabel: "Session" },
 ];
 
+// The grouping is sticky per browser: the map opens on whatever the user last chose (rather than a
+// "smart" default that guesses from the fleet shape), so returning to the map lands them exactly where
+// they left off. Defaults to "By machine" the first time, or when storage is unavailable.
+const PIVOT_STORAGE_KEY = "cockpit.fleetMapPivot";
+
+function initialPivot(): Pivot {
+  try {
+    const saved = window.localStorage.getItem(PIVOT_STORAGE_KEY);
+    if (saved === "machine" || saved === "repo" || saved === "agent" || saved === "list") return saved;
+  } catch {
+    /* storage unavailable (private mode) - fall through to the default */
+  }
+  return "machine";
+}
+
 // A group of sessions that share a team (SessionDto.groupId), rendered as a lead/worker cluster.
 interface Team {
   groupId: string;
@@ -66,7 +81,17 @@ export function FleetMapView() {
   const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
   const [directors, setDirectors] = useState<DirectorReachability[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
-  const [pivot, setPivot] = useState<Pivot>("machine");
+  const [pivot, setPivotState] = useState<Pivot>(initialPivot);
+  // Persist the choice so the map reopens on it (see initialPivot). Wraps the raw setter so every
+  // pivot change - from any button - writes through to storage.
+  const setPivot = useCallback((next: Pivot) => {
+    setPivotState(next);
+    try {
+      window.localStorage.setItem(PIVOT_STORAGE_KEY, next);
+    } catch {
+      /* storage unavailable (private mode) - the selection still applies this session */
+    }
+  }, []);
   // Title search (issue #1211): a case-insensitive substring filter over the session name. It hides
   // non-matches and NEVER reorders what remains (see the lanes memo below). Not persisted across
   // reloads.
