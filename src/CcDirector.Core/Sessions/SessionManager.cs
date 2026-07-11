@@ -74,6 +74,14 @@ public sealed class SessionManager : IDisposable
     public string? DirectorId { get; set; }
 
     /// <summary>
+    /// Issue #1357: returns the signed-in DevThrottle user (email + nickname) to name in a Pi session's
+    /// launch-time preamble, or null when no one is signed in. Set by ControlApiHost.StartAsync to read
+    /// the host's cached snapshot SYNCHRONOUSLY (no network) so session creation never blocks. Null
+    /// (tests, no host wiring) omits the user-identity line, exactly as when nobody is signed in.
+    /// </summary>
+    public Func<Account.SignedInUser?>? SignedInUserAccessor { get; set; }
+
+    /// <summary>
     /// Fired immediately after a session is added to the manager's internal dictionary,
     /// for EVERY session - whether created via the Avalonia UI, the web Control API,
     /// or restored from persistence at startup. Handlers must be idempotent: the
@@ -578,8 +586,11 @@ public sealed class SessionManager : IDisposable
                     session.CustomName,
                     SessionName.FolderName(repoPath),
                     SessionName.Disambiguator(id));
+                // Issue #1357: name the signed-in user in Pi's preamble too, read synchronously from the
+                // host's cached snapshot (no network) so launch never blocks; null omits the line.
+                var signedInUser = SignedInUserAccessor?.Invoke();
                 var preambleFile = CcDirector.Core.Pi.PiPreambleWriter.WriteForSession(
-                    id.ToString(), piName, Environment.MachineName, repoPath);
+                    id.ToString(), piName, Environment.MachineName, repoPath, signedInUser);
                 args = $"{args} --append-system-prompt \"{preambleFile}\"".Trim();
                 _log?.Invoke("Wrote Pi fleet preamble and passed it via --append-system-prompt.");
             }

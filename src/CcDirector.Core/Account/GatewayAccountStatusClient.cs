@@ -26,6 +26,13 @@ public sealed record GatewayAccountStatus(
     string? Provider,
     string? Error)
 {
+    /// <summary>
+    /// The signed-in user's chosen account nickname (issue #1357), or null when not signed in, when the
+    /// user has not set one, or when the Gateway did not resolve it. An <c>init</c> property (not a
+    /// positional parameter) so every existing construction of this record stays source-compatible.
+    /// </summary>
+    public string? Nickname { get; init; }
+
     /// <summary>The state for a Director that has no Gateway URL configured.</summary>
     public static GatewayAccountStatus NotConfigured() =>
         new(GatewayConfigured: false, Reachable: false, SignedIn: false, Email: null, Provider: null, Error: null);
@@ -102,9 +109,9 @@ public sealed class GatewayAccountStatusClient
                 return new GatewayAccountStatus(GatewayConfigured: true, Reachable: false, SignedIn: false,
                     Email: null, Provider: null, Error: "The Gateway returned an empty status response.");
 
-            FileLog.Write($"[GatewayAccountStatusClient] GetStatusAsync: signedIn={dto.SignedIn} (identity {(dto.Email is null ? "unavailable" : "resolved")})");
+            FileLog.Write($"[GatewayAccountStatusClient] GetStatusAsync: signedIn={dto.SignedIn} (identity {(dto.Email is null ? "unavailable" : "resolved")}, nickname {(dto.Nickname is null ? "unset" : "resolved")})");
             return new GatewayAccountStatus(GatewayConfigured: true, Reachable: true, SignedIn: dto.SignedIn,
-                Email: dto.Email, Provider: dto.Provider, Error: null);
+                Email: dto.Email, Provider: dto.Provider, Error: null) { Nickname = dto.Nickname };
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

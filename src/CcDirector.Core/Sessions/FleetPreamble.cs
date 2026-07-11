@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using CcDirector.Core.Account;
+
 namespace CcDirector.Core.Sessions;
 
 /// <summary>
@@ -18,16 +21,32 @@ public static class FleetPreamble
     /// <summary>
     /// Render the preamble for one session. <paramref name="name"/> may be null/empty
     /// (an unnamed session); the other values are always present on a live session.
+    /// <paramref name="user"/> is the signed-in DevThrottle user (issue #1357); when null (no one
+    /// signed in) the user-identity line is omitted cleanly - no blank line, no "null" artifact.
     /// </summary>
-    public static string Build(string sessionId, string? name, string machine, string repoPath)
+    public static string Build(string sessionId, string? name, string machine, string repoPath, SignedInUser? user = null)
     {
         var shortId = sessionId.Length >= 8 ? sessionId.Substring(0, 8) : sessionId;
         var displayName = string.IsNullOrWhiteSpace(name) ? "(unnamed)" : name;
 
-        var lines = new[]
+        var lines = new List<string>
         {
             $"[CC Director fleet] You are session {shortId} \"{displayName}\" on machine {machine}, repo {repoPath}.",
             $"Your full session id is {sessionId}.",
+        };
+
+        // Issue #1357: tell the agent WHO the human is, so "me / my account / email me" binds to the
+        // signed-in account instead of being guessed from usage or the database. Only emitted when a
+        // user is actually signed in with an email; otherwise the line is omitted entirely.
+        if (user is not null && !string.IsNullOrWhiteSpace(user.Email))
+        {
+            lines.Add(
+                $"The user of this session is {user.DisplayName} ({user.Email}). Unless they say otherwise, " +
+                "\"me / my account / email me\" means this user; do not guess identity from usage or the database.");
+        }
+
+        lines.AddRange(new[]
+        {
             "You can talk to other sessions across the fleet. This command is already on your PATH:",
             "  cc-devthrottle actions --json        list agent-discoverable DevThrottle actions",
             "  cc-devthrottle session list          list every session in the fleet",
@@ -47,7 +66,7 @@ public static class FleetPreamble
             "Every message you send interrupts the receiving agent. 'message send all' reaches only your own",
             "team, which is what you want. Do NOT try to reach the WHOLE fleet ('--everyone') - it freezes",
             "every session on every machine and repo; the Gateway Hub refuses it without a human grant (issue #1229).",
-        };
+        });
 
         return string.Join("\n", lines);
     }

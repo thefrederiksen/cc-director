@@ -1211,8 +1211,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // carries only the boolean + identity, never the access/refresh token (security rule DT-05).
         // Inherits the host-wide token middleware above (the existing gateway.token convention). On a
         // host with no credential service (a non-Windows host, Account null) it truthfully reports
-        // not-signed-in.
-        AccountStatusEndpoint.Map(_app, Account);
+        // not-signed-in. Issue #1357: it also resolves the signed-in user's chosen nickname (cached,
+        // best-effort) through the cloud nickname client, so a session's preamble can name the human;
+        // the identity email/provider path stays entirely local.
+        AccountStatusEndpoint.Map(_app, Account, new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }));
 
         // Gateway Centralization Phase 3 (issue #648): POST /account/logout CLEARS the Gateway-hosted
         // DevThrottle credential through the same reused DevThrottleAccountService (Account). The account

@@ -400,7 +400,13 @@ public sealed class ControlApiHost : IAsyncDisposable
         // and control-API send paths. Idempotent to set on each start.
         Core.Sessions.Session.DictationLockCheck = id => Core.Sessions.DictationLockReader.IsSessionLocked(id);
 
-        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore);
+        // Issue #1357: the signed-in DevThrottle user for a session's preamble. The account credential
+        // lives on the Gateway (issue #651), so this reads GET /account/status (email + provider +
+        // nickname) through a short-lived cache. GatewayConfig.Load is re-read each resolve so a settings
+        // change is picked up without a restart. Standalone/no-Gateway resolves to null (line omitted).
+        var signedInUserProvider = new Core.Account.SignedInUserProvider(Core.Configuration.GatewayConfig.Load);
+
+        ControlEndpoints.Map(_app, _sessionManager, DirectorId, _version, _requestShutdownAsync, _authEnabled, _repositoryRegistry, _turnSummaryCache, gatewayUrl, _proactiveExplain, GatewayMonitor, resolveTailnetEndpoint, () => _gatewayClient, messageSteward, _missionStore, ct => signedInUserProvider.ResolveAsync(ct));
         // Dictation glossary resolution mirrors the key resolver (#253): the Gateway's shared
         // dictionary when attached, the local cache when standalone. GatewayConfig.Load (not the
         // snapshot) is passed so the resolver re-reads config.json each dictation and self-heals
@@ -470,6 +476,16 @@ public sealed class ControlApiHost : IAsyncDisposable
         // (e.g. GET $CC_DIRECTOR_API/sessions/$CC_SESSION_ID to find themselves).
         _sessionManager.ControlApiBaseUrl = $"http://127.0.0.1:{Port}";
         _sessionManager.DirectorId = DirectorId;
+
+        // Issue #1357: let the (synchronous, non-blocking) Pi launch path name the signed-in user from
+        // the provider's cached snapshot. Warm the cache once now so the first Pi session started right
+        // after boot already has it; failures inside ResolveAsync are swallowed (best-effort context).
+        _sessionManager.SignedInUserAccessor = () => signedInUserProvider.CurrentSnapshot;
+        _ = Task.Run(async () =>
+        {
+            try { await signedInUserProvider.ResolveAsync(CancellationToken.None); }
+            catch (Exception ex) { FileLog.Write($"[ControlApiHost] signed-in user warm-up failed (best-effort): {ex.Message}"); }
+        });
 
         // Issue #1292: the Gateway is the authority for the fleet-unique session number. Wire the
         // SessionManager to ask the CURRENT GatewayClient (read the FIELD lazily so a settings change
