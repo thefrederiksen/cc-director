@@ -128,17 +128,21 @@ public sealed class HostedCarModeChat : ICarModeChat
     }
 
     /// <summary>
-    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + the FAST wingman model
-    /// (the "decent but fast" tier the owner asked for), with an optional <c>CC_CARMODE_MODEL</c>
-    /// environment override so the model can be escalated to the thinking tier (GLM) without a code change
-    /// if the fast model cannot reliably choose tools (mission risk to validate with evidence).
+    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + the THINKING wingman
+    /// model (GLM). The fast tier was validated against the real fleet and REJECTED with evidence (mission
+    /// model risk, resolved 2026-07-11): the fast model called the read tools and message/delete correctly
+    /// but SKIPPED start_session entirely and hallucinated "I started a session" with no tool call and no
+    /// session created - unacceptable for a command-and-control agent, where a false "done" is broken, not
+    /// merely slow. The thinking model chooses tools reliably. The optional <c>CC_CARMODE_MODEL</c>
+    /// environment override remains the switch (e.g. to try the fast model again with tool_choice=required,
+    /// a stronger prompt, or a read-vs-act split - a deliberate later latency fast-follow, not a v1 blocker).
     /// </summary>
     public static Func<(string BaseUrl, string Model, string Key)> DefaultResolver(Func<string, string?> vaultGet)
     {
         return () =>
         {
             var mode = TranscriptionModeConfig.Get();
-            var ep = TranscriptionEndpointResolver.ResolveWingmanFast(mode);
+            var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
             var overrideModel = Environment.GetEnvironmentVariable("CC_CARMODE_MODEL");
             var model = string.IsNullOrWhiteSpace(overrideModel) ? ep.Model : overrideModel.Trim();
             var key = vaultGet(ep.KeyName) ?? "";
