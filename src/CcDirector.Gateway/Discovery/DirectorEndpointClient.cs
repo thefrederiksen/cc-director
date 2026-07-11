@@ -402,6 +402,56 @@ public sealed class DirectorEndpointClient : IDisposable
         }
     }
 
+    /// <summary>Forward a "flag this session for deletion" to the owning Director so a remote client
+    /// (or another machine's session) can request the async teardown. Mirrors <see cref="KillSessionAsync"/>
+    /// but hits POST /sessions/{sid}/request-deletion and does not kill anything itself.</summary>
+    public async Task<bool> RequestSessionDeletionAsync(string endpoint, string sessionId, string? reason, CancellationToken ct = default)
+    {
+        try
+        {
+            var http = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/sessions/{sessionId}/request-deletion")
+            {
+                Content = JsonContent.Create(new SessionDeletionRequest { Reason = reason }),
+            };
+            var resp = await _actionHttp.SendAsync(http, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                FileLog.Write($"[DirectorEndpointClient] RequestSessionDeletionAsync HTTP {(int)resp.StatusCode}: {Truncate(body, 200)}");
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorEndpointClient] RequestSessionDeletionAsync FAILED: endpoint={endpoint}, sid={sessionId}, error={ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Forward a "cancel the pending deletion" to the owning Director (DELETE
+    /// /sessions/{sid}/request-deletion), so an operator can spare a session during the grace window
+    /// from a remote client.</summary>
+    public async Task<bool> CancelSessionDeletionAsync(string endpoint, string sessionId, CancellationToken ct = default)
+    {
+        try
+        {
+            var resp = await _actionHttp.DeleteAsync($"{endpoint}/sessions/{sessionId}/request-deletion", ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                FileLog.Write($"[DirectorEndpointClient] CancelSessionDeletionAsync HTTP {(int)resp.StatusCode}: {Truncate(body, 200)}");
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorEndpointClient] CancelSessionDeletionAsync FAILED: endpoint={endpoint}, sid={sessionId}, error={ex.Message}");
+            return false;
+        }
+    }
+
     private static string Truncate(string s, int max) => string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "...";
 
     public async Task<(bool ok, SessionDto? body, string? error)> PatchSessionAsync(string endpoint, string sessionId, SessionUpdateRequest req, CancellationToken ct = default)

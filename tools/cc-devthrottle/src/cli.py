@@ -17,6 +17,7 @@ from . import setup_ops
 from .session_ops import (
     ask_session,
     list_sessions,
+    mark_done,
     rename_session,
     selftest as run_selftest,
     send_message,
@@ -326,6 +327,25 @@ def rename(
         rename_session(None, target_or_name)
     else:
         rename_session(target_or_name, new_name)
+
+
+@session_app.command()
+def done(
+    target: Optional[str] = typer.Argument(
+        None, help="Session to mark for deletion. Defaults to THIS session (CC_SESSION_ID)."
+    ),
+    reason: Optional[str] = typer.Option(
+        None, "--reason", help="Short reason, shown while the session winds down."
+    ),
+) -> None:
+    """Flag a session for deletion (defaults to the current session).
+
+    Does NOT kill the session now - it is flagged, and the owning Director's reaper removes it
+    within about a minute once the grace window passes and it is no longer working. Use this at
+    the end of an unattended run that has nothing left for the user, so the session tears itself
+    down instead of lingering in the fleet.
+    """
+    mark_done(target, reason)
 
 
 @session_app.command()

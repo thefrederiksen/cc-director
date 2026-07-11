@@ -94,10 +94,31 @@ public sealed class SessionManager : IDisposable
     /// </summary>
     public event Action<Session>? OnSessionRemoved;
 
+    /// <summary>
+    /// How often the deletion reaper sweeps for sessions flagged via the Control API
+    /// (POST /sessions/{id}/request-deletion) and removes the eligible ones. Matches the
+    /// ~30s cadence of the other Director/Gateway timer sweeps. Read once when the timer is
+    /// armed in the constructor; tests drive <see cref="ReapPendingDeletions"/> directly.
+    /// </summary>
+    public int DeletionReaperIntervalMs { get; set; } = 30_000;
+
+    /// <summary>
+    /// Grace window between a session being flagged for deletion and the reaper being allowed to
+    /// remove it, so the flagging turn can flush its final output / completion notification first.
+    /// </summary>
+    public int DeletionGraceMs { get; set; } = 30_000;
+
+    /// <summary>Periodic deletion reaper (issue: self-requested session teardown). Disposed in
+    /// <see cref="Dispose"/>. Distinct from the event-driven clean-exit reaper
+    /// (<see cref="WireSessionReaper"/>), which fires off a process exit rather than a flag.</summary>
+    private readonly System.Threading.Timer _deletionReaper;
+
     public SessionManager(AgentOptions options, Action<string>? log = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _log = log;
+        _deletionReaper = new System.Threading.Timer(
+            _ => ReapPendingDeletions(), null, DeletionReaperIntervalMs, DeletionReaperIntervalMs);
     }
 
     /// <summary>Invoke OnSessionCreated. Public so external endpoint mappers (web Control API)
@@ -285,6 +306,62 @@ public sealed class SessionManager : IDisposable
         {
             _log?.Invoke($"Reaping cleanly-exited session {id}.");
             RemoveSession(id);
+        }
+    }
+
+    /// <summary>
+    /// Sweep for sessions flagged for deletion via the Control API and remove the eligible ones.
+    /// A flagged session is reaped once its grace window (<see cref="DeletionGraceMs"/>) has elapsed
+    /// AND it is not actively Working - option (a): we never cut off a final in-flight turn; a session
+    /// that is still Working is left for the next sweep. Called on the reaper timer; also invoked
+    /// directly by tests. Per-session failures are isolated so one bad row cannot stall the sweep.
+    /// </summary>
+    internal void ReapPendingDeletions()
+    {
+        var now = DateTime.UtcNow;
+        foreach (var session in _sessions.Values)
+        {
+            try
+            {
+                if (session.DeletionRequestedAt is not DateTime requestedAt) continue;
+                if ((now - requestedAt).TotalMilliseconds < DeletionGraceMs) continue;
+                // Option (a): wait out a still-running final turn. Reap only when the session is
+                // idle / parked / waiting / exited, never mid-Working.
+                if (session.ActivityState == ActivityState.Working) continue;
+
+                _log?.Invoke($"Reaping session {session.Id} flagged for deletion ({session.DeletionReason ?? "no reason"}).");
+                _ = KillAndRemoveForDeletionAsync(session.Id);
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"Deletion reaper: error evaluating session {session.Id}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Kill (best-effort) and force-remove a session the reaper picked. Unlike the clean-exit reaper,
+    /// this removes regardless of backend/exit code - the session explicitly asked to be gone. Re-checks
+    /// the flag right before removal so a <see cref="Session.CancelDeletion"/> that lands mid-sweep
+    /// spares it.
+    /// </summary>
+    private async Task KillAndRemoveForDeletionAsync(Guid id)
+    {
+        try
+        {
+            if (_sessions.TryGetValue(id, out var session)
+                && session.Status is SessionStatus.Running or SessionStatus.Starting)
+            {
+                try { await KillSessionAsync(id).ConfigureAwait(false); }
+                catch (Exception ex) { _log?.Invoke($"Deletion reaper: kill failed for {id}: {ex.Message}"); }
+            }
+
+            if (_sessions.TryGetValue(id, out var still) && still.DeletionRequestedAt.HasValue)
+                RemoveSession(id);
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"Deletion reaper: remove failed for {id}: {ex.Message}");
         }
     }
 
@@ -1207,6 +1284,7 @@ public sealed class SessionManager : IDisposable
 
     public void Dispose()
     {
+        _deletionReaper.Dispose();
         foreach (var session in _sessions.Values)
         {
             session.Dispose();

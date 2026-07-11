@@ -255,6 +255,22 @@ public sealed class SessionDto
     public bool OnHold { get; set; }
 
     /// <summary>
+    /// True when this session has asked (or been asked) to be deleted and is awaiting the owning
+    /// Director's deletion reaper. Set through POST /sessions/{id}/request-deletion; cleared by
+    /// DELETE /sessions/{id}/request-deletion during the grace window. Mirrors
+    /// <c>Session.PendingDeletion</c>. While true the row paints as a winding-down grey with a
+    /// "Marked for deletion" reason and is removed within roughly a minute. The common case is an
+    /// unattended run flagging ITSELF once it has nothing left for the user, so the session tears
+    /// itself down instead of lingering as a dead tab. The UI renders this verbatim.
+    /// </summary>
+    public bool PendingDeletion { get; set; }
+
+    /// <summary>Short human reason captured when <see cref="PendingDeletion"/> was set
+    /// (e.g. "jobs-auto: nothing to report"). Null when the session is not flagged.
+    /// Mirrors <c>Session.DeletionReason</c>.</summary>
+    public string? DeletionReason { get; set; }
+
+    /// <summary>
     /// Issue #553: true while the Gateway's wingman is actively producing this session's spoken
     /// summary (<c>WingmanVoiceService.IsGenerating</c>). Stamped by the Gateway aggregator only;
     /// always false in Director-local responses. Drives the voice-mode "yellow until ready" color
