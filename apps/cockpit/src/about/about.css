@@ -23,6 +23,17 @@
   margin: 0 0 16px;
 }
 
+.abt-cockpit-build {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin: -8px 0 16px;
+}
+
+.abt-cockpit-build strong {
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
 .abt-error {
   background: #3a1b1b;
   color: #f1a0a0;

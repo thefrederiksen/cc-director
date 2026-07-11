@@ -238,8 +238,13 @@
   display: flex;
   gap: 20px;
   align-items: flex-start;
-  justify-content: center;
+  /* "safe" keeps the lanes centred while they fit, but falls back to start-alignment when the row is
+     wider than the scroll viewport. Plain "center" clips the overflow equally on BOTH sides and makes
+     the first lane unreachable by scrolling - which cut off the edge repository columns. */
+  justify-content: safe center;
   flex-wrap: nowrap;
+  /* Match the canvas padding so the first and last lanes are not flush against the scroll edges. */
+  padding-inline: 2px;
 }
 
 .fmap-lane {

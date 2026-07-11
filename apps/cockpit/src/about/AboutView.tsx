@@ -61,6 +61,12 @@ export function AboutView() {
         <h1>About DevThrottle</h1>
       </div>
       <p className="abt-lede">What this Gateway is running and what&apos;s installed.</p>
+      {/* The cockpit's own build identity, stamped into the static bundle at build time (see
+          vite.config.ts). Always shown - even if the Gateway /about call fails - so you can always
+          confirm which cockpit is deployed, independently of the Gateway version below. */}
+      <p className="abt-cockpit-build">
+        Cockpit build: <strong>{__COCKPIT_COMMIT__}</strong> (built {formatServerTime(__COCKPIT_BUILD_TIME__)} UTC)
+      </p>
 
       {error !== null ? (
         <div className="abt-error">Could not load About info from the Gateway: {error}</div>
@@ -70,7 +76,8 @@ export function AboutView() {
         <>
           <div className="abt-card">
             <Row label="Product" value={about.product} />
-            <Row label="Version" value={about.version} />
+            <Row label="Gateway version" value={about.version} />
+            <Row label="Cockpit build" value={`${__COCKPIT_COMMIT__} (${formatServerTime(__COCKPIT_BUILD_TIME__)} UTC)`} />
             <Row label="Build date" value={about.buildDate ?? "(unknown)"} />
             <Row label="Machine" value={about.machineName} />
             <Row label="Install root" value={about.installRoot} />

@@ -1,5 +1,15 @@
+import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+
+// Stamp the cockpit's OWN build identity at build time so the About page can show exactly which
+// cockpit is deployed, independently of the Gateway's version. The two can diverge when only the
+// static cockpit files are refreshed (a cockpit-only redeploy), so the Gateway version alone cannot
+// tell you which cockpit you are looking at. The commit is the repo HEAD at build time; the time is
+// the build time. git is present in every build path (dev and the release MSBuild), so this is not
+// wrapped in a fallback - if it cannot read the commit the build fails loudly.
+const cockpitCommit = execSync("git rev-parse --short HEAD").toString().trim();
+const cockpitBuildTime = new Date().toISOString();
 
 // The desktop Cockpit is the Gateway's canonical front door: it is served at the site root "/"
 // (epic #967 cutover, issue #979 - the Blazor Server Cockpit is retired). Every asset URL is
@@ -49,6 +59,10 @@ const devProxy = proxyTarget
 
 export default defineConfig({
   base: "/",
+  define: {
+    __COCKPIT_COMMIT__: JSON.stringify(cockpitCommit),
+    __COCKPIT_BUILD_TIME__: JSON.stringify(cockpitBuildTime),
+  },
   plugins: [react()],
   server: {
     proxy: devProxy,

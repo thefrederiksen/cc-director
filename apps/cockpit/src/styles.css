@@ -2074,11 +2074,11 @@ body {
   position: relative;
 }
 
-/* When a rail card's menu is open, lift the WHOLE card above its siblings so the dropdown is not
-   painted under the next card (a later positioned sibling would otherwise cover it). */
-.roster-li:has(.session-menu.open) {
-  z-index: 50;
-}
+/* The dropdown is portaled to document.body and self-positioned with a high z-index (see
+   .session-menu-pop), so the row no longer needs to be lifted for the menu to sit on top. Lifting the
+   row here was in fact harmful: .roster-li is positioned, so raising it to z-index 50 painted the
+   row's own TEXT above the portaled popover (z-index 40), and the text showed through the menu. Do
+   not re-add a z-index raise on the open row. */
 
 .session-menu.rail {
   position: absolute;
@@ -2087,10 +2087,8 @@ body {
   z-index: 2;
 }
 
-/* An open menu lifts above every other rail card so its dropdown is never covered by a lower card. */
-.session-menu.open {
-  z-index: 50;
-}
+/* The open menu no longer needs a z-index raise: the dropdown is portaled to document.body and sits
+   above the app through .session-menu-pop's own z-index, not by lifting this in-row container. */
 
 .session-menu-btn {
   display: inline-flex;
@@ -2126,11 +2124,17 @@ body {
 }
 
 .session-menu-pop {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 40;
+  /* Position is set entirely inline by SessionMenu (position: fixed, plus top OR bottom + right), so
+     the menu can open downward or flip upward. Do NOT set top/right here: a leftover top would leak
+     into the flip-up case (which sets only bottom), leaving both top and bottom set and breaking the
+     menu's position - that is what stopped the bottom rows' menus from appearing at all. */
+  /* Sits above app content (roster rows, fleet cards, the dock) but below the modal dialog overlay
+     (z-index 80). Must exceed any raised in-flow element, or that element's text shows through the
+     portaled menu. */
+  z-index: 70;
   min-width: 168px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 5px;
