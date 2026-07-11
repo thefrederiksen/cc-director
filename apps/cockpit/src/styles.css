@@ -611,9 +611,12 @@ body {
   background: var(--surface-2);
 }
 
+/* The selected row (issue #1211): a filled accent-tinted background plus a full accent ring, so the
+   selection is unmistakable and stays distinct from the red "needs you" attention color even when the
+   same row is both selected AND in attention (per docs/VisualStyle.md - selected item is accent). */
 .roster-row-selected {
-  background: var(--surface-2);
-  box-shadow: inset 0 0 0 1px var(--border);
+  background: rgba(59, 130, 246, 0.16);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
 .roster-dot {
@@ -632,33 +635,69 @@ body {
   flex: 1;
 }
 
+/* The title (issue #1211): a badge + the wrapping name, laid out as a row so the badge holds the top
+   line while the name wraps beside it. */
 .roster-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
+}
+
+/* Reserve EXACTLY two lines for the title so every card is the same height regardless of title length;
+   a longer title wraps onto the second line and then clips with an ellipsis (issue #1211). */
+.roster-name-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-height: calc(2 * 1.35em);
   word-break: break-word;
 }
 
-.roster-num {
+/* The short session number, rendered as ONE shared badge (issue #1211) used identically here and on
+   the Fleet Map node cards, so the number reads as the same identity everywhere. */
+.num-badge {
+  flex: 0 0 auto;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.5;
   color: var(--text-dim);
-  font-weight: 500;
-  margin-right: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 5px;
 }
 
+/* One line, clipped - so the meta never wraps to a second row and cards keep a uniform height. */
 .roster-meta {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
   color: var(--text-dim);
+  overflow: hidden;
 }
 
+/* The state fills the meta line and, being the primary signal, keeps priority: it truncates only after
+   the machine name yields (the machine has the higher shrink priority below). */
 .roster-state {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .roster-tag {
+  flex: 0 0 auto;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -669,22 +708,32 @@ body {
   color: var(--text-dim);
 }
 
+/* The machine name yields FIRST when the meta line is tight (it truncates before the state does). */
 .roster-machine {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-dim);
   font-family: "Cascadia Mono", Consolas, Menlo, monospace;
   font-size: 10.5px;
 }
 
 .roster-waiting {
-  margin-left: auto;
+  flex: 0 0 auto;
   color: var(--attention);
   font-weight: 600;
 }
 
+/* One clipped line so an attention row's narration never grows the card past its neighbors (#1211). */
 .roster-railline {
   font-size: 11.5px;
   color: var(--text);
   line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- the detail region (right) ---- */

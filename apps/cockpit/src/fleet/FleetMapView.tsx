@@ -51,6 +51,10 @@ export function FleetMapView() {
   const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [pivot, setPivot] = useState<Pivot>("machine");
+  // Title search (issue #1211): a case-insensitive substring filter over the session name. It hides
+  // non-matches and NEVER reorders what remains (see the lanes memo below). Not persisted across
+  // reloads.
+  const [query, setQuery] = useState("");
   // The Wingman narration overlay is not implemented and is not planned, so its toggle is hidden from
   // the header (see below). Keep the value wired as a constant false so the narration code paths stay
   // intact for an easy future restore - flip this back to useState and restore the toggle to bring it
@@ -81,7 +85,18 @@ export function FleetMapView() {
   }, [loadRoster]);
 
   const list = useMemo(() => sessions ?? [], [sessions]);
-  const lanes = useMemo(() => buildLanes(list, pivot), [list, pivot]);
+  // Build the lanes from the WHOLE fleet first, so lane order and each card's slot are fixed. The title
+  // search then only removes non-matching cards from within those fixed lanes and drops lanes that go
+  // empty - a matching card never moves and the lanes never reorder (issue #1211).
+  const allLanes = useMemo(() => buildLanes(list, pivot), [list, pivot]);
+  const lanes = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) return allLanes;
+    return allLanes
+      .map((lane) => ({ ...lane, sessions: lane.sessions.filter((s) => (s.name ?? "").toLowerCase().includes(q)) }))
+      .filter((lane) => lane.sessions.length > 0);
+  }, [allLanes, query]);
+  const matchCount = useMemo(() => lanes.reduce((n, lane) => n + lane.sessions.length, 0), [lanes]);
 
   const machineCount = useMemo(() => {
     const set = new Set<string>();
@@ -121,6 +136,14 @@ export function FleetMapView() {
         </span>
 
         <div className="fmap-controls">
+          <input
+            type="search"
+            className="fmap-search"
+            placeholder="Search titles..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search sessions by title"
+          />
           <div className="fmap-pivot" role="group" aria-label="Group the fleet by">
             {PIVOTS.map((p) => (
               <button
@@ -163,12 +186,19 @@ export function FleetMapView() {
         </div>
       )}
 
+      {sessions !== null && list.length > 0 && lanes.length === 0 && query.trim().length > 0 && (
+        <div className="fmap-empty">
+          <p>No sessions match &ldquo;{query.trim()}&rdquo;.</p>
+          <p className="fmap-empty-sub">Clear the search to see the whole fleet.</p>
+        </div>
+      )}
+
       {lanes.length > 0 && (
         <Canvas
           lanes={lanes}
           pivot={pivot}
           wingman={wingman}
-          sessionCount={list.length}
+          sessionCount={query.trim().length > 0 ? matchCount : list.length}
           machineCount={machineCount}
           onOpen={(sid) => navigate(`/session/${encodeURIComponent(sid)}`)}
         />
@@ -359,6 +389,8 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
   const color = effectiveColor(s);
   const sid = s.sessionId ?? "";
   const unnamed = (s.name ?? "").trim().length === 0;
+  const num = s.number;
+  const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;
   const role = (s.groupRole ?? "").toLowerCase();
   const cls =
     "fmap-card" +
@@ -390,6 +422,7 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
           style={{ backgroundColor: dotColor(color) }}
           title={s.lastStatusReason ?? undefined}
         />
+        {hasNum && <span className="num-badge">{num}</span>}
         <span className={unnamed ? "fmap-card-name unnamed" : "fmap-card-name"}>
           {unnamed ? "(unnamed)" : s.name}
         </span>
