@@ -5,6 +5,7 @@ import {
   type AiProviderSnapshot,
   getAiModels,
   getAiProvider,
+  setCarModeModel,
   setWingmanFastModel,
   setTtsModel,
   setTtsVoice,
@@ -115,6 +116,20 @@ export function AiSettings() {
     setBusy(false);
   };
 
+  const chooseCarMode = async (model: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      await setCarModeModel(model);
+      setSnap({ ...snap, carModeModel: model });
+      setMsg("Car Mode model set.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const chooseSpeech = async (model: string) => {
     setBusy(true);
     setMsg("Saving...");
@@ -210,6 +225,18 @@ export function AiSettings() {
         <div className="setting-actions">
           <button type="button" className="setting-btn" disabled={busy} onClick={() => void runFastTest()}>Test</button>
           <span className="setting-msg">{fastTestMsg || "Spoken turn summaries and menus."}</span>
+        </div>
+      </div>
+
+      <div className="setting-block">
+        <label className="setting-label" htmlFor="ai-carmode-model">Car Mode model</label>
+        <select id="ai-carmode-model" className="setting-select" value={snap.carModeModel} disabled={busy} onChange={(e) => void chooseCarMode(e.target.value)}>
+          {ensure(snap.carModeModel, chatModels).map((id) => (
+            <option key={id} value={id}>{id}</option>
+          ))}
+        </select>
+        <div className="setting-actions">
+          <span className="setting-msg">Hands-free fleet control. Fast model recommended; GLM-5.2 is slower but a strong tool-caller.</span>
         </div>
       </div>
 

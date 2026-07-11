@@ -131,20 +131,12 @@ public sealed class HostedCarModeChat : ICarModeChat
     }
 
     /// <summary>
-    /// The Car Mode model. A FAST hosted model, paired with <c>tool_choice=required</c> + the
-    /// <c>speak_answer</c> tool (see <see cref="CompleteAsync"/> and the brain's tool catalog). This is the
-    /// evidence-based resolution of the mission's model risk (2026-07-11): with plain <c>tool_choice=auto</c>
-    /// the fast model hallucinated actions it never took (it skipped start_session), which briefly forced an
-    /// escalation to the slow thinking model (GLM-5.2, 2-9s/turn). Live testing then showed the REAL fix is
-    /// forcing a tool call every turn: the same fast model then chose every tool reliably at ~1-2s per call.
-    /// So Car Mode runs fast + forced-tool-choice, winning both correctness and latency. The
-    /// <c>CC_CARMODE_MODEL</c> environment variable overrides this per install.
-    /// </summary>
-    public const string DefaultCarModeModel = "moonshotai/Kimi-K2.5";
-
-    /// <summary>
-    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + <see cref="DefaultCarModeModel"/>
-    /// (overridable by <c>CC_CARMODE_MODEL</c>). Paired with <c>tool_choice=required</c> + <c>speak_answer</c>.
+    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + the effective Car Mode
+    /// model from <see cref="CarModeModelConfig"/> (the <c>CC_CARMODE_MODEL</c> env override, then the user's
+    /// saved AI-Settings choice, then the Qwen2.5-72B default). Read fresh each call so a settings change is
+    /// honoured on the next turn. Paired with <c>tool_choice=required</c> + <c>speak_answer</c> (see
+    /// <see cref="CompleteAsync"/> and the brain's tool catalog), which is what makes a fast model choose
+    /// tools reliably.
     /// </summary>
     public static Func<(string BaseUrl, string Model, string Key)> DefaultResolver(Func<string, string?> vaultGet)
     {
@@ -153,10 +145,8 @@ public sealed class HostedCarModeChat : ICarModeChat
             var mode = TranscriptionModeConfig.Get();
             // Same base URL + vault key as the wingman endpoint; only the model differs for Car Mode.
             var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
-            var overrideModel = Environment.GetEnvironmentVariable("CC_CARMODE_MODEL");
-            var model = string.IsNullOrWhiteSpace(overrideModel) ? DefaultCarModeModel : overrideModel.Trim();
             var key = vaultGet(ep.KeyName) ?? "";
-            return (ep.BaseUrl, model, key);
+            return (ep.BaseUrl, CarModeModelConfig.Resolve(), key);
         };
     }
 }

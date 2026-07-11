@@ -13,6 +13,7 @@ import {
   type AiProviderSnapshot,
   getAiModels,
   getAiProvider,
+  setCarModeModel,
   setWingmanFastModel,
   setTtsModel,
   setTtsVoice,
@@ -456,6 +457,20 @@ function AiTab() {
     }
   };
 
+  const chooseCarMode = async (model: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      await setCarModeModel(model);
+      setSnap({ ...snap, carModeModel: model });
+      setMsg("Car Mode model set.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runFastTest = async () => {
     setBusy(true);
     setFastTestMsg("Testing " + snap.wingmanFastModel + "...");
@@ -583,6 +598,28 @@ function AiTab() {
           </button>
           <span className="settings-inline-msg">
             {fastTestMsg || "Used for spoken turn summaries, menus, and choice mapping."}
+          </span>
+        </div>
+      </div>
+
+      <div className="settings-field">
+        <label htmlFor="settings-ai-carmode-model">Car Mode model</label>
+        <select
+          id="settings-ai-carmode-model"
+          className="settings-select"
+          value={snap.carModeModel}
+          disabled={busy}
+          onChange={(e) => void chooseCarMode(e.target.value)}
+        >
+          {ensureIds(snap.carModeModel, chatModels).map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+        <div className="settings-actions">
+          <span className="settings-inline-msg">
+            Hands-free fleet control from the phone. A fast model is recommended; GLM-5.2 is slower but a strong tool-caller.
           </span>
         </div>
       </div>

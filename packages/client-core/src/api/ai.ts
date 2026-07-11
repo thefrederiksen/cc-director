@@ -10,6 +10,9 @@ export interface AiProviderSnapshot {
   provider: AiProviderId;
   wingmanModel: string;
   wingmanFastModel: string;
+  /** The model Car Mode's fleet brain runs on - its OWN setting, separate from the Wingman (Car Mode
+   *  runs a fast tier + tool_choice=required). The user's saved choice, or the Qwen2.5-72B default. */
+  carModeModel: string;
   transcriptionModel: string;
   ttsModel: string;
   ttsVoice: string;
@@ -88,6 +91,13 @@ export function setWingmanModel(model: string): Promise<{ model: string }> {
 
 export function setWingmanFastModel(model: string): Promise<{ model: string }> {
   return putJson<{ model: string }>("/gateway/ai/wingman-fast-model", { model });
+}
+
+// PUT /gateway/ai/car-mode-model { model } - persist the model Car Mode's fleet brain runs on (its own
+// setting, separate from the Wingman). The Gateway resolves the effective model at turn time as env
+// override, then this saved setting, then the Qwen2.5-72B default.
+export function setCarModeModel(model: string): Promise<{ model: string }> {
+  return putJson<{ model: string }>("/gateway/ai/car-mode-model", { model });
 }
 
 export function setTtsModel(model: string): Promise<{ model: string }> {
