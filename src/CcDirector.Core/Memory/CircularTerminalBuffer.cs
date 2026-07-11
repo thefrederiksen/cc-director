@@ -3,6 +3,14 @@ using CcDirector.Core.Utilities;
 namespace CcDirector.Core.Memory;
 
 /// <summary>
+/// A terminal geometry change recorded against the raw byte stream: every byte written at or
+/// after <see cref="Position"/> (and before the next mark) was emitted by an application that
+/// believed the terminal was <see cref="Cols"/> x <see cref="Rows"/>. Replaying those bytes at
+/// any other width falsely re-wraps them (issue #1304).
+/// </summary>
+public readonly record struct TerminalResizeMark(long Position, short Cols, short Rows);
+
+/// <summary>
 /// Thread-safe circular byte buffer for raw terminal output.
 /// Stores raw ANSI bytes with no line parsing.
 /// </summary>
@@ -16,6 +24,10 @@ public sealed class CircularTerminalBuffer : IDisposable
     private long _totalWritten;   // Monotonic counter - never wraps
     private DateTime _lastWriteAtUtc = DateTime.MinValue;
     private volatile bool _disposed;
+
+    // Terminal geometry history for faithful replay (issue #1304). Small: one entry
+    // per real resize, pruned as the ring rolls past them. Guarded by _lock.
+    private readonly List<TerminalResizeMark> _resizeMarks = new();
 
     // Lock contention tracking
     private int _writeLockWaitCount;
@@ -250,6 +262,89 @@ public sealed class CircularTerminalBuffer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Record that the terminal was resized to <paramref name="cols"/> x <paramref name="rows"/>
+    /// at the current write position. Bytes written from this point on were emitted for the new
+    /// geometry; <see cref="GetResizeMarksSince"/> lets a replay apply each recorded size at the
+    /// right byte, so history is never re-wrapped at a width it was not written for (issue #1304).
+    /// A call with the same geometry as the newest mark is collapsed (no information gained).
+    /// </summary>
+    public void RecordResize(short cols, short rows)
+    {
+        if (_disposed) return;
+        if (cols <= 0 || rows <= 0) return;
+
+        try { _lock.EnterWriteLock(); }
+        catch (ObjectDisposedException) { return; } // raced with Dispose
+        try
+        {
+            if (_resizeMarks.Count > 0)
+            {
+                var newest = _resizeMarks[^1];
+                if (newest.Cols == cols && newest.Rows == rows)
+                    return;
+            }
+
+            _resizeMarks.Add(new TerminalResizeMark(_totalWritten, cols, rows));
+            PruneStaleResizeMarks();
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Return the geometry in effect at <paramref name="position"/> plus every mark after it,
+    /// in order. StartCols/StartRows are (0, 0) when no mark at or before the position exists
+    /// (a buffer from before marks were recorded); the caller must then choose its own
+    /// starting geometry.
+    /// </summary>
+    public (short StartCols, short StartRows, IReadOnlyList<TerminalResizeMark> Marks) GetResizeMarksSince(long position)
+    {
+        if (!TryEnterReadLock()) return (0, 0, Array.Empty<TerminalResizeMark>());
+        try
+        {
+            short startCols = 0, startRows = 0;
+            var later = new List<TerminalResizeMark>();
+            foreach (var mark in _resizeMarks)
+            {
+                if (mark.Position <= position)
+                {
+                    startCols = mark.Cols;
+                    startRows = mark.Rows;
+                }
+                else
+                {
+                    later.Add(mark);
+                }
+            }
+            return (startCols, startRows, later);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Drop marks the ring has rolled past, keeping the newest mark at or before the ring
+    /// start: that one defines the geometry of the oldest replayable byte. Caller must hold
+    /// the write lock.
+    /// </summary>
+    private void PruneStaleResizeMarks()
+    {
+        long ringStart = Math.Max(0, _totalWritten - _capacity);
+        int newestAtOrBefore = -1;
+        for (int i = 0; i < _resizeMarks.Count; i++)
+        {
+            if (_resizeMarks[i].Position <= ringStart) newestAtOrBefore = i;
+            else break;
+        }
+        if (newestAtOrBefore > 0)
+            _resizeMarks.RemoveRange(0, newestAtOrBefore);
+    }
+
     /// <summary>Reset the buffer.</summary>
     public void Clear()
     {
@@ -261,6 +356,7 @@ public sealed class CircularTerminalBuffer : IDisposable
             Array.Clear(_buffer);
             _writeHead = 0;
             _totalWritten = 0;
+            _resizeMarks.Clear();
         }
         finally
         {

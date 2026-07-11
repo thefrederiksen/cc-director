@@ -386,9 +386,12 @@ public class TerminalControl : Control
 
     /// <summary>
     /// Rebuild the cell grid and scrollback by replaying the entire PTY ring
-    /// buffer through a fresh ANSI parser at the current dimensions. The ring
-    /// holds the last ~2 MB of raw output, so this gives back scrollback that
-    /// survives any dimension change without juggling cached cell grids.
+    /// buffer through a fresh ANSI parser. The ring holds the last ~2 MB of raw
+    /// output plus the resize marks recorded when it was written, so the replay
+    /// parses every byte at the geometry it was originally emitted for (issue
+    /// #1304): committed history keeps its original width instead of being
+    /// falsely re-wrapped at today's width, and rows wider than the viewport
+    /// clip at the right edge, which the renderers already handle.
     /// Caller must guarantee Bounds and _session.Buffer are valid.
     /// </summary>
     private void RebuildFromBuffer()
@@ -400,16 +403,35 @@ public class TerminalControl : Control
         _lastScrollTotal = 0;
         _pathExistsCache.Clear();
 
-        _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
-
         long replayedBytes = 0;
+        int replaySegments = 0;
         if (_session?.Buffer != null)
         {
             var (data, newPos) = _session.Buffer.GetWrittenSince(0);
-            if (data.Length > 0)
-                _parser.Parse(data);
+            long dataStart = newPos - data.Length;
+            var (startCols, startRows, marks) = _session.Buffer.GetResizeMarksSince(dataStart);
+
+            // A buffer from before resize marks were recorded reports (0, 0):
+            // parse at the current dimensions, which is the pre-#1304 behavior.
+            int firstCols = startCols > 0 ? startCols : _cols;
+            int firstRows = startRows > 0 ? startRows : _rows;
+
+            var resizes = new List<ReplayResize>(marks.Count);
+            foreach (var mark in marks)
+                resizes.Add(new ReplayResize((int)(mark.Position - dataStart), mark.Cols, mark.Rows));
+
+            var (cells, parser) = SegmentedReplay.Replay(
+                data, firstCols, firstRows, resizes, _cols, _rows,
+                _scrollback, ScrollbackLines, FileLog.Write);
+            _cells = cells;
+            _parser = parser;
             _bufferPosition = newPos;
             replayedBytes = data.Length;
+            replaySegments = resizes.Count + 1;
+        }
+        else
+        {
+            _parser = new AnsiParser(_cells, _cols, _rows, _scrollback, ScrollbackLines, FileLog.Write);
         }
 
         // After replay the parser may be on the alternate screen, drawing into its own buffer;
@@ -420,7 +442,7 @@ public class TerminalControl : Control
         // first live poll computes a delta of zero, not the whole replayed history (issue #761).
         _lastScrollTotal = _parser?.TotalLinesScrolled ?? 0;
 
-        FileLog.Write($"[TerminalControl] RebuildFromBuffer: cols={_cols}, rows={_rows}, replayedBytes={replayedBytes}, scrollback={_scrollback.Count}");
+        FileLog.Write($"[TerminalControl] RebuildFromBuffer: cols={_cols}, rows={_rows}, replayedBytes={replayedBytes}, segments={replaySegments}, scrollback={_scrollback.Count}");
     }
 
     /// <summary>

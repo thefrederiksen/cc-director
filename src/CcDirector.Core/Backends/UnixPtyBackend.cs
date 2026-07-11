@@ -56,6 +56,10 @@ public sealed class UnixPtyBackend : ISessionBackend
         // Create Unix PTY with terminal dimensions
         _console = UnixPseudoConsole.Create(cols, rows);
 
+        // Record the spawn geometry before any output lands, so a replay knows the
+        // width the very first bytes were emitted for (issue #1304).
+        _buffer!.RecordResize(cols, rows);
+
         // Create process host
         _processHost = new UnixProcessHost(_console);
         _processHost.OnExited += OnProcessExited;
@@ -94,6 +98,10 @@ public sealed class UnixPtyBackend : ISessionBackend
     public void Resize(short cols, short rows)
     {
         if (_disposed || _console == null) return;
+        // Mark the geometry change at the current byte position BEFORE the console
+        // resizes, so the repaint bytes the resize triggers fall after the mark and
+        // are replayed at the new width (issue #1304).
+        _buffer?.RecordResize(cols, rows);
         try
         {
             _console.Resize(cols, rows);
