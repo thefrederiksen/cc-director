@@ -708,9 +708,30 @@ a.banner-btn {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* Clip to the viewport so the PAGE can never scroll - the session screens behave like an app: the
+     top chrome (title, tabs, manage bar, status) and the bottom input + key rows stay pinned on
+     screen, and only the terminal/chat body in the middle scrolls. Without this, anything that pushes
+     the column past 100dvh (a large device font scale, safe-area insets) spills out and the whole page
+     scrolls, hiding the bottom keys until you scroll the screen (issue: mobile session tabs). */
+  max-height: 100dvh;
+  overflow: hidden;
   max-width: 680px;
   margin: 0 auto;
   padding: 0 12px calc(10px + env(safe-area-inset-bottom));
+}
+
+/* Every direct child of a session screen holds its natural size; ONLY the terminal/chat stage flexes
+   and scrolls internally. This makes the stage the single give-point, so the input row and the key
+   rows can never be pushed off the bottom edge no matter how tall the chrome gets. The stage override
+   has higher specificity than the blanket rule, so it wins regardless of source order. */
+.terminal-screen > * {
+  flex: 0 0 auto;
+}
+
+.terminal-screen > .term-stage,
+.terminal-screen > .chat-stage {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .term-title {
