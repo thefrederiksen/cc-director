@@ -87,6 +87,13 @@ export function Home() {
         New session
       </Link>
 
+      {/* Car Mode (Car Mode mission): the hands-free, eyes-free voice channel to the whole fleet. Its
+          own full-screen page; one tap in, then just talk. */}
+      <Link className="car-entry" to="/car">
+        <span className="car-entry-icon" aria-hidden="true">&#9679;</span>
+        Car Mode - drive the fleet by voice
+      </Link>
+
       {sessions === null && error === null && <p className="status-line">Loading sessions...</p>}
 
       {sessions !== null && total === 0 && (

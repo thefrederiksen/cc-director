@@ -1867,3 +1867,254 @@ a.banner-btn {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 600;
 }
+
+/* ===== Car Mode (Car Mode mission) ============================================================ */
+/* The roster entry point to Car Mode - a big, unmistakable tap target above the session groups. */
+.car-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.car-entry-icon {
+  color: var(--accent);
+  font-size: 14px;
+}
+
+/* The full-screen Car Mode page. Chrome-less, high-contrast, thumb-reachable controls at the bottom. */
+.car-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  overflow-y: auto;
+}
+.car-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.car-exit {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 15px;
+  padding: 6px 4px;
+}
+.car-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.car-bar-spacer {
+  width: 34px;
+}
+.car-error {
+  margin: 12px 16px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #3a1c1c;
+  border: 1px solid var(--attention);
+  color: #ffd7d7;
+  font-size: 15px;
+}
+
+.car-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px 20px;
+  text-align: center;
+}
+
+/* The one big status orb: its color IS the state at a distance (paired with the two audible cues). */
+.car-orb {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 3px solid var(--border);
+  transition: background 0.2s, border-color 0.2s;
+}
+.car-orb-pulse {
+  width: 60%;
+  height: 60%;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+.car-orb-idle {
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+.car-orb-listening {
+  color: #22c55e;
+  border-color: #22c55e;
+}
+.car-orb-listening .car-orb-pulse {
+  animation: carPulse 1.6s ease-in-out infinite;
+}
+.car-orb-thinking {
+  color: #f59e0b;
+  border-color: #f59e0b;
+}
+.car-orb-thinking .car-orb-pulse {
+  animation: carSpin 1s linear infinite;
+  border-radius: 40%;
+}
+.car-orb-speaking {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.car-orb-speaking .car-orb-pulse {
+  animation: carPulse 0.9s ease-in-out infinite;
+}
+@keyframes carPulse {
+  0%, 100% { transform: scale(0.8); opacity: 0.6; }
+  50% { transform: scale(1.05); opacity: 0.95; }
+}
+@keyframes carSpin {
+  from { transform: rotate(0deg) scale(0.85); }
+  to { transform: rotate(360deg) scale(0.85); }
+}
+
+.car-status {
+  font-size: 19px;
+  line-height: 1.4;
+  max-width: 22ch;
+  color: var(--text);
+}
+.car-confirm {
+  font-size: 17px;
+  font-weight: 600;
+  color: #ffd7d7;
+  background: #3a1c1c;
+  border: 1px solid var(--attention);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.car-label {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.car-heard,
+.car-said {
+  width: 100%;
+  max-width: 34ch;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.car-heard-text {
+  font-size: 17px;
+}
+.car-said-text {
+  font-size: 17px;
+  color: var(--text);
+}
+.car-actions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  max-width: 34ch;
+}
+.car-action {
+  font-size: 14px;
+  color: #9be7a8;
+  padding: 4px 0;
+}
+
+.car-foot {
+  padding: 16px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.car-hint {
+  font-size: 15px;
+  color: var(--text-dim);
+  margin: 0;
+  text-align: center;
+}
+.car-hint strong {
+  color: var(--text);
+}
+.car-start,
+.car-stop {
+  width: 100%;
+  max-width: 420px;
+  padding: 18px;
+  font-size: 19px;
+  font-weight: 700;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+}
+.car-start {
+  background: var(--accent);
+  color: #fff;
+}
+.car-start:disabled {
+  background: #26314e;
+  color: #6b7391;
+  cursor: default;
+}
+.car-stop {
+  background: #3a1c1c;
+  color: #ffd7d7;
+  border: 1px solid var(--attention);
+}
+
+.car-history {
+  margin: 0 16px 20px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.car-history summary {
+  cursor: pointer;
+  padding: 6px 0;
+}
+.car-history ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.car-history li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.car-history-you {
+  color: var(--text);
+}
+.car-history-said {
+  color: var(--text-dim);
+}
