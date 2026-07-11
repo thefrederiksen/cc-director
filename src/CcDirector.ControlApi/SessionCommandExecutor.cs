@@ -101,14 +101,13 @@ internal static class SessionCommandExecutor
     }
 
     /// <summary>
-    /// The prompt core, past the id/session guards: reject an exited session, refuse human input while a
-    /// dictation is inbound (issue #1181, Task 3b), capture the pre-send buffer cursor, then deliver the
-    /// text. Shared by the verb handler and directly testable against a session. <paramref name="source"/>
-    /// names who is sending: <see cref="SendSource.UserInput"/> (the default, checked against the lock) or
-    /// the exempt <see cref="SendSource.Delivery"/> (the dictation's own arrival) / <see cref="SendSource.Internal"/>.
-    /// The lock is checked explicitly here (this executor is not a boundary, so it validates and returns a
-    /// status rather than letting <see cref="SessionLockedException"/> bubble); the same predicate backs the
-    /// in-process throw for the desktop send path.
+    /// The prompt core, past the id/session guards: reject an exited session, capture the pre-send
+    /// buffer cursor, then deliver the text. Shared by the verb handler and directly testable against
+    /// a session. <paramref name="source"/> names who is sending - <see cref="SendSource.UserInput"/>
+    /// (the default), <see cref="SendSource.Delivery"/> (a dictation's own arrival) or
+    /// <see cref="SendSource.Internal"/> - for diagnostics only; no source is ever refused. The old
+    /// dictation-lock refusal was removed deliberately (single-operator tool; the operator may inject
+    /// into their own sessions whenever they like).
     /// </summary>
     internal static async Task<DirectorCommandResult> SendPromptAsync(Session session, PromptRequest request, SendSource source = SendSource.UserInput)
     {
@@ -117,9 +116,6 @@ internal static class SessionCommandExecutor
 
         if (session.Status is SessionStatus.Exited or SessionStatus.Failed)
             return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "session has exited");
-
-        if (source == SendSource.UserInput && session.IsDictationLocked)
-            return DirectorCommandResult.Fail(DirectorCommandStatus.Locked, SessionLockedException.LockMessage);
 
         var bufferCursor = session.Buffer?.TotalBytesWritten ?? 0;
 

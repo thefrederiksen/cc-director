@@ -8,14 +8,15 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Issue #1181, Task 3b: the DESKTOP-side (Director) enforced dictation lock. Two things are proven here:
+/// The dictation-inbound marker on the desktop (Director) side. Two things are proven here:
 ///   1. The Director's <see cref="DictationLockReader"/> agrees with the Gateway's real writer
-///      (<see cref="VoiceUploadStore"/>): a PENDING marker locks, a terminal marker unlocks. This is the
-///      cross-format contract - if the Gateway ever changes the record shape, this test catches the drift.
-///   2. The shared <see cref="SessionCommandExecutor"/> refuses a human (<see cref="SendSource.UserInput"/>)
-///      prompt into a locked session with <see cref="DirectorCommandStatus.Locked"/>, while the dictation's
-///      own arrival (<see cref="SendSource.Delivery"/>) is exempt; and <see cref="Session.SendTextAsync"/>
-///      throws for a locked human send but not for the exempt sources.
+///      (<see cref="VoiceUploadStore"/>): a PENDING marker reads as inbound, a terminal marker clears.
+///      This is the cross-format contract behind the informational orange "receiving a dictation"
+///      overlay - if the Gateway ever changes the record shape, this test catches the drift.
+///   2. The marker is INFORMATIONAL ONLY. Sends are never refused because of it: this is a
+///      single-operator tool, and a collision between the operator's own phone dictation and their own
+///      typed send is theirs to make, not the Director's to police (issue #1308 removed the old
+///      enforcement, which had also falsely blocked desktop dictation whenever the marker wedged).
 /// </summary>
 public sealed class DictationDesktopLockTests
 {
@@ -35,10 +36,10 @@ public sealed class DictationDesktopLockTests
             store.Register(uploadId);
 
             store.MarkPending(uploadId, sid);
-            Assert.True(DictationLockReader.IsSessionLocked(root, sid), "a PENDING marker written by the Gateway must lock the Director's read");
+            Assert.True(DictationLockReader.IsSessionLocked(root, sid), "a PENDING marker written by the Gateway must read as dictation-inbound");
 
             store.MarkDelivered(uploadId, submitted: true, movedOn: false, transcript: "hi");
-            Assert.False(DictationLockReader.IsSessionLocked(root, sid), "a DELIVERED tombstone must unlock");
+            Assert.False(DictationLockReader.IsSessionLocked(root, sid), "a DELIVERED tombstone must clear");
         }
         finally
         {
@@ -60,7 +61,7 @@ public sealed class DictationDesktopLockTests
             Assert.True(DictationLockReader.IsSessionLocked(root, sid));
 
             store.MarkAbandoned(uploadId, "user_cancelled");
-            Assert.False(DictationLockReader.IsSessionLocked(root, sid), "an ABANDONED tombstone must unlock");
+            Assert.False(DictationLockReader.IsSessionLocked(root, sid), "an ABANDONED tombstone must clear");
         }
         finally
         {
@@ -68,10 +69,10 @@ public sealed class DictationDesktopLockTests
         }
     }
 
-    // ---- 2. executor + Session enforcement ---------------------------------------------------------
+    // ---- 2. the marker never blocks a send ----------------------------------------------------------
 
     [Collection("DirectorRoot")]
-    public sealed class Enforcement
+    public sealed class MarkerDoesNotBlockSends
     {
         private static (SessionManager sm, Session session) NewSession()
         {
@@ -89,50 +90,13 @@ public sealed class DictationDesktopLockTests
         };
 
         [Fact]
-        public async Task Executor_UserInputIntoLockedSession_ReturnsLockedWithMessage()
+        public async Task Executor_UserInputWhileDictationInbound_Succeeds()
         {
             var (sm, session) = NewSession();
-            Session.DictationLockCheck = id => id == session.Id;
+            Session.DictationLockCheck = id => id == session.Id; // a dictation is inbound...
             try
             {
-                var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", PromptCommand(session.Id.ToString()), source: SendSource.UserInput);
-
-                Assert.Equal(DirectorCommandStatus.Locked, result.Status);
-                Assert.Equal(SessionLockedException.LockMessage, result.Error);
-            }
-            finally
-            {
-                Session.DictationLockCheck = null;
-                sm.Dispose();
-            }
-        }
-
-        [Fact]
-        public async Task Executor_DeliveryIntoLockedSession_IsExemptAndSucceeds()
-        {
-            var (sm, session) = NewSession();
-            Session.DictationLockCheck = id => id == session.Id; // locked...
-            try
-            {
-                // ...but the dictation's OWN arrival (Delivery) is exempt - it is what the lock is held for.
-                var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", PromptCommand(session.Id.ToString()), source: SendSource.Delivery);
-
-                Assert.Equal(DirectorCommandStatus.Ok, result.Status);
-            }
-            finally
-            {
-                Session.DictationLockCheck = null;
-                sm.Dispose();
-            }
-        }
-
-        [Fact]
-        public async Task Executor_UserInputIntoUnlockedSession_Succeeds()
-        {
-            var (sm, session) = NewSession();
-            Session.DictationLockCheck = _ => false; // nothing inbound
-            try
-            {
+                // ...and the operator's typed send goes through anyway - the marker only paints the rail orange.
                 var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", PromptCommand(session.Id.ToString()), source: SendSource.UserInput);
 
                 Assert.Equal(DirectorCommandStatus.Ok, result.Status);
@@ -145,16 +109,14 @@ public sealed class DictationDesktopLockTests
         }
 
         [Fact]
-        public async Task SendTextAsync_UserInputIntoLocked_Throws_ButExemptSourcesDoNot()
+        public async Task SendTextAsync_AllSourcesGoThroughWhileDictationInbound()
         {
             var (sm, session) = NewSession();
             Session.DictationLockCheck = id => id == session.Id;
             try
             {
-                await Assert.ThrowsAsync<SessionLockedException>(() => session.SendTextAsync("hi", SendSource.UserInput));
-                await Assert.ThrowsAsync<SessionLockedException>(() => session.SendTextAsync("hi")); // default is UserInput
-
-                // The dictation delivery and framework sends must go through even while locked.
+                await session.SendTextAsync("typed", SendSource.UserInput);
+                await session.SendTextAsync("typed default"); // default is UserInput
                 await session.SendTextAsync("delivered", SendSource.Delivery);
                 await session.SendTextAsync("internal", SendSource.Internal);
             }

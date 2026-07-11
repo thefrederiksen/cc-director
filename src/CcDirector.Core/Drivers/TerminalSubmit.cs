@@ -26,6 +26,9 @@ public static class TerminalSubmit
     /// The single ConPTY submit protocol: trim caller submit newlines, use bracketed paste for
     /// large or multi-line blocks when the target TUI requested it, fall back to an @-temp-file
     /// reference when needed, and otherwise echo-verify before pressing Enter.
+    /// <paramref name="screenSnapshot"/>, when provided, returns the CURRENT rendered screen rows
+    /// and is consulted as a second opinion whenever the byte-stream echo check misses (see
+    /// <see cref="ScreenShowsText"/>).
     /// </summary>
     public static async Task SharedSubmitAsync(
         ISessionBackend backend,
@@ -35,7 +38,8 @@ public static class TerminalSubmit
         bool requireEcho = true,
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
-        TimeSpan? enterSettleDelay = null)
+        TimeSpan? enterSettleDelay = null,
+        Func<string[]>? screenSnapshot = null)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -51,7 +55,8 @@ public static class TerminalSubmit
                 requireEcho,
                 echoTimeout,
                 pollInterval,
-                enterSettleDelay);
+                enterSettleDelay,
+                screenSnapshot);
             return;
         }
 
@@ -65,7 +70,7 @@ public static class TerminalSubmit
 
             if (!string.IsNullOrWhiteSpace(backend.WorkingDirectory))
             {
-                await SubmitViaAtReferenceAsync(backend, textForCheck, driverTag, echoTimeout, pollInterval, enterSettleDelay);
+                await SubmitViaAtReferenceAsync(backend, textForCheck, driverTag, echoTimeout, pollInterval, enterSettleDelay, screenSnapshot);
                 return;
             }
         }
@@ -78,7 +83,8 @@ public static class TerminalSubmit
                 driverTag,
                 echoTimeout,
                 pollInterval,
-                enterSettleDelay);
+                enterSettleDelay,
+                screenSnapshot);
         }
         else
         {
@@ -98,7 +104,8 @@ public static class TerminalSubmit
         string driverTag,
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
-        TimeSpan? enterSettleDelay = null)
+        TimeSpan? enterSettleDelay = null,
+        Func<string[]>? screenSnapshot = null)
         => await SharedSubmitAsync(
             backend,
             text,
@@ -107,7 +114,8 @@ public static class TerminalSubmit
             requireEcho: true,
             echoTimeout,
             pollInterval,
-            enterSettleDelay);
+            enterSettleDelay,
+            screenSnapshot);
 
     private static async Task EchoVerifiedInlineSubmitAsync(
         ISessionBackend backend,
@@ -115,7 +123,8 @@ public static class TerminalSubmit
         string driverTag,
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
-        TimeSpan? enterSettleDelay = null)
+        TimeSpan? enterSettleDelay = null,
+        Func<string[]>? screenSnapshot = null)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -141,6 +150,21 @@ public static class TerminalSubmit
 
             if (needle.Length == 0 || await WaitForEchoAsync(buffer, cursor, needle, visibleTailNeedle, to, poll))
             {
+                await Task.Delay(settle);
+                backend.Write(EnterByte);
+                return;
+            }
+
+            // The byte stream missed the echo, but that stream is a poor witness for input that
+            // WRAPPED across composer rows: the TUI repaints wrapped text interleaved with box
+            // borders, footer hints ("esc again to clear") and cursor moves, so the typed text may
+            // never appear in the bytes as one contiguous run even though it is sitting in the
+            // composer. Ask the rendered screen - the final visual state, free of interleaving -
+            // before treating the attempt as a failure and disturbing the composer with Escape.
+            if (ScreenShowsText(screenSnapshot, needle, visibleTailNeedle))
+            {
+                FileLog.Write($"[{driverTag}] EchoVerifiedSubmit: byte-stream echo missed on attempt {attempt} " +
+                              $"but the rendered screen shows the typed text (len={text.Length}) - pressing Enter");
                 await Task.Delay(settle);
                 backend.Write(EnterByte);
                 return;
@@ -201,7 +225,8 @@ public static class TerminalSubmit
         string driverTag,
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
-        TimeSpan? enterSettleDelay = null)
+        TimeSpan? enterSettleDelay = null,
+        Func<string[]>? screenSnapshot = null)
     {
         var tempPath = LargeInputHandler.CreateTempFile(text, backend.WorkingDirectory);
         var relRef = LargeInputHandler.MakeAtReference(tempPath, backend.WorkingDirectory);
@@ -214,7 +239,8 @@ public static class TerminalSubmit
             driverTag,
             echoTimeout,
             pollInterval,
-            enterSettleDelay);
+            enterSettleDelay,
+            screenSnapshot);
 
         await AtReferenceSubmitVerifier.EnsureSubmittedAsync(backend.Buffer, backend.Write, atReference);
     }
@@ -227,7 +253,8 @@ public static class TerminalSubmit
         bool requireEcho,
         TimeSpan? echoTimeout = null,
         TimeSpan? pollInterval = null,
-        TimeSpan? enterSettleDelay = null)
+        TimeSpan? enterSettleDelay = null,
+        Func<string[]>? screenSnapshot = null)
     {
         var tempPath = LargeInputHandler.CreateTempFile(text, backend.WorkingDirectory);
         var relRef = LargeInputHandler.MakeAtReference(tempPath, backend.WorkingDirectory);
@@ -246,12 +273,33 @@ public static class TerminalSubmit
                 driverTag,
                 echoTimeout,
                 pollInterval,
-                enterSettleDelay);
+                enterSettleDelay,
+                screenSnapshot);
         }
         else
         {
             await TypeSettleEnterSubmitAsync(backend, instruction, driverTag, enterSettleDelay);
         }
+    }
+
+    /// <summary>
+    /// Second-opinion echo check against the RENDERED screen instead of the raw byte stream. Wrapped
+    /// composer rows reconstruct into the original text when the rows are concatenated and normalized
+    /// (the wrap points, borders and padding all fall outside <see cref="NormalizeForEcho"/>'s
+    /// alphabet), so finding the needle here is proof the composer holds the typed text even when the
+    /// byte stream only ever carried it as interleaved fragments. Also accepts the visible-tail
+    /// needle for composers that truncate the display of long input.
+    /// </summary>
+    private static bool ScreenShowsText(Func<string[]>? screenSnapshot, string needle, string? visibleTailNeedle)
+    {
+        if (screenSnapshot is null || needle.Length == 0)
+            return false;
+
+        var hay = NormalizeForEcho(string.Concat(screenSnapshot()));
+        if (hay.Contains(needle, StringComparison.Ordinal))
+            return true;
+
+        return visibleTailNeedle is not null && hay.Contains(visibleTailNeedle, StringComparison.Ordinal);
     }
 
     private static bool ShouldUseInstructionFile(string driverTag, string text)
