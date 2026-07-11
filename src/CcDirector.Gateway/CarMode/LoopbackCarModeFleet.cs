@@ -74,6 +74,77 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         };
     }
 
+    public async Task<CarModeSessionInfo?> ResolveSessionAsync(string sessionReference, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionReference))
+            throw new ArgumentException("A session reference is required.", nameof(sessionReference));
+        var sessions = await GetSessionsAsync(ct);
+        var match = ResolveSession(sessions, sessionReference);
+        return match is null ? null : ToInfo(match);
+    }
+
+    public async Task<string> StartSessionAsync(string repo, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(repo))
+            throw new ArgumentException("A repository name is required.", nameof(repo));
+        var wanted = repo.Trim();
+
+        // Find a machine that knows a repository by this leaf name, then create the session there the
+        // same way the "+ New session" button does (POST /directors/{id}/sessions). No repository of that
+        // name anywhere is a clear, spoken failure - never a silent guess at some other repo.
+        var directors = await GetJsonArrayAsync("/directors", ct);
+        foreach (var d in directors)
+        {
+            var directorId = GetString(d, "directorId");
+            var machineName = GetString(d, "machineName");
+            if (string.IsNullOrWhiteSpace(directorId)) continue;
+
+            var repos = await GetJsonArrayAsync($"/directors/{Uri.EscapeDataString(directorId)}/repos", ct);
+            foreach (var r in repos)
+            {
+                var path = GetString(r, "path");
+                if (string.IsNullOrWhiteSpace(path)) continue;
+                var leaf = RepoLeaf(path);
+                if (!string.Equals(leaf, wanted, StringComparison.OrdinalIgnoreCase)
+                    && !leaf.Contains(wanted, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var created = await CreateSessionAsync(directorId, path, ct);
+                var createdName = string.IsNullOrWhiteSpace(created?.Name) ? "a new session" : created!.Name!.Trim();
+                _log($"[CarModeFleet] started session in {leaf} on {machineName}");
+                return $"Started {createdName} in the {leaf} repository on {machineName}.";
+            }
+        }
+        throw new InvalidOperationException($"I couldn't find a repository called \"{wanted}\" on any machine.");
+    }
+
+    public async Task MessageSessionAsync(string sessionId, string message, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) throw new ArgumentException("A session id is required.", nameof(sessionId));
+        if (string.IsNullOrWhiteSpace(message)) throw new ArgumentException("A message is required.", nameof(message));
+        await PostJsonAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/prompt", new { text = message, appendEnter = true }, ct);
+        _log($"[CarModeFleet] messaged session {sessionId}");
+    }
+
+    public async Task ApproveSessionAsync(string sessionId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) throw new ArgumentException("A session id is required.", nameof(sessionId));
+        // Press Enter to accept the highlighted default, exactly the Enter button's payload.
+        await PostJsonAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/prompt", new { text = "\r", appendEnter = false }, ct);
+        _log($"[CarModeFleet] approved (Enter) session {sessionId}");
+    }
+
+    public async Task DeleteSessionAsync(string sessionId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) throw new ArgumentException("A session id is required.", nameof(sessionId));
+        using var request = new HttpRequestMessage(HttpMethod.Delete, $"{_baseUrl}/sessions/{Uri.EscapeDataString(sessionId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+        using var response = await _http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"The delete-session call failed: {(int)response.StatusCode} {response.StatusCode}.");
+        _log($"[CarModeFleet] deleted session {sessionId}");
+    }
+
     /// <summary>Read THIS Gateway's aggregated roster over loopback. A non-success status throws with the
     ///  code named (no-fallback) so the brain surfaces a loud, specific failure instead of an empty list.</summary>
     private async Task<IReadOnlyList<SessionDto>> GetSessionsAsync(CancellationToken ct)
@@ -87,6 +158,57 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         var sessions = JsonSerializer.Deserialize<List<SessionDto>>(json, JsonOptions);
         return sessions ?? new List<SessionDto>();
     }
+
+    /// <summary>GET a loopback endpoint that returns a JSON array and hand back its elements. Throws on a
+    ///  non-success status (no silent empty list).</summary>
+    private async Task<IReadOnlyList<JsonElement>> GetJsonArrayAsync(string path, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}{path}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"GET {path} failed: {(int)response.StatusCode} {response.StatusCode}.");
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.ValueKind == JsonValueKind.Array
+            ? doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList()
+            : new List<JsonElement>();
+    }
+
+    /// <summary>POST a JSON body to a loopback endpoint with the Bearer, throwing on a non-success status
+    ///  so the brain surfaces a loud, specific failure.</summary>
+    private async Task PostJsonAsync(string path, object body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}{path}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+        request.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
+        using var response = await _http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"POST {path} failed: {(int)response.StatusCode} {response.StatusCode}.");
+    }
+
+    /// <summary>Create a session on a Director (POST /directors/{id}/sessions), the same call the
+    ///  "+ New session" button makes, and return the created session.</summary>
+    private async Task<SessionDto?> CreateSessionAsync(string directorId, string repoPath, CancellationToken ct)
+    {
+        var body = new { repoPath = repoPath.Trim(), agent = "ClaudeCode", wingmanEnabled = false };
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/directors/{Uri.EscapeDataString(directorId)}/sessions");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+        request.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException($"Creating the session failed: {(int)response.StatusCode} {response.StatusCode}. {detail}");
+        }
+        var json = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<SessionDto>(json, JsonOptions);
+    }
+
+    private static string GetString(JsonElement el, string name) =>
+        el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String
+            ? p.GetString() ?? ""
+            : "";
 
     /// <summary>Resolve a fuzzy reference to one session: exact number, then exact name, then a name/repo
     ///  substring, then the newest match. Static and pure so it is unit-tested directly.</summary>

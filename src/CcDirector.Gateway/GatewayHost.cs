@@ -268,6 +268,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // tool-calling brain (POST /carmode/turn), so multi-turn references ("the latest one") resolve.
     // In-memory by design; one instance for the whole Gateway.
     private readonly CarMode.CarModeConversationStore _carModeConversations = new();
+    // Car Mode (decision 3): the per-device store of a destructive action armed and awaiting the owner's
+    // spoken confirmation, so a delete never runs without a clear spoken "confirm".
+    private readonly CarMode.CarModePendingStore _carModePending = new();
     // Gateway-owned set of sessions whose dictated utterance is being transcribed in the background
     // (the phone released the Speak dialog and the audio is uploading/transcribing). Stamps the
     // orange "Transcribing..." roster color so nobody else grabs the session mid-dictation.
@@ -1129,7 +1132,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // caller's per-device key), like every other data route.
         var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get));
         var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
-        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations);
+        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending);
         Api.CarModeEndpoint.Map(_app, carModeBrain);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
