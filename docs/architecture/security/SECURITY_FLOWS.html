@@ -56,8 +56,19 @@
 
 <header class="top">
   <h1>CC Director - Security Flows</h1>
+  <div style="border:2px solid #b00; background:#3a1414; color:#f4c7c7; padding:12px 16px; border-radius:6px; margin:12px 0; font-size:14px; line-height:1.5;">
+    <strong>SUPERSEDED - the enrollment model in this document is obsolete.</strong>
+    The "pairing code shown on the Gateway host / you must be in front of the gateway machine" enrollment
+    flow described below is NOT how devices are authenticated. A device (mobile or cc-director Director)
+    gets onto the Gateway exactly one way: by signing in to DevThrottle, which issues that device its
+    per-device token. There is no pairing code, no QR code, and nothing shown on the Gateway host to read
+    off or type in. See <code>docs/architecture/mobile/MOBILE_DEVICE_AUTH.md</code> (the current device-auth
+    spec, generalized to the desktop in epic #1069/#1088) and
+    <code>docs/reviews/gateway-connection-redesign-2026-07-11.md</code>. The per-device-key and
+    revoke-only principles below remain accurate; only the pairing-code enrollment mechanism is obsolete.
+  </div>
   <div class="sub">How every machine, agent, and client gets authorized access to a REST API. Target model: per-device keys issued by the Gateway.</div>
-  <div class="meta">Design / explainer doc - diagrams and flows only, not the implementation plan. Status: PROPOSED (per-device-key model approved).</div>
+  <div class="meta">Design / explainer doc - diagrams and flows only, not the implementation plan. Status: SUPERSEDED for enrollment (see banner); per-device-key model still current.</div>
 </header>
 
 <h2>1. The trust model in one paragraph</h2>

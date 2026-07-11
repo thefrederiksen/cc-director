@@ -12,14 +12,16 @@ Detect button, a Test button, another Detect button, a plain-text token box, a s
 flow in ONE place, built on a hard split between two separately-verified states:
 
 - CONNECTED: this Director can reach the Gateway, proven by the existing two-way nonce handshake.
-- SIGNED IN: this device is trusted by the Gateway (device key valid) and the Gateway reports a
-  signed-in account.
+- SIGNED IN: this device holds a valid per-device token and the Gateway reports a signed-in account.
+  The device gets that token the one and only way any device does - mobile or Director - by signing
+  in to DevThrottle. There is no pairing code, no QR code, and nothing shown on the Gateway host to
+  read off or type in.
 
 The flow must be reachable both from the Settings dialog and from a single status box in the
 bottom-left corner of the main window, where one click always takes the user to the next
 unfinished step. First-time setup and re-sign-in are the same flow. The result must be so simple
 that a brand-new user on a brand-new machine gets from first launch to fully connected by doing
-three things: click the amber box, click Connect, type the pairing code.
+three things: click the amber box, click Connect, sign in with DevThrottle.
 
 Source document (read it before starting):
 
@@ -50,12 +52,13 @@ duplicates the URL-plus-Detect-plus-Test controls in OnboardingWizardDialog.axam
 
 ## Decisions already made - do not re-litigate
 
-1. Two user-visible checkpoints, no more: Connected and Signed In. Device pairing is the
-   Director-side half of "signed in", not a third checkbox.
+1. Two user-visible checkpoints, no more: Connected and Signed In. Signing in to DevThrottle is the
+   Director-side half of "signed in" (it issues this device its token), not a separate pairing step.
 2. The Director never gates on any of this (issues 641 and 664 removed the Director login;
    the app always boots and works locally). The status box is a nudge, never a wall.
 3. The Director never holds account credentials (epic 1069: the account lives at the Gateway).
-   The Director's part is device pairing plus watching GET /account/status.
+   The Director's part is holding a valid per-device token - issued when the user signs in to
+   DevThrottle - plus watching GET /account/status.
 4. Green is earned, never assumed: the Connected check comes only from the proven two-way
    handshake; the Signed-in check only from the Gateway's own report.
 5. Scanning is automatic (the Detect button dies); connecting is the test (the Test button dies).
@@ -85,15 +88,15 @@ the full detail and proof requirement for each.
   resolver and Step 1: automatic scan (this machine, tailnet, local network - the issue 1233
   discovery order), found Gateways as one-click picks, manual entry fallback, live handshake
   progress, named failures. Reachable from a temporary menu entry for testing.
-- Phase 2 - Sign-in step. Step 2: pairing-code entry (absorbing the register-device dialog) and
-  the open-the-account-page path that polls account status and auto-advances. Done view with the
-  collapsed Advanced section.
+- Phase 2 - Sign-in step. Step 2: sign in with DevThrottle - open the browser sign-in that issues
+  this device its token, poll account status, and auto-advance. Done view with the collapsed
+  Advanced section. The old pairing-code dialog is deleted, not reused.
 - Phase 3 - One status box. Merge the two bottom-left boxes into one GatewayStatusBox with two
   check lines and four visual states (not connected, connected only, all green, was-working-now-
   unreachable red). Click opens the panel on the current step.
 - Phase 4 - Settings cleanup. Gateway tab becomes the embedded panel; Account tab becomes a
-  status summary plus one button; delete Detect, Test, the plain-text token box, the register
-  button, and the re-run-wizard button; the onboarding wizard embeds the panel.
+  status summary plus one button; delete Detect, Test, the plain-text token box, the pairing-code
+  "Connect to Gateway..." dialog, and the re-run-wizard button; the onboarding wizard embeds the panel.
 - Phase 5 - Repair mode. Troubleshooter diagnostics inline in Step 1; changed-address
   rediscovery offered as a one-click fix; red-state routing; re-sign-in lands directly on Step 2.
 
@@ -104,7 +107,7 @@ the full detail and proof requirement for each.
 2. The deletion list from the design document is fully executed - none of the removed buttons,
    boxes, or dialogs are reachable from the user interface.
 3. The end-to-end success test passes on a fresh profile: from clean start to two green checks
-   without typing a URL - click the amber box, click Connect, type the pairing code.
+   without typing a URL - click the amber box, click Connect, sign in with DevThrottle.
 4. The Mac verification pass is explicitly scheduled as the final step (network discovery,
    browser launch, and device-key storage path are the three platform-sensitive spots).
 5. A final verification report (HTML, in docs/reviews/) showing every state and step with

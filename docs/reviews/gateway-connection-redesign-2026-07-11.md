@@ -43,21 +43,24 @@ brand-new machine reaches "fully connected" by doing exactly three things:
 
 1. click the amber status box,
 2. click Connect,
-3. type the pairing code.
+3. sign in with DevThrottle.
 
-No URL typed. No Detect. No Test. No separate dialogs.
+No URL typed. No Detect. No Test. No pairing codes. No separate dialogs.
 
 The whole design rests on a hard split between two states that are verified separately and never
 conflated:
 
 - **CONNECTED** - this Director can reach the Gateway, proven by the existing two-way nonce
   handshake (GatewayConnectionMonitor). Heartbeats alone never prove it; both legs must complete.
-- **SIGNED IN** - this device is trusted by the Gateway (a valid per-device key) AND the Gateway
-  reports a signed-in account (GatewayAccountStatusClient reading GET /account/status).
+- **SIGNED IN** - this device holds a valid per-device token AND the Gateway reports a signed-in
+  account (GatewayAccountStatusClient reading GET /account/status). A device gets that token exactly
+  one way: by signing in to DevThrottle. Signing in is what authenticates the device (Director or
+  mobile) and puts the per-device token on it - there is no pairing code, no QR code, and nothing
+  shown on the Gateway host to read off or type in.
 
 Green is earned, never assumed. Connected green comes only from the proven handshake; Signed-in
-green comes only from the Gateway's own report. Device pairing is the Director-side half of
-"signed in", not a third checkbox.
+green comes only from the Gateway's own report. Signing in to DevThrottle is the single way this
+device becomes trusted, not a separate pairing step.
 
 ---
 
@@ -69,7 +72,8 @@ These thirteen are fixed. They are restated from the mission brief so this spec 
 2. The Director never gates on any of this (issues 641 and 664 removed the Director login; the app
    always boots and works locally). The status box is a nudge, never a wall.
 3. The Director never holds account credentials (epic 1069: the account lives at the Gateway). The
-   Director's part is device pairing plus watching GET /account/status.
+   Director's part is holding a valid per-device token - issued when the user signs in to DevThrottle -
+   plus watching GET /account/status.
 4. Green is earned: Connected only from the proven two-way handshake; Signed-in only from the
    Gateway's own report.
 5. Scanning is automatic (the Detect button dies); connecting is the test (the Test button dies).
@@ -257,17 +261,17 @@ question when the callback leg fails and auto-detection cannot resolve it (decis
 
 ### Step 2 - Sign in (Phase 2)
 
-Once CONNECTED, Step 2 gets the device paired and the account signed in. It absorbs the current
-ConnectToGatewayDialog pairing flow.
+Once CONNECTED, Step 2 makes this device trusted the ONE way a device ever becomes trusted:
+signing in to DevThrottle. There is no pairing code, no QR code, and nothing shown on the Gateway
+host - signing in is what authenticates the device (Director or mobile) and puts a per-device token
+on it.
 
-Two paths, shown together:
+One path:
 
-- **Pairing code** - the user reads a one-time code off the Gateway host's own screen and types it
-  here. On success the Gateway issues this device a unique key, saved locally (this is exactly what
-  ConnectToGatewayDialog does today; the field moves into the panel).
-- **Open the account page** - a button that opens the Cockpit Account page in the browser; the
-  panel then polls GET /account/status and auto-advances to the Done view the moment the Gateway
-  reports signed in.
+- **Sign in with DevThrottle** - a button that opens the DevThrottle sign-in in the browser. When
+  the user signs in, the per-device token is issued to this Director and stored locally, and the
+  Gateway reports the account signed in. The panel polls GET /account/status and auto-advances to
+  the Done view the moment the Gateway reports signed in.
 
 ASCII wireframe:
 
@@ -275,13 +279,9 @@ ASCII wireframe:
 +--------------------------------------------------+
 |  Sign in                                         |
 |  Connected to the Gateway. One more step to make  |
-|  this device trusted.                            |
+|  this device trusted: sign in with DevThrottle.  |
 |                                                  |
-|  Pairing code (shown on the Gateway host screen): |
-|   [ _ _ _ - _ _ _ ]        [ Pair this device ]   |
-|                                                  |
-|  or                                              |
-|   [ Open the account page ]                       |
+|   [ Sign in with DevThrottle ]                    |
 |   Waiting for you to sign in...                   |  <- appears after click, polls status
 +--------------------------------------------------+
 ```
@@ -335,12 +335,12 @@ the same flow into the same panel.
 ## 7. The three flows
 
 - **First-time (brand-new machine).** Box is amber -> click -> panel Step 1 auto-scans -> user
-  clicks the found Gateway -> handshake proves Connected -> panel advances to Step 2 -> user types
-  the pairing code -> both checks green -> Done. Three user actions total: click box, click
-  Connect, type code.
-- **Re-sign-in (device known, signed out at the Gateway).** Box is amber on line 2 only (Connected
-  is already green) -> click -> panel opens directly on Step 2 -> "Open the account page" or pair ->
-  green. It never sends the user back through Step 1.
+  clicks the found Gateway -> handshake proves Connected -> panel advances to Step 2 -> user signs
+  in with DevThrottle -> both checks green -> Done. Three user actions total: click box, click
+  Connect, sign in.
+- **Re-sign-in (device signed out at the Gateway).** Box is amber on line 2 only (Connected is
+  already green) -> click -> panel opens directly on Step 2 -> Sign in with DevThrottle -> green.
+  It never sends the user back through Step 1.
 - **Gateway moved (was connected, address changed).** Box goes red as WasConnectedNowUnreachable ->
   click -> panel opens Step 1 in repair mode -> the rediscovery scan runs automatically and offers
   the Gateway's new address as a one-click fix (Phase 5).
@@ -359,7 +359,8 @@ From SettingsDialog.axaml Gateway tab (lines 150 to 205):
 - `DetectPublicUrlButton` "Detect" for the public URL (line 174) - auto-detected under Advanced.
 - `GatewayTokenBox` plain-text token box (line 185) - never shown in the clear; masked under
   Advanced.
-- `ConnectToGatewayButton` "Connect to Gateway..." (line 190) - pairing moves into panel Step 2.
+- `ConnectToGatewayButton` "Connect to Gateway..." (line 190) - the whole pairing-code dialog
+  (ConnectToGatewayDialog) is deleted; signing in with DevThrottle in panel Step 2 replaces it.
 - `RerunOnboardingButton` "Re-run setup wizard..." (line 198) - the panel is the flow; no re-run
   button.
 - The bare `GatewayUrlBox` / `GatewayAdvertisedBox` as primary controls (lines 158, 172) - they
@@ -389,7 +390,7 @@ Reuse what exists; do not rebuild verification.
 |---------|------------------------|-------------------------|
 | Connected verification | `GatewayConnectionMonitor` (src/CcDirector.ControlApi) | resolver consumes its result |
 | Account/signed-in status | `GatewayAccountStatusClient` + `AccountIndicatorPresenter` (src/CcDirector.Core/Account) | resolver consumes its result |
-| Device pairing | `ConnectToGatewayDialog` + `DeviceRegistryClient.Register` | pairing UI moves into panel Step 2 |
+| Device trust (sign-in) | the DevThrottle browser sign-in that issues this device its token (see the account sign-in start/callback path and the loopback sign-in hand-back) | Step 2 opens that sign-in and polls status; the ConnectToGatewayDialog pairing-code dialog is deleted, not reused |
 | Diagnostics | `GatewayTroubleshootDialog.axaml.cs` logic | rendered inline in Step 1 repair mode |
 | Settings Gateway tab | `SettingsDialog.axaml` 150-205 + `.axaml.cs` handlers | tab embeds the panel; handlers deleted |
 | Two status boxes | `MainWindow.axaml` 251 + 286, presenters in `MainWindow.axaml.cs` | merged into GatewayStatusBox |
@@ -414,9 +415,9 @@ SOREN_NORTH, and clickable by Soren before the next phase begins.
   Proof: unit tests for the resolver across all six states; screenshots of scanning, connecting,
   connected, and a named failure, from the running app against the real Gateway on SOREN_NORTH.
 
-- **Phase 2 - Sign-in step.** Step 2 pairing-code entry (absorbing ConnectToGatewayDialog) and the
-  open-the-account-page path that polls account status and auto-advances. The Done view with the
-  collapsed Advanced section (masked key, public URL, manual address).
+- **Phase 2 - Sign-in step.** Step 2 sign in with DevThrottle: open the browser sign-in that issues
+  this device its token, then poll account status and auto-advance. The Done view with the collapsed
+  Advanced section (masked token, public URL, manual address). The old pairing-code dialog is deleted.
   Proof: unit tests for the resolver's signed-in transitions; screenshots of Step 2, the polling
   wait, and the green Done view, from the running app.
 
@@ -445,8 +446,8 @@ SOREN_NORTH, and clickable by Soren before the next phase begins.
 2. The section 8 deletion list is fully executed - none of the removed buttons, boxes, or dialogs
    are reachable from the user interface.
 3. The end-to-end success test passes on a fresh profile: from clean start to two green checks
-   without typing a URL - click the amber box, click Connect, type the pairing code.
+   without typing a URL - click the amber box, click Connect, sign in with DevThrottle.
 4. The Mac verification pass is explicitly scheduled as the final step (network discovery, browser
-   launch, and device-key storage path are the three platform-sensitive spots).
+   launch, and the per-device token storage path are the three platform-sensitive spots).
 5. A final verification report in docs/reviews/ showing every state and step with screenshots from
    the running app.

@@ -114,6 +114,15 @@
 
 <header class="top">
   <h1>Register a Director - UI Mockup (Anchor B)</h1>
+  <div style="border:2px solid #b00; background:#3a1414; color:#f4c7c7; padding:12px 16px; border-radius:6px; margin:12px 0; font-size:14px; line-height:1.5;">
+    <strong>SUPERSEDED - this entire mockup is obsolete.</strong>
+    There is NO pairing code, NO QR code, and nothing shown on the Gateway host to read off or type in, and
+    you do NOT need to be in front of the gateway machine. A device (mobile or cc-director Director) gets
+    onto the Gateway exactly one way: by signing in to DevThrottle, which issues that device its per-device
+    token. The "Connect to Gateway" pairing-code dialog shown here is being deleted. See
+    <code>docs/architecture/mobile/MOBILE_DEVICE_AUTH.md</code> (the current device-auth spec) and
+    <code>docs/reviews/gateway-connection-redesign-2026-07-11.md</code> Step 2 for the actual sign-in flow.
+  </div>
   <div class="sub">The pairing code is shown in the Gateway's own local app window on the host machine - never over the network. You must be in front of the gateway machine to enroll a device.</div>
   <div class="meta">Mockup / design only. Per-device-key model, local-presence root of trust. Companion to SECURITY_FLOWS.html.</div>
 </header>
