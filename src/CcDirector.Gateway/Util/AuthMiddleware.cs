@@ -48,6 +48,14 @@ internal static class AuthMiddleware
     public const string CookieName = "cc-gateway-token";
 
     /// <summary>
+    /// HttpContext.Items key under which <see cref="HasValidToken"/> stashes the <c>DeviceType</c> of the
+    /// per-device key that authenticated the request ("phone" / "browser" / ...), or leaves absent when the
+    /// caller used the shared machine token (no device). The DevThrottle Stats surface resolution reads it
+    /// to tag a remote prompt with its surface, from the SAME verified key that authenticated the call.
+    /// </summary>
+    public const string DeviceTypeItemKey = "cc.stats.DeviceType";
+
+    /// <summary>
     /// The desktop Cockpit's sign-in route (issue #1088): the shared client-core enrollment screen a
     /// signed-out browser navigation is redirected to. Must match the route in apps/cockpit/src/main.tsx.
     /// </summary>
@@ -190,9 +198,14 @@ internal static class AuthMiddleware
                 var provided = raw.Substring(prefix.Length).Trim();
                 if (string.Equals(provided, token, StringComparison.Ordinal))
                     return true;
-                // Issue #469: a unique per-device key issued at enrollment is equally valid.
-                if (devices is not null && devices.IsValidDeviceKey(provided))
+                // Issue #469: a unique per-device key issued at enrollment is equally valid. DevThrottle
+                // Stats: stash the matched device's type so a remote prompt can be tagged with its surface.
+                var deviceType = devices?.DeviceTypeForKey(provided);
+                if (deviceType is not null)
+                {
+                    ctx.Items[DeviceTypeItemKey] = deviceType;
                     return true;
+                }
             }
         }
 
@@ -209,8 +222,14 @@ internal static class AuthMiddleware
         {
             if (string.Equals(cookieValue, token, StringComparison.Ordinal))
                 return true;
-            if (devices is not null && devices.IsValidDeviceKey(cookieValue))
+            // DevThrottle Stats: same device-key surface stash as the Bearer branch (the live terminal
+            // stream authenticates via this cookie).
+            var cookieDeviceType = devices?.DeviceTypeForKey(cookieValue);
+            if (cookieDeviceType is not null)
+            {
+                ctx.Items[DeviceTypeItemKey] = cookieDeviceType;
                 return true;
+            }
         }
 
         return false;

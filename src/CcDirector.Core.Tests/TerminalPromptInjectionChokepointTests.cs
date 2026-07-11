@@ -13,11 +13,15 @@ public sealed class TerminalPromptInjectionChokepointTests
         var fifo = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Avalonia", "FifoWindow.axaml.cs"));
         var voiceMode = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Core", "Voice", "Controllers", "VoiceModeController.cs"));
 
-        Assert.Contains("await _activeSession.Session.SendTextAsync(text);", main);
-        Assert.Contains("await target.SendTextAsync(text);", main);
+        // DevThrottle Stats threaded an InputOrigin through the desktop choke-point calls: the composer is
+        // typed-desktop, the background dictation submit and the FIFO/voice-mode injections are voice-desktop.
+        // The chokepoint (SendTextAsync only, no Enter-retry, no raw SendInput) is unchanged - the calls still
+        // funnel here; they now also carry the honest origin tag.
+        Assert.Contains("await _activeSession.Session.SendTextAsync(text, origin: InputOrigin.DesktopTyped);", main);
+        Assert.Contains("await target.SendTextAsync(text, origin: InputOrigin.DesktopVoice);", main);
         Assert.Contains("await _activeSession.Session.SendTextAsync(\"/handover\", SendSource.Internal);", main);
-        Assert.Contains("await _current.SendTextAsync(transcript, SendSource.Internal);", fifo);
-        Assert.Contains("await _activeSession.SendTextAsync(transcription, SendSource.Internal);", voiceMode);
+        Assert.Contains("await _current.SendTextAsync(transcript, SendSource.Internal, InputOrigin.DesktopVoice);", fifo);
+        Assert.Contains("await _activeSession.SendTextAsync(transcription, SendSource.Internal, InputOrigin.DesktopVoice);", voiceMode);
 
         Assert.DoesNotContain("ScheduleEnterRetry", main);
         Assert.DoesNotContain("RetryEnterAfterDelay", main);
@@ -38,7 +42,7 @@ public sealed class TerminalPromptInjectionChokepointTests
 
         Assert.Contains("Verb = \"prompt\"", control);
         Assert.Contains("SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, source: source);", control);
-        Assert.Contains("await session.SendTextAsync(request.Text, source);", executor);
+        Assert.Contains("await session.SendTextAsync(request.Text, source, origin);", executor);
         Assert.Contains("await local.SendTextAsync(framed, SendSource.Internal);", control);
         Assert.Contains("await s.SendTextAsync(framed, SendSource.Internal);", control);
         Assert.Contains("await session.SendTextAsync(text, SendSource.Internal);", control);
@@ -48,7 +52,7 @@ public sealed class TerminalPromptInjectionChokepointTests
         // Raw SendInput is still allowed when the caller explicitly asked not to append Enter; that is
         // terminal typing, not prompt submission.
         Assert.Contains("if (request.AppendEnter)", executor);
-        Assert.Contains("session.SendInput(Encoding.UTF8.GetBytes(request.Text));", executor);
+        Assert.Contains("session.SendInput(Encoding.UTF8.GetBytes(request.Text), origin);", executor);
     }
 
     [Fact]
@@ -73,7 +77,7 @@ public sealed class TerminalPromptInjectionChokepointTests
         Assert.Contains("await sendPrompt(sid, trimmed, true);", mobileVoice);
 
         Assert.Contains("await sendPrompt(this.sessionId, chunk, false);", interactive);
-        Assert.Contains("sessionManager.GetSession(guid)?.SendInput(bytes);", stream);
+        Assert.Contains("sessionManager.GetSession(guid)?.SendInput(bytes, InputOrigin.Typed(InputSurface.Unknown));", stream);
 
         Assert.Contains("await client.PostPromptAsync(director.ControlEndpoint, sid, req);", gateway);
         Assert.Contains("new HttpRequestMessage(HttpMethod.Post, $\"{endpoint}/sessions/{sessionId}/prompt\")", directorClient);

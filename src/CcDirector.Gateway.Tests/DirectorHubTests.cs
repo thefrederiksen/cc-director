@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Stats;
 using CcDirector.Gateway.Streaming;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
@@ -19,6 +20,7 @@ public sealed class DirectorHubTests : IDisposable
     private readonly string _tempDir;
     private readonly DirectorRegistry _registry;
     private readonly PushedSessionStore _store;
+    private readonly GatewayInputStatsAggregator _inputStats;
     private DateTime _now = new(2026, 7, 9, 12, 0, 0, DateTimeKind.Utc);
 
     public DirectorHubTests()
@@ -27,6 +29,7 @@ public sealed class DirectorHubTests : IDisposable
         Directory.CreateDirectory(_tempDir);
         _registry = new DirectorRegistry(_tempDir);
         _store = new PushedSessionStore(() => _now);
+        _inputStats = new GatewayInputStatsAggregator(Path.Combine(_tempDir, "input-stats.json"));
     }
 
     public void Dispose()
@@ -39,7 +42,7 @@ public sealed class DirectorHubTests : IDisposable
     private (DirectorHub hub, FakeHubCallerContext ctx) NewHub(string connectionId)
     {
         var ctx = new FakeHubCallerContext(connectionId);
-        var hub = new DirectorHub(_store, _registry) { Context = ctx };
+        var hub = new DirectorHub(_store, _registry, _inputStats) { Context = ctx };
         return (hub, ctx);
     }
 

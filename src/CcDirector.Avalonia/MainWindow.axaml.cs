@@ -3077,7 +3077,8 @@ public partial class MainWindow : Window
         if (_activeSession?.Session == target)
             CleanView.InjectUserPrompt(text);
 
-        await target.SendTextAsync(text);
+        // DevThrottle Stats: desktop dictation - spoken input from the local machine.
+        await target.SendTextAsync(text, origin: InputOrigin.DesktopVoice);
     }
 
     // ===== Fire-and-forget dictation delivery =====
@@ -4321,7 +4322,9 @@ public partial class MainWindow : Window
         FileLog.Write($"[MainWindow] SendWingmanBriefOption: sid={_activeSession.Session.Id}, key=\"{o.Key}\", answerVia={answerVia}");
         if (string.Equals(answerVia, "keys", StringComparison.OrdinalIgnoreCase))
         {
-            try { await _activeSession.Session.SendTextAsync(o.Send); }
+            // DevThrottle Stats: a desktop wingman menu answer is a non-voice desktop action. Count it as
+            // typed (never voice) so answering menus from the desktop cannot inflate the published voice share.
+            try { await _activeSession.Session.SendTextAsync(o.Send, origin: InputOrigin.DesktopTyped); }
             catch (Exception ex) { FileLog.Write($"[MainWindow] SendWingmanBriefOption keys FAILED: {ex.Message}"); }
         }
         else
@@ -4950,7 +4953,8 @@ public partial class MainWindow : Window
         // Backends send Enter (CR/LF) explicitly after the text -- don't append a submit
         // newline here. Appending one used to trip LargeInputHandler's multi-line check
         // and route short single-line prompts through a temp file.
-        await _activeSession.Session.SendTextAsync(text);
+        // DevThrottle Stats: the desktop composer is typed input from the local machine, by construction.
+        await _activeSession.Session.SendTextAsync(text, origin: InputOrigin.DesktopTyped);
 
         if (isInteractiveCommand)
         {

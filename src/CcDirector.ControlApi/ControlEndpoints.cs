@@ -3580,6 +3580,9 @@ internal static class ControlEndpoints
             // them (desktop-dictation orange, legacy auto-explain yellow) without reading StatusColor.
             IsTranscribing = s.IsTranscribing,
             IsAutoExplaining = s.IsExplaining,
+            // DevThrottle Stats: the per-session input tally, taken at the choke point. Null when empty so a
+            // fresh session does not bloat every snapshot; the Gateway aggregates the non-null tallies.
+            InputStats = s.InputStats.IsEmpty ? null : s.InputStats.Snapshot(),
             RemoteRepo = s.RemoteRepo ?? "",
             RemoteThreadUrl = s.RemoteThreadUrl ?? "",
             RemoteRunUrl = s.RemoteRunUrl ?? "",

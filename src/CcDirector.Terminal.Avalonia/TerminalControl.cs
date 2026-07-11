@@ -1285,7 +1285,8 @@ public class TerminalControl : Control
             byte[]? data = MapKeyToBytes(e.Key, e.KeyModifiers);
             if (data != null)
             {
-                _session.SendInput(data);
+                // DevThrottle Stats: raw desktop terminal typing - typed character volume, local by construction.
+                _session.SendInput(data, InputOrigin.DesktopTyped);
                 e.Handled = true;
             }
         }
@@ -1302,7 +1303,8 @@ public class TerminalControl : Control
             if (_session == null || string.IsNullOrEmpty(e.Text)) return;
 
             var bytes = Encoding.UTF8.GetBytes(e.Text);
-            _session.SendInput(bytes);
+            // DevThrottle Stats: raw desktop terminal typing - typed character volume, local by construction.
+            _session.SendInput(bytes, InputOrigin.DesktopTyped);
             e.Handled = true;
         }
         catch (Exception ex)

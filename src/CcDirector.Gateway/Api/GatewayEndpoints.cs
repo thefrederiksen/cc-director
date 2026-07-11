@@ -1119,10 +1119,20 @@ internal static class GatewayEndpoints
             return Results.Json(buffer);
         });
 
-        app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req) =>
+        app.MapPost("/sessions/{sid}/prompt", async (string sid, PromptRequest req, HttpContext httpCtx) =>
         {
             if (req is null || string.IsNullOrEmpty(req.Text))
                 return Results.BadRequest(new { error = "text is required" });
+
+            // DevThrottle Stats: stamp the surface from the VERIFIED device key (stashed by AuthMiddleware),
+            // overwriting any client-supplied value so it cannot be forged. Rides both the SignalR command
+            // and the HTTP fallback below to the Director's choke-point tally. This IS the operator front
+            // door, so it is ALWAYS a real turn: when no device key resolved (a shared-machine-token call) we
+            // stamp "unknown" - NOT null - so the Director still counts it, into the honest "unknown" surface
+            // bucket the dashboard shows (decision 9: surface excluded volume, never silently drop it).
+            // Machine-to-machine traffic (fanout/broadcast) never reaches this handler and never sets Surface,
+            // so it stays null and is correctly excluded.
+            req.Surface = (httpCtx.Items.TryGetValue(AuthMiddleware.DeviceTypeItemKey, out var dt) ? dt as string : null) ?? "unknown";
 
             var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved, owners);
             if (session is null || director is null)

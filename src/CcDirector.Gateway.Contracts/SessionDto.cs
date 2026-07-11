@@ -458,6 +458,16 @@ public sealed class SessionDto
     public string RemoteRunStatus { get; set; } = "";
 
     /// <summary>
+    /// DevThrottle Stats: this session's input tally (submitted turns + character volume by modality and
+    /// surface), taken at the Director's SendInput/SendTextAsync choke point so desktop-local input is
+    /// counted too. Rides the existing snapshot/delta path up to the Gateway, which aggregates every
+    /// session's tally into the always-available stats page. Null when the session has taken no counted
+    /// input yet, or on Directors that predate this field. Only counts ever travel - never the text of
+    /// anything typed or said (mission decision 5).
+    /// </summary>
+    public InputStatsDto? InputStats { get; set; }
+
+    /// <summary>
     /// Issue #1176 (Phase 1a): a copy safe to hand out from the Gateway's pushed-session cache. The
     /// <c>/sessions</c> aggregation stamps scalar fields (EffectiveColor, DirectorId, MachineName,
     /// voice/transcription overlays, etc.) on the object it serves, so callers must never receive the
