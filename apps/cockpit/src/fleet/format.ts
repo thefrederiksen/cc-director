@@ -93,7 +93,9 @@ export function portLabel(controlEndpoint: string | null | undefined, tailnetEnd
   return port === null ? shortId(directorId) : `:${port}`;
 }
 
-function portOf(endpoint: string | null | undefined): string | null {
+// The port parsed from an endpoint URL (":<port>" tail), or null when none is present. Shared so the
+// Exes page renders a Director's port from the same parser the Director label uses (issue #1261).
+export function portOf(endpoint: string | null | undefined): string | null {
   if (endpoint === null || endpoint === undefined || endpoint.length === 0) return null;
   const m = /:(\d+)\/?$/.exec(endpoint);
   return m === null ? null : m[1];

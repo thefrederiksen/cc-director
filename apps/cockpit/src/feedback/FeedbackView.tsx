@@ -4,6 +4,7 @@ import {
   type BriefFeedbackItem,
 } from "@devthrottle/client-core/feedback/feedbackClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { shortId } from "../fleet/format";
 
 // The Feedback page (issue #978, epic #967) - the React port of the Blazor Cockpit Feedback.razor. It
 // reads the Wingman feedback corpus (brief votes + reasons, issue #207) from GET /turnbriefs/feedback:
@@ -27,10 +28,6 @@ function formatTime(iso: string): string {
     `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ` +
     `${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
   );
-}
-
-function shortId(value: string): string {
-  return value.length <= 8 ? value : value.slice(0, 8);
 }
 
 export function FeedbackView() {
