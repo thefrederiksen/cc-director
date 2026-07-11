@@ -723,6 +723,32 @@ public partial class MainWindow : Window
         }
     }
 
+    // TEMPORARY (Gateway Connection mission, Phase 1): open the new GatewayConnectionPanel in a plain
+    // tool window so it can be exercised against the real Gateway before it is wired into Settings, the
+    // status box, and the onboarding wizard (later phases). This menu entry and this method are removed
+    // in Phase 4 when the panel adopts its three real hosts.
+    private void OpenGatewayConnectionPreview()
+    {
+        try
+        {
+            var window = new Window
+            {
+                Title = "Gateway Connection (preview)",
+                Width = 540,
+                Height = 480,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Background = global::Avalonia.Media.Brush.Parse("#252526"),
+                Content = new Controls.GatewayConnectionPanel(),
+            };
+            window.Show(this);
+            FileLog.Write("[MainWindow] Gateway Connection preview opened");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[MainWindow] OpenGatewayConnectionPreview FAILED: {ex.Message}");
+        }
+    }
+
     // ==================== ACCOUNT STATUS INDICATOR (issue #852) ====================
 
     private global::Avalonia.Threading.DispatcherTimer? _accountPollTimer;
@@ -3743,6 +3769,10 @@ public partial class MainWindow : Window
         view.Menu.Items.Add(new NativeMenuItemSeparator());
         view.Menu.Items.Add(Item("Toggle Right Panel", () => RightPanelToggle_Click(this, new RoutedEventArgs())));
         view.Menu.Items.Add(Item("Reset Terminal View", () => TabBarRefreshButton_Click(this, new RoutedEventArgs())));
+        // TEMPORARY (Gateway Connection mission, Phase 1): a test entry into the new unified panel.
+        // Removed in Phase 4 when the panel is embedded in Settings, the status box, and onboarding.
+        view.Menu.Items.Add(new NativeMenuItemSeparator());
+        view.Menu.Items.Add(Item("Gateway Connection (preview)...", OpenGatewayConnectionPreview));
         menu.Items.Add(view);
 
         // ===== Tools (alpha only - none of these are verified working yet) =====
