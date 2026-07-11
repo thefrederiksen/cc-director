@@ -151,20 +151,76 @@ Found Gateways appear as one-click picks. Picking one runs the connect - which I
 (decision 5): it fires the two-way handshake and shows live progress. There is no separate Test
 button and no separate Detect button.
 
-ASCII wireframe - scanning, then found:
+This is the ONLY screen a brand-new user sees, so it must teach as well as work. It carries a
+plain-English intro, a clearly-marked recommendation, and a one-line "when to use this" on every
+option. Approved by Soren 2026-07-11; the rendered reference is
+docs/reviews/gateway-connection-step1-mockup-2026-07-11.html.
+
+Copy (use these words - decision 12, plain English):
+
+- Title: "Connect to your Gateway", with a small state pill in the header showing the count
+  ("2 FOUND" while found, "SCANNING..." while the scan runs).
+- Intro paragraph: "Your Gateway is the hub this Director connects to for voice, the fleet view,
+  cross-machine sessions, and shared keys. Pick how this Director should reach it - we looked on
+  this computer and over Tailscale. Not sure? Start with the one marked Recommended."
+- Section label above the list: "FOUND ON YOUR NETWORK".
+
+Each found option is a framed row: an icon, a name plus its address, a "when to use this" line, and
+a chevron. The per-kind copy:
+
+- This computer (Gateway on localhost): name "This computer", address = the machine name; when:
+  "The Gateway runs on this machine. Fastest and always available - the computer name does not
+  change, so this keeps working."
+- On your network (Gateway found by machine-name / LAN IP): name "On your network", address = the
+  machine name; when: "The Gateway is on another computer on your network. The computer name rarely
+  changes, so this keeps working - best when you are on the same network."
+- Over Tailscale: name "Over Tailscale", address = the ts.net name; when: "Reaches the Gateway from
+  any network. Use this on a laptop you travel with, or from a remote office - anywhere you are not
+  on the same network as the Gateway."
+
+The Recommended rule (decides which ONE row gets the badge): recommend the most stable LOCAL name
+that is reachable, in priority order This computer > On your network > Over Tailscale. Tailscale is
+recommended ONLY when it is the sole option found. When more than one is found, exactly one row
+carries a "Recommended" badge and a green left-accent; the rest are plain. This encodes Soren's
+rule: the local machine name rarely changes, so it is the default; Tailscale is the off-network
+fallback for travel or a remote office.
+
+A footnote under the list states the no-hidden-test rule: "Picking an option connects right away
+and checks the two-way connection - there is no separate Test step." A subtle "Scan again" link
+sits below the list.
+
+Visual direction (match the dictation card, TranscriptionComponent.axaml, and docs/VisualStyle.md;
+single dark theme, ASCII only): card surface #252526 on the #1E1E1E panel, 1px #3C3C3C borders,
+9-10px corner radius; the header count pill tinted blue (background #16283F, text #5AA9F0); the
+Recommended row uses a green left-accent bar (#34D06E) and badge (background #1B3A2A, text #34D06E)
+with a faint green wash; option icons in small tinted tiles (a monitor glyph for local, a globe for
+Tailscale); guidance/intro text in muted blue #6C79A0; the "when to use" lines in #888888 with the
+key phrase emphasized in #AAAAAA. No new accent colors beyond the app palette.
+
+ASCII wireframe - scanning, then found (two options, the local one recommended):
 
 ```
-+--------------------------------------------------+
-|  Connect to your Gateway                         |
-|  Looking for a Gateway on this machine, your     |
-|  tailnet, and your local network...              |
-|                                                  |
-|  Found:                                          |
-|   [ Gateway on SOREN_NORTH (this machine)   > ]  |
-|   [ Gateway at soren-north.tailnet.ts.net   > ]  |
-|                                                  |
-|  Not listed?  Enter the address manually         |  <- link, not a box
-+--------------------------------------------------+
++----------------------------------------------------------+
+|  Connect to your Gateway                       [ 2 FOUND ]|
+|  Your Gateway is the hub this Director connects to for    |
+|  voice, the fleet view, cross-machine sessions, and       |
+|  shared keys. Pick how this Director should reach it -     |
+|  we looked on this computer and over Tailscale. Not sure? |
+|  Start with the one marked Recommended.                   |
+|                                                          |
+|  FOUND ON YOUR NETWORK                                    |
+|  | []  This computer  SOREN_NORTH   [Recommended]     > | |  <- green accent
+|  |     The Gateway runs on this machine. Fastest and    | |
+|  |     always available - the name does not change.     | |
+|  | ()  Over Tailscale  soren-north....ts.net           > | |
+|  |     Reaches the Gateway from any network. Use this   | |
+|  |     on a laptop you travel with or a remote office.  | |
+|                                                          |
+|  Scan again                                              |
+|  [ v Enter the address manually - name+port or full URL ]|  <- collapsed Advanced
+|  (check) Picking an option connects right away and checks |
+|          the two-way connection - no separate Test step.  |
++----------------------------------------------------------+
 ```
 
 ASCII wireframe - connecting (live progress), the click IS the test:
