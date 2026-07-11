@@ -196,13 +196,26 @@ export function useVoiceMode(sessionId: string | undefined, opts?: { seededVoice
     async (signal: AbortSignal) => {
       try {
         const all = await listSessions(signal);
-        const match = all.find((s) => s.sessionId === sid) ?? null;
+        const match = all.find((s) => s.sessionId === sid);
+
+        if (!match) {
+          // The session is momentarily ABSENT from /sessions - almost always the owning computer is
+          // briefly unreachable, not a real "voice off" (issue #1333). Keep the last-known session and
+          // whatever is playing instead of nulling it, which would collapse the Voice screen to the off
+          // card mid-listen. A successful poll whose list simply omits this session is a transient gap,
+          // NOT authority to turn voice off - only the branch below (the session IS reported, with
+          // voiceMode=false) does that. Surface a soft reconnecting note; the next good poll clears it.
+          setPollDone(true);
+          setError("Reconnecting to this session's computer...");
+          return;
+        }
+
         // Only re-render when a field the screen uses actually changed (issue #951).
         setSession((prev) => (sameSessionForVoice(prev, match) ? prev : match));
-        if (match?.name && match.name.trim()) setName(match.name.trim());
+        if (match.name && match.name.trim()) setName(match.name.trim());
         setPollDone(true); // the true state is now known - OFF may render from here on if applicable
 
-        const on = localEnabledRef.current || Boolean(match?.voiceMode);
+        const on = localEnabledRef.current || Boolean(match.voiceMode);
         if (!on) {
           setVoice(null);
           setError(null);
