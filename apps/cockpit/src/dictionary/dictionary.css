@@ -191,3 +191,11 @@
   font-size: 13px;
   padding: 6px 0;
 }
+
+/* Duplicate-rejection notice next to an add box (issue #1255): a duplicate no longer silently clears
+   the input - it says so here, in amber so it reads as "not added". */
+.dc-notice {
+  color: var(--attention);
+  font-size: 12.5px;
+  margin: 8px 0 0;
+}

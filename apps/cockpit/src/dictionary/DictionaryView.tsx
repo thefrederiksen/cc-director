@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useBlocker } from "react-router-dom";
 import {
   getDictionary,
   saveDictionary,
   type Dictionary,
 } from "@devthrottle/client-core/dictation/dictionaryClient";
+import {
+  addMistranscriptionTerm,
+  addMistranscriptionVariant,
+  addVocabularyWord,
+} from "@devthrottle/client-core/dictation/dictionaryEdits";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { ConfirmDialog } from "../components";
 
 // The dictation Dictionary editor (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Dictionary.razor (#183). The human edits the vocabulary chips biased into speech-to-text and the
@@ -27,7 +33,34 @@ export function DictionaryView() {
   // Per-term draft text for the "+ wrong spelling" inputs, keyed by term.
   const [variantDrafts, setVariantDrafts] = useState<Record<string, string>>({});
 
+  // Rejection notices shown next to each add box (issue #1255): a duplicate no longer silently clears
+  // the input - it says so here, and the notice clears the moment the person edits that box again.
+  const [vocabNotice, setVocabNotice] = useState("");
+  const [termNotice, setTermNotice] = useState("");
+  const [variantNotices, setVariantNotices] = useState<Record<string, string>>({});
+
   const clearMsgTimer = useRef<number | null>(null);
+
+  // Guard against losing unsaved edits on navigation (issue #1255). useBlocker intercepts in-app route
+  // changes (for example the "Dashboard" link) while there are unsaved edits, so the person is asked
+  // before the page unmounts and the edits vanish. The browser's own beforeunload covers a tab close or
+  // refresh, which React Router cannot intercept.
+  const blocker = useBlocker(dirty);
+  // ConfirmDialog calls onClose right after a successful (synchronous) onConfirm. For the navigation
+  // guard that would fire blocker.reset() immediately after blocker.proceed() and cancel the very
+  // navigation we just allowed. This flag lets that trailing onClose no-op when we are proceeding, so
+  // only a real cancel/dismiss resets the blocker.
+  const proceedingRef = useRef(false);
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // A non-empty returnValue is what triggers the browser's native "leave site?" prompt.
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,12 +85,20 @@ export function DictionaryView() {
 
   // ---- vocabulary ----
   const addVocab = () => {
-    const v = newVocab.trim();
-    setNewVocab("");
-    if (v.length === 0 || dict === null) return;
-    if (!dict.vocabulary.includes(v)) {
-      setDict({ ...dict, vocabulary: [...dict.vocabulary, v] });
+    if (dict === null) return;
+    const result = addVocabularyWord(dict, newVocab);
+    if (result.status === "added") {
+      setDict(result.dict);
+      setNewVocab("");
+      setVocabNotice("");
       markDirty();
+    } else if (result.status === "duplicate") {
+      // Keep the text so the person sees exactly what was rejected, and say why.
+      setVocabNotice(`"${result.word}" is already in the vocabulary.`);
+    } else {
+      // Empty input - nothing to add and nothing to announce; just clear the box.
+      setNewVocab("");
+      setVocabNotice("");
     }
   };
 
@@ -69,15 +110,18 @@ export function DictionaryView() {
 
   // ---- mistranscriptions ----
   const addTerm = () => {
-    const name = newTerm.trim();
-    setNewTerm("");
-    if (name.length === 0 || dict === null) return;
-    if (!(name in dict.commonMistranscriptions)) {
-      setDict({
-        ...dict,
-        commonMistranscriptions: { ...dict.commonMistranscriptions, [name]: [] },
-      });
+    if (dict === null) return;
+    const result = addMistranscriptionTerm(dict, newTerm);
+    if (result.status === "added") {
+      setDict(result.dict);
+      setNewTerm("");
+      setTermNotice("");
       markDirty();
+    } else if (result.status === "duplicate") {
+      setTermNotice(`"${result.word}" is already a term.`);
+    } else {
+      setNewTerm("");
+      setTermNotice("");
     }
   };
 
@@ -91,24 +135,38 @@ export function DictionaryView() {
       delete copy[term];
       return copy;
     });
+    setVariantNotices((n) => {
+      const copy = { ...n };
+      delete copy[term];
+      return copy;
+    });
     markDirty();
   };
 
-  const setVariantDraft = (term: string, value: string) =>
+  const setVariantNotice = (term: string, value: string) =>
+    setVariantNotices((n) => ({ ...n, [term]: value }));
+
+  const setVariantDraft = (term: string, value: string) => {
     setVariantDrafts((d) => ({ ...d, [term]: value }));
+    // Editing the box clears any stale duplicate notice for that term.
+    setVariantNotices((n) => (n[term] ? { ...n, [term]: "" } : n));
+  };
 
   const addVariant = (term: string) => {
     if (dict === null) return;
-    const v = (variantDrafts[term] ?? "").trim();
-    setVariantDrafts((d) => ({ ...d, [term]: "" }));
-    if (v.length === 0) return;
-    const variants = dict.commonMistranscriptions[term];
-    if (variants === undefined || variants.includes(v)) return;
-    setDict({
-      ...dict,
-      commonMistranscriptions: { ...dict.commonMistranscriptions, [term]: [...variants, v] },
-    });
-    markDirty();
+    const result = addMistranscriptionVariant(dict, term, variantDrafts[term] ?? "");
+    if (result.status === "added") {
+      setDict(result.dict);
+      setVariantDrafts((d) => ({ ...d, [term]: "" }));
+      setVariantNotice(term, "");
+      markDirty();
+    } else if (result.status === "duplicate") {
+      setVariantNotice(term, `"${result.variant}" is already listed.`);
+    } else {
+      // Empty input or a term that vanished under the page - clear the box, nothing to announce.
+      setVariantDrafts((d) => ({ ...d, [term]: "" }));
+      setVariantNotice(term, "");
+    }
   };
 
   const removeVariant = (term: string, vi: number) => {
@@ -194,12 +252,20 @@ export function DictionaryView() {
                   className="dc-addbox"
                   placeholder="+ add term"
                   value={newVocab}
-                  onChange={(e) => setNewVocab(e.target.value)}
+                  onChange={(e) => {
+                    setNewVocab(e.target.value);
+                    if (vocabNotice !== "") setVocabNotice("");
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") addVocab();
                   }}
                 />
               </div>
+              {vocabNotice !== "" && (
+                <p className="dc-notice" role="status">
+                  {vocabNotice}
+                </p>
+              )}
             </div>
 
             {/* ---- Common mistranscriptions ---- */}
@@ -246,6 +312,11 @@ export function DictionaryView() {
                             }}
                           />
                         </div>
+                        {(variantNotices[term] ?? "") !== "" && (
+                          <p className="dc-notice" role="status">
+                            {variantNotices[term]}
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))
@@ -256,16 +327,45 @@ export function DictionaryView() {
                   className="dc-addbox dc-addterm"
                   placeholder="+ add a term to correct"
                   value={newTerm}
-                  onChange={(e) => setNewTerm(e.target.value)}
+                  onChange={(e) => {
+                    setNewTerm(e.target.value);
+                    if (termNotice !== "") setTermNotice("");
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") addTerm();
                   }}
                 />
+                {termNotice !== "" && (
+                  <p className="dc-notice" role="status">
+                    {termNotice}
+                  </p>
+                )}
               </div>
             </div>
           </>
         )}
       </div>
+
+      {/* Warn before navigating away from unsaved dictionary edits (issue #1255). The blocker is armed
+          only while `dirty` is true; confirming lets the pending navigation through, cancelling stays. */}
+      <ConfirmDialog
+        open={blocker.state === "blocked"}
+        title="Leave with unsaved edits?"
+        message="Your dictionary changes have not been saved. If you leave now they will be lost."
+        confirmLabel="Leave without saving"
+        cancelLabel="Stay on this page"
+        onConfirm={() => {
+          proceedingRef.current = true;
+          blocker.proceed?.();
+        }}
+        onClose={() => {
+          if (proceedingRef.current) {
+            proceedingRef.current = false;
+            return;
+          }
+          blocker.reset?.();
+        }}
+      />
     </div>
   );
 }

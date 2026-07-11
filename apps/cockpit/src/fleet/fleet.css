@@ -830,6 +830,13 @@
   font-size: 12px;
 }
 
+/* The unsaved-edits cue on the settings editor (issue #1255): amber, so it reads as "action pending"
+   next to the enabled Save button. */
+.ddet-settings-dirty {
+  color: var(--warn);
+  font-size: 12px;
+}
+
 .ddet-settings-error {
   margin-top: 8px;
   color: var(--attention);
