@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using CcDirector.Core.Account;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Network;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 
@@ -275,6 +276,54 @@ public sealed class GatewayAccountEnrollRunner
         var url = gatewayUrl.Trim();
         EngineLog.Write($"[GatewayAccountEnrollRunner] EnrollWithDiscoveredGatewayAsync: gateway={url}, deviceId={deviceId}, machine={machineName}");
         return await RegisterAndEnrollAsync(tokens, url, deviceId, machineName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Test that a gateway is actually reachable at a user-entered address BEFORE the install commits to it
+    /// (issue #1233 - the mandatory Test gate). Accepts either a bare computer name plus <paramref name="port"/>
+    /// (built into <c>http://name:port</c> - the primary manual form) or a full address pasted into
+    /// <paramref name="computerNameOrUrl"/> (normalized, e.g. a Tailscale https URL). Probes GET /healthz with
+    /// the configured timeout. On success it returns the RESOLVED url (the connect step then enrolls against
+    /// exactly that); on failure it returns a clear, calm reason and NO url, so the installer never registers
+    /// this machine against an address it could not reach. /healthz is unauthenticated, so the person can prove
+    /// the address works first, then Connect (which signs in and enrolls). Never throws for an expected failure.
+    /// </summary>
+    /// <param name="computerNameOrUrl">A bare gateway computer name, or a full pasted gateway address.</param>
+    /// <param name="port">The gateway port, used only when <paramref name="computerNameOrUrl"/> is a bare name.</param>
+    /// <param name="ct">Cancels the probe.</param>
+    public async Task<OperationResult<string>> TestGatewayAddressAsync(
+        string? computerNameOrUrl, int port, CancellationToken ct = default)
+    {
+        var raw = (computerNameOrUrl ?? string.Empty).Trim();
+        if (raw.Length == 0)
+            return OperationResult<string>.Fail("Enter the gateway computer name and port.");
+
+        // A pasted full address (has a scheme) is normalized as-is; anything else is a bare computer name
+        // combined with the port. Both paths validate before we probe.
+        string url;
+        string? buildError;
+        if (raw.Contains("://", StringComparison.Ordinal))
+        {
+            if (!GatewayAddress.TryNormalize(raw, out url, out buildError))
+                return OperationResult<string>.Fail(buildError!);
+        }
+        else if (!GatewayAddress.TryFromComputerNameAndPort(raw, port, out url, out buildError))
+        {
+            return OperationResult<string>.Fail(buildError!);
+        }
+
+        EngineLog.Write($"[GatewayAccountEnrollRunner] TestGatewayAddressAsync: probing {url}/healthz");
+        using var http = new HttpClient(_handlerFactory(), disposeHandler: true) { Timeout = _httpTimeout };
+        var reason = await GatewayEndpointSelector.ProbeHealthzAsync(url, http, ct).ConfigureAwait(false);
+        if (reason is null)
+        {
+            EngineLog.Write($"[GatewayAccountEnrollRunner] TestGatewayAddressAsync: {url} is reachable");
+            return OperationResult<string>.Ok(url);
+        }
+
+        EngineLog.Write($"[GatewayAccountEnrollRunner] TestGatewayAddressAsync: {url} not reachable: {reason}");
+        return OperationResult<string>.Fail(
+            $"Could not reach a gateway at {url}. Check the computer name and port, and that the gateway is running and not blocked by a firewall.");
     }
 
     /// <summary>

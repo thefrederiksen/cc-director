@@ -26,8 +26,52 @@ namespace CcDirector.Core.Configuration;
 /// </summary>
 public sealed class GatewayConfig
 {
-    /// <summary>Gateway base URL, e.g. <c>http://gateway.tailnet.example:7878</c>.</summary>
+    /// <summary>Gateway base URL, e.g. <c>http://gateway.tailnet.example:7878</c>. This is the
+    /// ACTIVE / preferred address: the one a manual override writes, and the first candidate tried
+    /// when connecting (a manually set address wins over the auto-discovered fallbacks).</summary>
     public string Url { get; init; } = "";
+
+    /// <summary>
+    /// The ordered list of FALLBACK gateway addresses discovered from the account (issue #1233):
+    /// machine name plus port, the Tailscale address when Tailscale is available, and the local
+    /// network IP plus port, in priority order. Read from the <c>gateway.urls</c> array in
+    /// config.json. Empty on older installs that only ever wrote <c>gateway.url</c>, in which case
+    /// behaviour is unchanged (one candidate). Use <see cref="CandidateUrls"/> to get the full
+    /// ordered set to try, which puts <see cref="Url"/> first.
+    /// </summary>
+    public IReadOnlyList<string> Urls { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// The full ordered set of addresses to try when connecting to the gateway (issue #1233):
+    /// <see cref="Url"/> first (the active/manual address wins), then each entry of
+    /// <see cref="Urls"/>, de-duplicated (case-insensitive) so the active address is not probed
+    /// twice when it also appears in the discovered list. A client walks these in order and
+    /// connects through the first that answers (see <see cref="Network.GatewayEndpointSelector"/>).
+    /// </summary>
+    public IReadOnlyList<string> CandidateUrls
+    {
+        get
+        {
+            var list = new List<string>();
+            AddCandidate(list, Url);
+            foreach (var u in Urls)
+                AddCandidate(list, u);
+            return list;
+        }
+    }
+
+    // Append a trimmed, non-blank candidate unless an equal one (case-insensitive) is already present.
+    private static void AddCandidate(List<string> list, string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate)) return;
+        var trimmed = candidate.Trim();
+        foreach (var existing in list)
+        {
+            if (string.Equals(existing, trimmed, StringComparison.OrdinalIgnoreCase))
+                return;
+        }
+        list.Add(trimmed);
+    }
 
     /// <summary>
     /// Bearer token the Director/launcher present to the Gateway. Normally the enrolled per-device key
@@ -104,6 +148,21 @@ public sealed class GatewayConfig
             var token = (gw.TryGetProperty("token", out var t) ? t.GetString() ?? "" : "").Trim();
             var tailnet = gw.TryGetProperty("tailnetEndpoint", out var te) ? te.GetString() : null;
 
+            // Issue #1233: the ordered fallback candidate list discovered from the account. A missing
+            // or malformed key leaves it empty so the install behaves exactly as before (one candidate,
+            // gateway.url). Only non-blank string entries are kept, trimmed, in the order given.
+            var urls = new List<string>();
+            if (gw.TryGetProperty("urls", out var urlsEl) && urlsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in urlsEl.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String) continue;
+                    var s = item.GetString();
+                    if (!string.IsNullOrWhiteSpace(s))
+                        urls.Add(s.Trim());
+                }
+            }
+
             // Issue #1176 (Phase 1a). streamMode is opt-in (only a JSON boolean true enables it), so a
             // missing or malformed key leaves the Director on the existing pull path. staleAfterSeconds
             // must be a positive integer or the default stands.
@@ -136,6 +195,7 @@ public sealed class GatewayConfig
             return new GatewayConfig
             {
                 Url = url,
+                Urls = urls,
                 Token = token,
                 TailnetEndpoint = string.IsNullOrWhiteSpace(tailnet) ? null : tailnet.Trim(),
                 AddressingMode = mode,

@@ -50,6 +50,12 @@ public sealed class GatewayClient : IDisposable
     private readonly Func<List<SessionStateSnapshot>>? _sessionStates;
     private readonly GatewayConnectionMonitor? _monitor;
     private readonly HttpClient _http;
+
+    // The gateway address currently in use (issue #1233). Starts as _config.Url and is narrowed at
+    // Start() to the first reachable entry of _config.CandidateUrls (machine name -> Tailscale -> IP).
+    // volatile: read by the fleet-relay one-off clients on other threads.
+    private volatile string _activeUrl = "";
+
     private DateTime _lastVerifyStartedUtc = DateTime.MinValue;
     private int _verifying; // re-entrancy guard: never stack a second handshake on a slow one
 
@@ -106,6 +112,20 @@ public sealed class GatewayClient : IDisposable
     /// endpoint verified (or verification is disabled). Surfaced for diagnostics.</summary>
     public string? LastVerifyError { get; private set; }
 
+    /// <summary>
+    /// The gateway address currently in use (issue #1233): <see cref="GatewayConfig.Url"/> until
+    /// <see cref="Start"/> narrows it to the first reachable entry of
+    /// <see cref="GatewayConfig.CandidateUrls"/>. Exposed for tests and diagnostics.
+    /// </summary>
+    internal string ActiveUrl => _activeUrl;
+
+    /// <summary>
+    /// Reachability probe for a single gateway candidate (issue #1233): returns null when the
+    /// address answers GET /healthz, otherwise a reason. Injectable so candidate selection is
+    /// unit-tested without a live gateway; production probes /healthz with a short timeout.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<string?>> ProbeGatewayCandidate { get; set; }
+
     public bool IsEnabled => _config.IsEnabled;
     public bool IsRegistered => _registered;
 
@@ -131,13 +151,16 @@ public sealed class GatewayClient : IDisposable
             ? LanResolver.ResolveEndpoint(_port, _config.TailnetEndpoint)
             : IdentityResolver.ResolveEndpoint(_port, _config.TailnetEndpoint);
 
+        _activeUrl = _config.Url;
+        ProbeGatewayCandidate = (url, ct) => ProbeGatewayHealthzAsync(url, ct);
+
         _http = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(10),
         };
         if (_config.IsEnabled)
         {
-            _http.BaseAddress = new Uri(_config.Url.TrimEnd('/') + "/");
+            _http.BaseAddress = new Uri(_activeUrl.TrimEnd('/') + "/");
             if (!string.IsNullOrEmpty(_config.Token))
                 _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _config.Token);
         }
@@ -245,7 +268,7 @@ public sealed class GatewayClient : IDisposable
         FileLog.Write($"[GatewayClient] AskFleetAsync: POST /sessions/{toSessionId}/prompt (wait <= {timeoutMs}ms)");
         using var http = new HttpClient
         {
-            BaseAddress = new Uri(_config.Url.TrimEnd('/') + "/"),
+            BaseAddress = new Uri(_activeUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMilliseconds(timeoutMs + 15_000),
         };
         if (!string.IsNullOrEmpty(_config.Token))
@@ -321,7 +344,7 @@ public sealed class GatewayClient : IDisposable
         FileLog.Write($"[GatewayClient] SpawnOnMachineAsync: POST /machines/{machine}/sessions, repo={req.RepoPath}, agent={req.Agent}");
         using var http = new HttpClient
         {
-            BaseAddress = new Uri(_config.Url.TrimEnd('/') + "/"),
+            BaseAddress = new Uri(_activeUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(120),
         };
         if (!string.IsNullOrEmpty(_config.Token))
@@ -421,10 +444,11 @@ public sealed class GatewayClient : IDisposable
         _monitor?.Reset(gatewayConfigured: true);
 
         _cts = new CancellationTokenSource();
-        FileLog.Write($"[GatewayClient] Start: gateway={_config.Url}, directorId={_directorId}, port={_port}");
+        FileLog.Write($"[GatewayClient] Start: candidates=[{string.Join(", ", _config.CandidateUrls)}], directorId={_directorId}, port={_port}");
 
-        // Kick off the first registration in the background. RegisterLoop retries on failure.
-        _ = Task.Run(() => RegisterLoop(_cts.Token));
+        // Choose the reachable gateway address from the ordered candidate list (issue #1233), THEN
+        // register. Both run in the background so a slow probe never blocks Director startup.
+        _ = Task.Run(() => SelectActiveUrlThenRegisterAsync(_cts.Token));
 
         _heartbeat = new Timer(_ => HeartbeatTick(), null, HeartbeatInterval, HeartbeatInterval);
     }
@@ -470,6 +494,66 @@ public sealed class GatewayClient : IDisposable
 
     // ===== Internals =====
 
+    /// <summary>
+    /// Narrow the active gateway address to the first reachable candidate, then run the registration
+    /// loop (issue #1233). Selection only probes /healthz; a failure there is non-fatal - registration
+    /// still proceeds against the current active address and its backoff retries.
+    /// </summary>
+    private async Task SelectActiveUrlThenRegisterAsync(CancellationToken ct)
+    {
+        try { await SelectActiveUrlAsync(ct); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { FileLog.Write($"[GatewayClient] candidate selection failed, using {_activeUrl}: {ex.Message}"); }
+        await RegisterLoop(ct);
+    }
+
+    /// <summary>
+    /// Walk <see cref="GatewayConfig.CandidateUrls"/> in priority order (machine name, then Tailscale,
+    /// then IP) and switch the active address to the first that answers GET /healthz (issue #1233).
+    /// Setting the shared client's base address here is safe: this runs before the first register
+    /// request. With a single candidate (older installs, or a manual override with no discovered
+    /// fallbacks) there is nothing to choose and the method is a no-op. When nothing answers yet, the
+    /// active address is left as-is so <see cref="RegisterLoop"/> still attempts it and retries.
+    /// Internal so the selection wiring is unit-tested through <see cref="ProbeGatewayCandidate"/>.
+    /// </summary>
+    internal async Task SelectActiveUrlAsync(CancellationToken ct)
+    {
+        var candidates = _config.CandidateUrls;
+        if (candidates.Count <= 1) return;
+
+        var selection = await GatewayEndpointSelector.SelectAsync(candidates, ProbeGatewayCandidate, ct);
+        if (selection.Found)
+        {
+            if (!string.Equals(selection.ChosenUrl, _activeUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                FileLog.Write($"[GatewayClient] selected reachable gateway {selection.ChosenUrl} from {candidates.Count} candidate(s)");
+                SetActiveUrl(selection.ChosenUrl!);
+            }
+        }
+        else
+        {
+            FileLog.Write($"[GatewayClient] no gateway candidate answered among {candidates.Count}; will attempt {_activeUrl} and retry");
+        }
+    }
+
+    // Point the shared client at a newly chosen gateway address. Only call before the first request is
+    // sent on _http - HttpClient forbids changing BaseAddress afterwards - which is the Start-time
+    // selection above, before RegisterLoop.
+    private void SetActiveUrl(string url)
+    {
+        _activeUrl = url;
+        _http.BaseAddress = new Uri(url.TrimEnd('/') + "/");
+    }
+
+    // Default candidate probe: GET <url>/healthz with a short timeout. /healthz is unauthenticated so
+    // no token is presented. Never throws - a transport failure or timeout becomes a reason string,
+    // which makes GatewayEndpointSelector move to the next candidate.
+    private static async Task<string?> ProbeGatewayHealthzAsync(string url, CancellationToken ct)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        return await GatewayEndpointSelector.ProbeHealthzAsync(url, http, ct);
+    }
+
     private async Task RegisterLoop(CancellationToken ct)
     {
         var delay = TimeSpan.FromSeconds(2);
@@ -493,7 +577,7 @@ public sealed class GatewayClient : IDisposable
             catch (Exception ex)
             {
                 FileLog.Write($"[GatewayClient] Register attempt failed: {ex.Message}");
-                _monitor?.ReportRegistrationFailure($"Cannot reach the Gateway at {_config.Url}: {ex.Message}");
+                _monitor?.ReportRegistrationFailure($"Cannot reach the Gateway at {_activeUrl}: {ex.Message}");
             }
 
             try { await Task.Delay(delay, ct); }
@@ -736,7 +820,7 @@ public sealed class GatewayClient : IDisposable
             if (resp.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
             {
                 _monitor.CompleteHandshake(nonce, null,
-                    $"The Gateway at {_config.Url} does not support the verify handshake - update the Gateway");
+                    $"The Gateway at {_activeUrl} does not support the verify handshake - update the Gateway");
                 return null;
             }
             if (!resp.IsSuccessStatusCode)
@@ -785,7 +869,7 @@ public sealed class GatewayClient : IDisposable
         {
             // Includes the HttpClient timeout (TaskCanceledException without ct signaled):
             // leg 1 itself is down or crawling.
-            _monitor.CompleteHandshake(nonce, null, $"Cannot reach the Gateway at {_config.Url}: {ex.Message}");
+            _monitor.CompleteHandshake(nonce, null, $"Cannot reach the Gateway at {_activeUrl}: {ex.Message}");
             return null;
         }
         finally
