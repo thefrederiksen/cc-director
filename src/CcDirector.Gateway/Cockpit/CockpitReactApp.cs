@@ -135,6 +135,19 @@ public static class CockpitReactApp
     /// </summary>
     private static async Task ServeAsync(HttpContext ctx, string relativePath)
     {
+        // The SPA shell (and its client-side routes and static assets) is only ever reached by a
+        // browser NAVIGATION or asset load, which is always GET (or HEAD). A NON-GET request that fell
+        // through to this fallback is by definition an unmatched API/hub call - e.g. a POST to a hub's
+        // /negotiate path when that hub is not mapped (stream mode off) - and MUST answer 404. Serving
+        // the 200 index.html shell for such a POST masks "this route does not exist" as success: it is
+        // both wrong for API clients and the reason the StreamModeOff hub-not-mapped tests saw 200 OK
+        // instead of 404 whenever the Cockpit assets happened to be present in the build output.
+        if (!HttpMethods.IsGet(ctx.Request.Method) && !HttpMethods.IsHead(ctx.Request.Method))
+        {
+            await WriteNotFoundAsync(ctx, $"Not found: {ctx.Request.Method} /{relativePath}");
+            return;
+        }
+
         var webRoot = WebRoot;
         if (!Directory.Exists(webRoot))
         {
