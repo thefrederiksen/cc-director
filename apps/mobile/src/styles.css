@@ -1129,18 +1129,41 @@ a.banner-btn {
   }
 }
 
-/* The pinned top controls on the voice screen: the audio bar + Respond stay reachable at the TOP
-   even when the response text below is long (issue #1003, voice-mode layout). Sticky so it stays put
-   while the narrative scrolls beneath it inside .voice-body. */
+/* The top controls on the voice screen: the audio bar + Respond stay reachable at the TOP even when
+   the response text below is long (issue #1003, voice-mode layout). In the speaking state the body is
+   a fixed-header + scrolling-narrative column (see .voice-body-speaking), so this block is a fixed
+   header that never shrinks and the narrative scrolls in its own window below it - the text can no
+   longer scroll up behind the controls. */
 .voice-top {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  background: var(--bg);
+  flex: 0 0 auto;
   padding-top: 2px;
   padding-bottom: 10px;
   margin-bottom: 10px;
   border-bottom: 1px solid var(--border);
+}
+
+/* Speaking state only: turn .voice-body into a non-scrolling column so the controls stay put and only
+   the narrative card scrolls. voice-body keeps its padding and bounded height (flex:1 in the
+   100dvh .terminal-screen); here it just stops being one big scroll. */
+.voice-body-speaking {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The narrative card becomes the single scroll window, filling the space left under the fixed controls
+   down to the bottom of the screen. min-height:0 lets it shrink below its content so the inner
+   overflow (not the page) does the scrolling. */
+.voice-body-speaking .voice-narr-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* "Turn voice off" stays a fixed strip at the very bottom, below the scrolling narrative. */
+.voice-body-speaking .voice-off-toggle {
+  flex: 0 0 auto;
 }
 
 /* C. Speaking: the player row (play/pause + restart + seek slider + clock). */

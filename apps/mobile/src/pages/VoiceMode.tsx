@@ -85,7 +85,10 @@ export function VoiceMode() {
         style={{ display: "none" }}
       />
 
-      <div className="voice-body">
+      {/* In the speaking state the audio controls are a FIXED header and only the narrative text
+          scrolls, in its own window below them (voice-body-speaking). In the other states the body
+          scrolls normally. */}
+      <div className={`voice-body${speaking ? " voice-body-speaking" : ""}`}>
         {error !== null && (
           <div className="banner banner-error" role="alert">{error}</div>
         )}
@@ -159,10 +162,11 @@ export function VoiceMode() {
           </>
         )}
 
-        {/* C. SPEAKING - the audio bar and Respond are pinned at the TOP (the controls you actually
-            use in voice mode); the response text sits BELOW and scrolls. In voice mode the text is a
-            nice-to-have, so a long response must never push the controls off-screen - the top block
-            is sticky (issue #1003, voice-mode screen layout). */}
+        {/* C. SPEAKING - the audio bar and Respond are a FIXED header at the TOP (the controls you
+            actually use in voice mode); the response text sits BELOW and scrolls inside its own window.
+            In voice mode the text is a nice-to-have, so a long response must never push the controls
+            off-screen and must never scroll up behind them - the body is a fixed-header + scrolling
+            narrative column, not one big scroll (issue #1003, voice-mode screen layout). */}
         {speaking && (
           <>
             <div className="voice-top">
