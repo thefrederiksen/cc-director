@@ -929,7 +929,12 @@
                             <Grid x:Name="TerminalGrid">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
+                                    <!-- Fixed gutter, NOT Auto: hiding/showing the scrollbar must
+                                         never change the terminal's width. With Auto, the bar
+                                         becoming visible when scrollback first appeared stole
+                                         columns mid-session and forced the agent to re-wrap
+                                         (issue #1307). -->
+                                    <ColumnDefinition Width="14" />
                                 </Grid.ColumnDefinitions>
                                 <terminal:TerminalControl x:Name="TerminalHost"
                                                           Grid.Column="0" />
