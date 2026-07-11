@@ -184,7 +184,7 @@ export function DirectorDetailView() {
                           <td>
                             <span className="dcell-dot" style={{ background: dotColor(effectiveColor(s)) }} title={s.lastStatusReason ?? undefined} />
                             <span className="dcell-name">{(s.name ?? "").trim().length === 0 ? repoBasename(s.repoPath) : s.name}</span>
-                            {s.onHold && <span className="dtag dtag-hold">HOLD</span>}
+                            {s.onHold && <span className="dtag dtag-hold">SNOOZED</span>}
                             {briefing ? (
                               <div className="dcell-sub dcell-briefing">wingman reading...</div>
                             ) : (s.railLine ?? "").trim().length > 0 ? (

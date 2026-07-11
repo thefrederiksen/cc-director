@@ -486,11 +486,11 @@ public sealed class SessionOrderingTests
     // ----- StateLabel: one per color / overlay (issue #1177, Phase 2) -----
 
     [Fact]
-    public void StateLabel_OnHold_IsOnHold()
+    public void StateLabel_OnHold_IsSnoozed()
     {
         var s = Raw("WaitingForInput");
         s.OnHold = true;
-        Assert.Equal("On hold", SessionOrdering.StateLabel(s));
+        Assert.Equal("Snoozed", SessionOrdering.StateLabel(s));
     }
 
     [Fact]

@@ -136,7 +136,7 @@ function AttentionGroups({
         </Bucket>
       )}
       {held.length > 0 && (
-        <Bucket title="On hold" tone="hold" count={held.length}>
+        <Bucket title="Snoozed" tone="hold" count={held.length}>
           {held.map((s) => (
             <RosterRow key={`hold-${s.sessionId}`} session={s} directors={directors} selectedId={selectedId} />
           ))}
@@ -206,7 +206,7 @@ function RosterRow({
           </span>
           <span className="roster-meta">
             <span className="roster-state">{contextLine(session)}</span>
-            {session.onHold && <span className="roster-tag">hold</span>}
+            {session.onHold && <span className="roster-tag">snoozed</span>}
             {session.voiceMode && <span className="roster-tag voice">voice</span>}
             {machine && <span className="roster-machine" title={session.directorId ?? undefined}>{machine}</span>}
             {lastSeen && <span className="roster-lastseen">{lastSeen}</span>}

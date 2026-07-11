@@ -107,7 +107,7 @@
                 <Button Grid.Column="2" x:Name="SkipButton" Content="Skip"
                         Click="OnSkipClick" Background="#2B6CB0" Foreground="White"
                         Height="64" Width="92" HorizontalContentAlignment="Center" Cursor="Hand" />
-                <Button Grid.Column="3" x:Name="HoldButton" Content="Hold"
+                <Button Grid.Column="3" x:Name="HoldButton" Content="Snooze"
                         Click="OnHoldClick" Background="#8A5A1A" Foreground="White"
                         Height="64" Width="92" HorizontalContentAlignment="Center" Cursor="Hand" />
                 <Button Grid.Column="4" x:Name="NextButton" Content="Next &gt;"

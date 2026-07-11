@@ -156,7 +156,7 @@ public class SessionViewModel : INotifyPropertyChanged
     /// <summary>Tooltip-ready reason for the current strip color. Reflects the on-hold
     /// override when set, otherwise the wingman's reason for <see cref="Session.StatusColor"/>.</summary>
     public string StatusReason => Session.OnHold
-        ? "On hold (set aside by you)"
+        ? "Snoozed (set aside by you)"
         : Session.IsReceivingDictation
             ? "Receiving a dictation from your phone"
             : Session.LastStatusReason ?? "";

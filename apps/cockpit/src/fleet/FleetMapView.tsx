@@ -237,7 +237,7 @@ export function FleetMapView() {
         <LegendDot color="yellow" label="Wingman reading" />
         <LegendDot color="orange" label="Transcribing" />
         <LegendDot color="supporting" label="Sub-agent" />
-        <LegendDot color="grey" label="On hold" />
+        <LegendDot color="grey" label="Snoozed" />
       </div>
     </div>
     </ReachabilityContext.Provider>
