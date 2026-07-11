@@ -1793,6 +1793,240 @@ body {
   cursor: pointer;
 }
 
+/* ===== Source Control tab (issue #1266): read-only repository view; click a file to insert its path == */
+.scm-tab {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.scm-repo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.scm-branch {
+  font-weight: 600;
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+.scm-sync {
+  display: inline-flex;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.scm-ahead {
+  color: var(--accent);
+}
+
+.scm-behind {
+  color: var(--warn);
+}
+
+.scm-insync {
+  color: var(--text-dim);
+}
+
+.scm-commit {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.scm-state {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.scm-state-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.scm-state-detail {
+  font-size: 12px;
+}
+
+.scm-state-error .scm-state-title {
+  color: var(--attention);
+}
+
+.scm-refresh {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.scm-refresh:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.scm-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.scm-lists {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.scm-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.scm-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border-radius: 9px;
+}
+
+.scm-section-empty {
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 2px 0 4px;
+}
+
+.scm-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.scm-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.scm-file:hover {
+  background: var(--surface-2);
+}
+
+.scm-kind {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 4px;
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+
+.scm-kind-m {
+  color: var(--warn);
+}
+
+.scm-kind-a {
+  color: #4ec9b0;
+}
+
+.scm-kind-d {
+  color: var(--attention);
+}
+
+.scm-kind-r,
+.scm-kind-c {
+  color: var(--accent);
+}
+
+.scm-kind-untracked {
+  color: var(--text-dim);
+}
+
+.scm-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+}
+
+.scm-insert {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0;
+}
+
+.scm-file:hover .scm-insert {
+  opacity: 1;
+}
+
 /* ===== Session menu (issue #1214): Rename / Hold-Resume / Handover info / Close ===== */
 .session-menu {
   position: relative;

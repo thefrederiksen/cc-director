@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useParams } from "react-router-dom";
 import { getQueue, type QueueItem } from "@devthrottle/client-core/api/client";
 import { TerminalPane } from "../panes/TerminalPane";
@@ -8,8 +8,10 @@ import { SessionComposer } from "./SessionComposer";
 import { SessionMenu } from "./SessionMenu";
 import { ChatTab } from "./ChatTab";
 import { VoiceTab } from "./VoiceTab";
+import { SourceControlTab } from "./SourceControlTab";
 import { QueuePanel } from "./QueuePanel";
 import { ScreenshotsPanel } from "./ScreenshotsPanel";
+import { appendToCompose } from "./composerInsert";
 
 // The selected session's detail region (issue #972): the live terminal (issue #971's TerminalPane,
 // reused verbatim) stacked over the driver action bar and the composer, with a tabbed dock for the
@@ -18,10 +20,12 @@ import { ScreenshotsPanel } from "./ScreenshotsPanel";
 // the composer text, and the queue are all per-session).
 
 type DockTab = "queue" | "shots";
-// The session-main view (issue #1213): Terminal, Chat, Voice. Terminal is the live PTY mirror (issue
-// #971); Chat is the cleaned conversation history and Voice is the hands-free narration - both ported
-// from the mobile pages through the shared client-core code, not rewritten.
-type MainTab = "terminal" | "chat" | "voice";
+// The session-main view (issues #1213, #1266): Terminal, Chat, Voice, Source Control. Terminal is the
+// live PTY mirror (issue #971); Chat is the cleaned conversation history and Voice is the hands-free
+// narration - both ported from the mobile pages through the shared client-core code, not rewritten.
+// Source Control is the read-only repository view (issue #1266) - click a file to insert its path into
+// the composer.
+type MainTab = "terminal" | "chat" | "voice" | "sourceControl";
 
 export function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -33,6 +37,9 @@ export function SessionDetail() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [tab, setTab] = useState<DockTab>("queue");
   const [mainTab, setMainTab] = useState<MainTab>("terminal");
+  // Set by the composer to a function that focuses its textarea, so the Source Control tab can focus the
+  // composer after inserting a clicked file's path (issue #1266).
+  const composerFocusRef = useRef<(() => void) | null>(null);
 
   // Load the queue for the selected session (and reset the composer) whenever the session changes, so
   // the composer and the queue never carry over from a previously-selected session.
@@ -50,9 +57,19 @@ export function SessionDetail() {
   }, [sessionId]);
 
   // Append text (a popped queue item, or a screenshot path) into the composer, separated by a space.
-  const appendToCompose = useCallback((text: string) => {
-    setCompose((cur) => (cur.length > 0 && !cur.endsWith(" ") ? `${cur} ${text}` : `${cur}${text}`));
+  const appendCompose = useCallback((text: string) => {
+    setCompose((cur) => appendToCompose(cur, text));
   }, []);
+
+  // The Source Control tab's click-a-file: insert the repository-relative path AND focus the composer,
+  // so the reader can immediately type the instruction that goes with the file (issue #1266).
+  const insertPathAndFocus = useCallback(
+    (path: string) => {
+      appendCompose(path);
+      composerFocusRef.current?.();
+    },
+    [appendCompose],
+  );
 
   return (
     <div className="session-detail">
@@ -85,6 +102,15 @@ export function SessionDetail() {
           >
             Voice
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mainTab === "sourceControl"}
+            className={`session-tab ${mainTab === "sourceControl" ? "on" : ""}`}
+            onClick={() => setMainTab("sourceControl")}
+          >
+            Source Control
+          </button>
           {/* The session menu (issue #1214): Rename, Hold/Resume, Handover info, Close - top right of
               the session header, driving the shared Gateway calls. */}
           {selected && <SessionMenu session={selected} variant="page" onClosed={() => navigate("/")} />}
@@ -106,10 +132,21 @@ export function SessionDetail() {
               <VoiceTab sessionId={sessionId} />
             </div>
           )}
+          {mainTab === "sourceControl" && (
+            <div className="session-pane">
+              <SourceControlTab sessionId={sessionId} onInsertPath={insertPathAndFocus} />
+            </div>
+          )}
         </div>
 
         <SessionActionBar sessionId={sessionId} capabilities={selected?.driverCapabilities} />
-        <SessionComposer sessionId={sessionId} value={compose} onChange={setCompose} onQueued={setQueue} />
+        <SessionComposer
+          sessionId={sessionId}
+          value={compose}
+          onChange={setCompose}
+          onQueued={setQueue}
+          focusHandleRef={composerFocusRef}
+        />
       </div>
 
       <aside className="session-dock">
@@ -123,9 +160,9 @@ export function SessionDetail() {
         </div>
         <div className="dock-body">
           {tab === "queue" ? (
-            <QueuePanel sessionId={sessionId} queue={queue} onQueue={setQueue} onPop={appendToCompose} />
+            <QueuePanel sessionId={sessionId} queue={queue} onQueue={setQueue} onPop={appendCompose} />
           ) : (
-            <ScreenshotsPanel sessionId={sessionId} onInsert={appendToCompose} />
+            <ScreenshotsPanel sessionId={sessionId} onInsert={appendCompose} />
           )}
         </div>
       </aside>
