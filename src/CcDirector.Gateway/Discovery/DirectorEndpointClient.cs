@@ -809,6 +809,22 @@ public sealed class DirectorEndpointClient : IDisposable
         }
     }
 
+    // Issue #1266: the read-only source-control snapshot for a session's repo (branch, ahead/behind,
+    // last commit, and the additive per-file staged/unstaged lists). The Gateway's read-only /git proxy
+    // forwards to this; there is deliberately no client method for the git WRITE routes.
+    public async Task<GitSnapshot?> GetGitAsync(string endpoint, string sessionId, CancellationToken ct = default)
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<GitSnapshot>($"{endpoint}/sessions/{sessionId}/git", ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorEndpointClient] GetGitAsync FAILED: endpoint={endpoint}, sid={sessionId}, error={ex.Message}");
+            return null;
+        }
+    }
+
     public async Task<(bool ok, HandoverResponse? body, string? error)> PostHandoverAsync(string endpoint, HandoverRequest req, CancellationToken ct = default)
     {
         try

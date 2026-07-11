@@ -78,7 +78,7 @@ public sealed class ProxyInjectsFleetTokenTests : IAsyncLifetime
         await _director.StartAsync();
         await RegisterDirectorAsync();
 
-        var resp = await _http.GetAsync("sessions/auth-session-1/git");
+        var resp = await _http.GetAsync("sessions/auth-session-1/echo-probe");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("{\"branch\":\"main\"}", await resp.Content.ReadAsStringAsync());
@@ -93,7 +93,7 @@ public sealed class ProxyInjectsFleetTokenTests : IAsyncLifetime
         await _director.StartAsync();
         await RegisterDirectorAsync();
 
-        var resp = await _http.GetAsync("sessions/auth-session-2/git");
+        var resp = await _http.GetAsync("sessions/auth-session-2/echo-probe");
 
         Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
     }
@@ -106,7 +106,8 @@ public sealed class ProxyInjectsFleetTokenTests : IAsyncLifetime
     }
 
     /// <summary>A stub Director that enforces a Bearer token on every route except /sessions/{sid}
-    /// ownership resolution (so the Gateway's fan-out can find it) and answers /sessions/{sid}/git.</summary>
+    /// ownership resolution (so the Gateway's fan-out can find it) and answers a generic forwarded
+    /// path /sessions/{sid}/echo-probe (carried by the catch-all forwarder, not a specific route).</summary>
     private sealed class AuthStubDirector : IAsyncDisposable
     {
         public string DirectorId { get; } = Guid.NewGuid().ToString();
@@ -136,7 +137,7 @@ public sealed class ProxyInjectsFleetTokenTests : IAsyncLifetime
             _app = builder.Build();
 
             // Bearer gate on everything except ownership resolution (the fan-out probe must reach it
-            // to learn the owner; ownership is not sensitive). The git verb requires the token.
+            // to learn the owner; ownership is not sensitive). The forwarded verb requires the token.
             _app.Use(async (ctx, next) =>
             {
                 var path = ctx.Request.Path.Value ?? "";
@@ -159,7 +160,7 @@ public sealed class ProxyInjectsFleetTokenTests : IAsyncLifetime
                     ? Results.Json(new SessionDto { SessionId = _sessionId, Agent = "ClaudeCode", ActivityState = "Idle", StatusColor = "green" })
                     : Results.NotFound());
 
-            _app.MapGet("/sessions/{sid}/git", () => Results.Text("{\"branch\":\"main\"}", "application/json"));
+            _app.MapGet("/sessions/{sid}/echo-probe", () => Results.Text("{\"branch\":\"main\"}", "application/json"));
 
             await _app.StartAsync();
         }

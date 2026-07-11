@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace CcDirector.Gateway.Contracts;
 
 /// <summary>
@@ -27,6 +29,37 @@ public sealed class GitSnapshot
 
     /// <summary>Free-text error detail when Status != "ok".</summary>
     public string? Error { get; set; }
+
+    /// <summary>
+    /// Issue #1266 (additive): the files staged for the next commit (the index side of git status).
+    /// Populated only by the read endpoint that serves the Cockpit's Source Control tab; the older
+    /// Wingman consumer never sets it, so this stays empty on that path and the summary fields above
+    /// are unchanged. Empty when there are no staged changes.
+    /// </summary>
+    public List<GitChangeEntry> StagedChanges { get; set; } = new();
+
+    /// <summary>
+    /// Issue #1266 (additive): the files changed in the working tree but not staged (the worktree side
+    /// of git status), including untracked files. See <see cref="StagedChanges"/>.
+    /// </summary>
+    public List<GitChangeEntry> UnstagedChanges { get; set; } = new();
+}
+
+/// <summary>
+/// One changed file in a session's repository (issue #1266): its repository-relative path and the
+/// one-letter git change kind. This is the read-only unit the Cockpit's Source Control tab lists and
+/// clicks to insert the path into the composer - it carries no staging or write capability.
+/// </summary>
+public sealed class GitChangeEntry
+{
+    /// <summary>Repository-relative path of the changed file.</summary>
+    public string Path { get; set; } = "";
+
+    /// <summary>
+    /// The one-letter git change kind: "M" modified, "A" added, "D" deleted, "R" renamed, "C" copied,
+    /// "?" untracked.
+    /// </summary>
+    public string ChangeKind { get; set; } = "";
 }
 
 /// <summary>

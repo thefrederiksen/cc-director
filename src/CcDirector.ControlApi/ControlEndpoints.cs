@@ -1894,6 +1894,13 @@ internal static class ControlEndpoints
             return Results.Json(resp);
         });
 
+        // Read-only source-control snapshot (issue #1266). The summary fields (branch, dirty, ahead/behind,
+        // last commit, status) come from WingmanService.GitSnapshotAsync as before; when the repo reads "ok"
+        // the response is additively enriched with the per-file staged/unstaged lists from GitStatusProvider
+        // (its own ten-second cache), so the Cockpit's Source Control tab can list what is changed and insert
+        // a path into the composer. The enrichment is additive-only, so the existing Wingman consumer of
+        // GitSnapshotAsync is untouched.
+        var gitStatusProvider = new Core.Git.GitStatusProvider();
         app.MapGet("/sessions/{sid}/git", async (string sid, HttpContext ctx) =>
         {
             if (!Guid.TryParse(sid, out var guid))
@@ -1901,6 +1908,12 @@ internal static class ControlEndpoints
             var session = sessionManager.GetSession(guid);
             if (session is null) return Results.NotFound(new { error = "session not found" });
             var snap = await WingmanService.GitSnapshotAsync(session.RepoPath, ctx.RequestAborted);
+            if (snap.Status == "ok")
+            {
+                var files = await gitStatusProvider.GetStatusAsync(session.RepoPath);
+                if (files.Success)
+                    Core.Git.GitChangeMapper.Enrich(snap, files);
+            }
             return Results.Json(snap);
         });
 

@@ -19,7 +19,7 @@ namespace CcDirector.Gateway.Tests;
 /// <c>/sessions/{sid}/{**rest}</c> the Gateway does not handle explicitly is reverse-proxied to the
 /// owning Director at the SAME path. A stub Director (real Kestrel host) implements
 /// <c>GET /sessions/{sid}</c> (ownership resolution) plus two arbitrary per-session verbs - a GET
-/// (<c>/git</c>) and a POST (<c>/clear-context</c>). The test asserts the forward reaches the
+/// (<c>/echo-probe</c>) and a POST (<c>/clear-context</c>). The test asserts the forward reaches the
 /// Director at the correct path/method, carries the query string and request body through, and
 /// streams the Director's response (status + body) back unchanged - including a Director 409.
 /// </summary>
@@ -73,12 +73,15 @@ public sealed class SessionHttpProxyRoundTripTests : IAsyncLifetime
     [Fact]
     public async Task Get_verb_round_trips_through_the_gateway_to_the_same_director_path()
     {
-        var resp = await _http.GetAsync("sessions/http-session-1/git");
+        // A generic (non-specific) GET path exercises the catch-all forwarder. /git is deliberately NOT
+        // used here: it is now a specific read-only route (issue #1266), so it would not reach the
+        // catch-all this test is proving.
+        var resp = await _http.GetAsync("sessions/http-session-1/echo-probe");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var body = await resp.Content.ReadAsStringAsync();
         Assert.Equal("{\"branch\":\"main\"}", body);
-        Assert.Equal("GET /sessions/http-session-1/git", _director.LastRequest);
+        Assert.Equal("GET /sessions/http-session-1/echo-probe", _director.LastRequest);
     }
 
     [Fact]
@@ -103,7 +106,7 @@ public sealed class SessionHttpProxyRoundTripTests : IAsyncLifetime
     [Fact]
     public async Task Unknown_session_is_404_not_a_forward()
     {
-        var resp = await _http.GetAsync("sessions/no-such-session/git");
+        var resp = await _http.GetAsync("sessions/no-such-session/echo-probe");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 
@@ -198,9 +201,9 @@ public sealed class SessionHttpProxyRoundTripTests : IAsyncLifetime
                     ? Results.Json(new SessionDto { SessionId = _sessionId, Agent = "ClaudeCode", ActivityState = "Idle", StatusColor = "green" })
                     : Results.NotFound());
 
-            _app.MapGet("/sessions/{sid}/git", (string sid) =>
+            _app.MapGet("/sessions/{sid}/echo-probe", (string sid) =>
             {
-                LastRequest = $"GET /sessions/{sid}/git";
+                LastRequest = $"GET /sessions/{sid}/echo-probe";
                 return Results.Text("{\"branch\":\"main\"}", "application/json");
             });
 

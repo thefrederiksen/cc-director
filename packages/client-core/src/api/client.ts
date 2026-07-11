@@ -429,6 +429,55 @@ export async function getQueue(sessionId: string, signal?: AbortSignal): Promise
   return readQueue(res, "GET queue");
 }
 
+// ===== Source control (issue #1266) =====
+
+/** One changed file in a session's repository, as returned by GET /sessions/{sid}/git. */
+export interface GitChangeEntry {
+  /** Repository-relative path of the changed file. */
+  path: string;
+  /** One-letter git change kind: "M" modified, "A" added, "D" deleted, "R" renamed, "C" copied, "?" untracked. */
+  changeKind: string;
+}
+
+/**
+ * A read-only snapshot of a session repository's source-control state (GET /sessions/{sid}/git).
+ * `status` is "ok" | "not_a_repo" | "git_failed"; on a non-ok status `error` carries the detail and
+ * the change lists are empty. The lists are additive fields the read endpoint fills for the Source
+ * Control tab.
+ */
+export interface GitSnapshot {
+  branch: string;
+  dirty: boolean;
+  ahead: number;
+  behind: number;
+  lastCommit: string;
+  status: string;
+  error?: string | null;
+  stagedChanges: GitChangeEntry[];
+  unstagedChanges: GitChangeEntry[];
+}
+
+// GET /sessions/{sid}/git - the read-only source-control snapshot for a session's repository. A non-2xx
+// throws so the caller surfaces it (no silent empty state); a non-ok `status` in the body is a normal
+// result the caller renders ("not a git repository" / "git failed"), not an error.
+export async function getGitStatus(sessionId: string, signal?: AbortSignal): Promise<GitSnapshot> {
+  const sid = encodeURIComponent(sessionId);
+  const res = await fetch(`/sessions/${sid}/git`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET git failed: ${res.status}`);
+  }
+  const body = (await res.json()) as GitSnapshot;
+  return {
+    ...body,
+    stagedChanges: body.stagedChanges ?? [],
+    unstagedChanges: body.unstagedChanges ?? [],
+  };
+}
+
 // POST /sessions/{sid}/queue { text } - append a prompt to the queue; returns the new queue.
 export async function enqueuePrompt(sessionId: string, text: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
