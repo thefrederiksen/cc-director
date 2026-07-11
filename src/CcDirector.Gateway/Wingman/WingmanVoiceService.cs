@@ -46,6 +46,19 @@ public sealed class WingmanVoiceService
     private readonly string _audioDir;
     private readonly HttpClient? _ttsHttp;   // test seam for TtsAsync (issue #939); a per-call client when null
 
+    // Backpressure so a busy fleet cannot storm the hosted model into 429s (issue #1324). All
+    // generation - the turn-end hook AND the idle sweep - funnels through GenerateAsync, so gating
+    // it here bounds the whole fleet at once:
+    //  * _rateGate: a shared cooldown that skips the model call while the provider is rate limiting us.
+    //  * _genGate: caps how many generations run at once (ten sessions finishing together must not
+    //    fire ten simultaneous model calls).
+    //  * _inFlight: coalesces - never two generations for the same session at the same time.
+    private const int MaxConcurrentGenerations = 2;
+    private static readonly TimeSpan GateAcquireTimeout = TimeSpan.FromSeconds(15);
+    private readonly SemaphoreSlim _genGate = new(MaxConcurrentGenerations, MaxConcurrentGenerations);
+    private readonly ConcurrentDictionary<string, byte> _inFlight = new();   // sid -> a generation is running now
+    private readonly WingmanRateLimitGate _rateGate = new();
+
     /// <summary>On-disk shape of one ready session's metadata (the audio bytes live next to it as
     /// an .mp3). Persisted so the play triangle / playability survives a gateway restart (issue #553).</summary>
     private sealed record PersistedVoice(string Spoken, string Reply, DateTime AtUtc, string? ContentType = null);
@@ -289,39 +302,86 @@ public sealed class WingmanVoiceService
     /// </summary>
     public async Task GenerateAsync(string sid, string endpoint, CancellationToken ct = default)
     {
+        Mark(sid);
+
+        // Backpressure #1 (issue #1324) - respect a provider rate-limit cooldown. A 429 means "stop
+        // calling", so while the cooldown is in effect we skip the model call entirely. Both callers
+        // funnel through here, so one cooldown stops the WHOLE fleet from hammering a throttled provider.
+        if (_rateGate.InCooldown(out var cooldownLeft))
+        {
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: provider throttled, {cooldownLeft.TotalSeconds:F0}s cooldown left");
+            return;
+        }
+
+        // Backpressure #2 - coalesce. Never run two generations for the same session at once (a slow
+        // turn overlapping the idle sweep would otherwise double the spend). First caller wins.
+        if (!_inFlight.TryAdd(sid, 1))
+            return;
         try
         {
-            Mark(sid);
-            var turns = await _client.GetTurnsAsync(endpoint, sid, ct);
-            var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
-            var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
-            if (string.IsNullOrWhiteSpace(lastReply)) return;  // nothing to say yet
-            // Recent conversation so the wingman can add context to a short/terse latest reply.
-            var recentContext = WingmanTranslator.BuildRecentContext(widgets);
-            // The wingman is now running for this session - show it yellow until the summary lands.
-            BeginGenerating(sid);
+            // Backpressure #3 - cap fleet-wide concurrency so a burst of simultaneous turn-ends does
+            // not fire a burst of simultaneous model calls. Bounded wait: if the gate stays saturated
+            // we DROP this cycle rather than queue unboundedly - the idle sweep or the next turn-end
+            // regenerates it.
+            if (!await _genGate.WaitAsync(GateAcquireTimeout, ct))
+            {
+                FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} SKIPPED: {MaxConcurrentGenerations} generations already in flight");
+                return;
+            }
             try
             {
-                var t = await _translator.TranslateAsync(recentContext, lastReply, ct);
-                await StoreSpokenAsync(sid, t.Spoken, lastReply, ct);
-                // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
-                // text-to-speech synthesis actually returned audio. Logging "voice ready"
-                // unconditionally (the old behavior) hid every failed synthesis behind a success
-                // line, which made a text-to-speech outage look like it was working in the log.
-                if (HasVoice(sid))
-                    FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={t.Spoken.Length}");
-                else
-                    FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={t.Spoken.Length}");
-                // Training capture (no-op unless the setting is on); fire-and-forget so it never
-                // delays the turn. CancellationToken.None so a captured turn is not lost on shutdown.
-                _ = _training.CaptureAsync(_client, endpoint, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
+                await GenerateOnceAsync(sid, endpoint, ct);
+                _rateGate.OnSuccess();   // reaching the provider clears any cooldown/backoff ramp
             }
-            finally { EndGenerating(sid); }
+            finally { _genGate.Release(); }
+        }
+        catch (WingmanModelRateLimitedException rl)
+        {
+            // The provider rate limited us - arm the cooldown so the next turn-end/sweep backs off
+            // instead of piling on. Honors its Retry-After when it sent one (issue #1324).
+            var backoff = _rateGate.OnRateLimited(rl.RetryAfter);
+            FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} rate limited (429); backing off {backoff.TotalSeconds:F0}s before the next generation");
         }
         catch (Exception ex)
         {
             FileLog.Write($"[WingmanVoiceService] GenerateAsync sid={sid} FAILED: {ex.Message}");
         }
+        finally { _inFlight.TryRemove(sid, out _); }
+    }
+
+    /// <summary>
+    /// One generation attempt: read the latest reply, translate it, synthesize and store the audio.
+    /// Split out of <see cref="GenerateAsync"/> so the backpressure wrapper (cooldown, concurrency cap,
+    /// coalescing) stays readable and this stays the pure "make the voice" step. A rate-limit surfaces
+    /// as <see cref="WingmanModelRateLimitedException"/> for the wrapper's cooldown to catch.
+    /// </summary>
+    private async Task GenerateOnceAsync(string sid, string endpoint, CancellationToken ct)
+    {
+        var turns = await _client.GetTurnsAsync(endpoint, sid, ct);
+        var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
+        var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
+        if (string.IsNullOrWhiteSpace(lastReply)) return;  // nothing to say yet
+        // Recent conversation so the wingman can add context to a short/terse latest reply.
+        var recentContext = WingmanTranslator.BuildRecentContext(widgets);
+        // The wingman is now running for this session - show it yellow until the summary lands.
+        BeginGenerating(sid);
+        try
+        {
+            var t = await _translator.TranslateAsync(recentContext, lastReply, ct);
+            await StoreSpokenAsync(sid, t.Spoken, lastReply, ct);
+            // Log the TRUE outcome: StoreSpokenAsync only makes the session playable when the
+            // text-to-speech synthesis actually returned audio. Logging "voice ready"
+            // unconditionally (the old behavior) hid every failed synthesis behind a success
+            // line, which made a text-to-speech outage look like it was working in the log.
+            if (HasVoice(sid))
+                FileLog.Write($"[WingmanVoiceService] voice ready: sid={sid}, spokenLen={t.Spoken.Length}");
+            else
+                FileLog.Write($"[WingmanVoiceService] voice NOT ready (text-to-speech produced no audio): sid={sid}, spokenLen={t.Spoken.Length}");
+            // Training capture (no-op unless the setting is on); fire-and-forget so it never
+            // delays the turn. CancellationToken.None so a captured turn is not lost on shutdown.
+            _ = _training.CaptureAsync(_client, endpoint, sid, "generate", lastReply, recentContext, t.Spoken, t.ReplySeconds, CancellationToken.None);
+        }
+        finally { EndGenerating(sid); }
     }
 
     /// <summary>
