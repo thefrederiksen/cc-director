@@ -118,7 +118,7 @@ Output - the resolved overall state (drives both colors and which step the panel
 | NotConfigured | No Gateway address, never connected | Amber | Step 1 (connect) |
 | Connecting | Address set, handshake verifying | Yellow | Step 1 (progress) |
 | ConnectFailed | Handshake failed, a named leg is down | Red | Step 1 (repair) |
-| ConnectedNotSignedIn | Handshake proven, device not paired or account signed out | Amber | Step 2 (sign in) |
+| ConnectedNotSignedIn | Handshake proven, device has no token yet or account signed out | Amber | Step 2 (sign in) |
 | AllGreen | Handshake proven AND Gateway reports signed in | Green | Done view |
 | WasConnectedNowUnreachable | Was green this run, now the handshake is failing | Red | Step 1 (repair) |
 
