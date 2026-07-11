@@ -66,10 +66,10 @@ export function LearningView() {
           </li>
           <li>
             <strong>Gateway</strong> - the service that gathers every machine's Directors into one fleet
-            and serves this dashboard.
+            and serves the Cockpit.
           </li>
           <li>
-            <strong>Cockpit</strong> - this web dashboard, which the Gateway serves to every machine and
+            <strong>Cockpit</strong> - this web app, which the Gateway serves to every machine and
             to your phone.
           </li>
         </ul>
@@ -88,9 +88,9 @@ export function LearningView() {
             Cockpit come with it.
           </li>
           <li>
-            Open the{" "}
+            Open{" "}
             <Link className="lrn-link" to="/">
-              Cockpit
+              Sessions
             </Link>{" "}
             to see your fleet, then start a new session and point it at a repository.
           </li>

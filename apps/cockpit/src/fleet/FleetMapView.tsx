@@ -23,9 +23,6 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // fly three ways (the pivot switch): by machine (machine -> Director -> session, the topology), by
 // repository (what we are building), or by agent (Claude/Codex/Gemini/... - the workforce).
 //
-// A Wingman narration toggle overlays each node with the session's live one-line read (the SessionDto
-// railLine the roster already returns) - opt-in, a pure display layer, never a new fetch.
-//
 // It reads the ONE shared fleet roster store (issue #1239) - the same GET /sessions?envelope=true
 // envelope Sessions and Directors read, from a single poll loop - never a Director address - and reuses
 // the ONE shared effective-color rule so a node's dot matches every other Cockpit surface. Because every
@@ -94,11 +91,6 @@ export function FleetMapView() {
   // non-matches and NEVER reorders what remains (see the lanes memo below). Not persisted across
   // reloads.
   const [query, setQuery] = useState("");
-  // The Wingman narration overlay is not implemented and is not planned, so its toggle is hidden from
-  // the header (see below). Keep the value wired as a constant false so the narration code paths stay
-  // intact for an easy future restore - flip this back to useState and restore the toggle to bring it
-  // back.
-  const wingman = false;
 
   const list = useMemo(() => sessions ?? [], [sessions]);
   // Build the lanes from the WHOLE fleet first, so lane order and each card's slot are fixed. The title
@@ -185,9 +177,6 @@ export function FleetMapView() {
               </button>
             ))}
           </div>
-          {/* The "Wingman narration" toggle is hidden for now: the narration overlay is not
-              implemented and is not planned. Restore this <label> (and the useState above) to bring
-              the feature back. */}
         </div>
       </header>
 
@@ -235,7 +224,6 @@ export function FleetMapView() {
             <Canvas
               lanes={lanes}
               pivot={pivot}
-              wingman={wingman}
               sessionCount={query.trim().length > 0 ? matchCount : list.length}
               machineCount={machineCount}
               onOpen={(sid) => navigate(`/session/${encodeURIComponent(sid)}`)}
@@ -268,7 +256,6 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 interface CanvasProps {
   lanes: Lane[];
   pivot: Pivot;
-  wingman: boolean;
   sessionCount: number;
   machineCount: number;
   onOpen: (sessionId: string) => void;
@@ -278,7 +265,7 @@ interface CanvasProps {
 // measured from the live DOM (so the wiring tracks whatever width the panels lay out at). The lanes
 // scroll horizontally inside their own container; the SVG is sized to the scrollable content so the
 // wires stay attached when the row is wider than the pane.
-function Canvas({ lanes, pivot, wingman, sessionCount, machineCount, onOpen }: CanvasProps) {
+function Canvas({ lanes, pivot, sessionCount, machineCount, onOpen }: CanvasProps) {
   const innerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const headRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -307,8 +294,8 @@ function Canvas({ lanes, pivot, wingman, sessionCount, machineCount, onOpen }: C
     setWires((prev) => (prev.length === next.length && prev.every((p, i) => p === next[i]) ? prev : next));
   }, [lanes]);
 
-  // Redraw after layout whenever the grouping, pivot, or narration (card heights) changes, and on any
-  // resize of the canvas. useLayoutEffect so the wires are computed against the just-painted DOM.
+  // Redraw after layout whenever the grouping or pivot changes, and on any resize of the canvas.
+  // useLayoutEffect so the wires are computed against the just-painted DOM.
   useLayoutEffect(() => {
     drawWires();
     const inner = innerRef.current;
@@ -320,10 +307,10 @@ function Canvas({ lanes, pivot, wingman, sessionCount, machineCount, onOpen }: C
       ro.disconnect();
       window.removeEventListener("resize", drawWires);
     };
-  }, [drawWires, laneKeys, pivot, wingman]);
+  }, [drawWires, laneKeys, pivot]);
 
   return (
-    <div className={wingman ? "fmap-canvas-scroll wm" : "fmap-canvas-scroll"}>
+    <div className="fmap-canvas-scroll">
       <div className="fmap-canvas" ref={innerRef}>
         <svg className="fmap-wires" aria-hidden="true">
           {wires.map((d, i) => (
@@ -457,7 +444,6 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
     (role === "worker" ? " worker" : "") +
     (wobbly ? " fmap-card-wobbly" : "") +
     (offline ? " fmap-card-offline" : "");
-  const rail = (s.railLine ?? "").trim();
 
   // The card tags carry the two hierarchy coordinates NOT already implied by the lane the card sits in.
   const tags = cardTags(s, pivot);
@@ -507,13 +493,6 @@ function NodeCard({ session: s, pivot, onOpen }: { session: SessionDto; pivot: P
 
       {lastSeen.length > 0 && (
         <div className="fmap-card-lastseen">{offline ? "Offline" : "Wobbly"} - {lastSeen}</div>
-      )}
-
-      {rail.length > 0 && (
-        <div className="fmap-rail">
-          <span className="fmap-rail-k">Wingman</span>
-          {rail}
-        </div>
       )}
     </article>
   );

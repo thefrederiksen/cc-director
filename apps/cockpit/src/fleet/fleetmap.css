@@ -122,66 +122,6 @@
   outline-offset: -2px;
 }
 
-/* wingman toggle */
-.fmap-wm {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 12.5px;
-  color: var(--text-dim);
-  cursor: pointer;
-  user-select: none;
-}
-
-.fmap-wm.on {
-  color: var(--text);
-}
-
-.fmap-wm input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-.fmap-wm-sw {
-  width: 38px;
-  height: 21px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  position: relative;
-  transition: background 150ms, border-color 150ms;
-  flex: 0 0 auto;
-}
-
-.fmap-wm-sw::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: var(--text-dim);
-  transition: transform 150ms, background 150ms;
-}
-
-.fmap-wm.on .fmap-wm-sw {
-  background: rgba(59, 130, 246, 0.25);
-  border-color: var(--accent);
-}
-
-.fmap-wm.on .fmap-wm-sw::after {
-  transform: translateX(17px);
-  background: var(--accent);
-}
-
-.fmap-wm:focus-within .fmap-wm-sw {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 /* ---- states ---- */
 .fmap-error {
   margin: 0 0 14px;
@@ -548,35 +488,6 @@
   color: var(--text-dim);
   font-weight: 400;
   font-family: "Cascadia Mono", Consolas, Menlo, monospace;
-}
-
-/* wingman rail line - shown only when narration is on */
-.fmap-rail {
-  display: none;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--text);
-}
-
-.fmap-canvas-scroll.wm .fmap-rail {
-  display: block;
-}
-
-/* When narration is on, the terse one-line state is redundant with the richer rail line. */
-.fmap-canvas-scroll.wm .fmap-card-state {
-  margin-top: 6px;
-}
-
-.fmap-rail-k {
-  display: block;
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin-bottom: 3px;
 }
 
 /* ---- legend ---- */

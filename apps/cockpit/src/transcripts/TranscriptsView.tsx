@@ -253,7 +253,7 @@ export function TranscriptsView() {
               Copy agent info
             </button>
             <Link className="ts-back" to="/">
-              &larr; Dashboard
+              &larr; Sessions
             </Link>
           </div>
         </div>
