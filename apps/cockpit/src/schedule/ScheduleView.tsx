@@ -122,10 +122,17 @@ export function ScheduleView() {
   const [machineFilter, setMachineFilter] = useState("");
   const [showDirectorPicker, setShowDirectorPicker] = useState(false);
 
-  // Create/edit modal state.
+  // Create/edit modal state. The editor is a large two-tab dialog (issue #1289): a "Settings" tab
+  // with every field, and an "Instructions" tab where the prompt editor fills essentially the whole
+  // tab. activeTab remembers which tab is showing; baseline is the form as it was when the dialog
+  // opened, so unsaved edits can be detected and guarded (the dirty-tracking convention from #1255);
+  // confirmDiscard drives the "discard unsaved changes?" guard when closing a dirty editor.
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [baseline, setBaseline] = useState<FormState>(EMPTY_FORM);
+  const [activeTab, setActiveTab] = useState<"settings" | "instructions">("settings");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   // The cron job awaiting delete confirmation. Deleting a job removes the schedule permanently, so it
@@ -187,16 +194,29 @@ export function ScheduleView() {
     }
   }, []);
 
+  // Open the dialog on a form, recording the same value as the dirty-tracking baseline and starting on
+  // the Settings tab. Both the create and edit flows funnel through here so they share the two-tab
+  // dialog and the unsaved-edit guard identically (issue #1289).
+  const openForm = useCallback(
+    (initial: FormState) => {
+      setForm(initial);
+      setBaseline(initial);
+      setActiveTab("settings");
+      setConfirmDiscard(false);
+      setFormError(null);
+      setShowForm(true);
+      void loadDirectors();
+    },
+    [loadDirectors],
+  );
+
   const openCreate = useCallback(() => {
-    setForm(EMPTY_FORM);
-    setFormError(null);
-    setShowForm(true);
-    void loadDirectors();
-  }, [loadDirectors]);
+    openForm(EMPTY_FORM);
+  }, [openForm]);
 
   const openEdit = useCallback(
     (job: CronJob) => {
-      setForm({
+      openForm({
         editingId: job.id,
         name: job.name,
         machine: job.target.machine,
@@ -213,11 +233,8 @@ export function ScheduleView() {
         enabled: job.enabled,
         preventOverlap: job.preventOverlap,
       });
-      setFormError(null);
-      setShowForm(true);
-      void loadDirectors();
     },
-    [loadDirectors],
+    [openForm],
   );
 
   const buildFromForm = useCallback((f: FormState): CronJob => {
@@ -246,6 +263,45 @@ export function ScheduleView() {
   const formErrors = useMemo(() => validateForm(form), [form]);
   const formValid = Object.keys(formErrors).length === 0;
 
+  // Every validated field lives on the Settings tab, so a validation problem is a Settings-tab
+  // problem. The tab shows a marker when it holds an unfilled required field, so a person editing on
+  // the Instructions tab still sees why Save is disabled (issue #1289).
+  const settingsHasError = !formValid;
+
+  // Unsaved-edit tracking (the #1255 convention): the form is dirty when it differs from the value it
+  // opened with. FormState is a flat object of primitives, so a stable JSON comparison is exact.
+  const formDirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(baseline), [form, baseline]);
+
+  // Close the editor and clear its transient guard. Used by a clean close and after a saved or
+  // discarded edit.
+  const closeForm = useCallback(() => {
+    setShowForm(false);
+    setConfirmDiscard(false);
+  }, []);
+
+  // Cancel / backdrop / Escape all route through here so a dirty editor asks before dropping edits and
+  // a clean one closes at once (issue #1289, guard style from #1255).
+  const requestCloseForm = useCallback(() => {
+    if (formDirty) {
+      setConfirmDiscard(true);
+    } else {
+      closeForm();
+    }
+  }, [formDirty, closeForm]);
+
+  // Escape closes the editor (through the unsaved-edit guard), but never while a save is in flight and
+  // never when a nested dialog (the machine picker or the discard confirmation) is open on top of it.
+  useEffect(() => {
+    if (!showForm) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !saving && !showDirectorPicker && !confirmDiscard) {
+        requestCloseForm();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showForm, saving, showDirectorPicker, confirmDiscard, requestCloseForm]);
+
   const save = useCallback(async () => {
     // The Create/Save button is disabled while invalid, but guard here too so no code path can POST
     // an empty job (issue #1027).
@@ -259,7 +315,7 @@ export function ScheduleView() {
       } else {
         await updateCronJob(form.editingId, dto);
       }
-      setShowForm(false);
+      closeForm();
       await refresh();
     } catch (err) {
       // Surface the Gateway's message (incl. a 400 for an invalid cron) inline in the form.
@@ -267,7 +323,7 @@ export function ScheduleView() {
     } finally {
       setSaving(false);
     }
-  }, [buildFromForm, form, formValid, refresh]);
+  }, [buildFromForm, form, formValid, refresh, closeForm]);
 
   const runNow = useCallback(
     async (job: CronJob) => {
@@ -615,168 +671,235 @@ export function ScheduleView() {
       )}
 
       {showForm && (
-        <div className="sched-modal-backdrop" onClick={() => setShowForm(false)}>
-          <div className="sched-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="sched-modal-head">{form.editingId === null ? "New cron job" : "Edit cron job"}</div>
-            <div className="sched-modal-body">
-              <div className="sched-fld">
-                <label className="sched-fld-label">Name</label>
-                <input
-                  className={formErrors.name ? "invalid" : undefined}
-                  value={form.name}
-                  placeholder="e.g. Nightly issue sweep"
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                />
-                {formErrors.name && <div className="sched-fld-err">{formErrors.name}</div>}
-              </div>
-
-              <div className="sched-fld">
-                <label className="sched-fld-label">Run on (machine)</label>
-                <div className="sched-dpick-field">
-                  <span className={`sched-dpick-chosen${form.machine.length === 0 ? " none" : ""}`}>
-                    {form.machine.length === 0 ? "No machine selected" : form.machine}
-                  </span>
-                  <button
-                    type="button"
-                    className="sched-btn dpick-choose"
-                    onClick={() => {
-                      setMachineFilter("");
-                      setShowDirectorPicker(true);
-                    }}
-                  >
-                    {form.machine.length === 0 ? "Choose..." : "Change"}
-                  </button>
-                </div>
-                {formErrors.machine && <div className="sched-fld-err">{formErrors.machine}</div>}
-              </div>
-
-              <div className="sched-fld">
-                <label className="sched-fld-label">Repository path</label>
-                <input
-                  className={`mono${formErrors.repoPath ? " invalid" : ""}`}
-                  value={form.repoPath}
-                  placeholder="C:\repos\devthrottle"
-                  onChange={(e) => setForm((f) => ({ ...f, repoPath: e.target.value }))}
-                />
-                {formErrors.repoPath && <div className="sched-fld-err">{formErrors.repoPath}</div>}
-              </div>
-
-              {/* The "What to run" selector is hidden for now: the named-work-list feature is being
-                  retired (GitHub issues are the queue), so a new job can only be a skill / prompt.
-                  The action defaults to "seed" (see EMPTY_FORM). An existing work-list job still loads
-                  its actionKind and renders its field below (no data loss), it just cannot be newly
-                  chosen. Restore this <select> to bring the work-list action back. */}
-
-              {form.actionKind === "worklist" ? (
-                <div className="sched-fld">
-                  <label className="sched-fld-label">Work list name</label>
-                  <input
-                    value={form.workListName}
-                    placeholder="e.g. Tonight"
-                    onChange={(e) => setForm((f) => ({ ...f, workListName: e.target.value }))}
-                  />
-                </div>
-              ) : (
-                <div className="sched-fld">
-                  <label className="sched-fld-label">Skill / prompt</label>
-                  <textarea
-                    className="sched-prompt mono"
-                    value={form.seed}
-                    rows={6}
-                    placeholder={"/implementation-loop 312\n\nor a full multi-paragraph instruction..."}
-                    onChange={(e) => setForm((f) => ({ ...f, seed: e.target.value }))}
-                  />
-                  <div className="sched-fld-help">
-                    A skill invocation (begins with a slash) or a full multi-paragraph instruction. This
-                    box grows and can be dragged taller.
-                  </div>
-                </div>
-              )}
-
-              <div className="sched-fld">
-                <label className="sched-fld-label">Schedule</label>
-                <select
-                  value={form.scheduleKind}
-                  onChange={(e) => setForm((f) => ({ ...f, scheduleKind: e.target.value as "oneOff" | "recurring" }))}
+        <div className="sched-modal-backdrop" onClick={requestCloseForm}>
+          {/* The large two-tab editor (issue #1289): about 70 percent of the viewport, with a Settings
+              tab for every field and an Instructions tab where the prompt editor fills the room. Save
+              and Cancel sit in the shared footer, visible from either tab. */}
+          <div
+            className="sched-modal sched-modal-large"
+            role="dialog"
+            aria-modal="true"
+            aria-label={form.editingId === null ? "New cron job" : "Edit cron job"}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sched-modal-head sched-modal-head-tabbed">
+              <span className="sched-modal-title">
+                {form.editingId === null ? "New cron job" : "Edit cron job"}
+              </span>
+              <div className="sched-tabs" role="tablist" aria-label="Editor sections">
+                <button
+                  type="button"
+                  role="tab"
+                  id="sched-tab-settings"
+                  aria-selected={activeTab === "settings"}
+                  aria-controls="sched-panel-settings"
+                  className={`sched-tab${activeTab === "settings" ? " active" : ""}`}
+                  onClick={() => setActiveTab("settings")}
                 >
-                  <option value="oneOff">Run once</option>
-                  <option value="recurring">Recurring (cron)</option>
-                </select>
-              </div>
-
-              {form.scheduleKind === "recurring" ? (
-                <div className="sched-fld">
-                  <label className="sched-fld-label">Cron expression (5-field)</label>
-                  <input
-                    className={`mono${formErrors.schedule ? " invalid" : ""}`}
-                    value={form.cron}
-                    placeholder="0 0 * * *"
-                    onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
-                  />
-                  {form.cron.trim().length > 0 && (
-                    <div className="sched-cron-preview">Runs {cronToEnglish(form.cron)}.</div>
+                  Settings
+                  {settingsHasError && (
+                    <span className="sched-tab-warn" title="A required field on this tab still needs a value">
+                      !
+                    </span>
                   )}
-                  {formErrors.schedule && <div className="sched-fld-err">{formErrors.schedule}</div>}
-                </div>
-              ) : (
-                <div className="sched-fld">
-                  <label className="sched-fld-label">Run at (local time)</label>
-                  <input
-                    className={`mono${formErrors.schedule ? " invalid" : ""}`}
-                    value={form.runAt}
-                    placeholder="2026-06-18T00:00:00"
-                    onChange={(e) => setForm((f) => ({ ...f, runAt: e.target.value }))}
-                  />
-                  {formErrors.schedule && <div className="sched-fld-err">{formErrors.schedule}</div>}
-                </div>
-              )}
-
-              <div className="sched-fld">
-                <label className="sched-fld-label">Time zone</label>
-                <input
-                  className="mono"
-                  value={form.timeZone}
-                  placeholder="America/Chicago"
-                  onChange={(e) => setForm((f) => ({ ...f, timeZone: e.target.value }))}
-                />
-              </div>
-
-              <div className="sched-fld">
-                <label className="sched-fld-label">Notify when run completes</label>
-                <select
-                  value={form.notifyOn}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, notifyOn: e.target.value as "none" | "always" | "failure" }))
-                  }
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="sched-tab-instructions"
+                  aria-selected={activeTab === "instructions"}
+                  aria-controls="sched-panel-instructions"
+                  className={`sched-tab${activeTab === "instructions" ? " active" : ""}`}
+                  onClick={() => setActiveTab("instructions")}
                 >
-                  <option value="none">Off (no notification)</option>
-                  <option value="always">Always (success or failure)</option>
-                  <option value="failure">Only on failure</option>
-                </select>
+                  Instructions
+                </button>
+              </div>
+            </div>
+
+            <div className="sched-modal-body sched-modal-body-tabbed">
+              <div
+                id="sched-panel-settings"
+                role="tabpanel"
+                aria-labelledby="sched-tab-settings"
+                hidden={activeTab !== "settings"}
+                className="sched-tabpanel sched-tabpanel-settings"
+              >
+                <div className="sched-settings-grid">
+                  <div className="sched-fld">
+                    <label className="sched-fld-label">Name</label>
+                    <input
+                      className={formErrors.name ? "invalid" : undefined}
+                      value={form.name}
+                      placeholder="e.g. Nightly issue sweep"
+                      onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                    />
+                    {formErrors.name && <div className="sched-fld-err">{formErrors.name}</div>}
+                  </div>
+
+                  <div className="sched-fld">
+                    <label className="sched-fld-label">Run on (machine)</label>
+                    <div className="sched-dpick-field">
+                      <span className={`sched-dpick-chosen${form.machine.length === 0 ? " none" : ""}`}>
+                        {form.machine.length === 0 ? "No machine selected" : form.machine}
+                      </span>
+                      <button
+                        type="button"
+                        className="sched-btn dpick-choose"
+                        onClick={() => {
+                          setMachineFilter("");
+                          setShowDirectorPicker(true);
+                        }}
+                      >
+                        {form.machine.length === 0 ? "Choose..." : "Change"}
+                      </button>
+                    </div>
+                    {formErrors.machine && <div className="sched-fld-err">{formErrors.machine}</div>}
+                  </div>
+
+                  <div className="sched-fld sched-fld-wide">
+                    <label className="sched-fld-label">Repository path</label>
+                    <input
+                      className={`mono${formErrors.repoPath ? " invalid" : ""}`}
+                      value={form.repoPath}
+                      placeholder="C:\repos\devthrottle"
+                      onChange={(e) => setForm((f) => ({ ...f, repoPath: e.target.value }))}
+                    />
+                    {formErrors.repoPath && <div className="sched-fld-err">{formErrors.repoPath}</div>}
+                  </div>
+
+                  <div className="sched-fld">
+                    <label className="sched-fld-label">Schedule</label>
+                    <select
+                      value={form.scheduleKind}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, scheduleKind: e.target.value as "oneOff" | "recurring" }))
+                      }
+                    >
+                      <option value="oneOff">Run once</option>
+                      <option value="recurring">Recurring (cron)</option>
+                    </select>
+                  </div>
+
+                  {form.scheduleKind === "recurring" ? (
+                    <div className="sched-fld">
+                      <label className="sched-fld-label">Cron expression (5-field)</label>
+                      <input
+                        className={`mono${formErrors.schedule ? " invalid" : ""}`}
+                        value={form.cron}
+                        placeholder="0 0 * * *"
+                        onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
+                      />
+                      {form.cron.trim().length > 0 && (
+                        <div className="sched-cron-preview">Runs {cronToEnglish(form.cron)}.</div>
+                      )}
+                      {formErrors.schedule && <div className="sched-fld-err">{formErrors.schedule}</div>}
+                    </div>
+                  ) : (
+                    <div className="sched-fld">
+                      <label className="sched-fld-label">Run at (local time)</label>
+                      <input
+                        className={`mono${formErrors.schedule ? " invalid" : ""}`}
+                        value={form.runAt}
+                        placeholder="2026-06-18T00:00:00"
+                        onChange={(e) => setForm((f) => ({ ...f, runAt: e.target.value }))}
+                      />
+                      {formErrors.schedule && <div className="sched-fld-err">{formErrors.schedule}</div>}
+                    </div>
+                  )}
+
+                  <div className="sched-fld">
+                    <label className="sched-fld-label">Time zone</label>
+                    <input
+                      className="mono"
+                      value={form.timeZone}
+                      placeholder="America/Chicago"
+                      onChange={(e) => setForm((f) => ({ ...f, timeZone: e.target.value }))}
+                    />
+                  </div>
+
+                  <div className="sched-fld">
+                    <label className="sched-fld-label">Notify when run completes</label>
+                    <select
+                      value={form.notifyOn}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, notifyOn: e.target.value as "none" | "always" | "failure" }))
+                      }
+                    >
+                      <option value="none">Off (no notification)</option>
+                      <option value="always">Always (success or failure)</option>
+                      <option value="failure">Only on failure</option>
+                    </select>
+                  </div>
+
+                  {form.notifyOn !== "none" && (
+                    <div className="sched-fld sched-fld-wide">
+                      <label className="sched-fld-label">Webhook URL (optional)</label>
+                      <input
+                        className="mono"
+                        value={form.notifyWebhookUrl}
+                        placeholder="example.com/hook (https)"
+                        onChange={(e) => setForm((f) => ({ ...f, notifyWebhookUrl: e.target.value }))}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {form.notifyOn !== "none" && (
-                <div className="sched-fld">
-                  <label className="sched-fld-label">Webhook URL (optional)</label>
-                  <input
-                    className="mono"
-                    value={form.notifyWebhookUrl}
-                    placeholder="example.com/hook (https)"
-                    onChange={(e) => setForm((f) => ({ ...f, notifyWebhookUrl: e.target.value }))}
-                  />
-                </div>
-              )}
-
-              {formError !== null && <div className="sched-modal-error">{formError}</div>}
+              <div
+                id="sched-panel-instructions"
+                role="tabpanel"
+                aria-labelledby="sched-tab-instructions"
+                hidden={activeTab !== "instructions"}
+                className="sched-tabpanel sched-tabpanel-instructions"
+              >
+                {/* The whole point of the editor is this one field. On its own tab it fills the room:
+                    a large monospace, resizable text area for a multi-paragraph instruction. The
+                    "What to run" selector stays hidden (work lists are being retired); an existing
+                    work-list job still shows and keeps its name here so nothing is lost. */}
+                {form.actionKind === "worklist" ? (
+                  <div className="sched-fld sched-fld-wide">
+                    <label className="sched-fld-label">Work list name</label>
+                    <input
+                      value={form.workListName}
+                      placeholder="e.g. Tonight"
+                      onChange={(e) => setForm((f) => ({ ...f, workListName: e.target.value }))}
+                    />
+                    <div className="sched-fld-help">
+                      This job drains a named work list. New jobs use a skill or prompt instead.
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <label className="sched-fld-label" htmlFor="sched-instructions-box">
+                      Skill / prompt
+                    </label>
+                    <textarea
+                      id="sched-instructions-box"
+                      className="sched-prompt sched-prompt-large mono"
+                      value={form.seed}
+                      placeholder={"/implementation-loop 312\n\nor a full multi-paragraph instruction..."}
+                      onChange={(e) => setForm((f) => ({ ...f, seed: e.target.value }))}
+                    />
+                    <div className="sched-fld-help">
+                      A skill invocation (begins with a slash) or a full multi-paragraph instruction - it
+                      fills the tab and can be dragged taller.
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
+
             <div className="sched-modal-foot">
-              <button className="sched-btn" onClick={() => setShowForm(false)}>
+              {formError !== null && <div className="sched-modal-error sched-modal-foot-error">{formError}</div>}
+              {formDirty && <span className="sched-modal-dirty">Unsaved changes</span>}
+              <button className="sched-btn" onClick={requestCloseForm} disabled={saving}>
                 Cancel
               </button>
               <button
                 className="sched-btn primary"
                 disabled={saving || !formValid}
-                title={formValid ? undefined : "Fill in the highlighted fields to continue"}
+                title={formValid ? undefined : "Fill in the highlighted fields on the Settings tab to continue"}
                 onClick={() => void save()}
               >
                 {saving ? "Saving..." : form.editingId === null ? "Create job" : "Save"}
@@ -879,6 +1002,19 @@ export function ScheduleView() {
           if (pendingDelete !== null) await remove(pendingDelete);
         }}
         onClose={() => setPendingDelete(null)}
+      />
+
+      {/* The unsaved-edit guard (issue #1289, guard style from #1255): closing a dirty editor asks
+          before dropping the edits, so a stray backdrop click or Escape can never silently discard a
+          part-written instruction. */}
+      <ConfirmDialog
+        open={confirmDiscard}
+        title="Discard unsaved changes?"
+        message="You have edits that have not been saved. Closing the editor will discard them. This cannot be undone."
+        confirmLabel="Discard and close"
+        cancelLabel="Keep editing"
+        onConfirm={closeForm}
+        onClose={() => setConfirmDiscard(false)}
       />
     </div>
   );
