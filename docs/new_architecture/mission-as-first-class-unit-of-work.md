@@ -142,6 +142,30 @@ GUID, or a 4-character prefix (Soren, 2026-07-09). Say "the Manager of the Lifec
   `fleet-identity-naming-and-addressing.md` (address by name/number, not GUID) one step further:
   the human-facing NAME itself should be the Role-of-Mission.
 
+### Display-name convention (ratified by Soren, 2026-07-11)
+
+The session DISPLAY NAME encodes Role-of-Mission in a fixed, sortable order - mission first,
+role second, joined with " - ":
+
+- `Gateway Connection - Architect`
+- `Gateway Connection - Manager`
+- `Gateway Connection - Worker - connect panel` (a Worker appends its Task at the end,
+  consistent with "a Worker is addressed by its Task" above)
+
+Rules:
+
+1. Mission name FIRST, so sorting the session list by name groups every session of one Mission
+   together, Architect and Manager adjacent, Workers under them.
+2. The repository is NEVER part of the name - the session list displays the repository in its
+   own column, so repeating it in the name is noise that pushes the meaningful part off-screen.
+3. Session ids and numbers are NEVER part of the name (they are machine addressing, per the
+   rule above).
+4. A solo session with no Mission is named for its work ("Clean up stale branches"), again
+   without the repository.
+
+The auto-naming build (`automatic-session-roles-naming-spec.md`, Chunk 3 - the composed
+role-flavored name at birth) must compose names to this convention.
+
 ## Wingman must speak the model, in plain engineering English
 
 The Wingman has to understand the Mission/role model so it can talk about sessions correctly, and it

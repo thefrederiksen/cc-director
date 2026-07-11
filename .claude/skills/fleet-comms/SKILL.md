@@ -40,6 +40,21 @@ no name displays as the bare folder name and is impossible to tell apart. Lead w
 `implement #799`); spawn warns when you give neither. A blank name, or a name equal to the bare
 repository folder name, is rejected - pass something meaningful or a purpose.
 
+### Display-name convention (ratified by Soren, 2026-07-11)
+
+Names are how the fleet sorts, so compose them so related sessions group together:
+
+- A session on a Mission is named mission first, role second, joined with " - ":
+  - `Gateway Connection - Architect`
+  - `Gateway Connection - Manager`
+  - `Gateway Connection - Worker - connect panel` (a Worker adds its task at the end)
+- Sorting by name then puts every session of one Mission next to each other, Architect and
+  Manager adjacent with the Workers under them.
+- NEVER put the repository in the name - the session list already shows the repository in its
+  own column. NEVER put session ids or numbers in the name.
+- A solo session (no Mission) is named for the work itself ("Clean up stale branches"), again
+  without the repository name.
+
 `session rename "name"` renames the current session using `CC_SESSION_ID`.
 `session rename <target> "name"` renames another session selected by id prefix or exact name.
 
