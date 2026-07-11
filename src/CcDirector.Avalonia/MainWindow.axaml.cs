@@ -734,8 +734,8 @@ public partial class MainWindow : Window
             var window = new Window
             {
                 Title = "Gateway Connection (preview)",
-                Width = 540,
-                Height = 480,
+                Width = 560,
+                Height = 660,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Background = global::Avalonia.Media.Brush.Parse("#252526"),
                 Content = new Controls.GatewayConnectionPanel(),
