@@ -4,7 +4,7 @@ import {
   type WingmanQueueSnapshot,
 } from "@devthrottle/client-core/wingman/queueClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
-import { clockLabel } from "../fleet/format";
+import { clockLabel, shortId } from "../fleet/format";
 
 // The fleet-level Wingman Pipeline page (issue #976, epic #967) - the React port of the Blazor
 // Cockpit WingmanQueue.razor (issue #239). A READ-ONLY window onto the one-brain stamping machine:
@@ -215,10 +215,6 @@ function elapsedText(seconds: number): string {
   if (seconds < 1) return "just now";
   if (seconds < 60) return `${Math.floor(seconds)}s`;
   return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
-}
-
-function shortId(value: string): string {
-  return value.length <= 8 ? value : value.slice(0, 8);
 }
 
 // The brief's local wall-clock "HH:mm:ss", matching the Blazor GeneratedAtUtc.ToLocalTime() render.

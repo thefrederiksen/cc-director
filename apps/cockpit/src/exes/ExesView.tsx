@@ -11,6 +11,7 @@ import {
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { dotColor } from "@devthrottle/client-core/sessions/ordering";
 import { ConfirmDialog, EmptyState, ErrorBanner, LoadingState, StatusMessage, useFlash } from "../components";
+import { portOf, repoBasename, uptime } from "../fleet/format";
 
 // The Exes management page (issue #977, epic #967) - the React port of the Blazor Cockpit
 // Exes.razor(.css) (#183). It lists the Directors running on THIS computer + their sessions and the
@@ -150,8 +151,8 @@ export function ExesView() {
                       {dir.slot == null ? "no slot" : `slot ${dir.slot}`}
                     </span>
                     <span className="ex-meta">
-                      PID <b>{dir.pid}</b> &middot; port <b>{portOf(dir.controlEndpoint)}</b> &middot; v
-                      {dir.version ?? "?"} &middot; up {relativeTime(dir.startedAt)}
+                      PID <b>{dir.pid}</b> &middot; port <b>{portOf(dir.controlEndpoint) ?? "?"}</b> &middot; v
+                      {dir.version ?? "?"} &middot; up {uptime(dir.startedAt)}
                     </span>
                     <span className="ex-spacer" />
                     {dir.directorUrl && dir.directorUrl.trim().length > 0 && (
@@ -223,7 +224,7 @@ export function ExesView() {
                       </div>
                       {sl.exists ? (
                         <div className="ex-sub">
-                          {fmtSize(sl.sizeBytes)} &middot; built {relativeTime(sl.lastBuiltUtc)} ago
+                          {fmtSize(sl.sizeBytes)} &middot; built {uptime(sl.lastBuiltUtc)} ago
                         </div>
                       ) : (
                         <div className="ex-sub">no exe in local_builds</div>
@@ -326,38 +327,12 @@ function describePending(
   }
 }
 
-// ---- display helpers (mirroring exes.html / Exes.razor exactly) ----
-function portOf(endpoint: string | null | undefined): string {
-  if (!endpoint || endpoint.trim().length === 0) return "?";
-  const m = endpoint.match(/:(\d+)\/?$/);
-  return m ? m[1] : "?";
-}
-
-function repoBasename(path: string | null | undefined): string {
-  if (!path || path.trim().length === 0) return "(no repo)";
-  const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  const i = norm.lastIndexOf("/");
-  return i >= 0 ? norm.slice(i + 1) : norm;
-}
-
+// The build-slot exe size ("12.3 MB" / "512 KB" / "0 B") - a display helper unique to this page, so it
+// stays local. The port, repo basename, and duration helpers this page used to re-implement now come
+// from the shared fleet/format module (issue #1261).
 function fmtSize(bytes: number): string {
   if (bytes === 0) return "0 B";
   const mb = bytes / (1024 * 1024);
   if (mb >= 1) return `${mb.toFixed(1)} MB`;
   return `${Math.round(bytes / 1024)} KB`;
-}
-
-// Relative time from a UTC timestamp, matching exes.html's relativeTime(): seconds / minutes /
-// "Hh Mm" / days.
-function relativeTime(utc: string | null | undefined): string {
-  if (!utc || utc.trim().length === 0) return "-";
-  const t = new Date(utc).getTime();
-  if (Number.isNaN(t)) return "-";
-  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${m % 60}m`;
-  return `${Math.floor(h / 24)}d`;
 }
