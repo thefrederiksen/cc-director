@@ -99,6 +99,19 @@ export class MicRecorder {
     this.startedAt = performance.now();
   }
 
+  /**
+   * Snapshot the audio captured SO FAR as one Blob, WITHOUT stopping the recorder - the microphone keeps
+   * capturing and more audio keeps accumulating. Used by Car Mode to transcribe the accumulated utterance
+   * on each pause while still listening (the single-mic-stream design). The blob starts at the first chunk
+   * (which carries the container header), so it is decodable; a segment that has produced no chunks yet
+   * returns an empty blob. Reads the chunk list synchronously, so it is safe to call from a timer while
+   * MediaRecorder is still delivering chunks on the same thread.
+   */
+  snapshot(): Blob {
+    const mime = this.mimeType || "audio/webm";
+    return new Blob(this.chunks, { type: mime });
+  }
+
   /** Current input level in 0..1, sampled live. Returns 0 when not recording. */
   level(): number {
     if (!this.analyser || !this.levelData) return 0;
