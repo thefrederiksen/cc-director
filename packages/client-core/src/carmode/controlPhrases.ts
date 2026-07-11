@@ -59,6 +59,26 @@ export function detectEndPhrase(rawTranscript: string): EndPhraseResult {
   return { ended: true, command };
 }
 
+/** What the turn-taking machine should do with a live control transcript, given the current phase. */
+export type ControlAction = "end" | "interrupt" | "none";
+
+/** The Car Mode phases the control-word handler branches on. */
+export type ControlPhase = "listening" | "thinking" | "speaking";
+
+/**
+ * The single turn-taking decision, pure and testable: given the current phase and the live control-word
+ * transcript, decide whether the owner ended his turn, interrupted the assistant, or did neither. Only
+ * Listening can END (on "over and out"), only Speaking can INTERRUPT (on "stop"/"wait"/"shut up"), and
+ * Thinking ignores control words (nothing is playing to interrupt, and the turn is already committed).
+ * useCarMode() calls this from its recognizer callback so the state machine's language rules live in one
+ * unit-tested place instead of inline in the imperative hook.
+ */
+export function decideControlAction(phase: ControlPhase, rawTranscript: string): ControlAction {
+  if (phase === "listening") return detectEndPhrase(rawTranscript).ended ? "end" : "none";
+  if (phase === "speaking") return detectInterrupt(rawTranscript) ? "interrupt" : "none";
+  return "none";
+}
+
 /**
  * Decide whether the transcript carries an interrupt word ("stop"/"wait"/"shut up"). Used ONLY while
  * the assistant is speaking, so the owner can cut it off instantly. Matches a WHOLE word/phrase (so

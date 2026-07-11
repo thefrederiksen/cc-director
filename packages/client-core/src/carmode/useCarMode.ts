@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
 import { playReadyCue, playYourTurnCue } from "../dictation/readyCue";
-import { detectEndPhrase, detectInterrupt } from "./controlPhrases";
+import { decideControlAction, detectEndPhrase } from "./controlPhrases";
 import { ControlWordListener, isControlRecognitionSupported } from "./speechRecognition";
 import { speakCarModeText, transcribeCarModeAudio, type CarModeAction } from "./carModeApi";
+import { gatewayErrorMessage } from "../api/client";
 
 // The Car Mode turn-taking machine (new build B, mission Phase 1). This shared hook owns the whole
 // walkie-talkie loop so the page is a thin view (decision 6): capture -> transcribe -> brain -> speak,
@@ -158,7 +159,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         await audio.play();
       } catch (err) {
         if (signal.aborted) return;
-        announceError(err instanceof Error ? err.message : "Could not play the reply.");
+        announceError(gatewayErrorMessage(err));
         await enterListening();
       }
     },
@@ -211,7 +212,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       await speakAndPlay(spoken, controller.signal);
     } catch (err) {
       if (controller.signal.aborted) return; // stop() aborted this turn on purpose
-      announceError(err instanceof Error ? err.message : "Something went wrong on that turn.");
+      // A loud, SPECIFIC spoken failure (decision 8): an unreachable Gateway, an out-of-credits 402, or
+      // a model error each collapses to the shared, friendly, retry-implying line rather than a raw
+      // "Failed to fetch" - and it is spoken, never a silent stall.
+      announceError(gatewayErrorMessage(err));
       await enterListening();
     }
   }, [respond, announceError, enterListening, speakAndPlay, setPhaseBoth]);
@@ -223,22 +227,20 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const onControlTranscript = useCallback(
     (text: string) => {
       const current = phaseRef.current;
-      if (current === "listening") {
-        if (detectEndPhrase(text).ended) {
-          console.log("[CarMode] end phrase heard -> taking the turn");
-          void takeTurn();
+      if (current === "thinking" || current === "idle") return;
+      const action = decideControlAction(current, text);
+      if (action === "end") {
+        console.log("[CarMode] end phrase heard -> taking the turn");
+        void takeTurn();
+      } else if (action === "interrupt") {
+        console.log("[CarMode] interrupt heard -> silencing and returning the turn");
+        const audio = audioRef.current;
+        try {
+          audio?.pause();
+        } catch {
+          /* nothing playing */
         }
-      } else if (current === "speaking") {
-        if (detectInterrupt(text)) {
-          console.log("[CarMode] interrupt heard -> silencing and returning the turn");
-          const audio = audioRef.current;
-          try {
-            audio?.pause();
-          } catch {
-            /* nothing playing */
-          }
-          void enterListening();
-        }
+        void enterListening();
       }
     },
     [takeTurn, enterListening],

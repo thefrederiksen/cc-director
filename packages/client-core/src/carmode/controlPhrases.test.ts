@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectEndPhrase, detectInterrupt, normalizeTranscript } from "./controlPhrases";
+import { decideControlAction, detectEndPhrase, detectInterrupt, normalizeTranscript } from "./controlPhrases";
 
 // The walkie-talkie discipline is load-bearing: the assistant must never speak until "over and out",
 // and must never mistake a mid-sentence "over" or "stopover" for the end word. These tests pin the
@@ -73,5 +73,27 @@ describe("detectInterrupt", () => {
   });
   it("does not fire on empty input", () => {
     expect(detectInterrupt("")).toBe(false);
+  });
+});
+
+describe("decideControlAction (the turn-taking decision)", () => {
+  it("ends the turn only from Listening on the end phrase", () => {
+    expect(decideControlAction("listening", "how many need me over and out")).toBe("end");
+    expect(decideControlAction("listening", "how many need me")).toBe("none");
+  });
+
+  it("interrupts only from Speaking on an interrupt word", () => {
+    expect(decideControlAction("speaking", "stop")).toBe("interrupt");
+    expect(decideControlAction("speaking", "keep going")).toBe("none");
+  });
+
+  it("does NOT end from Speaking and does NOT interrupt from Listening (phase-gated)", () => {
+    expect(decideControlAction("speaking", "over and out")).toBe("none");
+    expect(decideControlAction("listening", "stop")).toBe("none");
+  });
+
+  it("ignores control words entirely while Thinking (nothing to interrupt, turn committed)", () => {
+    expect(decideControlAction("thinking", "over and out")).toBe("none");
+    expect(decideControlAction("thinking", "stop")).toBe("none");
   });
 });
