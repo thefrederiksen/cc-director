@@ -1,0 +1,170 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CcDirector.Avalonia.Controls.GatewayConnectionPanel"
+             MinWidth="460">
+
+    <UserControl.Styles>
+        <Style Selector="TextBlock.title">
+            <Setter Property="Foreground" Value="#CCCCCC" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="TextBlock.body">
+            <Setter Property="Foreground" Value="#AAAAAA" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style Selector="TextBlock.fieldLabel">
+            <Setter Property="Foreground" Value="#888888" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Margin" Value="0,8,0,4" />
+        </Style>
+        <Style Selector="TextBox.input">
+            <Setter Property="Background" Value="#161616" />
+            <Setter Property="Foreground" Value="#E8E8E8" />
+            <Setter Property="BorderBrush" Value="#3C3C3C" />
+            <Setter Property="CornerRadius" Value="3" />
+            <Setter Property="Padding" Value="8" />
+        </Style>
+        <Style Selector="Button.primaryButton">
+            <Setter Property="Background" Value="#007ACC" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="16,8" />
+            <Setter Property="CornerRadius" Value="2" />
+        </Style>
+        <Style Selector="Button.secondaryButton">
+            <Setter Property="Background" Value="#3C3C3C" />
+            <Setter Property="Foreground" Value="#CCCCCC" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="12,8" />
+            <Setter Property="CornerRadius" Value="2" />
+        </Style>
+        <!-- A found-Gateway pick: a full-width clickable row. -->
+        <Style Selector="Button.pick">
+            <Setter Property="Background" Value="#161616" />
+            <Setter Property="Foreground" Value="#E8E8E8" />
+            <Setter Property="BorderBrush" Value="#3C3C3C" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="3" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+        <Style Selector="Button.pick:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#242424" />
+        </Style>
+        <Style Selector="TextBlock.link">
+            <Setter Property="Foreground" Value="#4EA1F2" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+    </UserControl.Styles>
+
+    <Grid Margin="20" MinHeight="220">
+
+        <!-- STEP 1a: scanning -->
+        <StackPanel x:Name="ScanningPanel" Spacing="6" VerticalAlignment="Top">
+            <TextBlock Classes="title" Text="Connect to your Gateway" />
+            <TextBlock Classes="body"
+                       Text="Looking for a Gateway on this machine, your tailnet, and your local network..." />
+            <ProgressBar IsIndeterminate="True" Height="3" Margin="0,10,0,0"
+                         Foreground="#007ACC" Background="#2A2A2A" />
+        </StackPanel>
+
+        <!-- STEP 1b: results (found picks and/or manual entry) -->
+        <StackPanel x:Name="FoundPanel" Spacing="4" VerticalAlignment="Top" IsVisible="False">
+            <TextBlock Classes="title" Text="Connect to your Gateway" />
+
+            <StackPanel x:Name="FoundListSection" IsVisible="False" Margin="0,6,0,0">
+                <TextBlock Classes="fieldLabel" Text="FOUND" />
+                <ItemsControl x:Name="FoundList">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Classes="pick" Click="Pick_Click" Tag="{Binding}">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="{Binding Label}" FontSize="13" VerticalAlignment="Center" />
+                                    <TextBlock Text="&gt;" Foreground="#777777" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" />
+                                </StackPanel>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+
+            <TextBlock x:Name="NoneFoundText" Classes="body" IsVisible="False" Margin="0,6,0,0"
+                       Text="No Gateway found automatically. Enter the address manually below." />
+
+            <Button x:Name="RescanButton" Classes="secondaryButton" Content="Scan again"
+                    HorizontalAlignment="Left" Margin="0,8,0,0" Click="Rescan_Click" />
+
+            <!-- Advanced: manual entry fallback (collapsed by default, decisions 5 and 6) -->
+            <Expander x:Name="AdvancedExpander" Header="Enter the address manually" Margin="0,12,0,0"
+                      Background="Transparent" Foreground="#4EA1F2">
+                <StackPanel Spacing="2" Margin="0,6,0,0">
+                    <TextBlock Classes="fieldLabel" Text="GATEWAY ADDRESS (computer name plus port, or a full address)" />
+                    <TextBox x:Name="ManualUrlBox" Classes="input"
+                             Watermark="e.g. SOREN_NORTH:7878  or  https://host.tailnet.ts.net" />
+                    <TextBlock x:Name="ManualErrorText" FontSize="11" Foreground="#E07A7A"
+                               TextWrapping="Wrap" IsVisible="False" Margin="0,4,0,0" />
+                    <Button x:Name="ManualConnectButton" Classes="primaryButton" Content="Connect"
+                            HorizontalAlignment="Left" Margin="0,8,0,0" Click="ManualConnect_Click" />
+                </StackPanel>
+            </Expander>
+        </StackPanel>
+
+        <!-- STEP 1c: connecting (the click IS the test) -->
+        <StackPanel x:Name="ConnectingPanel" Spacing="8" VerticalAlignment="Top" IsVisible="False">
+            <TextBlock x:Name="ConnectingTitle" Classes="title" Text="Connecting to Gateway..." />
+            <StackPanel Spacing="6" Margin="0,6,0,0">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock x:Name="LegReachMarker" Text="[.]" FontFamily="Consolas,Courier New"
+                               Foreground="#AAAAAA" VerticalAlignment="Top" />
+                    <TextBlock Text="Reaching the Gateway" Classes="body" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock x:Name="LegCallbackMarker" Text="[.]" FontFamily="Consolas,Courier New"
+                               Foreground="#AAAAAA" VerticalAlignment="Top" />
+                    <TextBlock Text="Waiting for the Gateway to reach this Director back" Classes="body" />
+                </StackPanel>
+            </StackPanel>
+            <ProgressBar IsIndeterminate="True" Height="3" Margin="0,6,0,0"
+                         Foreground="#007ACC" Background="#2A2A2A" />
+        </StackPanel>
+
+        <!-- STEP 1d: connected -->
+        <StackPanel x:Name="ConnectedPanel" Spacing="10" VerticalAlignment="Top" IsVisible="False">
+            <TextBlock Classes="title" Text="Connected" />
+            <Border Background="#14241A" BorderBrush="#2E7D32" BorderThickness="1" CornerRadius="3" Padding="16">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock Text="[x]" FontFamily="Consolas,Courier New" FontSize="14" Foreground="#66BB6A"
+                               VerticalAlignment="Center" />
+                    <TextBlock x:Name="ConnectedText" FontSize="14" Foreground="#CFE9CF"
+                               Text="Connected to the Gateway" VerticalAlignment="Center" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+            <TextBlock Classes="body"
+                       Text="The two-way connection is proven. Next comes signing in (added in the next step)." />
+        </StackPanel>
+
+        <!-- STEP 1e: named failure -->
+        <StackPanel x:Name="FailedPanel" Spacing="8" VerticalAlignment="Top" IsVisible="False">
+            <TextBlock Classes="title" Text="Could not finish connecting" />
+            <Border Background="#241616" BorderBrush="#8B3A3A" BorderThickness="1" CornerRadius="3" Padding="16">
+                <StackPanel Spacing="6">
+                    <TextBlock x:Name="FailureSummaryText" FontSize="13" Foreground="#E8C0C0"
+                               TextWrapping="Wrap" Text="The connection could not be completed." />
+                    <TextBlock x:Name="FailureFixText" FontSize="12" Foreground="#C79A9A"
+                               TextWrapping="Wrap" IsVisible="False" />
+                </StackPanel>
+            </Border>
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                <Button x:Name="TryAgainButton" Classes="primaryButton" Content="Try again" Click="TryAgain_Click" />
+                <Button x:Name="FailedBackButton" Classes="secondaryButton" Content="Back to scan" Click="Rescan_Click" />
+            </StackPanel>
+        </StackPanel>
+
+    </Grid>
+</UserControl>
