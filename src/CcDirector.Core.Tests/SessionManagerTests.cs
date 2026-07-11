@@ -389,6 +389,61 @@ public class SessionManagerTests : IDisposable
         Assert.False(_manager.NumberAllocator.IsReserved(number));
     }
 
+    // ===== Issue #1292: Gateway-assigned fleet numbers + offline fallback =====
+
+    [Fact]
+    public void CreateSession_WithGatewayNumbering_UsesTheGatewayNumber()
+    {
+        _manager.FleetNumberSource = (_, _) => Task.FromResult<int?>(250);
+        _manager.FleetNumberingActive = true;
+
+        var session = _manager.CreateSession(Path.GetTempPath());
+
+        // The Gateway number is applied asynchronously (creation never blocks on the network), so wait
+        // briefly for it to arrive.
+        Assert.True(SpinWait.SpinUntil(() => session.Number == 250, TimeSpan.FromSeconds(3)),
+            $"expected the Gateway number 250, got {session.Number}");
+        Assert.True(_manager.NumberAllocator.IsReserved(250));
+    }
+
+    [Fact]
+    public void CreateSession_WhenGatewayReturnsNoNumber_FallsBackToOfflineHighBand()
+    {
+        // Gateway configured but unreachable/exhausted -> the source returns null -> local offline number.
+        _manager.FleetNumberSource = (_, _) => Task.FromResult<int?>(null);
+        _manager.FleetNumberingActive = true;
+
+        var session = _manager.CreateSession(Path.GetTempPath());
+
+        Assert.True(SpinWait.SpinUntil(() => session.Number.HasValue, TimeSpan.FromSeconds(3)),
+            "expected an offline fallback number when the Gateway returned none");
+        Assert.InRange(session.Number!.Value, SessionNumberAllocator.OfflineBandStart, SessionNumberAllocator.MaxNumber);
+    }
+
+    [Fact]
+    public void CreateSession_WithNoGatewayConfigured_NumbersOfflineSynchronously()
+    {
+        // The default: no Gateway configured -> synchronous offline number available immediately.
+        Assert.False(_manager.FleetNumberingActive);
+
+        var session = _manager.CreateSession(Path.GetTempPath());
+
+        Assert.NotNull(session.Number);
+        Assert.InRange(session.Number!.Value, SessionNumberAllocator.OfflineBandStart, SessionNumberAllocator.MaxNumber);
+    }
+
+    [Fact]
+    public void RemoveSession_TellsTheGatewayToReleaseTheNumber()
+    {
+        var released = new List<Guid>();
+        _manager.FleetNumberRelease = id => released.Add(id);
+        var session = _manager.CreateSession(Path.GetTempPath());
+
+        _manager.RemoveSession(session.Id);
+
+        Assert.Contains(session.Id, released);
+    }
+
     [Fact]
     public void SaveCurrentState_PersistsSessionNumber()
     {

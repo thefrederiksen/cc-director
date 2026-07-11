@@ -36,6 +36,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public DirectorRegistry Registry { get; }
 
     /// <summary>
+    /// Issue #1292: the fleet-wide authority for the short three-digit session numbers. One instance for
+    /// the whole Gateway, so a number names exactly one session across every Director on every machine.
+    /// Directors ask it for a number at session creation (POST /session-numbers/allocate) and free it at
+    /// session end; the /sessions aggregation adopts every observed number so the in-use set survives a
+    /// Gateway restart.
+    /// </summary>
+    public Discovery.FleetSessionNumberAllocator SessionNumbers { get; } = new();
+
+    /// <summary>
     /// Issue #1176 (Phase 1a): the Gateway's cache of session state pushed up by stream-connected
     /// Directors. The <c>/sessions</c> aggregation serves a Director from here (instead of pulling it)
     /// when that Director's stream is connected and fresh. Empty until Directors connect and push.
@@ -321,6 +330,10 @@ public sealed class GatewayHost : IAsyncDisposable
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
         Registry = new DirectorRegistry(instancesDirectory);
+        // Issue #1292: free a removed Director's session numbers so a Director that died without releasing
+        // them does not leak the pool. OnDirectorRemoved fires on graceful unregister and on the registry's
+        // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
+        Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
@@ -1051,7 +1064,10 @@ public sealed class GatewayHost : IAsyncDisposable
             streamStaleAfter: _streamStaleAfter,
             // Issue #1177 (Phase 1): route per-session commands DOWN the Director's stream when stream mode
             // is on. Null when off, so every command endpoint stays on its HTTP path (byte-identical).
-            sendCommand: _streamMode ? SendCommandAsync : null);
+            sendCommand: _streamMode ? SendCommandAsync : null,
+            // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
+            // (Directors ask here at session creation) and the /sessions adopt-reconcile.
+            sessionNumbers: SessionNumbers);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and

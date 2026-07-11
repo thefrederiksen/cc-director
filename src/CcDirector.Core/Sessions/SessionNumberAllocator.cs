@@ -23,6 +23,16 @@ public sealed class SessionNumberAllocator
     /// <summary>Highest assignable number (inclusive).</summary>
     public const int MaxNumber = 999;
 
+    /// <summary>
+    /// Lowest number of the OFFLINE band (issue #1292). When the Director cannot reach the Gateway at
+    /// session creation, it picks a random free number in [<see cref="OfflineBandStart"/>,
+    /// <see cref="MaxNumber"/>]. The Gateway hands out from the LOW end (100 upward), so keeping offline
+    /// picks in the high band makes a clash between a coordinated number and an offline guess very
+    /// unlikely in normal use. It is a best guess, not a guarantee - two offline Directors can still,
+    /// rarely, land on the same number.
+    /// </summary>
+    public const int OfflineBandStart = 800;
+
     /// <summary>Total size of the number pool (900 distinct codes).</summary>
     public const int PoolCapacity = MaxNumber - MinNumber + 1;
 
@@ -32,6 +42,7 @@ public sealed class SessionNumberAllocator
     private readonly object _lock = new();
     private readonly HashSet<int> _inUse = new();
     private readonly Queue<int> _recentlyFreed = new();
+    private readonly Random _random = new();
 
     /// <summary>Count of numbers currently reserved (active sessions). For tests and diagnostics.</summary>
     public int InUseCount
@@ -76,6 +87,42 @@ public sealed class SessionNumberAllocator
 
             _inUse.Add(number);
             FileLog.Write($"[SessionNumberAllocator] Allocate: assigned {number} ({_inUse.Count} in use)");
+            return number;
+        }
+    }
+
+    /// <summary>
+    /// Assign a LOCAL offline number (issue #1292): a random free number in the offline band
+    /// [<see cref="OfflineBandStart"/>, <see cref="MaxNumber"/>], used when the Gateway cannot be
+    /// reached at session creation so the session still gets a number. Falls back to any free number
+    /// in the whole range only when the offline band is completely full. Returns null only when the
+    /// entire pool is exhausted. The chosen number is reserved, exactly like <see cref="Allocate"/>.
+    /// </summary>
+    public int? AllocateOffline()
+    {
+        lock (_lock)
+        {
+            if (_inUse.Count >= PoolCapacity)
+            {
+                FileLog.Write($"[SessionNumberAllocator] AllocateOffline: pool exhausted ({_inUse.Count} in use), returning no number");
+                return null;
+            }
+
+            var free = new List<int>();
+            for (int n = OfflineBandStart; n <= MaxNumber; n++)
+                if (!_inUse.Contains(n)) free.Add(n);
+
+            int number;
+            if (free.Count > 0)
+                number = free[_random.Next(free.Count)];
+            else if (FirstFree(skipHoldback: false) is int any)
+                number = any; // offline band full - take any free number rather than block
+            else
+                throw new InvalidOperationException(
+                    "SessionNumberAllocator: no free number found despite available capacity.");
+
+            _inUse.Add(number);
+            FileLog.Write($"[SessionNumberAllocator] AllocateOffline: assigned {number} ({_inUse.Count} in use)");
             return number;
         }
     }

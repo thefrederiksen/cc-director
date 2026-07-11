@@ -84,6 +84,7 @@ public class SessionViewModel : INotifyPropertyChanged
         session.OnHoldChanged += OnHoldChangedVm;
         session.OnViewModeChanged += OnViewModeChangedVm;
         session.OnReceivingDictationChanged += OnReceivingDictationChangedVm;
+        session.OnNumberChanged += OnNumberChangedVm;
 
         if (session.PromptQueue != null)
         {
@@ -247,6 +248,17 @@ public class SessionViewModel : INotifyPropertyChanged
 
     /// <summary>True when the session has a three-digit number to show (issue #820).</summary>
     public bool HasNumber => Session.Number.HasValue;
+
+    /// <summary>Issue #1292: the Gateway assigned this session's number after creation - repaint the
+    /// rail badge on the UI thread so the number appears when it arrives.</summary>
+    private void OnNumberChangedVm()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            OnPropertyChanged(nameof(NumberBadge));
+            OnPropertyChanged(nameof(HasNumber));
+        });
+    }
 
     public string? CustomColor
     {

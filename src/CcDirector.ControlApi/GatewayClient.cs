@@ -342,6 +342,68 @@ public sealed class GatewayClient : IDisposable
         return parsed;
     }
 
+    // ===== Fleet session numbers (issue #1292) =====
+    // The Gateway is the authority for the short three-digit session number (100-999) so it is
+    // unique across every Director on every machine. The Director asks here when it creates a
+    // session and frees the number when the session ends. Best-effort like the turn-brief fetch:
+    // a null / failed allocate means the Director falls back to a local offline number, so these
+    // never throw - an unreachable Gateway must not block session creation.
+
+    /// <summary>
+    /// Ask the Gateway to hand out this session's fleet-unique three-digit number (issue #1292).
+    /// Returns the number when the Gateway answered; null when the Gateway is disabled (not
+    /// configured), unreachable, or its pool is exhausted - the caller then assigns a local offline
+    /// number instead. Idempotent on the Gateway: asking again for the same session id returns the
+    /// same number.
+    /// </summary>
+    public async Task<int?> AllocateSessionNumberAsync(string sessionId, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled || string.IsNullOrWhiteSpace(sessionId)) return null;
+        try
+        {
+            var body = new SessionNumberAllocateRequest { SessionId = sessionId, DirectorId = _directorId };
+            using var resp = await _http.PostAsJsonAsync("session-numbers/allocate", body, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                FileLog.Write($"[GatewayClient] AllocateSessionNumberAsync {sessionId}: HTTP {(int)resp.StatusCode}");
+                return null;
+            }
+            var parsed = await resp.Content.ReadFromJsonAsync<SessionNumberAllocateResponse>(ct);
+            return parsed?.Number;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayClient] AllocateSessionNumberAsync {sessionId} FAILED (offline fallback): {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Tell the Gateway to free this session's number back to the pool when the session ends
+    /// (issue #1292). Fire-and-forget: a lost release is reconciled anyway - the Gateway frees a
+    /// number when its owning Director is removed from the registry. No-op while the Gateway is
+    /// disabled or unregistered.
+    /// </summary>
+    public void ReleaseSessionNumber(string sessionId)
+    {
+        if (!_config.IsEnabled || _disposed || string.IsNullOrWhiteSpace(sessionId)) return;
+        var cts = _cts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var resp = await _http.DeleteAsync($"session-numbers/{sessionId}", cts?.Token ?? default);
+                if (!resp.IsSuccessStatusCode)
+                    FileLog.Write($"[GatewayClient] ReleaseSessionNumber {sessionId} -> {(int)resp.StatusCode} (dropped; director-removal reconciles)");
+            }
+            catch (OperationCanceledException) { /* shutdown */ }
+            catch (Exception ex)
+            {
+                FileLog.Write($"[GatewayClient] ReleaseSessionNumber {sessionId} FAILED (dropped; director-removal reconciles): {ex.Message}");
+            }
+        });
+    }
+
     /// <summary>
     /// Start the registration lifecycle. Fire-and-forget: the first register attempt
     /// runs in the background so a slow or unreachable Gateway never blocks Director
