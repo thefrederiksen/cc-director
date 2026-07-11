@@ -47,6 +47,17 @@ tools before answering (never guesses a count or a state), asks one short clarif
 unsure rather than guessing, and says briefly what it did after an act. This is enforced in the system
 prompt, not by post-processing the model's words.
 
+## Model choice - the thinking model, decided with evidence
+
+The Car Mode brain runs the THINKING hosted model (GLM-5.2), not the fast tier. The fast model
+(Qwen2.5-72B) was validated against the real fleet and rejected with evidence (see the QA report):
+it called the read tools and message/delete correctly but SKIPPED start_session entirely and
+hallucinated "I started a session" with no tool call and no session created. For a command-and-control
+agent a false "done" is broken, not merely slow, so this is the escalation the brief sanctioned. The
+`CC_CARMODE_MODEL` environment variable remains the switch; winning the latency back on the fast model
+(tool_choice=required, a stronger prompt, or routing read-only turns to the fast model and only action
+turns to GLM) is a deliberate later fast-follow, not a v1 blocker.
+
 ## Latency - the fold is a documented option, intentionally not taken in v1
 
 The v1 shape is three clear steps (decision 2): the browser captures audio, gets a transcript from
