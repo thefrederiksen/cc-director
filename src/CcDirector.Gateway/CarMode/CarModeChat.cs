@@ -68,8 +68,11 @@ public sealed class HostedCarModeChat : ICarModeChat
                 "No DevThrottle account key is configured. Sign in to DevThrottle so Car Mode can reach the model.");
 
         // Assemble the request with the messages + tools verbatim (the brain owns their shape) so this
-        // layer stays a thin transport.
-        var body = $"{{\"model\":{JsonSerializer.Serialize(model)},\"messages\":{messagesJson},\"tools\":{toolsJson},\"tool_choice\":\"auto\",\"stream\":false}}";
+        // layer stays a thin transport. tool_choice is "required" (validated 2026-07-11): forcing a tool
+        // call every turn is what makes a fast model choose tools RELIABLY instead of hallucinating an
+        // action it never took. Conversational turns still work because the tool catalog carries an
+        // explicit speak_answer tool the model calls to say anything - so "required" never traps it.
+        var body = $"{{\"model\":{JsonSerializer.Serialize(model)},\"messages\":{messagesJson},\"tools\":{toolsJson},\"tool_choice\":\"required\",\"stream\":false}}";
 
         var url = baseUrl.TrimEnd('/') + "/chat/completions";
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
@@ -128,23 +131,30 @@ public sealed class HostedCarModeChat : ICarModeChat
     }
 
     /// <summary>
-    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + the THINKING wingman
-    /// model (GLM). The fast tier was validated against the real fleet and REJECTED with evidence (mission
-    /// model risk, resolved 2026-07-11): the fast model called the read tools and message/delete correctly
-    /// but SKIPPED start_session entirely and hallucinated "I started a session" with no tool call and no
-    /// session created - unacceptable for a command-and-control agent, where a false "done" is broken, not
-    /// merely slow. The thinking model chooses tools reliably. The optional <c>CC_CARMODE_MODEL</c>
-    /// environment override remains the switch (e.g. to try the fast model again with tool_choice=required,
-    /// a stronger prompt, or a read-vs-act split - a deliberate later latency fast-follow, not a v1 blocker).
+    /// The Car Mode model. A FAST hosted model, paired with <c>tool_choice=required</c> + the
+    /// <c>speak_answer</c> tool (see <see cref="CompleteAsync"/> and the brain's tool catalog). This is the
+    /// evidence-based resolution of the mission's model risk (2026-07-11): with plain <c>tool_choice=auto</c>
+    /// the fast model hallucinated actions it never took (it skipped start_session), which briefly forced an
+    /// escalation to the slow thinking model (GLM-5.2, 2-9s/turn). Live testing then showed the REAL fix is
+    /// forcing a tool call every turn: the same fast model then chose every tool reliably at ~1-2s per call.
+    /// So Car Mode runs fast + forced-tool-choice, winning both correctness and latency. The
+    /// <c>CC_CARMODE_MODEL</c> environment variable overrides this per install.
+    /// </summary>
+    public const string DefaultCarModeModel = "moonshotai/Kimi-K2.5";
+
+    /// <summary>
+    /// Build the model resolver Car Mode uses: the DevThrottle base + vault key + <see cref="DefaultCarModeModel"/>
+    /// (overridable by <c>CC_CARMODE_MODEL</c>). Paired with <c>tool_choice=required</c> + <c>speak_answer</c>.
     /// </summary>
     public static Func<(string BaseUrl, string Model, string Key)> DefaultResolver(Func<string, string?> vaultGet)
     {
         return () =>
         {
             var mode = TranscriptionModeConfig.Get();
+            // Same base URL + vault key as the wingman endpoint; only the model differs for Car Mode.
             var ep = TranscriptionEndpointResolver.ResolveWingman(mode);
             var overrideModel = Environment.GetEnvironmentVariable("CC_CARMODE_MODEL");
-            var model = string.IsNullOrWhiteSpace(overrideModel) ? ep.Model : overrideModel.Trim();
+            var model = string.IsNullOrWhiteSpace(overrideModel) ? DefaultCarModeModel : overrideModel.Trim();
             var key = vaultGet(ep.KeyName) ?? "";
             return (ep.BaseUrl, model, key);
         };
