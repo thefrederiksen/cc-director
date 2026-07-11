@@ -96,26 +96,28 @@ const router = createBrowserRouter(
         {
           element: <AppShell />,
           children: [
+            // The default landing is the Fleet Map: a fresh boot at "/" redirects there so the Cockpit
+            // opens on the whole-fleet picture (the first rail item), not an empty session prompt.
+            { index: true, element: <Navigate to="/fleet-map" replace /> },
             // The Sessions experience (issue #972): the fleet roster stays mounted on the left while the
             // selected session's detail (the interactive terminal from #971, the action bar, the composer,
-            // the queue, and the screenshots) routes into the right region. The index route ("/") shows a
+            // the queue, and the screenshots) routes into the right region. The /sessions home shows a
             // "pick a session" prompt; /session/{sid} drives that session.
             {
               element: <SessionsView />,
               children: [
-                { index: true, element: <SessionsEmpty /> },
+                { path: "sessions", element: <SessionsEmpty /> },
                 { path: "session/:sessionId", element: <SessionDetail /> },
               ],
             },
             // Roster/detail entry-page alignment (issue #978): the Blazor Cockpit reached the one session
-            // experience through several paths - /cockpit and /sessions (the list/home) and /cockpit/{sid}
-            // and /sessions/{sid} (drive / read-mostly detail). The React shell has ONE rail-plus-terminal
+            // experience through several paths - /cockpit (the list/home) and /cockpit/{sid} and
+            // /sessions/{sid} (drive / read-mostly detail). The React shell has ONE rail-plus-terminal
             // core (the routes above), so those Blazor paths redirect into it rather than duplicating the
             // session view. This keeps every Blazor entry path reaching a page for the cutover (#979): the
-            // list/home paths land on the roster index, the id paths on that session in the core.
-            { path: "/cockpit", element: <Navigate to="/" replace /> },
+            // list/home paths land on the /sessions home, the id paths on that session in the core.
+            { path: "/cockpit", element: <Navigate to="/sessions" replace /> },
             { path: "/cockpit/:sessionId", element: <SessionRedirect /> },
-            { path: "/sessions", element: <Navigate to="/" replace /> },
             { path: "/sessions/:sessionId", element: <SessionRedirect /> },
             // The fleet + machine views (issue #975): the Fleet cards dashboard, the Directors registry
             // table, and the standalone Director-detail page. Ported one-to-one from the Blazor

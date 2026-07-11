@@ -87,7 +87,7 @@ export function SessionDetail() {
           </button>
           {/* The session menu (issue #1214): Rename, Hold/Resume, Handover info, Close - top right of
               the session header, driving the shared Gateway calls. */}
-          {selected && <SessionMenu session={selected} variant="page" onClosed={() => navigate("/")} />}
+          {selected && <SessionMenu session={selected} variant="page" onClosed={() => navigate("/sessions")} />}
         </div>
 
         <div className="session-content">

@@ -113,7 +113,7 @@ export function ExesView() {
         <span className="ex-stats">{statsText}</span>
         <StatusMessage flash={result.flash} />
         <span className="ex-spacer" />
-        <Link className="ex-link ex-link-accent" to="/">
+        <Link className="ex-link ex-link-accent" to="/sessions">
           sessions
         </Link>
         <Link className="ex-link ex-link-accent" to="/transcripts">

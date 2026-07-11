@@ -11,14 +11,16 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 // themselves - see SessionsView - not to this frame.
 
 // The left-rail destinations. Each maps to a real routed page (the epic ported them in one at a time).
+// The Fleet Map is first and is the default landing: a fresh boot at "/" redirects to it, so the
+// Cockpit opens on the whole-fleet picture (main.tsx). Sessions lives at its own /sessions home.
 // `subtree` marks a destination active for a route family that does NOT share its path prefix: the
-// Sessions index lives at "/" (matched with `end`, so it does not light up on every route), but the
-// session detail routes into "/session/:id" - a different first segment - so it needs an explicit
-// subtree so Sessions stays highlighted while a session is being driven (the Directors item does not,
-// because "/directors/:id" already shares the "/directors" prefix NavLink matches by default).
+// Sessions home lives at "/sessions", but the session detail routes into "/session/:id" - a different
+// path - so it needs an explicit subtree so Sessions stays highlighted while a session is being driven
+// (the Directors item does not, because "/directors/:id" already shares the "/directors" prefix NavLink
+// matches by default).
 const NAV_ITEMS: ReadonlyArray<{ to: string; label: string; subtree?: string }> = [
-  { to: "/", label: "Sessions", subtree: "/session" },
   { to: "/fleet-map", label: "Fleet Map" },
+  { to: "/sessions", label: "Sessions", subtree: "/session" },
   { to: "/directors", label: "Directors" },
   { to: "/schedule", label: "Schedule" },
   // "Lists" (work lists) is hidden from the rail for now - GitHub issues already are the queue, so
