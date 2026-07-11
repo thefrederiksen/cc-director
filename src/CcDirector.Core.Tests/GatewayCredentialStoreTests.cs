@@ -61,6 +61,34 @@ public sealed class GatewayCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public void SaveEnrolledKey_EnablesStreamMode()
+    {
+        // Connecting to a Gateway makes the stream the connection method (issue #1176): the persisted
+        // gateway block must carry streamMode=true so a freshly-enrolled Director joins over the stream.
+        GatewayCredentialStore.SaveEnrolledKey("https://gw.example.ts.net", "test-per-device-key-abcdef0123456789");
+
+        var config = GatewayConfig.Load();
+        Assert.True(config.StreamMode, "SaveEnrolledKey must enable stream mode so connect uses the stream");
+    }
+
+    [Fact]
+    public void SaveEnrolledKey_DeepMerge_PreservesExistingGatewayKeys()
+    {
+        // A hand-set gateway key (here staleAfterSeconds) must survive the enroll write, since the
+        // credential store deep-merges rather than replacing the whole gateway block.
+        var configPath = CcStorage.ConfigJson();
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        File.WriteAllText(configPath, """{ "gateway": { "staleAfterSeconds": 45 } }""");
+
+        GatewayCredentialStore.SaveEnrolledKey("https://gw.example.ts.net", "test-per-device-key-abcdef0123456789");
+
+        var gateway = (JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject)?["gateway"] as JsonObject;
+        Assert.NotNull(gateway);
+        Assert.Equal(45, (int?)gateway["staleAfterSeconds"]);
+        Assert.True((bool?)gateway["streamMode"]);
+    }
+
+    [Fact]
     public void SaveEnrolledKey_EmptyKey_Throws()
     {
         Assert.Throws<ArgumentException>(() =>

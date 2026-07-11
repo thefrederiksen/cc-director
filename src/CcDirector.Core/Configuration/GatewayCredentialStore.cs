@@ -28,6 +28,14 @@ public static class GatewayCredentialStore
     /// Persist the per-device key issued at enrollment: write it to the local credential file and
     /// record the Gateway URL + key in config.json's gateway block. After this, both the Director's
     /// Gateway client and the local cc-* tools authenticate with the per-device key.
+    ///
+    /// Connecting to a Gateway also turns the persistent stream ON (<c>streamMode: true</c>): the
+    /// stream is how a Director joins the Gateway now (issue #1176), so every enroll/connect path -
+    /// the installer's account enroll, the in-app Connect-to-Gateway dialog, and the phone/Cockpit
+    /// enroll - lands the same stream-enabled gateway block. <see cref="GatewayConfig.StreamMode"/>
+    /// is otherwise opt-in and defaults off, so a Director that never connected is unchanged. The
+    /// merge is deep (<see cref="CcDirectorConfigService.MergePatch"/>), so a hand-set
+    /// <c>staleAfterSeconds</c> or other gateway keys survive.
     /// </summary>
     public static void SaveEnrolledKey(string gatewayUrl, string deviceKey)
     {
@@ -48,9 +56,13 @@ public static class GatewayCredentialStore
             {
                 ["url"] = gatewayUrl.Trim(),
                 ["token"] = deviceKey,
+                // The stream is the connection method (issue #1176): enabling it on connect makes a
+                // freshly-enrolled Director join over the Gateway's director-stream instead of the
+                // legacy pull/heartbeat path. Byte-identical for anyone who never connects.
+                ["streamMode"] = true,
             },
         };
         CcDirectorConfigService.MergePatch(patch);
-        FileLog.Write($"[GatewayCredentialStore] Recorded gateway url + per-device key in config.json (url={gatewayUrl})");
+        FileLog.Write($"[GatewayCredentialStore] Recorded gateway url + per-device key + streamMode=true in config.json (url={gatewayUrl})");
     }
 }

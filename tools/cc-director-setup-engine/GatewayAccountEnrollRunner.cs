@@ -64,8 +64,12 @@ public sealed class GatewayAccountEnrollRunner
     /// installer filters the account's devices to this type to discover which gateway to enroll against.</summary>
     public const string GatewayDeviceType = "gateway";
 
-    /// <summary>The platform string reported for a Windows Workstation install (a roster attribute).</summary>
-    public const string WorkstationPlatform = "windows";
+    /// <summary>The platform string reported for this Workstation/Director machine (a roster attribute),
+    /// resolved per-OS so a Mac enrolls as "macos" (not "windows") and the account roster is accurate.</summary>
+    public static string WorkstationPlatform { get; } =
+        OperatingSystem.IsMacOS() ? "macos"
+        : OperatingSystem.IsLinux() ? "linux"
+        : "windows";
 
     /// <summary>How long to wait for the browser sign-in hand-back before treating it as abandoned.
     /// Mirrors the installer's forced sign-in step (issue #657): long enough for a real sign-in, short
