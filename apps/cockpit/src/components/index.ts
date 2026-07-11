@@ -24,5 +24,16 @@ export type { ConfirmDialogProps } from "./ConfirmDialog";
 export { StatusMessage } from "./StatusMessage";
 export type { StatusMessageProps } from "./StatusMessage";
 
+export { DataTable } from "./DataTable";
+export type { DataTableColumn, DataTableProps } from "./DataTable";
+
+export {
+  matchesQuery,
+  compareSortValues,
+  filterAndSortRows,
+  nextSort,
+} from "./dataTableCore";
+export type { SortDirection, SortState } from "./dataTableCore";
+
 export { useFlash } from "./useFlash";
 export type { Flash, FlashController } from "./useFlash";

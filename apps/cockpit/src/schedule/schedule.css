@@ -134,6 +134,114 @@
 .sched-cell-name {
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+/* ---- new table cells (issue #1245): the "Runs" column is a type chip + short label, never the body ---- */
+.sched-dot2 {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.sched-dot2.on {
+  background: var(--sched-green);
+}
+.sched-dot2.off {
+  background: var(--text-dim);
+  opacity: 0.6;
+}
+
+.sched-runs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sched-typechip {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  padding: 2px 7px;
+  border: 1px solid;
+}
+.sched-typechip.skill {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sched-typechip.prompt {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.sched-typechip.work-list {
+  color: var(--sched-green);
+  border-color: var(--sched-green);
+}
+
+.sched-runs-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+}
+
+.sched-target {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.sched-target-repo {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sched-schedule {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.sched-lastrun {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sched-outcome {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+}
+.sched-outcome.ok {
+  color: var(--sched-green);
+  border-color: var(--sched-green);
+}
+.sched-outcome.err {
+  color: var(--attention);
+  border-color: var(--attention);
+}
+.sched-outcome.warn {
+  color: var(--warn);
+  border-color: var(--warn);
 }
 
 .sched-actions {
@@ -320,9 +428,133 @@
 }
 
 .sched-fld input:focus,
-.sched-fld select:focus {
+.sched-fld select:focus,
+.sched-fld textarea:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* ---- multi-line prompt editor (issue #1245): a real resizable monospace text area ---- */
+.sched-prompt {
+  width: 100%;
+  background: var(--code-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  resize: vertical;
+  min-height: 96px;
+}
+
+.sched-fld-help {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+/* live plain-English preview of the cron string, so the person knows what it means before saving */
+.sched-cron-preview {
+  margin-top: 6px;
+  padding: 6px 9px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ---- row-detail drawer content (issue #1245) ---- */
+.sched-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 13px;
+}
+
+.sched-detail-summary {
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sched-detail-facts {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+.sched-detail-facts dt {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+.sched-detail-facts dd {
+  margin: 0;
+  color: var(--text);
+}
+.sched-detail-cron {
+  margin-left: 8px;
+  color: var(--text-dim);
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+}
+
+.sched-detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.sched-detail-prompt {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sched-detail-note {
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 12.5px;
+}
+
+.sched-runtbl {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+.sched-runtbl th,
+.sched-runtbl td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+}
+.sched-runtbl th {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 /* per-field validation guidance (issue #1027) */

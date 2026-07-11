@@ -18,8 +18,18 @@ import {
 } from "@devthrottle/client-core/fleet/fleetClient";
 import type { SessionDto } from "@devthrottle/client-core/api/client";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
-import { clockLabel } from "../fleet/format";
-import { ConfirmDialog } from "../components";
+import { clockLabel, relativeTime, repoBasename } from "../fleet/format";
+import { Button, ConfirmDialog, DataTable, PageHeader, type DataTableColumn } from "../components";
+import {
+  absoluteUtc,
+  actionShortLabel,
+  actionType,
+  cronToEnglish,
+  epochOrMax,
+  lastOutcome,
+  promptBody,
+  relativeUntil,
+} from "./scheduleFormat";
 
 // The Schedule page (issue #976, epic #967) - the React port of the Blazor Cockpit Schedule.razor
 // (issue #488). The human's window into cron jobs: a pure CLIENT of the Gateway's /cron/jobs surface
@@ -335,124 +345,206 @@ export function ScheduleView() {
     [machineErrors],
   );
 
-  const selectedName = jobs.find((j) => j.id === selectedId)?.name ?? "";
+  // The searchable text of a job: name, machine, repository, and the prompt text - so the search box
+  // finds a job by any of them (issue #1245), including a word buried in the instructions.
+  const searchableText = useCallback(
+    (job: CronJob): string =>
+      [job.name, job.target.machine, job.action.repoPath, job.action.seed, job.action.workListName ?? ""].join(" "),
+    [],
+  );
 
-  return (
-    <div className="sched">
-      <header className="sched-head">
-        <h1 className="sched-title">Schedule</h1>
-        <span className="sched-sub">
-          {jobs.length} cron job{jobs.length === 1 ? "" : "s"}
-        </span>
-        <span className="sched-refreshed">
-          {lastRefresh === null ? "connecting..." : `updated ${clockLabel(lastRefresh)}`}
-        </span>
-        <span className="sched-spacer" />
-        <button className="sched-btn primary" onClick={openCreate}>
-          New cron job
-        </button>
-      </header>
-
-      {lastError !== null && <div className="sched-banner-error">Gateway error: {lastError}</div>}
-
-      {jobs.length === 0 && lastError === null && lastRefresh !== null && (
-        <div className="sched-empty">
-          No cron jobs yet. Create one to schedule a session or a work-list drain on a machine.
-        </div>
-      )}
-
-      {jobs.length > 0 && (
-        <>
-          <table className="sched-tbl">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Target</th>
-                <th>Runs</th>
-                <th>Schedule</th>
-                <th>Next run</th>
-                <th>Last run</th>
-                <th>Status</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((job) => (
-                <tr
-                  key={job.id}
-                  className={`sched-row${job.id === selectedId ? " sel" : ""}`}
-                  onClick={() => void selectJob(job.id)}
-                >
-                  <td>
-                    <span className="sched-cell-name">{job.name}</span>
-                  </td>
-                  <td className="mono">{job.target.machine}</td>
-                  <td>{runsLabel(job)}</td>
-                  <td>
-                    {scheduleLabel(job)}
-                    {notifyEnabled(job) && (
-                      <span className="sched-notify-badge" title={notifyTitle(job)}>
-                        {notifyLabel(job)}
-                      </span>
-                    )}
-                  </td>
-                  <td className="mono">{fmtUtc(job.nextRunUtc)}</td>
-                  <td className="dim">
-                    {job.lastFiredUtc ? fmtUtc(job.lastFiredUtc) : "never"}{" "}
-                    {job.lastStatus && job.lastStatus.length > 0 ? `(${job.lastStatus})` : ""}
-                  </td>
-                  <td>
-                    <button
-                      className={`sched-chip ${job.enabled ? "enabled" : "disabled"}`}
-                      title="Toggle enabled"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void toggleEnabled(job);
-                      }}
-                    >
-                      {job.enabled ? "Enabled" : "Disabled"}
-                    </button>
-                  </td>
-                  <td className="sched-actions" onClick={(e) => e.stopPropagation()}>
-                    <button className="sched-linkbtn" onClick={() => void runNow(job)}>
-                      Run now
-                    </button>
-                    <button className="sched-linkbtn" onClick={() => openEdit(job)}>
-                      Edit
-                    </button>
-                    <button className="sched-linkbtn del" onClick={() => setPendingDelete(job)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          {actionError !== null && <div className="sched-banner-error">{actionError}</div>}
-        </>
-      )}
-
-      {selectedId !== null && (
-        <>
-          <div className="sched-sec-head">
-            <h2>Run history</h2>
-            <span className="sched-hint">
-              {selectedName} - newest first. Infra status (did it start) is separate from task status
-              (did it finish).
+  // The grid columns: one short scannable value each. The prompt body is never here - it lives in the
+  // drawer. Default sort is next run, soonest first (epochOrMax sinks "no next run" to the bottom).
+  const columns = useMemo<DataTableColumn<CronJob>[]>(
+    () => [
+      {
+        key: "state",
+        header: "",
+        width: "30px",
+        render: (job) => (
+          <span
+            className={`sched-dot2 ${job.enabled ? "on" : "off"}`}
+            title={job.enabled ? "Enabled" : "Disabled"}
+          />
+        ),
+      },
+      {
+        key: "name",
+        header: "Name",
+        width: "200px",
+        sortable: true,
+        sortValue: (job) => job.name.toLowerCase(),
+        render: (job) => <span className="sched-cell-name">{job.name}</span>,
+      },
+      {
+        key: "runs",
+        header: "Runs",
+        width: "220px",
+        sortable: true,
+        sortValue: (job) => actionShortLabel(job).toLowerCase(),
+        render: (job) => (
+          <span className="sched-runs">
+            <span className={`sched-typechip ${actionType(job).toLowerCase().replace(/\s+/g, "-")}`}>
+              {actionType(job)}
             </span>
+            <span className="sched-runs-label" title={actionShortLabel(job)}>
+              {actionShortLabel(job)}
+            </span>
+          </span>
+        ),
+      },
+      {
+        key: "target",
+        header: "Target",
+        width: "150px",
+        sortable: true,
+        sortValue: (job) => job.target.machine.toLowerCase(),
+        render: (job) => (
+          <span className="sched-target">
+            <span className="mono">{job.target.machine}</span>
+            <span className="sched-target-repo">{repoBasename(job.action.repoPath)}</span>
+          </span>
+        ),
+      },
+      {
+        key: "schedule",
+        header: "Schedule",
+        width: "195px",
+        sortable: true,
+        sortValue: (job) => cronToEnglish(scheduleCron(job)).toLowerCase(),
+        render: (job) => (
+          <span className="sched-schedule" title={scheduleCron(job) ?? undefined}>
+            {scheduleEnglish(job)}
+            {notifyEnabled(job) && (
+              <span className="sched-notify-badge" title={notifyTitle(job)}>
+                {notifyLabel(job)}
+              </span>
+            )}
+          </span>
+        ),
+      },
+      {
+        key: "next",
+        header: "Next run",
+        width: "90px",
+        sortable: true,
+        sortValue: (job) => epochOrMax(job.nextRunUtc),
+        render: (job) => (
+          <span className="mono" title={absoluteUtc(job.nextRunUtc)}>
+            {relativeUntil(job.nextRunUtc)}
+          </span>
+        ),
+      },
+      {
+        key: "last",
+        header: "Last run",
+        width: "135px",
+        sortable: true,
+        sortValue: (job) => epochOrMax(job.lastFiredUtc),
+        render: (job) => {
+          const outcome = lastOutcome(job.lastStatus);
+          return (
+            <span className="sched-lastrun" title={absoluteUtc(job.lastFiredUtc)}>
+              <span className="dim">
+                {job.lastFiredUtc ? relativeTime(job.lastFiredUtc, { withAgo: true }) : "never"}
+              </span>
+              {outcome.kind !== "none" && (
+                <span className={`sched-outcome ${outcome.kind}`}>{outcome.label}</span>
+              )}
+            </span>
+          );
+        },
+      },
+      {
+        key: "enabled",
+        header: "Status",
+        width: "90px",
+        className: "ui-table-cell-stop",
+        sortable: true,
+        sortValue: (job) => (job.enabled ? 0 : 1),
+        render: (job) => (
+          <button
+            className={`sched-chip ${job.enabled ? "enabled" : "disabled"}`}
+            title="Toggle enabled"
+            onClick={() => void toggleEnabled(job)}
+          >
+            {job.enabled ? "Enabled" : "Disabled"}
+          </button>
+        ),
+      },
+      {
+        key: "actions",
+        header: "",
+        width: "165px",
+        align: "right",
+        className: "ui-table-cell-stop",
+        render: (job) => (
+          <span className="sched-actions">
+            <button className="sched-linkbtn" onClick={() => void runNow(job)}>
+              Run now
+            </button>
+            <button className="sched-linkbtn" onClick={() => openEdit(job)}>
+              Edit
+            </button>
+            <button className="sched-linkbtn del" onClick={() => setPendingDelete(job)}>
+              Delete
+            </button>
+          </span>
+        ),
+      },
+    ],
+    [toggleEnabled, runNow, openEdit],
+  );
+
+  // The drawer body for a job: what it does, in full. The prompt lives here (read-only, scrollable,
+  // monospace) alongside the plain-English schedule, the resolved next run, and recent run history.
+  const renderDetail = useCallback(
+    (job: CronJob) => {
+      const showRuns = job.id === selectedId;
+      return (
+        <div className="sched-detail">
+          <div className="sched-detail-summary">
+            <span className={`sched-dot2 ${job.enabled ? "on" : "off"}`} />
+            {job.enabled ? "Enabled" : "Disabled"} - <span className="mono">{job.target.machine}</span> -{" "}
+            <span className="mono">{job.action.repoPath}</span>
           </div>
 
-          {runs.length === 0 ? (
-            <div className="sched-empty">No runs recorded yet for this job.</div>
+          <dl className="sched-detail-facts">
+            <dt>Schedule</dt>
+            <dd>
+              {scheduleEnglish(job)}
+              {scheduleCron(job) !== null && <span className="sched-detail-cron">({scheduleCron(job)})</span>}
+            </dd>
+            <dt>Next run</dt>
+            <dd>
+              {relativeUntil(job.nextRunUtc)}{" "}
+              <span className="dim">({absoluteUtc(job.nextRunUtc)})</span>
+            </dd>
+            <dt>Last run</dt>
+            <dd>
+              {job.lastFiredUtc ? relativeTime(job.lastFiredUtc, { withAgo: true }) : "never"}{" "}
+              <span className="dim">({absoluteUtc(job.lastFiredUtc)})</span>
+            </dd>
+            <dt>Notify</dt>
+            <dd>{notifyDescription(job)}</dd>
+          </dl>
+
+          <div className="sched-detail-label">
+            {actionType(job)} - instructions
+          </div>
+          <pre className="sched-detail-prompt">{promptBody(job)}</pre>
+
+          <div className="sched-detail-label">Recent runs</div>
+          {!showRuns ? (
+            <div className="sched-detail-note">Loading run history...</div>
+          ) : runs.length === 0 ? (
+            <div className="sched-detail-note">No runs recorded yet for this job.</div>
           ) : (
-            <table className="sched-tbl">
+            <table className="sched-runtbl">
               <thead>
                 <tr>
                   <th>Scheduled</th>
                   <th>Fired</th>
-                  <th>Target</th>
-                  <th>Session</th>
                   <th>Infra</th>
                   <th>Task</th>
                 </tr>
@@ -462,8 +554,6 @@ export function ScheduleView() {
                   <tr key={`${r.scheduledUtc}/${r.firedUtc}/${i}`}>
                     <td className="mono">{fmtUtc(r.scheduledUtc)}</td>
                     <td className="mono">{fmtUtc(r.firedUtc)}</td>
-                    <td className="mono">{r.targetDirectorId}</td>
-                    <td className="mono dim">{r.sessionId && r.sessionId.length > 0 ? r.sessionId : "-"}</td>
                     <td>
                       <span className={`sched-st ${infraClass(r.infraStatus)}`}>{r.infraStatus}</span>
                     </td>
@@ -473,7 +563,55 @@ export function ScheduleView() {
               </tbody>
             </table>
           )}
-        </>
+        </div>
+      );
+    },
+    [runs, selectedId],
+  );
+
+  return (
+    <div className="sched">
+      <PageHeader
+        title="Schedule"
+        subtitle={`${jobs.length} cron job${jobs.length === 1 ? "" : "s"} across the fleet.`}
+        actions={
+          <Button variant="primary" onClick={openCreate}>
+            New cron job
+          </Button>
+        }
+      />
+
+      {lastError !== null && <div className="sched-banner-error">Gateway error: {lastError}</div>}
+      {actionError !== null && <div className="sched-banner-error">{actionError}</div>}
+
+      {lastRefresh !== null && (
+        <DataTable<CronJob>
+          columns={columns}
+          rows={jobs}
+          rowKey={(job) => job.id}
+          searchableText={searchableText}
+          searchPlaceholder="Search name, machine, repository, or prompt"
+          defaultSort={{ columnKey: "next", direction: "asc" }}
+          emptyMessage="No cron jobs yet. Create one to schedule a session or a work-list drain on a machine."
+          toolbarExtra={
+            <span className="sched-refreshed">
+              {lastRefresh === null ? "connecting..." : `updated ${clockLabel(lastRefresh)}`}
+            </span>
+          }
+          onRowActivate={(job) => void selectJob(job.id)}
+          renderDetail={renderDetail}
+          detailTitle={(job) => job.name}
+          detailActions={(job) => (
+            <>
+              <Button variant="secondary" onClick={() => void runNow(job)}>
+                Run now
+              </Button>
+              <Button variant="secondary" onClick={() => openEdit(job)}>
+                Edit
+              </Button>
+            </>
+          )}
+        />
       )}
 
       {showForm && (
@@ -541,12 +679,17 @@ export function ScheduleView() {
               ) : (
                 <div className="sched-fld">
                   <label className="sched-fld-label">Skill / prompt</label>
-                  <input
-                    className="mono"
+                  <textarea
+                    className="sched-prompt mono"
                     value={form.seed}
-                    placeholder="/implementation-loop 312"
+                    rows={6}
+                    placeholder={"/implementation-loop 312\n\nor a full multi-paragraph instruction..."}
                     onChange={(e) => setForm((f) => ({ ...f, seed: e.target.value }))}
                   />
+                  <div className="sched-fld-help">
+                    A skill invocation (begins with a slash) or a full multi-paragraph instruction. This
+                    box grows and can be dragged taller.
+                  </div>
                 </div>
               )}
 
@@ -570,6 +713,9 @@ export function ScheduleView() {
                     placeholder="0 0 * * *"
                     onChange={(e) => setForm((f) => ({ ...f, cron: e.target.value }))}
                   />
+                  {form.cron.trim().length > 0 && (
+                    <div className="sched-cron-preview">Runs {cronToEnglish(form.cron)}.</div>
+                  )}
                   {formErrors.schedule && <div className="sched-fld-err">{formErrors.schedule}</div>}
                 </div>
               ) : (
@@ -786,16 +932,33 @@ function notifyTitle(j: CronJob): string {
     : `Run-complete notification + webhook: ${j.notifyWebhookUrl}`;
 }
 
-function scheduleLabel(j: CronJob): string {
-  return j.scheduleKind.toLowerCase() === "recurring"
-    ? j.cronExpression ?? "(no cron)"
-    : `once @ ${j.runAt ?? ""}`;
+// The raw cron string when the job is recurring, otherwise null. Used for the "on hover" title and the
+// drawer's parenthetical, and as the input to the plain-English schedule.
+function scheduleCron(j: CronJob): string | null {
+  if (j.scheduleKind.toLowerCase() !== "recurring") return null;
+  const cron = (j.cronExpression ?? "").trim();
+  return cron.length > 0 ? cron : null;
 }
 
-function runsLabel(j: CronJob): string {
-  return !j.action.workListName || j.action.workListName.length === 0
-    ? `skill ${j.action.seed}`
-    : `work list ${j.action.workListName}`;
+// The schedule in plain English: a recurring job reads its cron ("At 8:14 AM and 2:14 PM, Monday
+// through Friday"); a one-off reads its run-at instant ("Once at ...").
+function scheduleEnglish(j: CronJob): string {
+  if (j.scheduleKind.toLowerCase() === "recurring") return cronToEnglish(j.cronExpression);
+  const runAt = (j.runAt ?? "").trim();
+  return runAt.length > 0 ? `Once at ${runAt}` : "Once (no time set)";
+}
+
+// The run-complete notification policy, spelled out for the drawer.
+function notifyDescription(j: CronJob): string {
+  const policy = j.notifyOn.toLowerCase();
+  const base =
+    policy === "always"
+      ? "Always (success or failure)"
+      : policy === "failure"
+        ? "Only on failure"
+        : "Off";
+  const hook = j.notifyWebhookUrl && j.notifyWebhookUrl.length > 0 ? ` - webhook: ${j.notifyWebhookUrl}` : "";
+  return base + hook;
 }
 
 // "yyyy-MM-dd HH:mm 'UTC'" from an ISO UTC timestamp, matching the Blazor FmtUtc. "-" when absent.
