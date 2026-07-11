@@ -24,13 +24,16 @@ public sealed class TurnEndWatcherVoiceRefreshTests
     private sealed class RecordingVoice
     {
         private readonly HashSet<string> _voiceSessions;
-        public readonly List<(string Sid, string Endpoint)> Generated = new();
+        public readonly List<(string Sid, string Endpoint, bool IsNewTurn)> Generated = new();
         public readonly List<string> Cleared = new();
 
         public RecordingVoice(params string[] voiceSessions) => _voiceSessions = new(voiceSessions);
 
         public bool IsVoiceSession(string sid) => _voiceSessions.Contains(sid);
-        public void GenerateAsync(string sid, string endpoint) => Generated.Add((sid, endpoint));
+        // Mirrors WingmanVoiceService.GenerateAsync(sid, endpoint, ct, showReadingWindow): the host
+        // passes signal.IsNewTurn as showReadingWindow, so the yellow "wingman reading" hold shows
+        // only for a genuinely new turn and a catch-up refresh stays quiet (issue #1322).
+        public void GenerateAsync(string sid, string endpoint, bool isNewTurn) => Generated.Add((sid, endpoint, isNewTurn));
         public void OnSessionWorking(string sid) => Cleared.Add(sid);
     }
 
@@ -45,7 +48,7 @@ public sealed class TurnEndWatcherVoiceRefreshTests
             onTurnEnd: signal =>
             {
                 if (voice.IsVoiceSession(signal.SessionId))
-                    voice.GenerateAsync(signal.SessionId, signal.DirectorEndpoint);
+                    voice.GenerateAsync(signal.SessionId, signal.DirectorEndpoint, signal.IsNewTurn);
             },
             onSessionWorking: sid => voice.OnSessionWorking(sid));
     }
@@ -65,6 +68,26 @@ public sealed class TurnEndWatcherVoiceRefreshTests
         var generated = Assert.Single(voice.Generated);
         Assert.Equal("voice-sid", generated.Sid);
         Assert.Equal("http://d1", generated.Endpoint);
+        // A live Working -> Waiting boundary is a genuinely new turn: show the yellow reading window.
+        Assert.True(generated.IsNewTurn);
+    }
+
+    [Fact]
+    public void FirstSightingAlreadyWaiting_FiresQuietRefresh_NotANewTurn()
+    {
+        // Issue #1322: a session first seen ALREADY waiting (the startup catch-up of a turn that
+        // ended earlier) still gets a voice refresh, but it is NOT a new turn - so it must generate
+        // quietly (showReadingWindow false), never flipping a session a phone may be listening to
+        // into the yellow "wingman reading" state mid-play.
+        var voice = new RecordingVoice("voice-sid");
+        using var watcher = BuildWatcher(voice);
+
+        // No prior Working observation - the very first sighting is the waiting state.
+        watcher.Observe("voice-sid", "WaitingForInput", "http://d1");
+
+        var generated = Assert.Single(voice.Generated);
+        Assert.Equal("voice-sid", generated.Sid);
+        Assert.False(generated.IsNewTurn);
     }
 
     [Fact]

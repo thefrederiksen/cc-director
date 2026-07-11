@@ -734,7 +734,9 @@ public sealed class GatewayHost : IAsyncDisposable
                     if (st is "Idle" or "WaitingForInput" or "WaitingForPerm")
                     {
                         FileLog.Write($"[GatewayHost] voice sweep: pre-building voice for idle session {sid}");
-                        await vs.GenerateAsync(sid, ep, CancellationToken.None);
+                        // A pre-build is not a new turn - generate quietly so an idle session a client
+                        // may be listening to is never flipped yellow mid-play (issue #1322).
+                        await vs.GenerateAsync(sid, ep, CancellationToken.None, showReadingWindow: false);
                         generated++;
                     }
                     break;  // found the owning Director
@@ -840,8 +842,11 @@ public sealed class GatewayHost : IAsyncDisposable
                 // list with no wait. Non-voice sessions do nothing here - the watcher is voice-only.
                 if (_voiceService is { } vs && vs.IsVoiceSession(signal.SessionId))
                 {
-                    FileLog.Write($"[GatewayHost] turn-end -> voice auto-refresh: sid={signal.SessionId}");
-                    _ = vs.GenerateAsync(signal.SessionId, signal.DirectorEndpoint, CancellationToken.None);
+                    FileLog.Write($"[GatewayHost] turn-end -> voice auto-refresh: sid={signal.SessionId} newTurn={signal.IsNewTurn}");
+                    // Show the yellow "wingman reading" hold only for a genuinely new turn; a startup
+                    // catch-up of an earlier turn refreshes quietly so a listening client is not
+                    // dropped out of the speaking screen (issue #1322).
+                    _ = vs.GenerateAsync(signal.SessionId, signal.DirectorEndpoint, CancellationToken.None, showReadingWindow: signal.IsNewTurn);
                 }
             },
             onSessionWorking: sid =>

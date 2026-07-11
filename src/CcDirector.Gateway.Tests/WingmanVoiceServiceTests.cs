@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
@@ -182,6 +183,66 @@ public sealed class WingmanVoiceServiceTests
             Assert.False(reloaded.HasVoice("sid-1"));
         }
         finally { Cleanup(persistPath); }
+    }
+
+    // ---------- Do not re-narrate an already-narrated turn (issue #1322) ----------
+
+    [Fact]
+    public async Task GenerateAsync_WhenSessionAlreadyHasVoice_SkipsWithoutFetchingTurns()
+    {
+        // Issue #1322: a re-narration must never disturb a turn that already has a fresh, playable
+        // narration - a client may be actively listening to it. The guard short-circuits BEFORE the
+        // Director turn fetch, so an already-ready session is not re-generated (which would flip it
+        // yellow again and mint a new generatedAt, restarting the listener's clip). Proven with a
+        // loopback "Director" that records whether its /turns endpoint was ever hit.
+        var hits = 0;
+        // Grab a free loopback port, then release it for the HttpListener.
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+
+        using var listener = new HttpListener();
+        var prefix = $"http://127.0.0.1:{port}/";
+        listener.Prefixes.Add(prefix);
+        listener.Start();
+        var serve = Task.Run(async () =>
+        {
+            while (listener.IsListening)
+            {
+                HttpListenerContext ctx;
+                try { ctx = await listener.GetContextAsync(); }
+                catch { break; }   // listener stopped
+                Interlocked.Increment(ref hits);
+                ctx.Response.StatusCode = 200;
+                var body = Encoding.UTF8.GetBytes("{\"widgets\":[]}");
+                await ctx.Response.OutputStream.WriteAsync(body);
+                ctx.Response.Close();
+            }
+        });
+
+        // Own an isolated audio directory so the durable clip this test seeds never leaks into the
+        // shared temp voice-audio folder other tests load from (StoreReadyAudioForTest persists).
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-guard-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
+        {
+            var svc = ServiceAt(persistPath);
+            svc.StoreReadyAudioForTest("sid-1", "spoken", "reply", new byte[] { 1, 2, 3 });
+            Assert.True(svc.HasVoice("sid-1"));
+
+            await svc.GenerateAsync("sid-1", prefix.TrimEnd('/'), CancellationToken.None);
+
+            Assert.Equal(0, hits);                    // the guard skipped before any turn fetch
+            Assert.True(svc.HasVoice("sid-1"));       // the existing clip is untouched
+            Assert.False(svc.IsGenerating("sid-1"));  // and it never flipped the session yellow
+        }
+        finally
+        {
+            listener.Stop();
+            await serve;
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
+        }
     }
 
     // ---------- Turn voice off / Unmark (issue #859) ----------
