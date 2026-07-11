@@ -9,6 +9,14 @@ import {
   inDesktopOrder,
 } from "@devthrottle/client-core/sessions/ordering";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
+import {
+  reachabilityFor,
+  reachabilityLastSeen,
+  REACHABILITY_OFFLINE,
+  REACHABILITY_WOBBLY,
+  type DirectorReachability,
+} from "@devthrottle/client-core/fleet/fleetClient";
+import { SessionMenu } from "./SessionMenu";
 
 // The fleet-wide session roster (issue #972) - the React port of the Blazor SessionRail. It lists
 // EVERY session the Gateway roster aggregation (GET /sessions) returns, across every Director, with
@@ -25,6 +33,8 @@ export type RosterView = "my-order" | "attention";
 
 export interface SessionRosterProps {
   sessions: SessionDto[] | null;
+  /** Per-Director reachability for the Online / Wobbly / Offline rendering (issue #1215). */
+  directors: DirectorReachability[];
   selectedId: string | undefined;
   view: RosterView;
   onView: (view: RosterView) => void;
@@ -33,7 +43,7 @@ export interface SessionRosterProps {
   onNewSession: () => void;
 }
 
-export function SessionRoster({ sessions, selectedId, view, onView, error, onNewSession }: SessionRosterProps) {
+export function SessionRoster({ sessions, directors, selectedId, view, onView, error, onNewSession }: SessionRosterProps) {
   const total = sessions?.length ?? 0;
 
   return (
@@ -83,13 +93,13 @@ export function SessionRoster({ sessions, selectedId, view, onView, error, onNew
       {sessions !== null && total > 0 && view === "my-order" && (
         <ul className="roster-list">
           {inDesktopOrder(sessions).map((s) => (
-            <RosterRow key={s.sessionId} session={s} selectedId={selectedId} />
+            <RosterRow key={s.sessionId} session={s} directors={directors} selectedId={selectedId} />
           ))}
         </ul>
       )}
 
       {sessions !== null && total > 0 && view === "attention" && (
-        <AttentionGroups sessions={sessions} selectedId={selectedId} />
+        <AttentionGroups sessions={sessions} directors={directors} selectedId={selectedId} />
       )}
     </div>
   );
@@ -97,7 +107,15 @@ export function SessionRoster({ sessions, selectedId, view, onView, error, onNew
 
 // Opt-in attention view: needs-you first, then active, then on-hold. Each bucket keeps its members in
 // desktop order (inBucket), so a session holds its slot within its bucket and does not reshuffle.
-function AttentionGroups({ sessions, selectedId }: { sessions: SessionDto[]; selectedId: string | undefined }) {
+function AttentionGroups({
+  sessions,
+  directors,
+  selectedId,
+}: {
+  sessions: SessionDto[];
+  directors: DirectorReachability[];
+  selectedId: string | undefined;
+}) {
   const needs = inBucket(sessions, "needsYou");
   const active = inBucket(sessions, "active");
   const held = inBucket(sessions, "onHold");
@@ -106,21 +124,21 @@ function AttentionGroups({ sessions, selectedId }: { sessions: SessionDto[]; sel
       {needs.length > 0 && (
         <Bucket title="Needs you" tone="needs" count={needs.length}>
           {needs.map((s) => (
-            <RosterRow key={`needs-${s.sessionId}`} session={s} selectedId={selectedId} />
+            <RosterRow key={`needs-${s.sessionId}`} session={s} directors={directors} selectedId={selectedId} />
           ))}
         </Bucket>
       )}
       {active.length > 0 && (
         <Bucket title="Active" count={active.length}>
           {active.map((s) => (
-            <RosterRow key={`active-${s.sessionId}`} session={s} selectedId={selectedId} />
+            <RosterRow key={`active-${s.sessionId}`} session={s} directors={directors} selectedId={selectedId} />
           ))}
         </Bucket>
       )}
       {held.length > 0 && (
         <Bucket title="On hold" tone="hold" count={held.length}>
           {held.map((s) => (
-            <RosterRow key={`hold-${s.sessionId}`} session={s} selectedId={selectedId} />
+            <RosterRow key={`hold-${s.sessionId}`} session={s} directors={directors} selectedId={selectedId} />
           ))}
         </Bucket>
       )}
@@ -149,7 +167,15 @@ function Bucket({
   );
 }
 
-function RosterRow({ session, selectedId }: { session: SessionDto; selectedId: string | undefined }) {
+function RosterRow({
+  session,
+  directors,
+  selectedId,
+}: {
+  session: SessionDto;
+  directors: DirectorReachability[];
+  selectedId: string | undefined;
+}) {
   const sid = session.sessionId ?? "";
   const color = effectiveColor(session);
   const selected = sid === selectedId;
@@ -158,10 +184,16 @@ function RosterRow({ session, selectedId }: { session: SessionDto; selectedId: s
   const num = session.number;
   const hasNum = num !== null && num !== undefined && String(num).trim().length > 0;
   const machine = (session.machineName ?? "").trim();
+  // The owning Director's reachability (issue #1215): a Wobbly/Offline Director dims its sessions in
+  // place and shows a "last seen" age; an Online (or unknown) Director renders normally.
+  const reach = reachabilityFor(directors, session.directorId);
+  const wobbly = reach?.state === REACHABILITY_WOBBLY;
+  const offline = reach?.state === REACHABILITY_OFFLINE;
+  const lastSeen = wobbly || offline ? reachabilityLastSeen(reach?.lastSeenAgeSeconds) : "";
   return (
-    <li>
+    <li className="roster-li">
       <Link
-        className={`roster-row${selected ? " roster-row-selected" : ""}${attention ? " roster-row-attention" : ""}`}
+        className={`roster-row${selected ? " roster-row-selected" : ""}${attention ? " roster-row-attention" : ""}${wobbly ? " roster-row-wobbly" : ""}${offline ? " roster-row-offline" : ""}`}
         style={{ borderLeftColor: dotColor(color) }}
         to={`/session/${encodeURIComponent(sid)}`}
         title={session.lastStatusReason ?? undefined}
@@ -177,6 +209,7 @@ function RosterRow({ session, selectedId }: { session: SessionDto; selectedId: s
             {session.onHold && <span className="roster-tag">hold</span>}
             {session.voiceMode && <span className="roster-tag voice">voice</span>}
             {machine && <span className="roster-machine" title={session.directorId ?? undefined}>{machine}</span>}
+            {lastSeen && <span className="roster-lastseen">{lastSeen}</span>}
             {attention && session.needsYouSince && <WaitingTime since={String(session.needsYouSince)} />}
           </span>
           {attention && session.railLine && session.railLine.trim().length > 0 && (
@@ -184,6 +217,9 @@ function RosterRow({ session, selectedId }: { session: SessionDto; selectedId: s
           )}
         </span>
       </Link>
+      {/* The same session menu as the session page (issue #1214), pinned to the card's top-right. It
+          sits OUTSIDE the Link so opening the menu never navigates into the session. */}
+      <SessionMenu session={session} variant="rail" />
     </li>
   );
 }

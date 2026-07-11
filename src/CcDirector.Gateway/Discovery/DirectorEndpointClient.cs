@@ -825,6 +825,24 @@ public sealed class DirectorEndpointClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// Issue #1214: fetch the owning Director's handover info block for a session (name, session id,
+    /// repo, director id, machine, version). Returns null when the Director is unreachable or answers
+    /// non-2xx, which the Gateway proxy surfaces as a 502 rather than a silent empty body.
+    /// </summary>
+    public async Task<HandoverInfoDto?> GetHandoverAsync(string endpoint, string sessionId, CancellationToken ct = default)
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<HandoverInfoDto>($"{endpoint}/sessions/{sessionId}/handover", ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorEndpointClient] GetHandoverAsync FAILED: endpoint={endpoint}, sid={sessionId}, error={ex.Message}");
+            return null;
+        }
+    }
+
     public async Task<(bool ok, HandoverResponse? body, string? error)> PostHandoverAsync(string endpoint, HandoverRequest req, CancellationToken ct = default)
     {
         try

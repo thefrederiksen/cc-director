@@ -52,6 +52,14 @@ public sealed class GatewayHost : IAsyncDisposable
     public Streaming.PushedSessionStore PushedSessions { get; }
 
     /// <summary>
+    /// Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. The <c>/sessions</c>
+    /// aggregation uses it so a single failed Director poll no longer drops that Director's sessions -
+    /// they are served stale (Wobbly) through a short grace window and only dropped (Offline) once the
+    /// grace window is exhausted. Presentation only; it never touches discovery or the registry constants.
+    /// </summary>
+    public Discovery.FleetRosterCache RosterCache { get; }
+
+    /// <summary>
     /// launcher-persistent-join: the map of which machine's cc-launcher is currently joined over a
     /// persistent stream. When a launcher is stream-connected, the machine lifecycle relay pushes a command
     /// DOWN the open stream instead of dialing the launcher's REST API. Empty until launchers connect and
@@ -335,6 +343,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
         Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
+        RosterCache = new Discovery.FleetRosterCache();
+        // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
+        // roster too so the cache does not grow without bound; a re-registering Director starts clean.
+        Registry.OnDirectorRemoved += id => RosterCache.Forget(id);
         LauncherConnections = new Streaming.LauncherConnectionRegistry();
         var gatewayConfig = Core.Configuration.GatewayConfig.Load();
         _streamMode = streamMode ?? gatewayConfig.StreamMode;
@@ -1065,6 +1077,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // Issue #1177 (Phase 1): route per-session commands DOWN the Director's stream when stream mode
             // is on. Null when off, so every command endpoint stays on its HTTP path (byte-identical).
             sendCommand: _streamMode ? SendCommandAsync : null,
+            // Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache absorbs a transient poll
+            // failure as Wobbly (served stale through a short grace window) instead of blinking the
+            // Director's sessions out of the roster; only a sustained failure reads as Offline.
+            rosterCache: RosterCache,
             // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
             // (Directors ask here at session creation) and the /sessions adopt-reconcile.
             sessionNumbers: SessionNumbers);

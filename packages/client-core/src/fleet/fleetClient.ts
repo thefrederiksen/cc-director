@@ -76,16 +76,49 @@ export interface MachineError {
   error?: string;
 }
 
-// The envelope shape GET /sessions returns with ?envelope=true: the live sessions AND the machines
-// that failed this fan-out. (Plain GET /sessions - api/client listSessions - returns just the array;
-// the Fleet and Directors pages need the machineErrors too, so they ask for the envelope.)
+// The three fleet-sweep presentation states (issue #1215, Cockpit plan phase 6). A Director reads as:
+//  - "online": its last poll succeeded.
+//  - "wobbly": a recent poll failed but is absorbed by the Gateway's grace window - its last-known-good
+//    sessions are STILL in the roster (served stale), shown dimmed with a "last seen N seconds ago" age.
+//  - "offline": the grace window is exhausted; its sessions are dropped from the roster.
+export const REACHABILITY_ONLINE = "online";
+export const REACHABILITY_WOBBLY = "wobbly";
+export const REACHABILITY_OFFLINE = "offline";
+export type ReachabilityState =
+  | typeof REACHABILITY_ONLINE
+  | typeof REACHABILITY_WOBBLY
+  | typeof REACHABILITY_OFFLINE;
+
+// One Director's reachability presentation in the roster envelope (issue #1215). The Cockpit joins a
+// session to its Director by directorId (also stamped on SessionDto.directorId) to decide how to render
+// it, so the list changes appearance IN PLACE and never reflows because of a transient miss.
+export interface DirectorReachability {
+  directorId: string;
+  machineName?: string;
+  /** "online" | "wobbly" | "offline". */
+  state: ReachabilityState;
+  /** When the Gateway last read this Director's sessions (ISO 8601 UTC), or null if never. */
+  lastSeenUtc?: string | null;
+  /** Seconds since last seen, computed by the Gateway at serve time (0 when online, null when never). */
+  lastSeenAgeSeconds?: number | null;
+  /** The last poll's failure reason for wobbly/offline; null while online. */
+  error?: string | null;
+}
+
+// The envelope shape GET /sessions returns with ?envelope=true: the live sessions, the machines that
+// failed this fan-out, AND the per-Director reachability presentation (issue #1215). (Plain GET
+// /sessions - api/client listSessions - returns just the array; the Fleet and Directors pages need the
+// machineErrors and reachability too, so they ask for the envelope.)
 export interface SessionsEnvelope {
   sessions: SessionDto[];
   machineErrors: MachineError[];
+  /** Per-Director reachability for the Online / Wobbly / Offline rendering (issue #1215). */
+  directors: DirectorReachability[];
 }
 
-// GET /sessions?envelope=true - the roster plus the unreachable-machine list. Throws GatewayError on
-// non-2xx so the page surfaces the failure rather than showing a silently empty roster.
+// GET /sessions?envelope=true - the roster plus the unreachable-machine list and per-Director
+// reachability. Throws GatewayError on non-2xx so the page surfaces the failure rather than showing a
+// silently empty roster.
 export async function getSessionsEnvelope(signal?: AbortSignal): Promise<SessionsEnvelope> {
   const res = await fetch("/sessions?envelope=true", {
     method: "GET",
@@ -96,7 +129,31 @@ export async function getSessionsEnvelope(signal?: AbortSignal): Promise<Session
     throw new GatewayError(res.status, `GET /sessions?envelope=true failed: ${res.status}`);
   }
   const body = (await res.json()) as Partial<SessionsEnvelope>;
-  return { sessions: body.sessions ?? [], machineErrors: body.machineErrors ?? [] };
+  return {
+    sessions: body.sessions ?? [],
+    machineErrors: body.machineErrors ?? [],
+    directors: body.directors ?? [],
+  };
+}
+
+// Join a session to its Director's reachability (issue #1215). Returns undefined when the envelope
+// carries no reachability for that Director (an older Gateway, or a Director that is fully Online with
+// no entry) - the caller then renders the session normally (Online). This is how a session's card
+// changes appearance IN PLACE (dimmed while Wobbly) instead of the list reflowing on a transient miss.
+export function reachabilityFor(
+  directors: DirectorReachability[],
+  directorId: string | null | undefined,
+): DirectorReachability | undefined {
+  if (!directorId) return undefined;
+  return directors.find((d) => d.directorId === directorId);
+}
+
+// The "last seen N ago" age label for a Wobbly/Offline card. Empty while Online (age 0 or missing).
+export function reachabilityLastSeen(ageSeconds: number | null | undefined): string {
+  if (ageSeconds === null || ageSeconds === undefined || ageSeconds <= 0) return "";
+  if (ageSeconds < 60) return `last seen ${Math.round(ageSeconds)}s ago`;
+  if (ageSeconds < 3600) return `last seen ${Math.floor(ageSeconds / 60)}m ago`;
+  return `last seen ${Math.floor(ageSeconds / 3600)}h ago`;
 }
 
 // PATCH /sessions/{sid} { name } - rename a session; the Gateway routes to the owning Director and
