@@ -1,16 +1,15 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { gatewayErrorMessage, type SessionDto } from "@devthrottle/client-core/api/client";
+import { type SessionDto } from "@devthrottle/client-core/api/client";
 import { dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import {
-  getSessionsEnvelope,
   reachabilityFor,
   reachabilityLastSeen,
   REACHABILITY_OFFLINE,
   REACHABILITY_WOBBLY,
   type DirectorReachability,
-  type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
 import { repoBasename, relativeTime } from "./format";
 
 // Per-Director reachability for the Online / Wobbly / Offline node rendering (issue #1215), provided at
@@ -27,11 +26,11 @@ const ReachabilityContext = createContext<DirectorReachability[]>([]);
 // A Wingman narration toggle overlays each node with the session's live one-line read (the SessionDto
 // railLine the roster already returns) - opt-in, a pure display layer, never a new fetch.
 //
-// It reads the same same-origin envelope the Fleet page polls (GET /sessions?envelope=true) through
-// client-core - never a Director address - and reuses the ONE shared effective-color rule so a node's
-// dot matches every other Cockpit surface. Polling and the keep-last-on-error behavior mirror
-// FleetView so the two pages agree on the fleet at all times.
-const ROSTER_POLL_MS = 2000;
+// It reads the ONE shared fleet roster store (issue #1239) - the same GET /sessions?envelope=true
+// envelope Sessions and Directors read, from a single poll loop - never a Director address - and reuses
+// the ONE shared effective-color rule so a node's dot matches every other Cockpit surface. Because every
+// fleet page reads that one store, this map and the Sessions roster always agree on the fleet at the
+// same moment, and a hidden tab makes no roster requests at all.
 
 type Pivot = "machine" | "repo" | "agent" | "list";
 
@@ -77,10 +76,9 @@ interface Lane {
 
 export function FleetMapView() {
   const navigate = useNavigate();
-  const [sessions, setSessions] = useState<SessionDto[] | null>(null);
-  const [machineErrors, setMachineErrors] = useState<MachineError[]>([]);
-  const [directors, setDirectors] = useState<DirectorReachability[]>([]);
-  const [lastError, setLastError] = useState<string | null>(null);
+  // The sessions, the unreachable-machine list, and the per-Director reachability all come from the ONE
+  // shared roster store; lastError is its keep-last banner text. No poll of its own.
+  const { sessions, machineErrors, directors, error: lastError } = useSharedRoster();
   const [pivot, setPivotState] = useState<Pivot>(initialPivot);
   // Persist the choice so the map reopens on it (see initialPivot). Wraps the raw setter so every
   // pivot change - from any button - writes through to storage.
@@ -101,30 +99,6 @@ export function FleetMapView() {
   // intact for an easy future restore - flip this back to useState and restore the toggle to bring it
   // back.
   const wingman = false;
-
-  const loadRoster = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const env = await getSessionsEnvelope(signal);
-      setSessions(env.sessions);
-      setMachineErrors(env.machineErrors);
-      setDirectors(env.directors);
-      setLastError(null);
-    } catch (err) {
-      if (signal?.aborted === true) return;
-      // Keep the last-known map on a transient failure; only surface the banner (FleetView parity).
-      setLastError(gatewayErrorMessage(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void loadRoster(controller.signal);
-    const timer = window.setInterval(() => void loadRoster(controller.signal), ROSTER_POLL_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [loadRoster]);
 
   const list = useMemo(() => sessions ?? [], [sessions]);
   // Build the lanes from the WHOLE fleet first, so lane order and each card's slot are fixed. The title

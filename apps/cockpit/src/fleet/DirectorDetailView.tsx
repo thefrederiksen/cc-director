@@ -5,11 +5,13 @@ import { dotColor, effectiveColor, inDesktopOrder, stateLabel } from "@devthrott
 import {
   getDirectorSettings,
   getFleetDirectors,
-  getSessionsEnvelope,
   putDirectorSettings,
   type FleetDirector,
   type MachineError,
 } from "@devthrottle/client-core/fleet/fleetClient";
+import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
+import { useVisiblePolling } from "@devthrottle/client-core/polling/useVisiblePolling";
+import { useNow } from "@devthrottle/client-core/polling/useNow";
 import { isSettingsDirty, prettyPrintSettings } from "@devthrottle/client-core/fleet/settingsEditor";
 import { ConfirmDialog } from "../components";
 import { clockLabel, humanizeState, portLabel, relativeTime, repoBasename, uptime } from "./format";
@@ -27,32 +29,39 @@ export function DirectorDetailView() {
   const { directorId = "" } = useParams();
   const navigate = useNavigate();
 
+  // This Director's sessions and its reachability come from the ONE shared roster store (issue #1239),
+  // so the page never runs its own roster fan-out. The registry facts and the repo list are this page's
+  // own concern and stay a local, visibility-aware poll below.
+  const roster = useSharedRoster();
+  const sessions: SessionDto[] = roster.sessions ?? [];
+  const machineError: MachineError | null =
+    roster.machineErrors.find((e) => (e.directorId ?? "").toLowerCase() === directorId.toLowerCase()) ?? null;
+
   const [director, setDirector] = useState<FleetDirector | null>(null);
   const [notFound, setNotFound] = useState(false);
-  const [sessions, setSessions] = useState<SessionDto[]>([]);
-  const [machineError, setMachineError] = useState<MachineError | null>(null);
   const [repos, setRepos] = useState<RepoInfo[] | null>(null);
   const [reposError, setReposError] = useState<string | null>(null);
-  const [lastError, setLastError] = useState<string | null>(null);
+  const [registryError, setRegistryError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [, setNow] = useState(Date.now());
-  const nowRef = useRef(0);
-  nowRef.current = Date.now();
+  // Live relative times re-render off the ONE shared 1-second ticker, not a per-page timer.
+  const now = useNow();
   const tickRef = useRef(0);
+  // The current reachability, mirrored into a ref so the stable poll callback can gate the repo fetch on
+  // it without taking the roster as a dependency (which would rebuild the poll loop every 2 seconds).
+  const reachableRef = useRef(true);
+  reachableRef.current = machineError === null;
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [ds, env] = await Promise.all([getFleetDirectors(signal), getSessionsEnvelope(signal)]);
+      const ds = await getFleetDirectors(signal);
       const d = ds.find((x) => x.directorId.toLowerCase() === directorId.toLowerCase()) ?? null;
       setDirector(d);
       setNotFound(d === null);
-      setSessions(env.sessions);
-      setMachineError(env.machineErrors.find((e) => (e.directorId ?? "").toLowerCase() === directorId.toLowerCase()) ?? null);
-      setLastError(null);
+      setRegistryError(null);
       setLastRefresh(new Date());
 
       const tick = tickRef.current;
-      if (d !== null && env.machineErrors.every((e) => (e.directorId ?? "").toLowerCase() !== directorId.toLowerCase()) && tick % REPO_EVERY_TICKS === 0) {
+      if (d !== null && reachableRef.current && tick % REPO_EVERY_TICKS === 0) {
         try {
           setRepos(await getRepos(directorId, signal));
           setReposError(null);
@@ -63,27 +72,24 @@ export function DirectorDetailView() {
       tickRef.current = tick + 1;
     } catch (err) {
       if (signal?.aborted === true) return;
-      setLastError(gatewayErrorMessage(err));
+      setRegistryError(gatewayErrorMessage(err));
     }
   }, [directorId]);
 
+  // A new director id starts a clean load (Blazor OnParametersSetAsync reset). The visible poll itself
+  // restarts on the new directorId because `refresh` changes with it.
   useEffect(() => {
-    // A new director id starts a clean load (Blazor OnParametersSetAsync reset).
     setDirector(null);
     setNotFound(false);
     setRepos(null);
     setReposError(null);
     tickRef.current = 0;
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const poll = window.setInterval(() => void refresh(controller.signal), POLL_MS);
-    const clock = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => {
-      controller.abort();
-      window.clearInterval(poll);
-      window.clearInterval(clock);
-    };
-  }, [refresh]);
+  }, [directorId]);
+
+  useVisiblePolling(refresh, POLL_MS);
+
+  // One banner for the page: the registry fetch failure if any, otherwise the shared roster's.
+  const lastError = registryError ?? roster.error;
 
   const mine = inDesktopOrder(sessions.filter((s) => (s.directorId ?? "").toLowerCase() === directorId.toLowerCase()));
 
@@ -187,7 +193,7 @@ export function DirectorDetailView() {
                           </td>
                           <td className="dcell-ellipsis" title={s.repoPath ?? undefined}>{repoBasename(s.repoPath)}</td>
                           <td className="ddim">{humanizeState(s.assessedState ?? s.activityState)}</td>
-                          <td className="ddim" title={s.lastActivityAt ?? undefined}>{relativeTime(s.lastActivityAt, { withAgo: true, now: nowRef.current })}</td>
+                          <td className="ddim" title={s.lastActivityAt ?? undefined}>{relativeTime(s.lastActivityAt, { withAgo: true, now })}</td>
                           <td>
                             <Link className="ddet-link" to={`/session/${encodeURIComponent(sid)}`} onClick={(e) => e.stopPropagation()}>drive &rarr;</Link>
                           </td>
@@ -220,7 +226,7 @@ export function DirectorDetailView() {
                       <tr key={r.path}>
                         <td className="dcell-name">{r.name}</td>
                         <td className="dmono dcell-ellipsis" title={r.path}>{r.path}</td>
-                        <td className="ddim" title={r.lastUsed ?? undefined}>{relativeTime(r.lastUsed, { withAgo: true, now: nowRef.current })}</td>
+                        <td className="ddim" title={r.lastUsed ?? undefined}>{relativeTime(r.lastUsed, { withAgo: true, now })}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -248,13 +254,13 @@ export function DirectorDetailView() {
                   <dt>Tailnet endpoint</dt><dd className="dmono">{d.tailnetEndpoint}</dd>
                 </>
               )}
-              <dt>Started</dt><dd title={d.startedAt}>{relativeTime(d.startedAt, { withAgo: true, now: nowRef.current })} (up {uptime(d.startedAt, nowRef.current)})</dd>
-              <dt>Last seen</dt><dd title={d.lastSeen ?? undefined}>{relativeTime(d.lastSeen, { withAgo: true, now: nowRef.current })}</dd>
+              <dt>Started</dt><dd title={d.startedAt}>{relativeTime(d.startedAt, { withAgo: true, now })} (up {uptime(d.startedAt, now)})</dd>
+              <dt>Last seen</dt><dd title={d.lastSeen ?? undefined}>{relativeTime(d.lastSeen, { withAgo: true, now })}</dd>
               <dt>Terminal stream</dt>
               {(d.streamVerifyError ?? null) !== null ? (
                 <dd className="dstat-err" title={d.streamVerifyError ?? undefined}>DOWN - WebSocket stream unreachable</dd>
               ) : (d.streamVerifiedAt ?? null) !== null ? (
-                <dd className="dstat-ok" title={d.streamVerifiedAt ?? undefined}>OK (verified {relativeTime(d.streamVerifiedAt, { withAgo: true, now: nowRef.current })})</dd>
+                <dd className="dstat-ok" title={d.streamVerifiedAt ?? undefined}>OK (verified {relativeTime(d.streamVerifiedAt, { withAgo: true, now })})</dd>
               ) : (
                 <dd className="ddim">not verified</dd>
               )}
