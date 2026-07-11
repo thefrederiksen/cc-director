@@ -6,7 +6,7 @@ import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import { getClipState, playClip, playingSid, stopPlayback, syncVoiceSessions, useVoiceClips } from "@devthrottle/client-core/voice/clips";
 import { NavDrawer } from "../components/NavDrawer";
-import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "../push/register";
+import { enablePush, notificationPermission, pushSupported, reconcileBadge } from "@devthrottle/client-core/push/register";
 
 // Home / roster. A "needs you" group first (when any session wants attention), then an "other
 // sessions" group with everything that is NOT waiting on you - so a session appears in exactly one

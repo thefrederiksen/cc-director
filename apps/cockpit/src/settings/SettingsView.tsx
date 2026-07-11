@@ -21,6 +21,13 @@ import {
   ttsSample,
 } from "@devthrottle/client-core/api/ai";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import {
+  disablePush,
+  enablePush,
+  isPushSubscribed,
+  notificationPermission,
+  pushSupported,
+} from "@devthrottle/client-core/push/register";
 
 // The Cockpit Settings page (issue #1025, epic #967) - the React port of the retired Blazor
 // wwwroot/pages/settings.html. The left-rail "Settings" item used to be a dead full-load anchor to
@@ -236,6 +243,8 @@ function ThisMachineTab() {
         )}
       </section>
 
+      <NotificationsCard />
+
       <section className="settings-card">
         <h2 className="settings-h2">
           Training data <span className="settings-pill">improve the wingman</span>
@@ -264,6 +273,105 @@ function ThisMachineTab() {
 function cockpitLabel(settings: GatewaySettings): string {
   const state = settings.cockpit.up ? "up" : "down";
   return `port ${settings.cockpit.port} (${state})`;
+}
+
+// ---- Browser notifications (issue #1257) ----------------------------------------------------------
+//
+// Per-browser toggle that subscribes THIS browser to the Gateway's existing "needs you" web push (the
+// same pipe the phone uses, #905) so a backgrounded Cockpit tab raises a desktop notification when a
+// session turns red. The subscribe/unsubscribe flow is the shared client-core push module; this card is
+// only its on/off switch plus the browser permission prompt behind it. Self-contained state (support,
+// permission, subscribed) so it never depends on the Gateway settings load - notifications are a
+// property of this browser, not of the machine's Gateway config. Turning it off unsubscribes this
+// browser only; a phone or another browser stays subscribed.
+
+function NotificationsCard() {
+  const supported = pushSupported();
+  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(
+    notificationPermission(),
+  );
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    if (!supported) {
+      setEnabled(false);
+      return;
+    }
+    let cancelled = false;
+    void isPushSubscribed().then((on) => {
+      if (!cancelled) setEnabled(on);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [supported]);
+
+  const onToggle = async (checked: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      if (checked) {
+        const result = await enablePush();
+        setPermission(notificationPermission());
+        if (result === "granted") {
+          setEnabled(true);
+          setMsg("On. This browser will be notified when a session needs you, even in the background.");
+        } else if (result === "denied") {
+          setEnabled(false);
+          setMsg("This browser blocked notifications. Allow them in the browser's site settings, then try again.");
+        } else {
+          setEnabled(false);
+          setMsg("This browser does not support notifications.");
+        }
+      } else {
+        await disablePush();
+        setEnabled(false);
+        setMsg("Off. Notifications stopped for this browser only.");
+      }
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-card">
+      <h2 className="settings-h2">
+        Notifications <span className="settings-pill">this browser</span>
+      </h2>
+      <p className="settings-hint">
+        Get a desktop notification when a session needs you, even when this tab is in the background or
+        the browser is minimized. Clicking the notification brings the Cockpit forward and opens the
+        session that is waiting. This is per-browser: turning it off here stops notifications for this
+        browser only, and your phone keeps its own alerts.
+      </p>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={enabled === true}
+          disabled={!supported || busy || enabled === null || permission === "denied"}
+          onChange={(e) => void onToggle(e.target.checked)}
+        />
+        Notify me on this browser
+      </label>
+      {!supported && (
+        <p className="settings-hint settings-hint-inline">
+          This browser does not support web notifications.
+        </p>
+      )}
+      {supported && permission === "denied" && (
+        <p className="settings-hint settings-hint-inline">
+          Notifications are blocked for this site in the browser. Allow them in the browser&apos;s site
+          settings to turn this on.
+        </p>
+      )}
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </section>
+  );
 }
 
 // ---- "AI" tab: DevThrottle-hosted models + voice --------------------------------------------------
