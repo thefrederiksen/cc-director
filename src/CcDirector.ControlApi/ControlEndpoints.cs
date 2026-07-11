@@ -1014,25 +1014,35 @@ internal static class ControlEndpoints
             if (!System.IO.File.Exists(path))
                 return Results.NotFound(new { error = "file not found: " + path });
 
-            var ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
-            var ctype = ext switch
-            {
-                ".html" or ".htm" => "text/html; charset=utf-8",
-                ".pdf"            => "application/pdf",
-                ".png"            => "image/png",
-                ".jpg" or ".jpeg" => "image/jpeg",
-                ".gif"            => "image/gif",
-                ".svg"            => "image/svg+xml",
-                ".css"            => "text/css; charset=utf-8",
-                ".js"             => "text/javascript; charset=utf-8",
-                ".json"           => "application/json; charset=utf-8",
-                ".csv"            => "text/csv; charset=utf-8",
-                ".md" or ".txt" or ".log" => "text/plain; charset=utf-8",
-                _                 => "application/octet-stream",
-            };
+            var ctype = FileContentType(path);
             FileLog.Write($"[ControlEndpoints] GET /file: {path} ({ctype})");
             // No fileDownloadName -> served inline, so the browser renders it (not a download).
             return Results.File(path, ctype);
+        });
+
+        // Local Files mission (Phase 1): the session-scoped sibling of the top-level /file above.
+        // The client viewing a session always has the session id, so it asks the Gateway for
+        // GET /sessions/{sid}/file?path=... ; the Gateway's per-session catch-all
+        // (/sessions/{sid}/{**rest}) uses the sid ONLY to resolve the owning Director, then forwards
+        // the request here unchanged. Because the session lives on this machine, any absolute path
+        // its terminal or chat emitted is a path on this machine - correct by construction. The sid
+        // is the routing vehicle, NOT a sandbox: like /file above, any existing absolute path is
+        // served (per the solo-tailnet decision), 404 if it does not exist. Two things this route
+        // adds over the top-level /file: enableRangeProcessing (large PDFs/images seek and resume)
+        // and X-Content-Type-Options: nosniff (the browser must honor the content type we set, so an
+        // HTML file cannot be re-sniffed into something that executes with different authority).
+        app.MapGet("/sessions/{sid}/file", (HttpContext ctx, string sid, string? path) =>
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return Results.BadRequest(new { error = "path is required" });
+            if (!System.IO.File.Exists(path))
+                return Results.NotFound(new { error = "file not found: " + path });
+
+            var ctype = FileContentType(path);
+            FileLog.Write($"[ControlEndpoints] GET /sessions/{sid}/file: {path} ({ctype})");
+            ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            // No fileDownloadName -> served inline, so the browser renders it (not a download).
+            return Results.File(path, ctype, enableRangeProcessing: true);
         });
 
         // Phase 4b: observability into the wingman. Returns current color + reason,
@@ -3752,5 +3762,27 @@ internal static class ControlEndpoints
         ".bmp" => "image/bmp",
         ".webp" => "image/webp",
         _ => "application/octet-stream",
+    };
+
+    /// <summary>
+    /// The single extension -> HTTP content-type map shared by the top-level <c>GET /file</c> and the
+    /// session-scoped <c>GET /sessions/{sid}/file</c> (Local Files mission). One map, two routes, so a
+    /// new type is added in exactly one place. The octet-stream fallback means an unknown extension is
+    /// served as an opaque download, never guessed as text or an image.
+    /// </summary>
+    private static string FileContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".html" or ".htm" => "text/html; charset=utf-8",
+        ".pdf"            => "application/pdf",
+        ".png"            => "image/png",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".gif"            => "image/gif",
+        ".svg"            => "image/svg+xml",
+        ".css"            => "text/css; charset=utf-8",
+        ".js"             => "text/javascript; charset=utf-8",
+        ".json"           => "application/json; charset=utf-8",
+        ".csv"            => "text/csv; charset=utf-8",
+        ".md" or ".txt" or ".log" => "text/plain; charset=utf-8",
+        _                 => "application/octet-stream",
     };
 }

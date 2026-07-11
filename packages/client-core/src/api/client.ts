@@ -597,6 +597,38 @@ export function screenshotFileUrl(sessionId: string, fileName: string): string {
   return `/sessions/${sid}/screenshots/file?name=${encodeURIComponent(fileName)}`;
 }
 
+// ===== Local Files (remote file viewer): any local file on the owning Director's disk =====
+// Same request shape as the screenshot bytes above, generalized from "one screenshot" to "any file
+// by absolute path". The client viewing a session always has the session id, so it asks the Gateway
+// same-origin at /sessions/{sid}/file?path=... ; the Gateway's per-session catch-all resolves the
+// owning Director and forwards the request there, and the Director streams the bytes off its own
+// disk. The session id is purely the routing vehicle that reaches the right machine (the path is
+// always a path on that machine), not a sandbox. Root-relative to the Gateway, so a browser <img>
+// or <iframe> src carries the cc-gateway-token cookie exactly as the screenshot viewer does.
+
+/** The same-origin URL for a local file's bytes on the owning Director, used as an <img>/<iframe>
+ *  src and as the target of a Download link. `path` is an absolute path on the session's machine. */
+export function sessionFileUrl(sessionId: string, path: string): string {
+  const sid = encodeURIComponent(sessionId);
+  return `/sessions/${sid}/file?path=${encodeURIComponent(path)}`;
+}
+
+// Fetch a local file's TEXT content through the Gateway (for the Markdown and text/code viewers,
+// which need the string, not an <img>/<iframe> src). A non-OK response is thrown as a GatewayError
+// so the viewer can show the real reason - 404 for a missing file, 503 for an offline Director -
+// never a silent blank.
+export async function fetchSessionFileText(sessionId: string, path: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(sessionFileUrl(sessionId, path), {
+    method: "GET",
+    headers: { ...authHeaders() },
+    signal,
+  });
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET file failed: ${res.status}`);
+  }
+  return res.text();
+}
+
 // GET /sessions/{sid}/screenshots[?count=N] - the newest screenshots' metadata (not the bytes).
 // count <= 0 fetches everything (the folder can hold thousands, so callers pass a cap). A 503 means
 // the owning Director is offline (the Gateway could not reach it for this leg, issue #412); it is
