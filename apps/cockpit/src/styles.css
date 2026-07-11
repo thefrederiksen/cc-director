@@ -72,14 +72,37 @@ body {
   padding: 4px 8px 16px;
 }
 
+/* The rail body holds the labeled sections (issue #1247); it grows to fill the rail so the footer
+   sits at the bottom. */
 .nav {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-section-title {
+  padding: 4px 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.nav-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  flex: 1;
 }
 
 .nav-link {
@@ -825,6 +848,13 @@ body {
 }
 
 .action-status {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Shown in place of the button row while a cold-linked session's capabilities are still loading
+   (issue #1247), so the bar is never an empty strip. */
+.action-loading {
   font-size: 12px;
   color: var(--text-dim);
 }

@@ -4,7 +4,7 @@
    token from the app theme (src/styles.css :root) or a literal defined here in this stylesheet -
    nothing hard-codes a color in a component. */
 
-/* ---- Fleet cards dashboard ---- */
+/* ---- Fleet cards view ---- */
 .fleet {
   max-width: 1400px;
 }

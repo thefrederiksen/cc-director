@@ -18,7 +18,6 @@ import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
 import { WingmanQueueView } from "./wingman/WingmanQueueView";
-import { ListsView } from "./lists/ListsView";
 import { DictionaryView } from "./dictionary/DictionaryView";
 import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { ExesView } from "./exes/ExesView";
@@ -35,7 +34,6 @@ import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
 import "./schedule/schedule.css";
 import "./wingman/wingman.css";
-import "./lists/lists.css";
 import "./dictionary/dictionary.css";
 import "./transcripts/transcripts.css";
 import "./exes/exes.css";
@@ -129,32 +127,30 @@ const router = createBrowserRouter(
             { path: "/cockpit", element: <Navigate to="/sessions" replace /> },
             { path: "/cockpit/:sessionId", element: <SessionRedirect /> },
             { path: "/sessions/:sessionId", element: <SessionRedirect /> },
-            // The fleet + machine views (issue #975): the Fleet cards dashboard, the Directors registry
+            // The fleet + machine views (issue #975): the Fleet cards view, the Directors registry
             // table, and the standalone Director-detail page. Ported one-to-one from the Blazor
             // Fleet.razor / Directors.razor / DirectorDetail.razor over the same Gateway REST surface.
             // The Fleet page was removed (issue #1212); its content is the Fleet Map's "Fleet list"
             // pivot now. Keep the old route working for bookmarks by redirecting to the Fleet Map.
             { path: "/fleet", element: <Navigate to="/fleet-map" replace /> },
             // The Fleet Map (issue #1109): the spatial node-canvas view of the same roster the Fleet
-            // page lists, pivotable by machine / repository / agent, with a Wingman narration overlay.
-            // Reads the same GET /sessions envelope through client-core.
+            // page lists, pivotable by machine / repository / agent. Reads the same GET /sessions
+            // envelope through client-core.
             { path: "/fleet-map", element: <FleetMapView /> },
             { path: "/directors", element: <DirectorsView /> },
             { path: "/directors/:directorId", element: <DirectorDetailView /> },
             // The Schedule + Wingman-pipeline pages (issue #976): one-to-one ports of the Blazor
             // Schedule.razor (cron jobs, /cron/jobs surface) and WingmanQueue.razor (read-only
-            // /wingman/queue snapshot) over the same Gateway REST surface. Wingman has no left-rail nav
-            // entry (mirroring the Blazor nav, which hides both from the v1 default view); it is reached
-            // by its direct route, as the Blazor page is.
+            // /wingman/queue snapshot) over the same Gateway REST surface. Both now have a Fleet-section
+            // nav entry (issue #1247).
             { path: "/schedule", element: <ScheduleView /> },
             { path: "/wingman", element: <WingmanQueueView /> },
-            // The tools + data pages (issue #977): one-to-one ports of the Blazor Lists.razor,
-            // Dictionary.razor, Transcripts.razor, Exes.razor, and Learning.razor over the same Gateway
-            // REST surface. Lists per-item title + flow:* status come from the Gateway item-status
-            // endpoint (issue #970), never a browser-held GitHub token. Following the Blazor nav (which
-            // shows Dictionary + Learning in the rail but reaches Recordings/Builds by their direct
-            // route), Dictionary and Learning get a left-rail entry; Transcripts and Exes are route-only.
-            { path: "/lists", element: <ListsView /> },
+            // The tools + data pages (issue #977): one-to-one ports of the Blazor Dictionary.razor,
+            // Transcripts.razor, Exes.razor, and Learning.razor over the same Gateway REST surface.
+            // All four have a Data-section nav entry now (issue #1247, exposing Voice Recorder and
+            // Executables that were previously reachable by address only). The Lists page was deleted
+            // (issue #1247): work lists are retired - GitHub issues are the queue - so the page and its
+            // /lists route are gone rather than left as dead surface.
             { path: "/dictionary", element: <DictionaryView /> },
             { path: "/transcripts", element: <TranscriptsView /> },
             { path: "/exes", element: <ExesView /> },

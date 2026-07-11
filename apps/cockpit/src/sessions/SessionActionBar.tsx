@@ -64,6 +64,18 @@ export function SessionActionBar({ sessionId, capabilities }: SessionActionBarPr
 
   const has = (cap: string) => capabilities?.includes(cap) === true;
 
+  // A cold deep link into a session (the roster has not arrived yet, so the selected session and its
+  // declared capabilities are still undefined) used to render an empty button row. Show a small loading
+  // state instead until the capabilities resolve (issue #1247). An empty array - a session that loaded
+  // and genuinely declares no driver verbs - is NOT loading, so it correctly renders no buttons.
+  if (capabilities === undefined) {
+    return (
+      <div className="action-bar">
+        <span className="action-loading">Loading session...</span>
+      </div>
+    );
+  }
+
   return (
     <div className="action-bar">
       {has("Cancel") && (

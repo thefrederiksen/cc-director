@@ -42,7 +42,7 @@ export function DictionaryView() {
   const clearMsgTimer = useRef<number | null>(null);
 
   // Guard against losing unsaved edits on navigation (issue #1255). useBlocker intercepts in-app route
-  // changes (for example the "Dashboard" link) while there are unsaved edits, so the person is asked
+  // changes (for example the "Sessions" back-link) while there are unsaved edits, so the person is asked
   // before the page unmounts and the edits vanish. The browser's own beforeunload covers a tab close or
   // refresh, which React Router cannot intercept.
   const blocker = useBlocker(dirty);
@@ -211,7 +211,7 @@ export function DictionaryView() {
         <div className="dc-top">
           <h1>Dictionary</h1>
           <Link className="dc-back" to="/">
-            &larr; Dashboard
+            &larr; Sessions
           </Link>
         </div>
         <p className="dc-sub">
