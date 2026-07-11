@@ -18,6 +18,12 @@ function pickMimeType(): string {
   return "";
 }
 
+// How often MediaRecorder flushes a chunk while recording. A timeslice makes the recorder deliver
+// encoded audio DURING capture (not only on stop), which gives us a genuine "first real audio
+// arrived" event - the web twin of the desktop recorder's first captured PCM buffer. It does not
+// change the captured clip: the chunks are concatenated in order on stop exactly as before.
+const CHUNK_MS = 100;
+
 export class MicRecorder {
   private stream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;
@@ -26,6 +32,12 @@ export class MicRecorder {
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private levelData: Uint8Array | null = null;
+
+  // One-shot latch + callback for the honest "the microphone is now capturing your voice" moment:
+  // fired when the FIRST real audio chunk lands, not merely when start() returned. The dialog uses
+  // it to flip to RECORDING and play the ready cue only once audio is actually flowing.
+  private captureLiveFired = false;
+  onCaptureLive: (() => void) | null = null;
 
   // Capture-health (issue #863): wall-clock of the segment the mic was actually open.
   // Compared against the DECODED audio duration of the captured blob (in wav.ts) to detect
@@ -71,10 +83,19 @@ export class MicRecorder {
       ? new MediaRecorder(this.stream, { mimeType: this.mimeType })
       : new MediaRecorder(this.stream);
     this.chunks = [];
+    this.captureLiveFired = false;
     this.recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) this.chunks.push(e.data);
+      if (e.data && e.data.size > 0) {
+        this.chunks.push(e.data);
+        // The first real chunk is the honest "mic is capturing your voice" moment. Fire once.
+        if (!this.captureLiveFired) {
+          this.captureLiveFired = true;
+          this.onCaptureLive?.();
+        }
+      }
     };
-    this.recorder.start();
+    // Start WITH a timeslice so chunks (and the first-audio signal) arrive during capture.
+    this.recorder.start(CHUNK_MS);
     this.startedAt = performance.now();
   }
 

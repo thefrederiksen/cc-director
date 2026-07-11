@@ -585,6 +585,7 @@ a.banner-btn {
   color: var(--attention);
 }
 
+.dictate-status-connecting,
 .dictate-status-transcribing,
 .dictate-status-paused {
   color: #dcdcaa;
