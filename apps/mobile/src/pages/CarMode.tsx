@@ -2,15 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCarMode, type CarModeReply } from "@devthrottle/client-core/carmode/useCarMode";
 import { carModeTurn } from "@devthrottle/client-core/carmode/carModeApi";
-import { getGatewayHealth, gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 
-// The client build id, inlined by Vite's `define` at build time (git short sha + build timestamp; see
-// vite.config.ts). Shown on the screen so the owner can confirm at a glance he is on the latest page,
-// not an old cached bundle. Vite substitutes this constant in both dev and production builds, so it is
-// always a real string in the app; the typeof guard only prevents a ReferenceError if this module is
-// ever imported outside a Vite build (for example a unit test), and is not a build-time fallback.
-const CLIENT_BUILD_ID = typeof __CLIENT_BUILD_ID__ === "string" ? __CLIENT_BUILD_ID__ : "no-build-id";
+// The Car Mode page version, shown small in the header corner so the owner can confirm at a glance he is
+// on the latest page, not an old cached bundle. This is a SIMPLE hand-bumped label (Soren's explicit ask):
+// the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
+// ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
+// Architect exactly which page is live and what to look for after a deploy.
+const CAR_MODE_VERSION = "v5";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -33,18 +32,32 @@ export function CarMode() {
   // Phase 1: a standalone page under /m with a screen wake-lock).
   useScreenWakeLock();
 
-  // The live Gateway version, read once from /healthz, so the on-screen indicator pairs the CLIENT
-  // build id (which page bundle) with the SERVER version (which Gateway build) - together they tell the
-  // owner exactly what he is talking to. A read failure shows the specific reason, never a silent blank.
-  const [gatewayVersion, setGatewayVersion] = useState("loading...");
+  // v5 - PIN THE SCREEN HEIGHT TO THE ACTUALLY-VISIBLE VIEWPORT. On the owner's Android PWA, CSS `dvh`
+  // proved unreliable: the fixed .car-screen stayed taller than the visible area, so the footer's primary
+  // button rendered BELOW the phone's bottom browser toolbar (cut off), in both idle and active states.
+  // window.visualViewport.height is the true visible height (it excludes the toolbars and the keyboard), so
+  // we publish it into the `--car-vh` CSS variable and the stylesheet sizes .car-screen to it (with a `dvh`
+  // fallback for the first paint / browsers without visualViewport). We refresh on every visualViewport
+  // resize/scroll and on orientation change, so it re-fits as the toolbars show and hide.
   useEffect(() => {
-    const controller = new AbortController();
-    getGatewayHealth(controller.signal)
-      .then((h) => setGatewayVersion(h.version))
-      .catch((err) => {
-        if (!controller.signal.aborted) setGatewayVersion(gatewayErrorMessage(err));
-      });
-    return () => controller.abort();
+    const vv = window.visualViewport;
+    const root = document.documentElement;
+    const apply = () => {
+      const height = vv !== null ? vv.height : window.innerHeight;
+      root.style.setProperty("--car-vh", `${Math.round(height)}px`);
+    };
+    apply();
+    vv?.addEventListener("resize", apply);
+    vv?.addEventListener("scroll", apply);
+    window.addEventListener("resize", apply);
+    window.addEventListener("orientationchange", apply);
+    return () => {
+      vv?.removeEventListener("resize", apply);
+      vv?.removeEventListener("scroll", apply);
+      window.removeEventListener("resize", apply);
+      window.removeEventListener("orientationchange", apply);
+      root.style.removeProperty("--car-vh");
+    };
   }, []);
 
   // The injected brain responder. Phase 2+: the real fleet brain. The stand-in (below) just echoes the
@@ -52,7 +65,13 @@ export function CarMode() {
   const respond = useCallback(async (command: string, signal: AbortSignal): Promise<CarModeReply> => {
     if (USE_FLEET_BRAIN) {
       const result = await carModeTurn(command, signal);
-      return { spoken: result.spoken, actions: result.actions, pendingConfirmation: result.pendingConfirmation };
+      return {
+        spoken: result.spoken,
+        actions: result.actions,
+        pendingConfirmation: result.pendingConfirmation,
+        turnId: result.turnId,
+        timing: result.timing,
+      };
     }
     // Phase 1 stand-in: a canned acknowledgement that repeats the command back, so the owner can hear
     // the whole loop (transcribe -> speak -> interrupt) working before the brain exists.
@@ -68,10 +87,6 @@ export function CarMode() {
     pendingConfirmation,
     error,
     unsupported,
-    history,
-    lastHeard,
-    captureState,
-    captureError,
     getMicLevel,
     endTurn,
     interrupt,
@@ -88,83 +103,73 @@ export function CarMode() {
           Exit
         </Link>
         <span className="car-title">Car Mode</span>
-        {/* The client build id in the corner: the owner glances here to confirm he is on the latest page,
-            not an old cached bundle. The full build id + Gateway version are in the debug readout below. */}
-        <span className="car-build" title={`Client build ${CLIENT_BUILD_ID}`}>
-          {shortBuild(CLIENT_BUILD_ID)}
-        </span>
+        {/* The simple, hand-bumped version in the corner: the owner glances here to confirm he is on the
+            latest page, not an old cached bundle. Bumped by hand on every deploy (see CAR_MODE_VERSION). */}
+        <span className="car-build">{CAR_MODE_VERSION}</span>
       </header>
 
-      {error !== null && (
-        <div className="car-error" role="alert">
-          {error}
-        </div>
-      )}
+      {/* The scrollable middle: everything between the fixed header and the fixed control footer. It flexes
+          to fill the viewport and scrolls internally ONLY if its content is taller than the space, so the
+          End Car Mode button and the controls in the footer are ALWAYS visible with no page scroll. */}
+      <div className="car-middle">
+        {error !== null && (
+          <div className="car-error" role="alert">
+            {error}
+          </div>
+        )}
 
-      {unsupported && (
-        <div className="car-error" role="alert">
-          Car Mode needs Chrome or another Chromium browser for hands-free voice. Open this page in
-          Chrome.
-        </div>
-      )}
+        {unsupported && (
+          <div className="car-error" role="alert">
+            Car Mode needs Chrome or another Chromium browser for hands-free voice. Open this page in
+            Chrome.
+          </div>
+        )}
 
-      <main className="car-body">
-        {/* The one big status orb + word: whose turn it is, readable at a glance / audible by the two
-            cues. Its color is the whole state at a distance. */}
-        <div className={`car-orb car-orb-${phase}`} aria-hidden="true">
-          <span className="car-orb-pulse" />
-        </div>
-        <p className="car-status" aria-live="polite">
-          {started ? statusText : "Tap Start, then just talk."}
-        </p>
-
-        {/* Live microphone level meter (Architect direction): visibly shows the owner his voice is being
-            picked up. Reads the capture stream's AnalyserNode via getMicLevel on an animation frame. It
-            only moves while the microphone is actually capturing (the Listening phase); flat otherwise. */}
-        {started && <MicMeter getLevel={getMicLevel} active={phase === "listening"} />}
-
-        {pendingConfirmation && (
-          <p className="car-confirm" role="status">
-            Waiting for you to say "confirm" - or say "cancel".
+        <main className="car-body">
+          {/* The one big status orb + word: whose turn it is, readable at a glance / audible by the two
+              cues. Its color is the whole state at a distance. */}
+          <div className={`car-orb car-orb-${phase}`} aria-hidden="true">
+            <span className="car-orb-pulse" />
+          </div>
+          <p className="car-status" aria-live="polite">
+            {started ? statusText : "Tap Start, then just talk."}
           </p>
-        )}
 
-        {/* The heard command and the spoken reply. The interface is sound; this text is for eyes-on
-            confirmation and debugging over chrome://inspect (mission decision 9). */}
-        {transcript.length > 0 && (
-          <div className="car-heard">
-            <span className="car-label">You said</span>
-            <span className="car-heard-text">{transcript}</span>
-          </div>
-        )}
-        {reply.length > 0 && (
-          <div className="car-said">
-            <span className="car-label">Assistant</span>
-            <span className="car-said-text">{reply}</span>
-          </div>
-        )}
-        {actions.length > 0 && (
-          <ul className="car-actions">
-            {actions.map((a, i) => (
-              <li key={`${a.tool}-${i}`} className="car-action">
-                {a.summary}
-              </li>
-            ))}
-          </ul>
-        )}
-      </main>
+          {/* Live microphone level meter (Architect direction): visibly shows the owner his voice is being
+              picked up. Reads the capture stream's AnalyserNode via getMicLevel on an animation frame. It
+              only moves while the microphone is actually capturing (the Listening phase); flat otherwise. */}
+          {started && <MicMeter getLevel={getMicLevel} active={phase === "listening"} />}
 
-      {/* Diagnostic readout (always visible). This is the eyes-on channel for confirming, at a glance,
-          which page/Gateway is live and whether the phone is actually hearing the owner - the exact
-          things a cached-bundle or dead-microphone failure would hide. Kept compact and monospace. */}
-      <section className="car-debug" aria-label="Car Mode diagnostics">
-        <DebugRow label="Client build" value={CLIENT_BUILD_ID} />
-        <DebugRow label="Gateway" value={gatewayVersion} />
-        <DebugRow label="Audio capture" value={unsupported ? "NOT supported" : "supported"} />
-        <DebugRow label="State" value={started ? captureState : "not started"} />
-        <DebugRow label="Last transcribe error" value={captureError ?? "none"} />
-        <DebugRow label="Heard" value={lastHeard.length > 0 ? lastHeard : "(nothing yet)"} />
-      </section>
+          {pendingConfirmation && (
+            <p className="car-confirm" role="status">
+              Waiting for you to say "confirm" - or say "cancel".
+            </p>
+          )}
+
+          {/* The heard command and the spoken reply, for eyes-on confirmation. */}
+          {transcript.length > 0 && (
+            <div className="car-heard">
+              <span className="car-label">You said</span>
+              <span className="car-heard-text">{transcript}</span>
+            </div>
+          )}
+          {reply.length > 0 && (
+            <div className="car-said">
+              <span className="car-label">Assistant</span>
+              <span className="car-said-text">{reply}</span>
+            </div>
+          )}
+          {actions.length > 0 && (
+            <ul className="car-actions">
+              {actions.map((a, i) => (
+                <li key={`${a.tool}-${i}`} className="car-action">
+                  {a.summary}
+                </li>
+              ))}
+            </ul>
+          )}
+        </main>
+      </div>
 
       <footer className="car-foot">
         {!started ? (
@@ -174,8 +179,7 @@ export function CarMode() {
         ) : (
           <>
             <p className="car-hint">
-              Say <strong>"over and out"</strong> to send. Say <strong>"stop"</strong> to cut me off.
-              Or use the buttons below.
+              Talk, then tap <strong>Over and out</strong> to send. Tap <strong>Stop</strong> to cut me off.
             </p>
             {/* Touch equivalents of the two spoken control phrases (Architect direction: the app must be
                 fully usable by touch, so testing is never blocked by the spoken "over and out"). Each
@@ -205,20 +209,6 @@ export function CarMode() {
           </>
         )}
       </footer>
-
-      {history.length > 1 && (
-        <details className="car-history">
-          <summary>Recent turns ({history.length})</summary>
-          <ul>
-            {history.map((h, i) => (
-              <li key={i}>
-                <span className="car-history-you">{h.command}</span>
-                <span className="car-history-said">{h.spoken}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
     </div>
   );
 }
@@ -265,32 +255,15 @@ function MicMeter({ getLevel, active }: { getLevel: () => number; active: boolea
   );
 }
 
-// One label/value line in the diagnostic readout.
-function DebugRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="car-debug-row">
-      <span className="car-debug-label">{label}</span>
-      <span className="car-debug-value">{value}</span>
-    </div>
-  );
-}
-
-// The short form of the build id for the header corner: just the git short sha (the first token), so
-// the badge stays tiny. The full "sha timestamp" is in the title tooltip and the debug readout.
-function shortBuild(buildId: string): string {
-  const firstSpace = buildId.indexOf(" ");
-  return firstSpace < 0 ? buildId : buildId.substring(0, firstSpace);
-}
-
 // The plain-English status line for each phase, the words that pair with the color orb and the cues.
 function phaseStatus(phase: string): string {
   switch (phase) {
     case "listening":
-      return "Listening - go ahead. I stay quiet until you say 'over and out'.";
+      return "Listening - go ahead, then tap 'Over and out' to send.";
     case "thinking":
       return "Got it. Working on that...";
     case "speaking":
-      return "Speaking. Say 'stop' to cut me off.";
+      return "Speaking. Tap 'Stop' to cut me off.";
     default:
       return "Ready.";
   }

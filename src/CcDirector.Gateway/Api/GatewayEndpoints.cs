@@ -80,7 +80,17 @@ internal static class GatewayEndpoints
         // /sessions roster (the path that carries SessionDto.InputStats whether stream mode is on or off),
         // so "Your Throttle" is fed by the same roster the fleet already reads, not only by the SignalR
         // push path (which is unmapped when stream mode is off). Null (old callers, tests) folds nothing.
-        Stats.GatewayInputStatsAggregator? inputStats = null)
+        Stats.GatewayInputStatsAggregator? inputStats = null,
+        // DevThrottle Stats: the durable fleet concurrency record. Observed from the same assembled roster
+        // (live count + actively-working count), so the peak is captured fleet-wide whether stream mode is
+        // on or off. Null (old callers, tests) records nothing.
+        Stats.GatewaySessionConcurrencyStats? concurrency = null,
+        // Snooze Length mission: the Gateway-owned snooze registry. When non-null, POST
+        // /sessions/{sid}/hold records/clears a snooze-until for the session, and the /sessions fold
+        // overlays an EXPIRED snooze back into "needs you" (OnHold=false) so the session returns on its
+        // own even if its Director has died. Null (old callers, tests) leaves hold as a plain forward
+        // with no timer, byte-identical to before.
+        Snooze.SnoozeRegistry? snoozeRegistry = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -604,6 +614,12 @@ internal static class GatewayEndpoints
                             .Select(x => x.SessionId),
                         StringComparer.Ordinal);
                     owners?.RetainForDirector(d.DirectorId, liveIds);
+                    // Snooze Length mission: a reachable Director's returned list is authoritative, so a
+                    // snoozed session that has permanently exited is no longer live here - drop its
+                    // snooze entry so the registry does not accumulate stale entries on disk. Runs only
+                    // for a Director that actually answered (!stale), so a transient miss never loses a
+                    // pending snooze.
+                    snoozeRegistry?.PruneNotLive(d.DirectorId, liveIds);
                 }
 
                 var baseUrl = DeriveDirectorBaseUrl(ctx, d);
@@ -701,7 +717,7 @@ internal static class GatewayEndpoints
             // The whole fleet is now assembled: compute each session's automatic role from the roster and
             // stamp the presentation fold (which reads the role to suppress a live Worker's red toward the
             // human). Done here, once, because the role needs the full fleet view.
-            StampFleetRolesAndFold(all, needsYouStampFor);
+            StampFleetRolesAndFold(all, needsYouStampFor, snoozeRegistry);
 
             // DevThrottle Stats: fold the assembled roster's per-session input tallies into the always-
             // available aggregate that backs "Your Throttle". This is the ONE path that carries
@@ -709,7 +725,14 @@ internal static class GatewayEndpoints
             // fold only runs when stream mode is on, which it is not in production). The aggregator's
             // per-session high-water logic makes folding the full roster on every read idempotent - only a
             // genuine increase is added, so repeated /sessions polls never double-count.
-            inputStats?.ObserveSnapshot(all);
+            inputStats?.ObserveSnapshot(all, DateTime.UtcNow);
+
+            // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same
+            // assembled roster - max concurrent loaded/running (live) and actively working, plus how many
+            // distinct sessions/machines/repositories ran each hour. Fleet-wide with no per-Director
+            // instrumentation, since the roster already sees every session on every machine. The tracker
+            // keeps only the higher value per hour, so folding on every /sessions read never inflates.
+            concurrency?.Observe(all, DateTime.UtcNow);
 
             // Issue #1292: adopt every observed number into the fleet allocator's in-use set. This is how
             // the Gateway learns numbers it did not hand out - a number a Director assigned offline, or any
@@ -1043,7 +1066,13 @@ internal static class GatewayEndpoints
             return Results.Content(body, "application/json");
         });
 
-        // Forward the FIFO "park / un-park this session" (hold) call to the owning Director.
+        // Forward the FIFO "park / un-park this session" (hold) call to the owning Director, AND
+        // record/clear the Gateway-owned snooze timer for it (Snooze Length mission,
+        // docs/architecture/snooze-length-mission-2026-07-11.md). Snooze IS the hold, plus a
+        // Gateway-owned expiry timestamp: holding a session records a snooze-until so the session is
+        // GUARANTEED to return to "needs you" on its own even if its Director later dies; un-holding
+        // clears it. The registry mutation happens only AFTER the forward succeeds, so a hold that did
+        // not take never arms (or leaves) a timer.
         app.MapPost("/sessions/{sid}/hold", async (string sid, HoldRequest req, CancellationToken ct) =>
         {
             var (director, session) = await LocateSessionAsync(registry, client, sid, pushedSessions, streamStaleResolved, owners);
@@ -1060,6 +1089,22 @@ internal static class GatewayEndpoints
                 : await client.SetHoldAsync(ep, sid, holdReq, ct);
             if (body is null)
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            if (snoozeRegistry is not null)
+            {
+                if (holdReq.OnHold)
+                {
+                    // One snooze length for everyone (the per-user Gateway default) - read now so a
+                    // Settings change applies to the next snooze. No per-snooze duration by design.
+                    var minutes = Core.Configuration.SnoozeDefaultConfig.Get();
+                    snoozeRegistry.Snooze(sid, DateTime.UtcNow.AddMinutes(minutes), director.DirectorId);
+                }
+                else
+                {
+                    // Manual unsnooze: drop the timer (an alarm turned off).
+                    snoozeRegistry.Clear(sid);
+                }
+            }
             return Results.Content(body, "application/json");
         });
 
@@ -1921,8 +1966,28 @@ internal static class GatewayEndpoints
     // (EffectiveColor/StateLabel/TriageBucket) then reads SessionRole to suppress a live Worker's red, so it
     // must run AFTER the role is known. NeedsYouSince keys off the final EffectiveColor, so it is stamped
     // here too (a suppressed Worker is not "red", so it never enters the needs-you clock).
-    private static void StampFleetRolesAndFold(List<SessionDto> all, Func<string, bool, DateTime?>? needsYouStampFor)
+    private static void StampFleetRolesAndFold(List<SessionDto> all, Func<string, bool, DateTime?>? needsYouStampFor, Snooze.SnoozeRegistry? snoozeRegistry = null)
     {
+        // Snooze Length mission: an EXPIRED snooze must read as "needs you" again. The registry is the
+        // source of truth for the timer; the cleanest fold (issue #1177 keeps the Gateway the single
+        // fold, decision #6) is to override OnHold=false on this aggregated DTO copy BEFORE the color /
+        // label / triage are computed, so SessionOrdering.Classify puts the session straight back into
+        // NeedsYou with no new classification logic. This is a pure, continuous overlay: while a snooze
+        // is expired every read reports the session as un-held, so it never flickers back to "Snoozed"
+        // between the moment it expires and the moment its Director confirms the clear. A DEAD Director's
+        // session still carries its last-known OnHold=true in the cached roster; this overlay is exactly
+        // what surfaces it anyway - the dead-man's-switch.
+        var nowUtc = DateTime.UtcNow;
+        if (snoozeRegistry is not null)
+            foreach (var s in all)
+                if (!string.IsNullOrEmpty(s.SessionId) && s.OnHold && snoozeRegistry.IsExpired(s.SessionId, nowUtc))
+                {
+                    s.OnHold = false;
+                    // Phase 2: mark it as a RETURNED-from-snooze item so clients render a distinct
+                    // "Snooze ended" badge and the phone push announces it once. Display-only metadata.
+                    s.SnoozeExpired = true;
+                }
+
         var liveIds = new HashSet<string>(StringComparer.Ordinal);
         var controllersWithLiveChild = new HashSet<string>(StringComparer.Ordinal);
         foreach (var s in all)

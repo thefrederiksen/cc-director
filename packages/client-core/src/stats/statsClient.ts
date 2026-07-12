@@ -24,11 +24,58 @@ export interface ThrottleBucket {
   characters: number;
 }
 
+/** One tracked concurrency dimension (live loaded/running, or actively working). */
+export interface ConcurrencySeries {
+  /** Most recently observed count. */
+  current: number;
+  /** Highest count ever observed. */
+  allTimeMax: number;
+  /** When the all-time peak was observed (ISO 8601 UTC), or null if never. */
+  allTimeMaxAtUtc: string | null;
+  /** Highest count in the last 7 days, derived from the hourly history. */
+  weeklyMax: number;
+}
+
+/** One hour of the fleet activity log (hour key "yyyy-MM-ddTHH" UTC): the max concurrent live and
+ * working counts, and how many distinct sessions, machines, and repositories ran that hour. */
+export interface ConcurrencyHour {
+  hour: string;
+  maxLive: number;
+  maxWorking: number;
+  sessions: number;
+  machines: number;
+  repos: number;
+}
+
+/** Fleet concurrency: how many sessions are loaded/running at once (live) and how many are actively
+ * working at once (working), plus the per-hour activity log. Null when the Gateway has not tracked any
+ * yet. */
+export interface ConcurrencyStats {
+  live: ConcurrencySeries;
+  working: ConcurrencySeries;
+  /** Per-hour activity log, oldest hour first. */
+  hourly: ConcurrencyHour[];
+}
+
+/** One hour of the "working day" log: turns (total + by modality) and characters submitted that UTC hour
+ * (hour key "yyyy-MM-ddTHH"). */
+export interface InputHour {
+  hour: string;
+  turns: number;
+  voiceTurns: number;
+  typedTurns: number;
+  characters: number;
+}
+
 /** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
 export interface ThrottleData {
   /** When the Gateway generated this snapshot (ISO 8601 UTC), or "" when absent. */
   generatedAtUtc: string;
   buckets: ThrottleBucket[];
+  /** Turns per UTC hour (the "working day" series), oldest hour first. */
+  hourlyTurns: InputHour[];
+  /** Fleet concurrency (both series), or null when nothing tracked yet. */
+  concurrency: ConcurrencyStats | null;
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
 }
@@ -96,16 +143,69 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
   const body = (await res.json()) as {
     generatedAtUtc?: unknown;
     buckets?: unknown;
+    hourlyTurns?: unknown;
+    concurrency?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
+  const hourlyTurns = Array.isArray(body?.hourlyTurns) ? body!.hourlyTurns.map(normalizeInputHour) : [];
   const notCaptured = Array.isArray(body?.notCaptured)
     ? body!.notCaptured.filter((x): x is string => typeof x === "string")
     : [];
   return {
     generatedAtUtc: typeof body?.generatedAtUtc === "string" ? body.generatedAtUtc : "",
     buckets,
+    hourlyTurns,
+    concurrency: normalizeConcurrency(body?.concurrency),
     notCaptured,
+  };
+}
+
+function normalizeInputHour(raw: unknown): InputHour {
+  const h = (raw ?? {}) as Partial<Record<keyof InputHour, unknown>>;
+  return {
+    hour: String(h.hour ?? ""),
+    turns: num(h.turns),
+    voiceTurns: num(h.voiceTurns),
+    typedTurns: num(h.typedTurns),
+    characters: num(h.characters),
+  };
+}
+
+function num(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeSeries(raw: unknown): ConcurrencySeries {
+  const s = (raw ?? {}) as Partial<Record<keyof ConcurrencySeries, unknown>>;
+  return {
+    current: num(s.current),
+    allTimeMax: num(s.allTimeMax),
+    allTimeMaxAtUtc: typeof s.allTimeMaxAtUtc === "string" ? s.allTimeMaxAtUtc : null,
+    weeklyMax: num(s.weeklyMax),
+  };
+}
+
+function normalizeHour(raw: unknown): ConcurrencyHour {
+  const h = (raw ?? {}) as Partial<Record<keyof ConcurrencyHour, unknown>>;
+  return {
+    hour: String(h.hour ?? ""),
+    maxLive: num(h.maxLive),
+    maxWorking: num(h.maxWorking),
+    sessions: num(h.sessions),
+    machines: num(h.machines),
+    repos: num(h.repos),
+  };
+}
+
+function normalizeConcurrency(raw: unknown): ConcurrencyStats | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const c = raw as { live?: unknown; working?: unknown; hourly?: unknown };
+  return {
+    live: normalizeSeries(c.live),
+    working: normalizeSeries(c.working),
+    hourly: Array.isArray(c.hourly) ? c.hourly.map(normalizeHour) : [],
   };
 }
 

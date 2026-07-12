@@ -9,6 +9,8 @@ import {
   SURFACE_ORDER,
   type ThrottleData,
   type ThrottleSummary,
+  type ConcurrencyHour,
+  type InputHour,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
@@ -19,6 +21,80 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 // live as the user drives by voice.
 
 const REFRESH_MS = 10_000;
+
+/** A 24-hour bar chart of the hourly peak concurrent sessions. Bar = max loaded/running that hour;
+ * darker inner portion = max actively-working. Pure CSS bars, theme-aware. */
+function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
+  const recent = hourly.slice(-24);
+  const peak = Math.max(1, ...recent.map((h) => h.maxLive));
+  return (
+    <div
+      className="thr-chart"
+      role="img"
+      aria-label={`Peak concurrent sessions per hour for the last ${recent.length} hours`}
+    >
+      {recent.map((h, i) => {
+        const livePct = (h.maxLive / peak) * 100;
+        const workPct = h.maxLive > 0 ? (h.maxWorking / h.maxLive) * 100 : 0;
+        return (
+          <div
+            className="thr-bar-col"
+            key={h.hour}
+            title={`${h.hour}:00 UTC - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} sessions`}
+          >
+            <div className="thr-bar-track">
+              <div className="thr-bar-live" style={{ height: `${livePct}%` }}>
+                <div className="thr-bar-work" style={{ height: `${workPct}%` }} />
+              </div>
+            </div>
+            <div className="thr-bar-label">{i % 6 === 0 ? h.hour.slice(-2) : ""}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A 24-hour bar chart of turns submitted per hour - the "working day" shape. Bar = total turns that
+ * hour, stacked voice (accent) over typed (muted). Pure CSS bars, theme-aware. */
+function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
+  const recent = hourly.slice(-24);
+  const peak = Math.max(1, ...recent.map((h) => h.turns));
+  return (
+    <>
+      <div
+        className="thr-chart"
+        role="img"
+        aria-label={`Turns submitted per hour for the last ${recent.length} hours`}
+      >
+        {recent.map((h, i) => {
+          const totalPct = (h.turns / peak) * 100;
+          const voicePortion = h.turns > 0 ? (h.voiceTurns / h.turns) * 100 : 0;
+          const typedPortion = h.turns > 0 ? (h.typedTurns / h.turns) * 100 : 0;
+          return (
+            <div
+              className="thr-bar-col"
+              key={h.hour}
+              title={`${h.hour}:00 UTC - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed)`}
+            >
+              <div className="thr-bar-track">
+                <div className="thr-turns-bar" style={{ height: `${totalPct}%` }}>
+                  <div className="thr-turns-typed" style={{ height: `${typedPortion}%` }} />
+                  <div className="thr-turns-voice" style={{ height: `${voicePortion}%` }} />
+                </div>
+              </div>
+              <div className="thr-bar-label">{i % 6 === 0 ? h.hour.slice(-2) : ""}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="thr-legend">
+        <span className="thr-legend-item"><span className="thr-swatch thr-swatch-voice" /> Voice</span>
+        <span className="thr-legend-item"><span className="thr-swatch thr-swatch-typed" /> Typed</span>
+      </div>
+    </>
+  );
+}
 
 export function YourThrottle() {
   const [data, setData] = useState<ThrottleData | null>(null);
@@ -72,6 +148,38 @@ export function YourThrottle() {
         <div className="thr-note">
           No input counted yet. Send a turn from the phone, desktop, or cockpit and it will show up here.
         </div>
+      )}
+
+      {data !== null && data.concurrency !== null && (
+        <section className="thr-list" aria-label="Fleet concurrency">
+          <div className="thr-list-title">Fleet concurrency</div>
+          <div className="thr-row">
+            <span className="thr-row-label">Loaded / running</span>
+            <span className="thr-row-value">
+              {data.concurrency.live.current} now, {data.concurrency.live.allTimeMax} peak
+            </span>
+          </div>
+          <div className="thr-row">
+            <span className="thr-row-label">Actively working</span>
+            <span className="thr-row-value">
+              {data.concurrency.working.current} now, {data.concurrency.working.allTimeMax} peak
+            </span>
+          </div>
+        </section>
+      )}
+
+      {data !== null && data.concurrency !== null && data.concurrency.hourly.length > 0 && (
+        <section className="thr-list" aria-label="Sessions per hour">
+          <div className="thr-list-title">Sessions per hour (last 24h)</div>
+          <ConcurrencyChart hourly={data.concurrency.hourly} />
+        </section>
+      )}
+
+      {data !== null && data.hourlyTurns.length > 0 && (
+        <section className="thr-list" aria-label="Turns per hour">
+          <div className="thr-list-title">Turns per hour (last 24h)</div>
+          <TurnsPerHourChart hourly={data.hourlyTurns} />
+        </section>
       )}
 
       {summary !== null && summary.hasData && (

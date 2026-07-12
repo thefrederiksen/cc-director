@@ -31,9 +31,7 @@ public sealed class LauncherTrayController : IDisposable
     private TrayIcon? _trayIcon;
     private TrayFlyoutController? _flyout;
     private Bitmap? _icon;
-    private LauncherHost? _host;
-    private GatewayRegistrationClient? _gatewayClient;
-    private LauncherStreamClient? _launcherStreamClient;
+    private LauncherCore? _core;
     private HostState _state = HostState.Starting;
     private bool _disposed;
 
@@ -59,7 +57,7 @@ public sealed class LauncherTrayController : IDisposable
         FileLog.Write($"[LauncherTrayController] Start (managed={LauncherAppOptions.Managed})");
 
         BuildTrayIcon();
-        RegisterAutostartSafe();
+        LauncherCore.RegisterAutostartSafe();
 
         SetState(HostState.Starting);
         _ = StartHostAsync();
@@ -69,7 +67,7 @@ public sealed class LauncherTrayController : IDisposable
         _ = Task.Run(ResolveAboutInfo);
 
         if (LauncherAppOptions.Managed)
-            _ = RunUpdateLoopAsync(_lifetime.Token);
+            _ = LauncherCore.RunUpdateLoopAsync(_lifetime.Token);
     }
 
     /// <summary>
@@ -114,9 +112,14 @@ public sealed class LauncherTrayController : IDisposable
         quit.Click += (_, _) => _ = QuitAsync();
         menu.Add(quit);
 
+        // Windows notification areas want the multi-resolution .ico; macOS menu-bar status
+        // items decode the .png (ico decoding is not guaranteed off Windows).
+        var trayIconAsset = OperatingSystem.IsWindows()
+            ? "avares://cc-launcher/Assets/tray.ico"
+            : "avares://cc-launcher/Assets/icon.png";
         _trayIcon = new TrayIcon
         {
-            Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://cc-launcher/Assets/tray.ico"))),
+            Icon = new WindowIcon(AssetLoader.Open(new Uri(trayIconAsset))),
             ToolTipText = "CC Launcher",
             Menu = menu,
             IsVisible = true,
@@ -138,7 +141,7 @@ public sealed class LauncherTrayController : IDisposable
 
         var rows = new List<StatusRow>
         {
-            new("Version", ReadVersion().Split('+')[0]),
+            new("Version", LauncherCore.ReadVersion().Split('+')[0]),
             new("Port", _port.ToString()),
             new("Director", directorState),
         };
@@ -173,7 +176,9 @@ public sealed class LauncherTrayController : IDisposable
 
         ToggleSpec? toggle = OperatingSystem.IsWindows()
             ? new ToggleSpec { Label = "Start with Windows", IsOn = LauncherAutostart.IsRegistered(), OnChanged = SetAutostart }
-            : null;
+            : OperatingSystem.IsMacOS()
+                ? new ToggleSpec { Label = "Start at login", IsOn = LauncherLaunchdAutostart.IsRegistered(), OnChanged = SetAutostart }
+                : null;
 
         return new TrayFlyoutModel
         {
@@ -206,35 +211,10 @@ public sealed class LauncherTrayController : IDisposable
     {
         try
         {
-            var launchService = new LaunchService();
-            var directorSupervisor = new DirectorSupervisor();
-            var version = ReadVersion();
-
-            _host = new LauncherHost(
-                _port,
-                launchService,
-                directorSupervisor,
-                QuitAsync,
-                version);
-
-            await _host.StartAsync();
+            _core = new LauncherCore(_port, LauncherCore.ReadVersion());
+            await _core.StartAsync(QuitAsync, userInterfaceState: "tray");
             SetState(HostState.Running);
             FileLog.Write($"[LauncherTrayController] Host running on :{_port}");
-
-            // Issue #331: register with the Gateway (no-op when gateway not configured).
-            // The token is read after host start because LauncherHost writes it on start.
-            var gwConfig = GatewayConfig.Load();
-            var launcherToken = LauncherAuth.LoadOrCreateToken();
-            _gatewayClient = new GatewayRegistrationClient(gwConfig, _port, launcherToken, version);
-            _gatewayClient.Start();
-
-            // launcher-persistent-join: when gateway.streamMode is on, also JOIN the Gateway over a
-            // persistent SignalR stream so the Gateway can push lifecycle commands DOWN the open connection
-            // instead of dialing this launcher's REST API. Runs alongside the registration client (which
-            // stays for metadata). Start() is a no-op unless a Gateway is configured AND stream mode is on,
-            // so with the flag off behaviour is unchanged and the Gateway relays over REST as today.
-            _launcherStreamClient = new LauncherStreamClient(gwConfig, _port, version, directorSupervisor, launchService);
-            _launcherStreamClient.Start();
         }
         catch (Exception ex)
         {
@@ -248,13 +228,12 @@ public sealed class LauncherTrayController : IDisposable
         FileLog.Write("[LauncherTrayController] RestartDirectorAsync: user requested");
         try
         {
-            if (_host is null)
+            if (_core is null)
             {
-                FileLog.Write("[LauncherTrayController] RestartDirectorAsync: host not ready");
+                FileLog.Write("[LauncherTrayController] RestartDirectorAsync: core not ready");
                 return;
             }
-            // Access the supervisor through the host's internal state by creating a fresh one.
-            // The host owns the supervisor internally; for the tray menu we create a standalone one.
+            // The core owns its supervisor internally; for the tray menu we create a standalone one.
             var supervisor = new DirectorSupervisor();
             await supervisor.RestartAsync();
         }
@@ -269,24 +248,11 @@ public sealed class LauncherTrayController : IDisposable
         FileLog.Write("[LauncherTrayController] QuitAsync");
         _lifetime.Cancel();
 
-        // launcher-persistent-join: close the persistent stream before shutting down.
-        if (_launcherStreamClient is not null)
+        // Stream close, Gateway unregister, host stop - all owned by the core.
+        if (_core is not null)
         {
-            await _launcherStreamClient.StopAsync();
-            _launcherStreamClient = null;
-        }
-
-        // Issue #331: unregister from the Gateway before shutting down the REST host.
-        if (_gatewayClient is not null)
-        {
-            await _gatewayClient.StopAsync();
-            _gatewayClient = null;
-        }
-
-        if (_host is not null)
-        {
-            await _host.StopAsync();
-            _host = null;
+            await _core.StopAsync();
+            _core = null;
         }
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
@@ -342,88 +308,37 @@ public sealed class LauncherTrayController : IDisposable
         });
     }
 
-    /// <summary>Enable/disable the Start-with-Windows autostart from the flyout toggle.</summary>
+    /// <summary>
+    /// Enable/disable the start-at-login autostart from the flyout toggle
+    /// (the Run key on Windows, the launchd launch agent on macOS).
+    /// </summary>
     private void SetAutostart(bool enable)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) return;
         try
         {
             if (enable)
             {
                 var exePath = Environment.ProcessPath
                     ?? throw new InvalidOperationException("Could not resolve own exe path");
-                LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
+                if (OperatingSystem.IsWindows())
+                    LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
+                else
+                    LauncherLaunchdAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
                 FileLog.Write("[LauncherTrayController] Autostart enabled by user");
             }
             else
             {
-                LauncherAutostart.Unregister();
+                if (OperatingSystem.IsWindows())
+                    LauncherAutostart.Unregister();
+                else
+                    LauncherLaunchdAutostart.Unregister();
                 FileLog.Write("[LauncherTrayController] Autostart disabled by user");
             }
         }
         catch (Exception ex)
         {
             FileLog.Write($"[LauncherTrayController] SetAutostart FAILED: {ex.Message}");
-        }
-    }
-
-    private void RegisterAutostartSafe()
-    {
-        if (!LauncherAppOptions.RegisterAutostart)
-        {
-            FileLog.Write("[LauncherTrayController] Autostart registration skipped (--no-autostart)");
-            return;
-        }
-
-        if (!OperatingSystem.IsWindows()) return;
-
-        try
-        {
-            var exePath = Environment.ProcessPath
-                          ?? Process.GetCurrentProcess().MainModule?.FileName
-                          ?? throw new InvalidOperationException("Could not resolve own exe path for autostart");
-            LauncherAutostart.EnsureRegistered(exePath, LauncherAppOptions.AutostartArguments());
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[LauncherTrayController] Autostart registration FAILED: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Periodic machine-tier auto-update (managed mode only): check for a newer Launcher and, if
-    /// found, launch the detached self-update helper (it POSTs /shutdown -> swap -> relaunch ->
-    /// health -> auto-rollback). Mirrors the Gateway's update loop. Failures only log.
-    /// </summary>
-    private static async Task RunUpdateLoopAsync(CancellationToken ct)
-    {
-        var layout = InstallLayout.Default();
-        // Let the launcher settle before the first check; never compete with startup.
-        try { await Task.Delay(TimeSpan.FromMinutes(2), ct); } catch (OperationCanceledException) { return; }
-
-        while (!ct.IsCancellationRequested)
-        {
-            var cfg = AutoUpdateConfig.Load(layout);
-            if (cfg.Enabled && OperatingSystem.IsWindows())
-            {
-                try
-                {
-                    var source = new ReleaseSource();
-                    var release = await source.FetchLatestAsync(ct);
-                    var version = await new LauncherUpdater(layout).CheckStageAndLaunchAsync(release, source, ct);
-                    if (version is not null)
-                    {
-                        FileLog.Write($"[LauncherTrayController] launched Launcher self-update to {version}; this process will be asked to exit");
-                        return; // the detached helper POSTs /shutdown, swaps, and relaunches us
-                    }
-                }
-                catch (Exception ex)
-                {
-                    FileLog.Write($"[LauncherTrayController] update check failed: {ex.Message}");
-                }
-            }
-            try { await Task.Delay(cfg.Enabled ? cfg.Interval : TimeSpan.FromHours(1), ct); }
-            catch (OperationCanceledException) { break; }
         }
     }
 
@@ -444,35 +359,14 @@ public sealed class LauncherTrayController : IDisposable
         });
     }
 
-    private static string ReadVersion()
-    {
-        try
-        {
-            var asm = System.Reflection.Assembly.GetExecutingAssembly();
-            var attr = System.Reflection.CustomAttributeExtensions
-                .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(asm);
-            return attr?.InformationalVersion ?? "0.0.0";
-        }
-        catch
-        {
-            return "0.0.0";
-        }
-    }
-
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _lifetime.Cancel();
-        try { _launcherStreamClient?.StopAsync().GetAwaiter().GetResult(); }
-        catch (Exception ex) { FileLog.Write($"[LauncherTrayController] Dispose stream client stop error: {ex.Message}"); }
-        _launcherStreamClient = null;
-        try { _gatewayClient?.StopAsync().GetAwaiter().GetResult(); }
-        catch (Exception ex) { FileLog.Write($"[LauncherTrayController] Dispose gateway client stop error: {ex.Message}"); }
-        _gatewayClient = null;
-        try { _host?.StopAsync().GetAwaiter().GetResult(); }
+        try { _core?.StopAsync().GetAwaiter().GetResult(); }
         catch (Exception ex) { FileLog.Write($"[LauncherTrayController] Dispose stop error: {ex.Message}"); }
-        _host = null;
+        _core = null;
         if (_trayIcon is not null) _trayIcon.IsVisible = false;
         _lifetime.Dispose();
     }

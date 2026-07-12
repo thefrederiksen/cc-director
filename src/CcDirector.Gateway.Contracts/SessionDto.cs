@@ -255,6 +255,17 @@ public sealed class SessionDto
     public bool OnHold { get; set; }
 
     /// <summary>
+    /// Snooze Length mission: display-only marker that this session has just RETURNED from an expired
+    /// snooze - its Gateway-owned snooze timer elapsed and the fold put it back into "needs you" on its
+    /// own (the dead-man's switch fired). Stamped by the Gateway aggregation overlay while the snooze
+    /// registry still holds an expired entry for the session; it is NOT a Director fact and nothing is
+    /// injected into the session's conversation. Clients render it as a distinct "Snooze ended" badge so
+    /// the owner knows this is a "go investigate why it went quiet" item rather than a fresh turn-end, and
+    /// the phone push reads "Snooze ended - still waiting on you" the one time it first appears.
+    /// </summary>
+    public bool SnoozeExpired { get; set; }
+
+    /// <summary>
     /// True when this session has asked (or been asked) to be deleted and is awaiting the owning
     /// Director's deletion reaper. Set through POST /sessions/{id}/request-deletion; cleared by
     /// DELETE /sessions/{id}/request-deletion during the grace window. Mirrors

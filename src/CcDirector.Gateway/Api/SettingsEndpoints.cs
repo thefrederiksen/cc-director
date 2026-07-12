@@ -76,6 +76,9 @@ internal static class SettingsEndpoints
                 // Gates ONLY the richer usage telemetry; the always-on login/startup events are
                 // never gated by it.
                 telemetryConsent = Core.Configuration.TelemetryConsentConfig.Get(),
+                // Snooze Length mission: the per-user default snooze length in minutes (default 60),
+                // so the one Settings page can render and edit it in Phase 3.
+                snoozeDefaultMinutes = Core.Configuration.SnoozeDefaultConfig.Get(),
             });
         });
 
@@ -224,6 +227,37 @@ internal static class SettingsEndpoints
             catch (JsonException ex)
             {
                 FileLog.Write($"[SettingsEndpoints] PUT /gateway/addressing-mode bad JSON: {ex.Message}");
+                return Results.BadRequest(new { error = "invalid JSON" });
+            }
+        });
+
+        // The per-user default snooze length in minutes (Snooze Length mission,
+        // docs/architecture/snooze-length-mission-2026-07-11.md). One value for the whole account:
+        // because every device talks to this one Gateway, this Gateway-owned setting IS "the same
+        // snooze length across all my devices". Read at snooze time, so a change applies to the next
+        // snooze with no Gateway restart. There is no per-snooze duration by design - this is the one
+        // length every Snooze button uses.
+        app.MapGet("/gateway/snooze-default", () =>
+            Results.Json(new { minutes = Core.Configuration.SnoozeDefaultConfig.Get() }));
+
+        app.MapPut("/gateway/snooze-default", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<SnoozeDefaultBody>(
+                    ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                if (body?.Minutes is not int minutes)
+                    return Results.BadRequest(new { error = "body { \"minutes\": <whole minutes> } is required" });
+                if (!Core.Configuration.SnoozeDefaultConfig.IsValid(minutes))
+                    return Results.BadRequest(new { error = $"minutes must be between {Core.Configuration.SnoozeDefaultConfig.MinMinutes} and {Core.Configuration.SnoozeDefaultConfig.MaxMinutes}" });
+
+                Core.Configuration.SnoozeDefaultConfig.Set(minutes);
+                FileLog.Write($"[SettingsEndpoints] snooze_default_minutes set to {minutes}");
+                return Results.Json(new { minutes });
+            }
+            catch (JsonException ex)
+            {
+                FileLog.Write($"[SettingsEndpoints] PUT /gateway/snooze-default bad JSON: {ex.Message}");
                 return Results.BadRequest(new { error = "invalid JSON" });
             }
         });
@@ -467,6 +501,7 @@ internal static class SettingsEndpoints
     private sealed record AddressingModeBody(string? Mode);
     private sealed record TranscriptionModeBody(string? Mode);
     private sealed record AutostartBody(bool Enabled);
+    private sealed record SnoozeDefaultBody(int? Minutes);
     private sealed record WingmanBody(bool Enabled);
     private sealed record BrainConfigBody(string? AgentId, string? Tool, string? Model);
 }

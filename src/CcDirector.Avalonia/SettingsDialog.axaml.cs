@@ -33,18 +33,15 @@ namespace CcDirector.Avalonia;
 /// </summary>
 public partial class SettingsDialog : Window
 {
-    private readonly Func<Task>? _reapplyGateway;
     private readonly Func<Task>? _reloadScreenshots;
-    private readonly int _directorPort;
 
-    // Shared detection/test logic, identical to what the REST Control API exposes.
+    // Shared detection logic (screenshots-folder detection). Gateway detect/test are gone - the
+    // embedded GatewayConnectionPanel owns scanning and connecting now (Phase 4).
     private readonly SettingsDetectionService _detector = new();
 
-    // Loaded values, so Save only writes fields the user actually changed.
+    // Loaded values, so Save only writes fields the user actually changed. Gateway fields are no longer
+    // saved here - the panel writes gateway config directly - so only the non-gateway baselines remain.
     private string _loadedScreenshots = "";
-    private string _loadedGatewayUrl = "";
-    private string _loadedGatewayAdvertised = "";
-    private string _loadedGatewayToken = "";
     private bool _loadedAlpha;
 
     // Issue #828: while LoadAsync sets the toggle to the on-disk value, programmatically setting
@@ -57,16 +54,12 @@ public partial class SettingsDialog : Window
     private readonly ObservableCollection<AgentEntryRow> _agentRows = new();
     private string _loadedAgentsSnapshot = "";
 
-    public SettingsDialog() : this(null, 0, null) { }
+    public SettingsDialog() : this(null) { }
 
-    /// <param name="reapplyGateway">Re-registers the running Director with the gateway after a gateway change.</param>
-    /// <param name="directorPort">This Director's live control port, used to build the advertised "public URL" on Detect.</param>
     /// <param name="reloadScreenshots">Re-points the main window's screenshots tab after the folder changes.</param>
-    public SettingsDialog(Func<Task>? reapplyGateway, int directorPort, Func<Task>? reloadScreenshots)
+    public SettingsDialog(Func<Task>? reloadScreenshots)
     {
-        FileLog.Write($"[SettingsDialog] Constructor: initializing (directorPort={directorPort})");
-        _reapplyGateway = reapplyGateway;
-        _directorPort = directorPort;
+        FileLog.Write("[SettingsDialog] Constructor: initializing");
         _reloadScreenshots = reloadScreenshots;
         InitializeComponent();
 
@@ -80,20 +73,18 @@ public partial class SettingsDialog : Window
         FileLog.Write("[SettingsDialog] LoadAsync: reading config.json");
         try
         {
-            var (screenshots, url, advertised, token) = await Task.Run(ReadConfigSnapshot);
+            var (screenshots, url, _, token) = await Task.Run(ReadConfigSnapshot);
             var autoUpdateTools = await Task.Run(ToolAutoUpdateSetting.Get);
 
             _loadedScreenshots = screenshots;
-            _loadedGatewayUrl = url;
-            _loadedGatewayAdvertised = advertised;
-            _loadedGatewayToken = token;
             _loadedAlpha = AlphaMode.IsEnabled;
 
             ScreenshotsDirBox.Text = screenshots;
-            GatewayUrlBox.Text = url;
-            GatewayAdvertisedBox.Text = advertised;
-            GatewayTokenBox.Text = token;
             AlphaFeaturesCheck.IsChecked = _loadedAlpha;
+
+            // The Gateway tab IS the connection panel now (Phase 4). Embed it opened on the resolver's
+            // current step so a connected+signed-in Director lands on the Done view, not the scan.
+            GatewaySettingsHost.Child = Controls.GatewayConnectionPanel.CreateForCurrentState();
 
             // Tools auto-update opt-out (issue #828): reflect tools.autoUpdate.enabled (default ON).
             // The read ran off the UI thread above; suppress the write that the programmatic set
@@ -509,44 +500,15 @@ public partial class SettingsDialog : Window
         try
         {
             var screenshots = ScreenshotsDirBox.Text?.Trim() ?? "";
-            var url = GatewayUrlBox.Text?.Trim() ?? "";
-            var advertised = GatewayAdvertisedBox.Text?.Trim() ?? "";
-            var token = GatewayTokenBox.Text?.Trim() ?? "";
 
-            // A Gateway URL is required (issue #442): a blank or non-absolute-http(s) URL is
-            // rejected so config.json can never be saved with an empty gateway.url through this
-            // dialog. The dialog stays open, the Gateway tab is shown, and the inline message names
-            // the fix. Reachability is NOT checked here - that is what the Test button is for. Reuses
-            // the same syntactic rule the onboarding wizard already enforces (and unit-tests).
-            var urlValidation = OnboardingModel.ValidateGatewayUrl(url);
-            if (!urlValidation.IsValid)
-            {
-                FileLog.Write($"[SettingsDialog] BtnSave_Click: rejected invalid gateway url='{url}': {urlValidation.Message}");
-                SelectGatewayTab();
-                ShowGatewayStatus("A Gateway URL is required. " + urlValidation.Message, error: true);
-                SaveButton.IsEnabled = true;
-                return;
-            }
-
-            // Build a patch with ONLY the sections the user changed, so we touch nothing else.
+            // Build a patch with ONLY the sections the user changed, so we touch nothing else. Gateway
+            // config is no longer written here (Phase 4): the embedded GatewayConnectionPanel writes
+            // gateway.url and the per-device key directly when the user connects and signs in.
             var patch = new JsonObject();
 
             var screenshotsChanged = screenshots != _loadedScreenshots;
             if (screenshotsChanged)
                 patch["screenshots"] = new JsonObject { ["source_directory"] = screenshots };
-
-            var gatewayChanged = url != _loadedGatewayUrl
-                || advertised != _loadedGatewayAdvertised
-                || token != _loadedGatewayToken;
-            if (gatewayChanged)
-            {
-                patch["gateway"] = new JsonObject
-                {
-                    ["url"] = url,
-                    ["token"] = token,
-                    ["tailnetEndpoint"] = advertised,
-                };
-            }
 
             var alpha = AlphaFeaturesCheck.IsChecked == true;
             var alphaChanged = alpha != _loadedAlpha;
@@ -576,14 +538,7 @@ public partial class SettingsDialog : Window
             if (alphaChanged)
                 await Task.Run(() => AlphaMode.SetEnabled(alpha));
 
-            FileLog.Write($"[SettingsDialog] BtnSave_Click: saved sections={patch.Count}, gatewayChanged={gatewayChanged}, agentsChanged={agentsChanged}, alphaChanged={alphaChanged}");
-
-            // Re-register with the gateway live so a URL/endpoint/token change takes effect now.
-            if (gatewayChanged && _reapplyGateway is not null)
-            {
-                await _reapplyGateway();
-                FileLog.Write("[SettingsDialog] BtnSave_Click: gateway re-applied");
-            }
+            FileLog.Write($"[SettingsDialog] BtnSave_Click: saved sections={patch.Count}, agentsChanged={agentsChanged}, alphaChanged={alphaChanged}");
 
             // Re-point the screenshots tab so a new folder takes effect without restarting.
             if (screenshotsChanged && _reloadScreenshots is not null)
@@ -594,9 +549,6 @@ public partial class SettingsDialog : Window
 
             // Update the loaded baseline to reflect what's now on disk.
             _loadedScreenshots = screenshots;
-            _loadedGatewayUrl = url;
-            _loadedGatewayAdvertised = advertised;
-            _loadedGatewayToken = token;
             _loadedAlpha = alpha;
             _loadedAgentsSnapshot = SnapshotAgents();
 
@@ -634,119 +586,18 @@ public partial class SettingsDialog : Window
     }
 
     /// <summary>
-    /// Probe the entered gateway URL's /healthz and report what answered, so the user can
-    /// confirm the URL is right before saving. Reachability only - it does not prove the
-    /// gateway can call back to this Director (that is what the public URL is for).
+    /// The Account tab's single action (Phase 4): take the user to the Gateway connection panel, which
+    /// is the Gateway tab now. The embedded panel is already created on the resolver's current step, so
+    /// selecting the tab shows it on the right step (connect / sign in / done).
     /// </summary>
-    private async void BtnTestGateway_Click(object? sender, RoutedEventArgs e)
+    private void BtnManageConnection_Click(object? sender, RoutedEventArgs e)
     {
-        FileLog.Write("[SettingsDialog] BtnTestGateway_Click");
-        var url = GatewayUrlBox.Text?.Trim() ?? "";
-        if (url.Length == 0)
-        {
-            ShowGatewayStatus("Enter a gateway URL first.", error: true);
-            return;
-        }
-
-        TestGatewayButton.IsEnabled = false;
-        ShowGatewayStatus($"Testing {url} ...", error: false);
-        try
-        {
-            var result = await _detector.TestGatewayAsync(url);
-            ShowGatewayStatus(result.Message, error: !result.Ok);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SettingsDialog] BtnTestGateway_Click FAILED: {ex.Message}");
-            ShowGatewayStatus($"Test failed: {ex.Message}", error: true);
-        }
-        finally
-        {
-            TestGatewayButton.IsEnabled = true;
-        }
+        FileLog.Write("[SettingsDialog] BtnManageConnection_Click: selecting the Gateway tab (connection panel)");
+        SelectGatewayTab();
     }
 
-    /// <summary>
-    /// Find the gateway via the shared detector (Tailscale-first scan, then loopback) and fill
-    /// the URL box with the first one that answers like a gateway.
-    /// </summary>
-    private async void BtnDetectGateway_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[SettingsDialog] BtnDetectGateway_Click");
-        DetectGatewayButton.IsEnabled = false;
-        ShowGatewayStatus("Scanning the tailnet and this machine for a gateway ...", error: false);
-        try
-        {
-            var result = await _detector.DetectGatewayAsync();
-            if (result.Url is not null)
-            {
-                GatewayUrlBox.Text = result.Url;
-                ShowGatewayStatus($"Found a gateway at {result.Url}. Click Save to connect.", error: false);
-            }
-            else
-            {
-                ShowGatewayStatus($"No gateway answered on any of the {result.Scanned.Count} address(es) scanned. Enter the gateway URL above.", error: true);
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SettingsDialog] BtnDetectGateway_Click FAILED: {ex.Message}");
-            ShowGatewayStatus($"Detection failed: {ex.Message}", error: true);
-        }
-        finally
-        {
-            DetectGatewayButton.IsEnabled = true;
-        }
-    }
-
-    /// <summary>
-    /// Fill the Director public URL from the shared detector (Tailscale MagicDNS name + control
-    /// port, else best local IP). This is the field a remote gateway calls back to.
-    /// </summary>
-    private async void BtnDetectPublicUrl_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[SettingsDialog] BtnDetectPublicUrl_Click");
-        DetectPublicUrlButton.IsEnabled = false;
-        ShowGatewayStatus("Detecting this machine's address ...", error: false);
-        try
-        {
-            var result = await _detector.DetectPublicUrlAsync(_directorPort);
-            if (result.Url is not null)
-            {
-                GatewayAdvertisedBox.Text = result.Url;
-                ShowGatewayStatus($"Detected {result.Url} ({result.Kind}). Click Save to apply.", error: false);
-            }
-            else if (_directorPort <= 0)
-            {
-                ShowGatewayStatus("This Director's control port is not known yet; cannot detect the public URL.", error: true);
-            }
-            else
-            {
-                ShowGatewayStatus("No Tailscale identity or reachable network address found. Enter the public URL manually.", error: true);
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SettingsDialog] BtnDetectPublicUrl_Click FAILED: {ex.Message}");
-            ShowGatewayStatus($"Detection failed: {ex.Message}", error: true);
-        }
-        finally
-        {
-            DetectPublicUrlButton.IsEnabled = true;
-        }
-    }
-
-    private void ShowGatewayStatus(string text, bool error)
-    {
-        GatewayTestStatus.Text = text;
-        GatewayTestStatus.IsVisible = true;
-        GatewayTestStatus.Foreground = error
-            ? global::Avalonia.Media.Brushes.IndianRed
-            : global::Avalonia.Media.Brushes.MediumSeaGreen;
-    }
-
-    /// <summary>Select the Gateway tab so a gateway-related message (e.g. the required-URL
-    /// validation block on Save, issue #442) is visible to the user.</summary>
+    /// <summary>Select the Gateway tab so the embedded connection panel is visible to the user (the main
+    /// window's status box routes here, and the Account tab's Manage connection button does too).</summary>
     public void SelectGatewayTab()
     {
         // Tab order in SettingsDialog.axaml: Account(0), Gateway(1), Agents(2), ...
@@ -837,77 +688,6 @@ public partial class SettingsDialog : Window
         finally
         {
             RunWizardButton.IsEnabled = true;
-        }
-    }
-
-    /// <summary>
-    /// Re-run the first-run onboarding wizard on demand (issue #370). The wizard may persist a new
-    /// gateway.url and the onboarding-complete marker, so afterwards we reload the dialog from disk so
-    /// the Gateway fields reflect any change the wizard made.
-    /// </summary>
-    /// <summary>
-    /// Issue #469: open the "Connect to Gateway" dialog to enroll THIS device with a pairing code.
-    /// The dialog enrolls the device (its stable device id) and writes the issued per-device key to
-    /// the local credential file. Prefills the URL from the Gateway URL field if one is entered.
-    /// </summary>
-    private async void BtnConnectToGateway_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[SettingsDialog] BtnConnectToGateway_Click");
-        ConnectToGatewayButton.IsEnabled = false;
-        try
-        {
-            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-            if (host is null)
-            {
-                ShowGatewayStatus("The Control API is not started yet. Try again in a moment.", error: true);
-                return;
-            }
-
-            var prefillUrl = (GatewayUrlBox.Text ?? "").Trim();
-            var dialog = new ConnectToGatewayDialog(host.DirectorId, prefillUrl);
-            var joined = await dialog.ShowDialog<bool?>(this);
-            if (joined == true)
-            {
-                // The dialog wrote the URL + per-device key to config.json; reload so the tab shows it
-                // and re-apply the gateway so the running client picks up the new key immediately.
-                await LoadAsync();
-                if (_reapplyGateway is not null)
-                    await _reapplyGateway();
-                FileLog.Write("[SettingsDialog] BtnConnectToGateway_Click: device registered; gateway re-applied");
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SettingsDialog] BtnConnectToGateway_Click FAILED: {ex.Message}");
-            ShowGatewayStatus($"Connect to Gateway failed: {ex.Message}", error: true);
-        }
-        finally
-        {
-            ConnectToGatewayButton.IsEnabled = true;
-        }
-    }
-
-    private async void BtnRerunOnboarding_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[SettingsDialog] BtnRerunOnboarding_Click");
-        RerunOnboardingButton.IsEnabled = false;
-        try
-        {
-            var options = CurrentOptions();
-            var dialog = new OnboardingWizardDialog(options);
-            await dialog.ShowDialog<bool?>(this);
-            await LoadAsync();
-            LoadAgentEntries();
-            FileLog.Write("[SettingsDialog] BtnRerunOnboarding_Click: wizard closed; reloaded settings");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[SettingsDialog] BtnRerunOnboarding_Click FAILED: {ex.Message}");
-            ShowGatewayStatus($"Setup wizard failed: {ex.Message}", error: true);
-        }
-        finally
-        {
-            RerunOnboardingButton.IsEnabled = true;
         }
     }
 

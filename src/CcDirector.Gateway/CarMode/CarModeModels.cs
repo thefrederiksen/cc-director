@@ -51,6 +51,12 @@ public sealed record CarModeTurnResponse
     public required string Spoken { get; init; }
     public IReadOnlyList<CarModeActionRecord> Actions { get; init; } = Array.Empty<CarModeActionRecord>();
     public bool PendingConfirmation { get; init; }
+
+    /// <summary>The per-stage server timing for this turn (Car Mode performance round): every hosted-model
+    ///  round trip and every fleet/roster read, plus the whole-turn wall-clock. Null only on a path that did
+    ///  not measure (it always measures in production). The endpoint returns it inline so the browser merges
+    ///  it with its own client stamps into one telemetry record.</summary>
+    public CarModeTurnTiming? Timing { get; init; }
 }
 
 /// <summary>Request body of POST /carmode/turn: the owner's transcribed command for this turn.</summary>

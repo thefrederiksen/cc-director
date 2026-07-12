@@ -117,6 +117,46 @@ public sealed class CarModeBrainTests
     }
 
     [Fact]
+    public async Task RunTurn_MeasuresPerStageTiming_ModelCallsAndFleetReads()
+    {
+        // Performance round: the turn response carries a per-stage timing breakdown. A list-then-answer turn
+        // is two model round trips and one fleet read; the timing must reflect exactly that.
+        var fleet = new FakeFleet { Sessions = new[] { Session("Local Files Manager", true) } };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("list_sessions") }),
+            new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"One session needs you.\"}") }));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "who needs me over", CancellationToken.None);
+
+        Assert.NotNull(result.Timing);
+        Assert.Equal(2, result.Timing!.ModelCallCount);
+        Assert.Equal(2, result.Timing.ModelMs.Count);
+        Assert.Equal(2, result.Timing.Rounds);
+        Assert.Equal(1, result.Timing.FleetReadCount); // exactly one roster read for list_sessions
+        Assert.True(result.Timing.TotalMs >= 0);
+    }
+
+    [Fact]
+    public async Task RunTurn_GeneralQuestion_AnswersDirectly_WithNoFleetRead()
+    {
+        // The fleet-read suppression: a general question the model answers directly by calling speak_answer
+        // makes NO fleet read, so the roster aggregation never runs and the turn is fast.
+        var fleet = new FakeFleet { Sessions = new[] { Session("Local Files Manager", true) } };
+        var chat = new ScriptedChat(
+            new CarModeAssistantTurn(null, new[] { Call("speak_answer", "{\"text\":\"I can run your fleet by voice.\"}") }));
+        var brain = new CarModeBrain(chat, fleet, new CarModeConversationStore(), new CarModePendingStore(_ => { }), _ => { });
+
+        var result = await brain.RunTurnAsync("device-a", "what can you help me with over", CancellationToken.None);
+
+        Assert.Equal("I can run your fleet by voice.", result.Spoken);
+        Assert.Equal(0, fleet.ListCalls);
+        Assert.NotNull(result.Timing);
+        Assert.Equal(0, result.Timing!.FleetReadCount);
+        Assert.Equal(1, result.Timing.ModelCallCount);
+    }
+
+    [Fact]
     public async Task RunTurn_ModelCallsActivityTool_PassesReferenceThrough()
     {
         var fleet = new FakeFleet

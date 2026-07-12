@@ -4,6 +4,7 @@ using System.Text;
 using CcDirector.AgentBrain;
 using CcDirector.Core;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Drivers;
 using CcDirector.Core.HostedAi;
 using CcDirector.Gateway.HostedAi;
 using CcDirector.Gateway.Discovery;
@@ -185,64 +186,187 @@ public sealed class WingmanVoiceServiceTests
         finally { Cleanup(persistPath); }
     }
 
-    // ---------- Do not re-narrate an already-narrated turn (issue #1322) ----------
+    // ---------- Re-narrate only when the reply actually changed (issue #1322, identity-aware) ----------
+
+    /// <summary>A loopback "Director" whose /turns (and /history) endpoint returns a fixed JSON body and
+    /// counts how many times it was hit. Lets a test prove whether GenerateAsync fetched and what it did
+    /// with the result.</summary>
+    private sealed class LoopbackDirector : IDisposable
+    {
+        private readonly HttpListener _listener;
+        private readonly Task _serve;
+        private int _hits;
+        public int Hits => _hits;
+        public string Endpoint { get; }
+
+        public LoopbackDirector(string json)
+        {
+            // Grab a free loopback port, then release it for the HttpListener.
+            var probe = new TcpListener(IPAddress.Loopback, 0);
+            probe.Start();
+            var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+
+            var prefix = $"http://127.0.0.1:{port}/";
+            Endpoint = prefix.TrimEnd('/');
+            _listener = new HttpListener();
+            _listener.Prefixes.Add(prefix);
+            _listener.Start();
+            _serve = Task.Run(async () =>
+            {
+                while (_listener.IsListening)
+                {
+                    HttpListenerContext ctx;
+                    try { ctx = await _listener.GetContextAsync(); }
+                    catch { break; }   // listener stopped
+                    Interlocked.Increment(ref _hits);
+                    ctx.Response.StatusCode = 200;
+                    var body = Encoding.UTF8.GetBytes(json);
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                    ctx.Response.Close();
+                }
+            });
+        }
+
+        public void Dispose()
+        {
+            _listener.Stop();
+            try { _serve.Wait(TimeSpan.FromSeconds(5)); } catch { /* stopping */ }
+        }
+    }
+
+    /// <summary>A brain that records how many times it was asked and returns a canned, marker-wrapped
+    /// spoken line - so a test can prove whether GenerateAsync actually ran the (re)narration.</summary>
+    private sealed class RecordingBrain : IAgentBrain
+    {
+        private int _askCount;
+        public int AskCount => _askCount;
+        public string? SessionId => "recording-brain";
+        public Task<AskResult> AskAsync(string prompt, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _askCount);
+            var wrapped = $"{SessionAskRunner.AnswerBeginMarker}\nnarrated spoken text\n{SessionAskRunner.AnswerEndMarker}";
+            return Task.FromResult(new AskResult { Text = wrapped, ReplySeconds = 0.1 });
+        }
+        public Task CancelAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<ClearResult> ClearAsync(CancellationToken ct = default) => Task.FromResult(new ClearResult());
+        public Task RestartAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task KillAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<BrainHealth> GetHealthAsync(CancellationToken ct = default) => Task.FromResult(new BrainHealth { IsAlive = true });
+        public void Dispose() { }
+    }
+
+    /// <summary>A voice service wired to a recording brain and a text-to-speech stub that returns
+    /// <paramref name="audio"/>, so the full turn-end path (fetch -> translate -> synthesize -> store)
+    /// runs without a live model or provider.</summary>
+    private static WingmanVoiceService ServiceWithBrainAndTts(IAgentBrain brain, byte[] audio, string persistPath)
+    {
+        var vaultPath = Path.Combine(Path.GetTempPath(), "wmvs-" + Guid.NewGuid().ToString("N") + ".vault");
+        var vault = new KeyVault(vaultPath);
+        vault.Set("OPENAI_API_KEY", "sk-test");
+        vault.Set("DEVTHROTTLE_API_KEY", "dt_live_test");
+        var http = new HttpClient(new TtsStubHandler(HttpStatusCode.OK, "", audio));
+        return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, new DirectorEndpointClient(), persistPath, ttsHttpClient: http);
+    }
 
     [Fact]
-    public async Task GenerateAsync_WhenSessionAlreadyHasVoice_SkipsWithoutFetchingTurns()
+    public async Task GenerateAsync_WhenCurrentReplyDiffersFromCache_Regenerates()
     {
-        // Issue #1322: a re-narration must never disturb a turn that already has a fresh, playable
-        // narration - a client may be actively listening to it. The guard short-circuits BEFORE the
-        // Director turn fetch, so an already-ready session is not re-generated (which would flip it
-        // yellow again and mint a new generatedAt, restarting the listener's clip). Proven with a
-        // loopback "Director" that records whether its /turns endpoint was ever hit.
-        var hits = 0;
-        // Grab a free loopback port, then release it for the HttpListener.
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-
-        using var listener = new HttpListener();
-        var prefix = $"http://127.0.0.1:{port}/";
-        listener.Prefixes.Add(prefix);
-        listener.Start();
-        var serve = Task.Run(async () =>
-        {
-            while (listener.IsListening)
-            {
-                HttpListenerContext ctx;
-                try { ctx = await listener.GetContextAsync(); }
-                catch { break; }   // listener stopped
-                Interlocked.Increment(ref hits);
-                ctx.Response.StatusCode = 200;
-                var body = Encoding.UTF8.GetBytes("{\"widgets\":[]}");
-                await ctx.Response.OutputStream.WriteAsync(body);
-                ctx.Response.Close();
-            }
-        });
-
-        // Own an isolated audio directory so the durable clip this test seeds never leaks into the
-        // shared temp voice-audio folder other tests load from (StoreReadyAudioForTest persists).
-        var dir = Path.Combine(Path.GetTempPath(), "wmvs-guard-" + Guid.NewGuid().ToString("N"));
+        // THE FIX (regression for the #1322 bare-HasVoice guard): when the session's CURRENT last reply
+        // differs from the one already narrated, the turn-end MUST regenerate - even though a cached clip
+        // exists. The old guard skipped here whenever the Working transition was missed, leaving the
+        // phone replaying a stale interim narration while the history had moved on to the real answer.
+        using var director = new LoopbackDirector("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the NEW final answer\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-regen-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
         {
-            var svc = ServiceAt(persistPath);
-            svc.StoreReadyAudioForTest("sid-1", "spoken", "reply", new byte[] { 1, 2, 3 });
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 4, 4, 4 }, persistPath);
+            svc.StoreReadyAudioForTest("sid-1", "old spoken", "the OLD interim reply", new byte[] { 1, 2, 3 });
             Assert.True(svc.HasVoice("sid-1"));
 
-            await svc.GenerateAsync("sid-1", prefix.TrimEnd('/'), CancellationToken.None);
+            await svc.GenerateAsync("sid-1", director.Endpoint, CancellationToken.None, showReadingWindow: false);
 
-            Assert.Equal(0, hits);                    // the guard skipped before any turn fetch
-            Assert.True(svc.HasVoice("sid-1"));       // the existing clip is untouched
-            Assert.False(svc.IsGenerating("sid-1"));  // and it never flipped the session yellow
+            Assert.Equal(1, brain.AskCount);                          // it regenerated (translated the new reply)
+            var ready = svc.Get("sid-1");
+            Assert.NotNull(ready);
+            Assert.Equal("the NEW final answer", ready!.Reply);       // the cache now holds the CURRENT reply
         }
-        finally
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WhenCurrentReplyMatchesCache_SkipsQuietly()
+    {
+        // Issue #1322 preserved: when the CURRENT last reply is the EXACT one already narrated, the
+        // turn-end fetches to compare but does NOT regenerate - it never calls the brain, never re-mints
+        // audio, and never flips the session yellow, so a client mid-play is not disturbed.
+        using var director = new LoopbackDirector("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the same reply\"}]}");
+        var dir = Path.Combine(Path.GetTempPath(), "wmvs-same-" + Guid.NewGuid().ToString("N"));
+        var persistPath = Path.Combine(dir, "voice-sessions.json");
+        try
         {
-            listener.Stop();
-            await serve;
-            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
+            var brain = new RecordingBrain();
+            var svc = ServiceWithBrainAndTts(brain, new byte[] { 9, 9 }, persistPath);
+            svc.StoreReadyAudioForTest("sid-1", "old spoken", "the same reply", new byte[] { 1, 2, 3 });
+            Assert.True(svc.HasVoice("sid-1"));
+
+            await svc.GenerateAsync("sid-1", director.Endpoint, CancellationToken.None, showReadingWindow: true);
+
+            Assert.Equal(0, brain.AskCount);              // never regenerated
+            Assert.True(director.Hits >= 1);              // but it DID fetch to compare (identity-aware, not blind)
+            Assert.True(svc.HasVoice("sid-1"));           // the existing clip is untouched
+            Assert.False(svc.IsGenerating("sid-1"));      // and it never flipped the session yellow
+            Assert.Equal(new byte[] { 1, 2, 3 }, svc.GetAudio("sid-1"));   // same original audio, not re-minted
         }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ } }
+    }
+
+    // ---------- ShouldRegenerate decision (pure, no brain / no fetch) ----------
+
+    [Fact]
+    public void ShouldRegenerate_NoCachedNarration_IsTrue()
+    {
+        var svc = NewService();
+        Assert.True(svc.ShouldRegenerate("sid-x", "a reply to narrate"));
+    }
+
+    [Fact]
+    public void ShouldRegenerate_EmptyOrNullCurrentReply_IsFalse()
+    {
+        // Nothing to narrate yet - do not touch or regenerate.
+        var svc = NewService();
+        Assert.False(svc.ShouldRegenerate("sid-x", null));
+        Assert.False(svc.ShouldRegenerate("sid-x", "   "));
+    }
+
+    [Fact]
+    public void ShouldRegenerate_SameReplyAlreadyCached_IsFalse()
+    {
+        var svc = NewService();
+        svc.StoreReadyAudioForTest("sid-1", "spoken", "the reply text", new byte[] { 1 });
+        Assert.False(svc.ShouldRegenerate("sid-1", "the reply text"));
+    }
+
+    [Fact]
+    public void ShouldRegenerate_SameReplyIgnoringSurroundingWhitespace_IsFalse()
+    {
+        // The two sources are the same JSONL text block; incidental leading/trailing whitespace must
+        // not force a needless re-mint (which would restart a listener's clip).
+        var svc = NewService();
+        svc.StoreReadyAudioForTest("sid-1", "spoken", "the reply text", new byte[] { 1 });
+        Assert.False(svc.ShouldRegenerate("sid-1", "  the reply text\n"));
+    }
+
+    [Fact]
+    public void ShouldRegenerate_ChangedReply_IsTrue()
+    {
+        // The exact bug: an interim reply was narrated, then the real answer landed. A changed reply
+        // must regenerate even though a cached clip exists.
+        var svc = NewService();
+        svc.StoreReadyAudioForTest("sid-1", "spoken", "the interim reply", new byte[] { 1 });
+        Assert.True(svc.ShouldRegenerate("sid-1", "the FINAL answer"));
     }
 
     // ---------- Turn voice off / Unmark (issue #859) ----------

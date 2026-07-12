@@ -27,7 +27,7 @@ namespace CcDirector.ControlApi;
 /// When the config is disabled (no gateway.url) the client is inert - every method
 /// is a no-op so the Director boots normally in local-only mode.
 /// </summary>
-public sealed class GatewayClient : IDisposable
+public sealed class GatewayClient : IGatewayHold, IDisposable
 {
     /// <summary>How often the heartbeat fires.</summary>
     public static TimeSpan HeartbeatInterval { get; } = TimeSpan.FromSeconds(15);
@@ -363,6 +363,32 @@ public sealed class GatewayClient : IDisposable
             throw new InvalidOperationException("Gateway start-on-machine returned an unparsable body.");
         FileLog.Write($"[GatewayClient] SpawnOnMachineAsync: started sid={parsed.SessionId} on machine={machine}");
         return parsed;
+    }
+
+    /// <summary>
+    /// Snooze Length mission (Phase 3): record or clear a Gateway-owned snooze/hold for a session by
+    /// driving the Gateway's <c>POST /sessions/{sid}/hold</c> with the SAME authenticated client (already
+    /// pointed at the resolved Gateway address and carrying the fleet token) the other Director-to-Gateway
+    /// relays use - so the desktop reuses the Director's existing Gateway connection, never binding its own
+    /// URL or token. The Gateway records the snooze-until AND forwards the hold back DOWN to the owning
+    /// Director before answering, so on success <c>Session.OnHold</c> is already set.
+    ///
+    /// This is the <see cref="IGatewayHold"/> seam - the ONE method the Gateway Cleanup migration re-points
+    /// from HTTP to the tunnel. Fail-loud (no fallback): THROWS when the Gateway is disabled or the call
+    /// does not confirm, so the desktop shows a clear error and sets no local hold.
+    /// </summary>
+    public async Task RecordHoldAsync(string sessionId, bool onHold, CancellationToken ct = default)
+    {
+        if (!_config.IsEnabled)
+            throw new InvalidOperationException("The Gateway is not configured; snooze needs a Gateway connection.");
+        if (string.IsNullOrWhiteSpace(sessionId))
+            throw new ArgumentException("Session id is required", nameof(sessionId));
+
+        FileLog.Write($"[GatewayClient] RecordHoldAsync: POST /sessions/{sessionId}/hold onHold={onHold}");
+        var body = new HoldRequest { OnHold = onHold };
+        using var resp = await _http.PostAsJsonAsync($"sessions/{sessionId}/hold", body, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Gateway hold for {sessionId} returned HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
     }
 
     // ===== Fleet session numbers (issue #1292) =====

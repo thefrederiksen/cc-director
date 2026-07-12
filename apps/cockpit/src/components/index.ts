@@ -21,6 +21,9 @@ export type { ErrorBannerProps } from "./ErrorBanner";
 export { ConfirmDialog } from "./ConfirmDialog";
 export type { ConfirmDialogProps } from "./ConfirmDialog";
 
+export { FileViewerModal } from "./FileViewerModal";
+export type { FileViewerModalProps } from "./FileViewerModal";
+
 export { StatusMessage } from "./StatusMessage";
 export type { StatusMessageProps } from "./StatusMessage";
 

@@ -36,6 +36,8 @@ public sealed class LaunchServiceTests : IDisposable
     [Fact]
     public void BuildStartInfo_GuiApp_UsesShellExecute()
     {
+        if (!OperatingSystem.IsWindows()) return; // Windows parentage recipe; macOS spawns directly
+
         var request = new LaunchRequest { Path = _tempExe };
 
         var psi = _svc.BuildStartInfo(request);
@@ -67,7 +69,8 @@ public sealed class LaunchServiceTests : IDisposable
         var psi = _svc.BuildStartInfo(request);
 
         Assert.False(psi.UseShellExecute, "Headless must NOT use UseShellExecute (no shell association)");
-        Assert.True(psi.CreateNoWindow, "Headless must set CreateNoWindow to suppress console");
+        if (OperatingSystem.IsWindows())
+            Assert.True(psi.CreateNoWindow, "Headless must set CreateNoWindow to suppress console");
     }
 
     // -------------------------------------------------------------------------
@@ -77,6 +80,8 @@ public sealed class LaunchServiceTests : IDisposable
     [Fact]
     public void BuildStartInfo_CmdFile_RoutedThroughCmdExe()
     {
+        if (!OperatingSystem.IsWindows()) return; // batch files are refused on macOS (see below)
+
         var request = new LaunchRequest { Path = _tempBat };
 
         var psi = _svc.BuildStartInfo(request);
@@ -90,11 +95,91 @@ public sealed class LaunchServiceTests : IDisposable
     [Fact]
     public void BuildStartInfo_CmdFile_ArgsAppendedCorrectly()
     {
+        if (!OperatingSystem.IsWindows()) return;
+
         var request = new LaunchRequest { Path = _tempBat, Args = "arg1 arg2" };
 
         var psi = _svc.BuildStartInfo(request);
 
         Assert.Contains("arg1 arg2", psi.Arguments);
+    }
+
+    // -------------------------------------------------------------------------
+    // macOS branch: bundles via /usr/bin/open, shell scripts via /bin/bash,
+    // plain executables spawned directly, batch files refused.
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void BuildStartInfo_Mac_PlainExecutable_SpawnsDirectly()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var request = new LaunchRequest { Path = _tempExe, Args = "--foo bar" };
+
+        var psi = _svc.BuildStartInfo(request);
+
+        Assert.Equal(_tempExe, psi.FileName);
+        Assert.False(psi.UseShellExecute, "macOS plain executables must spawn directly");
+        Assert.Equal("--foo bar", psi.Arguments);
+    }
+
+    [Fact]
+    public void BuildStartInfo_Mac_AppBundle_RoutedThroughOpen()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var bundle = Path.Combine(Path.GetTempPath(), $"test-launcher-{Guid.NewGuid():N}.app");
+        Directory.CreateDirectory(bundle);
+        try
+        {
+            var request = new LaunchRequest { Path = bundle, Args = "--managed \"two words\"" };
+
+            var psi = _svc.BuildStartInfo(request);
+
+            Assert.Equal("/usr/bin/open", psi.FileName);
+            Assert.Equal(bundle, psi.ArgumentList[0]);
+            Assert.Equal("--args", psi.ArgumentList[1]);
+            Assert.Equal("--managed", psi.ArgumentList[2]);
+            Assert.Equal("two words", psi.ArgumentList[3]);
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BuildStartInfo_Mac_ShellScript_RoutedThroughBash()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"test-launcher-{Guid.NewGuid():N}.sh");
+        File.WriteAllText(script, "#!/bin/bash\n");
+        try
+        {
+            var request = new LaunchRequest { Path = script, Args = "one two" };
+
+            var psi = _svc.BuildStartInfo(request);
+
+            Assert.Equal("/bin/bash", psi.FileName);
+            Assert.Equal(script, psi.ArgumentList[0]);
+            Assert.Equal("one", psi.ArgumentList[1]);
+            Assert.Equal("two", psi.ArgumentList[2]);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public void BuildStartInfo_Mac_BatchFile_Throws()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var request = new LaunchRequest { Path = _tempBat };
+
+        Assert.Throws<NotSupportedException>(() => _svc.BuildStartInfo(request));
     }
 
     // -------------------------------------------------------------------------

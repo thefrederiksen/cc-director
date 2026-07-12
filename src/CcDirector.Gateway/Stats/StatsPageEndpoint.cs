@@ -32,7 +32,8 @@ public static class StatsPageEndpoint
         "Surface (phone / cockpit) for remote input is read from the signed-in device. Remote input with no device identity (a shared-token or fleet call) is not counted as an operator surface.",
     };
 
-    public static void Map(IEndpointRouteBuilder app, GatewayInputStatsAggregator aggregator)
+    public static void Map(IEndpointRouteBuilder app, GatewayInputStatsAggregator aggregator,
+        GatewaySessionConcurrencyStats? concurrency = null)
     {
         FileLog.Write("[StatsPageEndpoint] serving /stats (embedded, always available)");
 
@@ -43,6 +44,11 @@ public static class StatsPageEndpoint
             {
                 generatedAtUtc = DateTime.UtcNow,
                 buckets = totals.Buckets,
+                // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
+                hourlyTurns = aggregator.HourlyTurns(),
+                // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
+                // working). Null until the aggregator is wired (old callers / tests).
+                concurrency = concurrency?.Snapshot(DateTime.UtcNow),
                 notCaptured = NotCaptured,
             });
         });

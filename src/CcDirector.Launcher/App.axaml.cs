@@ -10,6 +10,14 @@ public partial class App : Application
 {
     private LauncherTrayController? _controller;
 
+    /// <summary>
+    /// True once the user-interface framework reached application code. Program uses this
+    /// to tell a PLATFORM initialization failure (framework never started - e.g. a locked
+    /// screen at startup on macOS; fall back to headless mode) apart from a fault in the
+    /// running application (exit loudly, no fallback).
+    /// </summary>
+    public static bool FrameworkInitialized { get; private set; }
+
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
@@ -17,6 +25,8 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
+        FrameworkInitialized = true;
+
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             // The launcher has no main window: it lives in the tray and must NOT exit when

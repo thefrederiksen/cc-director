@@ -39,6 +39,9 @@ export interface GatewaySettings {
   autostart: AutostartState;
   wingmanTrainingCapture: boolean;
   telemetryConsent: boolean;
+  // Snooze Length mission: the per-user default snooze length in minutes (one value across every device,
+  // because they all talk to this one Gateway). Default 60.
+  snoozeDefaultMinutes: number;
 }
 
 async function gatewayErrorFrom(res: Response, label: string): Promise<GatewayError> {
@@ -107,7 +110,16 @@ export async function getGatewaySettings(signal?: AbortSignal): Promise<GatewayS
     },
     wingmanTrainingCapture: Boolean(body.wingmanTrainingCapture),
     telemetryConsent: Boolean(body.telemetryConsent),
+    snoozeDefaultMinutes: Number(body.snoozeDefaultMinutes ?? 60),
   };
+}
+
+// PUT /gateway/snooze-default { minutes } - set the per-user default snooze length (Snooze Length
+// mission). Read at snooze time, so a change applies to the next snooze with no restart, and it is the
+// same value on every device (all talk to this one Gateway). Returns the applied minutes.
+export async function setSnoozeDefaultMinutes(minutes: number, signal?: AbortSignal): Promise<number> {
+  const body = await putJson<{ minutes?: number }>("/gateway/snooze-default", "PUT /gateway/snooze-default", { minutes }, signal);
+  return Number(body.minutes ?? minutes);
 }
 
 // PUT /gateway/addressing-mode { mode } - set the fleet network addressing mode. Applies to this host's

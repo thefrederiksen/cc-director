@@ -10,19 +10,21 @@ namespace CcDirectorSetup.Steps;
 public partial class PrerequisitesStep : UserControl
 {
     private readonly Action<List<PrerequisiteInfo>> _onChecksComplete;
+    private readonly CcDirector.Setup.Engine.InstallRole _role;
     private List<PrerequisiteInfo> _items;
 
-    public PrerequisitesStep(Action<List<PrerequisiteInfo>> onChecksComplete, bool isUpdate)
+    public PrerequisitesStep(Action<List<PrerequisiteInfo>> onChecksComplete, bool isUpdate, CcDirector.Setup.Engine.InstallRole role)
     {
         InitializeComponent();
         _onChecksComplete = onChecksComplete;
-        _items = PrerequisiteChecker.CreateChecklist();
+        _role = role;
+        _items = PrerequisiteChecker.CreateChecklist(_role);
         PrereqList.ItemsSource = _items;
 
         if (isUpdate)
             SubtitleText.Text = "Verifying your environment...";
 
-        SetupLog.Write($"[PrerequisitesStep] Created: isUpdate={isUpdate}");
+        SetupLog.Write($"[PrerequisitesStep] Created: isUpdate={isUpdate}, role={_role}");
     }
 
     public async void RunChecks()
@@ -30,7 +32,7 @@ public partial class PrerequisitesStep : UserControl
         SetupLog.Write("[PrerequisitesStep] RunChecks: starting");
         RefreshButton.IsEnabled = false;
 
-        _items = PrerequisiteChecker.CreateChecklist();
+        _items = PrerequisiteChecker.CreateChecklist(_role);
         PrereqList.ItemsSource = _items;
 
         await PrerequisiteChecker.CheckAllAsync(_items);

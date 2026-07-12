@@ -111,6 +111,91 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
         Assert.Equal(0, rose.next.ZeroStreak);                      // streak reset - no pending clear
     }
 
+    // ---- snooze-expiry announcements (Snooze Length mission) -----------------------------------
+
+    [Fact]
+    public void Decide_NewlyExpiredWhileDotUp_AnnouncesOnceWithSnoozeEnded()
+    {
+        // The dot is already up for other needs-you work; a session then RETURNS from an expired snooze.
+        // That is genuinely new, actionable news, so it must push once with the snooze-ended marker even
+        // though the count already had a dot.
+        var up = WebPushNeedsYouNotifier.Decide(2, WebPushNeedsYouNotifier.DotState.Initial).next;
+
+        var r = WebPushNeedsYouNotifier.Decide(3, new[] { "s1" }, up);
+
+        Assert.True(r.push);
+        Assert.True(r.snoozeEnded);
+        Assert.Equal(3, r.count);
+        Assert.Contains("s1", r.next.Announced);
+    }
+
+    [Fact]
+    public void Decide_LingeringExpired_NeverBuzzesAgain()
+    {
+        // A dead-Director expired snooze lingers in "needs you" forever. It must be announced exactly once;
+        // every later poll (including the heartbeat re-assert) must NOT be a snooze-ended announcement.
+        var r = WebPushNeedsYouNotifier.Decide(1, new[] { "s1" }, WebPushNeedsYouNotifier.DotState.Initial);
+        Assert.True(r.push);
+        Assert.True(r.snoozeEnded); // announced once
+
+        for (var i = 0; i < WebPushNeedsYouNotifier.HeartbeatPolls + 2; i++)
+        {
+            var next = WebPushNeedsYouNotifier.Decide(1, new[] { "s1" }, r.next);
+            Assert.False(next.snoozeEnded); // a heartbeat may push, but NEVER as a snooze-ended buzz
+            r = next;
+        }
+    }
+
+    [Fact]
+    public void Decide_NewlyExpiredFromScratch_AnnouncesAndShowsTheDot()
+    {
+        var r = WebPushNeedsYouNotifier.Decide(1, new[] { "s1" }, WebPushNeedsYouNotifier.DotState.Initial);
+
+        Assert.True(r.push);
+        Assert.True(r.snoozeEnded);
+        Assert.True(r.next.DotShowing);
+    }
+
+    [Fact]
+    public void Decide_ReSnoozeThenReExpire_AnnouncesAgain()
+    {
+        // Announce s1, then the user re-snoozes it (it leaves the expired set - pruned from Announced),
+        // then it expires again -> it must announce afresh (a new dead-man's-switch event).
+        var r1 = WebPushNeedsYouNotifier.Decide(1, new[] { "s1" }, WebPushNeedsYouNotifier.DotState.Initial);
+        Assert.True(r1.snoozeEnded);
+
+        var reSnoozed = WebPushNeedsYouNotifier.Decide(1, Array.Empty<string>(), r1.next); // s1 no longer expired
+        Assert.DoesNotContain("s1", reSnoozed.next.Announced);
+
+        var reExpired = WebPushNeedsYouNotifier.Decide(1, new[] { "s1" }, reSnoozed.next);
+        Assert.True(reExpired.push);
+        Assert.True(reExpired.snoozeEnded);
+    }
+
+    [Fact]
+    public async Task RunOnce_NewlyExpiredSnooze_AnnouncesOnceThenGoesQuiet()
+    {
+        var store = new PushSubscriptionStore(_storePath);
+        store.Add("https://push.example/aaa", "p", "a");
+        var sender = new FakeSender();
+        var count = 1;
+        var expired = new List<string> { "s1" };
+        var notifier = new WebPushNeedsYouNotifier(
+            store,
+            _ => Task.FromResult(new WebPushNeedsYouNotifier.NeedsYouSnapshot(count, expired.ToArray())),
+            sender);
+
+        await notifier.RunOnceAsync(CancellationToken.None); // s1 newly expired -> announce
+        await notifier.RunOnceAsync(CancellationToken.None); // still lingering -> quiet (no heartbeat yet)
+
+        Assert.Single(sender.Sent);
+        Assert.Contains("\"snoozeEnded\":true", sender.Sent[0].payload);
+        Assert.Contains("\"count\":1", sender.Sent[0].payload);
+    }
+
+    private static WebPushNeedsYouNotifier.NeedsYouSnapshot Snap(int count, params string[] expired) =>
+        new(count, expired);
+
     [Fact]
     public void CountNeedsYou_CountsEffectiveRedNotParked()
     {
@@ -135,7 +220,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
     {
         var store = new PushSubscriptionStore(_storePath);
         var reads = 0;
-        var notifier = new WebPushNeedsYouNotifier(store, _ => { reads++; return Task.FromResult(5); }, new FakeSender());
+        var notifier = new WebPushNeedsYouNotifier(store, _ => { reads++; return Task.FromResult(Snap(5)); }, new FakeSender());
 
         await notifier.RunOnceAsync(CancellationToken.None);
 
@@ -149,7 +234,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
         store.Add("https://push.example/aaa", "p", "a");
         store.Add("https://push.example/bbb", "p", "a");
         var sender = new FakeSender();
-        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(2), sender);
+        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(2)), sender);
 
         await notifier.RunOnceAsync(CancellationToken.None);
 
@@ -163,7 +248,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
         var store = new PushSubscriptionStore(_storePath);
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
-        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(2), sender);
+        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(2)), sender);
 
         await notifier.RunOnceAsync(CancellationToken.None);
         await notifier.RunOnceAsync(CancellationToken.None);
@@ -178,7 +263,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
         var count = 2;
-        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(count), sender);
+        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(count)), sender);
 
         await notifier.RunOnceAsync(CancellationToken.None); // 2 -> push count:2 (rising edge)
         count = 0;
@@ -200,7 +285,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
         var count = 1;
-        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(count), sender);
+        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(count)), sender);
 
         await notifier.RunOnceAsync(CancellationToken.None); // 1 -> push count:1 (rising edge)
         count = 0;
@@ -221,7 +306,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
         store.Add("https://push.example/dead", "p", "a");
         var sender = new FakeSender();
         sender.GoneEndpoints.Add("https://push.example/dead");
-        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(1), sender);
+        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(1)), sender);
 
         await notifier.RunOnceAsync(CancellationToken.None);
 
@@ -236,7 +321,7 @@ public sealed class WebPushNeedsYouNotifierTests : IDisposable
         var store = new PushSubscriptionStore(_storePath);
         store.Add("https://push.example/aaa", "p", "a");
         var sender = new FakeSender();
-        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(2), sender);
+        var notifier = new WebPushNeedsYouNotifier(store, _ => Task.FromResult(Snap(2)), sender);
 
         await notifier.RunOnceAsync(CancellationToken.None); // push
         notifier.ResetDedupe();                              // a new device subscribed

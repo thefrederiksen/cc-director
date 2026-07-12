@@ -34,13 +34,10 @@ public partial class OnboardingWizardDialog : Window
 
     private readonly AgentOptions _options;
     private readonly OnboardingModel _model = new(new ToolDetectionService());
-    private readonly SettingsDetectionService _gatewayDetector = new();
 
     private int _currentStep = StepGateway;
-    private bool _gatewayTestPassed;
-    private string _persistedGatewayUrl = "";
+    private bool _gatewayConnected;
     private bool _agentAvailable;
-    private bool _gatewayAutoScanStarted;
 
     /// <summary>
     /// True when the user chose "Create first session" on the final step, so the caller should open
@@ -56,12 +53,23 @@ public partial class OnboardingWizardDialog : Window
         _options = options ?? throw new ArgumentNullException(nameof(options));
         InitializeComponent();
 
-        ShowStep(StepGateway);
+        // The Gateway step IS the one reusable connection panel now (Phase 4, design spec section 8). It
+        // auto-scans on show, connects (which IS the test), and signs in - so the wizard no longer has its
+        // own URL box / Detect / Test. Next advances once the panel reports Connected.
+        var panel = Controls.GatewayConnectionPanel.CreateForCurrentState();
+        panel.ConnectionVerified += (_, _) => OnGatewayConnected();
+        GatewayStep.Child = panel;
 
-        // Show the wizard instantly, then auto-scan for a gateway off the UI thread once it is
-        // visible (responsive-UI rule). This brings the wizard's gateway step to parity with the
-        // Settings gateway tab, which the user reached via the Detect button there.
-        Loaded += (_, _) => StartGatewayAutoScan();
+        ShowStep(StepGateway);
+    }
+
+    /// <summary>The embedded panel proved the two-way connection. Record it and let the user proceed
+    /// (they can finish signing in in the panel first, then click Next).</summary>
+    private void OnGatewayConnected()
+    {
+        _gatewayConnected = true;
+        FileLog.Write("[OnboardingWizardDialog] gateway connected (panel handshake verified)");
+        ShowStepStatus("Connected to your Gateway. Click Next to continue.", error: false);
     }
 
     /// <summary>Switch the visible step panel and update the title, indicator, and navigation buttons.</summary>
@@ -104,104 +112,6 @@ public partial class OnboardingWizardDialog : Window
         }
     }
 
-    /// <summary>
-    /// Auto-scan for a gateway exactly once, the first time the gateway step becomes visible. The
-    /// scan runs async (off the UI thread) so the wizard renders instantly. Mirrors the Settings
-    /// gateway tab's Detect behavior.
-    /// </summary>
-    private void StartGatewayAutoScan()
-    {
-        if (_gatewayAutoScanStarted)
-            return;
-        _gatewayAutoScanStarted = true;
-        FileLog.Write("[OnboardingWizardDialog] StartGatewayAutoScan");
-        _ = DetectGatewayAsync();
-    }
-
-    private async void BtnDetectGateway_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[OnboardingWizardDialog] BtnDetectGateway_Click");
-        await DetectGatewayAsync();
-    }
-
-    /// <summary>
-    /// Scan the tailnet and this machine for a gateway via the shared detector (the same
-    /// <see cref="SettingsDetectionService.DetectGatewayAsync"/> the Settings gateway tab uses).
-    /// On success, pre-fills the URL box and marks the test passed so the user can just click Next.
-    /// On no result, leaves the field for manual entry. Runs async with the spinner so the UI never
-    /// blocks; never throws (this is a UI helper called from event handlers and lifecycle).
-    /// </summary>
-    private async Task DetectGatewayAsync()
-    {
-        FileLog.Write("[OnboardingWizardDialog] DetectGatewayAsync");
-        DetectGatewayButton.IsEnabled = false;
-        TestGatewayButton.IsEnabled = false;
-        GatewayTestSpinner.IsVisible = true;
-        ShowGatewayStatus("Scanning the tailnet and this machine for a gateway ...", error: false);
-        try
-        {
-            var result = await _gatewayDetector.DetectGatewayAsync();
-            if (result.Url is not null)
-            {
-                GatewayUrlBox.Text = result.Url;
-                _gatewayTestPassed = true;
-                ShowGatewayStatus($"Found gateway at {result.Url}. Click Next to connect, or edit the address above.", error: false);
-                FileLog.Write($"[OnboardingWizardDialog] DetectGatewayAsync: found {result.Url}");
-            }
-            else
-            {
-                _gatewayTestPassed = false;
-                ShowGatewayStatus($"No gateway found on this network ({result.Scanned.Count} address(es) scanned). Enter the gateway URL above and click Test.", error: true);
-                FileLog.Write($"[OnboardingWizardDialog] DetectGatewayAsync: none found, scanned={result.Scanned.Count}");
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[OnboardingWizardDialog] DetectGatewayAsync FAILED: {ex.Message}");
-            ShowGatewayStatus($"Detection failed: {ex.Message}", error: true);
-            _gatewayTestPassed = false;
-        }
-        finally
-        {
-            GatewayTestSpinner.IsVisible = false;
-            DetectGatewayButton.IsEnabled = true;
-            TestGatewayButton.IsEnabled = true;
-        }
-    }
-
-    private async void BtnTestGateway_Click(object? sender, RoutedEventArgs e)
-    {
-        FileLog.Write("[OnboardingWizardDialog] BtnTestGateway_Click");
-        var validation = OnboardingModel.ValidateGatewayUrl(GatewayUrlBox.Text);
-        if (!validation.IsValid)
-        {
-            ShowGatewayStatus(validation.Message, error: true);
-            _gatewayTestPassed = false;
-            return;
-        }
-
-        TestGatewayButton.IsEnabled = false;
-        GatewayTestSpinner.IsVisible = true;
-        ShowGatewayStatus($"Testing {validation.NormalizedUrl} ...", error: false);
-        try
-        {
-            var result = await _gatewayDetector.TestGatewayAsync(validation.NormalizedUrl);
-            ShowGatewayStatus(result.Message, error: !result.Ok);
-            _gatewayTestPassed = result.Ok;
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[OnboardingWizardDialog] BtnTestGateway_Click FAILED: {ex.Message}");
-            ShowGatewayStatus($"Test failed: {ex.Message}", error: true);
-            _gatewayTestPassed = false;
-        }
-        finally
-        {
-            GatewayTestSpinner.IsVisible = false;
-            TestGatewayButton.IsEnabled = true;
-        }
-    }
-
     private async void BtnNext_Click(object? sender, RoutedEventArgs e)
     {
         FileLog.Write($"[OnboardingWizardDialog] BtnNext_Click: step={_currentStep}");
@@ -210,7 +120,7 @@ public partial class OnboardingWizardDialog : Window
             switch (_currentStep)
             {
                 case StepGateway:
-                    await AdvanceFromGatewayAsync();
+                    AdvanceFromGateway();
                     break;
 
                 case StepAgent:
@@ -230,52 +140,24 @@ public partial class OnboardingWizardDialog : Window
     }
 
     /// <summary>
-    /// Gateway step Next: version 1 expects a gateway, so a blank URL is not a normal mode - we nudge
-    /// the user to detect or enter one (they can still leave via "Skip for now" without bricking
-    /// first-run). A non-blank URL must be valid; if it has not been tested green yet we test it now
-    /// and only advance on success, then persist it to gateway.url.
+    /// Gateway step Next (Phase 4): the embedded panel connects and writes gateway.url itself, so the
+    /// wizard only checks that the two-way connection is proven before advancing. If it is not connected
+    /// yet, nudge the user to connect in the panel (they can still leave via "Skip for now" without
+    /// bricking first-run).
     /// </summary>
-    private async Task AdvanceFromGatewayAsync()
+    private void AdvanceFromGateway()
     {
-        var raw = GatewayUrlBox.Text?.Trim() ?? "";
-        if (raw.Length == 0)
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        var connected = _gatewayConnected
+            || host?.GatewayMonitor?.Status == CcDirector.ControlApi.GatewayConnectionStatus.Verified;
+        if (!connected)
         {
-            FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: blank URL, nudging for a gateway");
-            ShowGatewayStatus("Enter or detect a gateway URL to continue, or use \"Skip for now\" to set it later in Settings.", error: true);
+            FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: not connected yet, nudging");
+            ShowStepStatus("Connect to your Gateway above to continue, or use \"Skip for now\" to set it up later in Settings.", error: true);
             return;
         }
 
-        var validation = OnboardingModel.ValidateGatewayUrl(raw);
-        if (!validation.IsValid)
-        {
-            ShowGatewayStatus(validation.Message, error: true);
-            return;
-        }
-
-        if (!_gatewayTestPassed)
-        {
-            TestGatewayButton.IsEnabled = false;
-            GatewayTestSpinner.IsVisible = true;
-            ShowGatewayStatus($"Testing {validation.NormalizedUrl} ...", error: false);
-            try
-            {
-                var result = await _gatewayDetector.TestGatewayAsync(validation.NormalizedUrl);
-                _gatewayTestPassed = result.Ok;
-                ShowGatewayStatus(result.Message, error: !result.Ok);
-            }
-            finally
-            {
-                GatewayTestSpinner.IsVisible = false;
-                TestGatewayButton.IsEnabled = true;
-            }
-
-            if (!_gatewayTestPassed)
-                return;
-        }
-
-        await Task.Run(() => OnboardingModel.PersistGatewayUrl(validation.NormalizedUrl));
-        _persistedGatewayUrl = validation.NormalizedUrl;
-        FileLog.Write($"[OnboardingWizardDialog] AdvanceFromGateway: persisted {validation.NormalizedUrl}");
+        FileLog.Write("[OnboardingWizardDialog] AdvanceFromGateway: connected; advancing to the agent step");
         ShowStep(StepAgent);
     }
 
@@ -379,9 +261,11 @@ public partial class OnboardingWizardDialog : Window
 
     private void BuildDoneSummary()
     {
-        var gatewayPart = string.IsNullOrEmpty(_persistedGatewayUrl)
-            ? "No gateway is configured yet - add one from Settings so this Director shows up there."
-            : $"Connected to gateway {_persistedGatewayUrl}.";
+        // The panel wrote gateway.url on connect (Phase 4); read it back for the summary line.
+        var gatewayUrl = GatewayConfig.Load().Url;
+        var gatewayPart = string.IsNullOrWhiteSpace(gatewayUrl)
+            ? "No gateway is connected yet - connect one from Settings so this Director shows up there."
+            : $"Connected to gateway {gatewayUrl}.";
         var agentPart = _agentAvailable
             ? "Claude Code is available."
             : "No agent was detected yet - install Claude Code, then add it from Settings.";
@@ -402,13 +286,6 @@ public partial class OnboardingWizardDialog : Window
         AgentStatusBadgeText.Text = text;
         AgentStatusBadge.Background = new SolidColorBrush(Color.Parse(background));
         AgentStatusBadgeText.Foreground = new SolidColorBrush(Color.Parse(foreground));
-    }
-
-    private void ShowGatewayStatus(string text, bool error)
-    {
-        GatewayTestStatus.Text = text;
-        GatewayTestStatus.IsVisible = true;
-        GatewayTestStatus.Foreground = error ? Brushes.IndianRed : Brushes.MediumSeaGreen;
     }
 
     private void ShowStepStatus(string text, bool error)

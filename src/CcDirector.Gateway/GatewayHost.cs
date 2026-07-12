@@ -60,6 +60,14 @@ public sealed class GatewayHost : IAsyncDisposable
     public Stats.GatewayInputStatsAggregator InputStats { get; }
 
     /// <summary>
+    /// The durable fleet CONCURRENCY record (how many sessions run at once, and how many are actively
+    /// working at once) that the private Gateway dashboard and the agent API read. Fed from the same
+    /// assembled /sessions roster as <see cref="InputStats"/>, so it is fleet-wide with no per-Director
+    /// instrumentation - a session count is visible for every session on every machine, new build or old.
+    /// </summary>
+    public Stats.GatewaySessionConcurrencyStats SessionConcurrency { get; }
+
+    /// <summary>
     /// Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. The <c>/sessions</c>
     /// aggregation uses it so a single failed Director poll no longer drops that Director's sessions -
     /// they are served stale (Wobbly) through a short grace window and only dropped (Offline) once the
@@ -130,6 +138,20 @@ public sealed class GatewayHost : IAsyncDisposable
     /// pending pairing.
     /// </summary>
     public Pairing.PairingCodeService Pairing { get; } = new();
+
+    /// <summary>
+    /// Snooze Length mission: the Gateway-owned snooze registry. Exposed so a test can inject a pending
+    /// (or already-expired) snooze and assert the /sessions overlay flips it back into "needs you".
+    /// </summary>
+    internal Snooze.SnoozeRegistry SnoozeRegistry => _snoozeRegistry;
+
+    /// <summary>
+    /// Snooze Length mission: run one pass of the REAL wired snooze watchdog synchronously, so an
+    /// end-to-end test can prove the expiry nudge and the confirm-clear without waiting on the timer.
+    /// No-op before <see cref="StartAsync"/> builds the sweep.
+    /// </summary>
+    internal Task RunSnoozeSweepOnceAsync(CancellationToken cancellationToken = default)
+        => _snoozeSweep?.RunOnceAsync(cancellationToken) ?? Task.CompletedTask;
 
     /// <summary>
     /// Issue #469: the registry of enrolled devices and their unique per-device keys - the single
@@ -253,6 +275,12 @@ public sealed class GatewayHost : IAsyncDisposable
     // host with no credential service (nothing to sign in to).
     private readonly Account.TranscriptionKeyAutoProvisioner? _transcriptionKeyProvisioner;
     private readonly WorkListStore _workLists;
+    // Snooze Length mission: the Gateway-owned, restart-surviving snooze registry (the one piece of
+    // new state) and the watchdog sweep that makes an expired snooze come back on its own. The
+    // registry is constructed here (load-on-construct re-arms every pending snooze); the sweep is
+    // built and started in StartAsync (it needs the live Director client) and disposed in StopAsync.
+    private readonly Snooze.SnoozeRegistry _snoozeRegistry;
+    private Snooze.SnoozeExpirySweep? _snoozeSweep;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -279,6 +307,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // Car Mode (decision 3): the per-device store of a destructive action armed and awaiting the owner's
     // spoken confirmation, so a delete never runs without a clear spoken "confirm".
     private readonly CarMode.CarModePendingStore _carModePending = new();
+    // Car Mode performance round: the durable, Gateway-local store of per-turn timing records. The browser
+    // posts ONE record per turn; GET /carmode/telemetry reads them back. Retained about 90 days by age.
+    private readonly CarMode.CarModeTelemetryStore _carModeTelemetry = new();
     // Gateway-owned set of sessions whose dictated utterance is being transcribed in the background
     // (the phone released the Speak dialog and the audio is uploading/transcribing). Stamps the
     // orange "Transcribing..." roster color so nobody else grabs the session mid-dictation.
@@ -357,7 +388,7 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null)
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
@@ -368,6 +399,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
         InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
+        SessionConcurrency = new Stats.GatewaySessionConcurrencyStats();
         RosterCache = new Discovery.FleetRosterCache();
         // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
         // roster too so the cache does not grow without bound; a re-registering Director starts clean.
@@ -416,6 +448,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // Gateway data dir, loaded here (stale claims released) and written through on every
         // mutation. Tests MUST pass an isolated path so they never touch the real store.
         _workLists = new WorkListStore(workListsPath ?? Path.Combine(CcStorage.Root(), "worklists.json"));
+        // Snooze Length mission: the persisted snooze registry (sessionId -> SnoozeUntilUtc). Loaded here
+        // so a Gateway restart re-arms every pending snooze; an entry already past its time simply fires
+        // on the first sweep. Tests MUST pass an isolated path so they never touch the real store. The
+        // registry is bounded by dropping a removed Director's entries so they do not accumulate on disk.
+        _snoozeRegistry = new Snooze.SnoozeRegistry(snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
+        Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
         // Cron-job definitions persist across a Gateway restart (epic #479, #482): one JSON file in
         // the Gateway data dir, loaded here (next-run times recomputed) and written through on every
         // mutation - the WorkListStore precedent. Tests MUST pass an isolated path so they never
@@ -909,6 +947,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle Stats: the hub (constructed per-invocation by SignalR) folds each pushed session's
         // tally into this one aggregator instance, which the /stats dashboard reads.
         builder.Services.AddSingleton(InputStats);
+        builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
@@ -1118,7 +1157,14 @@ public sealed class GatewayHost : IAsyncDisposable
             // DevThrottle Stats: feed the input-tally aggregator from the assembled /sessions roster, so
             // "Your Throttle" is populated whether stream mode is on or off (the DirectorHub push fold only
             // runs in stream mode, which is off in production).
-            inputStats: InputStats);
+            inputStats: InputStats,
+            // DevThrottle Stats: record fleet concurrency (live + actively-working session counts) from the
+            // same assembled roster, so the peak is captured fleet-wide regardless of stream mode.
+            concurrency: SessionConcurrency,
+            // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold records
+            // (or clears) a snooze-until here, and the /sessions fold overlays an EXPIRED snooze back into
+            // "needs you" so the session returns on its own even after its Director dies.
+            snoozeRegistry: _snoozeRegistry);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1133,6 +1179,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // key; GET /devices is the host-readable registry listing. Mapped after the WS proxy so its
         // literal routes win over the catch-all session forwarder, same as the other literal routes.
         Api.DeviceEnrollmentEndpoint.Map(_app, Pairing, Devices, _childMirror);
+
+        // POST /devices/enroll-signed-in (issue #1069): the sign-in replacement for the pairing code -
+        // a co-located Director mints its own per-device key by having the Gateway signed in to
+        // DevThrottle, gated on a loopback caller. Same-machine only; remote via tailnet is a follow-up.
+        Api.SignedInEnrollmentEndpoint.Map(_app, Devices, SignIn, _childMirror);
 
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
         // session and have the persistent wingman brain translate the reply into speakable form,
@@ -1149,7 +1200,18 @@ public sealed class GatewayHost : IAsyncDisposable
         var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get));
         var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
         var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending);
-        Api.CarModeEndpoint.Map(_app, carModeBrain);
+        // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
+        // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
+        var carModeWarmup = new CarMode.CarModeWarmup(
+            CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get),
+            () =>
+            {
+                var mode = Core.Configuration.TranscriptionModeConfig.Get();
+                var tts = Core.Configuration.TranscriptionEndpointResolver.ResolveTts(mode);
+                var key = _keyVault.Get(tts.KeyName) ?? "";
+                return (tts.BaseUrl, Core.Configuration.TtsVoiceConfig.Resolve(mode), Core.Configuration.TtsModelConfig.Resolve(mode), key);
+            });
+        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTelemetry, carModeWarmup);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);
@@ -1391,7 +1453,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle Stats: the always-available private dashboard (/stats) and its JSON (/stats/data).
         // A self-contained embedded page, so it works even on a plain dev build with no React wwwroot.
         // Mapped before the mobile/cockpit catch-alls so the explicit routes win.
-        Stats.StatsPageEndpoint.Map(_app, InputStats);
+        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency);
 
         Mobile.MobileApp.Map(_app, Token);
 
@@ -1442,6 +1504,30 @@ public sealed class GatewayHost : IAsyncDisposable
         // only logs and retries next tick. Null on a host with no credential service.
         _deviceHeartbeat?.Start();
 
+        // Snooze Length mission: start the snooze watchdog. On its cadence it walks the registry and, for
+        // each pending snooze, reads the owning Director's RAW hold state directly (never the overlaid
+        // /sessions roster, so the fold's expiry overlay can never mask the Director's own clear). An
+        // expired-and-still-held session on a LIVE Director is nudged off hold (its own state and voice
+        // rotation then agree); the entry is cleared once the Director reports OnHold=false. A dead
+        // Director's entry is left alone - the /sessions fold surfaces it as "needs you" from the cached
+        // roster (the dead-man's-switch), and it is dropped only when that Director leaves the fleet.
+        _snoozeSweep = new Snooze.SnoozeExpirySweep(
+            _snoozeRegistry,
+            // Owning Director id -> the base URL the Gateway dials, or null when it has no reachable
+            // endpoint (offline/dead) - the case the sweep leaves untouched.
+            resolveEndpoint: directorId =>
+            {
+                var d = Registry.Get(directorId);
+                return d is null ? null : Api.SessionWsProxyEndpoints.ForwardDestination(d);
+            },
+            // RAW hold state read straight from the owning Director: true = held, false = not held,
+            // null = the session is absent there or the read did not land.
+            readOnHold: async (endpoint, sid, ct) => (await _client.GetSessionAsync(endpoint, sid, ct))?.OnHold,
+            // The expiry nudge: forward a hold=false to the owning Director.
+            forwardUnhold: (endpoint, sid, ct) => _client.SetHoldAsync(endpoint, sid, new Contracts.HoldRequest { OnHold = false }, ct),
+            utcNow: () => DateTime.UtcNow);
+        _snoozeSweep.Start();
+
         // Web Push (mobile app-icon "needs you" dot): start the background notifier now that this
         // Gateway's own /sessions endpoint is live on loopback. The notifier reads that endpoint (so its
         // "needs you" verdict is byte-identical to the roster's) and pushes the count to subscribed
@@ -1453,12 +1539,14 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Read THIS Gateway's own aggregated roster over loopback and count the sessions that "need you".
+    /// Read THIS Gateway's own aggregated roster over loopback and compute the notifier's snapshot: the
+    /// count of sessions that "need you" plus the ids of those that just returned from an expired snooze.
     /// Going through the real <c>/sessions</c> endpoint (rather than re-implementing the fan-out) keeps
     /// the notifier's verdict identical to what every client sees - same aggregation, same effective-red
-    /// fold. The per-machine Bearer is attached so it works whether or not global Gateway auth is on.
+    /// fold, same <see cref="Contracts.SessionDto.SnoozeExpired"/> overlay. The per-machine Bearer is
+    /// attached so it works whether or not global Gateway auth is on.
     /// </summary>
-    private async Task<int> GetNeedsYouCountAsync(CancellationToken cancellationToken)
+    private async Task<Push.WebPushNeedsYouNotifier.NeedsYouSnapshot> GetNeedsYouCountAsync(CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{Port}/sessions");
         request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {Token}");
@@ -1467,7 +1555,9 @@ public sealed class GatewayHost : IAsyncDisposable
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
         var sessions = JsonSerializer.Deserialize<List<Contracts.SessionDto>>(
             json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
-        return Push.WebPushNeedsYouNotifier.CountNeedsYou(sessions);
+        return new Push.WebPushNeedsYouNotifier.NeedsYouSnapshot(
+            Push.WebPushNeedsYouNotifier.CountNeedsYou(sessions),
+            Push.WebPushNeedsYouNotifier.ExpiredNeedsYouIds(sessions));
     }
 
     /// <summary>
@@ -1595,6 +1685,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // loopback HTTP client it read /sessions with. Subscriptions are already on disk (written through
         // on every change), so stopping loses nothing.
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
+        try { _snoozeSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] snooze sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }
 

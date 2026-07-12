@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useSessionChat } from "@devthrottle/client-core/history/useSessionChat";
 import { chatLinkLabel } from "@devthrottle/client-core/history/chatView";
+import { FileViewerModal } from "../components/FileViewerModal";
 
 // The Cockpit Chat tab (issue #1213): a thin view over the SAME shared client-core hook the mobile Chat
 // page uses (useSessionChat), so the two apps render the cleaned conversation history from one source.
@@ -14,6 +15,9 @@ export function ChatTab({ sessionId }: { sessionId: string | undefined }) {
   const { bubbles, emptyText, loadFailed, filter, setFilter } = useSessionChat(sessionId);
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Local Files (Phase 2): the file path currently being shown in the viewer, or null when closed. A
+  // click on a detected file-path link sets it; the FileViewerModal renders it in place.
+  const [viewerPath, setViewerPath] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
@@ -104,7 +108,16 @@ export function ChatTab({ sessionId }: { sessionId: string | undefined }) {
                             {chatLinkLabel(link.text)}
                           </a>
                         ) : (
-                          <span className="chat-link-text" title={link.text}>{chatLinkLabel(link.text)}</span>
+                          // Local Files (Phase 2): the file path is now a clickable control that opens
+                          // the viewer for that path (the copy button below is unchanged).
+                          <button
+                            type="button"
+                            className="chat-link-open chat-link-view"
+                            title={link.text}
+                            onClick={() => setViewerPath(link.text)}
+                          >
+                            {chatLinkLabel(link.text)}
+                          </button>
                         )}
                         <button type="button" className="chat-link-copy" onClick={() => void copyLink(link.text)}>
                           {link.isUrl ? "Copy URL" : "Copy path"}
@@ -119,6 +132,10 @@ export function ChatTab({ sessionId }: { sessionId: string | undefined }) {
           </div>
         )}
       </div>
+
+      {viewerPath !== null && sessionId && (
+        <FileViewerModal sessionId={sessionId} path={viewerPath} onClose={() => setViewerPath(null)} />
+      )}
     </div>
   );
 }

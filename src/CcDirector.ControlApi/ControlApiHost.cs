@@ -132,6 +132,16 @@ public sealed class ControlApiHost : IAsyncDisposable
     /// </summary>
     public GatewayConnectionMonitor GatewayMonitor { get; } = new();
 
+    /// <summary>
+    /// Snooze Length mission (Phase 3): the seam the desktop drives to record/clear a Gateway-owned
+    /// snooze THROUGH the Gateway (so a desktop snooze gets the same timer the phone/cockpit get),
+    /// instead of setting <c>Session.OnHold</c> in-process. Backed by the live <see cref="GatewayClient"/>
+    /// (which already holds the resolved Gateway address + fleet token), so it reuses the Director's
+    /// existing Gateway connection. Null while the Gateway is not configured (no client) - the desktop
+    /// gates the Snooze button on <see cref="GatewayMonitor"/> being Verified anyway.
+    /// </summary>
+    public IGatewayHold? GatewayHold => _gatewayClient;
+
     /// <summary>This Director's own serve provisioner (issue #197). Exposed for the
     /// troubleshooting dialog: rung 2's "Fix it now" runs EnsureMappingAsync, and the
     /// provisioner's LastError explains WHY a mapping is missing. Null on ephemeral-port

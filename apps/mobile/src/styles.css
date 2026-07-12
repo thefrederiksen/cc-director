@@ -164,6 +164,39 @@ a.banner-btn {
   border-color: rgba(255, 255, 255, 0.25);
 }
 
+/* Mobile-resilience mission: the ONE global bad-connection banner. A slim strip pinned to the very top
+   of every gated screen, shown only when the shared connection-health signal reads bad. It OVERLAYS the
+   top edge (fixed, not in flow) so it never reflows the fixed-height session screens or pushes the
+   terminal, and it names the bad connection plus how stale the data is - the single voice for "showing
+   last known information". Amber (a warning, not an error): the data underneath is fine, the network is
+   not. Sits above the sticky app bar and per-session headers (z-index 5) but below full-screen modals. */
+.conn-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  padding: calc(6px + env(safe-area-inset-top)) 12px 6px;
+  background: #7a5200;
+  border-bottom: 1px solid #b8860b;
+  color: #ffe6a3;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.conn-banner-age {
+  color: #ffcf7a;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
 .status-line {
   color: var(--text-dim);
   font-size: 14px;
@@ -204,6 +237,42 @@ a.banner-btn {
 
 .row-attention {
   border-color: rgba(241, 76, 76, 0.55);
+}
+
+/* Mobile-resilience Phase 2: a card whose owning machine is unreachable. It is KEPT and shown, just
+   dimmed and desaturated, so the reader sees it is stale-but-preserved (never deleted). A dashed border
+   distinguishes it from a live card at a glance without shouting. */
+.row-unreachable {
+  opacity: 0.72;
+  border-style: dashed;
+  border-color: rgba(148, 163, 184, 0.5);
+}
+
+/* The plain-English "Unreachable - MACHINE - last seen N ago" / "Reconnecting to MACHINE" note under an
+   unreachable card. Muted amber-gray: a warning, not an error - the data underneath is still good. */
+.row-unreachable-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbb892;
+}
+
+/* Snooze Length mission: a distinct amber "Snooze ended" badge on a card that just returned from an
+   expired snooze on its own - reads as "go see why it went quiet", not a plain needs-you. */
+.row-snooze-ended {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: rgba(217, 145, 32, 0.16);
+  border: 1px solid rgba(217, 145, 32, 0.55);
+  color: #d99120;
 }
 
 /* Issue #838: the dot is top-aligned at the start of the FIRST name line (align-items:
@@ -797,6 +866,30 @@ a.banner-btn {
   touch-action: pan-x pan-y;
 }
 
+/* Mobile-resilience Phase 3: the "reconnecting" note floats at the top-center of the terminal stage
+   while the live stream is down. It OVERLAYS the terminal (which keeps its last-known content beneath,
+   never blanked) and clears itself the instant the socket reopens. Amber - a warning, not an error. */
+.term-reconnecting {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: calc(100% - 24px);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(122, 82, 0, 0.94);
+  border: 1px solid #b8860b;
+  color: #ffe6a3;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
 /* The grid renders at the PTY's exact geometry; bottom padding reserves a strip so the live input
    row scrolls clear of the floating Fit / zoom controls instead of hiding under them. */
 .term-xterm {
@@ -1065,6 +1158,28 @@ a.banner-btn {
   cursor: pointer;
 }
 
+/* Regenerate response: a secondary action sitting just above Turn voice off. More emphasis than the
+   muted off-toggle (full text color, accent-tinted border) so it reads as an action, but still a
+   ghost button so it never competes with the primary in-state controls (Respond, the player). */
+.voice-regen-btn {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  border: 1px solid #5b2bd6;
+  border-radius: 10px;
+  padding: 11px 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.voice-regen-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* Status bar: a state pill on the left, an optional reference note on the right. */
 .voice-statusbar {
   display: flex;
@@ -1183,7 +1298,8 @@ a.banner-btn {
 }
 
 /* "Turn voice off" stays a fixed strip at the very bottom, below the scrolling narrative. */
-.voice-body-speaking .voice-off-toggle {
+.voice-body-speaking .voice-off-toggle,
+.voice-body-speaking .voice-regen-btn {
   flex: 0 0 auto;
 }
 
@@ -1693,6 +1809,177 @@ a.banner-btn {
 .chat-link-copied {
   color: #57c77d;
   font-size: 11px;
+}
+
+/* Local Files (Phase 3): the file-path link in chat is now a button that opens the viewer. It must
+   read exactly like the URL anchor (.chat-link-open) - a button carries default padding/background, so
+   reset those and keep the monospace accent styling. */
+.chat-link-view {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+/* ===== Local Files viewer (Phase 3) =====
+   The full-screen file viewer route (/session/:id/file). It reuses the .terminal-screen app shell
+   (title bar + a body that flexes and scrolls), so it behaves like every other session view - the top
+   chrome stays pinned and only the file body scrolls. The render modes mirror the Cockpit
+   FileViewerModal exactly; only this shell (a page, not a modal) differs. */
+
+/* Back and Download controls sit in the app-bar beside the file name (the flexing .term-title). */
+.file-view-back,
+.file-view-download {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.file-view-back {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.file-view-download {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: transparent;
+}
+.file-view-download:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* Download feedback toast: a floating status just under the app bar so a tap is never silent (it says
+   "Saving...", then "Saved ... to your device", or the specific failure). Fixed + high z-index so it
+   shows over the image/iframe body. */
+.file-view-download-toast {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: 90%;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* The body is the single give-point of the screen (the blanket .terminal-screen > * rule pins every
+   child at its natural size; this override lets the file body flex and scroll internally). */
+.terminal-screen > .file-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* pdf and sandboxed-html modes: the iframe fills the body. White backing so a transparent page reads. */
+.file-view-frame {
+  border: 0;
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+}
+
+/* image mode: scroll the natural-size image if it is larger than the body. */
+.file-view-scroll {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+}
+.file-view-image {
+  max-width: 100%;
+  height: auto;
+}
+
+/* text/code mode: a monospace pre that scrolls BOTH ways (horizontal scroll keeps code readable on a
+   narrow phone rather than wrapping it into an unreadable mess). */
+.file-view-pre {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 12px 14px;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre;
+  background: var(--surface);
+}
+
+/* markdown mode: the shared sanitized render, scrolled. */
+.file-view-md {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 14px 16px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.file-view-md img {
+  max-width: 100%;
+}
+
+.file-view-loading,
+.file-view-error,
+.file-view-download-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+.file-view-loading {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.file-view-error {
+  color: var(--attention);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.file-view-download-note {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.file-view-download-name {
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-all;
+}
+.file-view-download-size {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.file-view-download-btn {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #ffffff;
+  text-decoration: none;
+  font-size: 14px;
 }
 
 /* ===== Add-session flow + session management (issue #812) =====
@@ -2289,15 +2576,60 @@ a.banner-btn {
   font-size: 14px;
 }
 
-/* The full-screen Car Mode page. Chrome-less, high-contrast, thumb-reachable controls at the bottom. */
+/* The full-screen Car Mode page. Chrome-less, high-contrast, thumb-reachable controls at the bottom. It
+   fills exactly one viewport and never page-scrolls: the header and the control footer are pinned, and only
+   the middle scrolls if its content is taller than the space, so End Car Mode and the buttons are always
+   visible (docs/VisualStyle.md, the app-like session-screen rule). */
 .car-screen {
   position: fixed;
-  inset: 0;
+  /* Anchor top/left/right ONLY - deliberately NOT `inset: 0`. `inset: 0` sets both top:0 AND bottom:0,
+     which OVER-CONSTRAINS a fixed box: its height is then derived from top+bottom (the tall, toolbar-
+     hidden LAYOUT viewport) and the height below is IGNORED. Anchoring top-only lets the height win. */
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
+  /* v5 - HEIGHT IS PINNED TO THE ACTUALLY-VISIBLE VIEWPORT via --car-vh (set from
+     window.visualViewport.height in CarMode.tsx). On the owner's Android PWA, `dvh` did NOT track the
+     visible height reliably, so the box stayed taller than the screen and the footer's primary button
+     rendered below the bottom browser toolbar (cut off), idle AND active. --car-vh is the real visible
+     height (excludes the toolbars/keyboard); the fallbacks (100dvh, then 100vh) cover the first paint
+     before the effect runs and browsers without visualViewport. */
+  height: 100vh;
+  height: 100dvh;
+  height: var(--car-vh, 100dvh);
+  max-height: 100dvh;
+  max-height: var(--car-vh, 100dvh);
+  overflow: hidden;
+}
+/* The pin only works if the column lays out as: header (natural) -> middle (absorbs + scrolls) -> footer
+   (natural, at the bottom, NEVER pushed off). The middle is the single give-point, so no matter how tall
+   the body content gets, the footer's buttons stay laid out at the bottom of the visible viewport. */
+.car-screen > .car-middle {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.car-screen > .car-bar,
+.car-screen > .car-foot {
+  flex: 0 0 auto;
+}
+.car-bar {
+  flex: 0 0 auto;
+}
+/* The flexible middle between the pinned header and the pinned footer: it takes the remaining height and
+   scrolls INTERNALLY only when its content does not fit, so the page itself never scrolls. */
+.car-middle {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.car-foot {
+  flex: 0 0 auto;
 }
 .car-bar {
   display: flex;
@@ -2335,34 +2667,6 @@ a.banner-btn {
   white-space: nowrap;
 }
 
-/* The always-visible diagnostic readout: which page/Gateway is live, and whether the phone is hearing
-   the owner. Compact and monospace so it stays out of the way but is legible at a glance. */
-.car-debug {
-  margin: 0 12px 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.car-debug-row {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  align-items: baseline;
-}
-.car-debug-label {
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-.car-debug-value {
-  color: var(--text);
-  text-align: right;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
 .car-error {
   margin: 12px 16px 0;
   padding: 12px 14px;
@@ -2384,11 +2688,15 @@ a.banner-btn {
   text-align: center;
 }
 
-/* The one big status orb: its color IS the state at a distance (paired with the two audible cues). */
+/* The one big status orb: its color IS the state at a distance (paired with the two audible cues). It is
+   SIZED RESPONSIVELY (v4): a viewport-height clamp so it shrinks on short screens (landscape, small
+   phones) instead of forcing the middle taller and shoving the footer's button off the bottom edge. It
+   also never flex-grows/shrinks unexpectedly, so it holds this size and the middle scrolls if needed. */
 .car-orb {
   position: relative;
-  width: 140px;
-  height: 140px;
+  flex: 0 0 auto;
+  width: clamp(96px, 22vh, 140px);
+  height: clamp(96px, 22vh, 140px);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -2598,34 +2906,6 @@ a.banner-btn {
   cursor: default;
 }
 
-.car-history {
-  margin: 0 16px 20px;
-  color: var(--text-dim);
-  font-size: 13px;
-}
-.car-history summary {
-  cursor: pointer;
-  padding: 6px 0;
-}
-.car-history ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.car-history li {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 0;
-  border-top: 1px solid var(--border);
-}
-.car-history-you {
-  color: var(--text);
-}
-.car-history-said {
-  color: var(--text-dim);
-}
-
 /* ===== Your Throttle (devthrottle-stats mission) - the in-app port of the Gateway /stats page ===== */
 .thr-note {
   color: var(--text-dim);
@@ -2698,4 +2978,93 @@ a.banner-btn {
   font-size: 12px;
   color: var(--text-dim);
   margin-bottom: 6px;
+}
+
+/* 24-hour concurrency bar chart */
+.thr-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 110px;
+  padding: 8px 2px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-top: 8px;
+}
+.thr-bar-col {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+}
+.thr-bar-track {
+  width: 100%;
+  max-width: 16px;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-end;
+}
+.thr-bar-live {
+  width: 100%;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 2px 2px 0 0;
+  display: flex;
+  align-items: flex-end;
+  min-height: 1px;
+}
+.thr-bar-work {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+}
+.thr-bar-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  height: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.thr-turns-bar {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-radius: 2px 2px 0 0;
+  overflow: hidden;
+  min-height: 1px;
+}
+.thr-turns-voice {
+  width: 100%;
+  background: var(--accent);
+}
+.thr-turns-typed {
+  width: 100%;
+  background: color-mix(in srgb, var(--text-dim) 55%, transparent);
+}
+.thr-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.thr-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.thr-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.thr-swatch-voice {
+  background: var(--accent);
+}
+.thr-swatch-typed {
+  background: color-mix(in srgb, var(--text-dim) 55%, transparent);
 }

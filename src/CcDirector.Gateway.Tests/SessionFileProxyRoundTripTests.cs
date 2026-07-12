@@ -41,6 +41,11 @@ public sealed class SessionFileProxyRoundTripTests : IAsyncLifetime
     };
     private const string TextContent = "line one\nline two\nthe quick brown fox\n";
 
+    // A "large-ish" binary blob so the range test proves the seek-and-resume guarantee for big
+    // PDFs/images (Phase 4): each byte i holds (i * 31 + 7) mod 256, so any slice is independently
+    // verifiable against the same formula without holding a second copy.
+    private const int LargeSize = 300_000;
+
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-instances-" + Guid.NewGuid().ToString("N"));
     private readonly string _filesDir =
@@ -48,6 +53,9 @@ public sealed class SessionFileProxyRoundTripTests : IAsyncLifetime
 
     private string _pngPath = "";
     private string _textPath = "";
+    private string _largePath = "";
+
+    private static byte LargeByteAt(int i) => (byte)((i * 31 + 7) % 256);
 
     public async Task InitializeAsync()
     {
@@ -55,8 +63,13 @@ public sealed class SessionFileProxyRoundTripTests : IAsyncLifetime
         Directory.CreateDirectory(_filesDir);
         _pngPath = Path.Combine(_filesDir, "a report.png");
         _textPath = Path.Combine(_filesDir, "notes 1.txt");
+        _largePath = Path.Combine(_filesDir, "big scan.pdf");
         await File.WriteAllBytesAsync(_pngPath, PngBytes);
         await File.WriteAllTextAsync(_textPath, TextContent);
+
+        var large = new byte[LargeSize];
+        for (var i = 0; i < LargeSize; i++) large[i] = LargeByteAt(i);
+        await File.WriteAllBytesAsync(_largePath, large);
 
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
             instancesDirectory: _instancesDir,
@@ -138,6 +151,58 @@ public sealed class SessionFileProxyRoundTripTests : IAsyncLifetime
         var resp = await _http.GetAsync(
             $"sessions/file-session-1/file?path={Uri.EscapeDataString(missing)}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    // The large-file guarantee (Phase 4): a Range request must come back 206 Partial Content with only
+    // the requested slice - byte-identical to that slice of the original - and a Content-Range whose
+    // total is the full file size. This is what lets a big PDF/image seek and resume in the browser's
+    // native viewer, and it is also the mechanism the download panel's fetchSessionFileSize relies on
+    // (Range: bytes=0-0 -> the total is read from Content-Range). Proven through the Gateway proxy, so
+    // the range header and the 206 both survive the round trip.
+    [Fact]
+    public async Task Range_request_returns_206_with_the_exact_slice_through_the_gateway()
+    {
+        const int from = 100_000;
+        const int to = 100_255; // 256 bytes, inclusive on both ends (HTTP byte ranges)
+        var req = new HttpRequestMessage(HttpMethod.Get,
+            $"sessions/file-session-1/file?path={Uri.EscapeDataString(_largePath)}");
+        req.Headers.Range = new RangeHeaderValue(from, to);
+
+        var resp = await _http.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PartialContent, resp.StatusCode);
+
+        // The slice is exactly the requested bytes, in the right place, byte-for-byte.
+        var slice = await resp.Content.ReadAsByteArrayAsync();
+        Assert.Equal(to - from + 1, slice.Length);
+        for (var i = 0; i < slice.Length; i++)
+            Assert.Equal(LargeByteAt(from + i), slice[i]);
+
+        // Content-Range reports this slice out of the full size, so a client can compute total length.
+        Assert.NotNull(resp.Content.Headers.ContentRange);
+        Assert.Equal(from, resp.Content.Headers.ContentRange!.From);
+        Assert.Equal(to, resp.Content.Headers.ContentRange.To);
+        Assert.Equal(LargeSize, resp.Content.Headers.ContentRange.Length);
+    }
+
+    // The download panel's size probe (fetchSessionFileSize) in miniature: a one-byte Range: bytes=0-0
+    // yields 206 and the FULL size in Content-Range's total, so the panel can show a real size without
+    // downloading the file. This locks that exact contract at the proxy level.
+    [Fact]
+    public async Task Single_byte_range_reports_the_full_size_in_content_range()
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get,
+            $"sessions/file-session-1/file?path={Uri.EscapeDataString(_largePath)}");
+        req.Headers.Range = new RangeHeaderValue(0, 0);
+
+        var resp = await _http.SendAsync(req);
+
+        Assert.Equal(HttpStatusCode.PartialContent, resp.StatusCode);
+        var slice = await resp.Content.ReadAsByteArrayAsync();
+        Assert.Single(slice);
+        Assert.Equal(LargeByteAt(0), slice[0]);
+        Assert.NotNull(resp.Content.Headers.ContentRange);
+        Assert.Equal(LargeSize, resp.Content.Headers.ContentRange!.Length);
     }
 
     private static int FreePort()

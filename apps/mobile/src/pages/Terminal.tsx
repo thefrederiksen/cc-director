@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import "@xterm/xterm/css/xterm.css";
 import { listSessions } from "@devthrottle/client-core/api/client";
-import { TerminalMirror } from "@devthrottle/client-core/terminal/stream";
+import { TerminalMirror, type TerminalStreamStatus } from "@devthrottle/client-core/terminal/stream";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
 import { SessionControls } from "../components/SessionControls";
 import { SessionManageBar } from "../components/SessionManageBar";
@@ -31,15 +31,30 @@ const STATUS_BASE = "Live terminal (read-only)";
 
 export function Terminal() {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const mirrorRef = useRef<TerminalMirror | null>(null);
+
+  // Local Files (Phase 3): a clicked FILE path in the mirror opens the full-screen file viewer for that
+  // path. A stable callback so the TerminalMirror (constructed once per session) holds it across renders
+  // without being torn down. http/https URLs are opened by the mirror itself and never reach here.
+  const openFile = useCallback((path: string) => {
+    const sid = encodeURIComponent(sessionId ?? "");
+    // ?from= records THIS tab so the viewer's Back returns to Terminal (not a dead history.back()).
+    const from = encodeURIComponent(`/session/${sessionId ?? ""}/terminal`);
+    navigate(`/session/${sid}/file?path=${encodeURIComponent(path)}&from=${from}`);
+  }, [navigate, sessionId]);
 
   const [name, setName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>(STATUS_BASE);
   const [showKeys, setShowKeys] = useState(false); // controls hidden by default (Android parity)
   const [fitLabel, setFitLabel] = useState<"Fit" | "1:1">("1:1");
+  // The live-stream connection state (mobile-resilience Phase 3). While it is not "live" a small note
+  // shows over the terminal that it is (re)connecting - the last-known screen stays visible underneath,
+  // never blanked, and the note is the only sign of trouble.
+  const [streamStatus, setStreamStatus] = useState<TerminalStreamStatus>("connecting");
 
   // One-shot fetch of the session's display name for the header (the mirror itself never needs it).
   useEffect(() => {
@@ -56,11 +71,11 @@ export function Terminal() {
   // The live mirror: a real xterm.js terminal fed by the WebSocket session stream.
   useEffect(() => {
     if (!sessionId || wrapRef.current === null || hostRef.current === null) return;
-    const mirror = new TerminalMirror(wrapRef.current, hostRef.current, sessionId, setFitLabel);
+    const mirror = new TerminalMirror(wrapRef.current, hostRef.current, sessionId, setFitLabel, openFile, setStreamStatus);
     mirrorRef.current = mirror;
     mirror.start();
     return () => { mirror.dispose(); mirrorRef.current = null; };
-  }, [sessionId]);
+  }, [sessionId, openFile]);
 
   // The screen is kept awake app-wide by the gated layout's useScreenWakeLock (issue #981), which
   // covers the Terminal view too - so this page no longer holds its own separate wake lock.
@@ -99,6 +114,14 @@ export function Terminal() {
       {/* The terminal fills all remaining space. .term-wrap is the only scroll container (vertical
           scrollback + horizontal pan); the Fit and A-/A+ controls float over its corners. */}
       <div className="term-stage">
+        {/* Mobile-resilience Phase 3: while the live stream is down, a small note floats over the top of
+            the terminal. The last-known screen stays visible underneath (never blanked); this note is the
+            only sign the mirror is (re)connecting, and it clears itself the instant the socket reopens. */}
+        {streamStatus !== "live" && (
+          <div className="term-reconnecting" role="status">
+            {streamStatus === "connecting" ? "Connecting to the live terminal..." : "Reconnecting to the live terminal..."}
+          </div>
+        )}
         <div className="term-wrap" ref={wrapRef}><div className="term-xterm" ref={hostRef} /></div>
         <div className="term-zoom">
           <button type="button" className="term-zoom-btn" aria-label="Zoom out"
