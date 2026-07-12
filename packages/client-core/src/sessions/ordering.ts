@@ -8,6 +8,10 @@ type GatewayStampedSession = SessionDto & {
   effectiveColor?: string | null;
   stateLabel?: string | null;
   triageBucket?: TriageBucket | string | null;
+  // Snooze Length mission: display-only marker that this session just returned from an EXPIRED snooze
+  // (its Gateway-owned timer elapsed and the fold put it back into "needs you" on its own). The Gateway
+  // stamps it; clients render a distinct "Snooze ended" badge. Optional (absent/false for most sessions).
+  snoozeExpired?: boolean | null;
 };
 
 // The stable "desktop order": honor the owning Director's SortOrder (the user-controlled,
@@ -41,6 +45,14 @@ export function effectiveColor(s: SessionDto): string {
 // re-deriving a label from the raw color or activity state.
 export function stateLabel(s: SessionDto): string {
   return requireGatewayField((s as GatewayStampedSession).stateLabel, "stateLabel", s.sessionId);
+}
+
+// Snooze Length mission: true when this session just RETURNED from an expired snooze (its Gateway-owned
+// timer fired and put it back into "needs you" on its own). Clients render a distinct "Snooze ended"
+// badge so the owner knows it is a "go investigate why it went quiet" item, not a fresh turn-end.
+// Non-throwing (optional field): a session without the marker is simply not returned-from-snooze.
+export function snoozeExpired(s: SessionDto): boolean {
+  return Boolean((s as GatewayStampedSession).snoozeExpired);
 }
 
 // True while the agent is actively running a turn - the "working" state. Blue is the authoritative

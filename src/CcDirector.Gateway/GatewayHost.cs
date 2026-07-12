@@ -1534,12 +1534,14 @@ public sealed class GatewayHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Read THIS Gateway's own aggregated roster over loopback and count the sessions that "need you".
+    /// Read THIS Gateway's own aggregated roster over loopback and compute the notifier's snapshot: the
+    /// count of sessions that "need you" plus the ids of those that just returned from an expired snooze.
     /// Going through the real <c>/sessions</c> endpoint (rather than re-implementing the fan-out) keeps
     /// the notifier's verdict identical to what every client sees - same aggregation, same effective-red
-    /// fold. The per-machine Bearer is attached so it works whether or not global Gateway auth is on.
+    /// fold, same <see cref="Contracts.SessionDto.SnoozeExpired"/> overlay. The per-machine Bearer is
+    /// attached so it works whether or not global Gateway auth is on.
     /// </summary>
-    private async Task<int> GetNeedsYouCountAsync(CancellationToken cancellationToken)
+    private async Task<Push.WebPushNeedsYouNotifier.NeedsYouSnapshot> GetNeedsYouCountAsync(CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{Port}/sessions");
         request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {Token}");
@@ -1548,7 +1550,9 @@ public sealed class GatewayHost : IAsyncDisposable
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
         var sessions = JsonSerializer.Deserialize<List<Contracts.SessionDto>>(
             json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
-        return Push.WebPushNeedsYouNotifier.CountNeedsYou(sessions);
+        return new Push.WebPushNeedsYouNotifier.NeedsYouSnapshot(
+            Push.WebPushNeedsYouNotifier.CountNeedsYou(sessions),
+            Push.WebPushNeedsYouNotifier.ExpiredNeedsYouIds(sessions));
     }
 
     /// <summary>
