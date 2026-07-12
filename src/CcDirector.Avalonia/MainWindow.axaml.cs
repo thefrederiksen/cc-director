@@ -20,6 +20,7 @@ using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
 using CcDirector.Core.Configuration;
+using CcDirector.Core.GatewayConnection;
 using CcDirector.Core.Home;
 using CcDirector.Core.Network;
 using CcDirector.Core.Onboarding;
@@ -336,8 +337,7 @@ public partial class MainWindow : Window
         _schedulerLeaderTimer.Start();
         RefreshSchedulerLeaderIndicator();
 
-        WireGatewayIndicator();
-        WireAccountIndicator();
+        WireGatewayStatusBox();
         InitDirectorInfo();
 
         MaybeShowFirstRunWizards();
@@ -519,8 +519,13 @@ public partial class MainWindow : Window
     /// ControlApiHost starts in the background after the window opens, so retry on a
     /// short timer until it exists, then go fully event-driven.
     /// </summary>
-    private void WireGatewayIndicator()
+    private void WireGatewayStatusBox()
     {
+        // Line 2 of the box (account signed-in) is fed by a heartbeat poll of the Gateway's
+        // GET /account/status; line 1 (Gateway reachable) is fed by the GatewayConnectionMonitor
+        // attached below. Both repaint the one box through GatewayStatusBoxPresenter.
+        WireAccountStatusPoll();
+
         _gatewayAttachTimer = new global::Avalonia.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(1),
@@ -537,7 +542,7 @@ public partial class MainWindow : Window
         if (host is null) return;
 
         _gatewayMonitor = host.GatewayMonitor;
-        _gatewayMonitor.Changed += () => Dispatcher.UIThread.Post(UpdateGatewayIndicator);
+        _gatewayMonitor.Changed += () => Dispatcher.UIThread.Post(UpdateGatewayStatusBox);
 
         // Same host: wire the Control-API status indicator. The bind may have already failed
         // in the background before we attached, so paint the current state now AND subscribe
@@ -546,9 +551,9 @@ public partial class MainWindow : Window
 
         _gatewayAttachTimer?.Stop();
         _gatewayAttachTimer = null;
-        UpdateGatewayIndicator();
+        UpdateGatewayStatusBox();
         UpdateControlApiIndicator();
-        FileLog.Write("[MainWindow] Gateway indicator attached to GatewayConnectionMonitor");
+        FileLog.Write("[MainWindow] Gateway status box attached to GatewayConnectionMonitor");
     }
 
     private bool _controlApiFailureNotified;
@@ -602,97 +607,129 @@ public partial class MainWindow : Window
         }
     }
 
+    // Cached line-2 (account) inputs, refreshed by the account status poll; combined with the live
+    // monitor state (line 1) to paint the one box through GatewayStatusBoxPresenter (spec section 6).
+    private GatewayAccountSignInState _boxAccount = GatewayAccountSignInState.Unknown;
+    private string? _boxAccountEmail;
+    private bool _boxDeviceKeyPresent;
+    private bool _boxGatewayConfigured;
+    private string? _boxGatewayHost;
+
+    // True once the two-way handshake has proven Connected at least once this run, so a later failure
+    // reads as "was working, now unreachable" (red repair) rather than "never set up" (spec section 4).
+    private bool _boxWasEverConnected;
+
     /// <summary>
-    /// Paint the indicator from the monitor's state. GREEN only on a passed two-way
-    /// handshake; the EXAMPLE-PC failure mode (heartbeats fine, callback dead) shows
-    /// RED here while heartbeats still succeed - that is the whole point of #224.
+    /// Paint the ONE bottom-left status box from both verification sources (design spec section 6):
+    /// line 1 (Gateway reachable) from the live <see cref="GatewayConnectionMonitor"/>, line 2 (account
+    /// signed in) from the cached account-status poll. Both are reduced by
+    /// <see cref="GatewayStatusBoxPresenter"/> - which runs the same resolver the panel uses - so the box
+    /// and the panel can never disagree. GREEN is EARNED: line 1 only on a proven two-way handshake
+    /// (the EXAMPLE-PC failure mode of heartbeats-fine-callback-dead shows RED, the point of #224); line 2
+    /// only on the Gateway's own signed-in report.
     /// </summary>
-    private void UpdateGatewayIndicator()
+    private void UpdateGatewayStatusBox()
     {
-        var m = _gatewayMonitor;
-        if (m is null) return;
+        var inputs = BuildStatusBoxInputs();
+        if (inputs.Connection == GatewayConnectionVerification.Connected)
+            _boxWasEverConnected = true;
 
-        string icon, accent, bg, border, label, sub;
-        switch (m.Status)
-        {
-            case GatewayConnectionStatus.Verified:
-                (icon, accent, bg, border) = (GatewayIconCheck, "#22C55E", "#1B3A2A", "#22C55E");
-                label = "GATEWAY CONNECTED";
-                sub = $"two-way verified {m.LastVerifiedAt?.ToLocalTime():HH:mm:ss}";
-                break;
-            case GatewayConnectionStatus.Connecting:
-                (icon, accent, bg, border) = (GatewayIconRing, "#F0B848", "#3A331B", "#F0B848");
-                label = "GATEWAY VERIFYING...";
-                sub = "proving two-way connection";
-                break;
-            case GatewayConnectionStatus.Failed:
-                (icon, accent, bg, border) = (GatewayIconCross, "#EF4444", "#3A1B1B", "#DC2626");
-                label = "GATEWAY UNREACHABLE";
-                sub = (m.FailureSummary ?? "verification failed") + " - click to troubleshoot";
-                break;
-            case GatewayConnectionStatus.NoTailnetIdentity:
-                // Issue #324: explicit identity-failure state - the problem is LOCAL (no
-                // Tailscale identity to advertise), not the Gateway. Name the fix on screen.
-                (icon, accent, bg, border) = (GatewayIconCross, "#EF4444", "#3A1B1B", "#DC2626");
-                label = "NO TAILNET IDENTITY";
-                sub = (m.FailureSummary ?? "start Tailscale on this machine or set gateway.tailnetEndpoint") + " - click to troubleshoot";
-                break;
-            default:
-                // NotConfigured (issue #442): no gateway.url is set. This is a NEEDS-ATTENTION
-                // state (amber), not a benign local-only mode - features such as voice keys, the
-                // fleet view, and cross-machine sessions need a connected gateway. The click target
-                // opens Settings on the Gateway tab (see GatewayIndicator_PointerPressed).
-                (icon, accent, bg, border) = (GatewayIconRing, "#F0B848", "#3A331B", "#F0B848");
-                label = "GATEWAY NOT SET";
-                sub = "click to set the Gateway URL in Settings";
-                break;
-        }
+        var content = GatewayStatusBoxPresenter.Describe(inputs, _boxGatewayHost, _boxAccountEmail);
 
-        GatewayIndicatorIcon.Data = Geometry.Parse(icon);
-        GatewayIndicatorIcon.Fill = Brush.Parse(accent);
-        GatewayIndicator.Background = Brush.Parse(bg);
-        GatewayIndicator.BorderBrush = Brush.Parse(border);
-        GatewayIndicatorLabel.Text = label;
-        GatewayIndicatorLabel.Foreground = Brush.Parse(accent);
-        GatewayIndicatorSub.Text = sub;
+        var (bg, border) = BoxColors(content.Visual);
+        GatewayStatusBox.Background = Brush.Parse(bg);
+        GatewayStatusBox.BorderBrush = Brush.Parse(border);
+        PaintCheckLine(GatewayConnectedMarker, GatewayConnectedLine, content.Connected);
+        PaintCheckLine(GatewaySignedInMarker, GatewaySignedInLine, content.SignedIn);
+        ToolTip.SetTip(GatewayStatusBox, content.Tooltip);
 
-        var tip = $"Gateway connection: {m.Status}";
-        if (m.LastVerifiedAt is { } at) tip += $"\nLast verified: {at.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
-        if (m.LastResult is { } r && r.CallbackOk) tip += $"\nCallback: {r.CallbackLatencyMs} ms at {r.CallbackEndpoint}";
-        if (m.FailureSummary is { } f) tip += $"\n{f}";
-        // NotConfigured routes to Settings (set the URL); every other state routes to the
-        // troubleshooter (issue #442). The tooltip names whichever the click does.
-        tip += m.Status == GatewayConnectionStatus.NotConfigured
-            ? "\nClick to set the Gateway URL in Settings."
-            : "\nClick to open the troubleshooter.";
-        ToolTip.SetTip(GatewayIndicator, tip);
-
-        // The gateway light lives only in the rail now (GatewayIndicator, above). A missing
-        // gateway is NOT an error (legitimate local-only Director); only the failure states
-        // count against readiness and surface a problem row on the status screen.
-        var gatewayError = m.Status is GatewayConnectionStatus.Failed or GatewayConnectionStatus.NoTailnetIdentity;
-        _gatewayError = gatewayError;
+        // A missing gateway is NOT an error (a legitimate local-only Director); only the red failure
+        // states count against readiness and surface a problem row on the status screen.
+        _gatewayError = content.Visual == GatewayStatusBoxVisual.Red;
         ApplyHomeHealth();
-
     }
 
-    private async void GatewayIndicator_PointerPressed(object? sender, PointerPressedEventArgs e)
+    // Combine the live monitor state (line 1) with the cached account poll (line 2) into the resolver's
+    // full input snapshot. GatewayConfigured is true when either source says so, so the box resolves
+    // correctly whichever attached first.
+    private GatewayConnectionInputs BuildStatusBoxInputs()
     {
-        // No gateway configured (issue #442): route to Settings/Gateway so the user sets the
-        // required URL, rather than the troubleshooter (which has nothing to diagnose yet). Every
-        // other state still opens the troubleshooter.
+        var m = _gatewayMonitor;
+        var (connection, leg) = MapMonitor(m);
+        var configured = _boxGatewayConfigured || (m is not null && m.Status != GatewayConnectionStatus.NotConfigured);
+        return new GatewayConnectionInputs(
+            GatewayConfigured: configured,
+            Connection: connection,
+            FailedLeg: leg,
+            WasEverConnected: _boxWasEverConnected,
+            DeviceKeyPresent: _boxDeviceKeyPresent,
+            Account: _boxAccount);
+    }
+
+    // Map the monitor's raw status onto the resolver's connection verification plus the failing leg. A
+    // Failed handshake with a recorded callback verdict is the callback leg; without one, the outbound
+    // reach never got that far. NoTailnetIdentity is a local identity failure named generically here (the
+    // panel names it precisely in Step 1 repair).
+    private static (GatewayConnectionVerification, GatewayConnectionFailedLeg) MapMonitor(GatewayConnectionMonitor? m)
+    {
+        if (m is null) return (GatewayConnectionVerification.Unknown, GatewayConnectionFailedLeg.None);
+        return m.Status switch
+        {
+            GatewayConnectionStatus.Verified => (GatewayConnectionVerification.Connected, GatewayConnectionFailedLeg.None),
+            GatewayConnectionStatus.Connecting => (GatewayConnectionVerification.Verifying, GatewayConnectionFailedLeg.None),
+            GatewayConnectionStatus.Failed => (GatewayConnectionVerification.Failed,
+                m.LastResult is { CallbackOk: false } ? GatewayConnectionFailedLeg.Callback : GatewayConnectionFailedLeg.OutboundReach),
+            GatewayConnectionStatus.NoTailnetIdentity => (GatewayConnectionVerification.Failed, GatewayConnectionFailedLeg.None),
+            _ => (GatewayConnectionVerification.Unknown, GatewayConnectionFailedLeg.None),
+        };
+    }
+
+    // The box surface applies colors and glyphs; the presenter's per-line marker state decides which
+    // (spec section 6). Colors live here with the surface, not in the Core presenter.
+    private static void PaintCheckLine(global::Avalonia.Controls.Shapes.Path marker, TextBlock text, GatewayStatusLine line)
+    {
+        var (glyph, color) = MarkerStyle(line.Marker);
+        marker.Data = Geometry.Parse(glyph);
+        marker.Fill = Brush.Parse(color);
+        text.Text = line.Text;
+        text.Foreground = Brush.Parse(color);
+    }
+
+    private static (string Glyph, string Color) MarkerStyle(GatewayCheckState marker) => marker switch
+    {
+        GatewayCheckState.Passed => (GatewayIconCheck, "#22C55E"),   // green filled check
+        GatewayCheckState.Working => (GatewayIconRing, "#F0B848"),   // amber ring, in progress
+        GatewayCheckState.Failed => (GatewayIconCross, "#EF4444"),   // red cross, named leg
+        GatewayCheckState.Pending => (GatewayIconRing, "#F0B848"),   // amber ring, the actionable nudge
+        _ => (GatewayIconRing, "#777777"),                           // muted ring, cannot tell yet
+    };
+
+    private static (string Background, string Border) BoxColors(GatewayStatusBoxVisual visual) => visual switch
+    {
+        GatewayStatusBoxVisual.Green => ("#1B3A2A", "#22C55E"),
+        GatewayStatusBoxVisual.Red => ("#3A1B1B", "#DC2626"),
+        // Amber (needs attention) and Yellow (verifying) share the warm scheme; the line content and
+        // markers carry the distinction (line 1 "Connecting..." with a working ring for yellow).
+        _ => ("#3A331B", "#F0B848"),
+    };
+
+    /// <summary>
+    /// One click opens the Gateway Connection panel on the resolver's current step (spec section 6):
+    /// green -> the Done view, connected-but-not-signed-in -> Step 2 (sign in), everything else -> Step 1
+    /// (the automatic scan / progress / named failure). First-time setup and re-sign-in are the same flow
+    /// into the same panel.
+    /// </summary>
+    private void GatewayStatusBox_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
         try
         {
-            if (_gatewayMonitor?.Status == GatewayConnectionStatus.NotConfigured)
-            {
-                await OpenSettingsAsync(onGatewayTab: true);
-                return;
-            }
-            OpenGatewayTroubleshooter();
+            var step = GatewayConnectionStateResolver.Resolve(BuildStatusBoxInputs()).TargetStep;
+            FileLog.Write($"[MainWindow] GatewayStatusBox clicked; opening panel on step {step}");
+            OpenGatewayConnectionPanel(step);
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[MainWindow] GatewayIndicator_PointerPressed FAILED: {ex.Message}");
+            FileLog.Write($"[MainWindow] GatewayStatusBox_PointerPressed FAILED: {ex.Message}");
         }
     }
 
@@ -723,43 +760,46 @@ public partial class MainWindow : Window
         }
     }
 
-    // TEMPORARY (Gateway Connection mission, Phase 1): open the new GatewayConnectionPanel in a plain
-    // tool window so it can be exercised against the real Gateway before it is wired into Settings, the
-    // status box, and the onboarding wizard (later phases). This menu entry and this method are removed
-    // in Phase 4 when the panel adopts its three real hosts.
-    private void OpenGatewayConnectionPreview()
+    // Open the one reusable Gateway Connection panel in a tool window, on the given step (spec section 6:
+    // the status-box click opens the panel on the resolver's current step). Phase 4 also embeds this panel
+    // in Settings and the onboarding wizard; the temporary View-menu entry (which opens it on Step 1) is
+    // removed then.
+    private void OpenGatewayConnectionPanel(GatewayPanelStep step)
     {
         try
         {
             var window = new Window
             {
-                Title = "Gateway Connection (preview)",
+                Title = "Gateway Connection",
                 Width = 560,
                 Height = 660,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Background = global::Avalonia.Media.Brush.Parse("#252526"),
-                Content = new Controls.GatewayConnectionPanel(),
+                Content = new Controls.GatewayConnectionPanel(step),
             };
             window.Show(this);
-            FileLog.Write("[MainWindow] Gateway Connection preview opened");
+            FileLog.Write($"[MainWindow] Gateway Connection panel opened on step {step}");
         }
         catch (Exception ex)
         {
-            FileLog.Write($"[MainWindow] OpenGatewayConnectionPreview FAILED: {ex.Message}");
+            FileLog.Write($"[MainWindow] OpenGatewayConnectionPanel FAILED: {ex.Message}");
         }
     }
 
-    // ==================== ACCOUNT STATUS INDICATOR (issue #852) ====================
+    // TEMPORARY (Gateway Connection mission): the View-menu entry opens the panel on Step 1 for testing.
+    // Removed in Phase 4 when the panel adopts its Settings + onboarding hosts.
+    private void OpenGatewayConnectionPreview() => OpenGatewayConnectionPanel(GatewayPanelStep.Connect);
+
+    // ==================== GATEWAY STATUS BOX - ACCOUNT LINE (line 2) ====================
 
     private global::Avalonia.Threading.DispatcherTimer? _accountPollTimer;
     private bool _accountReadInFlight;
-    private AccountIndicatorState _accountState = AccountIndicatorState.Unavailable;
 
-    /// <summary>How often the ACCOUNT box re-reads the Gateway's signed-in status.</summary>
+    /// <summary>How often line 2 of the status box re-reads the Gateway's signed-in status.</summary>
     private static readonly TimeSpan AccountPollInterval = TimeSpan.FromSeconds(30);
 
     /// <summary>The Cockpit Account page route (issue #852). Appended to the Gateway-resolved
-    /// Cockpit front-door URL so the not-signed-in nudge lands on {frontDoor}/account.</summary>
+    /// Cockpit front-door URL. Retained for <see cref="BuildAccountUrl"/>, which is still unit-tested.</summary>
     private const string CockpitAccountRoute = "/account";
 
     /// <summary>
@@ -771,12 +811,12 @@ public partial class MainWindow : Window
         frontDoorUrl.TrimEnd('/') + CockpitAccountRoute;
 
     /// <summary>
-    /// Wire the read-only ACCOUNT box (issue #852): a heartbeat poll that reads the connected
-    /// Gateway's <c>GET /account/status</c> off the UI thread and repaints the box. Purely
-    /// informational and never a gate - the box paints its muted "resolving" state immediately and
-    /// updates when the first read returns, so the sidebar never waits on the network (#651/#664).
+    /// Wire the account line of the status box (spec section 6, line 2): a heartbeat poll that reads the
+    /// connected Gateway's <c>GET /account/status</c> off the UI thread, caches the line-2 inputs, and
+    /// repaints the one box. Purely informational and never a gate - the box paints immediately and updates
+    /// when the first read returns, so the sidebar never waits on the network (#651/#664).
     /// </summary>
-    private void WireAccountIndicator()
+    private void WireAccountStatusPoll()
     {
         _accountPollTimer = new global::Avalonia.Threading.DispatcherTimer
         {
@@ -784,17 +824,17 @@ public partial class MainWindow : Window
         };
         _accountPollTimer.Tick += AccountPollTimer_Tick;
         _accountPollTimer.Start();
-        // Kick the first read immediately so the box resolves shortly after startup without waiting
-        // a full poll interval. The timer Tick handler is the catching boundary.
+        // Kick the first read immediately so line 2 resolves shortly after startup without waiting a
+        // full poll interval. The timer Tick handler is the catching boundary.
         AccountPollTimer_Tick(null, EventArgs.Empty);
-        FileLog.Write("[MainWindow] Account indicator wired (heartbeat poll started)");
+        FileLog.Write("[MainWindow] Account status poll started (status box line 2)");
     }
 
     private async void AccountPollTimer_Tick(object? sender, EventArgs e)
     {
         try
         {
-            await RefreshAccountIndicatorAsync();
+            await RefreshAccountStatusAsync();
         }
         catch (Exception ex)
         {
@@ -803,11 +843,12 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Read the Gateway's signed-in status off the UI thread and repaint the ACCOUNT box. The read is
-    /// best-effort (an unreachable Gateway is a result value, never an exception out of the client), and
-    /// overlapping reads are skipped so a slow Gateway cannot pile up timer ticks.
+    /// Read the Gateway's signed-in status off the UI thread, then fold it into the status box (spec
+    /// section 6, line 2). The read is best-effort (an unreachable Gateway is a result value, never an
+    /// exception out of the client), and overlapping reads are skipped so a slow Gateway cannot pile up
+    /// timer ticks.
     /// </summary>
-    private async Task RefreshAccountIndicatorAsync()
+    private async Task RefreshAccountStatusAsync()
     {
         if (_accountReadInFlight) return;
         _accountReadInFlight = true;
@@ -816,7 +857,7 @@ public partial class MainWindow : Window
             // Snapshot the config on the UI thread, then do the network read off it.
             var config = GatewayConfig.Load();
             var status = await Task.Run(() => new GatewayAccountStatusClient().GetStatusAsync(config));
-            Dispatcher.UIThread.Post(() => UpdateAccountIndicator(status));
+            Dispatcher.UIThread.Post(() => ApplyAccountStatus(config, status));
         }
         finally
         {
@@ -825,106 +866,36 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Paint the ACCOUNT box from the Gateway's account status (issue #852). The visual state comes from
-    /// <see cref="AccountIndicatorPresenter"/>: GREEN signed-in with the email, AMBER not-signed-in nudge,
-    /// or a MUTED unavailable state when no Gateway is configured or the read failed - never a false
-    /// "signed out". The box shows the identity (email/provider) only, never any token (security DT-05).
+    /// Fold the Gateway's account status into the status box's line-2 inputs and repaint (spec sections 4,
+    /// 6): the signed-in state, the email (shown on the green line only), whether this device holds its own
+    /// token, whether a Gateway is configured, and the Gateway host for the tooltip. An unreachable or
+    /// not-configured Gateway maps to a MUTED "cannot tell yet" - never a false sign-out (decision 3). The
+    /// email is used only to render the identity; no token ever reaches the box (security DT-05).
     /// </summary>
-    private void UpdateAccountIndicator(GatewayAccountStatus status)
+    private void ApplyAccountStatus(GatewayConfig config, GatewayAccountStatus status)
     {
-        var content = AccountIndicatorPresenter.Describe(status);
-        _accountState = content.State;
-
-        string accent, bg, border;
-        switch (content.State)
-        {
-            case AccountIndicatorState.SignedIn:
-                (accent, bg, border) = ("#22C55E", "#1B3A2A", "#22C55E");
-                break;
-            case AccountIndicatorState.NotSignedIn:
-                (accent, bg, border) = ("#F0B848", "#3A331B", "#F0B848");
-                break;
-            default: // Unavailable
-                (accent, bg, border) = ("#777777", "#2A2A2A", "#3C3C3C");
-                break;
-        }
-
-        AccountIndicatorIcon.Fill = Brush.Parse(accent);
-        AccountIndicator.Background = Brush.Parse(bg);
-        AccountIndicator.BorderBrush = Brush.Parse(border);
-        AccountIndicatorLabel.Text = content.Label;
-        AccountIndicatorLabel.Foreground = Brush.Parse(accent);
-        AccountIndicatorSub.Text = content.Sub;
-
-        // Only the not-signed-in nudge is actionable (it opens the Cockpit Account page); the other
-        // states are read-only, so drop the hand cursor when there is nothing to click.
-        AccountIndicator.Cursor = content.State == AccountIndicatorState.NotSignedIn
-            ? new Cursor(StandardCursorType.Hand)
-            : Cursor.Default;
-
-        var tip = content.State switch
-        {
-            AccountIndicatorState.SignedIn => status.Provider is { Length: > 0 } p
-                ? $"Signed in to DevThrottle as {status.Email} (via {p}) on the Gateway."
-                : $"Signed in to DevThrottle as {status.Email} on the Gateway.",
-            AccountIndicatorState.NotSignedIn =>
-                "The Gateway is not signed in to DevThrottle. Click to open the Cockpit Account page and sign in.",
-            _ => status.Error ?? "Account status is managed by the Gateway and is currently unavailable.",
-        };
-        ToolTip.SetTip(AccountIndicator, tip);
+        _boxAccount = MapAccount(status);
+        _boxAccountEmail = status.SignedIn ? status.Email : null;
+        _boxDeviceKeyPresent = !string.IsNullOrWhiteSpace(config.Token);
+        _boxGatewayConfigured = status.GatewayConfigured;
+        _boxGatewayHost = SafeHost(config.Url);
 
         // Log the state and booleans, never the email (PII; CodingStyle Section 4 / 12).
-        FileLog.Write($"[MainWindow] UpdateAccountIndicator: state={content.State}, configured={status.GatewayConfigured}, reachable={status.Reachable}, signedIn={status.SignedIn}");
+        FileLog.Write($"[MainWindow] ApplyAccountStatus: account={_boxAccount}, deviceKey={_boxDeviceKeyPresent}, configured={status.GatewayConfigured}, reachable={status.Reachable}");
+        UpdateGatewayStatusBox();
     }
 
-    /// <summary>
-    /// Open the Cockpit Account page when the user clicks the not-signed-in nudge (issue #852). This is
-    /// the box's only action - it links OUT to the Gateway-managed account surface and never signs in on
-    /// the Director (#651/#664); the other states are read-only and do nothing on click. Mirrors
-    /// BtnCockpit_Click: ask the configured Gateway (GET {base}/cockpit) for the Tailscale front-door URL,
-    /// then open {frontDoor}/account. Director never opens a localhost URL.
-    /// </summary>
-    private async void AccountIndicator_PointerPressed(object? sender, PointerPressedEventArgs e)
+    // Map the Gateway's account report onto the resolver's signed-in input. A not-configured Gateway is
+    // Unknown and an unreachable one is Unavailable - both muted, never a false sign-out (decision 3).
+    private static GatewayAccountSignInState MapAccount(GatewayAccountStatus status)
     {
-        if (_accountState != AccountIndicatorState.NotSignedIn)
-        {
-            FileLog.Write($"[MainWindow] AccountIndicator_PointerPressed: ignored (state={_accountState}, only the not-signed-in nudge is clickable)");
-            return;
-        }
-
-        var baseUrl = CockpitUrlResolver.ResolveCockpitBase(GatewayConfig.Load());
-        FileLog.Write($"[MainWindow] AccountIndicator_PointerPressed: asking gateway for Cockpit URL, baseUrl={baseUrl}");
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            var info = await http.GetFromJsonAsync<global::CcDirector.Gateway.Contracts.CockpitInfoDto>(
-                baseUrl + "/cockpit");
-            if (info?.Url is { } frontDoor)
-            {
-                var accountUrl = BuildAccountUrl(frontDoor);
-                FileLog.Write($"[MainWindow] AccountIndicator_PointerPressed: opening {accountUrl} (up={info.Up}, baseUrl={baseUrl})");
-                OpenUrlInBrowser(accountUrl);
-            }
-            else
-            {
-                FileLog.Write($"[MainWindow] AccountIndicator_PointerPressed: gateway at {baseUrl} returned no Tailscale URL (Tailscale unavailable); opening nothing. cc-director never opens a localhost URL.");
-                await new MessageDialog(
-                    "Cannot Open Account Page",
-                    "Tailscale is unavailable on this machine, so there is no tailnet URL for the " +
-                    "Cockpit Account page. Bring Tailscale up and try again. Director never opens a " +
-                    "localhost URL because it would only work on this one machine.")
-                    .ShowDialog<bool?>(this);
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] AccountIndicator_PointerPressed FAILED (baseUrl={baseUrl}): {ex.Message}");
-            await new MessageDialog(
-                "Cannot Open Account Page",
-                BuildGatewayUnreachableMessage(baseUrl, ex.Message))
-                .ShowDialog<bool?>(this);
-        }
+        if (!status.GatewayConfigured) return GatewayAccountSignInState.Unknown;
+        if (!status.Reachable) return GatewayAccountSignInState.Unavailable;
+        return status.SignedIn ? GatewayAccountSignInState.SignedIn : GatewayAccountSignInState.SignedOut;
     }
+
+    private static string? SafeHost(string? url)
+        => !string.IsNullOrWhiteSpace(url) && Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
 
     // ==================== HOME (empty-state) ====================
 
@@ -978,9 +949,9 @@ public partial class MainWindow : Window
         if (!showHome) return;
 
         HomeView.SetVersion(AppVersion.Display);
-        // Paint the gateway card from current state (no-op until the monitor is attached;
+        // Paint the gateway status box from current state (no-op until the monitor is attached;
         // its Changed event repaints it once it is).
-        UpdateGatewayIndicator();
+        UpdateGatewayStatusBox();
         _ = RefreshHomeAsync();
     }
 
@@ -1342,8 +1313,7 @@ public partial class MainWindow : Window
         if (_lastHomeStatus is not { } status) return;
 
         var healthy = status.AllReady && !_gatewayError;
-        var gw = GatewayIndicatorLabel.Text ?? "";
-        var summary = gw.Contains("CONNECTED", StringComparison.OrdinalIgnoreCase)
+        var summary = _gatewayMonitor?.Status == GatewayConnectionStatus.Verified
             ? "Gateway connected - ready to work"
             : "Ready to start a session";
         // When all tools pass, show the count (and any optional not-installed) quietly here rather than
