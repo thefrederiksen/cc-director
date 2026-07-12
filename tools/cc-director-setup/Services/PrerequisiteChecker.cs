@@ -5,8 +5,22 @@ namespace CcDirectorSetup.Services;
 
 public static class PrerequisiteChecker
 {
-    public static List<PrerequisiteInfo> CreateChecklist()
+    public static List<PrerequisiteInfo> CreateChecklist(CcDirector.Setup.Engine.InstallRole role)
     {
+        // Tailscale stays optional and never blocks the install. Only the WHY differs by role:
+        // on the gateway it is what lets a phone or another computer reach this machine securely
+        // (browsers require HTTPS off localhost, and Tailscale supplies that certificate for free);
+        // on a workstation it only matters when the machine leaves the gateway's local network.
+        // Everything runs on this machine at localhost over plain HTTP with no Tailscale, because
+        // browsers treat localhost as already secure.
+        var tailscaleDescription = role == CcDirector.Setup.Engine.InstallRole.Gateway
+            ? "Optional but needed for your phone and other computers to reach this gateway. The "
+              + "mobile app and the Cockpit run in a browser, which requires a secure (HTTPS) "
+              + "connection off this machine - Tailscale provides that automatically and for free. "
+              + "Everything still works on this machine at localhost without it."
+            : "Optional: only needed if you use this machine away from your gateway's local "
+              + "network. On the same network it reaches the gateway directly, with no Tailscale.";
+
         return
         [
             new PrerequisiteInfo
@@ -42,7 +56,7 @@ public static class PrerequisiteChecker
             new PrerequisiteInfo
             {
                 Name = "Tailscale",
-                Description = "Optional: remote access (a Gateway/Cockpit on another machine reaches this Director over the tailnet); local-only use works without it",
+                Description = tailscaleDescription,
                 IsRequired = false,
                 CanAutoInstall = true,
                 WingetId = "tailscale.Tailscale",
