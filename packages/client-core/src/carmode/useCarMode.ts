@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
 import { playReadyCue, playYourTurnCue } from "../dictation/readyCue";
-import { detectEndPhrase, detectInterrupt } from "./controlPhrases";
+import { detectEndPhrase } from "./controlPhrases";
 import { playClip, type PlayOutcome, type PlayClipHooks } from "./audioPlayback";
 import {
   postCarModeTelemetry,
@@ -14,28 +14,29 @@ import {
 } from "./carModeApi";
 import { gatewayErrorMessage } from "../api/client";
 
-// The Car Mode turn-taking machine (new build B). This shared hook owns the whole walkie-talkie loop so
-// the page is a thin view (decision 6). There is NO silence timer that ends a turn - the owner pauses to
-// think for as long as he likes, and a pause only ends the turn when what he said ends with "over and out".
+// The Car Mode turn-taking machine (v3: button-first, mic never touched during playback). This shared hook
+// owns the whole walkie-talkie loop so the page is a thin view (decision 6).
 //
-// SINGLE MIC STREAM, control detection folded into the Gateway transcription (the architecture, 2026-07-11).
-// The browser's built-in speech recognizer was dropped: a harness proved Chrome's fake-audio capture does
-// not even feed webkitSpeechRecognition, and it is flaky and untestable - the likely reason the phone
-// failed. Instead there is ONE microphone consumer, MicRecorder, and the control words are found by the
-// SAME proven Gateway transcription (Whisper) we already use for the command. One getUserMedia stream, its
-// AnalyserNode driving BOTH the real level meter AND a cheap local silence detector, and no second consumer
-// so nothing contends for the microphone.
+// WHY v3 IS THE SHAPE IT IS (data-driven): the reply audio was proven to PLAY to its natural end on the
+// phone (Completed=TRUE, PlayedTo==ClipDuration) yet the owner "heard nothing". The telemetry pinned the
+// cause: re-opening the microphone (getUserMedia) for a rolling voice-"stop" watch WHILE the reply plays
+// ducks/reroutes the <audio> output on mobile so it is inaudible. So the hard rule now is: WHILE SPEAKING,
+// NOTHING touches the microphone - the capture stream is fully released and only the <audio> element plays.
 //
-// Two states, plus a brief Thinking state while the brain works:
-//   Listening - the owner is talking. MicRecorder accumulates his audio; the level meter shows it is being
-//               picked up. When he PAUSES (level under a threshold for ~0.7s AFTER speech), the accumulated
-//               audio is transcribed by the Gateway; the turn ends ONLY if that transcript ends with "over
-//               and out" (command = transcript minus the phrase). A mid-thought pause whose transcript does
-//               NOT end with the phrase does nothing - he keeps his turn. No silence-based turn-end.
-//   Thinking  - the command is answered by the brain.
-//   Speaking  - the reply plays through <audio>, while a short rolling-window Gateway transcription watches
-//               for "stop"/"wait"/"shut up" so the owner can cut it off. echoCancellation keeps the
-//               assistant's own voice out of that window; the touch Stop button is the instant path.
+// The two finicky voice paths are DEFERRED in favour of buttons (Soren's directive: one thing at a time):
+//   - Ending a turn is done by the touch "Over and out" BUTTON, which transcribes whatever was captured and
+//     takes the turn. The auto pause-probe that used to listen for a spoken "over and out" is removed (it
+//     took several tries to land). If the owner happens to say "over and out", it is stripped, but it is not
+//     required.
+//   - Interrupting the reply is done by the touch "Stop" BUTTON, the SOLE interrupt. There is no voice
+//     "stop" watch, because that is exactly the mic-during-playback that made the reply inaudible.
+//
+// The states, plus a brief Thinking state while the brain works:
+//   Listening - the owner is talking. MicRecorder (one getUserMedia stream) accumulates his audio and its
+//               AnalyserNode drives the on-screen level meter. The turn ends when he taps "Over and out".
+//   Thinking  - the microphone is stopped and RELEASED; the command is answered by the brain.
+//   Speaking  - the whole reply plays through the reused, gesture-unlocked <audio> element with the
+//               microphone still RELEASED (no getUserMedia). Only the touch "Stop" button cuts it off.
 //
 // The audible handshake (mission, first-class): the "my turn" water-drop (playReadyCue) fires the instant a
 // turn is taken; the "your turn" double-blip (playYourTurnCue) fires whenever the microphone is the owner's
@@ -80,9 +81,9 @@ interface TurnMetrics {
   playedToMs: number; // how far INTO the clip playback reached at end/cutoff (audio.currentTime): media-time, not wall-clock
   completed: boolean; // true when the reply clip played fully to its natural end; false when cut off (interrupt / End)
   playRejected: boolean; // true when the reply's play() was REJECTED (mobile autoplay block) so it never sounded
-  // ----- The mic-contention hypothesis (does grabbing the mic mid-playback cut the reply off on mobile?) -----
-  micReacquiredDuringPlayback: boolean; // did the rolling-"stop" watch re-open the microphone WHILE the reply was playing
-  speakingPollCount: number; // how many rolling-"stop" transcriptions ran during this reply (each re-reads the open mic)
+  // ----- Mic-during-playback proof (v3: the mic is released while the reply plays, so these read healthy) -----
+  micReacquiredDuringPlayback: boolean; // v3: always false (the mic is never re-opened during playback); kept to PROVE it
+  speakingPollCount: number; // v3: always 0 (no rolling-"stop" transcription runs during the reply)
   posted: boolean;
 }
 
@@ -118,8 +119,8 @@ export interface CarModeView {
   /** The last transcript the Gateway returned for a pause / rolling window (Car Mode diagnostic: lets the
    *  owner SEE what the phone heard). Empty until the first transcription of the current turn. */
   lastHeard: string;
-  /** A short capture/transcription state for the debug readout ("listening", "pause - transcribing",
-   *  'heard: "..."', "thinking", "watching for stop", "interrupt"). */
+  /** A short capture/transcription state for the debug readout ("listening", "transcribing",
+   *  'heard: "..."', "thinking", "speaking", "interrupt"). */
   captureState: string;
   /** The last transcription error line, or null when none. Distinct from `error` (the loud user-facing
    *  failure); this is the raw diagnostic detail from a background probe. */
@@ -144,12 +145,6 @@ export interface UseCarModeOptions {
   respond: (command: string, signal: AbortSignal) => Promise<CarModeReply>;
 }
 
-// Level below this (0..1 from the AnalyserNode) counts as quiet; at or above it counts as speech.
-const SILENCE_THRESHOLD = 0.06;
-// Quiet for this long AFTER speech has been heard counts as a pause worth transcribing.
-const PAUSE_MS = 700;
-// How often the rolling window is transcribed while the assistant is speaking, to catch an interrupt word.
-const SPEAKING_POLL_MS = 1500;
 // How often to send a keep-warm ping WHILE Car Mode is open, so the hosted model + text-to-speech stay hot
 // for the drive. Comfortably inside a typical provider keep-alive window; only fires while Car Mode is open.
 const KEEP_WARM_MS = 3 * 60 * 1000;
@@ -217,12 +212,6 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const clipUrlRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Silence-detector bookkeeping, read/written from the animation-frame loop (not a React render).
-  const rafRef = useRef<number>(0);
-  const heardSpeechRef = useRef(false); // has the owner spoken since the last (re)start of listening?
-  const belowSinceRef = useRef(0); // performance.now() the level first dropped below the threshold, or 0
-  const busyRef = useRef(false); // a background transcription is in flight (do not start another)
-  const speakingPollRef = useRef<number | null>(null); // setInterval id for the speaking rolling window
   const keepWarmRef = useRef<number | null>(null); // setInterval id for the keep-warm ping while Car Mode is open
 
   // Performance-round telemetry: the metrics for the turn in flight, filled across transcribe -> brain ->
@@ -233,12 +222,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // turn metrics the instant the turn is confirmed, so one real turn shows how hard "over and out" was to
   // land (a high count means the phrase kept being missed).
   const transcribeAttemptsRef = useRef(0);
-  // Mic-contention diagnostic: how many rolling-"stop" transcriptions ran while the current reply played.
-  // Each one re-reads the (still open) capture stream; the hypothesis is that grabbing the mic during
-  // playback ducks or interrupts the reply on mobile. Reset when a reply starts playing.
-  const speakingPollCountRef = useRef(0);
-  // The chunked-playback "stop now" resolver: set while a clip is playing so an interrupt (voice "stop" or
-  // the Stop button) or End Car Mode can end the current clip's play promise and unblock the play loop.
+  // The playback "stop now" resolver: set while the reply clip is playing so the touch Stop button or End
+  // Car Mode can end the play promise and unblock the speak loop.
   const playbackStopRef = useRef<(() => void) | null>(null);
 
   // The phase, read synchronously inside the loop/timer callbacks (not a React render). A ref mirror
@@ -249,22 +234,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     setPhase(p);
   }, []);
 
-  // "Latest" refs for the two functions the long-lived loop/interval invoke, so those callbacks always run
-  // the current implementation and never a stale closure, regardless of React re-renders.
-  const onPauseRef = useRef<() => void>(() => {});
-  const onSpeakingTickRef = useRef<() => void>(() => {});
-
   const revokeClip = useCallback(() => {
     if (clipUrlRef.current !== null) {
       URL.revokeObjectURL(clipUrlRef.current);
       clipUrlRef.current = null;
-    }
-  }, []);
-
-  const stopSpeakingPoll = useCallback(() => {
-    if (speakingPollRef.current !== null) {
-      clearInterval(speakingPollRef.current);
-      speakingPollRef.current = null;
     }
   }, []);
 
@@ -372,27 +345,25 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     }
   }, [announceError]);
 
-  // Enter Listening: the microphone is the owner's again. Play the "your turn" cue, reset the silence
-  // detector, clear the on-screen transcript for the fresh turn, and open a clean capture segment.
+  // Enter Listening: the microphone is the owner's again. Play the "your turn" cue, clear the on-screen
+  // transcript for the fresh turn, and open a clean capture segment (a fresh getUserMedia stream).
   const enterListening = useCallback(async () => {
-    stopSpeakingPoll();
     setPhaseBoth("listening");
     setError(null);
     playYourTurnCue();
-    heardSpeechRef.current = false;
-    belowSinceRef.current = 0;
-    busyRef.current = false;
     // Fresh turn: reset the finickiness probe counter so it counts only THIS turn's attempts.
     transcribeAttemptsRef.current = 0;
     setLastHeard("");
     setCaptureError(null);
     setCaptureState("listening");
     await restartCapture();
-  }, [restartCapture, setPhaseBoth, stopSpeakingPoll]);
+  }, [restartCapture, setPhaseBoth]);
 
-  // Synthesize `text` through the one good Gateway voice and play it, entering Speaking. Once playing, open
-  // a fresh capture segment and start the rolling-window interrupt watch (barge-in). A synthesis failure is
-  // announced loudly and the microphone returns to the owner.
+  // Synthesize `text` through the one good Gateway voice and play the WHOLE reply with the microphone fully
+  // RELEASED (v3): nothing touches getUserMedia while the reply plays, because re-opening the mic mid-
+  // playback ducks/reroutes the audio on mobile so the owner hears nothing. The reply is cut off ONLY by the
+  // touch Stop button. When it finishes on its own the microphone returns to the owner. A synthesis failure
+  // is announced loudly and the microphone returns to the owner.
   const speakAndPlay = useCallback(
     async (text: string, signal: AbortSignal) => {
       try {
@@ -418,12 +389,12 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         if (audio === null) throw new Error("The audio player was not ready.");
 
         setPhaseBoth("speaking");
-        setCaptureState("watching for stop");
+        setCaptureState("speaking");
 
         // Play the reply. The lifecycle hooks record the cut-off-reply diagnostic: when playback actually
-        // starts, how long it stayed audible, and whether it played to its natural end or was cut off.
-        // Fresh count of rolling-"stop" polls for THIS reply; the mic-contention diagnostic reads it back.
-        speakingPollCountRef.current = 0;
+        // starts, how long it stayed audible, and whether it played to its natural end or was cut off. The
+        // microphone stays RELEASED throughout (it was stopped in takeTurn before Thinking) - nothing
+        // re-opens it here, which is the whole point of v3.
         const played = playBlob(url, {
           onPlayStarted: () => {
             if (metrics === null) return;
@@ -448,7 +419,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
               metrics.clipDurationMs = Number.isFinite(audioEl.duration) ? audioEl.duration * 1000 : 0;
               metrics.playedToMs = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime * 1000 : 0;
             }
-            metrics.speakingPollCount = speakingPollCountRef.current;
+            // No rolling "stop" watch runs in v3, so the microphone was never re-opened during playback:
+            // these two mic-contention diagnostics read their healthy values (false / 0). They are kept so
+            // the /carmode/telemetry dashboard can PROVE the mic stayed released this turn.
+            metrics.micReacquiredDuringPlayback = false;
+            metrics.speakingPollCount = 0;
             // Post the merged timing record now that the clip's whole lifecycle is known - including a
             // cut-off - so a truncated reply is VISIBLE at /carmode/telemetry (fire-and-forget).
             postTurnTelemetry(metrics);
@@ -460,14 +435,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
           },
         });
 
-        // Barge-in: a fresh capture segment plus the rolling-window transcription watch for "stop". This is
-        // the mic-contention suspect - the microphone is re-opened WHILE the reply plays. Record that it
-        // happened so one real phone turn can prove or kill the hypothesis that this ducks/cuts the reply.
-        await restartCapture();
-        if (metrics !== null) metrics.micReacquiredDuringPlayback = true;
-        stopSpeakingPoll();
-        speakingPollRef.current = window.setInterval(() => onSpeakingTickRef.current(), SPEAKING_POLL_MS);
-
+        // v3: the microphone is NOT re-opened here. The reply plays with getUserMedia released; the touch
+        // Stop button is the sole interrupt. This is the fix for the "played but heard nothing" bug.
         const how = await played;
         if (how === "stopped" || signal.aborted) return; // interrupted / ended session mid-reply
 
@@ -479,7 +448,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         await enterListening();
       }
     },
-    [announceError, enterListening, playBlob, postTurnTelemetry, restartCapture, revokeClip, setPhaseBoth, stopSpeakingPoll],
+    [announceError, enterListening, playBlob, postTurnTelemetry, revokeClip, setPhaseBoth],
   );
 
   // Take the turn: the command (already stripped of "over and out") is answered by the brain and the reply
@@ -488,7 +457,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     async (command: string) => {
       if (phaseRef.current !== "listening") return;
       setPhaseBoth("thinking");
-      stopSpeakingPoll();
+      // Stop AND release the microphone before Thinking + Speaking: no getUserMedia stays open while the
+      // brain works and the reply plays (v3 - the mic must not touch the audio session during playback).
       const rec = recorderRef.current;
       try {
         if (rec !== null && rec.isRecording) await rec.stop();
@@ -540,153 +510,85 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         await enterListening();
       }
     },
-    [respond, announceError, enterListening, speakAndPlay, setPhaseBoth, stopSpeakingPoll],
+    [respond, announceError, enterListening, speakAndPlay, setPhaseBoth],
   );
 
-  // Transcribe the audio captured so far and decide the turn. `force` is the touch "over and out": it ends
-  // the turn with whatever was said (phrase stripped if present). A background pause probe (force=false)
-  // ends the turn ONLY if the transcript ends with the phrase; otherwise the owner keeps his turn. A probe
-  // failure is recorded but NOT spoken (it is a background check, not a user action); a forced failure is
-  // announced loudly (the owner explicitly acted).
-  const transcribeAndDecide = useCallback(
-    async (force: boolean) => {
-      const rec = recorderRef.current;
-      if (rec === null) return;
-      if (!force) {
-        if (busyRef.current) return;
-        busyRef.current = true;
-      }
-      // The pause was detected (or "over and out" tapped) now; time the command transcription from here so
-      // the telemetry record shows how long the owner waits between finishing and the brain starting.
-      const pauseDetectedAt = performance.now();
-      try {
-        const clip = rec.snapshot();
-        if (clip.size < MIN_CLIP_BYTES) {
-          if (force) void takeTurn("");
-          return;
-        }
-        if (!force) setCaptureState("pause - transcribing");
-        // Count this transcribe probe (pause-triggered or the forced "over and out" tap): the finickiness
-        // diagnostic is how many of these ran before the turn was finally taken. A high count on a real turn
-        // means the phone kept missing "over and out". Reset when the microphone returns (enterListening).
-        transcribeAttemptsRef.current += 1;
-        // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network
-        // + server), so a real phone turn shows where the pause-to-transcript time actually goes.
-        const transcodeStart = performance.now();
-        const { wav } = await blobToWav16kMono(clip);
-        const transcodeMs = performance.now() - transcodeStart;
-        const transcript = (await transcribeCarModeAudio(wav)).trim();
-        const pauseToTranscribeMs = performance.now() - pauseDetectedAt;
-        setLastHeard(transcript);
-        setCaptureError(null);
-        const parsed = detectEndPhrase(transcript);
-        setCaptureState(`heard: "${transcript}"`);
-
-        // Confirm the turn: fire the "my turn" cue the INSTANT the transcript confirms (before the brain
-        // responds), so the owner gets an immediate audible acknowledgement, then seed the turn metrics the
-        // brain + speak steps fill, then take the turn.
-        const confirmAndTake = (command: string) => {
-          playReadyCue();
-          turnMetricsRef.current = {
-            turnId: "",
-            pauseDetectedAt,
-            pauseToTranscribeMs,
-            transcodeMs,
-            commandChars: command.trim().length,
-            replyChars: 0,
-            brainMs: 0,
-            replyReadyAt: 0,
-            server: null,
-            actionsCount: 0,
-            pendingConfirmation: false,
-            ttsMs: 0,
-            firstAudioMs: 0,
-            totalTurnMs: 0,
-            // How many transcribe probes it took to land "over and out" this turn (this probe included).
-            transcribeAttempts: transcribeAttemptsRef.current,
-            chunks: 0,
-            playStartedAt: 0,
-            playMs: 0,
-            clipDurationMs: 0,
-            playedToMs: 0,
-            completed: false,
-            playRejected: false,
-            micReacquiredDuringPlayback: false,
-            speakingPollCount: 0,
-            posted: false,
-          };
-          void takeTurn(command);
-        };
-
-        if (parsed.ended) {
-          console.log("[CarMode] end phrase heard -> taking the turn");
-          confirmAndTake(parsed.command);
-        } else if (force) {
-          console.log('[CarMode] "over and out" tapped -> taking the turn with the heard command');
-          confirmAndTake(transcript);
-        } else {
-          // A mid-thought pause: keep the turn. Wait for fresh speech before probing again.
-          heardSpeechRef.current = false;
-          belowSinceRef.current = 0;
-          setCaptureState("listening");
-        }
-      } catch (err) {
-        const msg = gatewayErrorMessage(err);
-        setCaptureError(msg);
-        if (force) announceError(msg);
-        else {
-          heardSpeechRef.current = false;
-          belowSinceRef.current = 0;
-          setCaptureState("listening");
-        }
-      } finally {
-        if (!force) busyRef.current = false;
-      }
-    },
-    [announceError, takeTurn],
-  );
-
-  // The rolling-window interrupt watch, run on a timer while the assistant is speaking. Transcribe the
-  // recent audio and, if it carries an interrupt word, cut the assistant off. A probe failure is recorded,
-  // not spoken (the touch Stop button is the guaranteed path).
-  const watchForInterrupt = useCallback(async () => {
-    if (phaseRef.current !== "speaking" || busyRef.current) return;
+  // Transcribe the audio captured so far and take the turn. This is the touch "Over and out" path, the
+  // primary (and only) end-of-turn path in v3: the owner explicitly ended his turn, so a failure is
+  // announced loudly. If he happened to say "over and out" it is stripped; otherwise the whole transcript is
+  // the command (voice over-and-out is deferred - the button is the end path).
+  const transcribeAndTake = useCallback(async () => {
     const rec = recorderRef.current;
     if (rec === null) return;
-    busyRef.current = true;
+    // Time the command transcription from the tap so the telemetry shows how long the owner waits between
+    // finishing and the brain starting.
+    const pauseDetectedAt = performance.now();
     try {
       const clip = rec.snapshot();
-      if (clip.size < MIN_CLIP_BYTES) return;
-      // Count this rolling-"stop" transcription: it re-reads the open capture stream WHILE the reply plays,
-      // which the turn metrics record as the mic-contention diagnostic (speakingPollCount).
-      speakingPollCountRef.current += 1;
+      if (clip.size < MIN_CLIP_BYTES) {
+        void takeTurn(""); // nothing captured: a canned nudge, no server turn
+        return;
+      }
+      setCaptureState("transcribing");
+      transcribeAttemptsRef.current += 1;
+      // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network +
+      // server), so a real phone turn shows where the time actually goes.
+      const transcodeStart = performance.now();
       const { wav } = await blobToWav16kMono(clip);
+      const transcodeMs = performance.now() - transcodeStart;
       const transcript = (await transcribeCarModeAudio(wav)).trim();
+      const pauseToTranscribeMs = performance.now() - pauseDetectedAt;
       setLastHeard(transcript);
       setCaptureError(null);
-      if (phaseRef.current === "speaking" && detectInterrupt(transcript)) {
-        console.log("[CarMode] interrupt heard -> silencing and returning the turn");
-        haltPlayback();
-        setCaptureState("interrupt");
-        await enterListening();
-      }
+      const parsed = detectEndPhrase(transcript);
+      const command = parsed.ended ? parsed.command : transcript;
+      setCaptureState(`heard: "${transcript}"`);
+
+      // Fire the "my turn" cue the INSTANT the command is in hand (before the brain responds) for an
+      // immediate audible acknowledgement, seed the turn metrics the brain + speak steps fill, then take it.
+      playReadyCue();
+      turnMetricsRef.current = {
+        turnId: "",
+        pauseDetectedAt,
+        pauseToTranscribeMs,
+        transcodeMs,
+        commandChars: command.trim().length,
+        replyChars: 0,
+        brainMs: 0,
+        replyReadyAt: 0,
+        server: null,
+        actionsCount: 0,
+        pendingConfirmation: false,
+        ttsMs: 0,
+        firstAudioMs: 0,
+        totalTurnMs: 0,
+        transcribeAttempts: transcribeAttemptsRef.current,
+        chunks: 0,
+        playStartedAt: 0,
+        playMs: 0,
+        clipDurationMs: 0,
+        playedToMs: 0,
+        completed: false,
+        playRejected: false,
+        micReacquiredDuringPlayback: false,
+        speakingPollCount: 0,
+        posted: false,
+      };
+      void takeTurn(command);
     } catch (err) {
-      setCaptureError(gatewayErrorMessage(err));
-    } finally {
-      busyRef.current = false;
+      const msg = gatewayErrorMessage(err);
+      setCaptureError(msg);
+      announceError(msg);
     }
-  }, [enterListening, haltPlayback]);
+  }, [announceError, takeTurn]);
 
-  // Keep the "latest" refs the long-lived loop/interval call pointed at the current implementations.
-  onPauseRef.current = () => void transcribeAndDecide(false);
-  onSpeakingTickRef.current = () => void watchForInterrupt();
-
-  // Touch controls (the app must be fully usable by touch so testing is never blocked on the spoken
-  // phrase). "Over and out" forces an immediate transcribe-and-end; "Stop" cuts the reply off instantly.
+  // Touch controls (the app is fully usable by touch - this is the primary path in v3). "Over and out"
+  // ends the turn by transcribing what was captured; "Stop" cuts the reply off instantly (the sole
+  // interrupt, since no voice "stop" watch runs).
   const endTurn = useCallback(() => {
     if (phaseRef.current !== "listening") return;
-    void transcribeAndDecide(true);
-  }, [transcribeAndDecide]);
+    void transcribeAndTake();
+  }, [transcribeAndTake]);
 
   const interrupt = useCallback(() => {
     if (phaseRef.current !== "speaking") return;
@@ -728,42 +630,17 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     // (which play seconds after the tap, past the gesture window) are allowed to sound on mobile.
     unlockAudioElement(audio);
 
-    // The single silence-detector loop, live for the whole session; it only acts while Listening. When the
-    // level drops below the threshold for PAUSE_MS AFTER speech was heard, it fires a pause probe.
-    const tick = () => {
-      const rec = recorderRef.current;
-      if (rec !== null && phaseRef.current === "listening") {
-        const level = rec.level();
-        if (level >= SILENCE_THRESHOLD) {
-          heardSpeechRef.current = true;
-          belowSinceRef.current = 0;
-        } else if (heardSpeechRef.current) {
-          if (belowSinceRef.current === 0) {
-            belowSinceRef.current = performance.now();
-          } else if (performance.now() - belowSinceRef.current >= PAUSE_MS && !busyRef.current) {
-            belowSinceRef.current = 0;
-            onPauseRef.current();
-          }
-        }
-      }
-      rafRef.current = window.requestAnimationFrame(tick);
-    };
-    rafRef.current = window.requestAnimationFrame(tick);
-
+    // v3 has no silence detector / pause auto-probe: the turn ends when the owner taps "Over and out". The
+    // AnalyserNode still drives the on-screen level meter (getMicLevel), which reads the recorder directly.
     await enterListening();
   }, [started, unsupported, enterListening]);
 
   const stop = useCallback(() => {
     console.log("[CarMode] stop");
     abortRef.current?.abort();
-    // Unblock any in-flight chunked playback so the speak loop unwinds instead of awaiting an ended event
-    // that will never fire.
+    // Unblock any in-flight playback so the speak loop unwinds instead of awaiting an ended event that will
+    // never fire.
     playbackStopRef.current?.();
-    if (rafRef.current !== 0) {
-      window.cancelAnimationFrame(rafRef.current);
-      rafRef.current = 0;
-    }
-    stopSpeakingPoll();
     if (keepWarmRef.current !== null) {
       clearInterval(keepWarmRef.current);
       keepWarmRef.current = null;
@@ -788,15 +665,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     setStarted(false);
     setCaptureState("not started");
     setPhaseBoth("idle");
-  }, [revokeClip, setPhaseBoth, stopSpeakingPoll]);
+  }, [revokeClip, setPhaseBoth]);
 
   // Tear everything down if the page unmounts mid-session (navigating away from Car Mode).
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
       playbackStopRef.current?.();
-      if (rafRef.current !== 0) window.cancelAnimationFrame(rafRef.current);
-      if (speakingPollRef.current !== null) clearInterval(speakingPollRef.current);
       if (keepWarmRef.current !== null) clearInterval(keepWarmRef.current);
       try {
         recorderRef.current?.dispose();
