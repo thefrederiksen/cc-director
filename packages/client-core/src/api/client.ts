@@ -232,8 +232,10 @@ function isGatewayUnreachable(err: unknown): boolean {
 // answered status - including 4xx/500 application errors - reports REACHABLE (the Gateway answered). A
 // bare fetch rejection (the backend is down) reports UNREACHABLE. A caller-initiated abort is not a
 // connection signal, so it is rethrown without any report. This mirrors the issue #1028 classification
-// used by isGatewayUnreachable; it does not invent a second taxonomy.
-async function gatewayFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+// used by isGatewayUnreachable; it does not invent a second taxonomy. Exported so the fleet client
+// (fleetClient.ts) routes its reads - including the roster envelope the mobile app now polls - through
+// the SAME choke point, keeping the connection-health signal fed no matter which reader is on screen.
+export async function gatewayFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(input, init);
