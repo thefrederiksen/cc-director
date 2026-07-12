@@ -2,13 +2,20 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
-    <!-- The shipped Launcher exe (release asset cc-launcher-win-x64.exe). -->
+    <!-- Multi-target (cc-launcher mission): net10.0-windows is the shipped Windows build,
+         plain net10.0 is the macOS build (published osx-arm64 as cc-launcher-mac-arm64). -->
+    <TargetFrameworks>net10.0-windows;net10.0</TargetFrameworks>
+    <!-- The shipped Launcher exe (release assets cc-launcher-win-x64.exe / cc-launcher-mac-arm64). -->
     <AssemblyName>cc-launcher</AssemblyName>
     <RootNamespace>CcDirector.Launcher</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- Windows-only executable dressing: the Win32 icon resource and the app manifest
+       only apply to the Windows apphost. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
