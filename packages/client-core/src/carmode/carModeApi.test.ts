@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { carModeTurn, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
+import { carModeTurn, postCarModeTelemetry, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
 import { CreditsError, GatewayError } from "../api/client";
 
 // The Car Mode Gateway calls must fail LOUD and SPECIFIC (mission decision 8): a money refusal (402) is
@@ -75,6 +75,54 @@ describe("carModeTurn", () => {
     const result = await carModeTurn("who needs me");
     expect(result.actions).toEqual([]);
     expect(result.pendingConfirmation).toBe(false);
+  });
+
+  it("parses the server turnId and per-stage timing when present", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, {
+      turnId: "abc123",
+      spoken: "You have two sessions waiting.",
+      timing: {
+        totalMs: 812.5,
+        modelCallCount: 2,
+        modelMsTotal: 760,
+        modelMs: [400, 360],
+        fleetReadCount: 1,
+        fleetReadMsTotal: 30,
+        rounds: 2,
+      },
+    }));
+    const result = await carModeTurn("who needs me");
+    expect(result.turnId).toBe("abc123");
+    expect(result.timing?.fleetReadCount).toBe(1);
+    expect(result.timing?.modelMs).toEqual([400, 360]);
+  });
+
+  it("defaults turnId to empty and timing to null when the server omits them", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, { spoken: "Hi there." }));
+    const result = await carModeTurn("hello");
+    expect(result.turnId).toBe("");
+    expect(result.timing).toBeNull();
+  });
+});
+
+describe("postCarModeTelemetry", () => {
+  const record = {
+    turnId: "t1", pauseToTranscribeMs: 900, brainMs: 1200, ttsMs: 300, firstAudioMs: 350,
+    totalTurnMs: 2450, serverTotalMs: 1100, modelCallCount: 1, modelMsTotal: 1050,
+    modelMs: [1050], fleetReadCount: 0, fleetReadMsTotal: 0, rounds: 1, commandChars: 20,
+    replyChars: 40, actionsCount: 0, pendingConfirmation: false,
+  };
+
+  it("posts the record to /carmode/telemetry", async () => {
+    const fetchMock = mockFetch(200, { recorded: true, held: 1 });
+    vi.stubGlobal("fetch", fetchMock);
+    await postCarModeTelemetry(record);
+    expect(fetchMock).toHaveBeenCalledWith("/carmode/telemetry", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("never throws when the post fails (best-effort observability)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+    await expect(postCarModeTelemetry(record)).resolves.toBeUndefined();
   });
 
   it("maps 402 to the shared CreditsError", async () => {

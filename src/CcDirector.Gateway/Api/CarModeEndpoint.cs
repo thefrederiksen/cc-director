@@ -15,14 +15,22 @@ namespace CcDirector.Gateway.Api;
 /// action for confirmation. The browser stays thin (decision 2): it never sees the model key or the fleet
 /// logic.
 ///
-/// Auth: the route is not on the public allow-list and is not under /m/, so the host-wide auth gate already
-/// requires the caller's per-device key (or the shared token), per the Gateway auth rule. The caller's own
-/// credential also keys the server-side conversation context, so multi-turn works per device without any
-/// history crossing the wire. The credential is used only as an opaque key and is never logged (DT-05).
+/// Performance round: the turn response also carries a server-minted turnId and a per-stage server timing
+/// block so the browser can merge its own client stamps and post ONE compact timing record to the
+/// telemetry store below. Two more routes serve that store:
+///   POST /carmode/telemetry       - the browser posts one merged record per turn.
+///   GET  /carmode/telemetry       - a self-contained HTML dashboard of recent turns and aggregates.
+///   GET  /carmode/telemetry/data  - the raw records as JSON, which the dashboard fetches.
+///
+/// Auth: the routes are not on the public allow-list and are not under /m/, so the host-wide auth gate
+/// already requires the caller's per-device key (or the shared token), per the Gateway auth rule. The
+/// caller's own credential also keys the server-side conversation context, so multi-turn works per device
+/// without any history crossing the wire. The credential is used only as an opaque key and a one-way
+/// device hash, and is never logged (DT-05).
 /// </summary>
 internal static class CarModeEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain)
+    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTelemetryStore telemetry)
     {
         app.MapPost("/carmode/turn", async (HttpContext ctx, CarModeTurnRequest? req, CancellationToken ct) =>
         {
@@ -31,14 +39,29 @@ internal static class CarModeEndpoint
                 return Results.Json(new { error = "text is required" }, statusCode: StatusCodes.Status400BadRequest);
 
             var deviceKey = ExtractCallerCredential(ctx);
+            // A server-minted turn id ties the browser's posted timing record back to this turn's log line.
+            var turnId = Guid.NewGuid().ToString("N");
             try
             {
                 var result = await brain.RunTurnAsync(deviceKey, req.Text.Trim(), ct);
                 return Results.Json(new
                 {
+                    turnId,
                     spoken = result.Spoken,
                     actions = result.Actions.Select(a => new { tool = a.Tool, summary = a.Summary }),
                     pendingConfirmation = result.PendingConfirmation,
+                    // The per-stage server timing, inline, so the browser posts it back merged with its
+                    // own client stamps as one telemetry record (performance round).
+                    timing = result.Timing is null ? null : new
+                    {
+                        totalMs = result.Timing.TotalMs,
+                        modelCallCount = result.Timing.ModelCallCount,
+                        modelMsTotal = result.Timing.ModelMsTotal,
+                        modelMs = result.Timing.ModelMs,
+                        fleetReadCount = result.Timing.FleetReadCount,
+                        fleetReadMsTotal = result.Timing.FleetReadMsTotal,
+                        rounds = result.Timing.Rounds,
+                    },
                 });
             }
             catch (CarModeUnavailableException ex)
@@ -61,11 +84,66 @@ internal static class CarModeEndpoint
                     statusCode: StatusCodes.Status502BadGateway);
             }
         });
+
+        // The browser posts ONE merged timing record per turn here. It fills the client stamps and echoes
+        // the server timing it received in the turn response; the SERVER fills the received-at time, the
+        // device hash (from its own credential extraction, never trusting the client), and the Gateway
+        // build, so those cannot be spoofed. A malformed body is a clear 400, never a silent drop.
+        app.MapPost("/carmode/telemetry", (HttpContext ctx, CarModeTelemetryPost? req) =>
+        {
+            if (req is null || string.IsNullOrWhiteSpace(req.TurnId))
+                return Results.Json(new { error = "turnId is required" }, statusCode: StatusCodes.Status400BadRequest);
+
+            var record = new CarModeTelemetryRecord
+            {
+                TurnId = req.TurnId,
+                ReceivedAtUtc = DateTime.UtcNow.ToString("o"),
+                DeviceHash = CarModeDeviceHash.Of(ExtractCallerCredential(ctx)),
+                GatewayVersion = AppVersion.Full,
+                PauseToTranscribeMs = req.PauseToTranscribeMs,
+                BrainMs = req.BrainMs,
+                TtsMs = req.TtsMs,
+                FirstAudioMs = req.FirstAudioMs,
+                TotalTurnMs = req.TotalTurnMs,
+                ServerTotalMs = req.ServerTotalMs,
+                ModelCallCount = req.ModelCallCount,
+                ModelMsTotal = req.ModelMsTotal,
+                ModelMs = req.ModelMs ?? Array.Empty<double>(),
+                FleetReadCount = req.FleetReadCount,
+                FleetReadMsTotal = req.FleetReadMsTotal,
+                Rounds = req.Rounds,
+                CommandChars = req.CommandChars,
+                ReplyChars = req.ReplyChars,
+                ActionsCount = req.ActionsCount,
+                PendingConfirmation = req.PendingConfirmation,
+            };
+            var held = telemetry.Add(record);
+            return Results.Json(new { recorded = true, held });
+        });
+
+        app.MapGet("/carmode/telemetry/data", (HttpContext ctx) =>
+        {
+            var limit = 200;
+            if (int.TryParse(ctx.Request.Query["limit"], out var q) && q > 0) limit = Math.Min(q, 2000);
+            return Results.Json(new
+            {
+                generatedAtUtc = DateTime.UtcNow,
+                held = telemetry.Count(),
+                records = telemetry.Recent(limit),
+            });
+        });
+
+        app.MapGet("/carmode/telemetry", (HttpContext ctx) =>
+        {
+            ctx.Response.Headers.CacheControl = "no-cache";
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            return ctx.Response.WriteAsync(CarModeTelemetryPage.Html);
+        });
     }
 
     /// <summary>The caller's own credential (Bearer header, else the cc-gateway-token cookie), used only as
-    ///  the opaque per-device conversation key. Empty when the auth gate is off (debug), which the store
-    ///  maps to one shared anonymous context. Never logged.</summary>
+    ///  the opaque per-device conversation key and the one-way device hash. Empty when the auth gate is off
+    ///  (debug), which the store maps to one shared anonymous context. Never logged.</summary>
     private static string ExtractCallerCredential(HttpContext ctx)
     {
         if (ctx.Request.Headers.TryGetValue("Authorization", out var header))
@@ -79,4 +157,28 @@ internal static class CarModeEndpoint
             return cookie;
         return "";
     }
+}
+
+/// <summary>Body of POST /carmode/telemetry: the browser's client stamps plus the server timing it echoes
+/// back from the turn response, and small non-text turn facts. The server overrides the identity/build
+/// fields from its own side, so those are not part of this body.</summary>
+public sealed class CarModeTelemetryPost
+{
+    public string TurnId { get; set; } = "";
+    public double PauseToTranscribeMs { get; set; }
+    public double BrainMs { get; set; }
+    public double TtsMs { get; set; }
+    public double FirstAudioMs { get; set; }
+    public double TotalTurnMs { get; set; }
+    public double ServerTotalMs { get; set; }
+    public int ModelCallCount { get; set; }
+    public double ModelMsTotal { get; set; }
+    public double[]? ModelMs { get; set; }
+    public int FleetReadCount { get; set; }
+    public double FleetReadMsTotal { get; set; }
+    public int Rounds { get; set; }
+    public int CommandChars { get; set; }
+    public int ReplyChars { get; set; }
+    public int ActionsCount { get; set; }
+    public bool PendingConfirmation { get; set; }
 }

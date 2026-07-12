@@ -20,10 +20,22 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
+    /// <summary>How long a roster read is reused before a fresh loopback GET. A single Car Mode turn often
+    ///  reads the roster more than once (list_sessions, then resolve a target), and several turns come in
+    ///  quick succession; a tiny cache collapses those into one aggregation without ever showing stale
+    ///  state a person would notice (Car Mode performance round).</summary>
+    private static readonly TimeSpan RosterCacheTtl = TimeSpan.FromSeconds(2);
+
     private readonly HttpClient _http;
     private readonly string _baseUrl;
     private readonly string _token;
     private readonly Action<string> _log;
+
+    // The short-lived roster cache (2s TTL). Guarded by _rosterLock; a hit returns the cached list, a miss
+    // does one loopback GET and refills. Kept deliberately tiny so nothing a person would notice goes stale.
+    private readonly object _rosterLock = new();
+    private IReadOnlyList<SessionDto>? _rosterCache;
+    private DateTime _rosterCachedAtUtc = DateTime.MinValue;
 
     /// <param name="port">This Gateway's own listening port (loopback).</param>
     /// <param name="token">The per-machine Gateway token, attached as the Bearer so the call works
@@ -145,9 +157,30 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         _log($"[CarModeFleet] deleted session {sessionId}");
     }
 
-    /// <summary>Read THIS Gateway's aggregated roster over loopback. A non-success status throws with the
-    ///  code named (no-fallback) so the brain surfaces a loud, specific failure instead of an empty list.</summary>
+    /// <summary>Read THIS Gateway's aggregated roster, reusing a read taken within the last
+    ///  <see cref="RosterCacheTtl"/> so one turn's several roster reads (and back-to-back turns) collapse to
+    ///  a single loopback aggregation. A cache miss does one real GET and refills the cache.</summary>
     private async Task<IReadOnlyList<SessionDto>> GetSessionsAsync(CancellationToken ct)
+    {
+        lock (_rosterLock)
+        {
+            if (_rosterCache is not null && DateTime.UtcNow - _rosterCachedAtUtc < RosterCacheTtl)
+                return _rosterCache;
+        }
+
+        var fresh = await GetSessionsFreshAsync(ct);
+
+        lock (_rosterLock)
+        {
+            _rosterCache = fresh;
+            _rosterCachedAtUtc = DateTime.UtcNow;
+        }
+        return fresh;
+    }
+
+    /// <summary>One real loopback read of the aggregated roster. A non-success status throws with the code
+    ///  named (no-fallback) so the brain surfaces a loud, specific failure instead of an empty list.</summary>
+    private async Task<IReadOnlyList<SessionDto>> GetSessionsFreshAsync(CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/sessions");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
