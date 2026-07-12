@@ -87,6 +87,13 @@ public sealed record CarModeTelemetryRecord
     /// <summary>The whole turn as the owner feels it: pause detected to first audio playing.</summary>
     public double TotalTurnMs { get; init; }
 
+    // ----- "Over and out" finickiness (the finicky-end-phrase diagnostic), measured in the browser -----
+
+    /// <summary>How many pause/forced transcribe probes ran this turn before the turn was taken. 1 means the
+    ///  end phrase landed on the first try; a higher count means "over and out" kept being missed and the
+    ///  owner had to keep trying - the direct measure of how finicky the end phrase was on this turn.</summary>
+    public int TranscribeAttempts { get; init; }
+
     // ----- Reply-audio lifecycle (the cut-off-reply diagnostic), measured in the browser -----
 
     /// <summary>How many audio clips the reply played. It is 1 after the first-sentence split was reverted
@@ -95,13 +102,34 @@ public sealed record CarModeTelemetryRecord
     public int Chunks { get; init; }
 
     /// <summary>How long the reply clip was actually audible: play-started to play-ended (or to a cut-off),
-    ///  milliseconds. A value far short of what the reply length implies flags a truncated reply.</summary>
+    ///  milliseconds (wall-clock). A value far short of what the reply length implies flags a truncated reply.</summary>
     public double PlayMs { get; init; }
+
+    /// <summary>The synthesized reply clip's media length (audio.duration), milliseconds: the whole reply the
+    ///  phone actually received. A value far short of what <see cref="ReplyChars"/> implies flags a TRUNCATED
+    ///  SYNTHESIS (the reply came back short), as opposed to a playback cut-off.</summary>
+    public double ClipDurationMs { get; init; }
+
+    /// <summary>How far INTO the clip playback reached at end/cutoff (audio.currentTime), milliseconds
+    ///  (media-time). A value far below <see cref="ClipDurationMs"/> flags a PLAYBACK cut-off: the whole reply
+    ///  was synthesized but playback stopped part way through - the exact distinction the diagnostic needs.</summary>
+    public double PlayedToMs { get; init; }
 
     /// <summary>True when the reply clip played fully to its natural end; false when it was cut off (a voice
     ///  or touch interrupt, or End Car Mode). The cut-off-reply bug this telemetry makes visible reads as
     ///  false: the reply was synthesized but the owner did not hear all of it.</summary>
     public bool Completed { get; init; }
+
+    // ----- The mic-contention hypothesis (does re-opening the mic mid-playback cut the reply on mobile?) -----
+
+    /// <summary>True when the rolling-"stop" watch re-opened the microphone WHILE the reply was playing (the
+    ///  current behavior). The strong hypothesis is that on mobile this re-acquisition ducks or interrupts the
+    ///  reply. Read together with <see cref="Completed"/>/<see cref="PlayedToMs"/> it proves or kills that.</summary>
+    public bool MicReacquiredDuringPlayback { get; init; }
+
+    /// <summary>How many rolling-"stop" transcriptions ran during this reply. Each re-reads the open capture
+    ///  stream; more polls mean more mic contention while the reply was supposed to be playing.</summary>
+    public int SpeakingPollCount { get; init; }
 
     // ----- Server stamps (from CarModeTurnTiming, echoed back by the client) -----
 

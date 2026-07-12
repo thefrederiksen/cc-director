@@ -63,7 +63,7 @@ internal static class CarModeTelemetryPage
 <body>
 <div class="wrap">
   <h1>Car Mode Timing</h1>
-  <p class="sub">Per-turn, per-stage latency for hands-free Car Mode - the full pipeline a real phone turn walks: pause, transcode (phone), transcribe, brain round trip, the network gap (brain minus server), each model call, the fleet read, text-to-speech, and first audio. All numbers are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
+  <p class="sub">Per-turn, per-stage latency AND the two mobile failure diagnostics for hands-free Car Mode. The pipeline a real phone turn walks: pause, transcode (phone), transcribe, brain round trip, the network gap (brain minus server), each model call, the fleet read, text-to-speech, and first audio. The "over and out" finickiness shows as End-phrase tries (how many transcribe attempts before the turn was taken). The cut-off reply is split three ways: Clip length (the whole reply synthesized), Played to (how far playback reached), and Mic in playback (whether the rolling "stop" watch re-opened the microphone while the reply was playing - the mic-contention suspect). All times are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
 
   <div class="cards" id="cards"></div>
 
@@ -74,6 +74,7 @@ internal static class CarModeTelemetryPage
         <tr>
           <th>When</th>
           <th>Total<br>(felt)</th>
+          <th>End-phrase<br>tries</th>
           <th>Pause-&gt;<br>transcribe</th>
           <th>Transcode<br>(phone)</th>
           <th>Brain<br>(round trip)</th>
@@ -86,7 +87,11 @@ internal static class CarModeTelemetryPage
           <th>TTS<br>(reply)</th>
           <th>First<br>audio</th>
           <th>Reply<br>played</th>
+          <th>Clip<br>length</th>
+          <th>Played<br>to</th>
           <th>Whole<br>reply?</th>
+          <th>Mic in<br>playback</th>
+          <th>Stop<br>polls</th>
           <th>Clips</th>
           <th>Rounds</th>
           <th>Cmd<br>chars</th>
@@ -131,7 +136,7 @@ internal static class CarModeTelemetryPage
 
     if (!recs.length) {
       cards.appendChild(card("-", "No turns recorded yet", "Take a turn in Car Mode on the phone"));
-      document.getElementById("rows").innerHTML = '<tr><td colspan="19" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
+      document.getElementById("rows").innerHTML = '<tr><td colspan="24" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
       document.getElementById("foot").textContent = "";
       return;
     }
@@ -151,6 +156,18 @@ internal static class CarModeTelemetryPage
     cards.appendChild(card(cutOff + " / " + recs.length, "Replies NOT fully heard",
       cutOff > 0 ? "these were cut off before the end" : "every reply played to its end"));
 
+    // Finickiness of "over and out": the median number of transcribe tries before a turn was taken. 1 means
+    // the phrase landed on the first try; a higher median means the phone kept missing it.
+    var tries = recs.map(function (r) { return r.transcribeAttempts; }).filter(function (n) { return n > 0; });
+    cards.appendChild(card(tries.length ? String(median(tries)) : "-", "Median 'over and out' tries",
+      "1 = landed first try; higher = finicky"));
+
+    // The mic-contention suspect: how many recent replies had the microphone re-opened WHILE they played.
+    // On mobile this is the prime suspect for the cut-off / half-heard reply.
+    var micIn = recs.filter(function (r) { return r.micReacquiredDuringPlayback === true; }).length;
+    cards.appendChild(card(micIn + " / " + recs.length, "Mic re-opened during the reply",
+      "the mobile cut-off suspect: mic grabbed mid-playback"));
+
     var body = document.getElementById("rows"); body.innerHTML = "";
     recs.forEach(function (r) {
       var tr = document.createElement("tr");
@@ -164,8 +181,15 @@ internal static class CarModeTelemetryPage
       // Network the browser saw (its brain round trip minus what the server spent inside), so a bad phone
       // network shows up as a large gap that the loopback numbers can never reveal.
       var net = (r.brainMs != null && r.serverTotalMs != null) ? Math.max(0, r.brainMs - r.serverTotalMs) : null;
+      // A reply whose playback stopped well before the synthesized clip ended: the media-time cut-off. Flags
+      // the case the "Whole reply?" flag alone can miss (played-to far below the clip length).
+      var playedShort = (r.clipDurationMs != null && r.playedToMs != null && r.clipDurationMs > 1000
+        && r.playedToMs < r.clipDurationMs - 750);
       tr.appendChild(td(when));
       tr.appendChild(td(ms(r.totalTurnMs), r.totalTurnMs > 6000 ? "slow" : ""));
+      // End-phrase tries: how many transcribe attempts before the turn was taken. More than 1 is finicky.
+      tr.appendChild(td(r.transcribeAttempts == null ? "-" : r.transcribeAttempts,
+        (r.transcribeAttempts != null && r.transcribeAttempts > 1) ? "slow" : ""));
       tr.appendChild(td(ms(r.pauseToTranscribeMs), r.pauseToTranscribeMs > 4000 ? "slow" : ""));
       tr.appendChild(td(ms(r.transcodeMs)));
       tr.appendChild(td(ms(r.brainMs), r.brainMs > 5000 ? "slow" : ""));
@@ -178,10 +202,17 @@ internal static class CarModeTelemetryPage
       tr.appendChild(td(ms(r.ttsMs), r.ttsMs > 3000 ? "slow" : ""));
       tr.appendChild(td(ms(r.firstAudioMs)));
       // The reply-audio lifecycle (the cut-off-reply diagnostic): how long the reply was actually audible,
-      // whether it played to its end, and how many clips it took (1 since the split was reverted). A reply
-      // that was NOT fully heard is called out in red so a truncated reply is impossible to miss.
+      // the whole SYNTHESIZED clip length vs how far playback reached (the media-time cut-off), whether it
+      // played to its end, whether the mic was re-opened mid-playback (the suspect), how many "stop" polls
+      // ran, and how many clips it took (1 since the split was reverted). A reply that was NOT fully heard -
+      // by the completed flag OR by playing short of the clip - is called out in red.
       tr.appendChild(td(ms(r.playMs)));
+      tr.appendChild(td(ms(r.clipDurationMs)));
+      tr.appendChild(td(ms(r.playedToMs), playedShort ? "slow" : ""));
       tr.appendChild(td(r.completed == null ? "-" : (r.completed ? "yes" : "CUT OFF"), r.completed === false ? "slow" : ""));
+      tr.appendChild(td(r.micReacquiredDuringPlayback == null ? "-" : (r.micReacquiredDuringPlayback ? "YES" : "no"),
+        r.micReacquiredDuringPlayback === true ? "slow" : ""));
+      tr.appendChild(td(r.speakingPollCount == null ? "-" : r.speakingPollCount));
       tr.appendChild(td(r.chunks == null ? "-" : r.chunks, (r.chunks != null && r.chunks !== 1) ? "slow" : ""));
       tr.appendChild(td(r.rounds == null ? "-" : r.rounds));
       tr.appendChild(td(r.commandChars == null ? "-" : r.commandChars));

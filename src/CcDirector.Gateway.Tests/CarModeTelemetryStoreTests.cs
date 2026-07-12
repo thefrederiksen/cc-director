@@ -106,6 +106,34 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     }
 
     [Fact]
+    public void Add_ThenRecent_RoundTripsTheMobileDiagnosticFields()
+    {
+        // The mobile-failure diagnostics (this round): the "over and out" finickiness (how many transcribe
+        // tries before the turn was taken) and the mic-contention hypothesis fields (the whole synthesized
+        // clip length, how far playback reached, whether the mic was re-opened mid-playback, and how many
+        // rolling "stop" polls ran) must all persist so ONE real phone turn is enough to read the truth.
+        var store = new CarModeTelemetryStore(_path, _ => { });
+        var turn = Record("mobile", DateTime.UtcNow.ToString("o")) with
+        {
+            TranscribeAttempts = 4,             // "over and out" took four tries to land - finicky
+            ClipDurationMs = 5200,              // the whole reply the phone received
+            PlayedToMs = 2100,                  // but playback only reached 2.1s in
+            Completed = false,
+            MicReacquiredDuringPlayback = true, // the mic was re-opened while the reply played
+            SpeakingPollCount = 2,
+        };
+        store.Add(turn);
+
+        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(1)[0];
+
+        Assert.Equal(4, reloaded.TranscribeAttempts);
+        Assert.Equal(5200, reloaded.ClipDurationMs);
+        Assert.Equal(2100, reloaded.PlayedToMs);
+        Assert.True(reloaded.MicReacquiredDuringPlayback);
+        Assert.Equal(2, reloaded.SpeakingPollCount);
+    }
+
+    [Fact]
     public void Load_QuarantinesCorruptFile_AndStartsEmpty()
     {
         File.WriteAllText(_path, "{ this is not valid json ][");

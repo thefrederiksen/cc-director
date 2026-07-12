@@ -70,11 +70,18 @@ interface TurnMetrics {
   ttsMs: number; // text-to-speech round trip for the whole reply (one clip since the split was reverted)
   firstAudioMs: number; // reply-in-hand to first audio playing
   totalTurnMs: number; // pause detected to first audio playing (what the owner feels)
+  // ----- Finickiness of "over and out" (the finicky-end-phrase diagnostic) -----
+  transcribeAttempts: number; // how many pause/forced transcribe probes ran this turn before the turn was taken
   // ----- Reply-audio lifecycle (the cut-off-reply diagnostic): how the spoken reply's one clip played -----
   chunks: number; // how many audio clips the reply played (1 after the split revert; a guard for a future regression)
   playStartedAt: number; // performance.now() when the reply clip's play() was requested, or 0
   playMs: number; // how long the reply clip was actually audible: play-started to play-ended / cut off
+  clipDurationMs: number; // the SYNTHESIZED reply clip's media length (audio.duration): the whole reply the phone got
+  playedToMs: number; // how far INTO the clip playback reached at end/cutoff (audio.currentTime): media-time, not wall-clock
   completed: boolean; // true when the reply clip played fully to its natural end; false when cut off (interrupt / End)
+  // ----- The mic-contention hypothesis (does grabbing the mic mid-playback cut the reply off on mobile?) -----
+  micReacquiredDuringPlayback: boolean; // did the rolling-"stop" watch re-open the microphone WHILE the reply was playing
+  speakingPollCount: number; // how many rolling-"stop" transcriptions ran during this reply (each re-reads the open mic)
   posted: boolean;
 }
 
@@ -190,6 +197,15 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // Performance-round telemetry: the metrics for the turn in flight, filled across transcribe -> brain ->
   // speak and posted once first audio plays. Null between turns.
   const turnMetricsRef = useRef<TurnMetrics | null>(null);
+  // Finickiness diagnostic: how many pause/forced transcribe probes have run in the current turn before it
+  // was taken. Reset when the microphone returns to the owner (enterListening) and snapshotted into the
+  // turn metrics the instant the turn is confirmed, so one real turn shows how hard "over and out" was to
+  // land (a high count means the phrase kept being missed).
+  const transcribeAttemptsRef = useRef(0);
+  // Mic-contention diagnostic: how many rolling-"stop" transcriptions ran while the current reply played.
+  // Each one re-reads the (still open) capture stream; the hypothesis is that grabbing the mic during
+  // playback ducks or interrupts the reply on mobile. Reset when a reply starts playing.
+  const speakingPollCountRef = useRef(0);
   // The chunked-playback "stop now" resolver: set while a clip is playing so an interrupt (voice "stop" or
   // the Stop button) or End Car Mode can end the current clip's play promise and unblock the play loop.
   const playbackStopRef = useRef<(() => void) | null>(null);
@@ -235,9 +251,14 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       ttsMs: m.ttsMs,
       firstAudioMs: m.firstAudioMs,
       totalTurnMs: m.totalTurnMs,
+      transcribeAttempts: m.transcribeAttempts,
       chunks: m.chunks,
       playMs: m.playMs,
+      clipDurationMs: m.clipDurationMs,
+      playedToMs: m.playedToMs,
       completed: m.completed,
+      micReacquiredDuringPlayback: m.micReacquiredDuringPlayback,
+      speakingPollCount: m.speakingPollCount,
       serverTotalMs: m.server.totalMs,
       modelCallCount: m.server.modelCallCount,
       modelMsTotal: m.server.modelMsTotal,
@@ -332,6 +353,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     heardSpeechRef.current = false;
     belowSinceRef.current = 0;
     busyRef.current = false;
+    // Fresh turn: reset the finickiness probe counter so it counts only THIS turn's attempts.
+    transcribeAttemptsRef.current = 0;
     setLastHeard("");
     setCaptureError(null);
     setCaptureState("listening");
@@ -370,6 +393,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
 
         // Play the reply. The lifecycle hooks record the cut-off-reply diagnostic: when playback actually
         // starts, how long it stayed audible, and whether it played to its natural end or was cut off.
+        // Fresh count of rolling-"stop" polls for THIS reply; the mic-contention diagnostic reads it back.
+        speakingPollCountRef.current = 0;
         const played = playBlob(url, {
           onPlayStarted: () => {
             if (metrics === null) return;
@@ -385,14 +410,27 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             if (metrics === null) return;
             metrics.completed = outcome === "ended";
             metrics.playMs = metrics.playStartedAt > 0 ? performance.now() - metrics.playStartedAt : 0;
+            // The cut-off-reply distinction the mission asks for: the SYNTHESIZED clip length (audio.duration,
+            // the whole reply the phone received) versus how far playback actually reached (audio.currentTime).
+            // A short clipDuration means a truncated SYNTHESIS; a playedTo far below clipDuration means the
+            // PLAYBACK was cut. Both are media-time (seconds -> ms), independent of the wall-clock playMs.
+            const audioEl = audioRef.current;
+            if (audioEl !== null) {
+              metrics.clipDurationMs = Number.isFinite(audioEl.duration) ? audioEl.duration * 1000 : 0;
+              metrics.playedToMs = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime * 1000 : 0;
+            }
+            metrics.speakingPollCount = speakingPollCountRef.current;
             // Post the merged timing record now that the clip's whole lifecycle is known - including a
             // cut-off - so a truncated reply is VISIBLE at /carmode/telemetry (fire-and-forget).
             postTurnTelemetry(metrics);
           },
         });
 
-        // Barge-in: a fresh capture segment plus the rolling-window transcription watch for "stop".
+        // Barge-in: a fresh capture segment plus the rolling-window transcription watch for "stop". This is
+        // the mic-contention suspect - the microphone is re-opened WHILE the reply plays. Record that it
+        // happened so one real phone turn can prove or kill the hypothesis that this ducks/cuts the reply.
         await restartCapture();
+        if (metrics !== null) metrics.micReacquiredDuringPlayback = true;
         stopSpeakingPoll();
         speakingPollRef.current = window.setInterval(() => onSpeakingTickRef.current(), SPEAKING_POLL_MS);
 
@@ -494,6 +532,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
           return;
         }
         if (!force) setCaptureState("pause - transcribing");
+        // Count this transcribe probe (pause-triggered or the forced "over and out" tap): the finickiness
+        // diagnostic is how many of these ran before the turn was finally taken. A high count on a real turn
+        // means the phone kept missing "over and out". Reset when the microphone returns (enterListening).
+        transcribeAttemptsRef.current += 1;
         // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network
         // + server), so a real phone turn shows where the pause-to-transcript time actually goes.
         const transcodeStart = performance.now();
@@ -526,10 +568,16 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             ttsMs: 0,
             firstAudioMs: 0,
             totalTurnMs: 0,
+            // How many transcribe probes it took to land "over and out" this turn (this probe included).
+            transcribeAttempts: transcribeAttemptsRef.current,
             chunks: 0,
             playStartedAt: 0,
             playMs: 0,
+            clipDurationMs: 0,
+            playedToMs: 0,
             completed: false,
+            micReacquiredDuringPlayback: false,
+            speakingPollCount: 0,
             posted: false,
           };
           void takeTurn(command);
@@ -574,6 +622,9 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     try {
       const clip = rec.snapshot();
       if (clip.size < MIN_CLIP_BYTES) return;
+      // Count this rolling-"stop" transcription: it re-reads the open capture stream WHILE the reply plays,
+      // which the turn metrics record as the mic-contention diagnostic (speakingPollCount).
+      speakingPollCountRef.current += 1;
       const { wav } = await blobToWav16kMono(clip);
       const transcript = (await transcribeCarModeAudio(wav)).trim();
       setLastHeard(transcript);
