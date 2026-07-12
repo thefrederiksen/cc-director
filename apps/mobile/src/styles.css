@@ -1695,6 +1695,149 @@ a.banner-btn {
   font-size: 11px;
 }
 
+/* Local Files (Phase 3): the file-path link in chat is now a button that opens the viewer. It must
+   read exactly like the URL anchor (.chat-link-open) - a button carries default padding/background, so
+   reset those and keep the monospace accent styling. */
+.chat-link-view {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+/* ===== Local Files viewer (Phase 3) =====
+   The full-screen file viewer route (/session/:id/file). It reuses the .terminal-screen app shell
+   (title bar + a body that flexes and scrolls), so it behaves like every other session view - the top
+   chrome stays pinned and only the file body scrolls. The render modes mirror the Cockpit
+   FileViewerModal exactly; only this shell (a page, not a modal) differs. */
+
+/* Back and Download controls sit in the app-bar beside the file name (the flexing .term-title). */
+.file-view-back,
+.file-view-download {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.file-view-back {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.file-view-download {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: transparent;
+}
+
+/* The body is the single give-point of the screen (the blanket .terminal-screen > * rule pins every
+   child at its natural size; this override lets the file body flex and scroll internally). */
+.terminal-screen > .file-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* pdf and sandboxed-html modes: the iframe fills the body. White backing so a transparent page reads. */
+.file-view-frame {
+  border: 0;
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+}
+
+/* image mode: scroll the natural-size image if it is larger than the body. */
+.file-view-scroll {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+}
+.file-view-image {
+  max-width: 100%;
+  height: auto;
+}
+
+/* text/code mode: a monospace pre that scrolls BOTH ways (horizontal scroll keeps code readable on a
+   narrow phone rather than wrapping it into an unreadable mess). */
+.file-view-pre {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 12px 14px;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre;
+  background: var(--surface);
+}
+
+/* markdown mode: the shared sanitized render, scrolled. */
+.file-view-md {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 14px 16px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.file-view-md img {
+  max-width: 100%;
+}
+
+.file-view-loading,
+.file-view-error,
+.file-view-download-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+.file-view-loading {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.file-view-error {
+  color: var(--attention);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.file-view-download-note {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.file-view-download-name {
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-all;
+}
+.file-view-download-btn {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #ffffff;
+  text-decoration: none;
+  font-size: 14px;
+}
+
 /* ===== Add-session flow + session management (issue #812) =====
    The "+ New session" roster entry, the machine/repo pickers on the add screen, and the large
    Hold/Resume + Remove buttons (plus the Remove confirmation) on the session screen. All colors

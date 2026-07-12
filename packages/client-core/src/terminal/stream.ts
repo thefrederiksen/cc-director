@@ -22,7 +22,9 @@
 // bottom, so it never yanks the view when the user has scrolled up to read history.
 
 import { Terminal as Xterm } from "@xterm/xterm";
+import type { IDisposable, ILink, ILinkProvider } from "@xterm/xterm";
 import { ensureGatewayCookie } from "../api/client";
+import { findLineLinks, type LineLink } from "./lineLinks";
 
 const BASE_FONT = 13; // 1:1 (actual-size) font, in px - matches RawTerminalPage.cs
 const MIN_FONT = 6;
@@ -49,11 +51,19 @@ export class TerminalMirror {
   private readonly hostEl: HTMLElement;
   private readonly sessionId: string;
   private readonly onFitLabel: FitLabelListener;
+  // Local Files (Phase 3): the app supplies this to open its own file viewer when a FILE path in the
+  // mirror is clicked. client-core stays app-agnostic (it must not import app UI - brief decision 6),
+  // so the click routes back out through this callback. http/https URLs are opened here directly (a new
+  // tab) and never go through this callback. Optional: with no callback the mirror is unchanged except
+  // that URLs become clickable. This mirrors the interactive Cockpit terminal (interactive.ts).
+  private readonly onFileLink?: (path: string) => void;
 
   private term: Xterm | null = null;
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  // The registered xterm link provider (Local Files, Phase 3), disposed with the terminal.
+  private linkProvider: IDisposable | null = null;
   private want = true;
 
   private lastCols = 0;
@@ -64,11 +74,18 @@ export class TerminalMirror {
   private pinchDist0 = 0;
   private pinchFont0 = 0;
 
-  constructor(wrapEl: HTMLElement, hostEl: HTMLElement, sessionId: string, onFitLabel: FitLabelListener) {
+  constructor(
+    wrapEl: HTMLElement,
+    hostEl: HTMLElement,
+    sessionId: string,
+    onFitLabel: FitLabelListener,
+    onFileLink?: (path: string) => void,
+  ) {
     this.wrapEl = wrapEl;
     this.hostEl = hostEl;
     this.sessionId = sessionId;
     this.onFitLabel = onFitLabel;
+    this.onFileLink = onFileLink;
   }
 
   start(): void {
@@ -85,6 +102,8 @@ export class TerminalMirror {
     term.open(this.hostEl);
     this.term = term;
     this.onFitLabel(this.fitWidth ? "1:1" : "Fit");
+
+    this.registerLinks(term);
 
     if (window.ResizeObserver) {
       let pending = false;
@@ -107,12 +126,64 @@ export class TerminalMirror {
     this.want = false;
     if (this.reconnectTimer !== null) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.ws) { try { this.ws.onclose = null; this.ws.close(); } catch { /* already closing */ } this.ws = null; }
+    if (this.linkProvider !== null) {
+      try { this.linkProvider.dispose(); } catch { /* already disposed */ }
+      this.linkProvider = null;
+    }
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.wrapEl.removeEventListener("touchstart", this.onTouchStart);
     this.wrapEl.removeEventListener("touchmove", this.onTouchMove);
     this.wrapEl.removeEventListener("touchend", this.onTouchEnd);
     if (this.term) { try { this.term.dispose(); } catch { /* ignore */ } this.term = null; }
+  }
+
+  // ----- clickable links (Local Files, Phase 3) -----------------------------------------------
+
+  // Make absolute file paths and http/https URLs in the mirror clickable. xterm asks per line via
+  // provideLinks; we run the shared detector (findLineLinks) over that line's rendered text and hand
+  // back one xterm link per detected span with its column range. A FILE path click routes to the app's
+  // onFileLink (its viewer); a URL opens in a new tab here. This is the SAME contract the interactive
+  // Cockpit terminal (interactive.ts) uses, so both terminals behave identically. The provider is
+  // disposed with the terminal so it never outlives the render service.
+  private registerLinks(term: Xterm): void {
+    const provider: ILinkProvider = {
+      provideLinks: (bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) => {
+        const bufLine = term.buffer.active.getLine(bufferLineNumber - 1);
+        if (!bufLine) {
+          callback(undefined);
+          return;
+        }
+        const text = bufLine.translateToString(true);
+        const found = findLineLinks(text);
+        if (found.length === 0) {
+          callback(undefined);
+          return;
+        }
+        const links: ILink[] = found.map((l) => ({
+          text: l.text,
+          // xterm buffer ranges are 1-based and inclusive on both ends. l is a 0-based half-open
+          // [start, end) column range, so the first cell is start+1 and the last cell is end.
+          range: {
+            start: { x: l.start + 1, y: bufferLineNumber },
+            end: { x: l.end, y: bufferLineNumber },
+          },
+          activate: (event: MouseEvent) => this.onLinkActivate(l, event),
+        }));
+        callback(links);
+      },
+    };
+    this.linkProvider = term.registerLinkProvider(provider);
+  }
+
+  // A link was clicked. URLs open in a new tab (never routed to the app); a FILE path is handed to the
+  // app's viewer via onFileLink when one was supplied.
+  private onLinkActivate(link: LineLink, _event: MouseEvent): void {
+    if (link.isUrl) {
+      window.open(link.text, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (this.onFileLink) this.onFileLink(link.text);
   }
 
   // ----- fit-width / zoom (public, driven by the React Fit and A-/A+ buttons) -----------------
