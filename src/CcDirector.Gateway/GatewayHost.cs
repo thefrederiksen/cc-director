@@ -327,6 +327,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // Car Mode (decision 3): the per-device store of a destructive action armed and awaiting the owner's
     // spoken confirmation, so a delete never runs without a clear spoken "confirm".
     private readonly CarMode.CarModePendingStore _carModePending = new();
+    // Car Mode (Voice-screen-actions phase, design B): the per-device "current subject" - the session the
+    // owner is talking about - so "it" / "answer it" / "snooze it" resolve after a focus or a read.
+    private readonly CarMode.CarModeSubjectStore _carModeSubjects = new();
     // Car Mode performance round: the durable, Gateway-local store of per-turn timing records. The browser
     // posts ONE record per turn; GET /carmode/telemetry reads them back. Retained about 90 days by age.
     private readonly CarMode.CarModeTelemetryStore _carModeTelemetry = new();
@@ -1248,7 +1251,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // caller's per-device key), like every other data route.
         var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get));
         var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
-        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending);
+        var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending, _carModeSubjects);
         // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
         // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
         var carModeWarmup = new CarMode.CarModeWarmup(

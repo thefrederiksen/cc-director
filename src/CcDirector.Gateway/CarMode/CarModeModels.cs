@@ -40,6 +40,13 @@ public sealed record CarModeActivity
     public bool NeedsYou { get; init; }
 }
 
+/// <summary>The spoken narration for one session, for the "what does it need" / "read me the wingman" read
+/// tool (Voice-screen-actions phase). Backed by the SAME POST /wingman/explain the Voice screen's onSwitchOn
+/// path calls: <see cref="Spoken"/> is the real, current narration the assistant reads aloud (never a canned
+/// "it is waiting for you"), and <see cref="NothingYet"/> is true for a fresh/text-only session with nothing
+/// to summarize yet (in which case Spoken carries the truthful "nothing to read yet" line).</summary>
+public sealed record CarModeExplain(string Spoken, bool NothingYet);
+
 /// <summary>One action the brain took during a turn (Phase 3+), surfaced to the page for on-screen
 /// confirmation alongside the spoken reply. The act already happened server-side.</summary>
 public sealed record CarModeActionRecord(string Tool, string Summary);
