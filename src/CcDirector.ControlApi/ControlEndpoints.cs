@@ -2567,16 +2567,15 @@ internal static class ControlEndpoints
         // the saved absolute path so the client can drop it into the composer for the user
         // to send. The session and the saved file live on the same machine by construction
         // (the session runs here), so the path is always valid for that session.
+        // Gateway Cleanup Phase 0: the multipart form is read at THIS HTTP boundary (the tunnel never
+        // carries multipart), then the already-read bytes and file name are handed to the SAME
+        // upload-image byte verb the Gateway tunnel dispatches, so the SAVE logic lives in exactly one
+        // place (SessionByteExecutor.SaveUploadedImage) and the two paths file bytes identically. The
+        // id/session guards moved into that verb; only the genuinely boundary-specific multipart guards
+        // (a non-form body, a missing/empty file field) stay in this lambda.
         app.MapPost("/sessions/{sid}/upload-image", async (string sid, HttpContext httpCtx) =>
         {
             FileLog.Write($"[ControlEndpoints] POST upload-image: sid={sid}");
-
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
 
             if (!httpCtx.Request.HasFormContentType)
                 return Results.BadRequest(new { error = "expected multipart/form-data with an image file field 'file'" });
@@ -2586,23 +2585,33 @@ internal static class ControlEndpoints
             if (file is null || file.Length == 0)
                 return Results.BadRequest(new { error = "no image uploaded; use form field 'file'" });
 
-            var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-            var allowed = new[] { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".bmp" };
-            if (!allowed.Contains(ext))
-                return Results.BadRequest(new { error = $"unsupported image type '{ext}'. Allowed: {string.Join(", ", allowed)}" });
-
-            var dir = CcStorage.Screenshots();
-            var name = $"upload-{DateTime.Now:yyyyMMdd-HHmmss-fff}{ext}";
-            var fullPath = Path.Combine(dir, name);
-
-            await using (var dest = File.Create(fullPath))
+            byte[] bytes;
             await using (var src = file.OpenReadStream())
+            using (var memory = new MemoryStream())
             {
-                await src.CopyToAsync(dest, httpCtx.RequestAborted);
+                await src.CopyToAsync(memory, httpCtx.RequestAborted);
+                bytes = memory.ToArray();
             }
 
-            FileLog.Write($"[ControlEndpoints] upload-image saved: {fullPath} ({file.Length} bytes)");
-            return Results.Json(new { path = fullPath, fileName = name });
+            var command = new DirectorCommand
+            {
+                Verb = "upload-image",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new UploadImageRequest
+                {
+                    FileName = file.FileName,
+                    BytesBase64 = Convert.ToBase64String(bytes),
+                }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<UploadImageResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "upload-image command failed"),
+            };
         });
 
         // ===== REST: Screenshots gallery =====
@@ -2618,27 +2627,23 @@ internal static class ControlEndpoints
         // DefaultScreenshotCount. The folder can hold thousands of images and no client ever
         // shows more than the newest few - older files are deliberately ignored. "total"
         // always reports the full folder count so clients can say "newest N of total".
-        app.MapGet("/screenshots", (int? count) =>
+        // Gateway Cleanup Phase 0: the list runs through the shared SessionByteExecutor core so this REST
+        // path and the Gateway tunnel verb are identical and cannot drift. Phase 1 deletes this route and
+        // leaves the core reached only over the tunnel.
+        app.MapGet("/screenshots", async (int? count) =>
         {
-            var cap = count is > 0 ? count.Value : DefaultScreenshotCount;
-            FileLog.Write($"[ControlEndpoints] GET /screenshots cap={cap}");
-            var dir = CcStorage.Screenshots();
-            var all = ScreenshotFiles(dir);
-            var items = all
-                .Take(cap)
-                .Select(info => new
-                {
-                    fileName = info.Name,
-                    // Absolute on-disk path on THIS Director's machine. The Cockpit injects it
-                    // into the composer at the cursor (desktop parity: drop the path into the
-                    // prompt) - the owning Claude session reads it directly, no upload needed.
-                    path = info.FullName,
-                    timeLabel = info.LastWriteTime.ToString("MMM d, h:mm tt"),
-                    lastWriteUtc = info.LastWriteTimeUtc,
-                    sizeBytes = info.Length,
-                })
-                .ToList();
-            return Results.Json(new { directory = dir, total = all.Count, items });
+            var command = new DirectorCommand
+            {
+                Verb = "screenshots-list",
+                PayloadJson = SessionCommandExecutor.Serialize(new ScreenshotListRequest { Count = count }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<ScreenshotListResponse>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "screenshots-list command failed"),
+            };
         });
 
         // Serve one screenshot's bytes. Loaded browser-direct as an <img src> and fetched for the
@@ -3721,7 +3726,9 @@ internal static class ControlEndpoints
     /// calls. The previous string-path version stat'ed every file twice (sort + FileInfo),
     /// which took ~100ms on a 1400-file folder; this takes ~1-2ms.
     /// </summary>
-    private static List<FileInfo> ScreenshotFiles(string directory)
+    // Internal (Gateway Cleanup Phase 0) so the screenshots-list byte verb enumerates the same folder this
+    // REST route does - one enumerator, no drift.
+    internal static List<FileInfo> ScreenshotFiles(string directory)
     {
         if (!Directory.Exists(directory))
             return new List<FileInfo>();
