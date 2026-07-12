@@ -1364,70 +1364,21 @@ internal static class ControlEndpoints
         // provided by SessionHistoryEndpoint via SessionHistoryReader - it covers Claude, Codex, and
         // Pi. cc-history reads that existing endpoint; no duplicate is registered here.)
 
-        app.MapGet("/sessions/{sid}/turns", (string sid) =>
+        // Issue #1177 / Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route and leaves the core reached only over the tunnel.
+        app.MapGet("/sessions/{sid}/turns", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "turns", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var resp = new TurnsResponse
+            return result.Status switch
             {
-                SessionId = sid,
-                ClaudeSessionId = session.ClaudeSessionId,
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<TurnsResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "turns command failed"),
             };
-
-            if (session.AgentKind != AgentKind.ClaudeCode)
-            {
-                if (!SessionHistoryReader.IsSupported(session))
-                {
-                    resp.Status = "unsupported";
-                    resp.Error = $"Agent {session.AgentKind} does not expose conversation history.";
-                    return Results.Json(resp);
-                }
-
-                var history = SessionHistoryReader.Read(session);
-                resp.JsonlPath = SessionHistoryReader.ResolveTranscriptPath(session);
-                resp.LineCount = history.Messages.Count;
-                resp.Widgets = BuildTurnWidgetsFromHistory(history);
-                resp.Status = "ok";
-                return Results.Json(resp);
-            }
-
-            if (string.IsNullOrEmpty(session.ClaudeSessionId))
-            {
-                resp.Status = "no_session_id";
-                resp.Error = "Session has not been linked to a Claude session id yet.";
-                return Results.Json(resp);
-            }
-
-            try
-            {
-                var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
-                resp.JsonlPath = jsonl;
-
-                if (!File.Exists(jsonl))
-                {
-                    resp.Status = "no_jsonl";
-                    resp.Error = $"JSONL file not found at {jsonl}";
-                    return Results.Json(resp);
-                }
-
-                var messages = StreamMessageParser.ParseFile(jsonl);
-                resp.LineCount = messages.Count;
-                resp.Widgets = WidgetBuilder.BuildFromMessages(messages);
-                resp.Status = "ok";
-                return Results.Json(resp);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[ControlEndpoints] /turns FAILED: {ex.Message}");
-                resp.Status = "parse_error";
-                resp.Error = ex.Message;
-                return Results.Json(resp);
-            }
         });
 
         app.MapGet("/sessions/{sid}/summary", (string sid) =>
@@ -2588,19 +2539,26 @@ internal static class ControlEndpoints
         // Resize the session's PTY grid so a remote terminal (the Cockpit) can use the full
         // window width. Session.Resize no-ops on an unchanged size, so a chatty client can't
         // hammer the PTY (the Wingman repaint-loop invariant).
-        app.MapPost("/sessions/{sid}/resize", (string sid, ResizeRequest req) =>
+        // Issue #1177 / Gateway Cleanup Phase 0: the resize runs through the shared SessionWriteExecutor core
+        // so this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1
+        // deletes this route and leaves the core reached only over the tunnel.
+        app.MapPost("/sessions/{sid}/resize", async (string sid, ResizeRequest req) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            if (req is null || req.Cols <= 0 || req.Rows <= 0)
-                return Results.BadRequest(new { error = "cols and rows must be > 0" });
+            var command = new DirectorCommand
+            {
+                Verb = "resize",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.Resize((short)Math.Min(req.Cols, short.MaxValue), (short)Math.Min(req.Rows, short.MaxValue));
-            return Results.Json(new { accepted = true, cols = (int)session.CurrentCols, rows = (int)session.CurrentRows });
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<ResizeResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "resize command failed"),
+            };
         });
 
         // Upload an image (from the phone) and file it into the user's screenshots folder
@@ -3654,7 +3612,10 @@ internal static class ControlEndpoints
     /// the Gateway Wingman voice path. Assistant text must stay Kind="Text": that is the contract
     /// WingmanTranslator uses to find the latest reply to summarize and speak.
     /// </summary>
-    private static List<TurnWidgetDto> BuildTurnWidgetsFromHistory(ConversationHistory history)
+    // Internal (not private) so the extracted SessionReadExecutor.Turns core can call the SAME widget
+    // builder the REST route used, keeping the tunnel verb and the route byte-identical (Gateway Cleanup
+    // mission, Phase 0).
+    internal static List<TurnWidgetDto> BuildTurnWidgetsFromHistory(ConversationHistory history)
     {
         var widgets = new List<TurnWidgetDto>();
         foreach (var message in history.Messages)

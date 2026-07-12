@@ -72,6 +72,35 @@ public sealed class ResizeRequest
     public int Rows { get; set; }
 }
 
+/// <summary>
+/// Response of the resize verb / POST /sessions/{sid}/resize: the grid the session settled on after the
+/// resize (clamped to the PTY's limits). Gateway Cleanup mission, Phase 0: the resize verb returns this so
+/// the REST route and the tunnel verb share one typed body.
+/// </summary>
+public sealed class ResizeResponse
+{
+    /// <summary>Always true on success (the resize was applied).</summary>
+    public bool Accepted { get; set; }
+
+    /// <summary>The session's resulting column count.</summary>
+    public int Cols { get; set; }
+
+    /// <summary>The session's resulting row count.</summary>
+    public int Rows { get; set; }
+}
+
+/// <summary>
+/// Payload of the terminal-input verb (Gateway Cleanup mission, Phase 0): a browser keystroke frame to
+/// forward verbatim to the session's PTY. The bytes are base64-encoded so control bytes (arrows, Ctrl+C,
+/// Esc) survive the JSON envelope intact. The target session is the command's SessionId. This is a plain
+/// unary write, not a stream verb.
+/// </summary>
+public sealed class TerminalInputRequest
+{
+    /// <summary>The raw keystroke bytes, base64-encoded.</summary>
+    public string Bytes { get; set; } = "";
+}
+
 /// <summary>Body of the git stage/unstage/discard endpoints. Empty paths means "all" (stage/unstage only).</summary>
 public sealed class GitPathsRequest
 {
