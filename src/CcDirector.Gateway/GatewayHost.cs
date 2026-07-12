@@ -1187,7 +1187,18 @@ public sealed class GatewayHost : IAsyncDisposable
         var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get));
         var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
         var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending);
-        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTelemetry);
+        // Keep-warm (Car Mode performance round): warm the SAME hosted model the brain uses and the SAME
+        // text-to-speech target /wingman/tts uses, resolved fresh each warmup so a settings change applies.
+        var carModeWarmup = new CarMode.CarModeWarmup(
+            CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get),
+            () =>
+            {
+                var mode = Core.Configuration.TranscriptionModeConfig.Get();
+                var tts = Core.Configuration.TranscriptionEndpointResolver.ResolveTts(mode);
+                var key = _keyVault.Get(tts.KeyName) ?? "";
+                return (tts.BaseUrl, Core.Configuration.TtsVoiceConfig.Resolve(mode), Core.Configuration.TtsModelConfig.Resolve(mode), key);
+            });
+        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTelemetry, carModeWarmup);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);

@@ -1,3 +1,4 @@
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.CarMode;
 using CcDirector.Gateway.HostedAi;
@@ -30,8 +31,22 @@ namespace CcDirector.Gateway.Api;
 /// </summary>
 internal static class CarModeEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTelemetryStore telemetry)
+    public static void Map(IEndpointRouteBuilder app, CarModeBrain brain, CarModeTelemetryStore telemetry, CarModeWarmup warmup)
     {
+        // Keep-warm (Car Mode performance round): the browser calls this the instant the owner taps Start,
+        // and every few minutes WHILE Car Mode is open, so the hosted model + text-to-speech are hot before
+        // the first utterance and stay hot for the drive. Gated on the keep-warm config (default ON for Car
+        // Mode); when off it is a cheap no-op. The warmup runs in the BACKGROUND on CancellationToken.None
+        // so the Start tap is never blocked and navigating away does not cancel the warm. Best-effort - a
+        // warmup failure never surfaces to the owner.
+        app.MapPost("/carmode/warmup", () =>
+        {
+            if (!CarModeKeepWarmConfig.Enabled())
+                return Results.Json(new { warmed = false, reason = "keep-warm disabled" });
+            _ = Task.Run(() => warmup.WarmAsync(CancellationToken.None));
+            return Results.Json(new { warmed = true });
+        });
+
         app.MapPost("/carmode/turn", async (HttpContext ctx, CarModeTurnRequest? req, CancellationToken ct) =>
         {
             FileLog.Write($"[CarModeEndpoint] turn: len={req?.Text?.Length ?? 0}");

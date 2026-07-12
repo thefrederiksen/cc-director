@@ -5,6 +5,7 @@ import { playReadyCue, playYourTurnCue } from "../dictation/readyCue";
 import { detectEndPhrase, detectInterrupt } from "./controlPhrases";
 import {
   postCarModeTelemetry,
+  postCarModeWarmup,
   speakCarModeText,
   transcribeCarModeAudio,
   type CarModeAction,
@@ -135,6 +136,9 @@ const SILENCE_THRESHOLD = 0.06;
 const PAUSE_MS = 700;
 // How often the rolling window is transcribed while the assistant is speaking, to catch an interrupt word.
 const SPEAKING_POLL_MS = 1500;
+// How often to send a keep-warm ping WHILE Car Mode is open, so the hosted model + text-to-speech stay hot
+// for the drive. Comfortably inside a typical provider keep-alive window; only fires while Car Mode is open.
+const KEEP_WARM_MS = 3 * 60 * 1000;
 // A snapshot smaller than this is just the container header with no real audio - skip transcribing it.
 const MIN_CLIP_BYTES = 2000;
 
@@ -192,6 +196,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const belowSinceRef = useRef(0); // performance.now() the level first dropped below the threshold, or 0
   const busyRef = useRef(false); // a background transcription is in flight (do not start another)
   const speakingPollRef = useRef<number | null>(null); // setInterval id for the speaking rolling window
+  const keepWarmRef = useRef<number | null>(null); // setInterval id for the keep-warm ping while Car Mode is open
 
   // Performance-round telemetry: the metrics for the turn in flight, filled across transcribe -> brain ->
   // speak and posted once first audio plays. Null between turns.
@@ -625,6 +630,15 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     console.log("[CarMode] start");
     setStarted(true);
     setError(null);
+
+    // Warm-on-entry (Car Mode performance round): fire a warmup the INSTANT the owner taps Start, so the
+    // hosted model + text-to-speech are hot by the time the first utterance is transcribed - cold-start is
+    // the measured dominant latency. Then keep them warm every few minutes WHILE Car Mode is open, so
+    // credits are spent only during active use. Best-effort - it never blocks Start.
+    void postCarModeWarmup();
+    if (keepWarmRef.current !== null) clearInterval(keepWarmRef.current);
+    keepWarmRef.current = window.setInterval(() => void postCarModeWarmup(), KEEP_WARM_MS);
+
     recorderRef.current = new MicRecorder();
     // The reply's sentence chunks are played by playBlob, which sets onended per clip; the speak loop hands
     // the microphone back after the LAST chunk, so no global onended handler is needed here.
@@ -666,6 +680,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       rafRef.current = 0;
     }
     stopSpeakingPoll();
+    if (keepWarmRef.current !== null) {
+      clearInterval(keepWarmRef.current);
+      keepWarmRef.current = null;
+    }
     try {
       recorderRef.current?.dispose();
     } catch {
@@ -695,6 +713,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       playbackStopRef.current?.();
       if (rafRef.current !== 0) window.cancelAnimationFrame(rafRef.current);
       if (speakingPollRef.current !== null) clearInterval(speakingPollRef.current);
+      if (keepWarmRef.current !== null) clearInterval(keepWarmRef.current);
       try {
         recorderRef.current?.dispose();
       } catch {

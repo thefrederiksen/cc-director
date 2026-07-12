@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { carModeTurn, postCarModeTelemetry, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
+import { carModeTurn, postCarModeTelemetry, postCarModeWarmup, speakCarModeText, transcribeCarModeAudio } from "./carModeApi";
 import { CreditsError, GatewayError } from "../api/client";
 
 // The Car Mode Gateway calls must fail LOUD and SPECIFIC (mission decision 8): a money refusal (402) is
@@ -123,6 +123,20 @@ describe("postCarModeTelemetry", () => {
   it("never throws when the post fails (best-effort observability)", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
     await expect(postCarModeTelemetry(record)).resolves.toBeUndefined();
+  });
+});
+
+describe("postCarModeWarmup", () => {
+  it("posts to /carmode/warmup", async () => {
+    const fetchMock = mockFetch(200, { warmed: true });
+    vi.stubGlobal("fetch", fetchMock);
+    await postCarModeWarmup();
+    expect(fetchMock).toHaveBeenCalledWith("/carmode/warmup", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("never throws when the warmup ping fails (best-effort)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("down"); }));
+    await expect(postCarModeWarmup()).resolves.toBeUndefined();
   });
 
   it("maps 402 to the shared CreditsError", async () => {
