@@ -167,9 +167,10 @@ questions.
 ## Open questions (withdrawal reversed with the resume; question 2 re-asked, 3 and 4 pending)
 
 1. ANSWERED 2026-07-11 - restart policy. See decision 8 above.
-2. Which Mac builds are protected from remote restart (the Windows guard protects the main build
-   and slots 1-4)? Proposal: same convention - installed application plus slots 1-4 protected,
-   slot 5 and up free.
+2. VOID by owner ruling 2026-07-11 - the protected-builds question only exists for automatic
+   restarts, and the auto-update stream is parked, so nothing restarts any Director
+   automatically and there is nothing to protect. Do not re-ask. If the auto-update work ever
+   resumes, this returns as a design question inside that work, not as an owner question.
 3. Any Intel Macs in the fleet, now or planned? (Release pipeline is Apple-silicon only.)
 4. Apple Developer signing identity, or stay ad-hoc signed with quarantine stripping?
 
