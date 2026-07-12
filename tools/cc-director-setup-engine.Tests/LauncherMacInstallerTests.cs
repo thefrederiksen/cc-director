@@ -21,7 +21,7 @@ public class LauncherMacInstallerTests : IDisposable
         _dir = Path.Combine(Path.GetTempPath(), "cc-launcher-mac-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _layout = new InstallLayout(Path.Combine(_dir, "local"));
-        _plistPath = Path.Combine(_dir, "LaunchAgents", LauncherMacInstaller.LaunchAgentLabel + ".plist");
+        _plistPath = Path.Combine(_dir, "LaunchAgents", LauncherLaunchdAutostart.Label + ".plist");
         Directory.CreateDirectory(Path.GetDirectoryName(_plistPath)!);
     }
 
@@ -118,7 +118,7 @@ public class LauncherMacInstallerTests : IDisposable
         var result = await installer.InstallAsync();
 
         Assert.True(result.Success, result.Message);
-        Assert.Contains(commands, c => c.Contains("kickstart -k gui/501/" + LauncherMacInstaller.LaunchAgentLabel));
+        Assert.Contains(commands, c => c.Contains("kickstart -k gui/501/" + LauncherLaunchdAutostart.Label));
     }
 
     [Fact]

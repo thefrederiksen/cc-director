@@ -23,11 +23,6 @@ namespace CcDirector.Setup.Engine;
 /// </summary>
 public sealed class LauncherMacInstaller
 {
-    /// <summary>The launch agent label, agreed across the mission sessions on 2026-07-11. The
-    /// launcher's own autostart class (LauncherLaunchdAutostart, owned by the launcher port work)
-    /// is the canonical definition; consolidate this constant with that class once it exists.</summary>
-    public const string LaunchAgentLabel = "com.devthrottle.cc-launcher";
-
     /// <summary>Runs a short command and returns its exit code and combined output. Injectable so
     /// tests can fake launchctl without a real launchd.</summary>
     public delegate (int Exit, string Output) CommandRunner(string executable, string arguments);
@@ -60,10 +55,9 @@ public sealed class LauncherMacInstaller
     }
 
     /// <summary>The user's launch agent property list for the launcher:
-    /// ~/Library/LaunchAgents/com.devthrottle.cc-launcher.plist.</summary>
-    public static string DefaultLaunchAgentPlistPath() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "Library", "LaunchAgents", LaunchAgentLabel + ".plist");
+    /// ~/Library/LaunchAgents/com.devthrottle.cc-launcher.plist. Delegates to
+    /// <see cref="LauncherLaunchdAutostart"/>, the canonical owner of the label and path.</summary>
+    public static string DefaultLaunchAgentPlistPath() => LauncherLaunchdAutostart.PlistPath;
 
     /// <summary>
     /// Start the already-placed launcher and verify it is healthy and registered as a launch
@@ -137,7 +131,7 @@ public sealed class LauncherMacInstaller
             return;
         }
 
-        var serviceTarget = $"gui/{uid}/{LaunchAgentLabel}";
+        var serviceTarget = $"gui/{uid}/{LauncherLaunchdAutostart.Label}";
         var (kickExit, kickOutput) = _runCommand("/bin/launchctl", $"kickstart -k {serviceTarget}");
         if (kickExit == 0)
         {
