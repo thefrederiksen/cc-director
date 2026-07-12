@@ -629,6 +629,39 @@ export async function fetchSessionFileText(sessionId: string, path: string, sign
   return res.text();
 }
 
+// The on-disk SIZE of a file on the owning Director, for the download panel's "name - size" display
+// (Local Files, Phase 4). We do NOT download the file to weigh it: a Range: bytes=0-0 request makes the
+// Director - which already serves this route with enableRangeProcessing on - answer 206 Partial Content
+// with a Content-Range header ("bytes 0-0/<total>") whose total is the full size, transferring a single
+// byte. This reuses the existing range support and needs no new server or Gateway route (the per-session
+// catch-all proxy forwards any verb/headers unchanged). A missing file or offline machine is thrown as a
+// GatewayError (404 / 503) so the panel can fail loud. When the total cannot be read - an old or odd
+// server that ignored the range and returned 200 - null is returned and the caller shows the name and
+// Download with NO guessed size (the brief's "no fake size" rule; no fallback programming).
+export async function fetchSessionFileSize(sessionId: string, path: string, signal?: AbortSignal): Promise<number | null> {
+  const res = await fetch(sessionFileUrl(sessionId, path), {
+    method: "GET",
+    headers: { ...authHeaders(), Range: "bytes=0-0" },
+    signal,
+  });
+  // 206 (range honored) and 200 (range ignored, full body) are both "ok"; anything else is a real error.
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET file size failed: ${res.status}`);
+  }
+  // We never read the body - drop it so a 200 (full-file) response does not stream needlessly.
+  void res.body?.cancel();
+  const contentRange = res.headers.get("Content-Range");
+  if (contentRange) {
+    // "bytes 0-0/<total>" - the number after the last slash is the full file size.
+    const slash = contentRange.lastIndexOf("/");
+    if (slash >= 0) {
+      const total = Number(contentRange.slice(slash + 1).trim());
+      if (Number.isFinite(total) && total >= 0) return total;
+    }
+  }
+  return null;
+}
+
 // GET /sessions/{sid}/screenshots[?count=N] - the newest screenshots' metadata (not the bytes).
 // count <= 0 fetches everything (the folder can hold thousands, so callers pass a cap). A 503 means
 // the owning Director is offline (the Gateway could not reach it for this leg, issue #412); it is

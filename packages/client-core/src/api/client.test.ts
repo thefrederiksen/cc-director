@@ -1,9 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   configureUnauthorizedRedirect,
   cockpitSignInRedirect,
   mobileSignInRedirect,
   resolveSignInTarget,
+  fetchSessionFileSize,
+  GatewayError,
 } from "./client";
 
 // The shell-aware mid-session 401 redirect (issue #1024, retargeted by issue #1088). A 401 on the
@@ -53,5 +55,73 @@ describe("shell-aware unauthorized redirect", () => {
   it("defaults to the mobile route when a shell installs nothing", () => {
     // The mobile shell historically owned client-core, so the unconfigured default stays /m/signin.
     expect(resolveSignInTarget({ pathname: "/m", search: "" })).toBe("/m/signin");
+  });
+});
+
+// fetchSessionFileSize (Local Files, Phase 4): the download panel's size probe. It issues a one-byte
+// ranged GET (Range: bytes=0-0) so the Director answers 206 with Content-Range "bytes 0-0/<total>", and
+// reads the FULL size from that total - without downloading the file. A missing file / offline machine
+// (404 / 503) throws a GatewayError so the panel fails loud; a response with no readable total returns
+// null so the panel shows the name with NO guessed size.
+describe("fetchSessionFileSize", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  // A minimal fetch Response stand-in: status, a header bag, and a cancelable body.
+  function fakeResponse(status: number, headers: Record<string, string>): Response {
+    const map = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (name: string) => map.get(name.toLowerCase()) ?? null },
+      body: { cancel: () => Promise.resolve() },
+    } as unknown as Response;
+  }
+
+  it("sends a Range: bytes=0-0 header to the session file URL", async () => {
+    const fetchMock = vi.fn(async () =>
+      fakeResponse(206, { "Content-Range": "bytes 0-0/2048" }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await fetchSessionFileSize("sess-1", "D:\\out\\big.pdf");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`/sessions/sess-1/file?path=${encodeURIComponent("D:\\out\\big.pdf")}`);
+    expect((init.headers as Record<string, string>).Range).toBe("bytes=0-0");
+  });
+
+  it("reads the full size from the Content-Range total on a 206", async () => {
+    globalThis.fetch = (async () =>
+      fakeResponse(206, { "Content-Range": "bytes 0-0/1500000" })) as unknown as typeof fetch;
+
+    expect(await fetchSessionFileSize("s", "D:\\a\\b.bin")).toBe(1500000);
+  });
+
+  it("returns null when the server ignored the range (200, no Content-Range)", async () => {
+    globalThis.fetch = (async () =>
+      fakeResponse(200, { "Content-Length": "42" })) as unknown as typeof fetch;
+
+    expect(await fetchSessionFileSize("s", "D:\\a\\b.bin")).toBeNull();
+  });
+
+  it("throws a GatewayError with the status for a missing file (404)", async () => {
+    globalThis.fetch = (async () => fakeResponse(404, {})) as unknown as typeof fetch;
+
+    await expect(fetchSessionFileSize("s", "D:\\gone.bin")).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(fetchSessionFileSize("s", "D:\\gone.bin")).rejects.toBeInstanceOf(GatewayError);
+  });
+
+  it("throws a GatewayError with the status when the machine is offline (503)", async () => {
+    globalThis.fetch = (async () => fakeResponse(503, {})) as unknown as typeof fetch;
+
+    await expect(fetchSessionFileSize("s", "D:\\a\\b.bin")).rejects.toMatchObject({
+      status: 503,
+    });
   });
 });

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { classifyFile } from "@devthrottle/client-core/history/fileTypes";
+import { classifyFile, formatFileSize } from "@devthrottle/client-core/history/fileTypes";
 import type { FileViewerType } from "@devthrottle/client-core/history/fileTypes";
 import {
   GatewayError,
+  fetchSessionFileSize,
   fetchSessionFileText,
   sessionFileUrl,
 } from "@devthrottle/client-core/api/client";
@@ -111,14 +112,54 @@ function FileViewContent(props: {
       return <TextFile sessionId={sessionId} path={path} render="text" />;
     case "download":
     default:
-      return (
-        <div className="file-view-download-panel">
-          <p className="file-view-download-note">This file type has no in-app preview.</p>
-          <p className="file-view-download-name">{name}</p>
-          <a className="file-view-download-btn" href={url} download={name}>Download</a>
-        </div>
-      );
+      return <DownloadPanel sessionId={sessionId} path={path} url={url} name={name} />;
   }
+}
+
+// The unknown/binary case: no guessed render (brief decision 4), just the file NAME, its SIZE, and a
+// Download button. The size is probed through the Gateway (a one-byte ranged GET; fetchSessionFileSize).
+// While it loads the button is already usable. A 404/503 during the probe means the file is genuinely
+// missing or the machine is offline, so the panel shows that specific reason instead of offering a
+// Download that would only fail - keeping the fail-loud contract for this mode too. A size that cannot
+// be determined simply shows the name with no size (never a fake one). Mirrors the Cockpit DownloadPanel.
+function DownloadPanel({
+  sessionId,
+  path,
+  url,
+  name,
+}: {
+  sessionId: string;
+  path: string;
+  url: string;
+  name: string;
+}) {
+  const [size, setSize] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setSize(null);
+    setError(null);
+    fetchSessionFileSize(sessionId, path, controller.signal)
+      .then((bytes) => setSize(bytes))
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setError(fileLoadMessage(err));
+      });
+    return () => controller.abort();
+  }, [sessionId, path]);
+
+  if (error !== null) return <div className="file-view-error">{error}</div>;
+
+  const sizeLabel = size === null ? "" : formatFileSize(size);
+  return (
+    <div className="file-view-download-panel">
+      <p className="file-view-download-note">This file type has no in-app preview.</p>
+      <p className="file-view-download-name">{name}</p>
+      {sizeLabel ? <p className="file-view-download-size">{sizeLabel}</p> : null}
+      <a className="file-view-download-btn" href={url} download={name}>Download</a>
+    </div>
+  );
 }
 
 // An image renders directly from the Gateway URL. A failed load (missing file / offline machine) shows

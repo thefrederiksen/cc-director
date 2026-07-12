@@ -349,6 +349,11 @@
   word-break: break-all;
 }
 
+.file-viewer-download-size {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 /* The Download control appears both in the head (small) and in the download-mode body (button). */
 .file-viewer-download,
 .file-viewer-download-btn {
