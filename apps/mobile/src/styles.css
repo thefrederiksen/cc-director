@@ -239,6 +239,25 @@ a.banner-btn {
   border-color: rgba(241, 76, 76, 0.55);
 }
 
+/* Mobile-resilience Phase 2: a card whose owning machine is unreachable. It is KEPT and shown, just
+   dimmed and desaturated, so the reader sees it is stale-but-preserved (never deleted). A dashed border
+   distinguishes it from a live card at a glance without shouting. */
+.row-unreachable {
+  opacity: 0.72;
+  border-style: dashed;
+  border-color: rgba(148, 163, 184, 0.5);
+}
+
+/* The plain-English "Unreachable - MACHINE - last seen N ago" / "Reconnecting to MACHINE" note under an
+   unreachable card. Muted amber-gray: a warning, not an error - the data underneath is still good. */
+.row-unreachable-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbb892;
+}
+
 /* Issue #838: the dot is top-aligned at the start of the FIRST name line (align-items:
    flex-start) so a name that wraps to several lines keeps the dot beside its first line. */
 .row-link {

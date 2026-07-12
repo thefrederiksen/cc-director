@@ -7,7 +7,7 @@
 // Gateway-only-ingress rule the rest of client-core obeys, and carries the same Bearer via
 // authHeaders(). A non-2xx throws GatewayError so the caller surfaces the real reason instead of a
 // silently empty list (no fallback that hides the problem).
-import { authHeaders, GatewayError, type SessionDto } from "../api/client";
+import { authHeaders, gatewayFetch, GatewayError, type SessionDto } from "../api/client";
 
 // ===== Directors registry (GET /directors) =====
 
@@ -52,7 +52,7 @@ export const ENDPOINT_STATE_UNREACHABLE_BY_NAME = "unreachable-by-name";
 // GET /directors - the machines registered with this Gateway, as the FULL DirectorDto. Throws
 // GatewayError on non-2xx so the Directors page shows the real reason instead of an empty table.
 export async function getFleetDirectors(signal?: AbortSignal): Promise<FleetDirector[]> {
-  const res = await fetch("/directors", {
+  const res = await gatewayFetch("/directors", {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -120,7 +120,7 @@ export interface SessionsEnvelope {
 // reachability. Throws GatewayError on non-2xx so the page surfaces the failure rather than showing a
 // silently empty roster.
 export async function getSessionsEnvelope(signal?: AbortSignal): Promise<SessionsEnvelope> {
-  const res = await fetch("/sessions?envelope=true", {
+  const res = await gatewayFetch("/sessions?envelope=true", {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -161,7 +161,7 @@ export function reachabilityLastSeen(ageSeconds: number | null | undefined): str
 // the Gateway trims and echoes the applied name.
 export async function renameSession(sessionId: string, name: string, signal?: AbortSignal): Promise<SessionDto> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}`, {
+  const res = await gatewayFetch(`/sessions/${sid}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ name }),
@@ -211,7 +211,7 @@ export interface RestoreInterruptedResult {
 // GET /interrupted - every interrupted session across the fleet, newest death first. Throws
 // GatewayError on non-2xx.
 export async function getInterrupted(signal?: AbortSignal): Promise<InterruptedSession[]> {
-  const res = await fetch("/interrupted", {
+  const res = await gatewayFetch("/interrupted", {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -235,7 +235,7 @@ export async function dismissInterruptedJournal(
 ): Promise<void> {
   const dir = encodeURIComponent(deadDirectorId);
   const via = encodeURIComponent(reportedByDirectorId);
-  const res = await fetch(`/interrupted/${dir}/${deadPid}?via=${via}`, {
+  const res = await gatewayFetch(`/interrupted/${dir}/${deadPid}?via=${via}`, {
     method: "DELETE",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -257,7 +257,7 @@ export async function dismissInterruptedSession(
   const dir = encodeURIComponent(deadDirectorId);
   const sid = encodeURIComponent(sessionId);
   const via = encodeURIComponent(reportedByDirectorId);
-  const res = await fetch(`/interrupted/${dir}/${deadPid}/sessions/${sid}?via=${via}`, {
+  const res = await gatewayFetch(`/interrupted/${dir}/${deadPid}/sessions/${sid}?via=${via}`, {
     method: "DELETE",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -278,7 +278,7 @@ export async function restoreInterrupted(
   signal?: AbortSignal,
 ): Promise<RestoreInterruptedResult> {
   const dir = encodeURIComponent(deadDirectorId);
-  const res = await fetch(`/interrupted/${dir}/${deadPid}/restore`, {
+  const res = await gatewayFetch(`/interrupted/${dir}/${deadPid}/restore`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ sessionId, via: reportedByDirectorId }),
@@ -305,7 +305,7 @@ export async function restoreInterrupted(
 // GET /directors/{id}/settings - the Director's current settings as the raw JSON text it emits.
 export async function getDirectorSettings(directorId: string, signal?: AbortSignal): Promise<string> {
   const id = encodeURIComponent(directorId);
-  const res = await fetch(`/directors/${id}/settings`, {
+  const res = await gatewayFetch(`/directors/${id}/settings`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -321,7 +321,7 @@ export async function getDirectorSettings(directorId: string, signal?: AbortSign
 // never reaches the wire.
 export async function putDirectorSettings(directorId: string, json: string, signal?: AbortSignal): Promise<void> {
   const id = encodeURIComponent(directorId);
-  const res = await fetch(`/directors/${id}/settings`, {
+  const res = await gatewayFetch(`/directors/${id}/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: json,

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
+import { type SessionDto } from "@devthrottle/client-core/api/client";
+import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
+import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
 import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
@@ -15,10 +17,19 @@ import { enablePush, notificationPermission, pushSupported, reconcileBadge } fro
 // sessions" group with everything that is NOT waiting on you - so a session appears in exactly one
 // group and is never listed twice. Both use the live Gateway /sessions data and the shared triage
 // ordering. Tapping a row opens the session-detail placeholder bound to that session id.
+//
+// The roster reads the /sessions ENVELOPE (per-Director reachability), not the flat list, and runs it
+// through the keep-and-mark merge (mobile-resilience mission, Phase 2): a session whose owning machine
+// is unreachable STAYS on the roster, grayed and marked, and leaves only when its Director answers
+// without it. The retention cache is held in a ref so it survives across polls (and navigating into a
+// session and back) without churning React state.
 const POLL_INTERVAL_MS = 5000;
 
 export function Home() {
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
+  // Per-session reachability marks from the merge - only unreachable (wobbly/offline) sessions have one.
+  const [marks, setMarks] = useState<Map<string, RosterSessionMark>>(() => new Map());
+  const retentionCache = useRef(emptyRetentionCache());
   const [error, setError] = useState<string | null>(null);
   // The roster filter (by machine and/or repo) and whether its full-screen panel is open. The filter
   // is persisted across navigations and restarts by the hook; the panel is transient UI state.
@@ -31,15 +42,21 @@ export function Home() {
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const data = await listSessions(signal);
-      setSessions(data);
+      const envelope = await getSessionsEnvelope(signal);
+      // Keep-and-mark: retained sessions of unreachable machines stay on the roster, marked; a session
+      // leaves only when its owning Director answered without it (mergeRosterRetention owns the rule).
+      const merged = mergeRosterRetention(retentionCache.current, envelope);
+      retentionCache.current = merged.cache;
+      setSessions(merged.roster.sessions);
+      setMarks(merged.roster.marks);
       setError(null);
-      // Keep the app-icon "needs you" dot in sync while the app is open: set the badge to the live
-      // count, or clear the badge and the service worker's dot notification when nothing is waiting.
-      void reconcileBadge(inBucket(data, "needsYou").length);
+      // The app-icon "needs you" dot and the voice-clip sync read the LIVE sessions only (never the
+      // retained-and-marked ones): the badge must reflect what genuinely needs you right now, and only a
+      // reachable session can have a phone-ready voice clip.
+      void reconcileBadge(inBucket(envelope.sessions, "needsYou").length);
       // Pull each gateway-ready voice session's clip down to the phone so the triangle can appear
       // (phone-ready, the issue #850 rule). Fire-and-forget; it updates the clip store as bytes land.
-      void syncVoiceSessions(data);
+      void syncVoiceSessions(envelope.sessions);
     } catch (err) {
       if (signal?.aborted) return;
       // Keep the last-known roster on screen (never clear good data on a bad connection). The global
@@ -169,7 +186,7 @@ export function Home() {
           <h2 className="group-title group-title-attention">Needs you</h2>
           <ul className="roster">
             {needsYou.map((s) => (
-              <SessionRow key={`needs-${s.sessionId}`} session={s} />
+              <SessionRow key={`needs-${s.sessionId}`} session={s} mark={marks.get(s.sessionId ?? "")} />
             ))}
           </ul>
         </section>
@@ -180,7 +197,7 @@ export function Home() {
           <h2 className="group-title">Other sessions</h2>
           <ul className="roster">
             {others.map((s) => (
-              <SessionRow key={s.sessionId} session={s} />
+              <SessionRow key={s.sessionId} session={s} mark={marks.get(s.sessionId ?? "")} />
             ))}
           </ul>
         </section>
@@ -229,12 +246,24 @@ function EnableAlerts() {
   );
 }
 
-function SessionRow({ session }: { session: SessionDto }) {
+// The plain-English note under an unreachable card, naming the machine and (when known) how long ago it
+// was last seen. Wobbly reads as a soft "reconnecting"; offline as a firm "unreachable" - both honest.
+function unreachableNote(mark: RosterSessionMark): string {
+  const machine = mark.machineName.length > 0 ? mark.machineName : "its machine";
+  const base = mark.reachability === "wobbly" ? `Reconnecting to ${machine}` : `Unreachable - ${machine}`;
+  return mark.lastSeenLabel.length > 0 ? `${base} - ${mark.lastSeenLabel}` : base;
+}
+
+function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessionMark }) {
   const color = effectiveColor(session);
   const name = session.name && session.name.trim().length > 0 ? session.name : "(unnamed session)";
   const repo = repoLeaf(session);
   const machine = machineName(session);
-  const attention = classify(session) === "needsYou";
+  // An unreachable card (its owning machine is wobbly/offline, mobile-resilience Phase 2): grayed, its
+  // stale attention state and live waiting timer suppressed, and a note naming the machine. It KEEPS its
+  // last-known content and position - unreachable is shown, never deleted.
+  const unreachable = mark !== undefined;
+  const attention = classify(session) === "needsYou" && !unreachable;
   // Issue #844: the session's short three-digit number (SessionDto.Number, #820) read from the
   // regenerated typed client. Null on sessions/Directors without a number - then no prefix shows.
   const num = session.number;
@@ -244,11 +273,11 @@ function SessionRow({ session }: { session: SessionDto }) {
   const sid = encodeURIComponent(session.sessionId ?? "");
   const to = session.voiceMode ? `/session/${sid}/voice` : `/session/${sid}`;
   return (
-    <li className={`row${attention ? " row-attention" : ""}`}>
+    <li className={`row${attention ? " row-attention" : ""}${unreachable ? " row-unreachable" : ""}`}>
       {/* Hand the known voice-mode state to the destination (issue #1015) so the Voice screen paints
           the right state on the first render instead of flashing OFF while its first poll resolves. */}
       <Link className="row-link" to={to} state={{ voiceMode: Boolean(session.voiceMode) }}>
-        <span className="dot" style={{ backgroundColor: dotColor(color) }} aria-hidden="true" />
+        <span className="dot" style={{ backgroundColor: dotColor(unreachable ? "grey" : color) }} aria-hidden="true" />
         <span className="row-body">
           {/* The name uses the full card width and WRAPS (no truncation) - issue #838. A muted
               three-digit number prefix sits before the bold name, matching the desktop SessionRail
@@ -273,6 +302,10 @@ function SessionRow({ session }: { session: SessionDto }) {
               {repo && <span className="row-chip row-chip-repo">{repo}</span>}
             </span>
           )}
+          {/* Mobile-resilience Phase 2: when the owning machine is unreachable, a short plain note says so
+              and names the machine - the card is kept and grayed, never dropped, so the reader knows this
+              is stale-but-preserved, not gone. */}
+          {mark && <span className="row-unreachable-note">{unreachableNote(mark)}</span>}
           {/* A dictation started on this session's screen keeps showing here once the user walks back
               to the roster (#1139): in-flight while it uploads/transcribes, a sticky red pill if it
               failed - so a dropped transcription is visible from the list, never silent. */}
