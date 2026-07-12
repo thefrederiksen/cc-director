@@ -181,6 +181,82 @@ public sealed class MissionCommandTests
         finally { sm.Dispose(); }
     }
 
+    // Gateway Cleanup mission (Wave 4b): when the create request carries BOTH a MissionId and a MissionName
+    // (the GATEWAY path - the Gateway already validated the mission against its own store), the Director
+    // stamps the attachment DIRECTLY with no local-store lookup. Proof of "no lookup": the id is NOT in the
+    // store here (in fact the store is EMPTY), yet the create succeeds and stamps the carried name - a local
+    // lookup would have rejected it as unknown.
+    [Fact]
+    public async Task Create_WithMissionNamePresent_StampsDirectly_WithoutStoreLookup()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var services = new SessionCommandServices { MissionStore = NewMissionStore() }; // empty store
+            var carriedId = Guid.NewGuid(); // never created in the store
+
+            var command = CreateCommand(new NewSessionRequest
+            {
+                RepoPath = Path.GetTempPath(),
+                Agent = "RawCli",
+                Command = TestShellPath,
+                Name = "gateway-mission-create",
+                MissionId = carriedId,
+                MissionName = "Gateway Native Mission", // resolved+validated by the Gateway already
+            });
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, services);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status); // NOT rejected despite the empty store
+            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal(carriedId, dto.MissionId);
+            Assert.Equal("Gateway Native Mission", dto.MissionName); // stamped from the request, not the store
+
+            Assert.True(Guid.TryParse(dto.SessionId, out var sid));
+            var session = sm.GetSession(sid);
+            Assert.NotNull(session);
+            Assert.Equal(carriedId, session.MissionId);
+            Assert.Equal("Gateway Native Mission", session.MissionName);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // Gateway Cleanup mission (Wave 4b): the TRANSITIONAL BRIDGE. When the create request carries a MissionId
+    // but a BLANK MissionName (an old caller hitting the Director's POST /sessions directly for a
+    // Director-store mission), the Director resolves the name from its OWN store - so the stamped name comes
+    // from the store, not the request. Proof: the store name differs from anything on the request.
+    [Fact]
+    public async Task Create_WithMissionNameAbsent_ResolvesNameFromLocalStore()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var store = NewMissionStore();
+            var mission = store.Create("Name From Director Store");
+            var services = new SessionCommandServices { MissionStore = store };
+
+            var command = CreateCommand(new NewSessionRequest
+            {
+                RepoPath = Path.GetTempPath(),
+                Agent = "RawCli",
+                Command = TestShellPath,
+                Name = "bridge-mission-create",
+                MissionId = mission.MissionId,
+                MissionName = null, // blank -> the transitional local-store lookup resolves the name
+            });
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command, services);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<SessionDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal(mission.MissionId, dto.MissionId);
+            Assert.Equal("Name From Director Store", dto.MissionName); // resolved from the store
+        }
+        finally { sm.Dispose(); }
+    }
+
     [Fact]
     public async Task Create_WithUnknownMissionId_ReturnsBadRequest_NoSessionCreated()
     {

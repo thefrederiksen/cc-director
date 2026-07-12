@@ -384,16 +384,40 @@ internal static class SessionCommandExecutor
         if (req.Role is not null && !SessionRoles.IsValid(req.Role))
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown role '{req.Role}'. Valid: {string.Join(", ", SessionRoles.All)}");
 
-        // Mission attach at spawn: resolve+validate the Mission BEFORE creating the session, mirroring the
-        // explicit-role check, so attaching to an unknown Mission never silently drops. The resolved record
-        // (below) supplies the cached display name stamped onto the session after it is created.
-        Mission? mission = null;
+        // Mission attach at spawn. Missions are a FLEET-level concept and now live at the Gateway (source of
+        // truth), so the mission name that binds the session into a pod arrives ON the create request:
+        //   * GATEWAY path (MissionId AND MissionName both set): the Gateway already resolved+validated the
+        //     mission against its OWN store, so the Director stamps the attachment DIRECTLY - no local-store
+        //     lookup, no local validation. This is the end state.
+        //   * TRANSITIONAL BRIDGE (MissionId set, MissionName blank): an old caller hitting the Director's
+        //     POST /sessions directly for a Director-store mission. The Director resolves the name from its
+        //     own MissionStore exactly as before, rejecting an unknown mission. This local-lookup bridge is
+        //     TEMPORARY: it is REMOVED when the Gateway Cleanup Phase 1 drops the Director MissionStore, after
+        //     which the Director never resolves a mission name locally and only stamps what create carries.
+        //   * No MissionId: no attach.
+        // Resolved BEFORE creating the session (mirroring the explicit-role check) so an unknown mission never
+        // silently drops. attachMissionId / attachMissionName below carry the values stamped after creation.
+        Guid? attachMissionId = null;
+        string? attachMissionName = null;
         if (req.MissionId is Guid createMissionId)
         {
-            mission = services?.MissionStore?.Get(createMissionId);
-            if (mission is null)
-                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
-                    $"unknown mission '{createMissionId}'. Create it first with POST /missions.");
+            if (!string.IsNullOrWhiteSpace(req.MissionName))
+            {
+                // Gateway path: trust the Gateway's already-validated mission id + name; stamp directly.
+                attachMissionId = createMissionId;
+                attachMissionName = req.MissionName;
+            }
+            else
+            {
+                // Transitional bridge: resolve the name from the local Director MissionStore. Removed with
+                // the Director MissionStore in Phase 1.
+                var mission = services?.MissionStore?.Get(createMissionId);
+                if (mission is null)
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest,
+                        $"unknown mission '{createMissionId}'. Create it first with POST /missions.");
+                attachMissionId = mission.MissionId;
+                attachMissionName = mission.MissionName;
+            }
         }
 
         // RawCli requires a Command; validate before constructing the agent.
@@ -492,10 +516,11 @@ internal static class SessionCommandExecutor
         if (explicitRole is not null)
             session.SetExplicitRole(explicitRole);
 
-        // Mission attach at spawn: stamp the session's MissionId and cache the resolved display name (the
-        // Mission was validated above). This is the attachment that binds the new session into a pod.
-        if (mission is not null)
-            session.AttachToMission(mission.MissionId, mission.MissionName);
+        // Mission attach at spawn: stamp the session's MissionId and cache the display name (resolved above,
+        // either carried by the Gateway or resolved via the transitional local-store bridge). This is the
+        // attachment that binds the new session into a pod.
+        if (attachMissionId is Guid stampMissionId)
+            session.AttachToMission(stampMissionId, attachMissionName);
 
         // Issue #212: dispatch a supplied PrePrompt once the agent is actually READY, fire-and-forget so
         // create returns immediately. Readiness = a substantial startup burst followed by a quiet poll;

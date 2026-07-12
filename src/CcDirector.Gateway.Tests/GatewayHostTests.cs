@@ -63,6 +63,9 @@ public sealed class GatewayHostTests : IAsyncLifetime
             // back to the REAL per-user path and this test's /devices/register calls leak
             // "regression-test-device" rows into the developer's live registry (found 2026-07-04).
             devicesPath: Path.Combine(_instancesDir, "devices.json"),
+            // Gateway Cleanup mission (Wave 4b): isolate the Gateway-native mission store to this test's temp
+            // dir so /missions calls never touch the developer machine's real missions.json.
+            missionsPath: Path.Combine(_instancesDir, "missions.json"),
             account: GatewayAccountFactory.Build(
                 new InMemoryTokenStore(),
                 Path.Combine(_instancesDir, "auth-events.jsonl")));
@@ -148,6 +151,46 @@ public sealed class GatewayHostTests : IAsyncLifetime
     public async Task Delete_unknown_director_returns_404()
     {
         var resp = await _http.DeleteAsync($"directors/{Guid.NewGuid()}");
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    // Gateway Cleanup mission (Wave 4b): the Gateway-native mission surface. Create -> list -> get round-trip
+    // over the real loopback Gateway, plus a blank-name 400 and an unknown-id 404. Missions live at the
+    // Gateway now (the source of truth), so these routes must serve them like the Director's own /missions.
+    [Fact]
+    public async Task Missions_create_list_get_roundtrip()
+    {
+        // Create.
+        var createResp = await _http.PostAsJsonAsync("missions", new NewMissionRequest { MissionName = "Gateway Cleanup" });
+        Assert.Equal(HttpStatusCode.Created, createResp.StatusCode);
+        var created = await createResp.Content.ReadFromJsonAsync<MissionDto>();
+        Assert.NotNull(created);
+        Assert.NotEqual(Guid.Empty, created!.MissionId);
+        Assert.Equal("Gateway Cleanup", created.MissionName);
+
+        // List includes it.
+        var list = await _http.GetFromJsonAsync<List<MissionDto>>("missions");
+        Assert.NotNull(list);
+        Assert.Contains(list!, m => m.MissionId == created.MissionId && m.MissionName == "Gateway Cleanup");
+
+        // Get by id returns the same record.
+        var one = await _http.GetFromJsonAsync<MissionDto>($"missions/{created.MissionId}");
+        Assert.NotNull(one);
+        Assert.Equal(created.MissionId, one!.MissionId);
+        Assert.Equal("Gateway Cleanup", one.MissionName);
+    }
+
+    [Fact]
+    public async Task Missions_create_blank_name_returns_400()
+    {
+        var resp = await _http.PostAsJsonAsync("missions", new NewMissionRequest { MissionName = "   " });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Missions_get_unknown_returns_404()
+    {
+        var resp = await _http.GetAsync($"missions/{Guid.NewGuid()}");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 

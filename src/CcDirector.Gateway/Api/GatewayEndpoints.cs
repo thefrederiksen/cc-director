@@ -90,7 +90,12 @@ internal static class GatewayEndpoints
         // overlays an EXPIRED snooze back into "needs you" (OnHold=false) so the session returns on its
         // own even if its Director has died. Null (old callers, tests) leaves hold as a plain forward
         // with no timer, byte-identical to before.
-        Snooze.SnoozeRegistry? snoozeRegistry = null)
+        Snooze.SnoozeRegistry? snoozeRegistry = null,
+        // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, the
+        // POST/GET /missions routes are mapped and a mission-scoped spawn validates against it. Missions are
+        // a fleet-level concept, so the source of truth lives here at the Gateway. Null (old callers, tests)
+        // maps nothing, leaving missions to the Director's own /missions routes (unchanged this phase).
+        Core.Sessions.MissionStore? missions = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -136,6 +141,43 @@ internal static class GatewayEndpoints
                 sessionNumbers.Release(sessionId);
                 return Results.NoContent();
             });
+        }
+
+        // Gateway Cleanup mission (Wave 4b): the Gateway-native mission surface. Missions are a fleet-level
+        // concept (they span Directors and machines and nest), so the source of truth lives here at the
+        // Gateway - like fleet messaging and scheduling - and mission-existence VALIDATION lives here now.
+        // These routes inherit the host-wide token middleware, exactly like /cron/jobs and /session-numbers.
+        // The Director's own /missions routes stay until a later phase; this is the additive equivalent.
+        //   POST /missions        body { missionName, parentMissionId? } -> 201 MissionDto | 400
+        //   GET  /missions        -> [ MissionDto ]
+        //   GET  /missions/{mid}  -> MissionDto | 404
+        if (missions is not null)
+        {
+            app.MapPost("/missions", (NewMissionRequest req) =>
+            {
+                FileLog.Write($"[GatewayEndpoints] POST /missions: name=\"{req?.MissionName}\"");
+                if (req is null || string.IsNullOrWhiteSpace(req.MissionName))
+                    return Results.BadRequest(new { error = "missionName is required" });
+
+                var mission = missions.Create(req.MissionName, req.ParentMissionId);
+                return Results.Json(ToMissionDto(mission), statusCode: StatusCodes.Status201Created);
+            });
+
+            app.MapGet("/missions", () =>
+                Results.Json(missions.List().Select(ToMissionDto).ToList()));
+
+            app.MapGet("/missions/{mid}", (string mid) =>
+            {
+                if (!Guid.TryParse(mid, out var missionId))
+                    return Results.BadRequest(new { error = "invalid mission id format" });
+
+                var mission = missions.Get(missionId);
+                return mission is null
+                    ? Results.NotFound(new { error = "mission not found" })
+                    : Results.Json(ToMissionDto(mission));
+            });
+
+            FileLog.Write("[GatewayEndpoints] mapped Gateway-native /missions routes");
         }
 
         // Issue #469 closed the secret-embedding phone-pairing QR endpoints (/pair/qr.png and
@@ -1966,6 +2008,15 @@ internal static class GatewayEndpoints
     // (EffectiveColor/StateLabel/TriageBucket) then reads SessionRole to suppress a live Worker's red, so it
     // must run AFTER the role is known. NeedsYouSince keys off the final EffectiveColor, so it is stamped
     // here too (a suppressed Worker is not "red", so it never enters the needs-you clock).
+    // Gateway Cleanup mission (Wave 4b): map a stored Mission to the wire MissionDto - the SAME contract the
+    // Director's /missions routes return, so a client cannot tell a Gateway-native mission from a Director one.
+    private static MissionDto ToMissionDto(Core.Sessions.Mission m) => new()
+    {
+        MissionId = m.MissionId,
+        MissionName = m.MissionName,
+        ParentMissionId = m.ParentMissionId,
+    };
+
     private static void StampFleetRolesAndFold(List<SessionDto> all, Func<string, bool, DateTime?>? needsYouStampFor, Snooze.SnoozeRegistry? snoozeRegistry = null)
     {
         // Snooze Length mission: an EXPIRED snooze must read as "needs you" again. The registry is the
