@@ -51,7 +51,10 @@ const hoisted = vi.hoisted(() => {
     resetCount = 0;
     scrollToBottomCount = 0;
     disposed = false;
-    buffer = { active: { viewportY: 0, baseY: 0 } };
+    // getLine backs the Local Files link provider's per-line lookup; the existing tests never trigger a
+    // hover, so returning null is enough to satisfy the shape.
+    buffer = { active: { viewportY: 0, baseY: 0, getLine: (_y: number) => null } };
+    linkProviderDisposed = false;
     // The render service, torn down on dispose. `dimensions` reads through it, mirroring xterm's
     // `get dimensions(){return this._renderer.value.dimensions}` - so it throws once disposed.
     private renderValue: { dimensions: object } | undefined = { dimensions: {} };
@@ -71,6 +74,11 @@ const hoisted = vi.hoisted(() => {
     }
     onData(cb: (data: string) => void): void {
       this.onDataCb = cb;
+    }
+    // The Local Files link provider (Phase 2) is registered on open; return a disposable so dispose()
+    // can tear it down, matching xterm's registerLinkProvider contract.
+    registerLinkProvider(_provider: unknown): { dispose: () => void } {
+      return { dispose: () => { this.linkProviderDisposed = true; } };
     }
     write(data: unknown): void {
       if (typeof data === "string") this.writes.push(data);
