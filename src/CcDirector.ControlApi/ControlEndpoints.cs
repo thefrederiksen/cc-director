@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using CcDirector.ControlApi.Chat;
+using CcDirector.Core.Account;
 using CcDirector.Core.AgentPlugins;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
@@ -29,7 +30,7 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class ControlEndpoints
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version, Func<Task> requestShutdownAsync, bool authEnabled = false, RepositoryRegistry? repositoryRegistry = null, TurnSummaryCache? turnSummaryCache = null, string? gatewayUrl = null, ProactiveExplainService? proactiveExplain = null, GatewayConnectionMonitor? gatewayMonitor = null, Func<TailnetEndpointResolution>? resolveTailnetEndpoint = null, Func<GatewayClient?>? gatewayClientProvider = null, MessageSteward? messageSteward = null, MissionStore? missionStore = null, Func<CancellationToken, Task<SignedInUser?>>? signedInUserResolver = null)
     {
         var logoutVisibility = authEnabled ? "" : "style=\"display:none\"";
         // URL of the Gateway this Director is registered with, for the "Gateway" nav
@@ -252,7 +253,7 @@ internal static class ControlEndpoints
         // cc-devthrottle commands to reach the rest of the fleet. The Claude SessionStart hook fetches this
         // and injects it as additionalContext so the agent knows the fleet instantly, with no
         // skill lookup. Plain text (not JSON) so a hook can drop it straight into a context field.
-        app.MapGet("/sessions/{sid}/fleet-preamble", (string sid) =>
+        app.MapGet("/sessions/{sid}/fleet-preamble", async (string sid, CancellationToken ct) =>
         {
             if (!Guid.TryParse(sid, out var guid))
                 return Results.BadRequest(new { error = "invalid session id format" });
@@ -267,9 +268,14 @@ internal static class ControlEndpoints
                 SessionName.FolderName(session.RepoPath),
                 SessionName.Disambiguator(session.Id));
 
+            // Issue #1357: name the signed-in DevThrottle user so the agent binds "me / my account /
+            // email me" to that account. Resolved (cached) from the Gateway; null when no one is signed
+            // in or no resolver is wired (tests, standalone) - the preamble then omits the identity line.
+            SignedInUser? user = signedInUserResolver is null ? null : await signedInUserResolver(ct);
+
             // A session only ever calls its OWN Director, so this Director's machine name is the
             // session's machine.
-            var text = FleetPreamble.Build(session.Id.ToString(), name, Environment.MachineName, session.RepoPath);
+            var text = FleetPreamble.Build(session.Id.ToString(), name, Environment.MachineName, session.RepoPath, user);
             return Results.Text(text, "text/plain");
         });
 

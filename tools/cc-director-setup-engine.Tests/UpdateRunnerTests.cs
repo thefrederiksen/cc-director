@@ -126,6 +126,26 @@ public class UpdateRunnerTests : IDisposable
         Assert.Contains("extraction", result.Results[0].Error);
     }
 
+    [Fact]
+    public async Task Install_OnUnix_SetsExecutablePermission()
+    {
+        // A downloaded file carries no executable permission on macOS / Unix; the runner must set
+        // it or the placed binary (for example the macOS launcher) would never start.
+        if (OperatingSystem.IsWindows()) return;
+
+        const string content = "binary-v1";
+        var sha = Hashing.Sha256OfFile(WriteTemp(content));
+        var runner = new UpdateRunner(_layout, [ComponentRegistry.Launcher], DownloaderWith(content));
+
+        var plan = PlanOf(new PlanItem(ComponentRegistry.Launcher.Id, PlanItemKind.Install,
+            ComponentRegistry.Launcher.MacAsset!, null, "1.0.0", sha));
+        var result = await runner.ApplyAsync(plan);
+
+        Assert.Equal(1, result.Installed);
+        var mode = File.GetUnixFileMode(_layout.PathFor(ComponentRegistry.Launcher));
+        Assert.True(mode.HasFlag(UnixFileMode.UserExecute));
+    }
+
     private string WriteTemp(string content)
     {
         var p = Path.Combine(_dir, "tmp-" + Guid.NewGuid().ToString("N"));

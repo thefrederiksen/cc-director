@@ -11,9 +11,11 @@ namespace CcDirectorSetup;
 
 public partial class MainWindow : Window
 {
-    // 5-step flow, matching the Windows wizard: Welcome -> Prerequisites -> Skills -> Install -> Complete.
-    // (The old tool-group picker is gone: every cc-* tool ships as one shared-venv bundle.)
-    private const int StepWelcome = 1, StepPrereq = 2, StepSkills = 3, StepInstall = 4, StepComplete = 5;
+    // 6-step flow: Welcome -> Prerequisites -> Skills -> Install -> Gateway -> Complete.
+    // (The old tool-group picker is gone: every cc-* tool ships as one shared-venv bundle.
+    // The Gateway step is the CC Launcher mission's out-of-the-box enrollment: OPTIONAL here,
+    // unlike the Windows wizard where joining the gateway is mandatory.)
+    private const int StepWelcome = 1, StepPrereq = 2, StepSkills = 3, StepInstall = 4, StepGateway = 5, StepComplete = 6;
 
     private int _currentStep = StepWelcome;
     private InstallProfile _selectedProfile = InstallProfile.Standard;
@@ -34,6 +36,7 @@ public partial class MainWindow : Window
     private PrerequisitesStep? _prerequisitesStep;
     private SkillsStep? _skillsStep;
     private InstallStep? _installStep;
+    private GatewayConnectStep? _gatewayStep;
     private CompleteStep? _completeStep;
 
     private readonly record struct StepUI(Border Circle, TextBlock Label, TextBlock? Number);
@@ -90,9 +93,10 @@ public partial class MainWindow : Window
         new(Step3Circle, Step3Label, Step3Num),
         new(Step4Circle, Step4Label, Step4Num),
         new(Step5Circle, Step5Label, Step5Num),
+        new(Step6Circle, Step6Label, Step6Num),
     ];
 
-    private Border[] GetLines() => [Line12, Line23, Line34, Line45];
+    private Border[] GetLines() => [Line12, Line23, Line34, Line45, Line56];
 
     private void ShowStep(int step)
     {
@@ -108,6 +112,7 @@ public partial class MainWindow : Window
             StepPrereq => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
             StepSkills => _skillsStep ??= new SkillsStep(_isUpdate),
             StepInstall => _installStep ??= new InstallStep(),
+            StepGateway => _gatewayStep ??= CreateGatewayStep(),
             StepComplete => _completeStep ??= new CompleteStep(_installedCount, _skippedCount, _installPath, _isUpdate, _alreadyUpToDate, _latestVersion),
             _ => null
         };
@@ -180,11 +185,33 @@ public partial class MainWindow : Window
             NextButton.Content = "Next";
             UpdateNextButtonForPrereqs();
         }
+        else if (_currentStep == StepGateway)
+        {
+            // The gateway join is optional: the button always works, but it reads "Skip" until
+            // the join succeeds so the person understands what proceeding means.
+            NextButton.Content = _gatewayStep?.IsVerified == true ? "Next" : "Skip";
+            NextButton.IsEnabled = true;
+        }
         else
         {
             NextButton.Content = "Next";
             NextButton.IsEnabled = true;
         }
+    }
+
+    /// <summary>Build the gateway step and relabel Skip to Next the moment the join succeeds.</summary>
+    private GatewayConnectStep CreateGatewayStep()
+    {
+        var step = new GatewayConnectStep();
+        step.Connected += (_, _) =>
+        {
+            if (_currentStep == StepGateway)
+            {
+                NextButton.Content = "Next";
+                NextButton.IsEnabled = true;
+            }
+        };
+        return step;
     }
 
     private void OnPrerequisitesChecked(List<PrerequisiteInfo> prerequisites)
@@ -330,6 +357,7 @@ public partial class MainWindow : Window
                 _prerequisitesStep = null;
                 _skillsStep = null;
                 _installStep = null;
+                _gatewayStep = null;
                 _completeStep = null;
             }
             ShowStep(_currentStep + 1);

@@ -50,6 +50,17 @@ public sealed class EngineInstallRunner
         else bItem.SizeText = FormatSize(pyAsset.Size + toolsAsset.Size);
         items.Add(bItem); byId[PythonToolsInstaller.ComponentId] = bItem;
 
+        // The launcher installs on macOS only in THIS wizard: the Windows wizard (the WPF one)
+        // already installs it there. Older releases have no macOS launcher asset - skip cleanly.
+        if (OperatingSystem.IsMacOS() && ComponentRegistry.Launcher.MacAsset is { } launcherAssetName)
+        {
+            var lItem = new ToolDownloadItem { Name = ComponentRegistry.Launcher.Id, AssetName = launcherAssetName };
+            var lAsset = release.Manifest.TryGetAsset(launcherAssetName);
+            if (lAsset is null) { lItem.Status = "Skipped"; lItem.SizeText = "Not in release"; }
+            else lItem.SizeText = FormatSize(lAsset.Size);
+            items.Add(lItem); byId[ComponentRegistry.Launcher.Id] = lItem;
+        }
+
         var reader = new InstalledStateReader(_layout);
         var installedDirector = reader.Read(ComponentRegistry.Director).Version;
         var upToDate = installedDirector != null && dAsset != null
@@ -60,16 +71,18 @@ public sealed class EngineInstallRunner
         return new Prep(version, release, items, byId, installedDirector, upToDate);
     }
 
-    /// <summary>Place the Director, install the tools bundle, finalize. Returns (installed, skipped).</summary>
+    /// <summary>Place the Director, install the tools bundle, install the launcher (macOS),
+    /// finalize. Returns (installed, skipped).</summary>
     public async Task<(int installed, int skipped)> ApplyAsync(Prep prep, IProgress<string>? status = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(prep);
 
         var directorOk = await PlaceDirectorAsync(prep, status, ct);
         var toolCount = await InstallPythonToolsAsync(prep, status, ct);
+        var launcherOk = await InstallLauncherAsync(prep, status, ct);
         FinalizeInstall();
 
-        var installed = (directorOk ? 1 : 0) + toolCount;
+        var installed = (directorOk ? 1 : 0) + toolCount + (launcherOk ? 1 : 0);
         var skipped = prep.Items.Count(i => i.Status is "Skipped" or "Failed");
         SetupLog.Write($"[EngineInstallRunner] ApplyAsync: installed={installed}, skipped={skipped}");
         return (installed, skipped);
@@ -148,6 +161,75 @@ public sealed class EngineInstallRunner
         var res = await Task.Run(() => new PythonToolsInstaller(_layout).InstallAsync(prep.Release, _source, progress, percent, ct), ct);
         if (item is not null) { item.Status = res.Success ? "Done" : "Failed"; if (!res.Success) item.StatusDetail = res.Message; }
         return res.Success ? res.ToolCount : 0;
+    }
+
+    /// <summary>
+    /// Place and start the launcher on macOS: download and swap the single-file binary via the
+    /// generic runner (which also sets its executable permission), then hand over to
+    /// <see cref="LauncherMacInstaller"/> for the first start, the health wait, and the
+    /// launch-agent verification. On Windows this wizard does nothing - the Windows wizard
+    /// (the WPF one) installs the launcher there. Returns true when the launcher was installed
+    /// and is healthy.
+    /// </summary>
+    private async Task<bool> InstallLauncherAsync(Prep prep, IProgress<string>? status, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsMacOS()) return false;
+        prep.ItemsById.TryGetValue(ComponentRegistry.Launcher.Id, out var item);
+
+        var assetName = ComponentRegistry.Launcher.MacAsset;
+        if (assetName is null) return false;
+        var asset = prep.Release.Manifest.TryGetAsset(assetName);
+        if (asset is null)
+        {
+            if (item is not null) { item.Status = "Skipped"; item.StatusDetail = "Not in release"; }
+            SetupLog.Write($"[EngineInstallRunner] InstallLauncherAsync: {assetName} not in release; skipping");
+            return false;
+        }
+
+        SetupLog.Write($"[EngineInstallRunner] InstallLauncherAsync: placing {assetName}");
+        status?.Report("Installing the launcher...");
+        var plan = new UpdatePlan
+        {
+            Items = [new PlanItem(ComponentRegistry.Launcher.Id, PlanItemKind.Install, asset.Name, null, asset.Version, asset.Sha256)],
+        };
+        var runner = new UpdateRunner(_layout, ComponentRegistry.Apps, (planItem, innerCt) =>
+        {
+            if (item is not null) item.Status = "Downloading";
+            var download = new Progress<(long downloaded, long total)>(p =>
+            {
+                if (item is null) return;
+                var total = p.total > 0 ? p.total : asset.Size;
+                if (total <= 0) return;
+                item.Progress = Math.Min(100.0, p.downloaded * 100.0 / total);
+                item.SizeText = p.downloaded >= total
+                    ? FormatSize(total)
+                    : $"{FormatSize(p.downloaded)} / {FormatSize(total)}";
+            });
+            return _source.DownloadAssetAsync(planItem.AssetName, prep.Release.DownloadUrls, innerCt, download);
+        });
+        var placeResult = await runner.ApplyAsync(plan, ct);
+        var placed = placeResult.Results.Any(r => r.ComponentId == ComponentRegistry.Launcher.Id
+            && r.Status is ApplyStatus.Installed or ApplyStatus.Updated);
+        if (!placed)
+        {
+            var error = placeResult.Results.FirstOrDefault(r => r.ComponentId == ComponentRegistry.Launcher.Id)?.Error;
+            if (item is not null) { item.Status = "Failed"; item.StatusDetail = error ?? "Placement failed"; }
+            SetupLog.Write($"[EngineInstallRunner] InstallLauncherAsync FAILED to place: {error}");
+            return false;
+        }
+
+        if (item is not null) item.Status = "Starting...";
+        status?.Report("Starting the launcher...");
+        var startResult = await new LauncherMacInstaller(_layout).InstallAsync(ct);
+        foreach (var step in startResult.Steps)
+            SetupLog.Write($"[EngineInstallRunner]   launcher: {step}");
+        SetupLog.Write($"[EngineInstallRunner] InstallLauncherAsync: start success={startResult.Success}: {startResult.Message}");
+        if (item is not null)
+        {
+            item.Status = startResult.Success ? "Done" : "Failed";
+            if (!startResult.Success) item.StatusDetail = startResult.Message;
+        }
+        return startResult.Success;
     }
 
     private void FinalizeInstall()

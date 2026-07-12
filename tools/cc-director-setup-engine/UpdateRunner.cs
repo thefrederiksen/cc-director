@@ -105,6 +105,16 @@ public sealed class UpdateRunner
             var backup = InstallSwapper.Place(target, staged);
             TryDelete(staged);
 
+            // A downloaded file carries no executable permission on macOS / Unix, so a placed
+            // binary would not start. Windows has no such bit, so this is a no-op there.
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(target,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
+
             var status = wasPresent ? ApplyStatus.Updated : ApplyStatus.Installed;
             return new ApplyResult(item.ComponentId, status, item.FromVersion, item.ToVersion, null, backup);
         }

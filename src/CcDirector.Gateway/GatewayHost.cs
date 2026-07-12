@@ -1114,7 +1114,11 @@ public sealed class GatewayHost : IAsyncDisposable
             rosterCache: RosterCache,
             // Issue #1292: the fleet-wide session-number authority backs POST /session-numbers/allocate
             // (Directors ask here at session creation) and the /sessions adopt-reconcile.
-            sessionNumbers: SessionNumbers);
+            sessionNumbers: SessionNumbers,
+            // DevThrottle Stats: feed the input-tally aggregator from the assembled /sessions roster, so
+            // "Your Throttle" is populated whether stream mode is on or off (the DirectorHub push fold only
+            // runs in stream mode, which is off in production).
+            inputStats: InputStats);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1207,8 +1211,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // carries only the boolean + identity, never the access/refresh token (security rule DT-05).
         // Inherits the host-wide token middleware above (the existing gateway.token convention). On a
         // host with no credential service (a non-Windows host, Account null) it truthfully reports
-        // not-signed-in.
-        AccountStatusEndpoint.Map(_app, Account);
+        // not-signed-in. Issue #1357: it also resolves the signed-in user's chosen nickname (cached,
+        // best-effort) through the cloud nickname client, so a session's preamble can name the human;
+        // the identity email/provider path stays entirely local.
+        AccountStatusEndpoint.Map(_app, Account, new Core.Account.AccountNicknameClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }));
 
         // Gateway Centralization Phase 3 (issue #648): POST /account/logout CLEARS the Gateway-hosted
         // DevThrottle credential through the same reused DevThrottleAccountService (Account). The account

@@ -23,6 +23,7 @@ import { TranscriptsView } from "./transcripts/TranscriptsView";
 import { ExesView } from "./exes/ExesView";
 import { LearningView } from "./learning/LearningView";
 import { TelemetryView } from "./telemetry/TelemetryView";
+import { YourThrottleView } from "./throttle/YourThrottleView";
 import { TranscriptionHealthView } from "./transcription/TranscriptionHealthView";
 import { AccountView } from "./account/AccountView";
 import { AboutView } from "./about/AboutView";
@@ -39,6 +40,7 @@ import "./transcripts/transcripts.css";
 import "./exes/exes.css";
 import "./learning/learning.css";
 import "./telemetry/telemetry.css";
+import "./throttle/throttle.css";
 import "./transcription/transcriptionhealth.css";
 import "./account/account.css";
 import "./about/about.css";
@@ -162,6 +164,10 @@ const router = createBrowserRouter(
             // Telemetry, and About get a left-rail entry; Feedback is route-only (hidden from the default
             // rail there too), reached by its direct route.
             { path: "/telemetry", element: <TelemetryView /> },
+            // Your Throttle (devthrottle-stats mission): the in-Cockpit port of the standalone Gateway
+            // /stats page. Reads the same GET /stats/data feed through client-core so the user sees
+            // their throttle in the app rather than at a bare URL.
+            { path: "/your-throttle", element: <YourThrottleView /> },
             // Transcription Health: read-only view over the local transcription telemetry the Gateway
             // records (latency, failures, most-corrected words). Same Gateway REST surface via client-core.
             { path: "/transcription", element: <TranscriptionHealthView /> },
