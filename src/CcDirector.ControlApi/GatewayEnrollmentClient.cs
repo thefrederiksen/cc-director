@@ -79,4 +79,72 @@ public static class GatewayEnrollmentClient
         FileLog.Write($"[GatewayEnrollmentClient] EnrollAsync: per-device key issued for machine={body.MachineName}");
         return OperationResult<DeviceRegistrationResponse>.Ok(body);
     }
+
+    /// <summary>
+    /// Enroll THIS co-located Director with its own Gateway using the DevThrottle account sign-in instead
+    /// of a pairing code (issue #1069): POST <c>/devices/enroll-signed-in</c> with the Director's existing
+    /// Gateway token as the Bearer. The Gateway mints (or returns, if already present) this Director's own
+    /// per-device key - gated on the Gateway being signed in AND the caller being a loopback same-machine
+    /// connection. Returns the issued key, or a human-readable reason. A 409 means the Gateway is not signed
+    /// in yet (the caller should trigger the browser sign-in first); a 403 means this is not a same-machine
+    /// Director. Never throws for an expected failure.
+    /// </summary>
+    public static async Task<OperationResult<DeviceRegistrationResponse>> EnrollSignedInAsync(
+        string gatewayUrl, string? token, string deviceId, string machineName, string platform, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(gatewayUrl))
+            return OperationResult<DeviceRegistrationResponse>.Fail("No Gateway URL is configured.");
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return OperationResult<DeviceRegistrationResponse>.Fail("This Director has no device id.");
+
+        FileLog.Write($"[GatewayEnrollmentClient] EnrollSignedInAsync: gateway={gatewayUrl}, deviceId={deviceId}, machine={machineName}");
+        var request = new EnrollSignedInRequest
+        {
+            DeviceId = deviceId,
+            MachineName = machineName,
+            Platform = platform,
+            DeviceType = "workstation",
+        };
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        http.BaseAddress = new Uri(gatewayUrl.TrimEnd('/') + "/");
+        if (!string.IsNullOrEmpty(token))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await http.PostAsJsonAsync("devices/enroll-signed-in", request, ct);
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayEnrollmentClient] EnrollSignedInAsync transport FAILED: {ex.Message}");
+            return OperationResult<DeviceRegistrationResponse>.Fail(
+                $"Could not reach the Gateway at {gatewayUrl}: {ex.Message}");
+        }
+
+        if (resp.StatusCode == HttpStatusCode.Conflict)
+            return OperationResult<DeviceRegistrationResponse>.Fail(
+                "Sign in to DevThrottle first, then this device gets its token.");
+        if (resp.StatusCode == HttpStatusCode.Forbidden)
+            return OperationResult<DeviceRegistrationResponse>.Fail(
+                "This Director must be on the Gateway's own machine to enroll this way.");
+        if (!resp.IsSuccessStatusCode)
+        {
+            FileLog.Write($"[GatewayEnrollmentClient] EnrollSignedInAsync failed: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+            return OperationResult<DeviceRegistrationResponse>.Fail(
+                $"The Gateway refused enrollment: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+        }
+
+        var body = await resp.Content.ReadFromJsonAsync<DeviceRegistrationResponse>(ct);
+        if (body is null || string.IsNullOrWhiteSpace(body.DeviceKey))
+        {
+            FileLog.Write("[GatewayEnrollmentClient] EnrollSignedInAsync: 2xx with no device key in body");
+            return OperationResult<DeviceRegistrationResponse>.Fail("The Gateway returned no device key.");
+        }
+
+        FileLog.Write($"[GatewayEnrollmentClient] EnrollSignedInAsync: per-device key issued for machine={body.MachineName}");
+        return OperationResult<DeviceRegistrationResponse>.Ok(body);
+    }
 }

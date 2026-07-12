@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -11,6 +12,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CcDirector.ControlApi;
+using CcDirector.Core.Account;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.GatewayConnection;
 using CcDirector.Core.Network;
@@ -68,6 +70,13 @@ public partial class GatewayConnectionPanel : UserControl
     // The last address tried, so "Try again" repeats it.
     private (string Url, string Label)? _lastAttempt;
 
+    // Cancels the Step 2 account-status polling loop when the panel is left or the flow restarts.
+    private CancellationTokenSource? _pollCts;
+
+    // Enroll is attempted at most once per sign-in flow, and NEVER from the poll loop, so status polling
+    // can never mint keys repeatedly (guardrail against the #1136 auto-mint key leak).
+    private bool _enrollAttempted;
+
     public GatewayConnectionPanel()
     {
         InitializeComponent();
@@ -84,6 +93,7 @@ public partial class GatewayConnectionPanel : UserControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
+        StopPolling();
         if (_subscribed && _monitor is not null)
         {
             _monitor.Changed -= OnMonitorChanged;
@@ -96,6 +106,7 @@ public partial class GatewayConnectionPanel : UserControl
     private async void StartScan()
     {
         _connecting = false;
+        StopPolling();
         CountPillText.Text = "SCANNING...";
         ScanningProgress.IsVisible = true;
         ResultsArea.IsVisible = false;
@@ -125,7 +136,7 @@ public partial class GatewayConnectionPanel : UserControl
         var any = found.Count > 0;
         NoneFoundText.IsVisible = !any;
         // When nothing was found, open the manual-entry section so the fallback is one step away.
-        AdvancedExpander.IsExpanded = !any;
+        AdvancedToggle.IsChecked = !any;
         ResultsArea.IsVisible = true;
         ShowOnly(ConnectPanel);
         FileLog.Write($"[GatewayConnectionPanel] scan rendered: {found.Count} pick(s), recommended index {recommended}");
@@ -369,6 +380,14 @@ public partial class GatewayConnectionPanel : UserControl
             ConnectTo(pick.Url, pick.Label);
     }
 
+    private void AdvancedToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        var open = AdvancedToggle.IsChecked == true;
+        // Guard: this can fire during control construction, before the sibling fields are assigned.
+        if (ManualEntryPanel is not null) ManualEntryPanel.IsVisible = open;
+        if (AdvancedCaret is not null) AdvancedCaret.Text = open ? "^" : "v";
+    }
+
     private void ManualConnect_Click(object? sender, RoutedEventArgs e)
     {
         ManualErrorText.IsVisible = false;
@@ -446,7 +465,7 @@ public partial class GatewayConnectionPanel : UserControl
         switch (monitor.Status)
         {
             case GatewayConnectionStatus.Verified:
-                ShowConnected(_lastAttempt?.Label);
+                OnHandshakeVerified();
                 break;
             case GatewayConnectionStatus.Failed:
             case GatewayConnectionStatus.NoTailnetIdentity:
@@ -469,7 +488,7 @@ public partial class GatewayConnectionPanel : UserControl
         var monitor = _monitor;
         if (monitor?.Status == GatewayConnectionStatus.Verified)
         {
-            ShowConnected(_lastAttempt?.Label);
+            OnHandshakeVerified();
             return;
         }
 
@@ -480,14 +499,228 @@ public partial class GatewayConnectionPanel : UserControl
             "Check that the Gateway is running and reachable, or set the Director public URL under Advanced.");
     }
 
-    private void ShowConnected(string? label)
+    // ---- Step 2: sign in with DevThrottle -------------------------------------------------------
+
+    // The handshake proved Connected. Route to Step 2 (sign in) or the Done view based on the current
+    // signed-in state, resolved via the same resolver the status box uses (spec section 4).
+    private async void OnHandshakeVerified()
     {
         _connecting = false;
-        ConnectedText.Text = string.IsNullOrWhiteSpace(label)
+        FileLog.Write("[GatewayConnectionPanel] connected (handshake verified); resolving sign-in state");
+        await RefreshSignedInViewAsync();
+    }
+
+    // Read the account status + device-token presence, resolve, and show Step 2 or the Done view.
+    private async Task RefreshSignedInViewAsync()
+    {
+        var config = GatewayConfig.Load();
+        var account = await SafeStatusAsync(config, CancellationToken.None);
+
+        var inputs = new GatewayConnectionInputs(
+            GatewayConfigured: config.IsEnabled,
+            Connection: GatewayConnectionVerification.Connected,
+            FailedLeg: GatewayConnectionFailedLeg.None,
+            WasEverConnected: true,
+            DeviceKeyPresent: HasDeviceToken(config),
+            Account: MapAccount(account));
+
+        if (GatewayConnectionStateResolver.ResolveState(inputs) == GatewayConnectionState.AllGreen)
+            ShowDone(config, account);
+        else
+            ShowSignIn();
+    }
+
+    private void ShowSignIn()
+    {
+        StopPolling();
+        _enrollAttempted = false;
+        SignInWaitRow.IsVisible = false;
+        SignInErrorText.IsVisible = false;
+        SignInButton.IsEnabled = true;
+        ShowOnly(SignInPanel);
+        FileLog.Write("[GatewayConnectionPanel] showing Step 2 (sign in)");
+    }
+
+    private void SignIn_Click(object? sender, RoutedEventArgs e) => _ = StartSignInAsync();
+
+    private async Task StartSignInAsync()
+    {
+        SignInErrorText.IsVisible = false;
+        SignInButton.IsEnabled = false;
+        SignInWaitRow.IsVisible = true;
+        SignInWaitText.Text = "Opening the DevThrottle sign-in in your browser...";
+
+        try
+        {
+            await OpenDevThrottleSignInAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] sign-in launch failed: {ex.Message}");
+            ShowSignInError("Could not open the sign-in page. " + ex.Message);
+            return;
+        }
+
+        // Watch for the Gateway reporting signed in, then settle to Done. Enroll runs at most once and
+        // NEVER from the poll loop itself (guardrail against the #1136 key leak).
+        SignInWaitText.Text = "Waiting for you to sign in...";
+        StartPolling();
+    }
+
+    // Open the DevThrottle sign-in front door in the system browser. The Gateway itself decides the
+    // loopback-versus-remote redirect (AccountSignInStartEndpoint).
+    private async Task OpenDevThrottleSignInAsync()
+    {
+        var config = GatewayConfig.Load();
+        var baseUrl = global::CcDirector.Avalonia.CockpitUrlResolver.ResolveCockpitBase(config);
+        var url = baseUrl.TrimEnd('/') + "/account/sign-in-start";
+        await Task.Run(() => System.Diagnostics.Process.Start(
+            new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }));
+        FileLog.Write($"[GatewayConnectionPanel] opened DevThrottle sign-in: {url}");
+    }
+
+    private void ShowSignInError(string message)
+    {
+        StopPolling();
+        SignInWaitRow.IsVisible = false;
+        SignInButton.IsEnabled = true;
+        SignInErrorText.Text = message;
+        SignInErrorText.IsVisible = true;
+    }
+
+    private void StartPolling()
+    {
+        StopPolling();
+        _pollCts = new CancellationTokenSource();
+        _ = PollAccountAsync(_pollCts.Token);
+    }
+
+    private void StopPolling()
+    {
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+        _pollCts = null;
+    }
+
+    // Poll GET /account/status until the Gateway reports signed in; then ensure this Director holds its
+    // own device token (enrolling once through the Gateway) and settle to the Done view. The loop only
+    // READS status - it never mints a key on its own.
+    private async Task PollAccountAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var config = GatewayConfig.Load();
+            var account = await SafeStatusAsync(config, ct);
+            if (ct.IsCancellationRequested) return;
+
+            if (account.SignedIn)
+            {
+                if (!HasDeviceToken(config) && !_enrollAttempted)
+                {
+                    _enrollAttempted = true;
+                    await EnrollThroughGatewayOnceAsync();
+                    config = GatewayConfig.Load();
+                    account = await SafeStatusAsync(config, ct);
+                }
+
+                if (HasDeviceToken(config) && account.SignedIn)
+                {
+                    var finalConfig = config;
+                    var finalAccount = account;
+                    await Dispatcher.UIThread.InvokeAsync(() => ShowDone(finalConfig, finalAccount));
+                    return;
+                }
+            }
+
+            try { await Task.Delay(TimeSpan.FromSeconds(2), ct); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    // Enroll THIS co-located Director through its Gateway now that the account is signed in: the Gateway
+    // mints (or returns) this Director's own per-device token, which is stored locally. Called at most once
+    // per sign-in flow and never from the poll loop's read path (guardrail against the #1136 key leak).
+    private async Task EnrollThroughGatewayOnceAsync()
+    {
+        try
+        {
+            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+            if (host is null)
+            {
+                FileLog.Write("[GatewayConnectionPanel] enroll-through-Gateway: Control API not running");
+                return;
+            }
+
+            var config = GatewayConfig.Load();
+            var result = await GatewayEnrollmentClient.EnrollSignedInAsync(
+                config.Url, config.Token, host.DirectorId, Environment.MachineName, "windows");
+
+            if (!result.Success || result.Value is null)
+            {
+                FileLog.Write($"[GatewayConnectionPanel] enroll-through-Gateway failed: {result.ErrorMessage}");
+                return;
+            }
+
+            // Store this device's own token, then re-apply so the running client authenticates with it.
+            await Task.Run(() => GatewayCredentialStore.SaveEnrolledKey(config.Url, result.Value.DeviceKey));
+            await host.ReapplyGatewayAsync();
+            FileLog.Write("[GatewayConnectionPanel] enroll-through-Gateway: this Director's token stored");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] enroll-through-Gateway error: {ex.Message}");
+        }
+    }
+
+    private static async Task<GatewayAccountStatus> SafeStatusAsync(GatewayConfig config, CancellationToken ct)
+    {
+        try { return await new GatewayAccountStatusClient().GetStatusAsync(config, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] account status read failed: {ex.Message}");
+            return GatewayAccountStatus.NotConfigured();
+        }
+    }
+
+    private void ShowDone(GatewayConfig config, GatewayAccountStatus account)
+    {
+        StopPolling();
+        var host = SafeHost(config.Url);
+        DoneConnectedText.Text = string.IsNullOrWhiteSpace(host)
             ? "Connected to the Gateway"
-            : $"Connected to {label}";
-        ShowOnly(ConnectedPanel);
-        FileLog.Write("[GatewayConnectionPanel] connected (handshake verified)");
+            : $"Connected to Gateway on {host}";
+        DoneSignedInText.Text = string.IsNullOrWhiteSpace(account.Email)
+            ? "Signed in"
+            : $"Signed in as {account.Email}";
+        DoneMaskedToken.Text = MaskToken(config.Token);
+        DoneGatewayUrl.Text = config.Url;
+        ShowOnly(DonePanel);
+        FileLog.Write("[GatewayConnectionPanel] showing Done (both checks green)");
+    }
+
+    private void DoneAdvancedToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        var open = DoneAdvancedToggle.IsChecked == true;
+        if (DoneAdvancedPanel is not null) DoneAdvancedPanel.IsVisible = open;
+        if (DoneAdvancedCaret is not null) DoneAdvancedCaret.Text = open ? "^" : "v";
+    }
+
+    // The token is shown masked, never in the clear (decision 7) - same masking as the old pairing dialog.
+    private static string MaskToken(string? token)
+        => !string.IsNullOrEmpty(token) && token.Length > 8
+            ? token[..4] + "..." + token[^4..]
+            : "********";
+
+    // True when this device already holds its per-device token. GatewayConfig.Load resolves it from the
+    // local credential file for a same-machine Gateway, so the config token is the complete check.
+    private static bool HasDeviceToken(GatewayConfig config) => !string.IsNullOrWhiteSpace(config.Token);
+
+    private static GatewayAccountSignInState MapAccount(GatewayAccountStatus status)
+    {
+        if (!status.GatewayConfigured) return GatewayAccountSignInState.Unknown;
+        if (!status.Reachable) return GatewayAccountSignInState.Unavailable;
+        return status.SignedIn ? GatewayAccountSignInState.SignedIn : GatewayAccountSignInState.SignedOut;
     }
 
     private void ShowFailure(string summary, string? fix)
@@ -536,7 +769,8 @@ public partial class GatewayConnectionPanel : UserControl
     {
         ConnectPanel.IsVisible = ReferenceEquals(panel, ConnectPanel);
         ConnectingPanel.IsVisible = ReferenceEquals(panel, ConnectingPanel);
-        ConnectedPanel.IsVisible = ReferenceEquals(panel, ConnectedPanel);
+        SignInPanel.IsVisible = ReferenceEquals(panel, SignInPanel);
+        DonePanel.IsVisible = ReferenceEquals(panel, DonePanel);
         FailedPanel.IsVisible = ReferenceEquals(panel, FailedPanel);
     }
 }

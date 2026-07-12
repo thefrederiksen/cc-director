@@ -53,6 +53,27 @@
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="TextBlock.Foreground" Value="#9FB0D6" />
         </Style>
+        <!-- Full-width disclosure header (no default Expander chrome, so no trailing bordered cell). -->
+        <Style Selector="ToggleButton.disclosure">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="14,12" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="ToggleButton.disclosure /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="ToggleButton.disclosure:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="ToggleButton.disclosure:checked /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="ToggleButton.disclosure:pressed /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
     </UserControl.Styles>
 
     <!-- Scrolls so the panel never clips when a host (Settings tab, status-box window, onboarding) is
@@ -104,20 +125,28 @@
                     <Button x:Name="RescanButton" Classes="link" Click="Rescan_Click" Content="Scan again" />
                 </StackPanel>
 
-                <!-- Advanced: manual entry fallback, collapsed by default (decisions 5, 6) -->
+                <!-- Advanced: manual entry fallback, collapsed by default (decisions 5, 6). A custom
+                     disclosure (a full-width ToggleButton header with the caret flush right, plus a
+                     collapsible panel) so the row spans the full width like the option rows above, with
+                     no trailing bordered cell. -->
                 <Border Margin="0,14,0,0" Background="#202021" BorderBrush="#3C3C3C" BorderThickness="1"
                         CornerRadius="9">
-                    <Expander x:Name="AdvancedExpander" Background="Transparent" BorderThickness="0"
-                              Padding="4,0">
-                        <Expander.Header>
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <TextBlock Text="Enter the address manually" Foreground="#AAAAAA"
-                                           FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                <TextBlock Text="- computer name plus port, or a full address"
-                                           Foreground="#666666" FontSize="11.5" VerticalAlignment="Center" />
-                            </StackPanel>
-                        </Expander.Header>
-                        <StackPanel Spacing="2" Margin="0,6,4,10">
+                    <StackPanel>
+                        <ToggleButton x:Name="AdvancedToggle" Classes="disclosure"
+                                      IsCheckedChanged="AdvancedToggle_IsCheckedChanged">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8"
+                                            VerticalAlignment="Center">
+                                    <TextBlock Text="Enter the address manually" Foreground="#AAAAAA"
+                                               FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <TextBlock Text="- computer name plus port, or a full address"
+                                               Foreground="#666666" FontSize="11.5" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1" x:Name="AdvancedCaret" Text="v" Foreground="#666666"
+                                           FontSize="12" VerticalAlignment="Center" />
+                            </Grid>
+                        </ToggleButton>
+                        <StackPanel x:Name="ManualEntryPanel" Spacing="2" Margin="14,0,14,12" IsVisible="False">
                             <TextBlock Classes="fieldLabel"
                                        Text="GATEWAY ADDRESS (computer name plus port, or a full address)" />
                             <TextBox x:Name="ManualUrlBox" Classes="input"
@@ -127,7 +156,7 @@
                             <Button x:Name="ManualConnectButton" Classes="primaryButton" Content="Connect"
                                     HorizontalAlignment="Left" Margin="0,8,0,0" Click="ManualConnect_Click" />
                         </StackPanel>
-                    </Expander>
+                    </StackPanel>
                 </Border>
 
                 <!-- Footnote: the no-hidden-test rule -->
@@ -160,19 +189,64 @@
                          Foreground="#007ACC" Background="#2A2A2A" />
         </StackPanel>
 
-        <!-- STEP 1d: connected -->
-        <StackPanel x:Name="ConnectedPanel" Spacing="10" VerticalAlignment="Top" IsVisible="False">
-            <TextBlock Classes="title" Text="Connected" />
-            <Border Background="#14241A" BorderBrush="#2E7D32" BorderThickness="1" CornerRadius="3" Padding="16">
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock Text="[x]" FontFamily="Consolas,Courier New" FontSize="14" Foreground="#66BB6A"
-                               VerticalAlignment="Center" />
-                    <TextBlock x:Name="ConnectedText" FontSize="14" Foreground="#CFE9CF"
-                               Text="Connected to the Gateway" VerticalAlignment="Center" TextWrapping="Wrap" />
+        <!-- STEP 2: sign in with DevThrottle (once connected). Signing in issues this device its token. -->
+        <StackPanel x:Name="SignInPanel" Spacing="10" VerticalAlignment="Top" IsVisible="False">
+            <TextBlock Classes="title" Text="Sign in" />
+            <TextBlock Classes="body"
+                       Text="Connected to the Gateway. One more step to make this device trusted: sign in with DevThrottle. Signing in is what puts this device's own token on it - there is no pairing code." />
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                <Button x:Name="SignInButton" Classes="primaryButton" Content="Sign in with DevThrottle"
+                        Click="SignIn_Click" />
+            </StackPanel>
+            <StackPanel x:Name="SignInWaitRow" Orientation="Horizontal" Spacing="10" IsVisible="False" Margin="0,4,0,0">
+                <ProgressBar IsIndeterminate="True" Width="120" Height="3" Foreground="#007ACC"
+                             Background="#2A2A2A" VerticalAlignment="Center" />
+                <TextBlock x:Name="SignInWaitText" Classes="body" Text="Waiting for you to sign in..." />
+            </StackPanel>
+            <TextBlock x:Name="SignInErrorText" FontSize="12" Foreground="#E07A7A" TextWrapping="Wrap"
+                       IsVisible="False" />
+        </StackPanel>
+
+        <!-- DONE: both checks green, with the masked device token under a collapsed Advanced (decision 7). -->
+        <StackPanel x:Name="DonePanel" Spacing="10" VerticalAlignment="Top" IsVisible="False">
+            <TextBlock Classes="title" Text="Gateway" />
+            <Border Background="#14241A" BorderBrush="#2E7D32" BorderThickness="1" CornerRadius="9" Padding="16">
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock Text="[x]" FontFamily="Consolas,Courier New" FontSize="14" Foreground="#34D06E"
+                                   VerticalAlignment="Center" />
+                        <TextBlock x:Name="DoneConnectedText" FontSize="14" Foreground="#CFE9CF"
+                                   Text="Connected to the Gateway" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock Text="[x]" FontFamily="Consolas,Courier New" FontSize="14" Foreground="#34D06E"
+                                   VerticalAlignment="Center" />
+                        <TextBlock x:Name="DoneSignedInText" FontSize="14" Foreground="#CFE9CF"
+                                   Text="Signed in" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    </StackPanel>
                 </StackPanel>
             </Border>
-            <TextBlock Classes="body"
-                       Text="The two-way connection is proven. Next comes signing in (added in the next step)." />
+            <Border Background="#202021" BorderBrush="#3C3C3C" BorderThickness="1" CornerRadius="9">
+                <StackPanel>
+                    <ToggleButton x:Name="DoneAdvancedToggle" Classes="disclosure"
+                                  IsCheckedChanged="DoneAdvancedToggle_IsCheckedChanged">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" Text="Advanced" Foreground="#AAAAAA" FontSize="13"
+                                       FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" x:Name="DoneAdvancedCaret" Text="v" Foreground="#666666"
+                                       FontSize="12" VerticalAlignment="Center" />
+                        </Grid>
+                    </ToggleButton>
+                    <StackPanel x:Name="DoneAdvancedPanel" Spacing="6" Margin="14,0,14,12" IsVisible="False">
+                        <TextBlock Classes="fieldLabel" Text="DEVICE TOKEN (this device's key, masked)" />
+                        <TextBlock x:Name="DoneMaskedToken" FontFamily="Cascadia Mono,Consolas,Courier New"
+                                   Foreground="#AAAAAA" FontSize="12.5" Text="********" />
+                        <TextBlock Classes="fieldLabel" Text="GATEWAY ADDRESS" />
+                        <TextBlock x:Name="DoneGatewayUrl" FontFamily="Cascadia Mono,Consolas,Courier New"
+                                   Foreground="#AAAAAA" FontSize="12.5" Text="" TextWrapping="Wrap" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
         </StackPanel>
 
         <!-- STEP 1e: named failure -->

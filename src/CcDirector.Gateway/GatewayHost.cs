@@ -1180,6 +1180,11 @@ public sealed class GatewayHost : IAsyncDisposable
         // literal routes win over the catch-all session forwarder, same as the other literal routes.
         Api.DeviceEnrollmentEndpoint.Map(_app, Pairing, Devices, _childMirror);
 
+        // POST /devices/enroll-signed-in (issue #1069): the sign-in replacement for the pairing code -
+        // a co-located Director mints its own per-device key by having the Gateway signed in to
+        // DevThrottle, gated on a loopback caller. Same-machine only; remote via tailnet is a follow-up.
+        Api.SignedInEnrollmentEndpoint.Map(_app, Devices, SignIn, _childMirror);
+
         // Wingman-voice surface for the Cockpit's Voice tab (issue #531): drive one turn of a
         // session and have the persistent wingman brain translate the reply into speakable form,
         // plus the direct-to-wingman path. Backed by the same warm Brain the brief agent uses.

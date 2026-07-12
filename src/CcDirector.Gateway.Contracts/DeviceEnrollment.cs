@@ -37,6 +37,30 @@ public sealed class DeviceRegistrationRequest
 }
 
 /// <summary>
+/// A co-located Director's request to enroll with its own Gateway using the DevThrottle account
+/// sign-in instead of a pairing code (issue #1069). The Director POSTs this to
+/// <c>/devices/enroll-signed-in</c>; the Gateway mints (or, if this device already has one, returns)
+/// the Director's own per-device key - gated on the Gateway being signed in to DevThrottle AND the
+/// caller being a loopback same-machine connection. There is no pairing code: signing in is the
+/// authorization. Carries no credential of its own; the loopback origin plus the Gateway's signed-in
+/// account are the proof.
+/// </summary>
+public sealed class EnrollSignedInRequest
+{
+    /// <summary>The Director's stable device identity (its existing device GUID).</summary>
+    public string DeviceId { get; set; } = "";
+
+    /// <summary>The Director's machine name, recorded in the registry and echoed back for confirmation.</summary>
+    public string MachineName { get; set; } = "";
+
+    /// <summary>The operating-system platform string (for example "windows"), for the cloud mirror roster.</summary>
+    public string Platform { get; set; } = "";
+
+    /// <summary>The device type - defaults to "workstation" - for the cloud mirror roster.</summary>
+    public string DeviceType { get; set; } = "";
+}
+
+/// <summary>
 /// The Gateway's response to a successful <see cref="DeviceRegistrationRequest"/> (issue #469).
 /// Carries the unique per-device key the Director writes to its local credential file. The
 /// pairing code is consumed and never returned.
