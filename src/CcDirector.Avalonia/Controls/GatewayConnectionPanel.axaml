@@ -86,14 +86,47 @@
 
             <!-- Header: title + count pill -->
             <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,6">
-                <TextBlock Grid.Column="0" Classes="title" Text="Connect to your Gateway"
-                           VerticalAlignment="Center" />
+                <TextBlock Grid.Column="0" x:Name="ConnectHeaderTitle" Classes="title"
+                           Text="Connect to your Gateway" VerticalAlignment="Center" />
                 <Border Grid.Column="1" x:Name="CountPill" Background="#16283F" CornerRadius="11"
                         Padding="9,4" VerticalAlignment="Center">
                     <TextBlock x:Name="CountPillText" Text="SCANNING..." Foreground="#5AA9F0"
                                FontSize="10.5" FontWeight="Bold" />
                 </Border>
             </Grid>
+
+            <!-- Repair banner (Phase 5, design spec sections 5/7): shown only when the panel opened
+                 because a prior connection failed or a connected Gateway became unreachable. It names the
+                 failing leg, offers the troubleshooter diagnostics INLINE (the same GatewayConnectivitySelfTest
+                 ladder, rendered in DiagnosticsHost - the dialog-as-destination is gone), and the rediscovery
+                 scan below offers the Gateway's current address as a one-click fix. -->
+            <Border x:Name="RepairBanner" IsVisible="False" Margin="0,0,0,16"
+                    Background="#241616" BorderBrush="#8B3A3A" BorderThickness="1" CornerRadius="9">
+                <StackPanel>
+                    <StackPanel Margin="16,14,16,12" Spacing="6">
+                        <TextBlock x:Name="RepairTitle" FontSize="14" FontWeight="SemiBold" Foreground="#E8C0C0"
+                                   Text="Reconnect to your Gateway" TextWrapping="Wrap" />
+                        <TextBlock x:Name="RepairSummary" FontSize="12.5" Foreground="#C79A9A" TextWrapping="Wrap"
+                                   Text="The connection stopped working. Pick your Gateway below to reconnect - we re-scanned for its current address." />
+                    </StackPanel>
+                    <ToggleButton x:Name="DiagnosticsToggle" Classes="disclosure"
+                                  IsCheckedChanged="DiagnosticsToggle_IsCheckedChanged">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" Text="Show diagnostics" Foreground="#AAAAAA" FontSize="13"
+                                       FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" x:Name="DiagnosticsCaret" Text="v" Foreground="#666666"
+                                       FontSize="12" VerticalAlignment="Center" />
+                        </Grid>
+                    </ToggleButton>
+                    <StackPanel x:Name="DiagnosticsPanel" Margin="14,0,14,12" IsVisible="False">
+                        <TextBlock x:Name="DiagnosticsVerdict" FontSize="12" Foreground="#C79A9A" TextWrapping="Wrap"
+                                   Margin="0,0,0,8" />
+                        <StackPanel x:Name="DiagnosticsHost" Spacing="0" />
+                        <TextBlock x:Name="DiagnosticsRunning" FontSize="12" Foreground="#888888" FontStyle="Italic"
+                                   Text="Running checks..." IsVisible="False" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
 
             <!-- Teaching intro (muted blue, key phrases emphasized) -->
             <TextBlock x:Name="IntroText" Foreground="#6C79A0" FontSize="12.5" TextWrapping="Wrap"
