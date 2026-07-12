@@ -8,7 +8,9 @@ namespace CcDirector.Gateway.Util;
 /// <summary>
 /// Bearer-or-cookie auth for the Gateway.
 ///
-/// Public, no auth:    /healthz, /login, /logout, /favicon.ico, /devices/register, the credential-free
+/// Public, no auth:    /healthz, /login, /logout, /favicon.ico, /devices/register,
+///                     /devices/enroll-signed-in (epic #1069: carries its own loopback + signed-in
+///                     guards, so a token-less fresh device can earn its first key), the credential-free
 ///                     cloud sign-in start front door /account/sign-in-start (issue #1076, GET + POST -
 ///                     it reads/returns no credential and no account data), the mobile app
 ///                     shell /m + everything under /m/ (which includes the enroll path
@@ -85,6 +87,15 @@ internal static class AuthMiddleware
         // device with no credential yet can reach it. The endpoint itself rejects a wrong/expired/
         // used code, so opening the route does not weaken the trust model.
         "/devices/register",
+        // Epic #1069 (fresh-device unblock): the sign-in replacement for the pairing code. A brand-new
+        // co-located Director has NO Gateway token yet, so its enroll call arrives token-less and would
+        // 401 at this gate BEFORE reaching the endpoint's own guards - the deadlock (the one endpoint that
+        // hands a fresh device its FIRST key was unreachable by a device with no key). Opening it does not
+        // weaken the trust model: SignedInEnrollmentEndpoint carries its OWN transport-level authorization,
+        // exactly like /devices/register above - a proven-loopback caller (403 for any non-loopback, so a
+        // tailnet/LAN attacker gains nothing), the Gateway signed in (409 otherwise), and an idempotent
+        // mint (the #1136 leak guard). Loopback = same machine = already inside the trust boundary.
+        "/devices/enroll-signed-in",
         // Issue #1076 (epic #1069): the credential-free cloud sign-in START front door. A signed-out
         // browser must reach this to BEGIN cloud sign-in, so it cannot sit behind the raw-token wall
         // (that is the deadlock the epic breaks). It is exact-match, so ONLY /account/sign-in-start is
