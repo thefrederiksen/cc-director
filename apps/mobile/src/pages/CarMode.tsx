@@ -4,12 +4,12 @@ import { useCarMode, type CarModeReply } from "@devthrottle/client-core/carmode/
 import { carModeTurn } from "@devthrottle/client-core/carmode/carModeApi";
 import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 
-// The client build id, inlined by Vite's `define` at build time (git short sha + build timestamp; see
-// vite.config.ts). Shown on the screen so the owner can confirm at a glance he is on the latest page,
-// not an old cached bundle. Vite substitutes this constant in both dev and production builds, so it is
-// always a real string in the app; the typeof guard only prevents a ReferenceError if this module is
-// ever imported outside a Vite build (for example a unit test), and is not a build-time fallback.
-const CLIENT_BUILD_ID = typeof __CLIENT_BUILD_ID__ === "string" ? __CLIENT_BUILD_ID__ : "no-build-id";
+// The Car Mode page version, shown small in the header corner so the owner can confirm at a glance he is
+// on the latest page, not an old cached bundle. This is a SIMPLE hand-bumped label (Soren's explicit ask):
+// the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
+// ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
+// Architect exactly which page is live and what to look for after a deploy.
+const CAR_MODE_VERSION = "v1";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -75,11 +75,9 @@ export function CarMode() {
           Exit
         </Link>
         <span className="car-title">Car Mode</span>
-        {/* The client build id in the corner: the owner glances here to confirm he is on the latest page,
-            not an old cached bundle. The full build id is in the title tooltip. */}
-        <span className="car-build" title={`Client build ${CLIENT_BUILD_ID}`}>
-          {shortBuild(CLIENT_BUILD_ID)}
-        </span>
+        {/* The simple, hand-bumped version in the corner: the owner glances here to confirm he is on the
+            latest page, not an old cached bundle. Bumped by hand on every deploy (see CAR_MODE_VERSION). */}
+        <span className="car-build">{CAR_MODE_VERSION}</span>
       </header>
 
       {/* The scrollable middle: everything between the fixed header and the fixed control footer. It flexes
@@ -228,13 +226,6 @@ function MicMeter({ getLevel, active }: { getLevel: () => number; active: boolea
       ))}
     </div>
   );
-}
-
-// The short form of the build id for the header corner: just the git short sha (the first token), so
-// the badge stays tiny. The full "sha timestamp" is in the title tooltip and the debug readout.
-function shortBuild(buildId: string): string {
-  const firstSpace = buildId.indexOf(" ");
-  return firstSpace < 0 ? buildId : buildId.substring(0, firstSpace);
 }
 
 // The plain-English status line for each phase, the words that pair with the color orb and the cues.

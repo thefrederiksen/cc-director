@@ -1,22 +1,6 @@
-import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
-
-// The client build id, injected at build time so a page can show at a glance which bundle it is
-// running (Car Mode diagnostic: the owner must be able to tell a fresh page from an old cached one).
-// The build timestamp alone proves a fresh build (it changes every time); the git short commit sha
-// pins the bundle to an exact commit so it can be matched against the Gateway version from /healthz.
-//
-// No fallback (CLAUDE.md): the mobile app is only ever built from a git checkout - the redeploy
-// script builds from an isolated git worktree, and the release builds from a git clone - so reading
-// the commit sha MUST succeed. A missing git is a broken build environment, surfaced loudly here
-// rather than shipping an "unknown" marker that would defeat the whole point of the indicator.
-function resolveClientBuildId(): string {
-  const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-  const builtAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  return `${sha} ${builtAt}`;
-}
 
 // The app is served by the Gateway under /m, so every asset URL must be /m-rooted.
 // The PWA service worker caches the app shell (Issue 1, AC7) so the roster opens offline
@@ -24,11 +8,6 @@ function resolveClientBuildId(): string {
 // MSBuild target copies into wwwroot/m/.
 export default defineConfig({
   base: "/m/",
-  // Compile-time constant read by the app (see apps/mobile/src/vite-env.d.ts for its type). Stringified
-  // so it is inlined as a literal, exactly like Vite's own import.meta.env values.
-  define: {
-    __CLIENT_BUILD_ID__: JSON.stringify(resolveClientBuildId()),
-  },
   plugins: [
     react(),
     VitePWA({
