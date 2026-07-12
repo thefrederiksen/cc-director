@@ -216,6 +216,22 @@ export function VoiceMode() {
           </>
         )}
 
+        {/* Regenerate response: force a fresh narration of the session's CURRENT last reply, without
+            toggling voice off/on. Present in the on-states that already have (or are making) a clip -
+            NOT in the unavailable state, which shows its own "Generate narration now". This is the
+            manual override for the rare case the auto-narration is stale or you just want it re-read;
+            it hits the same force path (/wingman/explain) that overwrites the cached clip. */}
+        {voiceOn && !audioUnavailable && (
+          <button
+            type="button"
+            className="voice-regen-btn"
+            onClick={() => void onGenerateNow()}
+            disabled={regenerating}
+          >
+            {regenerating ? "Regenerating..." : "Regenerate response"}
+          </button>
+        )}
+
         {/* Turn voice off: a low-emphasis control present in every on-state (working, speaking). It
             tells the owning Director to leave voice mode (ViewMode -> Text), the same call the native
             app makes, and the screen returns to the off state. */}
