@@ -161,3 +161,18 @@ export async function postCarModeTelemetry(record: CarModeTelemetryPost): Promis
     console.log(`[CarMode] telemetry post failed (ignored): ${String(err)}`);
   }
 }
+
+/**
+ * Warm the Car Mode hosted model + text-to-speech provider (POST /carmode/warmup). The page calls this the
+ * instant the owner taps Start (so the providers are hot before the first utterance is transcribed) and
+ * every few minutes while Car Mode is open, so cold-start - the measured dominant latency - is paid before
+ * the drive, not during it. The Gateway gates it on the keep-warm config (default on for Car Mode) and runs
+ * the actual warmup in the background. Best-effort: it never throws and never blocks the turn loop.
+ */
+export async function postCarModeWarmup(): Promise<void> {
+  try {
+    await fetch("/carmode/warmup", { method: "POST", headers: { ...authHeaders() }, keepalive: true });
+  } catch (err) {
+    console.log(`[CarMode] warmup ping failed (ignored): ${String(err)}`);
+  }
+}
