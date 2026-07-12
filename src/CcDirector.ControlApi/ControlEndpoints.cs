@@ -889,14 +889,12 @@ internal static class ControlEndpoints
 
         // Toggle mobile mode for a session. When turned on, kick off an immediate background
         // briefing so the cache is warm right away instead of waiting for the next turn-end.
+        // Gateway Cleanup Phase 0 (Worker W1): the mobile-mode toggle (and its briefing-cache warm side
+        // effect) run through the shared SessionWriteExecutor core so this REST path and the Gateway stream
+        // down-channel are identical. The optional body is read at this HTTP boundary exactly as before
+        // (empty body -> default enable) and handed to the core as the command payload.
         app.MapPost("/sessions/{sid}/mobile-mode", async (string sid, HttpContext httpCtx) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
             var enabled = true;
             try
             {
@@ -905,27 +903,33 @@ internal static class ControlEndpoints
             }
             catch { /* empty body -> default enable */ }
 
-            // Session (text) tab: Text when watching, Off when the phone navigates away. This is
-            // the same gate as before (MobileMode is now derived from ViewMode), so proactive
-            // briefings behave identically; we only also distinguish Voice from Text now.
-            session.ViewMode = enabled ? MobileViewMode.Text : MobileViewMode.Off;
-            FileLog.Write($"[ControlEndpoints] /mobile-mode: session={guid} enabled={enabled} viewMode={session.ViewMode}");
-            if (enabled) proactiveExplain?.TriggerBackgroundExplain(session);
-            return Results.Json(new { mobileMode = session.MobileMode });
+            var command = new DirectorCommand
+            {
+                Verb = "mobile-mode",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new MobileModeRequest(enabled)),
+            };
+            var services = new SessionCommandServices { ProactiveExplain = proactiveExplain, TurnSummaryCache = turnSummaryCache };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "mobile-mode command failed"),
+            };
         });
 
         // Toggle voice (in-car) mode for a session. The mobile Voice tab calls this on tab switch:
         // enabled -> Voice (the wingman will write spoken-friendly remarks); disabled -> Text (the
         // user left the Voice tab but the phone is still on the mobile app). Like /mobile-mode this
         // warms the briefing cache immediately so the phone has something to speak right away.
+        // Gateway Cleanup Phase 0 (Worker W1): the voice-mode toggle (and its unconditional briefing-cache
+        // warm) run through the shared SessionWriteExecutor core. The optional body is read here at the HTTP
+        // boundary exactly as before (empty body -> default enable).
         app.MapPost("/sessions/{sid}/voice-mode", async (string sid, HttpContext httpCtx) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
             var enabled = true;
             try
             {
@@ -934,14 +938,22 @@ internal static class ControlEndpoints
             }
             catch { /* empty body -> default enable */ }
 
-            var wasVoice = session.VoiceMode;
-            session.ViewMode = enabled ? MobileViewMode.Voice : MobileViewMode.Text;
+            var command = new DirectorCommand
+            {
+                Verb = "voice-mode",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new VoiceModeRequest(enabled)),
+            };
+            var services = new SessionCommandServices { ProactiveExplain = proactiveExplain, TurnSummaryCache = turnSummaryCache };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
 
-            FileLog.Write($"[ControlEndpoints] /voice-mode: session={guid} entering={enabled}, wingmanEnabled unchanged ({session.WingmanEnabled})");
-
-            FileLog.Write($"[ControlEndpoints] /voice-mode: session={guid} enabled={enabled} viewMode={session.ViewMode}");
-            proactiveExplain?.TriggerBackgroundExplain(session);
-            return Results.Json(new { voiceMode = session.VoiceMode, mobileMode = session.MobileMode });
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "voice-mode command failed"),
+            };
         });
 
         // Park / un-park a session in the FIFO voice queue. The phone's FIFO mode calls this
@@ -985,14 +997,11 @@ internal static class ControlEndpoints
         // flipped OFF mid-flight we also clear IsExplaining so the dot doesn't stick on
         // Yellow waiting for the in-flight briefing to finish.
         // Empty body defaults to enabled=true (the common case is "turn it on").
+        // Gateway Cleanup Phase 0 (Worker W1): the Wingman on/off toggle (with its cache-warm on / clear the
+        // in-flight explaining flag off) runs through the shared SessionWriteExecutor core. The optional body
+        // is read here at the HTTP boundary exactly as before (empty body -> default enable).
         app.MapPost("/sessions/{sid}/wingman-enabled", async (string sid, HttpContext httpCtx) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
             var enabled = true;
             try
             {
@@ -1001,19 +1010,22 @@ internal static class ControlEndpoints
             }
             catch { /* empty body -> default enable */ }
 
-            session.WingmanEnabled = enabled;
-            FileLog.Write($"[ControlEndpoints] /wingman-enabled: session={guid} enabled={enabled}");
-            if (enabled)
+            var command = new DirectorCommand
             {
-                // Warm the cache so the Wingman tab has something to show on first open.
-                proactiveExplain?.TriggerBackgroundExplain(session);
-            }
-            else
+                Verb = "wingman-enabled",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new WingmanEnabledRequest(enabled)),
+            };
+            var services = new SessionCommandServices { ProactiveExplain = proactiveExplain, TurnSummaryCache = turnSummaryCache };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
+
+            return result.Status switch
             {
-                // Don't let a Yellow dot stick around for a session the user just turned off.
-                session.IsExplaining = false;
-            }
-            return Results.Json(new { wingmanEnabled = session.WingmanEnabled });
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "wingman-enabled command failed"),
+            };
         });
 
         // Resolve the session repo's GitHub "new issue" URL from its origin remote. The
@@ -1861,17 +1873,24 @@ internal static class ControlEndpoints
 
         // Re-point a Director session at a different Claude session id (mirrors the desktop
         // Relink button - recover continuity when the underlying Claude session id changed).
-        app.MapPost("/sessions/{sid}/relink", (string sid, RelinkRequest? req) =>
+        // Gateway Cleanup Phase 0 (Worker W1): routed through the shared SessionWriteExecutor core.
+        app.MapPost("/sessions/{sid}/relink", async (string sid, RelinkRequest? req) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            if (req is null || string.IsNullOrWhiteSpace(req.ClaudeSessionId))
-                return Results.BadRequest(new { error = "claudeSessionId is required" });
-            if (sessionManager.GetSession(guid) is null)
-                return Results.NotFound(new { error = "session not found" });
+            var command = new DirectorCommand
+            {
+                Verb = "relink",
+                SessionId = sid,
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            sessionManager.RelinkClaudeSession(guid, req.ClaudeSessionId);
-            return Results.Json(new { accepted = true, claudeSessionId = req.ClaudeSessionId });
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "relink command failed"),
+            };
         });
 
         app.MapPost("/sessions/{sid}/recovery-prompt", async (string sid, HttpContext ctx) =>
@@ -2335,57 +2354,44 @@ internal static class ControlEndpoints
 
         // Open the tool's in-terminal history picker (Claude's double-Esc). A
         // visible-terminal feature: the desktop/Cockpit terminal must be on screen.
+        // Gateway Cleanup Phase 0 (Worker W1): routed through the shared SessionWriteExecutor core.
         app.MapPost("/sessions/{sid}/history-picker", async (string sid) =>
         {
             FileLog.Write($"[ControlEndpoints] POST history-picker: sid={sid}");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "history-picker", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            try
+            return result.Status switch
             {
-                await session.ShowHistoryAsync();
-            }
-            catch (NotSupportedException ex)
-            {
-                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status409Conflict);
-            }
-            return Results.Json(new { accepted = true });
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status409Conflict),
+                _ => Results.Problem(result.Error ?? "history-picker command failed"),
+            };
         });
 
         // Reset the conversation context in place (/clear for Claude, /new for pi) and,
         // for transcript-capable drivers, re-link the Director to the NEW agent session
         // id - closing the stale-relink gap after /clear (issue #172 spike finding).
+        // Gateway Cleanup Phase 0 (Worker W1): the reset runs through the shared SessionWriteExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift.
         app.MapPost("/sessions/{sid}/clear-context", async (string sid, CancellationToken ct) =>
         {
             FileLog.Write($"[ControlEndpoints] POST clear-context: sid={sid}");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "clear-context", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ct);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var oldId = session.ClaudeSessionId;
-            string? newId;
-            try
+            return result.Status switch
             {
-                newId = await session.ClearContextAsync(ct);
-            }
-            catch (NotSupportedException ex)
-            {
-                return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status409Conflict);
-            }
-
-            if (newId is not null)
-                sessionManager.RelinkClaudeSession(guid, newId);
-
-            return Results.Json(new { accepted = true, oldAgentSessionId = oldId, newAgentSessionId = newId });
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.Json(new { error = result.Error }, statusCode: StatusCodes.Status409Conflict),
+                _ => Results.Problem(result.Error ?? "clear-context command failed"),
+            };
         });
 
         // A Claude SessionStart hook (matchers startup/resume/clear/compact) reports the CURRENT
@@ -3088,42 +3094,48 @@ internal static class ControlEndpoints
         // session is no longer Working. This is the SAFE self-delete: an agent flags its OWN session
         // (id = CC_SESSION_ID) and then finishes its turn - unlike DELETE /sessions/{sid}, it does not
         // kill the caller's process mid-request. Body is optional ({ "reason": "..." }).
-        app.MapPost("/sessions/{sid}/request-deletion", (HttpContext ctx, string sid, SessionDeletionRequest? body) =>
+        // Gateway Cleanup Phase 0 (Worker W1): the deletion flag runs through the shared SessionWriteExecutor
+        // core. The caller-identity log stays here at the HTTP boundary (it reads the loopback connection).
+        app.MapPost("/sessions/{sid}/request-deletion", async (HttpContext ctx, string sid, SessionDeletionRequest? body) =>
         {
             var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
             FileLog.Write($"[ControlEndpoints] POST /sessions/{sid}/request-deletion caller={caller} reason=\"{body?.Reason}\"");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.MarkForDeletion(body?.Reason);
-            return Results.Json(new
+            var command = new DirectorCommand
             {
-                pendingDeletion = true,
-                requestedAt = session.DeletionRequestedAt,
-                reason = session.DeletionReason,
-            });
+                Verb = "request-deletion",
+                SessionId = sid,
+                PayloadJson = body is null ? "" : SessionCommandExecutor.Serialize(body),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "request-deletion command failed"),
+            };
         });
 
         // Cancel a pending deletion during the grace window (operator changed their mind).
-        app.MapDelete("/sessions/{sid}/request-deletion", (HttpContext ctx, string sid) =>
+        // Gateway Cleanup Phase 0 (Worker W1): routed through the shared SessionWriteExecutor core; the
+        // caller-identity log stays here at the HTTP boundary.
+        app.MapDelete("/sessions/{sid}/request-deletion", async (HttpContext ctx, string sid) =>
         {
             var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
             FileLog.Write($"[ControlEndpoints] DELETE /sessions/{sid}/request-deletion caller={caller}");
 
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "cancel-deletion", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.CancelDeletion();
-            return Results.Json(new { pendingDeletion = false });
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "cancel-deletion command failed"),
+            };
         });
 
         // ===== Crash recovery (issue #212 W3) =====
@@ -3202,34 +3214,37 @@ internal static class ControlEndpoints
         // self-injection suppression window, exited/failed-session guard. Contrast
         // POST /sessions/{sid}/wingman/act above, which DECIDES the action before acting;
         // that endpoint stays until the Phase-3 split removes its decide leg.
-        app.MapPost("/sessions/{sid}/execute-action", (string sid, WingmanAction? action) =>
+        // Gateway Cleanup Phase 0 (Worker W1): the mechanical execute runs through the shared
+        // SessionWriteExecutor core so this REST path and the Gateway stream down-channel are identical and
+        // cannot drift. The core's guards map to the same 400 / 404 the lambda returned; the executor's own
+        // outcome rides back inside the WingmanActResult, and the mechanical status -> HTTP mapping (a gone
+        // session -> 410, a malformed action -> 400, ok / suppressed -> 200) is reproduced here unchanged.
+        app.MapPost("/sessions/{sid}/execute-action", async (string sid, WingmanAction? action) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new WingmanActResult { Status = WingmanActResult.StatusBadRequest, Error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            if (action is null)
-                return Results.BadRequest(new WingmanActResult { Status = WingmanActResult.StatusBadRequest, Error = "body is required: a WingmanAction JSON object (action none|type|send_keys|submit)" });
-
-            FileLog.Write($"[ControlEndpoints] POST /execute-action: session={guid} action={action.Action}");
-            var result = WingmanActionExecutor.Execute(session, action);
-            FileLog.Write($"[ControlEndpoints] POST /execute-action: session={guid} action={result.Action} performed={result.Performed} status={result.Status}");
-
-            // Mechanical status -> HTTP mapping (no judgment in this path): a gone session
-            // and a malformed action are caller errors surfaced as 4xx with nothing injected;
-            // ok and suppressed are the verb's contract working as specified (suppressed =
-            // the executor's idempotency invariant fired and reports itself).
-            if (result.Status == WingmanActResult.StatusSessionGone)
+            var command = new DirectorCommand
             {
-                result.Error = $"session is {session.Status}; nothing was injected";
-                return Results.Json(result, statusCode: StatusCodes.Status410Gone);
+                Verb = "execute-action",
+                SessionId = sid,
+                PayloadJson = action is null ? "" : SessionCommandExecutor.Serialize(action),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            switch (result.Status)
+            {
+                case DirectorCommandStatus.Ok:
+                    var actResult = SessionCommandExecutor.Deserialize<WingmanActResult>(result.BodyJson)!;
+                    if (actResult.Status == WingmanActResult.StatusSessionGone)
+                        return Results.Json(actResult, statusCode: StatusCodes.Status410Gone);
+                    if (actResult.Status == WingmanActResult.StatusBadRequest)
+                        return Results.Json(actResult, statusCode: StatusCodes.Status400BadRequest);
+                    return Results.Json(actResult);
+                case DirectorCommandStatus.BadRequest:
+                    return Results.Json(new WingmanActResult { Status = WingmanActResult.StatusBadRequest, Error = result.Error }, statusCode: StatusCodes.Status400BadRequest);
+                case DirectorCommandStatus.NotFound:
+                    return Results.NotFound(new { error = result.Error });
+                default:
+                    return Results.Problem(result.Error ?? "execute-action command failed");
             }
-            if (result.Status == WingmanActResult.StatusBadRequest)
-                return Results.Json(result, statusCode: StatusCodes.Status400BadRequest);
-            return Results.Json(result);
         });
     }
 
