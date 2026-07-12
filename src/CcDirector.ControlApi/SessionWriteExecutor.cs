@@ -1,3 +1,8 @@
+using System.Diagnostics;
+using CcDirector.Core.AgentPlugins;
+using CcDirector.Core.Agents;
+using CcDirector.Core.Backends;
+using CcDirector.Core.Claude;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Wingman;
@@ -29,6 +34,11 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
         // verb share one core and cannot drift.
         "clear-context", "history-picker", "mobile-mode", "voice-mode", "wingman-enabled",
         "relink", "request-deletion", "cancel-deletion", "execute-action",
+        // Gateway Cleanup Phase 0 (wave 3): the final deferred write verbs. handover-generate is
+        // director-level (creates/targets a session from a source); wingman-ask and recap-generate are
+        // per-session writes that call static services (no new dependency). Each core reproduces its old
+        // REST lambda verbatim, so the REST route and the tunnel verb share one core and cannot drift.
+        "handover-generate", "wingman-ask", "recap-generate",
     };
 
     public async Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -57,6 +67,9 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             "request-deletion" => RequestDeletion(sessionManager, command),
             "cancel-deletion" => CancelDeletion(sessionManager, command),
             "execute-action" => ExecuteAction(sessionManager, command),
+            "handover-generate" => await HandoverGenerateAsync(sessionManager, context.DirectorId, command),
+            "wingman-ask" => await WingmanAskAsync(context, command, cancellationToken),
+            "recap-generate" => await RecapGenerateAsync(sessionManager, context.DirectorId, command, cancellationToken),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the session write area"),
         };
     }
@@ -370,5 +383,310 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             result.Error = $"session is {session.Status}; nothing was injected";
 
         return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(result));
+    }
+
+    /// <summary>
+    /// The <c>handover-generate</c> verb (director-level, no target session on the command): the atomic
+    /// "move the work" write. Mirrors the Director's <c>POST /handover</c> lambda verbatim - it reads the
+    /// SOURCE session's context, delivers it to a TARGET (an existing session, or a brand-new one created in
+    /// a repo), and optionally archives a markdown copy to the vault. The guards return the same statuses the
+    /// route did: a bad/blank fromSessionId, the mutually-exclusive/exactly-one target rule, a bad
+    /// toSessionId/toRepoPath, or an unknown agent -&gt; BadRequest; a missing source or target -&gt; NotFound;
+    /// an Exited/Failed existing target -&gt; Conflict (the route's empty-body 409); a create fault -&gt; Error
+    /// (the route's 500). On success it returns a <see cref="HandoverResponse"/> whose <c>TargetSession</c> is
+    /// the plain <see cref="ControlEndpoints.Map"/> - the Director's own REST route re-maps it with its
+    /// identity-stamped mapper for its 201, exactly as the create verb does. The new-session dispatch (wait for
+    /// idle, then send) and the best-effort archive keep their fire-and-forget task and try/catch from the
+    /// source, so behaviour is byte-identical.
+    /// </summary>
+    internal static async Task<DirectorCommandResult> HandoverGenerateAsync(SessionManager sessionManager, string directorId, DirectorCommand command)
+    {
+        var req = SessionCommandExecutor.Deserialize<HandoverRequest>(command.PayloadJson);
+        FileLog.Write($"[SessionWriteExecutor] handover-generate: from={req?.FromSessionId} toSid={req?.ToSessionId} toRepo={req?.ToRepoPath}");
+
+        if (req is null || string.IsNullOrEmpty(req.FromSessionId))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "fromSessionId is required");
+        if (string.IsNullOrEmpty(req.ToSessionId) && string.IsNullOrEmpty(req.ToRepoPath))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "exactly one of toSessionId or toRepoPath is required");
+        if (!string.IsNullOrEmpty(req.ToSessionId) && !string.IsNullOrEmpty(req.ToRepoPath))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "toSessionId and toRepoPath are mutually exclusive");
+
+        if (!Guid.TryParse(req.FromSessionId, out var fromGuid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid fromSessionId format");
+
+        var source = sessionManager.GetSession(fromGuid);
+        if (source is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "source session not found on this director");
+
+        // 1) Build the context text
+        SessionSummaryDto summary;
+        if (string.IsNullOrEmpty(source.ClaudeSessionId))
+        {
+            summary = new SessionSummaryDto
+            {
+                SessionId = req.FromSessionId, DirectorId = directorId,
+                Agent = source.AgentKind.ToString(),
+                RepoPath = source.RepoPath,
+                ActivityState = source.ActivityState.ToString(),
+                CreatedAt = source.CreatedAt.UtcDateTime,
+            };
+        }
+        else
+        {
+            var jsonl = ClaudeSessionReader.GetJsonlPath(source.ClaudeSessionId, source.RepoPath);
+            summary = File.Exists(jsonl)
+                ? SummaryBuilder.Build(StreamMessageParser.ParseFile(jsonl))
+                : new SessionSummaryDto();
+            summary.SessionId = req.FromSessionId;
+            summary.DirectorId = directorId;
+            summary.Agent = source.AgentKind.ToString();
+            summary.RepoPath = source.RepoPath;
+            summary.ActivityState = source.ActivityState.ToString();
+            summary.CreatedAt = source.CreatedAt.UtcDateTime;
+        }
+        var contextText = SummaryBuilder.FormatAsHandoverPrompt(summary, req.ExtraContext);
+
+        // 2) Find or create the target session
+        Session target;
+        if (!string.IsNullOrEmpty(req.ToSessionId))
+        {
+            if (!Guid.TryParse(req.ToSessionId, out var toGuid))
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid toSessionId format");
+            var existing = sessionManager.GetSession(toGuid);
+            if (existing is null)
+                return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "target session not found on this director");
+            if (existing.Status is SessionStatus.Exited or SessionStatus.Failed)
+                return DirectorCommandResult.Fail(DirectorCommandStatus.Conflict, "target session has exited");
+            target = existing;
+            await target.SendTextAsync(contextText, SendSource.Internal);
+        }
+        else
+        {
+            var repo = req.ToRepoPath!;
+            if (!Directory.Exists(repo))
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"toRepoPath does not exist: {repo}");
+            if (!Enum.TryParse<AgentKind>(req.ToAgent, ignoreCase: true, out var kind))
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown agent: {req.ToAgent}");
+
+            if (!AgentPluginRegistry.Contains(kind))
+                return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"agent {kind} is not a built-in plugin target");
+            var agent = AgentPluginRegistry.CreateAgent(kind, sessionManager.Options);
+
+            try
+            {
+                target = sessionManager.CreateSession(repo, agent, userArgs: null, SessionBackendType.ConPty, resumeSessionId: null);
+            }
+            catch (Exception ex)
+            {
+                return DirectorCommandResult.Fail(DirectorCommandStatus.Error, "failed to create target session: " + ex.Message);
+            }
+            // SessionManager.CreateSession now fires OnSessionCreated itself, so no
+            // explicit RaiseSessionCreated call is needed here.
+
+            // Dispatch the context after the new session reaches Idle. Fire-and-forget;
+            // we return the target DTO immediately so callers can navigate to it.
+            var capturedTarget = target;
+            var capturedText = contextText;
+            _ = Task.Run(async () =>
+            {
+                var deadline = DateTime.UtcNow.AddMilliseconds(30_000);
+                while (DateTime.UtcNow < deadline)
+                {
+                    var st = capturedTarget.ActivityState;
+                    if (st is ActivityState.Idle or ActivityState.WaitingForInput) break;
+                    if (st is ActivityState.Exited) { FileLog.Write($"[SessionWriteExecutor] handover-generate target exited before idle, sid={capturedTarget.Id}"); return; }
+                    await Task.Delay(500);
+                }
+                try { await capturedTarget.SendTextAsync(capturedText, SendSource.Internal); }
+                catch (Exception ex) { FileLog.Write($"[SessionWriteExecutor] handover-generate dispatch FAILED: {ex.Message}"); }
+            });
+        }
+
+        // 3) Optionally archive to vault
+        string? archivedAt = null;
+        if (req.ArchiveToVault)
+        {
+            try { archivedAt = HandoverArchive.Write(summary, contextText, target.Id.ToString()); }
+            catch (Exception ex) { FileLog.Write($"[SessionWriteExecutor] handover-generate archive FAILED: {ex.Message}"); }
+        }
+
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new HandoverResponse
+        {
+            Accepted = true,
+            TargetSession = ControlEndpoints.Map(target, directorId),
+            ContextSent = contextText,
+            ArchivedAt = archivedAt,
+        }));
+    }
+
+    /// <summary>
+    /// The <c>wingman-ask</c> verb: the "Ask the Wingman" channel. Mirrors the Director's
+    /// <c>POST /sessions/{sid}/wingman/ask</c> lambda - two behaviours, both on the strong model:
+    /// <c>mode=explain</c> is a terse "what's happening" briefing over pre-built context; a free-text
+    /// question opens a read-only full-power session over the whole terminal + repo that answers faithfully
+    /// and reads content VERBATIM. Invalid id -&gt; BadRequest; a missing session -&gt; NotFound. The
+    /// question-required guard is NOT an id/session error but the wingman's own <c>bad_request</c> outcome,
+    /// so it rides back as a 200 <see cref="WingmanAskResult"/> (Status "bad_request"); the REST route maps
+    /// that Status to its original 400 exactly as the execute-action verb maps its executor outcomes. The
+    /// turn-summary cache (explain mode's context input) rides in the command services; no new dependency is
+    /// introduced because the answer itself comes from the static <see cref="Core.Wingman.WingmanService"/>
+    /// methods. Lifted as a plain unary verb (Architect option A); the slow-LLM invocation strategy is a
+    /// Phase 2 decision, deliberately unchanged here.
+    /// </summary>
+    internal static async Task<DirectorCommandResult> WingmanAskAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
+    {
+        var sessionManager = context.SessionManager;
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var req = SessionCommandExecutor.Deserialize<WingmanAskRequest>(command.PayloadJson);
+        var explain = string.Equals(req?.Mode, "explain", StringComparison.OrdinalIgnoreCase);
+        // Explain mode briefs the whole session and needs no user question; the free-text ask path still
+        // requires one. This is the wingman's bad_request outcome, carried in the result (a 200 here, mapped
+        // to a 400 at the REST boundary), NOT an id/session guard.
+        if (req is null || (!explain && string.IsNullOrWhiteSpace(req.Question)))
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(
+                new WingmanAskResult { Status = "bad_request", Error = "question is required" }));
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        // Explain = the terse "what's happening" briefing (strong model over pre-built, length-capped
+        // context). Unchanged.
+        if (explain)
+        {
+            var explainCtx = await WingmanContextBuilder.BuildAsync(session, context.Services?.TurnSummaryCache, cancellationToken);
+            var explainResult = await Core.Wingman.WingmanService.AskAboutSessionAsync(
+                req.Question, explainCtx, sessionManager.Options.ClaudePath, cancellationToken, explain: true);
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(explainResult));
+        }
+
+        // Any free-text question = the faithful "Ask the Wingman" channel: a read-only full-power session
+        // over the WHOLE terminal + repo, on the strong model, that reads content VERBATIM instead of
+        // summarizing.
+        var fullTerminal = ControlEndpoints.ReadFullCleanedBuffer(session);
+        var result = await Core.Wingman.WingmanService.AnswerViaSessionAsync(
+            req.Question, fullTerminal, session.AgentKind.ToString(), session.RepoPath,
+            sessionManager.Options.ClaudePath, cancellationToken);
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(result));
+    }
+
+    /// <summary>
+    /// The <c>recap-generate</c> verb: build (and cache) a fresh recap for a session by running the static
+    /// <see cref="RecapGenerator.GenerateAsync"/> over a digest of the session's Claude transcript. Mirrors
+    /// the Director's <c>POST /sessions/{sid}/recap</c> lambda - invalid id -&gt; BadRequest, missing session
+    /// -&gt; NotFound. The not-yet-linked, missing-transcript, and generation-failure branches are DOMAIN
+    /// states the route returned as 200 <see cref="RecapResponse"/> bodies (status strings), so they stay
+    /// <see cref="DirectorCommandStatus.Ok"/> here; the successful generation is also an Ok body whose
+    /// <c>Status == "ok"</c>, which the REST route maps to its original 201 (a 200 for the domain-state
+    /// bodies). The <c>model</c> query argument rides in the <see cref="RecapGenerateRequest"/> payload. A
+    /// caller cancellation (the route's 499) is NOT caught here - it is a boundary concern that bubbles to
+    /// the REST/stream boundary - while every other generation fault is preserved as the route's
+    /// <c>generation_failed</c> 200, exactly as the source lambda's try/catch did.
+    /// </summary>
+    internal static async Task<DirectorCommandResult> RecapGenerateAsync(SessionManager sessionManager, string directorId, DirectorCommand command, CancellationToken cancellationToken)
+    {
+        FileLog.Write($"[SessionWriteExecutor] recap-generate: sid={command.SessionId}");
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+
+        var request = SessionCommandExecutor.Deserialize<RecapGenerateRequest>(command.PayloadJson);
+        var model = request?.Model;
+        if (string.IsNullOrWhiteSpace(model))
+            model = RecapGenerator.DefaultModel;
+
+        if (string.IsNullOrEmpty(session.ClaudeSessionId))
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RecapResponse
+            {
+                SessionId = command.SessionId,
+                Model = model,
+                Status = "no_session_id",
+                Error = "Session has not been linked to a Claude session id yet.",
+            }));
+
+        var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
+        if (!File.Exists(jsonl))
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RecapResponse
+            {
+                SessionId = command.SessionId,
+                Model = model,
+                Status = "no_jsonl",
+                Error = $"JSONL file not found at {jsonl}",
+            }));
+
+        SessionSummaryDto summary;
+        string digest;
+        int currentTurns;
+        try
+        {
+            var messages = StreamMessageParser.ParseFile(jsonl);
+            summary = SummaryBuilder.Build(messages);
+            summary.SessionId = command.SessionId;
+            summary.DirectorId = directorId;
+            summary.Agent = session.AgentKind.ToString();
+            summary.RepoPath = session.RepoPath;
+            summary.ActivityState = session.ActivityState.ToString();
+            summary.CreatedAt = session.CreatedAt.UtcDateTime;
+            digest = SummaryBuilder.FormatAsHandoverPrompt(summary);
+            currentTurns = summary.TurnCount;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[SessionWriteExecutor] recap-generate digest build FAILED: {ex.Message}");
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RecapResponse
+            {
+                SessionId = command.SessionId,
+                Model = model,
+                Status = "generation_failed",
+                Error = "Failed to build session digest: " + ex.Message,
+            }));
+        }
+
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            var recapText = await RecapGenerator.GenerateAsync(
+                digest, sessionManager.Options.ClaudePath, model, cancellationToken);
+            sw.Stop();
+
+            var entry = new RecapCache.Entry
+            {
+                Recap = recapText,
+                GeneratedAt = DateTime.UtcNow,
+                AtTurnCount = currentTurns,
+                Model = model,
+                ElapsedMs = sw.ElapsedMilliseconds,
+            };
+            RecapCache.Set(guid, entry);
+
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RecapResponse
+            {
+                SessionId = command.SessionId,
+                Recap = entry.Recap,
+                GeneratedAt = entry.GeneratedAt,
+                AtTurnCount = entry.AtTurnCount,
+                CurrentTurnCount = currentTurns,
+                IsStale = false,
+                Model = entry.Model,
+                ElapsedMs = entry.ElapsedMs,
+                Status = "ok",
+            }));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            FileLog.Write($"[SessionWriteExecutor] recap-generate generation FAILED: {ex.Message}");
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RecapResponse
+            {
+                SessionId = command.SessionId,
+                Model = model,
+                Status = "generation_failed",
+                Error = ex.Message,
+            }));
+        }
     }
 }

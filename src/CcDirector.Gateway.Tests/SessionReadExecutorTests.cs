@@ -425,4 +425,57 @@ public sealed class SessionReadExecutorTests
         }
         finally { sm.Dispose(); }
     }
+
+    // ---------- handover (Gateway Cleanup Phase 0 wave 3: needs the Director version via SessionCommandServices) ----------
+
+    [Fact]
+    public async Task DispatchAsync_Handover_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handover", "not-a-guid"),
+                new SessionCommandServices { DirectorVersion = "9.9.9-test" });
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Handover_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handover", Guid.NewGuid().ToString()),
+                new SessionCommandServices { DirectorVersion = "9.9.9-test" });
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Handover_ExistingSession_ReturnsInfoBlockWithVersionFromServices()
+    {
+        // The identity/locate block is a pure read of the live session record. The Director version rides in
+        // the services - the one dependency the tunnel command surface did not carry - and is stamped exactly
+        // as the REST route stamped ControlApiHost._version. The block never carries a Director address.
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-handover", Cmd("handover", session.Id.ToString()),
+                new SessionCommandServices { DirectorVersion = "9.9.9-test" });
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<HandoverInfoDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal(session.Id.ToString(), dto!.SessionId);
+            Assert.Equal("dir-handover", dto.DirectorId);
+            Assert.Equal("9.9.9-test", dto.Version);
+            Assert.Equal(Environment.MachineName, dto.MachineName);
+            Assert.False(string.IsNullOrWhiteSpace(dto.DisplayName));
+            Assert.DoesNotContain("http://", result.BodyJson ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+        finally { sm.Dispose(); }
+    }
 }
