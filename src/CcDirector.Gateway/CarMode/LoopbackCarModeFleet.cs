@@ -157,6 +157,42 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
         _log($"[CarModeFleet] deleted session {sessionId}");
     }
 
+    public async Task<CarModeExplain> ExplainSessionAsync(string sessionId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) throw new ArgumentException("A session id is required.", nameof(sessionId));
+        // POST /sessions/{id}/wingman/explain with no body, exactly as the Voice screen's onSwitchOn does.
+        // The Gateway reads the session's latest completed turn and returns { reply, spoken, nothingYet }.
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/sessions/{Uri.EscapeDataString(sessionId)}/wingman/explain");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"The wingman explain call failed: {(int)response.StatusCode} {response.StatusCode}.");
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        var spoken = GetString(root, "spoken");
+        var nothingYet = root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("nothingYet", out var n) && n.ValueKind == JsonValueKind.True;
+        _log($"[CarModeFleet] explained session {sessionId} (nothingYet={nothingYet})");
+        return new CarModeExplain(spoken, nothingYet);
+    }
+
+    public async Task SwitchVoiceModeAsync(string sessionId, bool enabled, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) throw new ArgumentException("A session id is required.", nameof(sessionId));
+        await PostJsonAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/voice-mode", new { enabled }, ct);
+        _log($"[CarModeFleet] set voice-mode {enabled} on session {sessionId}");
+    }
+
+    public async Task SnoozeSessionAsync(string sessionId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) throw new ArgumentException("A session id is required.", nameof(sessionId));
+        // Snooze IS the hold: the Gateway's /hold handler records the Gateway-owned snooze-until timer (from
+        // the per-user default length) when onHold is true, so the session returns to "needs you" on its own.
+        await PostJsonAsync($"/sessions/{Uri.EscapeDataString(sessionId)}/hold", new { onHold = true }, ct);
+        _log($"[CarModeFleet] snoozed session {sessionId}");
+    }
+
     /// <summary>Read THIS Gateway's aggregated roster, reusing a read taken within the last
     ///  <see cref="RosterCacheTtl"/> so one turn's several roster reads (and back-to-back turns) collapse to
     ///  a single loopback aggregation. A cache miss does one real GET and refills the cache.</summary>
@@ -243,11 +279,22 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
             ? p.GetString() ?? ""
             : "";
 
-    /// <summary>Resolve a fuzzy reference to one session: exact number, then exact name, then a name/repo
-    ///  substring, then the newest match. Static and pure so it is unit-tested directly.</summary>
+    /// <summary>Resolve a fuzzy reference to one session: exact number, then exact name, then a NAME match,
+    ///  then (only when nothing matched by name) a REPO match, newest first. Static and pure so it is
+    ///  unit-tested directly.
+    ///
+    ///  Two safety properties matter here, both learned the hard way (a wrong-session act during Car Mode QA):
+    ///  1. The reference is punctuation-normalized first. The model echoes its own spoken narration back as the
+    ///     tool argument - for example "Car Mode Demo, in the devthrottle repo" - and the comma must not stop
+    ///     "demo," from matching the name word "demo".
+    ///  2. A NAME match ALWAYS beats a REPO match. That same "Name, in the repo repo" phrase contains the repo
+    ///     word ("devthrottle"), which every session in that repo shares; without name-priority the reference
+    ///     would spuriously match an arbitrary other same-repo session (the newest one) instead of the session
+    ///     actually named. Repo matching is only a fallback for a reference that names no session at all
+    ///     (for example "the devthrottle session").</summary>
     internal static SessionDto? ResolveSession(IReadOnlyList<SessionDto> sessions, string reference)
     {
-        var reff = reference.Trim().ToLowerInvariant();
+        var reff = NormalizeRef(reference);
         if (reff.Length == 0) return null;
 
         // A number reference ("session 104", "one hundred four" already digitized by the model).
@@ -258,27 +305,40 @@ public sealed class LoopbackCarModeFleet : ICarModeFleet
             if (byNumber is not null) return byNumber;
         }
 
-        // Exact (case-insensitive) name.
-        var exact = sessions.FirstOrDefault(s => (s.Name ?? "").Trim().ToLowerInvariant() == reff);
+        // Exact (normalized) name.
+        var exact = sessions.FirstOrDefault(s => NormalizeRef(s.Name ?? "") == reff);
         if (exact is not null) return exact;
 
-        // Match by name or repo, newest first so a tie picks the latest. A session matches when the
-        // reference is a substring of its name (the owner spoke a fragment of the name), or when its
-        // name or repo appears as WHOLE WORDS inside the reference (the owner said the name/repo within
-        // a longer phrase). Whole-word matching on the reverse direction avoids a short repo leaf like
-        // "one" spuriously matching inside an unrelated word like "nonexistent".
-        var candidates = sessions
-            .OrderByDescending(s => s.CreatedAt)
-            .Where(s =>
+        // A session matches by NAME when the reference is a substring of its name (a spoken fragment) or its
+        // name appears as whole words inside the reference (the name said within a longer phrase). A NAME
+        // match wins outright; only if no session matches by name do we fall back to the newest session whose
+        // REPO leaf appears as whole words in the reference. Newest first so a tie picks the latest.
+        SessionDto? nameMatch = null;
+        SessionDto? repoMatch = null;
+        foreach (var s in sessions.OrderByDescending(s => s.CreatedAt))
+        {
+            var name = NormalizeRef(s.Name ?? "");
+            var repo = NormalizeRef(RepoLeaf(s.RepoPath));
+            if (name.Length > 0 && (name.Contains(reff) || ContainsAsWords(reff, name)))
             {
-                var name = (s.Name ?? "").Trim().ToLowerInvariant();
-                var repo = RepoLeaf(s.RepoPath).ToLowerInvariant();
-                if (name.Length > 0 && (name.Contains(reff) || ContainsAsWords(reff, name))) return true;
-                if (repo.Length > 0 && ContainsAsWords(reff, repo)) return true;
-                return false;
-            })
-            .ToList();
-        return candidates.FirstOrDefault();
+                nameMatch = s;
+                break; // a name match always wins; the newest matching name is the answer
+            }
+            if (repoMatch is null && repo.Length > 0 && ContainsAsWords(reff, repo))
+                repoMatch = s;
+        }
+        return nameMatch ?? repoMatch;
+    }
+
+    /// <summary>Lower-case and collapse a reference (or a name/repo) to space-separated alphanumeric words,
+    ///  dropping ALL punctuation. So "Car Mode Demo, in the devthrottle repo" and "Car Mode - Manager" become
+    ///  clean word runs that <see cref="ContainsAsWords"/> can compare without a stray comma or dash breaking a
+    ///  whole-word match.</summary>
+    internal static string NormalizeRef(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        var chars = value.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : ' ').ToArray();
+        return string.Join(' ', new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
     /// <summary>True when <paramref name="needle"/>'s words appear as a contiguous run of whole words in

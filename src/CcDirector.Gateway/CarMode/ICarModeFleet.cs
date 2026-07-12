@@ -41,4 +41,20 @@ public interface ICarModeFleet
     /// <summary>Delete (kill) a session, exactly the way the remove button does (DELETE /sessions/{id}).
     ///  Destructive: the brain only calls this AFTER a spoken confirmation. Addressed by session id.</summary>
     Task DeleteSessionAsync(string sessionId, CancellationToken ct);
+
+    /// <summary>Read a session's current spoken narration, exactly the way the Voice screen's onSwitchOn does
+    ///  (POST /sessions/{id}/wingman/explain): the Gateway reads the session's latest completed turn and
+    ///  returns the speakable summary. The brain reads this REAL narration aloud - never a canned line.
+    ///  Addressed by session id (already resolved).</summary>
+    Task<CarModeExplain> ExplainSessionAsync(string sessionId, CancellationToken ct);
+
+    /// <summary>Switch a session into (or out of) voice mode, exactly the way the Voice screen's Switch button
+    ///  does (POST /sessions/{id}/voice-mode { enabled }). Addressed by session id (already resolved).</summary>
+    Task SwitchVoiceModeAsync(string sessionId, bool enabled, CancellationToken ct);
+
+    /// <summary>Snooze a session, exactly the way the per-session Snooze button does
+    ///  (POST /sessions/{id}/hold { onHold: true }). Snooze IS the hold plus a Gateway-owned timer: the
+    ///  Gateway records a snooze-until from the per-user default length, so the session RETURNS to "needs
+    ///  you" on its own when the timer fires (Snooze Length mission). Addressed by session id.</summary>
+    Task SnoozeSessionAsync(string sessionId, CancellationToken ct);
 }

@@ -27,14 +27,16 @@ public sealed class CarModeBrain
     private readonly ICarModeFleet _fleet;
     private readonly CarModeConversationStore _conversations;
     private readonly CarModePendingStore _pending;
+    private readonly CarModeSubjectStore _subjects;
     private readonly Action<string> _log;
 
-    public CarModeBrain(ICarModeChat chat, ICarModeFleet fleet, CarModeConversationStore conversations, CarModePendingStore pending, Action<string>? log = null)
+    public CarModeBrain(ICarModeChat chat, ICarModeFleet fleet, CarModeConversationStore conversations, CarModePendingStore pending, CarModeSubjectStore subjects, Action<string>? log = null)
     {
         _chat = chat ?? throw new ArgumentNullException(nameof(chat));
         _fleet = fleet ?? throw new ArgumentNullException(nameof(fleet));
         _conversations = conversations ?? throw new ArgumentNullException(nameof(conversations));
         _pending = pending ?? throw new ArgumentNullException(nameof(pending));
+        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _log = log ?? FileLog.Write;
     }
 
@@ -155,17 +157,28 @@ public sealed class CarModeBrain
             var messagesJson = JsonSerializer.Serialize(messages);
             var turn = await timer.TimeModelAsync(() => _chat.CompleteAsync(messagesJson, ToolCatalogJson, ct));
 
-            // Under tool_choice=required the model normally calls a tool every turn, and says its final
-            // words by calling speak_answer. Defensive path: if a model still answers in plain content with
-            // no tool call, take that content as the final spoken reply so the loop degrades gracefully.
+            // Structural guard against the Car Mode hallucination gotcha (a known, recurring failure of the
+            // fast model): under tool_choice=required the model MUST speak by calling speak_answer and act by
+            // calling an action tool. A bare-content reply is a protocol violation - and, critically, it is how
+            // the model tries to CLAIM an action ("I've snoozed it") WITHOUT calling the tool, which would make
+            // Car Mode narrate something it never did (the banned fire-and-forget defect). So bare content is
+            // NEVER returned as the answer: push it back and require a real tool call. The prompt hard rule is
+            // the belt; this is the suspenders. The round cap still bounds it, so a model that refuses to comply
+            // ends in a loud failure below - never a false success.
             if (turn.ToolCalls.Count == 0)
             {
-                var spoken = (turn.Content ?? "").Trim();
-                if (spoken.Length == 0)
-                    throw new InvalidOperationException("The model returned an empty spoken reply.");
-                _conversations.Append(deviceKey, userText, spoken);
-                _log($"[CarModeBrain] turn done in {round + 1} round(s) via content: actions={actions.Count}, pending={armedThisTurn}");
-                return new CarModeTurnResponse { Spoken = spoken, Actions = actions, PendingConfirmation = armedThisTurn };
+                _log($"[CarModeBrain] bare content with no tool call (round {round + 1}); re-prompting for a real tool call");
+                messages.Add(new { role = "assistant", content = turn.Content ?? "" });
+                messages.Add(new
+                {
+                    role = "user",
+                    content = "You answered in plain text without calling a tool. That does not count and I did not "
+                        + "hear it. If you performed or intend an action (snooze, switch to voice mode, message, "
+                        + "approve, start, delete), you MUST call that action's tool now - saying it is not doing it. "
+                        + "If you are only speaking to me, call speak_answer with the exact words. Do not reply in "
+                        + "plain text again.",
+                });
+                continue;
             }
 
             // The model wants tools this round: echo its assistant message (with the tool_calls) back,
@@ -239,7 +252,9 @@ public sealed class CarModeBrain
     ///  (delete) is NOT run - it arms a confirmation the owner must speak next turn (decision 3).</summary>
     private async Task<ToolOutcome> ExecuteToolAsync(string deviceKey, CarModeToolCall call, TurnTimer timer, CancellationToken ct)
     {
-        _log($"[CarModeBrain] tool: {call.Name}");
+        // Log the raw arguments too: model tool arguments are the boundary where a mis-resolve (the wrong
+        // session) originates, so the exact reference the model produced must be visible when diagnosing.
+        _log($"[CarModeBrain] tool: {call.Name} args={call.ArgumentsJson}");
         switch (call.Name)
         {
             case "list_sessions":
@@ -264,7 +279,30 @@ public sealed class CarModeBrain
                 var activity = await timer.TimeFleetAsync(() => _fleet.GetSessionActivityAsync(reference, ct));
                 if (activity is null)
                     return Result(new { error = $"No session matched \"{reference}\"." });
+                // Reading a session makes it the current subject, so a follow-up "read the wingman" / "answer
+                // it" / "snooze it" resolves without the owner naming it again.
+                _subjects.Set(deviceKey, new CarModeSubject(activity.SessionId, activity.Name, activity.Repo));
                 return Result(new { activity.Name, activity.Repo, activity.State, activity.NeedsYou, activity.Summary });
+            }
+            case "focus_next_needs_me":
+            {
+                // "The next one that needs me": focus the OLDEST-waiting needs-you session (longest wait first)
+                // as the current subject, so follow-ups ("read the wingman", "answer it", "snooze it") resolve.
+                var sessions = await timer.TimeFleetAsync(() => _fleet.ListSessionsAsync(ct));
+                var next = sessions.Where(s => s.NeedsYou).OrderByDescending(s => s.WaitingMinutes).FirstOrDefault();
+                if (next is null)
+                    return Result(new { status = "none", message = "No session is waiting on the owner right now." });
+                _subjects.Set(deviceKey, new CarModeSubject(next.SessionId, next.Name, next.Repo));
+                return Result(new { session = next.Name, repo = next.Repo, next.WaitingMinutes, next.Summary });
+            }
+            case "read_wingman":
+            {
+                var reference = ReadStringArg(call.ArgumentsJson, "session");
+                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "read the wingman for", timer, ct);
+                if (target is null) return Result(new { error });
+                var explain = await timer.TimeFleetAsync(() => _fleet.ExplainSessionAsync(target.SessionId, ct));
+                // The REAL, current narration - the brain reads this aloud, never a canned "it is waiting".
+                return Result(new { session = target.Name, repo = target.Repo, narration = explain.Spoken, explain.NothingYet });
             }
             case "start_session":
             {
@@ -278,11 +316,10 @@ public sealed class CarModeBrain
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
                 var message = ReadStringArg(call.ArgumentsJson, "message");
-                if (string.IsNullOrWhiteSpace(reference) || string.IsNullOrWhiteSpace(message))
-                    return Result(new { error = "Provide both the session and the message to send." });
-                var target = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
-                if (target is null)
-                    return Result(new { error = $"No session matched \"{reference}\"." });
+                if (string.IsNullOrWhiteSpace(message))
+                    return Result(new { error = "Provide the message to send into the session." });
+                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "send that to", timer, ct);
+                if (target is null) return Result(new { error });
                 await timer.TimeFleetAsync(() => _fleet.MessageSessionAsync(target.SessionId, message, ct));
                 var summary = $"Messaged {target.Name}.";
                 return Acted(new { status = "sent", session = target.Name }, new CarModeActionRecord("message_session", summary));
@@ -290,24 +327,38 @@ public sealed class CarModeBrain
             case "approve_session":
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
-                if (string.IsNullOrWhiteSpace(reference))
-                    return Result(new { error = "Provide the session to approve." });
-                var target = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
-                if (target is null)
-                    return Result(new { error = $"No session matched \"{reference}\"." });
+                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "approve", timer, ct);
+                if (target is null) return Result(new { error });
                 await timer.TimeFleetAsync(() => _fleet.ApproveSessionAsync(target.SessionId, ct));
                 var summary = $"Approved {target.Name}.";
                 return Acted(new { status = "approved", session = target.Name }, new CarModeActionRecord("approve_session", summary));
             }
+            case "switch_to_voice_mode":
+            {
+                var reference = ReadStringArg(call.ArgumentsJson, "session");
+                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "switch to voice mode", timer, ct);
+                if (target is null) return Result(new { error });
+                await timer.TimeFleetAsync(() => _fleet.SwitchVoiceModeAsync(target.SessionId, true, ct));
+                var summary = $"Switched {target.Name} to voice mode.";
+                return Acted(new { status = "voice_on", session = target.Name }, new CarModeActionRecord("switch_to_voice_mode", summary));
+            }
+            case "snooze_session":
+            {
+                var reference = ReadStringArg(call.ArgumentsJson, "session");
+                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "snooze", timer, ct);
+                if (target is null) return Result(new { error });
+                await timer.TimeFleetAsync(() => _fleet.SnoozeSessionAsync(target.SessionId, ct));
+                var summary = $"Snoozed {target.Name}.";
+                return Acted(new { status = "snoozed", session = target.Name }, new CarModeActionRecord("snooze_session", summary));
+            }
             case "delete_session":
             {
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
-                if (string.IsNullOrWhiteSpace(reference))
-                    return Result(new { error = "Provide the session to delete." });
-                var target = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
-                if (target is null)
-                    return Result(new { error = $"No session matched \"{reference}\"." });
-                // Destructive: do NOT delete. Arm a confirmation the owner must speak next turn.
+                var (target, error) = await ResolveActTargetAsync(deviceKey, reference, "delete", timer, ct);
+                if (target is null) return Result(new { error });
+                // Destructive: do NOT delete. Arm a confirmation the owner must speak next turn. The
+                // confirmation ALWAYS names the resolved session and repo out loud, so even a stale current
+                // subject is heard before it acts - the omit-session convenience never makes delete less safe.
                 _pending.Arm(deviceKey, new CarModePendingAction("delete", target.SessionId, target.Name));
                 return new ToolOutcome(
                     JsonSerializer.Serialize(new
@@ -315,7 +366,7 @@ public sealed class CarModeBrain
                         status = "confirmation_required",
                         session = target.Name,
                         repo = target.Repo,
-                        message = $"Deleting {target.Name} in the {target.Repo} repo is permanent. Ask the owner to say \"confirm\" to proceed, or \"cancel\" to stop. Do not call any more tools.",
+                        message = $"Deleting {target.Name} in the {target.Repo} repo is permanent. Tell the owner exactly which session and repo you are about to delete, and ask him to say \"confirm\" to proceed, or \"cancel\" to stop. Do not call any more tools.",
                     }, ToolResultJson),
                     Action: null,
                     ArmedConfirmation: true);
@@ -323,6 +374,34 @@ public sealed class CarModeBrain
             default:
                 return Result(new { error = $"Unknown tool \"{call.Name}\"." });
         }
+    }
+
+    /// <summary>
+    /// Resolve the session an act tool will operate on, honoring the current-subject convenience (design B).
+    /// When the model supplies a <paramref name="reference"/>, resolve it live and, on success, make it the
+    /// current subject so later "it" references work. When the model OMITS the reference (the owner said
+    /// "answer it" / "snooze it" / "read the wingman"), fall back to the device's current subject. Returns the
+    /// target and a null error on success, or a null target and a specific, speakable error the model can
+    /// relay - a different message for "which one do you mean" (nothing named, no subject) versus "no session
+    /// matched X" (named something that does not exist). The subject NEVER makes delete less safe: delete's
+    /// confirmation still names the resolved session and repo out loud.
+    /// </summary>
+    private async Task<(CarModeSubject? Target, string? Error)> ResolveActTargetAsync(
+        string deviceKey, string? reference, string actionPhrase, TurnTimer timer, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(reference))
+        {
+            var resolved = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
+            if (resolved is null)
+                return (null, $"No session matched \"{reference}\".");
+            var subject = new CarModeSubject(resolved.SessionId, resolved.Name, resolved.Repo);
+            _subjects.Set(deviceKey, subject);
+            return (subject, null);
+        }
+        var current = _subjects.Get(deviceKey);
+        if (current is null)
+            return (null, $"Which session should I {actionPhrase}? Name it, or first say which one you mean.");
+        return (current, null);
     }
 
     /// <summary>Execute a destructive action the owner has just confirmed out loud, returning the spoken
@@ -404,15 +483,43 @@ public sealed class CarModeBrain
         + "true. \"The latest one\" is the first session in the list (it is ordered newest first).\n"
         + "- If a request is ambiguous or you cannot tell which session is meant, ask one short clarifying "
         + "question instead of guessing.\n\n"
+        + "The session you are talking about (\"it\"):\n"
+        + "- The system remembers the session you last acted on or read as the CURRENT one. When the owner "
+        + "says \"it\", \"that one\", \"this session\", \"answer it\", \"snooze it\", he means that current "
+        + "session. For those follow-ups you may OMIT the session argument and the tool acts on the current "
+        + "one. Only name a session explicitly when he named one or you are changing which session you mean.\n"
+        + "- \"the next one that needs me\", \"who's next\", \"read me the next one\": call focus_next_needs_me. "
+        + "It focuses the session that has been waiting the longest and makes it the current one; then read it "
+        + "to him. After that, \"answer it\" / \"snooze it\" act on that session.\n"
+        + "- When you DO put a session in a tool's session argument, use only its short NAME (for example "
+        + "\"Car Mode Demo\") - never the \"in the such-and-such repo\" phrase. The name alone identifies it; "
+        + "adding the repository can point the action at the wrong session in that repository.\n\n"
         + "Taking action (you have full control):\n"
-        + "- Ordinary actions just happen - do not ask permission for them. To start a session, call "
-        + "start_session with the repository name. To message a session, call message_session. To approve "
-        + "a session that is waiting, call approve_session. After an act, say briefly what you did.\n"
-        + "- Deleting or killing a session is DESTRUCTIVE and always needs the owner's spoken confirmation. "
-        + "When he asks to delete or kill a session, call delete_session; you will get a "
-        + "confirmation_required result. Then tell him exactly what will be deleted and ask him to say "
-        + "\"confirm\" to proceed or \"cancel\" to stop, and call no more tools. The system handles the "
-        + "actual deletion once he confirms out loud - you never delete without that confirmation.\n"
+        + "- CRITICAL: doing something means CALLING ITS TOOL. To snooze, you MUST call snooze_session. To "
+        + "switch to voice mode, you MUST call switch_to_voice_mode. To answer or message, message_session. To "
+        + "approve, approve_session. To start, start_session. Saying it out loud is NOT doing it. NEVER tell the "
+        + "owner you snoozed, switched, messaged, approved, started, or deleted a session unless you actually "
+        + "called that tool THIS turn. If you have not called the tool yet, you have not done it - call the tool "
+        + "first, then say what you did. Claiming an action you did not perform is a serious error.\n"
+        + "- Ordinary actions just happen - do not ask permission for them. After an act, say briefly what you "
+        + "did.\n"
+        + "- To START a session, call start_session with the repository name.\n"
+        + "- To ANSWER a session or send it an instruction - \"answer it and say yes\", \"tell it to run the "
+        + "tests\", \"reply that ...\" - call message_session with the exact words to send. If he is answering "
+        + "the current session, omit the session argument.\n"
+        + "- To READ what a session needs - \"what does it need\", \"read me that one\", \"what is it waiting "
+        + "on\" - call read_wingman. It returns the session's REAL current narration; read that narration back "
+        + "to him. Never invent a status like \"it is waiting for you\" - say what the narration actually says.\n"
+        + "- To APPROVE a waiting session (accept its highlighted default), call approve_session.\n"
+        + "- To SWITCH a session into voice mode - \"put it in voice mode\", \"switch it to voice\" - call "
+        + "switch_to_voice_mode.\n"
+        + "- To SNOOZE a session - \"snooze it\", \"hold it\", \"silence it for a bit\", \"let it wait\" - call "
+        + "snooze_session. It comes back on its own after the snooze time.\n"
+        + "- Deleting, killing, or removing a session is DESTRUCTIVE and always needs the owner's spoken "
+        + "confirmation. When he asks to delete, kill, or remove a session, call delete_session; you will get a "
+        + "confirmation_required result. Then tell him exactly which session and repo will be deleted and ask "
+        + "him to say \"confirm\" to proceed or \"cancel\" to stop, and call no more tools. The system handles "
+        + "the actual deletion once he confirms out loud - you never delete without that confirmation.\n"
         + "\n\nHow you speak:\n"
         + "- To SAY anything to the owner - an answer, a clarifying question, or an acknowledgement of what you "
         + "did - you MUST call the speak_answer tool with the exact words to say out loud. Do not put your reply "
@@ -436,13 +543,35 @@ public sealed class CarModeBrain
             "type": "function",
             "function": {
               "name": "get_session_activity",
-              "description": "Get what one specific session is doing right now. Resolve a fuzzy reference (a name, a repository, or a number) to one session.",
+              "description": "Get what one specific session is doing right now (its short one-line status). Resolve a fuzzy reference (a name, a repository, or a number) to one session. This makes that session the current one.",
               "parameters": {
                 "type": "object",
                 "properties": {
                   "session": { "type": "string", "description": "The session to read: a human name, a repository name, or a number." }
                 },
                 "required": ["session"]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "focus_next_needs_me",
+              "description": "Focus the session that has been waiting on the owner the LONGEST (the next one that needs him) and make it the current one. Use for \"the next one that needs me\", \"who's next\", \"read me the next one\". Returns its name, repository, how long it has waited, and a short summary; if nothing is waiting it returns none.",
+              "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "read_wingman",
+              "description": "Read a session's REAL current narration - what it actually needs or last said - so you can say it back out loud. Use for \"what does it need\", \"read me that one\", \"what is it waiting on\". Omit session to read the current session.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "session": { "type": "string", "description": "The session to read: a name, a repository, or a number. Omit to read the current session." }
+                },
+                "required": []
               }
             }
           },
@@ -464,14 +593,14 @@ public sealed class CarModeBrain
             "type": "function",
             "function": {
               "name": "message_session",
-              "description": "Send a message (a prompt) into a running session, the same as typing to it. Use this to tell a session to do something, for example run the tests.",
+              "description": "Send a message (a prompt) into a running session, the same as typing to it. Use this to answer a session, or to tell it to do something (for example run the tests). Omit session to send it to the current session (\"answer it\", \"reply ...\").",
               "parameters": {
                 "type": "object",
                 "properties": {
-                  "session": { "type": "string", "description": "The session to message: a human name, a repository, or a number." },
-                  "message": { "type": "string", "description": "The message to send into the session." }
+                  "session": { "type": "string", "description": "The session to send to: a name, a repository, or a number. Omit to send to the current session." },
+                  "message": { "type": "string", "description": "The exact words to send into the session." }
                 },
-                "required": ["session", "message"]
+                "required": ["message"]
               }
             }
           },
@@ -479,13 +608,41 @@ public sealed class CarModeBrain
             "type": "function",
             "function": {
               "name": "approve_session",
-              "description": "Approve a session that is waiting for the owner by accepting its highlighted default (presses Enter). Use this when the owner says to approve, allow, or continue a waiting session.",
+              "description": "Approve a session that is waiting for the owner by accepting its highlighted default (presses Enter). Use when the owner says to approve, allow, or continue a waiting session. Omit session to approve the current session.",
               "parameters": {
                 "type": "object",
                 "properties": {
-                  "session": { "type": "string", "description": "The session to approve: a human name, a repository, or a number." }
+                  "session": { "type": "string", "description": "The session to approve: a name, a repository, or a number. Omit to approve the current session." }
                 },
-                "required": ["session"]
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "switch_to_voice_mode",
+              "description": "Switch a session INTO voice mode (so the assistant reads its turns aloud). Use for \"put it in voice mode\", \"switch it to voice\". Omit session to switch the current session.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "session": { "type": "string", "description": "The session to switch: a name, a repository, or a number. Omit for the current session." }
+                },
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "snooze_session",
+              "description": "Snooze a session so it stops asking for now and comes back on its own after the snooze time. Use for \"snooze it\", \"hold it\", \"silence it for a bit\", \"let it wait\". Omit session to snooze the current session.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "session": { "type": "string", "description": "The session to snooze: a name, a repository, or a number. Omit for the current session." }
+                },
+                "required": []
               }
             }
           },
@@ -493,13 +650,13 @@ public sealed class CarModeBrain
             "type": "function",
             "function": {
               "name": "delete_session",
-              "description": "Request to delete (kill and remove) a session. This is DESTRUCTIVE: it does not delete immediately - it returns confirmation_required, and the owner must confirm out loud before it happens.",
+              "description": "Request to delete (kill and remove) a session. This is DESTRUCTIVE: it does not delete immediately - it returns confirmation_required, and the owner must confirm out loud before it happens. Omit session to target the current session.",
               "parameters": {
                 "type": "object",
                 "properties": {
-                  "session": { "type": "string", "description": "The session to delete: a human name, a repository, or a number." }
+                  "session": { "type": "string", "description": "The session to delete: a name, a repository, or a number. Omit to target the current session." }
                 },
-                "required": ["session"]
+                "required": []
               }
             }
           },
