@@ -9,7 +9,7 @@ import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 // the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
 // ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
 // Architect exactly which page is live and what to look for after a deploy.
-const CAR_MODE_VERSION = "v2";
+const CAR_MODE_VERSION = "v3";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -151,8 +151,7 @@ export function CarMode() {
         ) : (
           <>
             <p className="car-hint">
-              Say <strong>"over and out"</strong> to send. Say <strong>"stop"</strong> to cut me off.
-              Or use the buttons below.
+              Talk, then tap <strong>Over and out</strong> to send. Tap <strong>Stop</strong> to cut me off.
             </p>
             {/* Touch equivalents of the two spoken control phrases (Architect direction: the app must be
                 fully usable by touch, so testing is never blocked by the spoken "over and out"). Each
@@ -232,11 +231,11 @@ function MicMeter({ getLevel, active }: { getLevel: () => number; active: boolea
 function phaseStatus(phase: string): string {
   switch (phase) {
     case "listening":
-      return "Listening - go ahead. I stay quiet until you say 'over and out'.";
+      return "Listening - go ahead, then tap 'Over and out' to send.";
     case "thinking":
       return "Got it. Working on that...";
     case "speaking":
-      return "Speaking. Say 'stop' to cut me off.";
+      return "Speaking. Tap 'Stop' to cut me off.";
     default:
       return "Ready.";
   }
