@@ -48,6 +48,12 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
         "fs-list",
         "facts",
         "repos-list",
+        // Gateway Cleanup Phase 0 (Wave 4a): the two saved-handover-DOCUMENT reads. These read the saved
+        // handover documents on this machine (DISTINCT from the per-session "handover" info verb). Each core
+        // reproduces its old REST lambda verbatim, so the REST route and the tunnel verb share one core and
+        // cannot drift.
+        "handovers-list",
+        "handovers-content",
     };
 
     public async Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -61,6 +67,8 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             "fs-list" => FsList(command),
             "facts" => Facts(context.DirectorId, context.Services?.DirectorVersion),
             "repos-list" => ReposList(context.Services?.Repositories),
+            "handovers-list" => HandoversList(command),
+            "handovers-content" => HandoversContent(command),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the catalog read area"),
         };
     }
@@ -284,6 +292,70 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
         {
             FileLog.Write($"[CatalogReadExecutor] fs-list FAILED: {ex.Message}");
             return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// The <c>handovers-list</c> verb (director-level, no session): the saved handover DOCUMENTS on this
+    /// machine (the Handovers tab), NOT the per-session handover info. Mirrors the Director's
+    /// <c>GET /handovers</c> lambda - a scan of <see cref="HandoverScanner.ScanAll"/>, optionally filtered to
+    /// documents whose repo paths include the payload <c>repo</c> (normalized comparison), always a 200 - and
+    /// returns a serialized <see cref="List{HandoverDto}"/>. The source route had no try/catch, so none is
+    /// added here.
+    /// </summary>
+    internal static DirectorCommandResult HandoversList(DirectorCommand command)
+    {
+        var request = SessionCommandExecutor.Deserialize<HandoversListRequest>(command.PayloadJson);
+        var repo = request?.Repo;
+        FileLog.Write($"[CatalogReadExecutor] handovers-list: repo={repo}");
+
+        var infos = HandoverScanner.ScanAll();
+        if (!string.IsNullOrWhiteSpace(repo))
+        {
+            var wanted = ControlEndpoints.NormalizeRepoPath(repo);
+            infos = infos.Where(h => h.RepoPaths.Any(p => ControlEndpoints.NormalizeRepoPath(p) == wanted)).ToList();
+        }
+        var dtos = infos.Select(h => new HandoverDto
+        {
+            Path = h.Path,
+            Title = h.Title,
+            DateDisplay = h.DateDisplay,
+            DateUtc = h.DateUtc,
+            RepoPath = h.RepoPath,
+            RepoPaths = h.RepoPaths,
+            SessionName = h.SessionName,
+        }).ToList();
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(dtos));
+    }
+
+    /// <summary>
+    /// The <c>handovers-content</c> verb (director-level, no session): the raw content of one saved handover
+    /// document. Mirrors the Director's <c>GET /handovers/content</c> lambda - a null / blank path -&gt;
+    /// BadRequest - and returns a serialized <see cref="HandoverContentDto"/>. The source route wrapped the
+    /// read in a try/catch that turned an <see cref="UnauthorizedAccessException"/> into a 400 (surfaced here
+    /// as <see cref="DirectorCommandStatus.BadRequest"/>) and a <see cref="FileNotFoundException"/> into a 404
+    /// (surfaced here as <see cref="DirectorCommandStatus.NotFound"/>), so that try/catch is preserved here and
+    /// behaviour is byte-identical.
+    /// </summary>
+    internal static DirectorCommandResult HandoversContent(DirectorCommand command)
+    {
+        var request = SessionCommandExecutor.Deserialize<HandoverContentRequest>(command.PayloadJson);
+        var path = request?.Path;
+        FileLog.Write($"[CatalogReadExecutor] handovers-content: path={path}");
+        if (string.IsNullOrWhiteSpace(path))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "path is required");
+        try
+        {
+            var content = HandoverScanner.ReadContent(path);
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new HandoverContentDto { Path = path, Content = content }));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, ex.Message);
+        }
+        catch (FileNotFoundException)
+        {
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "handover not found");
         }
     }
 }

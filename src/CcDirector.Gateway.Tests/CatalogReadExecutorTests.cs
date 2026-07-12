@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Sessions;
+using CcDirector.Core.Storage;
 using CcDirector.Gateway.Contracts;
 using Xunit;
 
@@ -285,5 +286,162 @@ public sealed class CatalogReadExecutorTests
             try { if (File.Exists(registryFile)) File.Delete(registryFile); } catch { /* best effort */ }
             try { if (Directory.Exists(repoDir)) Directory.Delete(repoDir, true); } catch { /* best effort */ }
         }
+    }
+
+    // ---------- handovers-list / handovers-content (Gateway Cleanup Phase 0 Wave 4a: the saved-handover
+    // DOCUMENT reads, DISTINCT from the per-session "handover" info verb). CC_DIRECTOR_ROOT is pinned into a
+    // temp dir so the vault handover folder these verbs scan is a controlled, empty-then-seeded folder that
+    // never touches the user's real vault. In the "DirectorRoot" collection (serializes root-touching tests).
+
+    [Fact]
+    public async Task DispatchAsync_HandoversList_EmptyFolder_ReturnsOkWithNoDocuments()
+    {
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-list"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("r2", result.CommandId);
+            var dtos = JsonSerializer.Deserialize<List<HandoverDto>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dtos);
+            Assert.Empty(dtos!);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoversList_SeededDocument_ReturnsItAndHonorsRepoFilter()
+    {
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        // The frontmatter repo path only round-trips through the scanner when the directory actually exists
+        // (HandoverScanner keeps only on-disk repo paths), so the seeded repo is a real temp directory.
+        var repoDir = Path.Combine(Path.GetTempPath(), "ccd-hv-repo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(repoDir);
+        try
+        {
+            HandoverScanner.WriteNew("Wave 4a handover", "the saved body", new[] { repoDir }, "Wave 4a - Worker");
+
+            // No filter: the seeded document is listed.
+            var all = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-list"));
+            Assert.Equal(DirectorCommandStatus.Ok, all.Status);
+            var allDtos = JsonSerializer.Deserialize<List<HandoverDto>>(all.BodyJson ?? "", Json);
+            Assert.NotNull(allDtos);
+            Assert.Contains(allDtos!, h => h.Title == "Wave 4a handover");
+
+            // Matching repo filter: still listed.
+            var matchPayload = JsonSerializer.Serialize(new HandoversListRequest { Repo = repoDir }, Json);
+            var match = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-list", payloadJson: matchPayload));
+            var matchDtos = JsonSerializer.Deserialize<List<HandoverDto>>(match.BodyJson ?? "", Json);
+            Assert.NotNull(matchDtos);
+            Assert.Contains(matchDtos!, h => h.Title == "Wave 4a handover");
+
+            // Non-matching repo filter: excluded (the ?repo= filter rides in the payload, as before).
+            var missPayload = JsonSerializer.Serialize(new HandoversListRequest { Repo = @"Z:\no\such\repo\wave4a" }, Json);
+            var miss = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-list", payloadJson: missPayload));
+            var missDtos = JsonSerializer.Deserialize<List<HandoverDto>>(miss.BodyJson ?? "", Json);
+            Assert.NotNull(missDtos);
+            Assert.DoesNotContain(missDtos!, h => h.Title == "Wave 4a handover");
+        }
+        finally
+        {
+            sm.Dispose();
+            RestoreRoot(root, prev);
+            try { if (Directory.Exists(repoDir)) Directory.Delete(repoDir, true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoversContent_BlankPath_ReturnsBadRequest()
+    {
+        // The route's own guard: a null / blank path is a 400 before any file access.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var payload = JsonSerializer.Serialize(new HandoverContentRequest { Path = "  " }, Json);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-content", payloadJson: payload));
+
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.False(string.IsNullOrEmpty(result.Error));
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoversContent_MissingFileInsideFolder_ReturnsNotFound()
+    {
+        // A path INSIDE the handover folder that does not exist: the source route wrapped ReadContent in a
+        // try/catch that turned a FileNotFoundException into a 404; that preserved try/catch surfaces here as a
+        // NotFound. (A path OUTSIDE the folder is instead the UnauthorizedAccessException -> BadRequest branch.)
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var missing = Path.Combine(CcStorage.VaultHandovers(), "no-such-handover-wave4a.md");
+            var payload = JsonSerializer.Serialize(new HandoverContentRequest { Path = missing }, Json);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-content", payloadJson: payload));
+
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoversContent_PathOutsideFolder_ReturnsBadRequest()
+    {
+        // A path outside the handover folder is the route's UnauthorizedAccessException -> BadRequest branch,
+        // preserved verbatim by the lifted core.
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var payload = JsonSerializer.Serialize(new HandoverContentRequest { Path = @"Z:\outside\handover-wave4a.md" }, Json);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-content", payloadJson: payload));
+
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoversContent_SeededDocument_ReturnsContent()
+    {
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var path = HandoverScanner.WriteNew("Wave 4a content", "the exact saved body", null, null);
+
+            var payload = JsonSerializer.Serialize(new HandoverContentRequest { Path = path }, Json);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("handovers-content", payloadJson: payload));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<HandoverContentDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal(path, dto!.Path);
+            Assert.Contains("the exact saved body", dto.Content);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    // Pin the vault into a fresh temp dir so the vault handover folder these verbs scan is a controlled,
+    // empty-then-seeded folder that never touches the user's real vault. The vault path is resolved from
+    // CC_VAULT_PATH first (this machine has it set), so that is the variable to override - CC_DIRECTOR_ROOT
+    // alone would not redirect the vault. Returns the pinned root and the previous value so RestoreRoot can
+    // put it back and delete the temp tree.
+    private static (string root, string? prev) PinRoot()
+    {
+        var prev = Environment.GetEnvironmentVariable("CC_VAULT_PATH");
+        var root = Path.Combine(Path.GetTempPath(), "ccd-handover-test-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_VAULT_PATH", Path.Combine(root, "vault"));
+        return (root, prev);
+    }
+
+    private static void RestoreRoot(string root, string? prev)
+    {
+        Environment.SetEnvironmentVariable("CC_VAULT_PATH", prev);
+        try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); } catch { /* best effort */ }
     }
 }

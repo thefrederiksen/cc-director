@@ -2384,14 +2384,25 @@ internal static class ControlEndpoints
 
         // Delete one screenshot from disk (the per-card "Del" action). Mirrors the desktop, which
         // deletes the file off disk. Path-traversal safe via ResolveScreenshot.
-        app.MapDelete("/screenshots/file", (string name) =>
+        // Gateway Cleanup Phase 0 (Wave 4a): the delete runs through the shared SessionByteExecutor core so
+        // this REST path and the Gateway tunnel verb are identical and cannot drift. The bare name rides in
+        // the command payload; the core resolves it with the same traversal-safe ResolveScreenshot helper, so
+        // an escaping/non-image/missing name is still a 404. Phase 1 deletes this route.
+        app.MapDelete("/screenshots/file", async (string name) =>
         {
-            var full = ResolveScreenshot(name);
-            if (full is null)
-                return Results.NotFound(new { error = "screenshot not found" });
-            FileLog.Write($"[ControlEndpoints] DELETE /screenshots/file: {full}");
-            File.Delete(full);
-            return Results.Json(new { deleted = true, fileName = Path.GetFileName(full) });
+            var command = new DirectorCommand
+            {
+                Verb = "screenshot-delete",
+                PayloadJson = SessionCommandExecutor.Serialize(new ScreenshotDeleteRequest { Name = name }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<ScreenshotDeleteResponse>(result.BodyJson)),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "screenshot-delete command failed"),
+            };
         });
 
         // ===== REST: Fan-out within this Director =====
@@ -2496,16 +2507,26 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Remove a repository from the recent list =====
-        app.MapDelete("/repos", (string? path) =>
+        // Gateway Cleanup Phase 0 (Wave 4a): the remove runs through the shared SessionWriteExecutor core so
+        // this REST path and the Gateway tunnel verb are identical and cannot drift. The path rides in the
+        // command payload; the live registry rides in the services (as repos-list reads it). A blank path is
+        // a 400 and a null registry is a 200 { removed = false }, exactly as before. Phase 1 deletes this route.
+        app.MapDelete("/repos", async (string? path) =>
         {
-            FileLog.Write($"[ControlEndpoints] DELETE /repos: path={path}");
-            if (string.IsNullOrWhiteSpace(path))
-                return Results.BadRequest(new { error = "path is required" });
-            if (repositoryRegistry is null)
-                return Results.Json(new { removed = false });
+            var command = new DirectorCommand
+            {
+                Verb = "repo-delete",
+                PayloadJson = SessionCommandExecutor.Serialize(new RepoDeleteRequest { Path = path }),
+            };
+            var services = new SessionCommandServices { Repositories = repositoryRegistry };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
 
-            var removed = repositoryRegistry.Remove(path);
-            return Results.Json(new { removed });
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<RepoDeleteResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "repo-delete command failed"),
+            };
         });
 
         // ===== REST: Register a repository explicitly (no session needed) =====
@@ -2674,26 +2695,24 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Handover documents (Handovers tab) =====
-        app.MapGet("/handovers", (string? repo) =>
+        // Gateway Cleanup Phase 0 (Wave 4a): the saved-handover-document list runs through the shared
+        // CatalogReadExecutor core so this REST path and the Gateway tunnel verb are identical and cannot
+        // drift. This lists the saved handover DOCUMENTS on this machine (DISTINCT from the per-session
+        // "handover" info verb). The ?repo= filter rides in the command payload. Phase 1 deletes this route.
+        app.MapGet("/handovers", async (string? repo) =>
         {
-            FileLog.Write($"[ControlEndpoints] GET /handovers: repo={repo}");
-            var infos = HandoverScanner.ScanAll();
-            if (!string.IsNullOrWhiteSpace(repo))
+            var command = new DirectorCommand
             {
-                var wanted = NormalizeRepoPath(repo);
-                infos = infos.Where(h => h.RepoPaths.Any(p => NormalizeRepoPath(p) == wanted)).ToList();
-            }
-            var dtos = infos.Select(h => new HandoverDto
+                Verb = "handovers-list",
+                PayloadJson = SessionCommandExecutor.Serialize(new HandoversListRequest { Repo = repo }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
             {
-                Path = h.Path,
-                Title = h.Title,
-                DateDisplay = h.DateDisplay,
-                DateUtc = h.DateUtc,
-                RepoPath = h.RepoPath,
-                RepoPaths = h.RepoPaths,
-                SessionName = h.SessionName,
-            }).ToList();
-            return Results.Json(dtos);
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<List<HandoverDto>>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "handovers-list command failed"),
+            };
         });
 
         app.MapPost("/handovers", (HandoverCreateRequest req) =>
@@ -2741,24 +2760,26 @@ internal static class ControlEndpoints
             }
         });
 
-        app.MapGet("/handovers/content", (string? path) =>
+        // Gateway Cleanup Phase 0 (Wave 4a): the saved-handover-document content read runs through the shared
+        // CatalogReadExecutor core so this REST path and the Gateway tunnel verb are identical and cannot
+        // drift. The ?path= argument rides in the command payload; the core preserves the source route's
+        // try/catch, so an access error is still a 400 and a missing file a 404. Phase 1 deletes this route.
+        app.MapGet("/handovers/content", async (string? path) =>
         {
-            FileLog.Write($"[ControlEndpoints] GET /handovers/content: path={path}");
-            if (string.IsNullOrWhiteSpace(path))
-                return Results.BadRequest(new { error = "path is required" });
-            try
+            var command = new DirectorCommand
             {
-                var content = HandoverScanner.ReadContent(path);
-                return Results.Json(new HandoverContentDto { Path = path, Content = content });
-            }
-            catch (UnauthorizedAccessException ex)
+                Verb = "handovers-content",
+                PayloadJson = SessionCommandExecutor.Serialize(new HandoverContentRequest { Path = path }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
             {
-                return Results.BadRequest(new { error = ex.Message });
-            }
-            catch (FileNotFoundException)
-            {
-                return Results.NotFound(new { error = "handover not found" });
-            }
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<HandoverContentDto>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "handovers-content command failed"),
+            };
         });
 
         // ===== REST: Remote folder browser (Browse... button) =====
@@ -2932,23 +2953,53 @@ internal static class ControlEndpoints
         });
 
         // Dismiss one claimed dirty journal once its sessions are recovered or no longer wanted.
-        app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}", (HttpContext ctx, string deadDirectorId, int deadPid) =>
+        // Gateway Cleanup Phase 0 (Wave 4a): the dismiss runs through the shared SessionWriteExecutor core so
+        // this REST path and the Gateway tunnel verb are identical and cannot drift. The route segments ride
+        // in the command payload; the caller-identity boundary log (it reads the HTTP connection) stays here.
+        // A missing journal is still a 404, exactly as before. Phase 1 deletes this route.
+        app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}", async (HttpContext ctx, string deadDirectorId, int deadPid) =>
         {
             var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
             FileLog.Write($"[ControlEndpoints] DELETE /interrupted/{deadDirectorId}/{deadPid} caller={caller}");
-            var removed = Core.Sessions.DirectorCrashJournal.Dismiss(deadDirectorId, deadPid);
-            return removed ? Results.Json(new { dismissed = true }) : Results.NotFound(new { error = "no such interrupted journal" });
+            var command = new DirectorCommand
+            {
+                Verb = "interrupted-dismiss",
+                PayloadJson = SessionCommandExecutor.Serialize(new InterruptedDismissRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<InterruptedDismissResponse>(result.BodyJson)),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "interrupted-dismiss command failed"),
+            };
         });
 
         // Remove ONE session from a claimed dirty journal after it has been restored
         // (issue #212 W4): the rest of the journal stays in the Interrupted sessions list.
+        // Gateway Cleanup Phase 0 (Wave 4a): the remove runs through the shared SessionWriteExecutor core so
+        // this REST path and the Gateway tunnel verb are identical and cannot drift. The route segments ride
+        // in the command payload; the caller-identity boundary log stays here. A session that is not in the
+        // journal is still a 404, exactly as before. Phase 1 deletes this route.
         app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}/sessions/{sessionId}",
-            (HttpContext ctx, string deadDirectorId, int deadPid, string sessionId) =>
+            async (HttpContext ctx, string deadDirectorId, int deadPid, string sessionId) =>
         {
             var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
             FileLog.Write($"[ControlEndpoints] DELETE /interrupted/{deadDirectorId}/{deadPid}/sessions/{sessionId} caller={caller}");
-            var removed = Core.Sessions.DirectorCrashJournal.RemoveSession(deadDirectorId, deadPid, sessionId);
-            return removed ? Results.Json(new { removed = true }) : Results.NotFound(new { error = "no such interrupted session" });
+            var command = new DirectorCommand
+            {
+                Verb = "interrupted-remove",
+                PayloadJson = SessionCommandExecutor.Serialize(new InterruptedRemoveRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid, SessionId = sessionId }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<InterruptedRemoveResponse>(result.BodyJson)),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "interrupted-remove command failed"),
+            };
         });
 
         // ===== Admin: session-number backfill (issue #846) =====
@@ -2961,13 +3012,22 @@ internal static class ControlEndpoints
         // auth is enabled. Reached through the Gateway via POST /directors/{id}/backfill-numbers,
         // which forwards here (a Director-id-keyed route, since the per-session /sessions/{sid}
         // catch-all would treat a non-session path segment as a session id).
-        app.MapPost("/admin/backfill-numbers", (HttpContext ctx) =>
+        // Gateway Cleanup Phase 0 (Wave 4a): the backfill runs through the shared SessionWriteExecutor core so
+        // this REST path and the Gateway tunnel verb are identical and cannot drift. The verb takes no input
+        // and always returns a 200 with the count newly numbered; the caller-identity boundary log stays here.
+        // Phase 1 deletes this route.
+        app.MapPost("/admin/backfill-numbers", async (HttpContext ctx) =>
         {
             var caller = Core.Network.LoopbackPeerResolver.Describe(ctx.Connection.RemotePort, ctx.Connection.LocalPort);
             FileLog.Write($"[ControlEndpoints] POST admin/backfill-numbers requested caller={caller}");
-            var assigned = sessionManager.BackfillNumbers();
-            FileLog.Write($"[ControlEndpoints] admin/backfill-numbers assigned {assigned} number(s)");
-            return Results.Json(new { assigned });
+            var command = new DirectorCommand { Verb = "backfill-numbers", SessionId = "" };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<BackfillNumbersResponse>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "backfill-numbers command failed"),
+            };
         });
 
         // ===== Shutdown =====

@@ -608,4 +608,220 @@ public sealed class SessionWriteExecutorTests
         }
         finally { sm.Dispose(); }
     }
+
+    // ---------- repo-delete (Gateway Cleanup Phase 0 Wave 4a: director-level, reads the live registry from
+    // the services, exactly as repos-list does) ----------
+
+    [Fact]
+    public async Task DispatchAsync_RepoDelete_BlankPath_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = Command("repo-delete", "", new RepoDeleteRequest { Path = "  " });
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.False(string.IsNullOrEmpty(result.Error));
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_RepoDelete_NoRegistry_ReturnsOkRemovedFalse()
+    {
+        // With no registry wired (no services) the core removes nothing - a 200 { removed = false } - exactly
+        // as the REST route returned when no registry was set.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = Command("repo-delete", "", new RepoDeleteRequest { Path = @"Z:\some\repo\wave4a" });
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var resp = JsonSerializer.Deserialize<RepoDeleteResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.False(resp!.Removed);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_RepoDelete_RegisteredRepo_RemovesItAndReturnsOkRemovedTrue()
+    {
+        // The live registry rides in the services (as repos-list reads it): a registered repo is removed and
+        // gone from the registry afterward.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        var registryFile = Path.Combine(Path.GetTempPath(), "ccd-wr-repos-" + Guid.NewGuid().ToString("N") + ".json");
+        var repoDir = Path.Combine(Path.GetTempPath(), "ccd-wr-repo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(repoDir);
+        try
+        {
+            var registry = new Core.Configuration.RepositoryRegistry(registryFile);
+            Assert.True(registry.TryAdd(repoDir));
+
+            var command = Command("repo-delete", "", new RepoDeleteRequest { Path = repoDir });
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command,
+                new SessionCommandServices { Repositories = registry });
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var resp = JsonSerializer.Deserialize<RepoDeleteResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.True(resp!.Removed);
+            Assert.DoesNotContain(registry.Repositories, r => string.Equals(
+                Path.GetFullPath(r.Path).TrimEnd('\\', '/'),
+                Path.GetFullPath(repoDir).TrimEnd('\\', '/'),
+                StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            sm.Dispose();
+            try { if (File.Exists(registryFile)) File.Delete(registryFile); } catch { /* best effort */ }
+            try { if (Directory.Exists(repoDir)) Directory.Delete(repoDir, true); } catch { /* best effort */ }
+        }
+    }
+
+    // ---------- interrupted-dismiss / interrupted-remove (Gateway Cleanup Phase 0 Wave 4a: director-level
+    // crash-journal edits; CC_DIRECTOR_ROOT is pinned so the journal folder is a controlled temp dir) ----------
+
+    [Fact]
+    public async Task DispatchAsync_InterruptedDismiss_NoSuchJournal_ReturnsNotFound()
+    {
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = Command("interrupted-dismiss", "",
+                new InterruptedDismissRequest { DeadDirectorId = "dir-gone", DeadPid = 4242 });
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_InterruptedDismiss_ExistingJournal_ReturnsOkDismissedTrue()
+    {
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var deadDir = "dir-dead"; var deadPid = 9191;
+            SeedDirtyJournal(deadDir, deadPid, "11111111-1111-1111-1111-111111111111");
+
+            var command = Command("interrupted-dismiss", "",
+                new InterruptedDismissRequest { DeadDirectorId = deadDir, DeadPid = deadPid });
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var resp = JsonSerializer.Deserialize<InterruptedDismissResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.True(resp!.Dismissed);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_InterruptedRemove_NoSuchSession_ReturnsNotFound()
+    {
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = Command("interrupted-remove", "",
+                new InterruptedRemoveRequest { DeadDirectorId = "dir-gone", DeadPid = 4242, SessionId = Guid.NewGuid().ToString() });
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_InterruptedRemove_ExistingSession_ReturnsOkRemovedTrue()
+    {
+        var (root, prev) = PinRoot();
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var deadDir = "dir-dead2"; var deadPid = 9292;
+            var sid = "22222222-2222-2222-2222-222222222222";
+            // Seed two sessions so removing one leaves the journal (RemoveSession true, journal not deleted).
+            SeedDirtyJournal(deadDir, deadPid, sid, "33333333-3333-3333-3333-333333333333");
+
+            var command = Command("interrupted-remove", "",
+                new InterruptedRemoveRequest { DeadDirectorId = deadDir, DeadPid = deadPid, SessionId = sid });
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var resp = JsonSerializer.Deserialize<InterruptedRemoveResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.True(resp!.Removed);
+        }
+        finally { sm.Dispose(); RestoreRoot(root, prev); }
+    }
+
+    // ---------- backfill-numbers (Gateway Cleanup Phase 0 Wave 4a: director-level, no input, always 200) ----------
+
+    [Fact]
+    public async Task DispatchAsync_BackfillNumbers_NoSessions_ReturnsOkAssignedZero()
+    {
+        // No sessions to number, so the count is zero - still a 200, exactly as the REST route returned.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = Command("backfill-numbers", "");
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("cmd-w1", result.CommandId);
+            var resp = JsonSerializer.Deserialize<BackfillNumbersResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.Equal(0, resp!.Assigned);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // Pin CC_DIRECTOR_ROOT into a fresh temp dir so the crash-journal folder is controlled; returns the pinned
+    // root and the previous value so RestoreRoot can put it back and delete the temp tree.
+    private static (string root, string? prev) PinRoot()
+    {
+        var prev = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
+        var root = Path.Combine(Path.GetTempPath(), "ccd-wr-root-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", root);
+        return (root, prev);
+    }
+
+    private static void RestoreRoot(string root, string? prev)
+    {
+        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", prev);
+        try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+    }
+
+    // Write a claimed dirty crash journal ({directorId}.{pid}.dirty.json) into the pinned DefaultDirectory,
+    // holding the given recoverable session ids, so the dismiss/remove verbs have a real file to act on.
+    private static void SeedDirtyJournal(string directorId, int pid, params string[] sessionIds)
+    {
+        var dir = DirectorCrashJournal.DefaultDirectory;
+        Directory.CreateDirectory(dir);
+        var data = new DirectorCrashJournalData
+        {
+            DirectorId = directorId,
+            Pid = pid,
+            MachineName = Environment.MachineName,
+            User = Environment.UserName,
+            StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5),
+            LastUpdatedUtc = DateTimeOffset.UtcNow,
+            Sessions = sessionIds.Select(s => new DirectorCrashJournalSession
+            {
+                SessionId = s,
+                RepoPath = @"Z:\wave4a\journal-repo",
+                Agent = "ClaudeCode",
+                CreatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5),
+            }).ToList(),
+        };
+        var path = Path.Combine(dir, $"{directorId}.{pid}.dirty.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(data, Json));
+    }
 }

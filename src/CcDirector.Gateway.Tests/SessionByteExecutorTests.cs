@@ -254,4 +254,65 @@ public sealed class SessionByteExecutorTests : IAsyncLifetime
         }
         finally { sm.Dispose(); }
     }
+
+    // ---------- screenshot-delete (Gateway Cleanup Phase 0 Wave 4a) ----------
+
+    private static DirectorCommand ScreenshotDeleteCommand(string? name) => new()
+    {
+        CommandId = "sd1",
+        Verb = "screenshot-delete",
+        PayloadJson = JsonSerializer.Serialize(new ScreenshotDeleteRequest { Name = name }, Json),
+    };
+
+    [Fact]
+    public async Task DispatchAsync_ScreenshotDelete_MissingFile_ReturnsNotFound()
+    {
+        // A name that does not resolve to an existing screenshot (traversal-safe ResolveScreenshot returns
+        // null) is the route's 404 - carried as a NotFound command result.
+        var sm = new SessionManager(new AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", ScreenshotDeleteCommand("no-such-shot.png"));
+
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ScreenshotDelete_TraversalName_ReturnsNotFound()
+    {
+        // A name that is not a bare file (a traversal attempt) is rejected by ResolveScreenshot before any
+        // filesystem touch - a 404, exactly as the REST route returned.
+        var sm = new SessionManager(new AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", ScreenshotDeleteCommand(@"..\escape.png"));
+
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ScreenshotDelete_ExistingFile_DeletesItAndReturnsOk()
+    {
+        SeedScreenshot("shot-to-delete.png", DateTime.UtcNow);
+        Assert.True(File.Exists(Path.Combine(_shotsDir, "shot-to-delete.png")));
+
+        var sm = new SessionManager(new AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", ScreenshotDeleteCommand("shot-to-delete.png"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("sd1", result.CommandId);
+            var resp = JsonSerializer.Deserialize<ScreenshotDeleteResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.True(resp!.Deleted);
+            Assert.Equal("shot-to-delete.png", resp.FileName);
+            Assert.False(File.Exists(Path.Combine(_shotsDir, "shot-to-delete.png")));
+        }
+        finally { sm.Dispose(); }
+    }
 }
