@@ -95,6 +95,36 @@ public sealed class DeviceRegistry
     }
 
     /// <summary>
+    /// Idempotent enrollment for the account-sign-in path (issue #1069): if this device id already holds an
+    /// active per-device key, return that SAME key unchanged; otherwise mint one via <see cref="Register"/>.
+    /// This is the load-bearing guardrail against minting a fresh key on every call - the auto-mint key leak
+    /// that #1136 fixed. Unlike <see cref="Register"/> (which rotates the key so a re-pairing issues a fresh
+    /// one), this never rotates: one device identity gets exactly one key until it is revoked.
+    /// </summary>
+    public DeviceRegistrationResponse RegisterIfAbsent(string deviceId, string machineName, string? platform = null, string? deviceType = null)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+            throw new ArgumentException("deviceId is required", nameof(deviceId));
+
+        if (_byDeviceId.TryGetValue(deviceId, out var existing)
+            && string.Equals(existing.Status, StatusActive, StringComparison.Ordinal)
+            && !string.IsNullOrEmpty(existing.DeviceKey))
+        {
+            FileLog.Write($"[DeviceRegistry] RegisterIfAbsent: device id={deviceId} already has an active key; returning it unchanged (no re-mint)");
+            return new DeviceRegistrationResponse
+            {
+                DeviceKey = existing.DeviceKey,
+                DeviceId = deviceId,
+                MachineName = existing.MachineName,
+                Status = existing.Status,
+                DeviceCount = _byDeviceId.Count,
+            };
+        }
+
+        return Register(deviceId, machineName, platform, deviceType);
+    }
+
+    /// <summary>
     /// Records the cloud roster id assigned to a mirrored child (Path B, Diagram 2b) so a later
     /// revoke-pull (Diagram 2c) can match this local child against the cloud list by id, and so a
     /// restart does not re-mirror an already-mirrored child. A no-op when the device id is unknown

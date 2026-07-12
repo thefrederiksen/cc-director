@@ -637,13 +637,39 @@ public partial class GatewayConnectionPanel : UserControl
         }
     }
 
-    // MECHANISM SEAM (Phase 2b): call POST /devices/enroll-signed-in on the co-located Gateway to mint and
-    // store this Director's own per-device token (idempotent server-side, gated on account-signed-in AND a
-    // same-machine loopback caller). No-op until that Gateway endpoint and its Director client land.
-    private static Task EnrollThroughGatewayOnceAsync()
+    // Enroll THIS co-located Director through its Gateway now that the account is signed in: the Gateway
+    // mints (or returns) this Director's own per-device token, which is stored locally. Called at most once
+    // per sign-in flow and never from the poll loop's read path (guardrail against the #1136 key leak).
+    private async Task EnrollThroughGatewayOnceAsync()
     {
-        FileLog.Write("[GatewayConnectionPanel] enroll-through-Gateway seam (Phase 2b) not yet wired");
-        return Task.CompletedTask;
+        try
+        {
+            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+            if (host is null)
+            {
+                FileLog.Write("[GatewayConnectionPanel] enroll-through-Gateway: Control API not running");
+                return;
+            }
+
+            var config = GatewayConfig.Load();
+            var result = await GatewayEnrollmentClient.EnrollSignedInAsync(
+                config.Url, config.Token, host.DirectorId, Environment.MachineName, "windows");
+
+            if (!result.Success || result.Value is null)
+            {
+                FileLog.Write($"[GatewayConnectionPanel] enroll-through-Gateway failed: {result.ErrorMessage}");
+                return;
+            }
+
+            // Store this device's own token, then re-apply so the running client authenticates with it.
+            await Task.Run(() => GatewayCredentialStore.SaveEnrolledKey(config.Url, result.Value.DeviceKey));
+            await host.ReapplyGatewayAsync();
+            FileLog.Write("[GatewayConnectionPanel] enroll-through-Gateway: this Director's token stored");
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] enroll-through-Gateway error: {ex.Message}");
+        }
     }
 
     private static async Task<GatewayAccountStatus> SafeStatusAsync(GatewayConfig config, CancellationToken ct)
