@@ -237,16 +237,28 @@ internal static class ControlEndpoints
             return Results.Json(sessions);
         });
 
-        app.MapGet("/sessions/{sid}", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so this REST
+        // path and the Gateway stream down-channel are identical and cannot drift. The Director's local
+        // response still uses its identity-stamped mapper (MachineName/User/TailnetEndpoint), so this
+        // endpoint stays byte-identical; the executor returns the plain stream DTO that the Gateway stamps
+        // during aggregation (exactly as the patch verb does). Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}", async (string sid) =>
         {
             if (!Guid.TryParse(sid, out var guid))
                 return Results.BadRequest(new { error = "invalid session id format" });
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
+            var command = new DirectorCommand { Verb = "snapshot", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            return Results.Json(MapWithIdentity(session, turnSummaryCache));
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.NotFound(new { error = result.Error });
+
+            var session = sessionManager.GetSession(guid);
+            return session is null
+                ? Results.NotFound(new { error = "session not found" })
+                : Results.Json(MapWithIdentity(session, turnSummaryCache));
         });
 
         // The launch-time "fleet awareness" preamble for a session: its own identity plus the
@@ -859,28 +871,20 @@ internal static class ControlEndpoints
         // Returns instantly (no LLM call) so a phone shows it the moment the view opens.
         // text is null when nothing has been cached yet (mobile mode off, or first turn
         // not finished). The phone falls back to the on-demand /wingman/ask in that case.
-        app.MapGet("/sessions/{sid}/wingman/explain", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so this REST
+        // path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/wingman/explain", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
+            var command = new DirectorCommand { Verb = "wingman-explain", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            return Results.Json(new
+            return result.Status switch
             {
-                mobileMode = session.MobileMode,
-                text = session.CachedExplainText,
-                at = session.CachedExplainAt,
-                model = session.CachedExplainModel,
-                quickReplies = session.CachedQuickReplies,
-                headline = session.CachedExplainHeadline,
-                whatHappened = session.CachedExplainWhatHappened,
-                longDescription = session.CachedExplainLongDescription,
-                whatClaudeWants = session.CachedExplainWhatClaudeWants,
-                claudeVerbatim = session.CachedExplainClaudeVerbatim,
-                say = session.CachedExplainSay,
-            });
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<WingmanExplainResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "wingman-explain command failed"),
+            };
         });
 
         // Toggle mobile mode for a session. When turned on, kick off an immediate background
@@ -1016,25 +1020,22 @@ internal static class ControlEndpoints
         // Cockpit's session menu (#191) calls this because the repo lives on THIS Director's
         // machine - the browser cannot read the git config itself. 409 when the repo has no
         // GitHub origin (the menu shows the message verbatim).
-        app.MapGet("/sessions/{sid}/github-urls", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so this REST
+        // path and the Gateway stream down-channel are identical and cannot drift. A repo with no GitHub
+        // origin is a Conflict, mapped back to the route's 409. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/github-urls", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
+            var command = new DirectorCommand { Verb = "github-urls", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            FileLog.Write($"[ControlEndpoints] GET /sessions/{guid}/github-urls: repo={session.RepoPath}");
-            try
+            return result.Status switch
             {
-                var url = GitHubUrls.BuildNewIssueUrl(session.RepoPath);
-                return Results.Json(new { newIssueUrl = url });
-            }
-            catch (InvalidOperationException ex)
-            {
-                FileLog.Write($"[ControlEndpoints] github-urls FAILED: {ex.Message}");
-                return Results.Json(new { error = ex.Message }, statusCode: 409);
-            }
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<GithubUrlsResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.Json(new { error = result.Error }, statusCode: 409),
+                _ => Results.Problem(result.Error ?? "github-urls command failed"),
+            };
         });
 
         // Mobile view-links: serve a local file INLINE so a phone can tap a link and VIEW
@@ -1085,49 +1086,22 @@ internal static class ControlEndpoints
 
         // Phase 4b: observability into the wingman. Returns current color + reason,
         // a timestamped log of recent decisions, and the latest TurnSummary if any.
-        app.MapGet("/sessions/{sid}/wingman", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core (given the
+        // Director-local TurnSummaryCache via the command services) so this REST path and the Gateway stream
+        // down-channel are identical and cannot drift. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/wingman", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "wingman-view", SessionId = sid };
+            var services = new SessionCommandServices { TurnSummaryCache = turnSummaryCache };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var events = session.RecentWingmanEvents;
-            var latestSummary = turnSummaryCache?.GetForSession(session.Id).LastOrDefault();
-
-            return Results.Json(new WingmanViewDto
+            return result.Status switch
             {
-                SessionId = session.Id.ToString(),
-                Name = session.CustomName,
-                CurrentColor = session.StatusColor,
-                CurrentReason = session.LastStatusReason,
-                Since = events.Count > 0 ? events[0].At : (DateTime?)null,
-                Events = events.Select(e => new WingmanEventDto
-                {
-                    At = e.At,
-                    OldColor = e.OldColor,
-                    NewColor = e.NewColor,
-                    Reason = e.Reason,
-                    Llm = e.Llm,
-                }).ToList(),
-                Actions = session.RecentWingmanActions.Select(a => new WingmanActionDto
-                {
-                    At = a.At,
-                    Action = a.Action,
-                    Detail = a.Detail,
-                    Reason = a.Reason,
-                }).ToList(),
-                LatestTurnSummary = latestSummary,
-                Goal = session.WingmanGoal,
-                GoalSetAt = session.WingmanGoalSetAt,
-                GoalState = session.WingmanGoalState,
-                GoalReason = session.WingmanGoalReason,
-                GoalEvaluatedAt = session.WingmanGoalEvaluatedAt,
-                LastUserPrompt = session.LastUserPrompt,
-                LastUserPromptAt = session.LastUserPromptAt,
-            });
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<WingmanViewDto>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "wingman-view command failed"),
+            };
         });
 
         // Goal management: set (or clear) the session's stated goal. Setting a goal
@@ -1284,50 +1258,26 @@ internal static class ControlEndpoints
                 : Results.Json(MapWithIdentity(session, turnSummaryCache));
         });
 
-        app.MapGet("/sessions/{sid}/buffer", (string sid, int? lines, bool? raw, long? since) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so this REST
+        // path and the Gateway stream down-channel are identical and cannot drift. The route's query-string
+        // arguments (lines/raw/since) ride in the command payload as a BufferRequest. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/buffer", async (string sid, int? lines, bool? raw, long? since) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var buffer = session.Buffer;
-            if (buffer is null)
-                return Results.Json(new BufferResponse { SessionId = sid });
-
-            byte[] bytes;
-            long newCursor;
-            if (since is long pos && pos >= 0)
+            var command = new DirectorCommand
             {
-                var (data, np) = buffer.GetWrittenSince(pos);
-                bytes = data;
-                newCursor = np;
-            }
-            else
-            {
-                bytes = buffer.DumpAll();
-                newCursor = buffer.TotalBytesWritten;
-            }
-
-            string text;
-            if (raw == true)
-                text = Encoding.UTF8.GetString(bytes);
-            else
-            {
-                text = AnsiCleaner.Clean(bytes);
-                if (lines is int n && n > 0)
-                    text = AnsiCleaner.LastLines(text, n);
-            }
-
-            return Results.Json(new BufferResponse
-            {
+                Verb = "buffer",
                 SessionId = sid,
-                TotalBytes = buffer.TotalBytesWritten,
-                NewCursor = newCursor,
-                Text = text,
-            });
+                PayloadJson = SessionCommandExecutor.Serialize(new BufferRequest { Lines = lines, Raw = raw, Since = since }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<BufferResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "buffer command failed"),
+            };
         });
 
         // ===== HTML snapshot of the terminal grid =====
@@ -1336,28 +1286,20 @@ internal static class ControlEndpoints
         // terminal" tab needs the same treatment, otherwise CR-overwrites and
         // status-bar redraws stack as junk lines. We expose the per-session
         // parser snapshot here as styled HTML; the client just swaps innerHTML.
-        app.MapGet("/sessions/{sid}/buffer/html", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so this REST
+        // path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/buffer/html", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "buffer-html", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var (scrollbackHtml, gridHtml, scrollbackCount) = session.GetHtmlSnapshotSplit();
-            return Results.Json(new
+            return result.Status switch
             {
-                sessionId = sid,
-                totalBytes = session.Buffer?.TotalBytesWritten ?? 0,
-                scrollbackHtml,
-                gridHtml,
-                scrollbackCount,
-                // Backward-compat: existing callers (and integration tests) read
-                // .html as the concatenated stream. Keep this so a partial
-                // client update doesn't break.
-                html = scrollbackHtml + gridHtml,
-            });
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<BufferHtmlResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "buffer-html command failed"),
+            };
         });
 
         // (The agent-agnostic conversation history endpoint, GET /sessions/{sid}/history, is already
@@ -1381,61 +1323,20 @@ internal static class ControlEndpoints
             };
         });
 
-        app.MapGet("/sessions/{sid}/summary", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so this REST
+        // path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/summary", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "summary", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var dto = new SessionSummaryDto
+            return result.Status switch
             {
-                SessionId = sid,
-                DirectorId = directorId,
-                Agent = session.AgentKind.ToString(),
-                RepoPath = session.RepoPath,
-                ActivityState = session.ActivityState.ToString(),
-                CreatedAt = session.CreatedAt.UtcDateTime,
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<SessionSummaryDto>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "summary command failed"),
             };
-
-            if (string.IsNullOrEmpty(session.ClaudeSessionId))
-            {
-                dto.Status = "no_session_id";
-                dto.Error = "Session has not been linked to a Claude session id yet.";
-                return Results.Json(dto);
-            }
-
-            try
-            {
-                var jsonl = ClaudeSessionReader.GetJsonlPath(session.ClaudeSessionId, session.RepoPath);
-                if (!File.Exists(jsonl))
-                {
-                    dto.Status = "no_jsonl";
-                    dto.Error = $"JSONL file not found at {jsonl}";
-                    return Results.Json(dto);
-                }
-
-                var messages = StreamMessageParser.ParseFile(jsonl);
-                var summary = SummaryBuilder.Build(messages);
-                // Fold the structural fields we already filled into the freshly built one.
-                summary.SessionId = sid;
-                summary.DirectorId = directorId;
-                summary.Agent = dto.Agent;
-                summary.RepoPath = dto.RepoPath;
-                summary.ActivityState = dto.ActivityState;
-                summary.CreatedAt = dto.CreatedAt;
-                summary.Status = "ok";
-                return Results.Json(summary);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[ControlEndpoints] /summary FAILED: {ex.Message}");
-                dto.Status = "parse_error";
-                dto.Error = ex.Message;
-                return Results.Json(dto);
-            }
         });
 
         // ===== REST: Handover info (issue #1214) =====
@@ -1638,41 +1539,20 @@ internal static class ControlEndpoints
         // Two endpoints: GET returns whatever is in the cache (or status=not_cached),
         // POST regenerates and writes to cache. We never start a generation on GET
         // because GET should always be cheap and never trigger an API spend.
-        app.MapGet("/sessions/{sid}/recap", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core so this REST
+        // path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/recap", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "recap", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var cached = RecapCache.TryGet(guid);
-            var currentTurns = ComputeTurnCount(session);
-
-            if (cached is null)
+            return result.Status switch
             {
-                return Results.Json(new RecapResponse
-                {
-                    SessionId = sid,
-                    CurrentTurnCount = currentTurns,
-                    Status = "not_cached",
-                    Error = "No recap has been generated yet. POST to /sessions/{sid}/recap to create one.",
-                });
-            }
-
-            return Results.Json(new RecapResponse
-            {
-                SessionId = sid,
-                Recap = cached.Recap,
-                GeneratedAt = cached.GeneratedAt,
-                AtTurnCount = cached.AtTurnCount,
-                CurrentTurnCount = currentTurns,
-                IsStale = currentTurns > cached.AtTurnCount,
-                Model = cached.Model,
-                ElapsedMs = cached.ElapsedMs,
-                Status = "ok",
-            });
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<RecapResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "recap command failed"),
+            };
         });
 
         app.MapPost("/sessions/{sid}/recap", async (string sid, HttpContext ctx) =>
@@ -2058,16 +1938,22 @@ internal static class ControlEndpoints
         // Per-completed-turn structured summary produced by the SessionWingman.
         // Feeds the Agent View AND the voice mode's TTS (via summary.spokenText).
         // See docs/goals/GOAL_CC_DIRECTOR_SUPERVISOR.md section 4.
-        app.MapGet("/sessions/{sid}/turn-summaries", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core (given the
+        // Director-local TurnSummaryCache via the command services) so this REST path and the Gateway stream
+        // down-channel are identical and cannot drift. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/turn-summaries", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
+            var command = new DirectorCommand { Verb = "turn-summaries", SessionId = sid };
+            var services = new SessionCommandServices { TurnSummaryCache = turnSummaryCache };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, services);
 
-            if (sessionManager.GetSession(guid) is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            var list = turnSummaryCache?.GetForSession(guid).ToList() ?? new List<TurnSummary>();
-            return Results.Json(new TurnSummariesResponse { SessionId = sid, Summaries = list });
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<TurnSummariesResponse>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "turn-summaries command failed"),
+            };
         });
 
         // POST /sessions/{sid}/turn-summaries - generate a summary for the LATEST turn
@@ -3677,7 +3563,9 @@ internal static class ControlEndpoints
     /// Returns 0 if the session isn't linked or the file isn't there yet.
     /// Used by the recap endpoints to compute the IsStale flag.
     /// </summary>
-    private static int ComputeTurnCount(Session session)
+    // Gateway Cleanup Phase 0: internal so the shared SessionReadExecutor.Recap core (which the tunnel
+    // recap verb and the re-pointed GET /sessions/{sid}/recap route both call) reads the SAME turn count.
+    internal static int ComputeTurnCount(Session session)
     {
         if (string.IsNullOrEmpty(session.ClaudeSessionId)) return 0;
         try
