@@ -1,10 +1,16 @@
 # Mission Brief: CC Launcher on the Mac (remote launch and mutual updates)
 
-> **PARKED - DESIGN ONLY, NOT SCHEDULED** (owner decision, 2026-07-11). Implementation is on
-> hold. Work already produced before the stand-down is preserved on draft pull requests 1365
-> (Mac port), 1364 (installer), and 1367 (Director-side update safety) and their branches.
-> The open questions below are withdrawn and must be re-asked if the mission resumes.
+> **STATUS CORRECTION 2026-07-11 (late evening): the mission is ACTIVE again.** The earlier
+> mission-wide park was a relay scope error - the owner's instruction ("we're not implementing
+> this right now") referred only to the auto-update work stream, not the whole mission. The Mac
+> port (pull request 1365) and installer (pull request 1364) streams are resumed. Only the
+> mutual-update stream (pull request 1367) is parked, confirmed by the owner verbatim: "I didn't
+> park all launcher missions! I parked the auto-update, that's all I parked! We need the launcher
+> working, but no auto-update while sessions are running." (His condition - never update while
+> sessions are running - is exactly what decision 8 and the DirectorUpdateGuardian on the parked
+> branch already enforce.)
 >
+> The resume-gate list below remains the accurate map of what is left to prove:
 > **Resume gates** - what remained unproven at stand-down, in merge order:
 > 1. Pull request 1365 (Mac port): the Director-restart-over-the-stream proof leg needs the
 >    screen unlocked or the never-lock posture applied; everything else was proven live.
@@ -15,7 +21,7 @@
 > 4. Fleet-wide: the production Gateway must be updated to a build containing the launcher
 >    stream before remote commands work outside a local test Gateway.
 
-Status: parked. Originally an active mission. Written 2026-07-11 by the Architect session
+Status: active mission (auto-update stream on hold - see the status correction above). Written 2026-07-11 by the Architect session
 ("CC Launcher Mission - Architect", session 7b78e474, machine Sorens-Mac-mini). The Architect
 settles the design and coordinates; the worker sessions listed under "The work" own execution.
 
@@ -158,7 +164,7 @@ questions.
   screen. The Director-restart-over-the-stream proof needs the screen unlocked or the never-lock
   posture applied to this Mac mini.
 
-## Open questions (WITHDRAWN at stand-down; re-ask if the mission resumes)
+## Open questions (withdrawal reversed with the resume; question 2 re-asked, 3 and 4 pending)
 
 1. ANSWERED 2026-07-11 - restart policy. See decision 8 above.
 2. Which Mac builds are protected from remote restart (the Windows guard protects the main build
