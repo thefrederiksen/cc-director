@@ -11,6 +11,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using CcDirector.Avalonia.HostedAi;
 using CcDirector.Avalonia.Voice;
+using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Dictation;
 using CcDirector.Core.HostedAi;
@@ -218,13 +219,46 @@ public partial class FifoWindow : Window
         Advance();
     }
 
-    private void OnHoldClick(object? sender, RoutedEventArgs e)
+    private async void OnHoldClick(object? sender, RoutedEventArgs e)
     {
         if (_busy || _recording || _current is null) return;
-        SetStatus("Holding this session...", Yellow);
-        _current.OnHold = true; // parks it out of the rotation until taken off hold
-        FileLog.Write($"[FifoWindow] hold session={_current.Id}");
-        Advance();
+
+        // Snooze Length mission (Phase 3): snooze is Gateway-owned. Route the hold THROUGH the Gateway so
+        // it gets the Gateway-owned timer, instead of setting Session.OnHold in-process. The Gateway
+        // records the snooze-until AND forwards the hold back down to this Director (which sets OnHold),
+        // so OnHold is already set when we Advance - no optimistic local set.
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        if (host?.GatewayMonitor.Status != GatewayConnectionStatus.Verified || host.GatewayHold is null)
+        {
+            // No Gateway -> no snooze (owner rule, no-fallback). Do NOT advance, set NO local hold.
+            SetStatus("Connect to a Gateway to snooze.", Red);
+            return;
+        }
+
+        var sid = _current.Id;
+        _busy = true;                              // immediate feedback + block concurrent steering
+        SetStatus("Snoozing this session...", Yellow);
+        var ok = false;
+        try
+        {
+            // Async off the UI thread: the Gateway may be cross-machine over Tailscale, so this can be slow.
+            await host.GatewayHold.RecordHoldAsync(sid.ToString(), true);
+            FileLog.Write($"[FifoWindow] snoozed session={sid} via Gateway");
+            ok = true;
+        }
+        catch (Exception ex)
+        {
+            // Fail loud: name the error, do NOT advance, and set NO local OnHold (no divergence).
+            FileLog.Write($"[FifoWindow] snooze FAILED session={sid}: {ex.Message}");
+            SetStatus($"Snooze failed - {ex.Message}", Red);
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        // Only advance once the Gateway confirmed the hold (OnHold is now set on the session).
+        if (ok) Advance();
     }
 
     private void OnExitClick(object? sender, RoutedEventArgs e) => Close();

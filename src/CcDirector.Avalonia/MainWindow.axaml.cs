@@ -2337,14 +2337,38 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ToggleSessionHold(SessionViewModel vm)
+    private async void ToggleSessionHold(SessionViewModel vm)
     {
-        var newState = !vm.Session.OnHold;
-        FileLog.Write($"[MainWindow] ToggleSessionHold: session={vm.Session.Id}, onHold={newState}");
-        vm.Session.OnHold = newState;
-        ShowNotification(newState
-            ? $"{vm.DisplayName} put on hold"
-            : $"{vm.DisplayName} taken off hold");
+        // Snooze Length mission (Phase 3): snooze is Gateway-owned. Instead of setting Session.OnHold
+        // in-process (which gave no timer), drive the Gateway hold seam so this snooze gets the same
+        // Gateway-owned timer the phone and cockpit get. The Gateway records the snooze-until AND forwards
+        // the hold back DOWN to this Director, which sets OnHold - so we never set it locally here.
+        var target = !vm.Session.OnHold;
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+
+        // No Gateway -> no snooze (owner rule, no-fallback): require a VERIFIED connection, which proves
+        // BOTH legs the round-trip needs (Director->Gateway to record, Gateway->Director to forward back).
+        if (host?.GatewayMonitor.Status != GatewayConnectionStatus.Verified || host.GatewayHold is null)
+        {
+            ShowNotification("You need to be connected to a Gateway to use snooze.");
+            return;
+        }
+
+        // Immediate feedback (<100ms); the Gateway round-trip runs async off the UI thread - it is NOT
+        // always loopback (the Gateway may be on another machine over Tailscale), so it may be slow.
+        ShowNotification(target ? $"Snoozing {vm.DisplayName}..." : $"Waking {vm.DisplayName}...");
+        try
+        {
+            await host.GatewayHold.RecordHoldAsync(vm.Session.Id.ToString(), target);
+            FileLog.Write($"[MainWindow] ToggleSessionHold via Gateway: session={vm.Session.Id}, onHold={target}");
+            ShowNotification(target ? $"{vm.DisplayName} snoozed" : $"{vm.DisplayName} taken off snooze");
+        }
+        catch (Exception ex)
+        {
+            // Fail loud: no local OnHold set, so nothing diverges from the Gateway's truth.
+            FileLog.Write($"[MainWindow] ToggleSessionHold FAILED: session={vm.Session.Id}: {ex.Message}");
+            ShowNotification($"Could not snooze {vm.DisplayName} - {ex.Message}");
+        }
     }
 
     /// <summary>

@@ -185,6 +185,34 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.Equal("needsYou", returned.TriageBucket);
     }
 
+    [Fact]
+    public async Task A_dead_director_snooze_still_returns_to_needs_you_from_the_cached_roster()
+    {
+        // THE mission scenario: a session is snoozed, then its whole Director dies, and the snooze must
+        // still bring it back - the dead-man's switch. The timer lives on the Gateway, and the last-known
+        // roster (FleetRosterCache) keeps the session visible, so the fold's expiry overlay returns it to
+        // "needs you" on its own even though the Director is gone.
+        await SetDefaultMinutes(1);
+        var fake = await StartFakeAsync("s5", onHold: true); // held on the Director
+        await Register(fake);
+
+        // Prime the last-known-good roster while the Director is still alive.
+        var alive = await GetSession("s5");
+        Assert.True(alive.OnHold); // shown as snoozed while held (no expiry entry yet)
+
+        // Arm an already-expired snooze, then the Director DIES (its host stops).
+        _gw.SnoozeRegistry.Snooze("s5", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
+        await fake.DisposeAsync();
+        _fakes.Remove(fake);
+
+        // The Gateway can no longer reach the Director, but the cached roster still carries s5 and the
+        // expiry overlay returns it to "needs you" - the session was NOT lost by snoozing.
+        var returned = await GetSession("s5");
+        Assert.False(returned.OnHold);
+        Assert.Equal("needsYou", returned.TriageBucket);
+        Assert.True(returned.SnoozeExpired);
+    }
+
     // ---- helpers ----
 
     private async Task SetDefaultMinutes(int minutes)

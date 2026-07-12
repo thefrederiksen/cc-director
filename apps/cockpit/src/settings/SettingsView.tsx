@@ -4,6 +4,7 @@ import {
   getGatewaySettings,
   setAddressingMode,
   setAutostart,
+  setSnoozeDefaultMinutes,
   setTrainingCapture,
   type AddressingMode,
   type GatewaySettings,
@@ -114,6 +115,8 @@ function ThisMachineTab() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  // Snooze Length mission: a draft of the default-snooze-length input, synced from the loaded settings.
+  const [snoozeDraft, setSnoozeDraft] = useState("");
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -130,6 +133,11 @@ function ThisMachineTab() {
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
+
+  // Keep the snooze input in sync with the loaded/saved value.
+  useEffect(() => {
+    if (settings !== null) setSnoozeDraft(String(settings.snoozeDefaultMinutes));
+  }, [settings?.snoozeDefaultMinutes]);
 
   const chooseAddressing = async (mode: AddressingMode) => {
     if (settings === null || busy || mode === settings.addressingMode) return;
@@ -173,6 +181,26 @@ function ThisMachineTab() {
       const applied = await setTrainingCapture(enabled);
       setSettings({ ...settings, wingmanTrainingCapture: applied });
       setMsg(applied ? "Capturing wingman training data." : "Training capture turned off.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveSnooze = async () => {
+    if (settings === null || busy) return;
+    const minutes = Number(snoozeDraft);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 7 * 24 * 60) {
+      setMsg("Snooze length must be a whole number of minutes from 1 to 10080.");
+      return;
+    }
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      const applied = await setSnoozeDefaultMinutes(minutes);
+      setSettings({ ...settings, snoozeDefaultMinutes: applied });
+      setMsg(`Snooze length set to ${applied} minute${applied === 1 ? "" : "s"}. Applies to the next snooze, on every device.`);
     } catch (e) {
       setMsg(errText(e));
     } finally {
@@ -242,6 +270,35 @@ function ThisMachineTab() {
         {!settings.autostart.supported && (
           <p className="settings-hint settings-hint-inline">Not supported on this host (no tray).</p>
         )}
+      </section>
+
+      <section className="settings-card">
+        <h2 className="settings-h2">Snooze</h2>
+        <p className="settings-hint">
+          How long a snoozed session stays parked before it returns to &quot;needs you&quot; on its own -
+          a dead-man&apos;s switch, so a session you snooze can never be lost. One length for every snooze,
+          the same on every device. Read at snooze time, so a change applies to the next snooze.
+        </p>
+        <div className="settings-field">
+          <label htmlFor="settings-snooze">Default snooze length (minutes)</label>
+          <input
+            id="settings-snooze"
+            className="settings-input"
+            type="number"
+            min={1}
+            max={10080}
+            step={1}
+            value={snoozeDraft}
+            disabled={busy}
+            onChange={(e) => setSnoozeDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveSnooze();
+            }}
+          />
+          <button type="button" className="settings-btn" disabled={busy} onClick={() => void saveSnooze()}>
+            Save
+          </button>
+        </div>
       </section>
 
       <NotificationsCard />
