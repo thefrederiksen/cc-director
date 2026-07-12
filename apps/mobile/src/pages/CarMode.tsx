@@ -9,7 +9,7 @@ import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 // the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
 // ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
 // Architect exactly which page is live and what to look for after a deploy.
-const CAR_MODE_VERSION = "v4";
+const CAR_MODE_VERSION = "v5";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -31,6 +31,34 @@ export function CarMode() {
   // Car Mode is eyes-free with the phone in a pocket: keep the screen awake the whole time (mission
   // Phase 1: a standalone page under /m with a screen wake-lock).
   useScreenWakeLock();
+
+  // v5 - PIN THE SCREEN HEIGHT TO THE ACTUALLY-VISIBLE VIEWPORT. On the owner's Android PWA, CSS `dvh`
+  // proved unreliable: the fixed .car-screen stayed taller than the visible area, so the footer's primary
+  // button rendered BELOW the phone's bottom browser toolbar (cut off), in both idle and active states.
+  // window.visualViewport.height is the true visible height (it excludes the toolbars and the keyboard), so
+  // we publish it into the `--car-vh` CSS variable and the stylesheet sizes .car-screen to it (with a `dvh`
+  // fallback for the first paint / browsers without visualViewport). We refresh on every visualViewport
+  // resize/scroll and on orientation change, so it re-fits as the toolbars show and hide.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const root = document.documentElement;
+    const apply = () => {
+      const height = vv !== null ? vv.height : window.innerHeight;
+      root.style.setProperty("--car-vh", `${Math.round(height)}px`);
+    };
+    apply();
+    vv?.addEventListener("resize", apply);
+    vv?.addEventListener("scroll", apply);
+    window.addEventListener("resize", apply);
+    window.addEventListener("orientationchange", apply);
+    return () => {
+      vv?.removeEventListener("resize", apply);
+      vv?.removeEventListener("scroll", apply);
+      window.removeEventListener("resize", apply);
+      window.removeEventListener("orientationchange", apply);
+      root.style.removeProperty("--car-vh");
+    };
+  }, []);
 
   // The injected brain responder. Phase 2+: the real fleet brain. The stand-in (below) just echoes the
   // heard command so Phase 1's barge-in proof needs no server and no credits.

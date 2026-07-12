@@ -2584,11 +2584,7 @@ a.banner-btn {
   position: fixed;
   /* Anchor top/left/right ONLY - deliberately NOT `inset: 0`. `inset: 0` sets both top:0 AND bottom:0,
      which OVER-CONSTRAINS a fixed box: its height is then derived from top+bottom (the tall, toolbar-
-     hidden LAYOUT viewport) and the `height: 100dvh` below is IGNORED. The box then extends BELOW the
-     phone's bottom browser toolbar, pushing the footer's primary button off the visible area (the
-     "button cut off" bug, v4). Anchoring top-only lets `height: 100dvh` win, so the box tracks the
-     DYNAMIC visible viewport and the footer sits above the toolbar - the same reason .terminal-screen
-     uses dvh, not vh. */
+     hidden LAYOUT viewport) and the height below is IGNORED. Anchoring top-only lets the height win. */
   top: 0;
   left: 0;
   right: 0;
@@ -2596,10 +2592,29 @@ a.banner-btn {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
+  /* v5 - HEIGHT IS PINNED TO THE ACTUALLY-VISIBLE VIEWPORT via --car-vh (set from
+     window.visualViewport.height in CarMode.tsx). On the owner's Android PWA, `dvh` did NOT track the
+     visible height reliably, so the box stayed taller than the screen and the footer's primary button
+     rendered below the bottom browser toolbar (cut off), idle AND active. --car-vh is the real visible
+     height (excludes the toolbars/keyboard); the fallbacks (100dvh, then 100vh) cover the first paint
+     before the effect runs and browsers without visualViewport. */
   height: 100vh;
   height: 100dvh;
+  height: var(--car-vh, 100dvh);
   max-height: 100dvh;
+  max-height: var(--car-vh, 100dvh);
   overflow: hidden;
+}
+/* The pin only works if the column lays out as: header (natural) -> middle (absorbs + scrolls) -> footer
+   (natural, at the bottom, NEVER pushed off). The middle is the single give-point, so no matter how tall
+   the body content gets, the footer's buttons stay laid out at the bottom of the visible viewport. */
+.car-screen > .car-middle {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.car-screen > .car-bar,
+.car-screen > .car-foot {
+  flex: 0 0 auto;
 }
 .car-bar {
   flex: 0 0 auto;

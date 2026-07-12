@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
-import { playReadyCue, playYourTurnCue } from "../dictation/readyCue";
+import { playReadyCue, playYourTurnCue, startThinkingCue } from "../dictation/readyCue";
 import { detectEndPhrase } from "./controlPhrases";
 import { playClip, type PlayOutcome, type PlayClipHooks } from "./audioPlayback";
 import {
@@ -84,6 +84,12 @@ interface TurnMetrics {
   // ----- Mic-during-playback proof (v3: the mic is released while the reply plays, so these read healthy) -----
   micReacquiredDuringPlayback: boolean; // v3: always false (the mic is never re-opened during playback); kept to PROVE it
   speakingPollCount: number; // v3: always 0 (no rolling-"stop" transcription runs during the reply)
+  // ----- Real viewport measurements (v5: the button-cut-off diagnostic, read from HIS phone, not desktop) -----
+  viewportInnerHeight: number; // window.innerHeight at telemetry time (the layout viewport height)
+  visualViewportHeight: number; // window.visualViewport.height (the ACTUALLY visible height, minus toolbars) or 0
+  documentClientHeight: number; // document.documentElement.clientHeight (a third viewport read to cross-check)
+  footerBottom: number; // the .car-foot element's getBoundingClientRect().bottom (where the buttons end, in px)
+  footerVisible: boolean; // footerBottom <= the visible viewport height: TRUE only when the buttons are on-screen
   posted: boolean;
 }
 
@@ -225,6 +231,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // The playback "stop now" resolver: set while the reply clip is playing so the touch Stop button or End
   // Car Mode can end the play promise and unblock the speak loop.
   const playbackStopRef = useRef<(() => void) | null>(null);
+  // The "thinking" ambient cue's stopper (v5): set the instant the owner taps "Over and out" (in the tap
+  // gesture, so mobile lets it sound) and called the instant the reply audio starts, so the ~2s of silent
+  // work is filled with a gentle working tone. Also cleared when the mic returns to the owner or the
+  // session ends, so it can never leak past its turn.
+  const thinkingCueStopRef = useRef<(() => void) | null>(null);
 
   // The phase, read synchronously inside the loop/timer callbacks (not a React render). A ref mirror
   // avoids a stale closure so the machine always branches on the CURRENT phase.
@@ -239,6 +250,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       URL.revokeObjectURL(clipUrlRef.current);
       clipUrlRef.current = null;
     }
+  }, []);
+
+  // Stop the "thinking" ambient cue if it is playing (v5). Idempotent: safe to call whether or not a cue
+  // is running. Called when the reply audio starts, when the mic returns to the owner, and on teardown.
+  const stopThinkingCue = useCallback(() => {
+    thinkingCueStopRef.current?.();
+    thinkingCueStopRef.current = null;
   }, []);
 
   // Post one turn's merged timing record ONCE (guards double-post). Only a real brain turn (with a server
@@ -264,6 +282,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       playRejected: m.playRejected,
       micReacquiredDuringPlayback: m.micReacquiredDuringPlayback,
       speakingPollCount: m.speakingPollCount,
+      viewportInnerHeight: m.viewportInnerHeight,
+      visualViewportHeight: m.visualViewportHeight,
+      documentClientHeight: m.documentClientHeight,
+      footerBottom: m.footerBottom,
+      footerVisible: m.footerVisible,
       serverTotalMs: m.server.totalMs,
       modelCallCount: m.server.modelCallCount,
       modelMsTotal: m.server.modelMsTotal,
@@ -348,6 +371,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // Enter Listening: the microphone is the owner's again. Play the "your turn" cue, clear the on-screen
   // transcript for the fresh turn, and open a clean capture segment (a fresh getUserMedia stream).
   const enterListening = useCallback(async () => {
+    // The mic is the owner's again: make sure the "thinking" ambient cue is not still running (v5).
+    stopThinkingCue();
     setPhaseBoth("listening");
     setError(null);
     playYourTurnCue();
@@ -357,7 +382,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     setCaptureError(null);
     setCaptureState("listening");
     await restartCapture();
-  }, [restartCapture, setPhaseBoth]);
+  }, [restartCapture, setPhaseBoth, stopThinkingCue]);
 
   // Synthesize `text` through the one good Gateway voice and play the WHOLE reply with the microphone fully
   // RELEASED (v3): nothing touches getUserMedia while the reply plays, because re-opening the mic mid-
@@ -397,6 +422,9 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         // re-opens it here, which is the whole point of v3.
         const played = playBlob(url, {
           onPlayStarted: () => {
+            // The reply is now sounding: stop the gentle "thinking" ambient cue so it does not play under
+            // the reply (v5 - the ambient fills only the silent working gap, never overlaps the answer).
+            stopThinkingCue();
             if (metrics === null) return;
             const nowMs = performance.now();
             metrics.chunks = 1;
@@ -424,6 +452,27 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             // the /carmode/telemetry dashboard can PROVE the mic stayed released this turn.
             metrics.micReacquiredDuringPlayback = false;
             metrics.speakingPollCount = 0;
+            // v5: capture the REAL viewport numbers from THIS phone so the button-cut-off bug is proven from
+            // his device, not guessed from desktop. innerHeight (layout viewport), visualViewport.height (the
+            // ACTUALLY visible height minus browser toolbars), and documentElement.clientHeight are three
+            // independent reads; footerBottom is where the buttons actually end, and footerVisible is the
+            // bottom line: is that below or at the visible viewport bottom (buttons on-screen) or past it
+            // (cut off). Measured now, while the active footer with its buttons is on screen.
+            const vv = typeof window !== "undefined" ? window.visualViewport : null;
+            const innerH = typeof window !== "undefined" ? window.innerHeight : 0;
+            const clientH =
+              typeof document !== "undefined" ? document.documentElement.clientHeight : 0;
+            const visualH = vv !== null ? vv.height : 0;
+            const footEl =
+              typeof document !== "undefined" ? document.querySelector(".car-foot") : null;
+            const footBottom = footEl !== null ? footEl.getBoundingClientRect().bottom : 0;
+            const viewportH = visualH > 0 ? visualH : innerH;
+            metrics.viewportInnerHeight = innerH;
+            metrics.visualViewportHeight = visualH;
+            metrics.documentClientHeight = clientH;
+            metrics.footerBottom = footBottom;
+            // +1px tolerance for sub-pixel rounding. Only true when the footer's bottom edge is within view.
+            metrics.footerVisible = footBottom > 0 && viewportH > 0 ? footBottom <= viewportH + 1 : false;
             // Post the merged timing record now that the clip's whole lifecycle is known - including a
             // cut-off - so a truncated reply is VISIBLE at /carmode/telemetry (fire-and-forget).
             postTurnTelemetry(metrics);
@@ -448,15 +497,17 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         await enterListening();
       }
     },
-    [announceError, enterListening, playBlob, postTurnTelemetry, revokeClip, setPhaseBoth],
+    [announceError, enterListening, playBlob, postTurnTelemetry, revokeClip, setPhaseBoth, stopThinkingCue],
   );
 
   // Take the turn: the command (already stripped of "over and out") is answered by the brain and the reply
   // is spoken. Guards against double-entry so a touch tap and a pause probe cannot both fire one turn.
   const takeTurn = useCallback(
     async (command: string) => {
-      if (phaseRef.current !== "listening") return;
-      setPhaseBoth("thinking");
+      // v5: the screen is switched to Thinking SYNCHRONOUSLY in the endTurn tap handler (responsive-first),
+      // so by the time this runs the phase is already "thinking" - guard on that (not "listening") so the
+      // turn proceeds, while a second rapid tap is still a no-op (endTurn's own listening-guard blocks it).
+      if (phaseRef.current !== "thinking") return;
       // Stop AND release the microphone before Thinking + Speaking: no getUserMedia stays open while the
       // brain works and the reply plays (v3 - the mic must not touch the audio session during playback).
       const rec = recorderRef.current;
@@ -573,15 +624,24 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         playRejected: false,
         micReacquiredDuringPlayback: false,
         speakingPollCount: 0,
+        viewportInnerHeight: 0,
+        visualViewportHeight: 0,
+        documentClientHeight: 0,
+        footerBottom: 0,
+        footerVisible: false,
         posted: false,
       };
       void takeTurn(command);
     } catch (err) {
+      // The transcribe failed while we are already in Thinking (v5): silence the ambient cue and hand the
+      // microphone back to the owner so the screen does not stall on Thinking after a failure.
+      stopThinkingCue();
       const msg = gatewayErrorMessage(err);
       setCaptureError(msg);
       announceError(msg);
+      await enterListening();
     }
-  }, [announceError, takeTurn]);
+  }, [announceError, enterListening, stopThinkingCue, takeTurn]);
 
   // Touch controls (the app is fully usable by touch - this is the primary path in v3). "Over and out"
   // ends the turn by transcribing what was captured; "Stop" cuts the reply off instantly (the sole
@@ -590,11 +650,21 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     if (phaseRef.current !== "listening") return;
     // v4: fire the "my turn" acknowledgement cue SYNCHRONOUSLY as the FIRST thing on tap, before any of
     // the async end-of-turn work (mic snapshot -> WAV transcode -> transcribe round trip). That async
-    // work took ~2 seconds, so the cue used to lag the tap badly; firing it here gives an immediate
+    // work takes ~2 seconds, so the cue used to lag the tap badly; firing it here gives an immediate
     // (<150ms) audible "got it". Firing inside the tap gesture also guarantees mobile permits it to sound.
     playReadyCue();
+    // v5 (responsive-first): switch the SCREEN to Thinking SYNCHRONOUSLY too, so the orb/status change the
+    // instant he taps instead of sitting on Listening for the whole ~2s transcribe+brain+tts. This also
+    // makes the takeTurn guard (which now checks for "thinking") pass, and blocks a double-tap (a second
+    // endTurn sees phase != "listening" and no-ops).
+    setPhaseBoth("thinking");
+    setCaptureState("thinking");
+    // And fill the silent working gap with the gentle ambient droplet, started HERE inside the tap gesture
+    // so mobile lets its audio run; speakAndPlay stops it the instant the reply starts.
+    stopThinkingCue();
+    thinkingCueStopRef.current = startThinkingCue();
     void transcribeAndTake();
-  }, [transcribeAndTake]);
+  }, [setPhaseBoth, stopThinkingCue, transcribeAndTake]);
 
   const interrupt = useCallback(() => {
     if (phaseRef.current !== "speaking") return;
@@ -647,6 +717,8 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     // Unblock any in-flight playback so the speak loop unwinds instead of awaiting an ended event that will
     // never fire.
     playbackStopRef.current?.();
+    // Silence the "thinking" ambient cue if the session ends mid-turn (v5).
+    stopThinkingCue();
     if (keepWarmRef.current !== null) {
       clearInterval(keepWarmRef.current);
       keepWarmRef.current = null;
@@ -671,13 +743,14 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     setStarted(false);
     setCaptureState("not started");
     setPhaseBoth("idle");
-  }, [revokeClip, setPhaseBoth]);
+  }, [revokeClip, setPhaseBoth, stopThinkingCue]);
 
   // Tear everything down if the page unmounts mid-session (navigating away from Car Mode).
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
       playbackStopRef.current?.();
+      thinkingCueStopRef.current?.();
       if (keepWarmRef.current !== null) clearInterval(keepWarmRef.current);
       try {
         recorderRef.current?.dispose();
