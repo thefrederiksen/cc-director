@@ -77,17 +77,32 @@ public partial class GatewayConnectionPanel : UserControl
     // can never mint keys repeatedly (guardrail against the #1136 auto-mint key leak).
     private bool _enrollAttempted;
 
-    public GatewayConnectionPanel()
+    // Which step the panel opens on (spec section 6: the status-box click opens the panel on the resolver's
+    // current step). Connect (the default) starts the auto-scan; SignIn/Done skip the scan and read the
+    // signed-in state directly, because the handshake is already proven in those states.
+    private readonly GatewayPanelStep _initialStep;
+
+    public GatewayConnectionPanel() : this(GatewayPanelStep.Connect)
     {
+    }
+
+    public GatewayConnectionPanel(GatewayPanelStep initialStep)
+    {
+        _initialStep = initialStep;
         InitializeComponent();
-        FileLog.Write("[GatewayConnectionPanel] constructed");
+        FileLog.Write($"[GatewayConnectionPanel] constructed (initialStep={initialStep})");
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
-        // Automatic scan on show - there is no Detect button (decision 5).
-        StartScan();
+        // Open on the step the resolver pointed at (spec section 6). When the box already resolved to
+        // signed-in or done, the handshake is proven - go straight to the signed-in view rather than
+        // re-scanning from Step 1. Otherwise start the automatic scan (there is no Detect button, decision 5).
+        if (_initialStep is GatewayPanelStep.SignIn or GatewayPanelStep.Done)
+            _ = RefreshSignedInViewAsync();
+        else
+            StartScan();
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
