@@ -939,29 +939,32 @@ function PhraseTester({ phrase }: { phrase: string }) {
   useEffect(() => () => void stopTest(), [stopTest]);
 
   return (
-    <div className="settings-field" style={{ display: "block" }}>
-      <label>Test the phrase</label>
-      <p className="settings-hint">
-        Same detection Car Mode uses: it transcribes what you say about once a second and fires the instant
-        your words end with the phrase.
-      </p>
-      <div className="settings-actions">
-        <button type="button" className="settings-btn" onClick={() => (listening ? void stopTest() : void startTest())}>
-          {listening ? "Stop test" : "Test"}
-        </button>
-        <span className="settings-inline-msg">{status}</span>
-      </div>
+    <div className="carmode-tester">
+      <span className="carmode-tester-title">Test your phrase</span>
+      <span className="carmode-tester-sub">
+        Speak a command, then finish with your phrase. It uses the exact detection Car Mode uses and catches
+        the phrase in about a second.
+      </span>
+      <button
+        type="button"
+        className={"settings-btn primary carmode-test-btn" + (listening ? " listening" : "")}
+        onClick={() => (listening ? void stopTest() : void startTest())}
+      >
+        {listening ? "Listening - say your phrase, then Stop" : "Test the phrase"}
+      </button>
+      <div className="carmode-tester-status">{status}</div>
       {result && (
-        <div className="settings-msg">
-          DETECTED - fired {result.latencyMs} ms after you stopped speaking; command heard:{" "}
-          &quot;{result.command || "(none)"}&quot;
+        <div className="carmode-result">
+          <span className="carmode-result-badge">Heard it</span>
+          Fired {result.latencyMs} ms after you stopped speaking. Command heard: &quot;{result.command || "(none)"}&quot;
         </div>
       )}
       {log.length > 0 && (
-        <div style={{ marginTop: 8, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+        <div className="carmode-log">
           {log.map((e, i) => (
-            <div key={i} style={{ color: e.matched ? "#0a7d28" : "#666" }}>
-              {(e.atMs / 1000).toFixed(1)}s {e.transcribeMs}ms {e.matched ? "[MATCH]" : "[  -  ]"} &quot;{e.transcript}&quot;
+            <div key={i} className={"carmode-log-row" + (e.matched ? " match" : "")}>
+              {(e.atMs / 1000).toFixed(1)}s - {e.transcribeMs}ms - {e.matched ? "MATCH" : "listening"} - &quot;
+              {e.transcript}&quot;
             </div>
           ))}
         </div>
