@@ -34,6 +34,7 @@ public sealed class LauncherHost : IAsyncDisposable
     private readonly Func<Task> _requestShutdownAsync;
     private readonly DateTime _startedAt = DateTime.UtcNow;
     private readonly string _version;
+    private readonly string _userInterfaceState;
 
     private WebApplication? _app;
     private string? _token;
@@ -43,13 +44,19 @@ public sealed class LauncherHost : IAsyncDisposable
 
     public int Port => _port;
 
-    public LauncherHost(int port, LaunchService launchService, DirectorSupervisor directorSupervisor, Func<Task> requestShutdownAsync, string version = "0.0.0")
+    public LauncherHost(int port, LaunchService launchService, DirectorSupervisor directorSupervisor, Func<Task> requestShutdownAsync, string version = "0.0.0",
+        string userInterfaceState = "tray")
     {
         _port = port;
         _launchService = launchService ?? throw new ArgumentNullException(nameof(launchService));
         _directorSupervisor = directorSupervisor ?? throw new ArgumentNullException(nameof(directorSupervisor));
         _requestShutdownAsync = requestShutdownAsync ?? throw new ArgumentNullException(nameof(requestShutdownAsync));
         _version = version;
+        // "tray" (normal) or "degraded" (headless fallback: the user-interface platform could
+        // not initialize - e.g. locked screen at startup on macOS - so there is no menu-bar
+        // icon; everything else runs). Surfaced on /healthz and /status so the Gateway can
+        // see a launcher running without its icon.
+        _userInterfaceState = userInterfaceState;
     }
 
     /// <summary>Start Kestrel, load/generate the token, write the discovery file.</summary>
@@ -125,6 +132,7 @@ public sealed class LauncherHost : IAsyncDisposable
                 version = _version,
                 pid = Environment.ProcessId,
                 uptimeS,
+                userInterface = _userInterfaceState,
             }, JsonOpts);
         });
 
@@ -141,6 +149,7 @@ public sealed class LauncherHost : IAsyncDisposable
                     version = _version,
                     uptimeS,
                     startedAtUtc = _startedAt,
+                    userInterface = _userInterfaceState,
                 },
                 director = new
                 {
