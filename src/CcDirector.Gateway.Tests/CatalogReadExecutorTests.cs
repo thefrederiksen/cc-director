@@ -1,0 +1,192 @@
+using System.Text.Json;
+using CcDirector.ControlApi;
+using CcDirector.Core.Sessions;
+using CcDirector.Gateway.Contracts;
+using Xunit;
+
+namespace CcDirector.Gateway.Tests;
+
+/// <summary>
+/// Gateway Cleanup mission, Phase 0 (Worker R2): parity tests for the CATALOG / director-level READ verbs
+/// moved onto the tunnel command surface (<see cref="CatalogReadExecutor"/>). Each verb is exercised through
+/// the real <see cref="SessionCommandExecutor.DispatchAsync"/> path (verb map -&gt; area -&gt; core), the same
+/// way the re-pointed REST route and the Gateway stream down-channel reach it, so the core is asserted exactly
+/// once for both callers. Covers the per-session guards for <c>git-status</c> (invalid id -&gt; BadRequest,
+/// missing session -&gt; NotFound, existing session -&gt; a 200 snapshot), the always-200 director-level reads
+/// (<c>coaching-categories</c>, <c>claude-sessions</c>, <c>interrupted-list</c>, <c>fs-list</c> at the drive
+/// roots), and the one preserved try/catch (<c>fs-list</c> on a bad path -&gt; BadRequest). Reuses the
+/// buffer-only embedded-session harness from the sibling SessionCommandExecutor tests.
+/// </summary>
+[Collection("DirectorRoot")]
+public sealed class CatalogReadExecutorTests
+{
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    private static (SessionManager sm, Session session, ExecuteActionTestBackend backend) NewSession()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        var backend = new ExecuteActionTestBackend();
+        var session = sm.CreateEmbeddedSession(Path.GetTempPath(), null, backend);
+        return (sm, session, backend);
+    }
+
+    private static DirectorCommand Cmd(string verb, string sid = "", string payloadJson = "") =>
+        new() { CommandId = "r2", Verb = verb, SessionId = sid, PayloadJson = payloadJson };
+
+    // ---------- git-status ----------
+
+    [Fact]
+    public async Task DispatchAsync_GitStatus_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("git-status", "not-a-guid"));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_GitStatus_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("git-status", Guid.NewGuid().ToString()));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_GitStatus_ExistingSession_ReturnsOkWithSnapshot()
+    {
+        // The temp path is not a git repo, so GitSnapshotAsync owns the "not a repo" domain state and returns
+        // a snapshot - still a 200 (the source route had no guard/try-catch of its own). The result is Ok with
+        // a deserializable GitSnapshot body.
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("git-status", session.Id.ToString()));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("r2", result.CommandId);
+            var snap = JsonSerializer.Deserialize<GitSnapshot>(result.BodyJson ?? "", Json);
+            Assert.NotNull(snap);
+            Assert.False(string.IsNullOrEmpty(snap!.Status));
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- coaching-categories ----------
+
+    [Fact]
+    public async Task DispatchAsync_CoachingCategories_ReturnsOkWithAssistantAndCoach()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("coaching-categories"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var cats = JsonSerializer.Deserialize<List<CoachingCategoryDto>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(cats);
+            Assert.Equal(2, cats!.Count);
+            Assert.Contains(cats, c => c.Key == "assistant");
+            Assert.Contains(cats, c => c.Key == "coach");
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- claude-sessions ----------
+
+    [Fact]
+    public async Task DispatchAsync_ClaudeSessions_NoFilter_ReturnsOkWithList()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("claude-sessions"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dtos = JsonSerializer.Deserialize<List<ClaudeSessionDto>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dtos);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ClaudeSessions_RepoFilter_ReturnsOnlyMatchingRepo()
+    {
+        // A repo path that matches nothing on this machine yields an empty (but valid) list - the ?repo=
+        // filter rides in the payload, exactly as the route's query-string argument did.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var payload = JsonSerializer.Serialize(new ClaudeSessionsRequest { Repo = @"Z:\no\such\repo\r2-parity" }, Json);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("claude-sessions", payloadJson: payload));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dtos = JsonSerializer.Deserialize<List<ClaudeSessionDto>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dtos);
+            Assert.Empty(dtos!);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- interrupted-list ----------
+
+    [Fact]
+    public async Task DispatchAsync_InterruptedList_ReturnsOkWithList()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("interrupted-list"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var pending = JsonSerializer.Deserialize<List<DirectorCrashJournalData>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(pending);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- fs-list ----------
+
+    [Fact]
+    public async Task DispatchAsync_FsList_NullPath_ReturnsDriveRoots()
+    {
+        // A null/absent path lists the drive roots: CurrentPath is null and every entry is a drive.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("fs-list"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var listing = JsonSerializer.Deserialize<DirectoryListingDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(listing);
+            Assert.Null(listing!.CurrentPath);
+            Assert.NotEmpty(listing.Entries);
+            Assert.All(listing.Entries, e => Assert.True(e.IsDrive));
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_FsList_MissingDirectory_ReturnsBadRequest()
+    {
+        // The source route wrapped ListDirectory in a try/catch that turned a missing directory into a 400;
+        // that preserved try/catch surfaces here as a BadRequest with the message.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var payload = JsonSerializer.Serialize(new FsListRequest { Path = @"Z:\no\such\directory\r2-parity" }, Json);
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("fs-list", payloadJson: payload));
+
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.False(string.IsNullOrEmpty(result.Error));
+        }
+        finally { sm.Dispose(); }
+    }
+}

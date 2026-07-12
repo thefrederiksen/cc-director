@@ -1829,21 +1829,21 @@ internal static class ControlEndpoints
         // (its own ten-second cache), so the Cockpit's Source Control tab can list what is changed and insert
         // a path into the composer. The enrichment is additive-only, so the existing Wingman consumer of
         // GitSnapshotAsync is untouched.
-        var gitStatusProvider = new Core.Git.GitStatusProvider();
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route and leaves the core reached only over the tunnel.
         app.MapGet("/sessions/{sid}/git", async (string sid, HttpContext ctx) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null) return Results.NotFound(new { error = "session not found" });
-            var snap = await WingmanService.GitSnapshotAsync(session.RepoPath, ctx.RequestAborted);
-            if (snap.Status == "ok")
+            var command = new DirectorCommand { Verb = "git-status", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ctx.RequestAborted);
+
+            return result.Status switch
             {
-                var files = await gitStatusProvider.GetStatusAsync(session.RepoPath);
-                if (files.Success)
-                    Core.Git.GitChangeMapper.Enrich(snap, files);
-            }
-            return Results.Json(snap);
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<GitSnapshot>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "git-status command failed"),
+            };
         });
 
         // ===== Git WRITE actions (mirror the desktop Source Control view) =====
@@ -2814,88 +2814,39 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Coaching quick-launch categories (Assistant / Coach cards) =====
-        app.MapGet("/coaching/categories", () =>
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route.
+        app.MapGet("/coaching/categories", async () =>
         {
-            FileLog.Write("[ControlEndpoints] GET /coaching/categories");
-            var cats = new List<CoachingCategoryDto>
+            var command = new DirectorCommand { Verb = "coaching-categories" };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
             {
-                new()
-                {
-                    Key = "assistant",
-                    Label = "Assistant",
-                    Description = "Tasks, contacts, daily briefing",
-                    Path = CcStorage.CoachingCategory("assistant"),
-                },
-                new()
-                {
-                    Key = "coach",
-                    Label = "Coach",
-                    Description = "Life coaching across all domains",
-                    Path = CcStorage.CoachingCategory("coach"),
-                },
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<List<CoachingCategoryDto>>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "coaching-categories command failed"),
             };
-            return Results.Json(cats);
         });
 
         // ===== REST: Resumable Claude Code sessions (Resume Session tab) =====
-        app.MapGet("/claude-sessions", (string? repo) =>
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route. The ?repo= filter rides in the command payload as a ClaudeSessionsRequest.
+        app.MapGet("/claude-sessions", async (string? repo) =>
         {
-            FileLog.Write($"[ControlEndpoints] GET /claude-sessions: repo={repo}");
-
-            var claudeMeta = new Dictionary<string, ClaudeSessionMetadata>(StringComparer.Ordinal);
-            foreach (var cm in ClaudeSessionReader.ScanAllProjects())
-                claudeMeta.TryAdd(cm.SessionId, cm);
-
-            var history = new SessionHistoryStore().LoadAll();
-            var dtos = new List<ClaudeSessionDto>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-
-            // History entries first (they carry custom name/color), enriched with Claude metadata.
-            foreach (var entry in history)
+            var command = new DirectorCommand
             {
-                if (string.IsNullOrEmpty(entry.ClaudeSessionId) || !seen.Add(entry.ClaudeSessionId))
-                    continue;
-                claudeMeta.TryGetValue(entry.ClaudeSessionId, out var meta);
-                dtos.Add(new ClaudeSessionDto
-                {
-                    ClaudeSessionId = entry.ClaudeSessionId,
-                    RepoPath = entry.RepoPath,
-                    ProjectName = ProjectNameOf(entry.RepoPath),
-                    CustomName = entry.CustomName,
-                    CustomColor = entry.CustomColor,
-                    MessageCount = meta?.MessageCount ?? 0,
-                    Summary = meta?.Summary ?? meta?.FirstPrompt ?? entry.FirstPromptSnippet,
-                    LastUsedUtc = entry.LastUsedAt == default ? meta?.Modified : entry.LastUsedAt.UtcDateTime,
-                });
-            }
+                Verb = "claude-sessions",
+                PayloadJson = SessionCommandExecutor.Serialize(new ClaudeSessionsRequest { Repo = repo }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            // Then any Claude sessions not tracked by a workspace history entry.
-            foreach (var meta in claudeMeta.Values)
+            return result.Status switch
             {
-                if (string.IsNullOrEmpty(meta.SessionId) || !seen.Add(meta.SessionId))
-                    continue;
-                dtos.Add(new ClaudeSessionDto
-                {
-                    ClaudeSessionId = meta.SessionId,
-                    RepoPath = meta.ProjectPath ?? string.Empty,
-                    ProjectName = ProjectNameOf(meta.ProjectPath ?? string.Empty),
-                    MessageCount = meta.MessageCount,
-                    Summary = meta.Summary ?? meta.FirstPrompt,
-                    LastUsedUtc = meta.Modified == DateTime.MinValue ? null : meta.Modified,
-                });
-            }
-
-            if (!string.IsNullOrWhiteSpace(repo))
-            {
-                var wanted = NormalizeRepoPath(repo);
-                dtos = dtos.Where(d => !string.IsNullOrEmpty(d.RepoPath)
-                                       && NormalizeRepoPath(d.RepoPath) == wanted).ToList();
-            }
-
-            var ordered = dtos
-                .OrderByDescending(d => d.LastUsedUtc ?? DateTime.MinValue)
-                .ToList();
-            return Results.Json(ordered);
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<List<ClaudeSessionDto>>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "claude-sessions command failed"),
+            };
         });
 
         // ===== REST: Handover documents (Handovers tab) =====
@@ -2987,18 +2938,25 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Remote folder browser (Browse... button) =====
-        app.MapGet("/fs/list", (string? path) =>
+        // Gateway Cleanup Phase 0 (Worker R2): the list-directory read runs through the shared
+        // CatalogReadExecutor core so this REST path and the Gateway stream down-channel are identical and
+        // cannot drift. Phase 1 deletes this route. The ?path= argument rides in the command payload as an
+        // FsListRequest; the core preserves the source route's try/catch, so a bad path is still a 400.
+        app.MapGet("/fs/list", async (string? path) =>
         {
-            FileLog.Write($"[ControlEndpoints] GET /fs/list: path={path}");
-            try
+            var command = new DirectorCommand
             {
-                return Results.Json(ListDirectory(path));
-            }
-            catch (Exception ex)
+                Verb = "fs-list",
+                PayloadJson = SessionCommandExecutor.Serialize(new FsListRequest { Path = path }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
             {
-                FileLog.Write($"[ControlEndpoints] GET /fs/list FAILED: {ex.Message}");
-                return Results.BadRequest(new { error = ex.Message });
-            }
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<DirectoryListingDto>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "fs-list command failed"),
+            };
         });
 
         // ===== REST: Create a session =====
@@ -3142,10 +3100,19 @@ internal static class ControlEndpoints
         // This machine's claimed dirty crash journals - Directors that died abnormally here,
         // with their recoverable session rosters. The Gateway aggregates these across the fleet
         // for the Cockpit's Interrupted sessions list.
-        app.MapGet("/interrupted", () =>
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route.
+        app.MapGet("/interrupted", async () =>
         {
-            var pending = Core.Sessions.DirectorCrashJournal.ListPendingRecoveries();
-            return Results.Json(pending);
+            var command = new DirectorCommand { Verb = "interrupted-list" };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<List<Core.Sessions.DirectorCrashJournalData>>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "interrupted-list command failed"),
+            };
         });
 
         // Dismiss one claimed dirty journal once its sessions are recovered or no longer wanted.
@@ -3249,7 +3216,9 @@ internal static class ControlEndpoints
     }
 
     /// <summary>Folder name of a repo path, for display fallback. Empty path -> "Unknown Project".</summary>
-    private static string ProjectNameOf(string repoPath)
+    // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's claude-sessions core
+    // (lifted verbatim from GET /claude-sessions) calls the SAME helper - no drift, no duplication.
+    internal static string ProjectNameOf(string repoPath)
     {
         if (string.IsNullOrEmpty(repoPath))
             return "Unknown Project";
@@ -3270,7 +3239,9 @@ internal static class ControlEndpoints
     /// case-insensitive). Callers must filter null/empty first; Path.GetFullPath throws
     /// only on empty or embedded-NUL input, which the global error envelope surfaces loudly.
     /// </summary>
-    private static string NormalizeRepoPath(string path)
+    // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's claude-sessions core
+    // (lifted verbatim from GET /claude-sessions) calls the SAME helper - no drift, no duplication.
+    internal static string NormalizeRepoPath(string path)
     {
         return Path.GetFullPath(path).TrimEnd('\\', '/').ToLowerInvariant();
     }
@@ -3279,7 +3250,9 @@ internal static class ControlEndpoints
     /// List sub-directories of <paramref name="path"/> for the remote folder browser. A null or
     /// empty path returns the drive roots. Solo-tailnet: no path sandboxing (see remote-experience-plan.md).
     /// </summary>
-    private static DirectoryListingDto ListDirectory(string? path)
+    // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's fs-list core (the
+    // list-directory read, lifted from GET /fs/list) calls the SAME helper - no drift, no duplication.
+    internal static DirectoryListingDto ListDirectory(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
