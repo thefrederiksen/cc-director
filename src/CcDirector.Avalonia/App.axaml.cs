@@ -321,6 +321,7 @@ public partial class App : Application
                 // stages and applies at the next restart. All failures only log. Re-reads the config each
                 // cycle so toggling autoUpdate.enabled / intervalHours takes effect without a restart.
                 var layout = CcDirector.Setup.Engine.InstallLayout.Default();
+                var launcherRescuer = new CcDirector.Setup.Engine.LauncherRescuer(layout);
                 while (true)
                 {
                     var cfg = CcDirector.Setup.Engine.AutoUpdateConfig.Load(layout);
@@ -331,6 +332,22 @@ public partial class App : Application
                             await Updater.CheckAndStageAsync();
                             var toolResult = await new CcDirector.Setup.Engine.ToolUpdater(layout).RefreshAsync();
                             FileLog.Write($"[App] tool auto-update: updated={toolResult.Updated}, failed={toolResult.Failed}");
+
+                            // The Director's side of the mutual-update pact (the CC Launcher
+                            // mission): rescue a dead or missing launcher. Skipped whenever a
+                            // Director update is staged - a machine never updates both binaries
+                            // in the same pass, so the launcher waits for a cycle in which the
+                            // Director itself is not about to change.
+                            if (string.IsNullOrEmpty(CcDirector.Core.Update.UpdaterState.Load().StagedVersion))
+                            {
+                                var rescue = await launcherRescuer.CheckAndRescueAsync();
+                                if (rescue.Outcome != CcDirector.Setup.Engine.LauncherRescueOutcome.Healthy)
+                                    FileLog.Write($"[App] launcher rescue: {rescue.Outcome} - {rescue.Message}");
+                            }
+                            else
+                            {
+                                FileLog.Write("[App] launcher rescue skipped: a Director update is staged (one binary per pass).");
+                            }
                         }
                         catch (Exception ex)
                         {
