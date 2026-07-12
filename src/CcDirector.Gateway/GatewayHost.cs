@@ -60,6 +60,14 @@ public sealed class GatewayHost : IAsyncDisposable
     public Stats.GatewayInputStatsAggregator InputStats { get; }
 
     /// <summary>
+    /// The durable fleet CONCURRENCY record (how many sessions run at once, and how many are actively
+    /// working at once) that the private Gateway dashboard and the agent API read. Fed from the same
+    /// assembled /sessions roster as <see cref="InputStats"/>, so it is fleet-wide with no per-Director
+    /// instrumentation - a session count is visible for every session on every machine, new build or old.
+    /// </summary>
+    public Stats.GatewaySessionConcurrencyStats SessionConcurrency { get; }
+
+    /// <summary>
     /// Issue #1215 (Cockpit plan phase 6): the last-known-good roster cache. The <c>/sessions</c>
     /// aggregation uses it so a single failed Director poll no longer drops that Director's sessions -
     /// they are served stale (Wobbly) through a short grace window and only dropped (Offline) once the
@@ -368,6 +376,7 @@ public sealed class GatewayHost : IAsyncDisposable
         Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
         InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
+        SessionConcurrency = new Stats.GatewaySessionConcurrencyStats();
         RosterCache = new Discovery.FleetRosterCache();
         // Issue #1215: when a Director is unregistered or evicted from the registry, forget its cached
         // roster too so the cache does not grow without bound; a re-registering Director starts clean.
@@ -909,6 +918,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle Stats: the hub (constructed per-invocation by SignalR) folds each pushed session's
         // tally into this one aggregator instance, which the /stats dashboard reads.
         builder.Services.AddSingleton(InputStats);
+        builder.Services.AddSingleton(SessionConcurrency);
         builder.Services.AddSingleton(Registry);
         // launcher-persistent-join: the LauncherHub (constructed per-invocation by SignalR) and
         // SendLauncherCommandAsync share this one connection registry.
@@ -1118,7 +1128,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // DevThrottle Stats: feed the input-tally aggregator from the assembled /sessions roster, so
             // "Your Throttle" is populated whether stream mode is on or off (the DirectorHub push fold only
             // runs in stream mode, which is off in production).
-            inputStats: InputStats);
+            inputStats: InputStats,
+            // DevThrottle Stats: record fleet concurrency (live + actively-working session counts) from the
+            // same assembled roster, so the peak is captured fleet-wide regardless of stream mode.
+            concurrency: SessionConcurrency);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1391,7 +1404,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // DevThrottle Stats: the always-available private dashboard (/stats) and its JSON (/stats/data).
         // A self-contained embedded page, so it works even on a plain dev build with no React wwwroot.
         // Mapped before the mobile/cockpit catch-alls so the explicit routes win.
-        Stats.StatsPageEndpoint.Map(_app, InputStats);
+        Stats.StatsPageEndpoint.Map(_app, InputStats, SessionConcurrency);
 
         Mobile.MobileApp.Map(_app, Token);
 

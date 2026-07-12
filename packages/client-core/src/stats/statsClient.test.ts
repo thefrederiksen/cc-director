@@ -5,7 +5,7 @@ import { summarizeThrottle, formatShare, type ThrottleData } from "./statsClient
 // exercised through the app; here we lock the honest share arithmetic that both shells render.
 
 function data(buckets: ThrottleData["buckets"]): ThrottleData {
-  return { generatedAtUtc: "2026-07-11T00:00:00Z", buckets, notCaptured: [] };
+  return { generatedAtUtc: "2026-07-11T00:00:00Z", buckets, concurrency: null, notCaptured: [] };
 }
 
 describe("summarizeThrottle", () => {

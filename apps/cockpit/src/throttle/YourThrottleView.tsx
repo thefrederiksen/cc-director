@@ -87,6 +87,40 @@ export function YourThrottleView() {
         </div>
       )}
 
+      {data !== null && data.concurrency !== null && (
+        <div className="thr-section">
+          <h2>Fleet concurrency</h2>
+          <p className="thr-hint">
+            How many sessions run at once across every machine. Loaded/running is the parallel capacity in
+            flight; actively working is the subset whose agent is processing a turn this instant.
+          </p>
+          <table className="thr-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th className="thr-num">Now</th>
+                <th className="thr-num">This week</th>
+                <th className="thr-num">All-time</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Loaded / running</td>
+                <td className="thr-num">{data.concurrency.live.current}</td>
+                <td className="thr-num">{data.concurrency.live.weeklyMax}</td>
+                <td className="thr-num">{data.concurrency.live.allTimeMax}</td>
+              </tr>
+              <tr>
+                <td>Actively working</td>
+                <td className="thr-num">{data.concurrency.working.current}</td>
+                <td className="thr-num">{data.concurrency.working.weeklyMax}</td>
+                <td className="thr-num">{data.concurrency.working.allTimeMax}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {summary !== null && summary.hasData && (
         <>
           <div className="thr-cards">

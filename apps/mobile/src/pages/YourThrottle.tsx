@@ -74,6 +74,24 @@ export function YourThrottle() {
         </div>
       )}
 
+      {data !== null && data.concurrency !== null && (
+        <section className="thr-list" aria-label="Fleet concurrency">
+          <div className="thr-list-title">Fleet concurrency</div>
+          <div className="thr-row">
+            <span className="thr-row-label">Loaded / running</span>
+            <span className="thr-row-value">
+              {data.concurrency.live.current} now, {data.concurrency.live.allTimeMax} peak
+            </span>
+          </div>
+          <div className="thr-row">
+            <span className="thr-row-label">Actively working</span>
+            <span className="thr-row-value">
+              {data.concurrency.working.current} now, {data.concurrency.working.allTimeMax} peak
+            </span>
+          </div>
+        </section>
+      )}
+
       {summary !== null && summary.hasData && (
         <>
           <section className="thr-cards" aria-label="Headline shares">

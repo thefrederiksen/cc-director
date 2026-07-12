@@ -78,6 +78,12 @@
   font-weight: 600;
   margin: 0 0 10px;
 }
+.thr-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 10px;
+  max-width: 600px;
+}
 .thr-table {
   width: 100%;
   border-collapse: collapse;
