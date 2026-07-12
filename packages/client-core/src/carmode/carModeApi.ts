@@ -125,6 +125,7 @@ export async function carModeTurn(text: string, signal?: AbortSignal): Promise<C
 export interface CarModeTelemetryPost {
   turnId: string;
   pauseToTranscribeMs: number;
+  transcodeMs: number;
   brainMs: number;
   ttsMs: number;
   firstAudioMs: number;

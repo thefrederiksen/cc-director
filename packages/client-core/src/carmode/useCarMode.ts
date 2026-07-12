@@ -56,7 +56,8 @@ export interface CarModeReply {
 interface TurnMetrics {
   turnId: string;
   pauseDetectedAt: number; // performance.now() when the ending pause was detected / "over and out" tapped
-  pauseToTranscribeMs: number; // that pause to the command transcript in hand
+  pauseToTranscribeMs: number; // that pause to the command transcript in hand (transcode + network + server)
+  transcodeMs: number; // the client-side WebM/Opus -> 16k mono WAV transcode alone (phone CPU)
   commandChars: number;
   replyChars: number;
   brainMs: number; // POST /carmode/turn round trip as the browser saw it
@@ -235,6 +236,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     void postCarModeTelemetry({
       turnId: m.turnId,
       pauseToTranscribeMs: m.pauseToTranscribeMs,
+      transcodeMs: m.transcodeMs,
       brainMs: m.brainMs,
       ttsMs: m.ttsMs,
       firstAudioMs: m.firstAudioMs,
@@ -498,7 +500,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
           return;
         }
         if (!force) setCaptureState("pause - transcribing");
+        // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network
+        // + server), so a real phone turn shows where the pause-to-transcript time actually goes.
+        const transcodeStart = performance.now();
         const { wav } = await blobToWav16kMono(clip);
+        const transcodeMs = performance.now() - transcodeStart;
         const transcript = (await transcribeCarModeAudio(wav)).trim();
         const pauseToTranscribeMs = performance.now() - pauseDetectedAt;
         setLastHeard(transcript);
@@ -515,6 +521,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             turnId: "",
             pauseDetectedAt,
             pauseToTranscribeMs,
+            transcodeMs,
             commandChars: command.trim().length,
             replyChars: 0,
             brainMs: 0,

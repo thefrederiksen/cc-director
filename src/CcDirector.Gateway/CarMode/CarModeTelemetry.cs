@@ -64,9 +64,13 @@ public sealed record CarModeTelemetryRecord
 
     // ----- Client stamps (milliseconds), measured in the browser turn-taking machine -----
 
-    /// <summary>Pause detected (or "over and out" tapped) to the command transcript in hand: the Gateway
-    ///  transcription round trip for the command.</summary>
+    /// <summary>Pause detected (or "over and out" tapped) to the command transcript in hand: the whole
+    ///  command path (client transcode + network + server transcribe).</summary>
     public double PauseToTranscribeMs { get; init; }
+
+    /// <summary>The client-side WebM/Opus to 16k mono WAV transcode alone (phone CPU), so the transcribe
+    ///  round trip (network + server) is <see cref="PauseToTranscribeMs"/> minus this.</summary>
+    public double TranscodeMs { get; init; }
 
     /// <summary>The brain round trip as the browser saw it: POST /carmode/turn request to response, network
     ///  included (so it is >= the server TotalMs by the network cost).</summary>

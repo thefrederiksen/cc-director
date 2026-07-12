@@ -101,6 +101,7 @@ internal static class CarModeEndpoint
                 DeviceHash = CarModeDeviceHash.Of(ExtractCallerCredential(ctx)),
                 GatewayVersion = AppVersion.Full,
                 PauseToTranscribeMs = req.PauseToTranscribeMs,
+                TranscodeMs = req.TranscodeMs,
                 BrainMs = req.BrainMs,
                 TtsMs = req.TtsMs,
                 FirstAudioMs = req.FirstAudioMs,
@@ -166,6 +167,7 @@ public sealed class CarModeTelemetryPost
 {
     public string TurnId { get; set; } = "";
     public double PauseToTranscribeMs { get; set; }
+    public double TranscodeMs { get; set; }
     public double BrainMs { get; set; }
     public double TtsMs { get; set; }
     public double FirstAudioMs { get; set; }
