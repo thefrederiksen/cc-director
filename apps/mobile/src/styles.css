@@ -258,6 +258,23 @@ a.banner-btn {
   color: #cbb892;
 }
 
+/* Snooze Length mission: a distinct amber "Snooze ended" badge on a card that just returned from an
+   expired snooze on its own - reads as "go see why it went quiet", not a plain needs-you. */
+.row-snooze-ended {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: rgba(217, 145, 32, 0.16);
+  border: 1px solid rgba(217, 145, 32, 0.55);
+  color: #d99120;
+}
+
 /* Issue #838: the dot is top-aligned at the start of the FIRST name line (align-items:
    flex-start) so a name that wraps to several lines keeps the dot beside its first line. */
 .row-link {

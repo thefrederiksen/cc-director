@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Net;
 using System.Text.Json;
 using CcDirector.Core.Utilities;
@@ -30,6 +31,14 @@ namespace CcDirector.Gateway.Push;
 ///   - The FALLING edge (the count has read zero for <see cref="ClearConfirmations"/> polls in a row)
 ///     pushes a single zero so the dot CLEARS even while the phone app is closed - the service worker
 ///     closes its notification on a zero payload.
+///   - A newly-EXPIRED snooze (Snooze Length mission): when a session RETURNS from an expired snooze
+///     (<see cref="SessionDto.SnoozeExpired"/>) it is genuinely new, actionable news, so it is ANNOUNCED
+///     ONCE with distinct copy that is ALLOWED to buzz even if the dot is already up. Crucially, the
+///     announcement is keyed to a session ENTERING the expired set that we have not yet announced, NOT to
+///     "any expired snooze is present" - a dead-Director expired snooze lingers in "needs you" forever, so
+///     buzzing on its mere presence would re-buzz every poll. Once announced it is remembered
+///     (<see cref="DotState.Announced"/>) and folds into the silent dot/heartbeat, never buzzing again
+///     while it lingers.
 /// A change from one non-zero count to another (2 -> 3 -> 4) is NOT pushed between heartbeats: the dot
 /// is already there. Keeping the volume this low is what stops the constant pinging, and in particular
 /// keeps the silent zero-clear push (a push that shows no notification, which browsers budget under the
@@ -65,7 +74,7 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
     public const int HeartbeatPolls = 8;
 
     private readonly PushSubscriptionStore _store;
-    private readonly Func<CancellationToken, Task<int>> _getNeedsYouCount;
+    private readonly Func<CancellationToken, Task<NeedsYouSnapshot>> _getSnapshot;
     private readonly IWebPushSender _sender;
 
     private System.Threading.Timer? _timer;
@@ -75,11 +84,11 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
 
     public WebPushNeedsYouNotifier(
         PushSubscriptionStore store,
-        Func<CancellationToken, Task<int>> getNeedsYouCount,
+        Func<CancellationToken, Task<NeedsYouSnapshot>> getSnapshot,
         IWebPushSender sender)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
-        _getNeedsYouCount = getNeedsYouCount ?? throw new ArgumentNullException(nameof(getNeedsYouCount));
+        _getSnapshot = getSnapshot ?? throw new ArgumentNullException(nameof(getSnapshot));
         _sender = sender ?? throw new ArgumentNullException(nameof(sender));
     }
 
@@ -102,55 +111,90 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
     }
 
     /// <summary>
+    /// The count of sessions that "need you" plus the ids of those that just returned from an expired
+    /// snooze (a subset of the needs-you set). The notifier reads this once per poll from the same
+    /// aggregated roster every client sees.
+    /// </summary>
+    public readonly record struct NeedsYouSnapshot(int Count, IReadOnlyCollection<string> ExpiredNeedsYouIds);
+
+    /// <summary>
     /// Immutable decision state for the app-icon dot: whether we have told the phone a dot is present,
     /// how many consecutive zero-count polls we have seen while it is present (the falling-edge debounce
-    /// counter), and how many polls have passed since we last pushed while it is present (the heartbeat
-    /// counter that brings a phone-cleared dot back).
+    /// counter), how many polls have passed since we last pushed while it is present (the heartbeat
+    /// counter that brings a phone-cleared dot back), and the set of returned-from-snooze session ids we
+    /// have ALREADY announced (so each is buzzed exactly once and a lingering expired snooze never
+    /// re-buzzes).
     /// </summary>
-    public readonly record struct DotState(bool DotShowing, int ZeroStreak, int PollsSincePush)
+    public readonly record struct DotState(bool DotShowing, int ZeroStreak, int PollsSincePush, ImmutableHashSet<string> Announced)
     {
-        /// <summary>The starting state: no dot on the phone, no pending clear.</summary>
-        public static readonly DotState Initial = new(false, 0, 0);
+        /// <summary>The starting state: no dot on the phone, no pending clear, nothing announced.</summary>
+        public static readonly DotState Initial = new(false, 0, 0, ImmutableHashSet<string>.Empty);
+    }
+
+    private static readonly IReadOnlyCollection<string> NoExpired = Array.Empty<string>();
+
+    /// <summary>
+    /// The pure decision, count-only overload (no snooze-expiry signal). Kept so the dot's rising /
+    /// heartbeat / falling behavior can be reasoned about and tested in isolation.
+    /// </summary>
+    public static (bool push, int count, DotState next) Decide(int current, DotState state)
+    {
+        var (push, count, _, next) = Decide(current, NoExpired, state);
+        return (push, count, next);
     }
 
     /// <summary>
     /// The pure decision. The app-icon dot is boolean on Android (a dot is present or not - the exact
     /// count does not change it), so we push on the moments that matter and stay quiet otherwise:
+    ///   - Newly-expired snooze (highest priority): one or more sessions in <paramref name="expiredNow"/>
+    ///     were not in <see cref="DotState.Announced"/> - announce ONCE (push, snoozeEnded=true, buzz
+    ///     permitted) even if the dot is already up, then remember them so they never re-buzz.
     ///   - Rising edge (no dot yet, work now needs you): push the current count so the dot appears.
     ///   - Heartbeat (dot showing, <see cref="HeartbeatPolls"/> polls since the last push): re-push the
-    ///     current count so a dot the phone cleared on its own (a swipe-away, or the app clearing it on
-    ///     foreground) comes back while sessions still wait. The re-assert is silent, so it does not buzz.
-    ///   - Falling edge (dot showing, count has read zero for <see cref="ClearConfirmations"/> polls in
-    ///     a row): push a single zero so the dot clears, even while the app is closed.
-    /// A change from one non-zero count to another (2 -> 3 -> 4) does NOT push between heartbeats: the
-    /// dot is already there. Returns whether to push, the count to send, and the next state to carry
-    /// forward.
+    ///     current count so a dot the phone cleared on its own comes back. Silent, so it does not buzz.
+    ///   - Falling edge (dot showing, count has read zero for <see cref="ClearConfirmations"/> polls in a
+    ///     row): push a single zero so the dot clears, even while the app is closed.
+    /// The <see cref="DotState.Announced"/> set is pruned to only sessions still expired each poll, so a
+    /// session whose snooze was cleared and later re-expires is announced afresh. Returns whether to push,
+    /// the count to send, whether this push is a snooze-expiry announcement, and the next state.
     /// </summary>
-    public static (bool push, int count, DotState next) Decide(int current, DotState state)
+    public static (bool push, int count, bool snoozeEnded, DotState next) Decide(
+        int current, IReadOnlyCollection<string> expiredNow, DotState state)
     {
+        // Prune the announced set to sessions still expired (a cleared/re-snoozed session drops out and
+        // may be announced again if it re-expires), then find the ones newly entering the expired set.
+        var expiredSet = expiredNow as ImmutableHashSet<string> ?? ImmutableHashSet.CreateRange(expiredNow);
+        var announcedStill = state.Announced.Intersect(expiredSet);
+        var hasNewlyExpired = expiredSet.Except(announcedStill).Count > 0;
+
         if (current > 0)
         {
+            // A newly-expired snooze is genuinely new, actionable news: announce it ONCE, and let it buzz
+            // even if the dot is already up. After this it is remembered and folds into the silent dot.
+            if (hasNewlyExpired)
+                return (true, current, true, new DotState(true, 0, 0, expiredSet));
+
             // Rising edge: work now needs you and no dot is up yet -> show it immediately.
             if (!state.DotShowing)
-                return (true, current, new DotState(DotShowing: true, ZeroStreak: 0, PollsSincePush: 0));
+                return (true, current, false, new DotState(true, 0, 0, announcedStill));
 
             // Dot already up. Re-assert on the heartbeat (recovers a phone-side clear); otherwise stay
             // quiet, only advancing the heartbeat counter.
             var polls = state.PollsSincePush + 1;
             if (polls >= HeartbeatPolls)
-                return (true, current, new DotState(DotShowing: true, ZeroStreak: 0, PollsSincePush: 0));
-            return (false, 0, new DotState(DotShowing: true, ZeroStreak: 0, PollsSincePush: polls));
+                return (true, current, false, new DotState(true, 0, 0, announcedStill));
+            return (false, 0, false, new DotState(true, 0, polls, announcedStill));
         }
 
-        // current == 0: nothing needs you right now.
+        // current == 0: nothing needs you right now (so nothing is expired either).
         if (!state.DotShowing)
-            return (false, 0, DotState.Initial); // no dot to clear (startup, or already cleared)
+            return (false, 0, false, DotState.Initial); // no dot to clear (startup, or already cleared)
 
         var streak = state.ZeroStreak + 1;
         if (streak >= ClearConfirmations)
-            return (true, 0, DotState.Initial); // settled at zero -> clear the dot once
+            return (true, 0, false, DotState.Initial); // settled at zero -> clear the dot once, forget announcements
         // Debouncing the clear: hold the dot, keep the heartbeat counter so a re-rise resumes cleanly.
-        return (false, 0, new DotState(DotShowing: true, ZeroStreak: streak, PollsSincePush: state.PollsSincePush));
+        return (false, 0, false, new DotState(true, streak, state.PollsSincePush, announcedStill));
     }
 
     /// <summary>The count of sessions that currently "need you" (effective-red, not parked).</summary>
@@ -158,7 +202,20 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
         sessions.Count(s => SessionOrdering.Classify(s) == SessionOrdering.TriageBucket.NeedsYou);
 
     /// <summary>
-    /// One poll: skip entirely when no one is subscribed; otherwise read the current count, decide,
+    /// The ids of sessions that "need you" AND just returned from an expired snooze
+    /// (<see cref="SessionDto.SnoozeExpired"/>). A subset of the needs-you set - the ones the notifier
+    /// announces once with distinct copy.
+    /// </summary>
+    public static IReadOnlyCollection<string> ExpiredNeedsYouIds(IEnumerable<SessionDto> sessions) =>
+        sessions
+            .Where(s => s.SnoozeExpired
+                        && !string.IsNullOrEmpty(s.SessionId)
+                        && SessionOrdering.Classify(s) == SessionOrdering.TriageBucket.NeedsYou)
+            .Select(s => s.SessionId)
+            .ToList();
+
+    /// <summary>
+    /// One poll: skip entirely when no one is subscribed; otherwise read the current snapshot, decide,
     /// and push to every subscription when the decision says so. Public so a test can drive it directly.
     /// </summary>
     public async Task RunOnceAsync(CancellationToken cancellationToken)
@@ -170,10 +227,10 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
             return;
         }
 
-        int current;
+        NeedsYouSnapshot snapshot;
         try
         {
-            current = await _getNeedsYouCount(cancellationToken);
+            snapshot = await _getSnapshot(cancellationToken);
         }
         catch (Exception ex)
         {
@@ -183,20 +240,21 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
 
         bool push;
         int count;
+        bool snoozeEnded;
         lock (_dotLock)
         {
-            (push, count, _dot) = Decide(current, _dot);
+            (push, count, snoozeEnded, _dot) = Decide(snapshot.Count, snapshot.ExpiredNeedsYouIds, _dot);
         }
         if (!push) return;
 
-        await SendToAllAsync(count, cancellationToken);
+        await SendToAllAsync(count, snoozeEnded, cancellationToken);
     }
 
-    private async Task SendToAllAsync(int count, CancellationToken cancellationToken)
+    private async Task SendToAllAsync(int count, bool snoozeEnded, CancellationToken cancellationToken)
     {
-        var payload = JsonSerializer.Serialize(new NeedsYouPayload { Count = count });
+        var payload = JsonSerializer.Serialize(new NeedsYouPayload { Count = count, SnoozeEnded = snoozeEnded });
         var subscriptions = _store.All();
-        FileLog.Write($"[WebPushNeedsYouNotifier] pushing count={count} to {subscriptions.Count} subscription(s)");
+        FileLog.Write($"[WebPushNeedsYouNotifier] pushing count={count} snoozeEnded={snoozeEnded} to {subscriptions.Count} subscription(s)");
 
         foreach (var subscription in subscriptions)
         {
@@ -259,5 +317,11 @@ public sealed class WebPushNeedsYouNotifier : IDisposable
         // Lowercase on the wire so the service worker reads event.data.json().count.
         [System.Text.Json.Serialization.JsonPropertyName("count")]
         public int Count { get; set; }
+
+        // Snooze Length mission: true only on the one push that ANNOUNCES a newly-returned-from-snooze
+        // session. The service worker renders the distinct "Snooze ended" copy and lets that push buzz;
+        // every other push stays the quiet dot. Always present so the worker can read it.
+        [System.Text.Json.Serialization.JsonPropertyName("snoozeEnded")]
+        public bool SnoozeEnded { get; set; }
     }
 }

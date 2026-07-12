@@ -160,6 +160,9 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         Assert.False(s.OnHold);                    // overlay flipped it
         Assert.Equal("red", s.EffectiveColor);     // back to needs-you red
         Assert.Equal("needsYou", s.TriageBucket);
+        // Phase 2: the returned-from-snooze marker is stamped so clients show a distinct "Snooze ended"
+        // badge and the phone push announces it once.
+        Assert.True(s.SnoozeExpired);
     }
 
     // ---------- automatic session roles (chunk 1) ----------

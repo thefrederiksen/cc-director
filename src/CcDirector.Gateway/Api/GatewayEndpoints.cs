@@ -1981,7 +1981,12 @@ internal static class GatewayEndpoints
         if (snoozeRegistry is not null)
             foreach (var s in all)
                 if (!string.IsNullOrEmpty(s.SessionId) && s.OnHold && snoozeRegistry.IsExpired(s.SessionId, nowUtc))
+                {
                     s.OnHold = false;
+                    // Phase 2: mark it as a RETURNED-from-snooze item so clients render a distinct
+                    // "Snooze ended" badge and the phone push announces it once. Display-only metadata.
+                    s.SnoozeExpired = true;
+                }
 
         var liveIds = new HashSet<string>(StringComparer.Ordinal);
         var controllersWithLiveChild = new HashSet<string>(StringComparer.Ordinal);

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
 import { getSessionsEnvelope } from "@devthrottle/client-core/fleet/fleetClient";
 import { emptyRetentionCache, mergeRosterRetention, type RosterSessionMark } from "@devthrottle/client-core/fleet/rosterRetention";
-import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
+import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf, snoozeExpired } from "@devthrottle/client-core/sessions/ordering";
 import { applyFilter, filterIsActive, filterSummary, machineName, pruneFilter } from "@devthrottle/client-core/sessions/filter";
 import { useDictationStatusFor } from "@devthrottle/client-core/dictation/status";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
@@ -292,6 +292,10 @@ function SessionRow({ session, mark }: { session: SessionDto; mark?: RosterSessi
             <span className="row-context">{contextLine(session)}</span>
             {attention && session.needsYouSince && <WaitingTime since={String(session.needsYouSince)} />}
           </span>
+          {/* Snooze Length mission: a distinct "Snooze ended" badge when this session just returned from
+              an expired snooze on its own (the dead-man's switch fired) - so the reader knows this is a
+              "go see why it went quiet" item, not a fresh turn-end. */}
+          {snoozeExpired(session) && <span className="row-snooze-ended">Snooze ended</span>}
           {/* The facts you navigate and filter by - the machine the session runs on and its repo - are
               a bottom row of small chips, so a fleet spread across several machines is legible at a
               glance without crowding the status line. The machine chip is accent-tinted; the repo chip
