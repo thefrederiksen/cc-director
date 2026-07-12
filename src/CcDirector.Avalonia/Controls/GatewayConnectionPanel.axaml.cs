@@ -73,10 +73,6 @@ public partial class GatewayConnectionPanel : UserControl
     // Cancels the Step 2 account-status polling loop when the panel is left or the flow restarts.
     private CancellationTokenSource? _pollCts;
 
-    // Enroll is attempted at most once per sign-in flow, and NEVER from the poll loop, so status polling
-    // can never mint keys repeatedly (guardrail against the #1136 auto-mint key leak).
-    private bool _enrollAttempted;
-
     // Which step the panel opens on (spec section 6: the status-box click opens the panel on the resolver's
     // current step). Connect (the default) starts the auto-scan; SignIn/Done skip the scan and read the
     // signed-in state directly, because the handshake is already proven in those states.
@@ -760,6 +756,29 @@ public partial class GatewayConnectionPanel : UserControl
                 ["gateway"] = new JsonObject { ["url"] = url },
             }));
 
+            // Epic #1069 (fresh-device unblock): a brand-new Director holds NO Gateway key, and the register
+            // handshake needs one, so it would 401. Earn the key FIRST via the co-located loopback
+            // enrollment (which is public and self-guards), then the handshake succeeds. On the common
+            // same-machine case where the Gateway is already signed in this reaches green with ZERO extra
+            // clicks. A signed-out Gateway (409) routes to the browser sign-in; a remote device (403) is
+            // case B, not yet supported.
+            if (!HasDeviceToken(GatewayConfig.Load()))
+            {
+                switch (await TryEnrollFirstAsync(url, host))
+                {
+                    case EnrollFirst.SignInNeeded:
+                        ShowSignIn();
+                        return;
+                    case EnrollFirst.RemoteNotSupported:
+                        ShowFailure(
+                            "This Director is not on the Gateway's own machine, so it cannot sign itself in yet.",
+                            "Run this Director on the Gateway's machine for now. Signing in from another machine is coming next.");
+                        return;
+                    // Enrolled (key earned) or FellThrough (no local Gateway to enroll with) both continue to
+                    // the handshake below - a real failure there surfaces through the normal verdict path.
+                }
+            }
+
             EnsureSubscribed(host.GatewayMonitor);
             await host.ReapplyGatewayAsync();
             _ = TimeoutAsync(attempt);
@@ -769,6 +788,50 @@ public partial class GatewayConnectionPanel : UserControl
             FileLog.Write($"[GatewayConnectionPanel] ConnectTo FAILED to start: {ex.Message}");
             ShowFailure($"Could not start connecting: {ex.Message}", null);
         }
+    }
+
+    private enum EnrollFirst { Enrolled, SignInNeeded, RemoteNotSupported, FellThrough }
+
+    // Try to earn this device's first Gateway key via the co-located loopback enrollment (epic #1069 A3).
+    // Dials the LOOPBACK address explicitly (127.0.0.1 + the local Gateway port from the pick) so the
+    // Gateway's guardrail-1 IsLoopback check passes even though "This computer" displays the machine name.
+    private async Task<EnrollFirst> TryEnrollFirstAsync(string pickedUrl, ControlApiHost host)
+    {
+        var loopbackUrl = BuildLoopbackEnrollUrl(pickedUrl);
+        var result = await GatewayEnrollmentClient.EnrollSignedInAsync(
+            loopbackUrl, token: null, host.DirectorId, Environment.MachineName, "windows");
+
+        switch (result.Outcome)
+        {
+            case EnrollOutcome.Enrolled:
+                // Store the key under the address the running client will actually register with (the pick),
+                // then the re-apply below registers WITH the key -> handshake -> green.
+                await Task.Run(() => GatewayCredentialStore.SaveEnrolledKey(pickedUrl, result.Value!.DeviceKey));
+                FileLog.Write("[GatewayConnectionPanel] enroll-first: device key issued (zero-click, Gateway already signed in)");
+                return EnrollFirst.Enrolled;
+            case EnrollOutcome.GatewayNotSignedIn:
+                FileLog.Write("[GatewayConnectionPanel] enroll-first: Gateway not signed in -> browser sign-in");
+                return EnrollFirst.SignInNeeded;
+            case EnrollOutcome.NotLoopback:
+                FileLog.Write("[GatewayConnectionPanel] enroll-first: not a loopback caller -> remote device (epic #1069 case B)");
+                return EnrollFirst.RemoteNotSupported;
+            default:
+                FileLog.Write($"[GatewayConnectionPanel] enroll-first: no local Gateway to enroll with ({result.Message}); continuing to the handshake");
+                return EnrollFirst.FellThrough;
+        }
+    }
+
+    // The same-machine enroll MUST be dialed at loopback (guardrail 1 checks the caller's remote IP with
+    // IPAddress.IsLoopback). Take the port from the pick - which for "This computer" is the local Gateway's
+    // own port (issue-1233) - and force the host to the literal 127.0.0.1 (deterministic over "localhost",
+    // which could resolve to the IPv6 ::1). If this is wrong the guard 403s, so keep this construction (and
+    // its test) intact.
+    internal static string BuildLoopbackEnrollUrl(string pickedUrl)
+    {
+        var port = EndpointProbe.DefaultGatewayPort;
+        if (Uri.TryCreate(pickedUrl, UriKind.Absolute, out var uri) && uri.Port > 0)
+            port = uri.Port;
+        return $"http://127.0.0.1:{port}";
     }
 
     private void EnsureSubscribed(GatewayConnectionMonitor monitor)
@@ -799,7 +862,19 @@ public partial class GatewayConnectionPanel : UserControl
                 break;
             case GatewayConnectionStatus.Failed:
             case GatewayConnectionStatus.NoTailnetIdentity:
-                ShowFailure(monitor.FailureSummary ?? "The connection could not be completed.", DeriveFix(monitor));
+                // Epic #1069 A3 fallback: a 401/Unauthorized handshake means this device is not authorized
+                // yet (e.g. a stale key). Route to Sign in - which re-enrolls and earns a fresh key - rather
+                // than a dead-end failure. (A brand-new no-key device is already handled by enroll-first in
+                // ConnectTo, so this covers the has-a-bad-key case.)
+                if (IsUnauthorizedFailure(monitor.FailureSummary))
+                {
+                    FileLog.Write("[GatewayConnectionPanel] handshake unauthorized (401) -> routing to Sign in");
+                    ShowSignIn();
+                }
+                else
+                {
+                    ShowFailure(monitor.FailureSummary ?? "The connection could not be completed.", DeriveFix(monitor));
+                }
                 break;
             case GatewayConnectionStatus.Connecting:
             case GatewayConnectionStatus.NotConfigured:
@@ -863,14 +938,23 @@ public partial class GatewayConnectionPanel : UserControl
 
     private void ShowSignIn()
     {
+        // Reaching Step 2 ends any in-flight connect attempt, so background verdict churn stops driving the
+        // view (ApplyVerdict ignores changes while not connecting).
+        _connecting = false;
         StopPolling();
-        _enrollAttempted = false;
         SignInWaitRow.IsVisible = false;
         SignInErrorText.IsVisible = false;
         SignInButton.IsEnabled = true;
         ShowOnly(SignInPanel);
         FileLog.Write("[GatewayConnectionPanel] showing Step 2 (sign in)");
     }
+
+    // Epic #1069 A3 fallback: is a handshake failure an authorization failure (401)? The monitor's failure
+    // summary carries the HTTP reason from the register call (GatewayClient.ReportRegistrationFailure).
+    private static bool IsUnauthorizedFailure(string? summary) =>
+        summary is not null
+        && (summary.Contains("401")
+            || summary.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase));
 
     private void SignIn_Click(object? sender, RoutedEventArgs e) => _ = StartSignInAsync();
 
@@ -933,28 +1017,33 @@ public partial class GatewayConnectionPanel : UserControl
         _pollCts = null;
     }
 
-    // Poll GET /account/status until the Gateway reports signed in; then ensure this Director holds its
-    // own device token (enrolling once through the Gateway) and settle to the Done view. The loop only
-    // READS status - it never mints a key on its own.
+    // After the user starts the browser sign-in, watch for it to complete and settle to the Done view.
+    //
+    // A brand-new device has NO key, so it cannot read the credential-gated /account/status yet (epic #1069
+    // A2 keeps account data gated). It therefore polls by RETRYING the loopback enrollment: that returns 409
+    // while the Gateway is still signed out and 200 the instant it is signed in, and the server mint is
+    // idempotent per device (the #1136 leak guard, so retrying is safe). Once the device earns its key, the
+    // authenticated status read confirms signed-in and the view settles to Done.
     private async Task PollAccountAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             var config = GatewayConfig.Load();
-            var account = await SafeStatusAsync(config, ct);
-            if (ct.IsCancellationRequested) return;
 
-            if (account.SignedIn)
+            // Keyless: retry the enroll until the Gateway is signed in (then it hands over the key).
+            if (!HasDeviceToken(config))
             {
-                if (!HasDeviceToken(config) && !_enrollAttempted)
-                {
-                    _enrollAttempted = true;
-                    await EnrollThroughGatewayOnceAsync();
-                    config = GatewayConfig.Load();
-                    account = await SafeStatusAsync(config, ct);
-                }
+                await EnrollThroughGatewayOnceAsync();
+                if (ct.IsCancellationRequested) return;
+                config = GatewayConfig.Load();
+            }
 
-                if (HasDeviceToken(config) && account.SignedIn)
+            // With a key, read the (now authenticated) status; signed-in means both checks are green.
+            if (HasDeviceToken(config))
+            {
+                var account = await SafeStatusAsync(config, ct);
+                if (ct.IsCancellationRequested) return;
+                if (account.SignedIn)
                 {
                     var finalConfig = config;
                     var finalAccount = account;
@@ -983,16 +1072,19 @@ public partial class GatewayConnectionPanel : UserControl
             }
 
             var config = GatewayConfig.Load();
+            // Dial the enroll at LOOPBACK (guardrail 1), same as the pre-sign-in enroll-first path - the
+            // configured URL may be the machine name, which would 403.
             var result = await GatewayEnrollmentClient.EnrollSignedInAsync(
-                config.Url, config.Token, host.DirectorId, Environment.MachineName, "windows");
+                BuildLoopbackEnrollUrl(config.Url), token: null, host.DirectorId, Environment.MachineName, "windows");
 
-            if (!result.Success || result.Value is null)
+            if (result.Outcome != EnrollOutcome.Enrolled || result.Value is null)
             {
-                FileLog.Write($"[GatewayConnectionPanel] enroll-through-Gateway failed: {result.ErrorMessage}");
+                FileLog.Write($"[GatewayConnectionPanel] enroll-through-Gateway not enrolled ({result.Outcome}): {result.Message}");
                 return;
             }
 
-            // Store this device's own token, then re-apply so the running client authenticates with it.
+            // Store this device's own token under the configured URL, then re-apply so the running client
+            // authenticates with it.
             await Task.Run(() => GatewayCredentialStore.SaveEnrolledKey(config.Url, result.Value.DeviceKey));
             await host.ReapplyGatewayAsync();
             FileLog.Write("[GatewayConnectionPanel] enroll-through-Gateway: this Director's token stored");
