@@ -4,6 +4,7 @@ import { classifyFile, formatFileSize } from "@devthrottle/client-core/history/f
 import type { FileViewerType } from "@devthrottle/client-core/history/fileTypes";
 import {
   GatewayError,
+  authHeaders,
   ensureGatewayCookie,
   fetchSessionFileSize,
   fetchSessionFileText,
@@ -62,9 +63,17 @@ export function FileView() {
   const navigate = useNavigate();
   const path = params.get("path") ?? "";
 
-  // Back returns to the exact session tab (Chat or Terminal) the file was opened from - the browser's
-  // own back step, which is how the half-built "mobile view-links" feature intended Back to work.
-  const goBack = () => navigate(-1);
+  // Back returns to the tab the file was opened from. Chat/Terminal pass that tab as ?from= when they
+  // navigate here, so Back is an EXPLICIT route, not history.back(): navigate(-1) does nothing when the
+  // viewer was reached with no in-app history to pop - a hard reload, a deep link, or a link that opened
+  // a fresh context - which left the Back button dead and forced an app restart. With no ?from we still
+  // have a working destination: the session itself (its Chat), so Back is never a no-op.
+  const from = params.get("from");
+  const goBack = () => {
+    if (from) navigate(from);
+    else if (sessionId) navigate(`/session/${sessionId}`);
+    else navigate("/");
+  };
 
   if (!sessionId || !path) {
     return (
@@ -89,12 +98,56 @@ export function FileView() {
       <header className="app-bar">
         <button type="button" className="file-view-back" onClick={goBack}>Back</button>
         <h1 className="term-title" title={path}>{name}</h1>
-        <a className="file-view-download" href={url} download={name}>Download</a>
+        <DownloadButton url={url} name={name} />
       </header>
       <div className="file-view-body">
         <FileViewContent type={type} url={url} name={name} sessionId={sessionId} path={path} />
       </div>
     </div>
+  );
+}
+
+// The Download control. The old bare <a download> gave the phone NO sign a tap registered - so a file
+// that saved silently (or failed silently) looked like nothing happened, and the button got tapped over
+// and over. This fetches the bytes itself (carrying the Bearer, so it works regardless of the cookie),
+// shows "Saving..." while it runs, then a visible "Saved ... to your device" (or the specific failure),
+// and only then triggers the browser's save. One in-flight download at a time.
+function DownloadButton({ url, name }: { url: string; name: string }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const onDownload = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNote(`Saving ${name}...`);
+    try {
+      const res = await fetch(url, { headers: authHeaders() });
+      if (!res.ok) throw new GatewayError(res.status, `download failed: ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 15000);
+      setNote(`Saved ${name} to your device`);
+    } catch (err) {
+      setNote(fileLoadMessage(err));
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setNote(null), 4000);
+    }
+  };
+
+  return (
+    <>
+      <button type="button" className="file-view-download" onClick={onDownload} disabled={busy}>
+        {busy ? "Saving..." : "Download"}
+      </button>
+      {note !== null && <div className="file-view-download-toast" role="status">{note}</div>}
+    </>
   );
 }
 

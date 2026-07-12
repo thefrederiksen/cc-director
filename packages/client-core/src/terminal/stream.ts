@@ -166,37 +166,66 @@ export class TerminalMirror {
 
   // ----- clickable links (Local Files, Phase 3) -----------------------------------------------
 
-  // Make absolute file paths and http/https URLs in the mirror clickable. xterm asks per line via
-  // provideLinks; we run the shared detector (findLineLinks) over that line's rendered text and hand
-  // back one xterm link per detected span with its column range. A FILE path click routes to the app's
-  // onFileLink (its viewer); a URL opens in a new tab here. This is the SAME contract the interactive
-  // Cockpit terminal (interactive.ts) uses, so both terminals behave identically. The provider is
-  // disposed with the terminal so it never outlives the render service.
+  // Make absolute file paths and http/https URLs in the mirror clickable. xterm asks per VISUAL row via
+  // provideLinks. A long absolute path (e.g. D:\ReposFred\devthrottle\.temp\lf-samples\sample-image.png)
+  // WRAPS across several rows on a narrow phone, so detecting per visual row would only ever see a
+  // fragment and produce no link - which is why terminal file links did nothing on mobile while the wide
+  // Cockpit terminal (paths on one line) worked. So we reconstruct the whole LOGICAL line first (this row
+  // plus the wrapped continuation rows), run the shared detector over the joined text, then map each
+  // detected span back to a possibly multi-row xterm range. A FILE path click routes to the app's
+  // onFileLink (its viewer); a URL opens in a new tab. Provider disposed with the terminal.
   private registerLinks(term: Xterm): void {
     const provider: ILinkProvider = {
       provideLinks: (bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) => {
-        const bufLine = term.buffer.active.getLine(bufferLineNumber - 1);
-        if (!bufLine) {
+        const buffer = term.buffer.active;
+        const cols = term.cols;
+        const reqLine = buffer.getLine(bufferLineNumber - 1);
+        if (!reqLine || cols <= 0) {
           callback(undefined);
           return;
         }
-        const text = bufLine.translateToString(true);
+
+        // Walk back over wrapped continuation rows to the logical line's first row.
+        let startIdx = bufferLineNumber - 1; // 0-based
+        while (startIdx > 0 && buffer.getLine(startIdx)?.isWrapped) startIdx--;
+
+        // Join this row + the wrapped rows that follow, each padded to the full width so a character
+        // OFFSET in the joined text maps cleanly to (row = offset / cols, column = offset % cols).
+        let text = "";
+        for (let j = startIdx; j < buffer.length; j++) {
+          const line = buffer.getLine(j);
+          if (!line) break;
+          if (j > startIdx && !line.isWrapped) break;
+          let row = line.translateToString(false);
+          if (row.length < cols) row = row.padEnd(cols, " ");
+          else if (row.length > cols) row = row.slice(0, cols);
+          text += row;
+        }
+
         const found = findLineLinks(text);
         if (found.length === 0) {
           callback(undefined);
           return;
         }
-        const links: ILink[] = found.map((l) => ({
-          text: l.text,
-          // xterm buffer ranges are 1-based and inclusive on both ends. l is a 0-based half-open
-          // [start, end) column range, so the first cell is start+1 and the last cell is end.
-          range: {
-            start: { x: l.start + 1, y: bufferLineNumber },
-            end: { x: l.end, y: bufferLineNumber },
-          },
-          activate: (event: MouseEvent) => this.onLinkActivate(l, event),
-        }));
-        callback(links);
+
+        const links: ILink[] = [];
+        for (const l of found) {
+          // l is a 0-based half-open [start, end) offset span in the joined text. xterm ranges are
+          // 1-based and inclusive on both ends; a span can cross wrapped rows, so start/end may differ in y.
+          const startY = startIdx + Math.floor(l.start / cols) + 1;
+          const startX = (l.start % cols) + 1;
+          const lastOffset = l.end - 1;
+          const endY = startIdx + Math.floor(lastOffset / cols) + 1;
+          const endX = (lastOffset % cols) + 1;
+          // Only hand xterm the links that actually cover the row it asked about.
+          if (bufferLineNumber < startY || bufferLineNumber > endY) continue;
+          links.push({
+            text: l.text,
+            range: { start: { x: startX, y: startY }, end: { x: endX, y: endY } },
+            activate: (event: MouseEvent) => this.onLinkActivate(l, event),
+          });
+        }
+        callback(links.length > 0 ? links : undefined);
       },
     };
     this.linkProvider = term.registerLinkProvider(provider);

@@ -15,24 +15,38 @@ const hoisted = vi.hoisted(() => {
   const reportGatewayUnreachable = vi.fn();
   // The minimum of the xterm.js surface the mirror touches during start() + the link provider path.
   class FakeTerminal {
-    // getLine backs the link provider's per-line lookup; lineText is buffer row 1's rendered text.
+    // getLine backs the link provider's per-line lookup. `lineText` is the simple single-row case;
+    // `rows` (when set) models a LOGICAL line wrapped across several buffer rows, each carrying its own
+    // isWrapped flag - so the provider's wrapped-line join can be exercised.
     lineText = "";
-    buffer = {
-      active: {
-        viewportY: 0,
-        baseY: 0,
-        getLine: (y: number) =>
-          y === 0 && this.lineText
-            ? { translateToString: (_trim?: boolean) => this.lineText }
-            : null,
-      },
-    };
+    rows: { text: string; isWrapped: boolean }[] | null = null;
+    cols = 80; // wide enough that the single-row cases never wrap
+    buffer: { active: { viewportY: number; baseY: number; length: number; getLine: (y: number) => unknown } };
     linkProvider: unknown = null;
     linkProviderDisposed = false;
     writes: string[] = [];
     resetCount = 0;
     disposed = false;
     constructor(public options: unknown) {
+      const self = this;
+      this.buffer = {
+        active: {
+          viewportY: 0,
+          baseY: 0,
+          get length(): number {
+            return self.rows ? self.rows.length : self.lineText ? 1 : 0;
+          },
+          getLine(y: number): unknown {
+            if (self.rows) {
+              const r = self.rows[y];
+              return r ? { isWrapped: r.isWrapped, translateToString: (_trim?: boolean) => r.text } : null;
+            }
+            return y === 0 && self.lineText
+              ? { isWrapped: false, translateToString: (_trim?: boolean) => self.lineText }
+              : null;
+          },
+        },
+      };
       terminals.push(this);
     }
     open(): void {}
@@ -193,6 +207,33 @@ describe("TerminalMirror link provider (Local Files, Phase 3/4)", () => {
   it("returns no links for a line with none, so xterm leaves the line undecorated", () => {
     const { links } = linksFor("plain output, nothing clickable");
     expect(links).toEqual([]);
+  });
+
+  // The mobile regression: a long absolute path WRAPS across buffer rows on a narrow phone. Detecting
+  // per visual row saw only a fragment and produced no link. The provider now joins the logical line
+  // (this row + wrapped continuation rows) and returns a range that can span rows.
+  it("detects a file path that wraps across two rows and spans them in the range", () => {
+    const onFileLink = vi.fn();
+    const mirror = new TerminalMirror(fakeEl(), fakeEl(), SID, () => {}, onFileLink);
+    mirror.start();
+    const term = hoisted.terminals[0];
+    term.cols = 10;
+    // "D:\a\bcdef.png" (14 chars) split at column 10: row 0 is the first 10, row 1 (wrapped) the rest.
+    term.rows = [
+      { text: "D:\\a\\bcdef", isWrapped: false },
+      { text: ".png rest", isWrapped: true },
+    ];
+    const provider = term.linkProvider as {
+      provideLinks: (n: number, cb: (l: XLink[] | undefined) => void) => void;
+    };
+    let links: XLink[] | undefined;
+    provider.provideLinks(1, (l) => { links = l; });
+    const link = (links ?? []).find((l) => l.text === "D:\\a\\bcdef.png");
+    expect(link).toBeDefined();
+    expect(link!.range.start.y).toBe(1);
+    expect(link!.range.end.y).toBe(2); // the link body continues onto the wrapped row
+    link!.activate({} as MouseEvent);
+    expect(onFileLink).toHaveBeenCalledWith("D:\\a\\bcdef.png");
   });
 });
 
