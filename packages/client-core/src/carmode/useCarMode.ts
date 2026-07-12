@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
-import { playReadyCue, playYourTurnCue, startThinkingCue } from "../dictation/readyCue";
-import { detectEndPhrase } from "./controlPhrases";
+import { playReadyCue, playYourTurnCue, startThinkingCue, primeCueAudio, releaseCueAudio } from "../dictation/readyCue";
+import { detectPhraseAtEnd } from "./controlPhrases";
 import { playClip, type PlayOutcome, type PlayClipHooks } from "./audioPlayback";
 import {
   postCarModeTelemetry,
@@ -23,13 +23,15 @@ import { gatewayErrorMessage } from "../api/client";
 // ducks/reroutes the <audio> output on mobile so it is inaudible. So the hard rule now is: WHILE SPEAKING,
 // NOTHING touches the microphone - the capture stream is fully released and only the <audio> element plays.
 //
-// The two finicky voice paths are DEFERRED in favour of buttons (Soren's directive: one thing at a time):
-//   - Ending a turn is done by the touch "Over and out" BUTTON, which transcribes whatever was captured and
-//     takes the turn. The auto pause-probe that used to listen for a spoken "over and out" is removed (it
-//     took several tries to land). If the owner happens to say "over and out", it is stripped, but it is not
-//     required.
-//   - Interrupting the reply is done by the touch "Stop" BUTTON, the SOLE interrupt. There is no voice
-//     "stop" watch, because that is exactly the mic-during-playback that made the reply inaudible.
+// The two voice control paths differ by whether the assistant is speaking:
+//   - Ending a turn is HANDS-FREE via the spoken sign-off phrase (default "over and out", owner-configurable):
+//     a rolling transcription watch runs during Listening and takes the turn the moment the transcript ends
+//     with the phrase. This replaces the old finicky silence/pause probe by leaning on the reliable
+//     transcription (measured 9/9). The touch "Over and out" BUTTON is the instant fallback. There is no
+//     self-trigger risk because the assistant is silent while the owner talks.
+//   - Interrupting the reply is done by the touch "Stop" BUTTON, the SOLE interrupt. There is deliberately no
+//     voice "stop" watch during playback, because re-opening the mic mid-playback ducks the reply on mobile,
+//     AND the generic on-device keyword model self-triggers on the assistant's own voice (issue #1411).
 //
 // The states, plus a brief Thinking state while the brain works:
 //   Listening - the owner is talking. MicRecorder (one getUserMedia stream) accumulates his audio and its
@@ -149,6 +151,11 @@ export interface CarModeView {
  *  the real POST /carmode/turn call, over the identical turn-taking machine. */
 export interface UseCarModeOptions {
   respond: (command: string, signal: AbortSignal) => Promise<CarModeReply>;
+  /** The spoken sign-off phrase that ends the owner's turn hands-free (default "over and out"). The page
+   *  passes the owner's configured phrase; when the rolling end-phrase watch hears the transcript end with
+   *  it, the turn is taken, exactly as tapping the "Over and out" button does. The button remains the
+   *  instant fallback. */
+  endPhrase?: string;
 }
 
 // How often to send a keep-warm ping WHILE Car Mode is open, so the hosted model + text-to-speech stay hot
@@ -156,6 +163,13 @@ export interface UseCarModeOptions {
 const KEEP_WARM_MS = 3 * 60 * 1000;
 // A snapshot smaller than this is just the container header with no real audio - skip transcribing it.
 const MIN_CLIP_BYTES = 2000;
+// The default hands-free sign-off phrase; the page can override it with the owner's configured phrase.
+const DEFAULT_END_PHRASE = "over and out";
+// How often, while Listening, the captured audio is re-transcribed to check whether it now ends with the
+// sign-off phrase. This replaces the removed silence/endpoint probe: it leans on the reliable transcription
+// (measured 9/9 on "over and out") instead of guessing when the owner paused. The touch button is the
+// instant path; this is the hands-free path, ~1s felt delay after the phrase (owner-accepted).
+const END_PHRASE_POLL_MS = 800;
 
 /** Whether this browser can capture audio for Car Mode. Car Mode is Chromium-first (decision 7); elsewhere
  *  the page tells the owner plainly instead of silently degrading (no fallback, decision 8). */
@@ -197,6 +211,10 @@ function unlockAudioElement(audio: HTMLAudioElement): void {
 
 export function useCarMode(options: UseCarModeOptions): CarModeView {
   const respond = options.respond;
+  // The owner's configured sign-off phrase, mirrored in a ref so the rolling watch's timer callback always
+  // reads the CURRENT phrase (a render prop would be a stale closure inside the interval).
+  const endPhraseRef = useRef(options.endPhrase ?? DEFAULT_END_PHRASE);
+  endPhraseRef.current = options.endPhrase ?? DEFAULT_END_PHRASE;
 
   const [phase, setPhase] = useState<CarModePhase>("idle");
   const [started, setStarted] = useState(false);
@@ -236,6 +254,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // work is filled with a gentle working tone. Also cleared when the mic returns to the owner or the
   // session ends, so it can never leak past its turn.
   const thinkingCueStopRef = useRef<(() => void) | null>(null);
+
+  // The hands-free end-phrase watch: a rolling transcription timer during Listening. endPollRef holds its
+  // interval id; endPollBusyRef prevents overlapping transcriptions; endTickRef points at the latest tick
+  // so the interval (started from enterListening, defined before the tick) always calls the current one.
+  const endPollRef = useRef<number | null>(null);
+  const endPollBusyRef = useRef(false);
+  const endTickRef = useRef<() => void>(() => {});
 
   // The phase, read synchronously inside the loop/timer callbacks (not a React render). A ref mirror
   // avoids a stale closure so the machine always branches on the CURRENT phase.
@@ -368,6 +393,22 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     }
   }, [announceError]);
 
+  // Stop the hands-free end-phrase watch (idempotent). Called at every exit from Listening.
+  const stopEndPhraseWatch = useCallback(() => {
+    if (endPollRef.current !== null) {
+      clearInterval(endPollRef.current);
+      endPollRef.current = null;
+    }
+    endPollBusyRef.current = false;
+  }, []);
+
+  // Start the hands-free end-phrase watch: a rolling timer that (via endTickRef, set once the tick below is
+  // defined) re-transcribes the captured audio and takes the turn when it ends with the sign-off phrase.
+  const startEndPhraseWatch = useCallback(() => {
+    stopEndPhraseWatch();
+    endPollRef.current = window.setInterval(() => endTickRef.current(), END_PHRASE_POLL_MS);
+  }, [stopEndPhraseWatch]);
+
   // Enter Listening: the microphone is the owner's again. Play the "your turn" cue, clear the on-screen
   // transcript for the fresh turn, and open a clean capture segment (a fresh getUserMedia stream).
   const enterListening = useCallback(async () => {
@@ -382,7 +423,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     setCaptureError(null);
     setCaptureState("listening");
     await restartCapture();
-  }, [restartCapture, setPhaseBoth, stopThinkingCue]);
+    // Hands-free: watch for the spoken sign-off phrase for the whole of this Listening turn. The touch
+    // "Over and out" button remains the instant path; this is what makes it work without a tap.
+    startEndPhraseWatch();
+  }, [restartCapture, setPhaseBoth, stopThinkingCue, startEndPhraseWatch]);
 
   // Synthesize `text` through the one good Gateway voice and play the WHOLE reply with the microphone fully
   // RELEASED (v3): nothing touches getUserMedia while the reply plays, because re-opening the mic mid-
@@ -568,30 +612,40 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // primary (and only) end-of-turn path in v3: the owner explicitly ended his turn, so a failure is
   // announced loudly. If he happened to say "over and out" it is stripped; otherwise the whole transcript is
   // the command (voice over-and-out is deferred - the button is the end path).
-  const transcribeAndTake = useCallback(async () => {
+  const transcribeAndTake = useCallback(async (prefetched?: { transcript: string; transcodeMs: number; pauseDetectedAt: number }) => {
     const rec = recorderRef.current;
     if (rec === null) return;
     // Time the command transcription from the tap so the telemetry shows how long the owner waits between
-    // finishing and the brain starting.
-    const pauseDetectedAt = performance.now();
+    // finishing and the brain starting. The voice end-phrase path already transcribed to DETECT the phrase,
+    // so it passes its transcript + timings and we skip a second round trip.
+    const pauseDetectedAt = prefetched ? prefetched.pauseDetectedAt : performance.now();
     try {
-      const clip = rec.snapshot();
-      if (clip.size < MIN_CLIP_BYTES) {
-        void takeTurn(""); // nothing captured: a canned nudge, no server turn
-        return;
+      let transcript: string;
+      let transcodeMs: number;
+      if (prefetched) {
+        transcript = prefetched.transcript;
+        transcodeMs = prefetched.transcodeMs;
+      } else {
+        const clip = rec.snapshot();
+        if (clip.size < MIN_CLIP_BYTES) {
+          void takeTurn(""); // nothing captured: a canned nudge, no server turn
+          return;
+        }
+        setCaptureState("transcribing");
+        transcribeAttemptsRef.current += 1;
+        // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network +
+        // server), so a real phone turn shows where the time actually goes.
+        const transcodeStart = performance.now();
+        const { wav } = await blobToWav16kMono(clip);
+        transcodeMs = performance.now() - transcodeStart;
+        transcript = (await transcribeCarModeAudio(wav)).trim();
       }
-      setCaptureState("transcribing");
-      transcribeAttemptsRef.current += 1;
-      // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network +
-      // server), so a real phone turn shows where the time actually goes.
-      const transcodeStart = performance.now();
-      const { wav } = await blobToWav16kMono(clip);
-      const transcodeMs = performance.now() - transcodeStart;
-      const transcript = (await transcribeCarModeAudio(wav)).trim();
       const pauseToTranscribeMs = performance.now() - pauseDetectedAt;
       setLastHeard(transcript);
       setCaptureError(null);
-      const parsed = detectEndPhrase(transcript);
+      // Strip the owner's configured sign-off phrase (default "over and out") if he ended with it; on the
+      // button path, if he did not say it, the whole transcript is the command.
+      const parsed = detectPhraseAtEnd(transcript, endPhraseRef.current);
       const command = parsed.ended ? parsed.command : transcript;
       setCaptureState(`heard: "${transcript}"`);
 
@@ -643,11 +697,55 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     }
   }, [announceError, enterListening, stopThinkingCue, takeTurn]);
 
-  // Touch controls (the app is fully usable by touch - this is the primary path in v3). "Over and out"
-  // ends the turn by transcribing what was captured; "Stop" cuts the reply off instantly (the sole
-  // interrupt, since no voice "stop" watch runs).
+  // The hands-free end-phrase tick: while Listening, re-transcribe the captured audio and, if it now ends
+  // with the owner's sign-off phrase, take the turn (reusing the transcript so there is no second round
+  // trip). This is the voice equivalent of tapping "Over and out"; the button remains the instant fallback.
+  // There is NO self-trigger risk here because the assistant is silent while the owner is talking.
+  const endPhraseTick = useCallback(async () => {
+    if (endPollBusyRef.current || phaseRef.current !== "listening") return;
+    const rec = recorderRef.current;
+    if (rec === null) return;
+    endPollBusyRef.current = true;
+    const startedAt = performance.now();
+    try {
+      const clip = rec.snapshot();
+      if (clip.size < MIN_CLIP_BYTES) return;
+      const transcodeStart = performance.now();
+      const { wav } = await blobToWav16kMono(clip);
+      const transcodeMs = performance.now() - transcodeStart;
+      const transcript = (await transcribeCarModeAudio(wav)).trim();
+      // The owner may have tapped the button (or the session ended) during this ~1s transcribe: only commit
+      // while STILL Listening, so the button and the watch can never both take one turn.
+      if (phaseRef.current !== "listening") return;
+      setLastHeard(transcript);
+      if (!detectPhraseAtEnd(transcript, endPhraseRef.current).ended) return; // not done yet - keep listening
+      // Heard the sign-off. Mirror the button's end-of-turn exactly: instant "my turn" cue, switch to
+      // Thinking, start the gentle working tone, stop the watch, then take the turn with the transcript we
+      // already have (transcribeAndTake reuses it and strips the phrase).
+      playReadyCue();
+      setPhaseBoth("thinking");
+      setCaptureState("thinking");
+      stopThinkingCue();
+      thinkingCueStopRef.current = startThinkingCue();
+      stopEndPhraseWatch();
+      void transcribeAndTake({ transcript, transcodeMs, pauseDetectedAt: startedAt });
+    } catch (err) {
+      // A failed rolling transcribe must not kill the turn - skip this tick and try again next second.
+      console.log(`[CarMode] end-phrase watch skipped a tick: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      endPollBusyRef.current = false;
+    }
+  }, [setPhaseBoth, stopThinkingCue, stopEndPhraseWatch, transcribeAndTake]);
+  // Keep the interval (started in enterListening, before this tick is defined) pointing at the latest tick.
+  endTickRef.current = endPhraseTick;
+
+  // Touch controls (the app is fully usable by touch). "Over and out" ends the turn by transcribing what was
+  // captured; "Stop" cuts the reply off instantly. The button is the INSTANT fallback for the hands-free
+  // end-phrase watch above.
   const endTurn = useCallback(() => {
     if (phaseRef.current !== "listening") return;
+    // The button is taking the turn: stop the hands-free watch so it cannot also fire for this same turn.
+    stopEndPhraseWatch();
     // v4: fire the "my turn" acknowledgement cue SYNCHRONOUSLY as the FIRST thing on tap, before any of
     // the async end-of-turn work (mic snapshot -> WAV transcode -> transcribe round trip). That async
     // work takes ~2 seconds, so the cue used to lag the tap badly; firing it here gives an immediate
@@ -664,7 +762,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     stopThinkingCue();
     thinkingCueStopRef.current = startThinkingCue();
     void transcribeAndTake();
-  }, [setPhaseBoth, stopThinkingCue, transcribeAndTake]);
+  }, [setPhaseBoth, stopThinkingCue, stopEndPhraseWatch, transcribeAndTake]);
 
   const interrupt = useCallback(() => {
     if (phaseRef.current !== "speaking") return;
@@ -705,9 +803,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     // first await below. The same element is reused for every reply, so once unlocked here, later replies
     // (which play seconds after the tap, past the gesture window) are allowed to sound on mobile.
     unlockAudioElement(audio);
+    // Open the ONE shared cue audio channel inside this Start tap gesture, so every cue this session - the
+    // "my turn" beep and the "thinking" tone, INCLUDING when the hands-free watch fires them from a timer -
+    // sounds cleanly and does not churn the mobile audio session (which was ducking the spoken reply in v7).
+    primeCueAudio();
 
-    // v3 has no silence detector / pause auto-probe: the turn ends when the owner taps "Over and out". The
-    // AnalyserNode still drives the on-screen level meter (getMicLevel), which reads the recorder directly.
+    // The turn ends hands-free when the rolling end-phrase watch hears the sign-off phrase, or instantly
+    // when the owner taps "Over and out". The AnalyserNode drives the on-screen level meter (getMicLevel).
     await enterListening();
   }, [started, unsupported, enterListening]);
 
@@ -719,6 +821,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     playbackStopRef.current?.();
     // Silence the "thinking" ambient cue if the session ends mid-turn (v5).
     stopThinkingCue();
+    // Stop the hands-free end-phrase watch so its timer does not outlive the session.
+    stopEndPhraseWatch();
+    // Release the shared cue audio channel opened at Start.
+    releaseCueAudio();
     if (keepWarmRef.current !== null) {
       clearInterval(keepWarmRef.current);
       keepWarmRef.current = null;
@@ -743,7 +849,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     setStarted(false);
     setCaptureState("not started");
     setPhaseBoth("idle");
-  }, [revokeClip, setPhaseBoth, stopThinkingCue]);
+  }, [revokeClip, setPhaseBoth, stopThinkingCue, stopEndPhraseWatch]);
 
   // Tear everything down if the page unmounts mid-session (navigating away from Car Mode).
   useEffect(() => {

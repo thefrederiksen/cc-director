@@ -15,6 +15,7 @@ import {
   getAiModels,
   getAiProvider,
   setCarModeModel,
+  setCarModeEndPhrase,
   setWingmanFastModel,
   setTtsModel,
   setTtsVoice,
@@ -23,6 +24,11 @@ import {
   ttsSample,
 } from "@devthrottle/client-core/api/ai";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
+import { MicRecorder } from "@devthrottle/client-core/dictation/recorder";
+import { blobToWav16kMono } from "@devthrottle/client-core/dictation/wav";
+import { transcribeCarModeAudio } from "@devthrottle/client-core/carmode/carModeApi";
+import { playReadyCue, primeCueAudio, releaseCueAudio } from "@devthrottle/client-core/dictation/readyCue";
+import { detectPhraseAtEnd } from "@devthrottle/client-core/carmode/controlPhrases";
 import {
   disablePush,
   enablePush,
@@ -44,7 +50,7 @@ import {
 
 const SAMPLE_TEXT = "Hi, I'm your DevThrottle wingman. This is how I'll sound.";
 
-type TabId = "machine" | "ai";
+type TabId = "machine" | "ai" | "carmode";
 
 export function SettingsView() {
   const [tab, setTab] = useState<TabId>("machine");
@@ -80,9 +86,18 @@ export function SettingsView() {
         >
           AI
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "carmode"}
+          className={tab === "carmode" ? "settings-tab active" : "settings-tab"}
+          onClick={() => setTab("carmode")}
+        >
+          Car Mode
+        </button>
       </div>
 
-      {tab === "machine" ? <ThisMachineTab /> : <AiTab />}
+      {tab === "machine" ? <ThisMachineTab /> : tab === "ai" ? <AiTab /> : <CarModeTab />}
     </div>
   );
 }
@@ -514,20 +529,6 @@ function AiTab() {
     }
   };
 
-  const chooseCarMode = async (model: string) => {
-    setBusy(true);
-    setMsg("Saving...");
-    try {
-      await setCarModeModel(model);
-      setSnap({ ...snap, carModeModel: model });
-      setMsg("Car Mode model set.");
-    } catch (e) {
-      setMsg(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const runFastTest = async () => {
     setBusy(true);
     setFastTestMsg("Testing " + snap.wingmanFastModel + "...");
@@ -660,28 +661,6 @@ function AiTab() {
       </div>
 
       <div className="settings-field">
-        <label htmlFor="settings-ai-carmode-model">Car Mode model</label>
-        <select
-          id="settings-ai-carmode-model"
-          className="settings-select"
-          value={snap.carModeModel}
-          disabled={busy}
-          onChange={(e) => void chooseCarMode(e.target.value)}
-        >
-          {ensureIds(snap.carModeModel, chatModels).map((id) => (
-            <option key={id} value={id}>
-              {id}
-            </option>
-          ))}
-        </select>
-        <div className="settings-actions">
-          <span className="settings-inline-msg">
-            Hands-free fleet control from the phone. A fast model is recommended; GLM-5.2 is slower but a strong tool-caller.
-          </span>
-        </div>
-      </div>
-
-      <div className="settings-field">
         <label htmlFor="settings-ai-ttsmodel">Speech model</label>
         <select
           id="settings-ai-ttsmodel"
@@ -729,6 +708,265 @@ function AiTab() {
 
       {msg !== "" && <div className="settings-msg">{msg}</div>}
     </section>
+  );
+}
+
+// ---- "Car Mode" tab: the phone's hands-free fleet control in one place (owner's ask) - its model, its
+// sign-off phrase, and a live phrase tester. The phrase is a Gateway setting (setCarModeEndPhrase) so what
+// is set here reaches the phone where Car Mode runs.
+function CarModeTab() {
+  const [snap, setSnap] = useState<AiProviderSnapshot | null>(null);
+  const [chatModels, setChatModels] = useState<AiModel[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [phraseDraft, setPhraseDraft] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      const s = await getAiProvider();
+      setSnap(s);
+      setPhraseDraft(s.carModeEndPhrase);
+      setChatModels(await getAiModels("chat"));
+    } catch (e) {
+      setError(errText(e));
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error !== null) {
+    return <div className="settings-error">Could not load Car Mode settings: {error}</div>;
+  }
+  if (snap === null) {
+    return <p className="settings-loading">Loading...</p>;
+  }
+
+  const chooseModel = async (model: string) => {
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      await setCarModeModel(model);
+      setSnap({ ...snap, carModeModel: model });
+      setMsg("Car Mode model set.");
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePhrase = async () => {
+    setBusy(true);
+    setMsg("Saving...");
+    try {
+      const { phrase } = await setCarModeEndPhrase(phraseDraft);
+      setSnap({ ...snap, carModeEndPhrase: phrase });
+      setPhraseDraft(phrase);
+      setMsg(`End phrase set to "${phrase}". Applies to the next Car Mode turn, on every device.`);
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-card">
+      <h2 className="settings-h2">Car Mode</h2>
+      <p className="settings-hint">
+        Hands-free fleet control from your phone. Set the model it thinks with, the phrase that ends your
+        turn, and test that the phrase is heard reliably - all in one place.
+      </p>
+
+      <div className="settings-field">
+        <label htmlFor="settings-carmode-model">Model</label>
+        <select
+          id="settings-carmode-model"
+          className="settings-select"
+          value={snap.carModeModel}
+          disabled={busy}
+          onChange={(e) => void chooseModel(e.target.value)}
+        >
+          {ensureIds(snap.carModeModel, chatModels).map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+        <div className="settings-actions">
+          <span className="settings-inline-msg">
+            A fast model is recommended - it must also call tools reliably. GLM-5.2 is slower but a strong
+            tool-caller.
+          </span>
+        </div>
+      </div>
+
+      <div className="settings-field">
+        <label htmlFor="settings-carmode-phrase">End phrase (say this to finish your turn)</label>
+        <input
+          id="settings-carmode-phrase"
+          className="settings-input"
+          type="text"
+          value={phraseDraft}
+          disabled={busy}
+          autoCapitalize="none"
+          autoCorrect="off"
+          placeholder="over and out"
+          onChange={(e) => setPhraseDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void savePhrase();
+          }}
+        />
+        <button type="button" className="settings-btn" disabled={busy} onClick={() => void savePhrase()}>
+          Save
+        </button>
+      </div>
+
+      <PhraseTester phrase={phraseDraft || snap.carModeEndPhrase} />
+
+      {msg !== "" && <div className="settings-msg">{msg}</div>}
+    </section>
+  );
+}
+
+// The live phrase tester: the same detection Car Mode uses (rolling transcription through the Gateway ~once
+// a second, fire when the transcript ends with the phrase), so the owner can confirm a phrase is heard
+// reliably before he relies on it on the road. Uses the shared cue audio so the "heard it" beep sounds.
+function PhraseTester({ phrase }: { phrase: string }) {
+  const [listening, setListening] = useState(false);
+  const [status, setStatus] = useState("Tap Test, speak, and finish with your phrase.");
+  const [result, setResult] = useState<{ latencyMs: number; command: string } | null>(null);
+  const [log, setLog] = useState<{ atMs: number; transcript: string; matched: boolean; transcribeMs: number }[]>([]);
+
+  const recorderRef = useRef<MicRecorder | null>(null);
+  const pollRef = useRef<number | null>(null);
+  const levelRef = useRef<number | null>(null);
+  const busyRef = useRef(false);
+  const listeningRef = useRef(false);
+  const startAtRef = useRef(0);
+  const lastLoudRef = useRef(0);
+  const phraseRef = useRef(phrase);
+  phraseRef.current = phrase;
+
+  const stopTest = useCallback(async () => {
+    listeningRef.current = false;
+    setListening(false);
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    if (levelRef.current !== null) {
+      clearInterval(levelRef.current);
+      levelRef.current = null;
+    }
+    releaseCueAudio();
+    const rec = recorderRef.current;
+    recorderRef.current = null;
+    if (rec && rec.isRecording) {
+      try {
+        await rec.stop();
+      } catch {
+        /* tearing down */
+      }
+    }
+  }, []);
+
+  const poll = useCallback(async () => {
+    if (busyRef.current || !listeningRef.current) return;
+    const rec = recorderRef.current;
+    if (rec === null) return;
+    busyRef.current = true;
+    try {
+      const clip = rec.snapshot();
+      if (clip.size < 2000) return;
+      const t0 = performance.now();
+      const { wav } = await blobToWav16kMono(clip);
+      const heard = (await transcribeCarModeAudio(wav)).trim();
+      const transcribeMs = Math.round(performance.now() - t0);
+      if (!listeningRef.current) return;
+      const det = detectPhraseAtEnd(heard, phraseRef.current);
+      setLog((p) =>
+        [{ atMs: Math.round(performance.now() - startAtRef.current), transcript: heard, matched: det.ended, transcribeMs }, ...p].slice(0, 12),
+      );
+      if (det.ended) {
+        playReadyCue();
+        const latencyMs = Math.max(0, Math.round(performance.now() - lastLoudRef.current));
+        setResult({ latencyMs, command: det.command });
+        setStatus(`Heard "${phraseRef.current}" - ${latencyMs} ms after you stopped speaking.`);
+        void stopTest();
+      }
+    } catch (e) {
+      setStatus("Transcription error: " + errText(e));
+    } finally {
+      busyRef.current = false;
+    }
+  }, [stopTest]);
+
+  const startTest = useCallback(async () => {
+    if (listeningRef.current) return;
+    if (!phraseRef.current.trim()) {
+      setStatus("Set an end phrase first.");
+      return;
+    }
+    setResult(null);
+    setLog([]);
+    setStatus("Opening the microphone...");
+    const rec = new MicRecorder();
+    try {
+      await rec.start();
+    } catch (e) {
+      setStatus("Could not open the microphone: " + errText(e));
+      return;
+    }
+    recorderRef.current = rec;
+    listeningRef.current = true;
+    setListening(true);
+    primeCueAudio();
+    const now = performance.now();
+    startAtRef.current = now;
+    lastLoudRef.current = now;
+    setStatus(`Listening. Speak, then say "${phraseRef.current}".`);
+    levelRef.current = window.setInterval(() => {
+      const l = recorderRef.current?.level() ?? 0;
+      if (l > 0.06) lastLoudRef.current = performance.now();
+    }, 100);
+    pollRef.current = window.setInterval(() => void poll(), 800);
+  }, [poll]);
+
+  useEffect(() => () => void stopTest(), [stopTest]);
+
+  return (
+    <div className="settings-field" style={{ display: "block" }}>
+      <label>Test the phrase</label>
+      <p className="settings-hint">
+        Same detection Car Mode uses: it transcribes what you say about once a second and fires the instant
+        your words end with the phrase.
+      </p>
+      <div className="settings-actions">
+        <button type="button" className="settings-btn" onClick={() => (listening ? void stopTest() : void startTest())}>
+          {listening ? "Stop test" : "Test"}
+        </button>
+        <span className="settings-inline-msg">{status}</span>
+      </div>
+      {result && (
+        <div className="settings-msg">
+          DETECTED - fired {result.latencyMs} ms after you stopped speaking; command heard:{" "}
+          &quot;{result.command || "(none)"}&quot;
+        </div>
+      )}
+      {log.length > 0 && (
+        <div style={{ marginTop: 8, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+          {log.map((e, i) => (
+            <div key={i} style={{ color: e.matched ? "#0a7d28" : "#666" }}>
+              {(e.atMs / 1000).toFixed(1)}s {e.transcribeMs}ms {e.matched ? "[MATCH]" : "[  -  ]"} &quot;{e.transcript}&quot;
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -59,6 +59,27 @@ export function detectEndPhrase(rawTranscript: string): EndPhraseResult {
   return { ended: true, command };
 }
 
+/**
+ * The same end-of-turn rule as detectEndPhrase, but for a CONFIGURABLE phrase (the Car Mode end-word
+ * test page and, later, the Car Mode settings tab where the owner chooses his own sign-off phrase). The
+ * phrase must be the trailing token sequence of the normalized transcript - the whole transcript IS the
+ * phrase, or it ends with a word boundary followed by the phrase - so it never fires mid-sentence, and
+ * it is stripped to yield the command. A blank phrase never matches (so an empty setting cannot end
+ * every turn). Both the transcript and the phrase pass through the one normalizer.
+ */
+export function detectPhraseAtEnd(rawTranscript: string, phrase: string): EndPhraseResult {
+  const norm = normalizeTranscript(phrase);
+  if (norm.length === 0) return { ended: false, command: "" };
+  const text = normalizeTranscript(rawTranscript);
+  if (text.length === 0) return { ended: false, command: "" };
+
+  const endsWithPhrase = text === norm || text.endsWith(" " + norm);
+  if (!endsWithPhrase) return { ended: false, command: "" };
+
+  const command = text.slice(0, text.length - norm.length).trim();
+  return { ended: true, command };
+}
+
 /** What the turn-taking machine should do with a live control transcript, given the current phase. */
 export type ControlAction = "end" | "interrupt" | "none";
 

@@ -129,6 +129,20 @@ internal static class AiModelsEndpoint
             catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
         });
 
+        app.MapPut("/gateway/ai/car-mode-end-phrase", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var body = await JsonSerializer.DeserializeAsync<EndPhraseBody>(ctx.Request.Body, JsonOpts, ctx.RequestAborted);
+                // A blank phrase resets to the default (an empty phrase would end every turn); CarModeEndPhraseConfig.Set enforces it.
+                CarModeEndPhraseConfig.Set(body?.Phrase ?? string.Empty);
+                var phrase = CarModeEndPhraseConfig.Get();
+                FileLog.Write($"[AiModelsEndpoint] car mode end phrase set: {phrase}");
+                return Results.Json(new { phrase });
+            }
+            catch (JsonException) { return Results.BadRequest(new { error = "invalid JSON" }); }
+        });
+
         app.MapPut("/gateway/ai/tts-model", async (HttpContext ctx) =>
         {
             try
@@ -184,5 +198,6 @@ internal static class AiModelsEndpoint
     }
 
     private sealed record ModelBody(string? Model);
+    private sealed record EndPhraseBody(string? Phrase);
     private sealed record ModelDto(string Id, string Description, List<string> Voices, string? DefaultVoice);
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCarMode, type CarModeReply } from "@devthrottle/client-core/carmode/useCarMode";
 import { carModeTurn } from "@devthrottle/client-core/carmode/carModeApi";
+import { getAiProvider } from "@devthrottle/client-core/api/ai";
 import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 
 // The Car Mode page version, shown small in the header corner so the owner can confirm at a glance he is
@@ -9,7 +10,7 @@ import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 // the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
 // ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
 // Architect exactly which page is live and what to look for after a deploy.
-const CAR_MODE_VERSION = "v5";
+const CAR_MODE_VERSION = "v8";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared
@@ -78,6 +79,26 @@ export function CarMode() {
     return { spoken: `You said: ${command}. Go ahead when you're ready.` };
   }, []);
 
+  // The owner's configured hands-free sign-off phrase (set in the Cockpit "Car Mode" settings tab, a Gateway
+  // setting so it reaches this phone). Start from the cached value for an instant, offline-safe default, then
+  // sync the authoritative value from the Gateway. Default "over and out".
+  const [endPhrase, setEndPhrase] = useState(() => localStorage.getItem("carmode.endphrase") || "over and out");
+  useEffect(() => {
+    let cancelled = false;
+    void getAiProvider()
+      .then((p) => {
+        if (cancelled || !p.carModeEndPhrase) return;
+        setEndPhrase(p.carModeEndPhrase);
+        localStorage.setItem("carmode.endphrase", p.carModeEndPhrase);
+      })
+      .catch(() => {
+        // Offline or Gateway unreachable: keep the cached phrase so Car Mode still ends turns.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const {
     phase,
     started,
@@ -92,7 +113,7 @@ export function CarMode() {
     interrupt,
     start,
     stop,
-  } = useCarMode({ respond });
+  } = useCarMode({ respond, endPhrase });
 
   const statusText = phaseStatus(phase);
 
@@ -134,6 +155,17 @@ export function CarMode() {
           <p className="car-status" aria-live="polite">
             {started ? statusText : "Tap Start, then just talk."}
           </p>
+
+          {/* A small link to the End Word Test harness so the owner can reach it without remembering the
+              URL (his ask). Shown only on the idle screen; it is a tuning tool, not part of a live turn. */}
+          {!started && (
+            <Link
+              to="/endword"
+              style={{ marginTop: 16, fontSize: 14, color: "#8ab4f8", textDecoration: "underline" }}
+            >
+              Open the End Word Test
+            </Link>
+          )}
 
           {/* Live microphone level meter (Architect direction): visibly shows the owner his voice is being
               picked up. Reads the capture stream's AnalyserNode via getMicLevel on an animation frame. It
@@ -179,7 +211,7 @@ export function CarMode() {
         ) : (
           <>
             <p className="car-hint">
-              Talk, then tap <strong>Over and out</strong> to send. Tap <strong>Stop</strong> to cut me off.
+              Talk, then say (or tap) <strong>Over and out</strong> to send. Tap <strong>Stop</strong> to cut me off.
             </p>
             {/* Touch equivalents of the two spoken control phrases (Architect direction: the app must be
                 fully usable by touch, so testing is never blocked by the spoken "over and out"). Each
