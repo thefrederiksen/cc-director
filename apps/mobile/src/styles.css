@@ -2582,7 +2582,16 @@ a.banner-btn {
    visible (docs/VisualStyle.md, the app-like session-screen rule). */
 .car-screen {
   position: fixed;
-  inset: 0;
+  /* Anchor top/left/right ONLY - deliberately NOT `inset: 0`. `inset: 0` sets both top:0 AND bottom:0,
+     which OVER-CONSTRAINS a fixed box: its height is then derived from top+bottom (the tall, toolbar-
+     hidden LAYOUT viewport) and the `height: 100dvh` below is IGNORED. The box then extends BELOW the
+     phone's bottom browser toolbar, pushing the footer's primary button off the visible area (the
+     "button cut off" bug, v4). Anchoring top-only lets `height: 100dvh` win, so the box tracks the
+     DYNAMIC visible viewport and the footer sits above the toolbar - the same reason .terminal-screen
+     uses dvh, not vh. */
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -2664,11 +2673,15 @@ a.banner-btn {
   text-align: center;
 }
 
-/* The one big status orb: its color IS the state at a distance (paired with the two audible cues). */
+/* The one big status orb: its color IS the state at a distance (paired with the two audible cues). It is
+   SIZED RESPONSIVELY (v4): a viewport-height clamp so it shrinks on short screens (landscape, small
+   phones) instead of forcing the middle taller and shoving the footer's button off the bottom edge. It
+   also never flex-grows/shrinks unexpectedly, so it holds this size and the middle scrolls if needed. */
 .car-orb {
   position: relative;
-  width: 140px;
-  height: 140px;
+  flex: 0 0 auto;
+  width: clamp(96px, 22vh, 140px);
+  height: clamp(96px, 22vh, 140px);
   border-radius: 50%;
   display: flex;
   align-items: center;
