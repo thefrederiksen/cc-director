@@ -24,6 +24,7 @@
 import { Terminal as Xterm } from "@xterm/xterm";
 import type { IDisposable, ILink, ILinkProvider } from "@xterm/xterm";
 import { ensureGatewayCookie } from "../api/client";
+import { reportGatewayReachable, reportGatewayUnreachable } from "../connection/health";
 import { findLineLinks, type LineLink } from "./lineLinks";
 
 const BASE_FONT = 13; // 1:1 (actual-size) font, in px - matches RawTerminalPage.cs
@@ -41,6 +42,14 @@ const STICKY_SLACK_PX = 48; // auto-scroll only when within this many px of the 
 /** Called when the fit/zoom state changes so the React shell can relabel the Fit button. */
 export type FitLabelListener = (label: "Fit" | "1:1") => void;
 
+// The live-stream connection state, surfaced to the React shell so it can show a small "reconnecting"
+// note while the socket is down (mobile-resilience mission, Phase 3). "connecting" is the first attempt
+// before any open; "live" once a socket is open and replaying; "reconnecting" whenever the socket has
+// dropped and the ~1200ms retry loop is trying again. The terminal content stays on screen the whole
+// time - the note is the only sign of trouble, never a blank screen.
+export type TerminalStreamStatus = "connecting" | "live" | "reconnecting";
+export type StreamStatusListener = (status: TerminalStreamStatus) => void;
+
 function streamUrl(sessionId: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}/sessions/${encodeURIComponent(sessionId)}/stream`;
@@ -51,6 +60,10 @@ export class TerminalMirror {
   private readonly hostEl: HTMLElement;
   private readonly sessionId: string;
   private readonly onFitLabel: FitLabelListener;
+  // Optional: the React shell's setter for the live-stream status note (Phase 3). Absent for callers
+  // that do not render a note (the link-provider unit tests). Only ever called with a CHANGED status.
+  private readonly onStatus?: StreamStatusListener;
+  private status: TerminalStreamStatus = "connecting";
   // Local Files (Phase 3): the app supplies this to open its own file viewer when a FILE path in the
   // mirror is clicked. client-core stays app-agnostic (it must not import app UI - brief decision 6),
   // so the click routes back out through this callback. http/https URLs are opened here directly (a new
@@ -80,12 +93,23 @@ export class TerminalMirror {
     sessionId: string,
     onFitLabel: FitLabelListener,
     onFileLink?: (path: string) => void,
+    onStatus?: StreamStatusListener,
   ) {
     this.wrapEl = wrapEl;
     this.hostEl = hostEl;
     this.sessionId = sessionId;
     this.onFitLabel = onFitLabel;
     this.onFileLink = onFileLink;
+    this.onStatus = onStatus;
+  }
+
+  // Publish a live-stream status transition to the shell (Phase 3), de-duped so the same status does
+  // not re-notify. The initial "connecting" is published on start() so the note shows from the first
+  // frame until the socket opens.
+  private setStatus(next: TerminalStreamStatus): void {
+    if (next === this.status) return;
+    this.status = next;
+    this.onStatus?.(next);
   }
 
   start(): void {
@@ -119,6 +143,8 @@ export class TerminalMirror {
     this.wrapEl.addEventListener("touchmove", this.onTouchMove, { passive: false });
     this.wrapEl.addEventListener("touchend", this.onTouchEnd, { passive: true });
 
+    // Publish the initial "connecting" so the note shows from the first frame until the socket opens.
+    this.onStatus?.(this.status);
     this.connect();
   }
 
@@ -326,10 +352,25 @@ export class TerminalMirror {
     // authenticates (browsers cannot set an Authorization header on a WebSocket).
     ensureGatewayCookie();
 
-    term.reset(); // each connection replays full history from byte 0
+    // NOTE: the terminal is NOT reset here. On a bad connection connect() is retried every ~1200ms, and
+    // resetting before a socket that never opens would wipe the screen and leave it blank the whole time
+    // the network is down (mobile-resilience mission: never clear good data). The reset moves to a
+    // SUCCESSFUL open (sock.onopen), immediately before the byte-0 history replay that a new connection
+    // always sends - so a failed attempt keeps the last-known screen and only a real replay clears it.
     const sock = new WebSocket(streamUrl(this.sessionId));
     sock.binaryType = "arraybuffer";
     this.ws = sock;
+    // Whether THIS socket ever opened. A close with opened=false is a failed attempt (the stream leg is
+    // down) and lights the shared connection banner; a close after a successful open is a normal end or a
+    // mid-stream drop the retry loop handles, and must not be mistaken for an unreachable Gateway.
+    let opened = false;
+
+    sock.onopen = () => {
+      opened = true;
+      term.reset(); // a new connection replays the full history from byte 0 - clear right before it
+      reportGatewayReachable(); // the stream reached a healthy backend (feeds the global banner)
+      this.setStatus("live");
+    };
 
     sock.onmessage = (ev: MessageEvent) => {
       if (typeof ev.data === "string") {
@@ -349,7 +390,14 @@ export class TerminalMirror {
 
     sock.onclose = () => {
       if (this.ws === sock) this.ws = null;
-      if (this.want && this.reconnectTimer === null) {
+      // Disposing (want=false): no reconnect, no status, no health report - a deliberate teardown.
+      if (!this.want) return;
+      // A socket that never opened is a failed connect attempt: the stream leg is down, so light the
+      // shared connection banner. A close AFTER a successful open is a normal stream end or a brief drop
+      // the retry loop handles; the next failed attempt (if the network is really down) reports it then.
+      if (!opened) reportGatewayUnreachable();
+      this.setStatus("reconnecting");
+      if (this.reconnectTimer === null) {
         this.reconnectTimer = window.setTimeout(() => {
           this.reconnectTimer = null;
           if (this.want) this.connect();

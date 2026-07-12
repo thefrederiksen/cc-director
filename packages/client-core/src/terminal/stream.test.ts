@@ -10,6 +10,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ----- fakes for xterm + the Gateway client (hoisted so vi.mock factories may reference them) -----
 const hoisted = vi.hoisted(() => {
   const ensureGatewayCookie = vi.fn();
+  // Spies for the shared connection-health signal the mirror feeds on socket open/close (Phase 3).
+  const reportGatewayReachable = vi.fn();
+  const reportGatewayUnreachable = vi.fn();
   // The minimum of the xterm.js surface the mirror touches during start() + the link provider path.
   class FakeTerminal {
     // getLine backs the link provider's per-line lookup; lineText is buffer row 1's rendered text.
@@ -49,7 +52,7 @@ const hoisted = vi.hoisted(() => {
     }
   }
   const terminals: FakeTerminal[] = [];
-  return { FakeTerminal, terminals, ensureGatewayCookie };
+  return { FakeTerminal, terminals, ensureGatewayCookie, reportGatewayReachable, reportGatewayUnreachable };
 });
 
 const ensureGatewayCookie = hoisted.ensureGatewayCookie;
@@ -60,6 +63,10 @@ vi.mock("@xterm/xterm", () => ({ Terminal: hoisted.FakeTerminal }));
 vi.mock("../api/client", () => ({
   ensureGatewayCookie: () => hoisted.ensureGatewayCookie(),
 }));
+vi.mock("../connection/health", () => ({
+  reportGatewayReachable: () => hoisted.reportGatewayReachable(),
+  reportGatewayUnreachable: () => hoisted.reportGatewayUnreachable(),
+}));
 
 // ----- fake WebSocket (the mirror opens one on connect; the tests never drive it) ---------------
 class FakeWebSocket {
@@ -68,11 +75,21 @@ class FakeWebSocket {
   static readonly OPEN = 1;
   binaryType = "";
   readyState = 0;
+  onopen: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
   closed = false;
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
+  }
+  // Test drivers for the socket lifecycle the mirror wires up.
+  open(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.();
+  }
+  fireClose(): void {
+    this.onclose?.();
   }
   close(): void {
     this.closed = true;
@@ -98,6 +115,8 @@ beforeEach(() => {
   hoisted.terminals.length = 0;
   FakeWebSocket.instances.length = 0;
   ensureGatewayCookie.mockClear();
+  hoisted.reportGatewayReachable.mockClear();
+  hoisted.reportGatewayUnreachable.mockClear();
   windowOpen.mockReset();
   // The mirror touches only these members of window during start()/connect(). ResizeObserver is left
   // undefined so the observer branch is skipped (nothing to measure in these routing tests).
@@ -174,5 +193,66 @@ describe("TerminalMirror link provider (Local Files, Phase 3/4)", () => {
   it("returns no links for a line with none, so xterm leaves the line undecorated", () => {
     const { links } = linksFor("plain output, nothing clickable");
     expect(links).toEqual([]);
+  });
+});
+
+// Reconnect-without-blanking (mobile-resilience mission, Phase 3): the mirror must NOT reset the screen
+// on a failed connect attempt (that would blank the terminal for the whole outage); it resets only on a
+// SUCCESSFUL open, right before the byte-0 history replay. It also feeds the shared connection-health
+// signal (reachable on open, unreachable on a failed attempt) and publishes a status the shell shows as
+// a "reconnecting" note.
+describe("TerminalMirror reconnect without blanking (Phase 3)", () => {
+  function startMirror(): { ws: FakeWebSocket; term: (typeof hoisted.terminals)[number]; statuses: string[] } {
+    const statuses: string[] = [];
+    const mirror = new TerminalMirror(fakeEl(), fakeEl(), SID, () => {}, undefined, (s) => statuses.push(s));
+    mirror.start();
+    return { ws: FakeWebSocket.instances[0], term: hoisted.terminals[0], statuses };
+  }
+
+  it("does NOT reset the terminal on connect - only on a successful socket open", () => {
+    const { ws, term } = startMirror();
+    expect(term.resetCount).toBe(0); // the failed-connection blanking bug: no reset before the socket opens
+    ws.open();
+    expect(term.resetCount).toBe(1); // reset happens once, right before the byte-0 replay
+  });
+
+  it("keeps the last-known screen (no reset) and reports the Gateway unreachable when a connect attempt fails", () => {
+    const { ws, term, statuses } = startMirror();
+    ws.fireClose(); // a socket that never opened = a failed attempt (the stream leg is down)
+    expect(term.resetCount).toBe(0); // the screen is NEVER wiped on a failed attempt
+    expect(hoisted.reportGatewayUnreachable).toHaveBeenCalledTimes(1);
+    expect(hoisted.reportGatewayReachable).not.toHaveBeenCalled();
+    expect(statuses).toEqual(["connecting", "reconnecting"]);
+  });
+
+  it("reports the Gateway reachable and goes live on a successful open", () => {
+    const { ws, statuses } = startMirror();
+    ws.open();
+    expect(hoisted.reportGatewayReachable).toHaveBeenCalledTimes(1);
+    expect(statuses).toEqual(["connecting", "live"]);
+  });
+
+  it("does NOT report unreachable when a stream that had opened later closes (a normal end, not a drop)", () => {
+    const { ws, statuses } = startMirror();
+    ws.open();
+    hoisted.reportGatewayUnreachable.mockClear();
+    ws.fireClose(); // opened=true, so this close is a normal end/brief drop the retry loop handles
+    expect(hoisted.reportGatewayUnreachable).not.toHaveBeenCalled();
+    expect(statuses).toEqual(["connecting", "live", "reconnecting"]);
+  });
+
+  it("does nothing on a close after dispose (no health report, no status)", () => {
+    const statuses: string[] = [];
+    const mirror = new TerminalMirror(fakeEl(), fakeEl(), SID, () => {}, undefined, (s) => statuses.push(s));
+    mirror.start();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    hoisted.reportGatewayReachable.mockClear();
+    hoisted.reportGatewayUnreachable.mockClear();
+    const before = [...statuses];
+    mirror.dispose(); // dispose nulls the socket's onclose, so a later close is inert
+    ws.fireClose();
+    expect(hoisted.reportGatewayUnreachable).not.toHaveBeenCalled();
+    expect(statuses).toEqual(before);
   });
 });

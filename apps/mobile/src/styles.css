@@ -849,6 +849,30 @@ a.banner-btn {
   touch-action: pan-x pan-y;
 }
 
+/* Mobile-resilience Phase 3: the "reconnecting" note floats at the top-center of the terminal stage
+   while the live stream is down. It OVERLAYS the terminal (which keeps its last-known content beneath,
+   never blanked) and clears itself the instant the socket reopens. Amber - a warning, not an error. */
+.term-reconnecting {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: calc(100% - 24px);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(122, 82, 0, 0.94);
+  border: 1px solid #b8860b;
+  color: #ffe6a3;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
 /* The grid renders at the PTY's exact geometry; bottom padding reserves a strip so the live input
    row scrolls clear of the floating Fit / zoom controls instead of hiding under them. */
 .term-xterm {
