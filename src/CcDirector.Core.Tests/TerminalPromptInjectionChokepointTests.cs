@@ -39,13 +39,17 @@ public sealed class TerminalPromptInjectionChokepointTests
         var executor = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "SessionCommandExecutor.cs"));
         var voice = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "VoiceTurnEndpoint.cs"));
         var chat = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "Chat", "ChatService.cs"));
+        // Gateway Cleanup mission, Phase 0: the queue-send path's chokepoint call moved with the verb, from
+        // ControlEndpoints.cs into the QueueGitExecutor.cs core (the REST route and the tunnel verb now share
+        // that one core). The audit stays STRICT - it pins the call to its new known home, not "any file".
+        var queueGit = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "QueueGitExecutor.cs"));
 
         Assert.Contains("Verb = \"prompt\"", control);
         Assert.Contains("SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, source: source);", control);
         Assert.Contains("await session.SendTextAsync(request.Text, source, origin);", executor);
         Assert.Contains("await local.SendTextAsync(framed, SendSource.Internal);", control);
         Assert.Contains("await s.SendTextAsync(framed, SendSource.Internal);", control);
-        Assert.Contains("await session.SendTextAsync(text, SendSource.Internal);", control);
+        Assert.Contains("await session.SendTextAsync(text, SendSource.Internal);", queueGit);
         Assert.Contains("await session.SendTextAsync(inputText, SendSource.Internal);", voice);
         Assert.Contains("await session.SendTextAsync(req.Text, SendSource.Internal);", chat);
 

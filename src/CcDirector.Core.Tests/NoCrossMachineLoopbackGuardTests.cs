@@ -34,6 +34,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         ["src/CcDirector.ControlApi/ControlEndpoints.cs"] = "Same-machine control endpoint helpers / local references.",
         ["src/CcDirector.ControlApi/TailscaleServeSelfProvisioner.cs"] = "Maps the tailnet front door to local loopback backend.",
         ["src/CcDirector.ControlApi/GatewayConnectivitySelfTest.cs"] = "Probes the local loopback Control API as part of self-test.",
+        ["src/CcDirector.ControlApi/GatewayEnrollmentClient.cs"] = "Epic #1069 A: doc comment on EnrollSignedInAsync states the same-machine caller MUST pass a LOOPBACK gatewayUrl (http://127.0.0.1:<local gateway port>) so the Gateway's guardrail-1 IsLoopback check passes. Documents the policy; the literal address is built by the panel's BuildLoopbackEnrollUrl.",
         ["src/CcDirector.ControlApi/DictationEndpoint.cs"] = "Doc comment: 'Localhost-only by default' (describes the loopback bind).",
         ["src/CcDirector.ControlApi/TerminalStreamEndpoint.cs"] = "Doc comment: 'Localhost-only by default' (describes the loopback bind).",
         ["src/CcDirector.Gateway/GatewayHost.cs"] = "Local loopback bind / same-machine wiring.",
@@ -71,6 +72,7 @@ public sealed class NoCrossMachineLoopbackGuardTests
         // --- Desktop app: local Director/Cockpit access + local-only labels ---
         ["src/CcDirector.Avalonia/App.axaml.cs"] = "Local Control API bootstrap / loopback references.",
         ["src/CcDirector.Avalonia/CockpitUrlResolver.cs"] = "Resolves the local Cockpit URL (same machine).",
+        ["src/CcDirector.Avalonia/Controls/GatewayConnectionPanel.axaml.cs"] = "Epic #1069 A: BuildLoopbackEnrollUrl dials the co-located Gateway's /devices/enroll-signed-in at the literal 127.0.0.1 BY DESIGN - the Gateway's guardrail 1 requires the enroll caller to be a proven SAME-machine loopback connection (IPAddress.IsLoopback), so a machine-name or tailnet address would 403. Same-machine only; the enrolled key then registers/heartbeats over the pick's real address.",
         ["src/CcDirector.Avalonia/MainWindow.axaml.cs"] = "Local-only labelled endpoint strings (handover/about).",
         ["src/CcDirector.Avalonia/Controls/ConnectionsView.axaml.cs"] = "Local connection references.",
         ["src/CcDirector.Avalonia/Controls/DirectorView/DirectorView.axaml.cs"] = "Embedded local Director view.",

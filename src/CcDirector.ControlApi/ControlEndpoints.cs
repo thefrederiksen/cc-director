@@ -1829,47 +1829,58 @@ internal static class ControlEndpoints
         // (its own ten-second cache), so the Cockpit's Source Control tab can list what is changed and insert
         // a path into the composer. The enrichment is additive-only, so the existing Wingman consumer of
         // GitSnapshotAsync is untouched.
-        var gitStatusProvider = new Core.Git.GitStatusProvider();
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route and leaves the core reached only over the tunnel.
         app.MapGet("/sessions/{sid}/git", async (string sid, HttpContext ctx) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null) return Results.NotFound(new { error = "session not found" });
-            var snap = await WingmanService.GitSnapshotAsync(session.RepoPath, ctx.RequestAborted);
-            if (snap.Status == "ok")
+            var command = new DirectorCommand { Verb = "git-status", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command, cancellationToken: ctx.RequestAborted);
+
+            return result.Status switch
             {
-                var files = await gitStatusProvider.GetStatusAsync(session.RepoPath);
-                if (files.Success)
-                    Core.Git.GitChangeMapper.Enrich(snap, files);
-            }
-            return Results.Json(snap);
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<GitSnapshot>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "git-status command failed"),
+            };
         });
 
         // ===== Git WRITE actions (mirror the desktop Source Control view) =====
         // Reads stay on GET /git above; these mutate the working tree of the session's repo.
-        var gitWrite = new Core.Git.GitWriteService();
-
-        async Task<IResult> RunGitWrite(string sid, Func<string, Task<Core.Git.GitWriteResult>> op)
+        // Gateway Cleanup Phase 0 (Worker W2): each git write now runs through the shared QueueGitExecutor
+        // core so the REST route and the Gateway tunnel down-channel cannot drift. The command body (the
+        // git result) rides back verbatim; a non-zero git exit surfaces as accepted=false, which this route
+        // maps to HTTP 409 exactly as the old RunGitWrite helper did.
+        async Task<IResult> DispatchGitWrite(string verb, string sid, object? payload)
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null) return Results.NotFound(new { error = "session not found" });
-            var r = await op(session.RepoPath);
-            return r.Success
-                ? Results.Json(new { accepted = true, output = r.Output })
-                : Results.Json(new { accepted = false, error = r.Error, exitCode = r.ExitCode }, statusCode: StatusCodes.Status409Conflict);
+            var command = new DirectorCommand
+            {
+                Verb = verb,
+                SessionId = sid,
+                PayloadJson = payload is null ? "" : SessionCommandExecutor.Serialize(payload),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok =>
+                    SessionCommandExecutor.Deserialize<GitWriteEnvelope>(result.BodyJson)!.Accepted
+                        ? Results.Content(result.BodyJson ?? "", "application/json")
+                        : Results.Content(result.BodyJson ?? "", "application/json", null, StatusCodes.Status409Conflict),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "git command failed"),
+            };
         }
 
         app.MapPost("/sessions/{sid}/git/stage", (string sid, GitPathsRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.StageAsync(repo, req?.Paths ?? new())));
+            DispatchGitWrite("git-stage", sid, req));
         app.MapPost("/sessions/{sid}/git/unstage", (string sid, GitPathsRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.UnstageAsync(repo, req?.Paths ?? new())));
+            DispatchGitWrite("git-unstage", sid, req));
         app.MapPost("/sessions/{sid}/git/discard", (string sid, GitPathsRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.DiscardAsync(repo, req?.Paths ?? new())));
+            DispatchGitWrite("git-discard", sid, req));
         app.MapPost("/sessions/{sid}/git/commit", (string sid, GitCommitRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.CommitAsync(repo, req?.Message ?? "")));
+            DispatchGitWrite("git-commit", sid, req));
 
         // Re-point a Director session at a different Claude session id (mirrors the desktop
         // Relink button - recover continuity when the underlying Claude session id changed).
@@ -2195,118 +2206,91 @@ internal static class ControlEndpoints
         // Messages the user composed while the agent was busy. Stored on the session's
         // PromptQueue; the Cockpit's Queue button adds here, the queue panel lists/removes,
         // and "send" delivers an item to the PTY now. Mirrors the existing desktop queue.
-        app.MapGet("/sessions/{sid}/queue", (string sid) =>
+        // Gateway Cleanup Phase 0 (Worker W2): every queue verb now runs through the shared QueueGitExecutor
+        // core so the REST route and the Gateway tunnel down-channel cannot drift. Each route packages its
+        // arguments into a DirectorCommand, dispatches, and maps the typed result back to the same HTTP shape
+        // the old lambda returned (the success body is the queue projection, shipped verbatim).
+        IResult MapQueueResult(DirectorCommandResult result) => result.Status switch
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            return Results.Json(new { items = ProjectQueue(session) });
-        });
+            DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+            DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+            DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+            _ => Results.Problem(result.Error ?? "queue command failed"),
+        };
+
+        async Task<IResult> DispatchQueue(string verb, string sid, object? payload)
+        {
+            var command = new DirectorCommand
+            {
+                Verb = verb,
+                SessionId = sid,
+                PayloadJson = payload is null ? "" : SessionCommandExecutor.Serialize(payload),
+            };
+            return MapQueueResult(await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command));
+        }
+
+        app.MapGet("/sessions/{sid}/queue", (string sid) =>
+            DispatchQueue("queue-read", sid, null));
 
         app.MapPost("/sessions/{sid}/queue", (string sid, PromptRequest req) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue enqueue: sid={sid}, len={req?.Text?.Length ?? 0}");
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            if (req is null || string.IsNullOrWhiteSpace(req.Text))
-                return Results.BadRequest(new { error = "text is required" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.PromptQueue.Enqueue(req.Text);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-add", sid, new QueueItemCommand(Text: req?.Text));
         });
 
         app.MapDelete("/sessions/{sid}/queue/{itemId}", (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] DELETE queue item: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.PromptQueue.Remove(itemGuid);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-remove", sid, new QueueItemCommand(ItemId: itemId));
         });
 
         // Edit the text of a queued item in place.
         app.MapPatch("/sessions/{sid}/queue/{itemId}", (string sid, string itemId, PromptRequest req) =>
         {
             FileLog.Write($"[ControlEndpoints] PATCH queue edit: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            if (req is null || string.IsNullOrWhiteSpace(req.Text))
-                return Results.BadRequest(new { error = "text is required" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.UpdateText(itemGuid, req.Text);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-update", sid, new QueueItemCommand(ItemId: itemId, Text: req?.Text));
         });
 
         app.MapPost("/sessions/{sid}/queue/{itemId}/move-up", (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue move-up: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.MoveUp(itemGuid);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-move-up", sid, new QueueItemCommand(ItemId: itemId));
         });
 
         app.MapPost("/sessions/{sid}/queue/{itemId}/move-down", (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue move-down: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.MoveDown(itemGuid);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-move-down", sid, new QueueItemCommand(ItemId: itemId));
         });
 
         app.MapDelete("/sessions/{sid}/queue", (string sid) =>
         {
             FileLog.Write($"[ControlEndpoints] DELETE queue clear: sid={sid}");
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.Clear();
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-clear", sid, null);
         });
 
         // Deliver one queued item to the PTY now (and drop it from the queue). Used by the
-        // queue panel's per-item "send" and by a "send next" action.
+        // queue panel's per-item "send" and by a "send next" action. Unlike the other queue verbs
+        // this one can return 409 (an Exited/Failed session), returned here as an empty 409 exactly
+        // as the old lambda did.
         app.MapPost("/sessions/{sid}/queue/{itemId}/send", async (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue send: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            if (session.Status is SessionStatus.Exited or SessionStatus.Failed)
-                return Results.StatusCode(StatusCodes.Status409Conflict);
-
-            var item = session.PromptQueue.FindById(itemGuid);
-            if (item is null)
-                return Results.NotFound(new { error = "queue item not found" });
-
-            var text = item.Text;
-            session.PromptQueue.Remove(itemGuid);
-            // Queue drain is an explicit, ordered mechanism (issue #1181, Task 3b lists it exempt): the
-            // user asked to release this queued item, so it is not blocked by the dictation lock.
-            await session.SendTextAsync(text, SendSource.Internal);
-            return Results.Json(new { items = ProjectQueue(session) });
+            var command = new DirectorCommand
+            {
+                Verb = "queue-send",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new QueueItemCommand(ItemId: itemId)),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.StatusCode(StatusCodes.Status409Conflict),
+                _ => Results.Problem(result.Error ?? "queue send command failed"),
+            };
         });
 
         // Hard interrupt via the session's agent driver (Ctrl+C for Claude). Drivers
@@ -2814,88 +2798,39 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Coaching quick-launch categories (Assistant / Coach cards) =====
-        app.MapGet("/coaching/categories", () =>
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route.
+        app.MapGet("/coaching/categories", async () =>
         {
-            FileLog.Write("[ControlEndpoints] GET /coaching/categories");
-            var cats = new List<CoachingCategoryDto>
+            var command = new DirectorCommand { Verb = "coaching-categories" };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
             {
-                new()
-                {
-                    Key = "assistant",
-                    Label = "Assistant",
-                    Description = "Tasks, contacts, daily briefing",
-                    Path = CcStorage.CoachingCategory("assistant"),
-                },
-                new()
-                {
-                    Key = "coach",
-                    Label = "Coach",
-                    Description = "Life coaching across all domains",
-                    Path = CcStorage.CoachingCategory("coach"),
-                },
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<List<CoachingCategoryDto>>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "coaching-categories command failed"),
             };
-            return Results.Json(cats);
         });
 
         // ===== REST: Resumable Claude Code sessions (Resume Session tab) =====
-        app.MapGet("/claude-sessions", (string? repo) =>
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route. The ?repo= filter rides in the command payload as a ClaudeSessionsRequest.
+        app.MapGet("/claude-sessions", async (string? repo) =>
         {
-            FileLog.Write($"[ControlEndpoints] GET /claude-sessions: repo={repo}");
-
-            var claudeMeta = new Dictionary<string, ClaudeSessionMetadata>(StringComparer.Ordinal);
-            foreach (var cm in ClaudeSessionReader.ScanAllProjects())
-                claudeMeta.TryAdd(cm.SessionId, cm);
-
-            var history = new SessionHistoryStore().LoadAll();
-            var dtos = new List<ClaudeSessionDto>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-
-            // History entries first (they carry custom name/color), enriched with Claude metadata.
-            foreach (var entry in history)
+            var command = new DirectorCommand
             {
-                if (string.IsNullOrEmpty(entry.ClaudeSessionId) || !seen.Add(entry.ClaudeSessionId))
-                    continue;
-                claudeMeta.TryGetValue(entry.ClaudeSessionId, out var meta);
-                dtos.Add(new ClaudeSessionDto
-                {
-                    ClaudeSessionId = entry.ClaudeSessionId,
-                    RepoPath = entry.RepoPath,
-                    ProjectName = ProjectNameOf(entry.RepoPath),
-                    CustomName = entry.CustomName,
-                    CustomColor = entry.CustomColor,
-                    MessageCount = meta?.MessageCount ?? 0,
-                    Summary = meta?.Summary ?? meta?.FirstPrompt ?? entry.FirstPromptSnippet,
-                    LastUsedUtc = entry.LastUsedAt == default ? meta?.Modified : entry.LastUsedAt.UtcDateTime,
-                });
-            }
+                Verb = "claude-sessions",
+                PayloadJson = SessionCommandExecutor.Serialize(new ClaudeSessionsRequest { Repo = repo }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            // Then any Claude sessions not tracked by a workspace history entry.
-            foreach (var meta in claudeMeta.Values)
+            return result.Status switch
             {
-                if (string.IsNullOrEmpty(meta.SessionId) || !seen.Add(meta.SessionId))
-                    continue;
-                dtos.Add(new ClaudeSessionDto
-                {
-                    ClaudeSessionId = meta.SessionId,
-                    RepoPath = meta.ProjectPath ?? string.Empty,
-                    ProjectName = ProjectNameOf(meta.ProjectPath ?? string.Empty),
-                    MessageCount = meta.MessageCount,
-                    Summary = meta.Summary ?? meta.FirstPrompt,
-                    LastUsedUtc = meta.Modified == DateTime.MinValue ? null : meta.Modified,
-                });
-            }
-
-            if (!string.IsNullOrWhiteSpace(repo))
-            {
-                var wanted = NormalizeRepoPath(repo);
-                dtos = dtos.Where(d => !string.IsNullOrEmpty(d.RepoPath)
-                                       && NormalizeRepoPath(d.RepoPath) == wanted).ToList();
-            }
-
-            var ordered = dtos
-                .OrderByDescending(d => d.LastUsedUtc ?? DateTime.MinValue)
-                .ToList();
-            return Results.Json(ordered);
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<List<ClaudeSessionDto>>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "claude-sessions command failed"),
+            };
         });
 
         // ===== REST: Handover documents (Handovers tab) =====
@@ -2987,18 +2922,25 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Remote folder browser (Browse... button) =====
-        app.MapGet("/fs/list", (string? path) =>
+        // Gateway Cleanup Phase 0 (Worker R2): the list-directory read runs through the shared
+        // CatalogReadExecutor core so this REST path and the Gateway stream down-channel are identical and
+        // cannot drift. Phase 1 deletes this route. The ?path= argument rides in the command payload as an
+        // FsListRequest; the core preserves the source route's try/catch, so a bad path is still a 400.
+        app.MapGet("/fs/list", async (string? path) =>
         {
-            FileLog.Write($"[ControlEndpoints] GET /fs/list: path={path}");
-            try
+            var command = new DirectorCommand
             {
-                return Results.Json(ListDirectory(path));
-            }
-            catch (Exception ex)
+                Verb = "fs-list",
+                PayloadJson = SessionCommandExecutor.Serialize(new FsListRequest { Path = path }),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
             {
-                FileLog.Write($"[ControlEndpoints] GET /fs/list FAILED: {ex.Message}");
-                return Results.BadRequest(new { error = ex.Message });
-            }
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<DirectoryListingDto>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "fs-list command failed"),
+            };
         });
 
         // ===== REST: Create a session =====
@@ -3017,43 +2959,35 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Create a GitHub Actions remote session =====
-        app.MapPost("/sessions/github", (GitHubSessionRequest req) =>
+        // Gateway Cleanup Phase 0 (Worker W2): the whole create-from-github - the validation guards and the
+        // CreateGitHubActionsSession call - runs through the shared QueueGitExecutor so this REST path and the
+        // Gateway tunnel down-channel create identically. The Director's own 201 response is still built with
+        // the identity-stamped MapWithIdentity (unchanged), so this endpoint stays byte-identical; the executor
+        // returns the plain stream DTO. Mirrors CreateLocalSessionAsync for the local `create` verb.
+        app.MapPost("/sessions/github", async (GitHubSessionRequest req) =>
         {
             FileLog.Write($"[ControlEndpoints] POST /sessions/github: {req?.Owner}/{req?.Repo} mode={req?.TriggerMode}");
 
-            if (req is null || string.IsNullOrWhiteSpace(req.Owner) || string.IsNullOrWhiteSpace(req.Repo))
-                return Results.BadRequest(new { error = "owner and repo are required" });
-            if (string.IsNullOrWhiteSpace(req.InitialPrompt))
-                return Results.BadRequest(new { error = "initialPrompt is required" });
-            if (!Enum.TryParse<RemoteTriggerMode>(req.TriggerMode, ignoreCase: true, out var mode))
-                return Results.BadRequest(new { error = $"unknown triggerMode: {req.TriggerMode}. Valid: NewIssue, ExistingThread, WorkflowDispatch" });
-            if (mode == RemoteTriggerMode.ExistingThread && (req.ThreadNumber is null || req.ThreadNumber <= 0))
-                return Results.BadRequest(new { error = "threadNumber is required (and must be positive) for ExistingThread mode" });
-            if (mode == RemoteTriggerMode.WorkflowDispatch && string.IsNullOrWhiteSpace(req.WorkflowFile))
-                return Results.BadRequest(new { error = "workflowFile is required for WorkflowDispatch mode" });
-
-            var config = new RemoteSessionConfig
+            var command = new DirectorCommand
             {
-                Owner = req.Owner.Trim(),
-                Repo = req.Repo.Trim(),
-                BaseBranch = string.IsNullOrWhiteSpace(req.BaseBranch) ? "main" : req.BaseBranch.Trim(),
-                TriggerMode = mode,
-                InitialPrompt = req.InitialPrompt.Trim(),
-                ThreadNumber = req.ThreadNumber,
-                IssueTitle = req.IssueTitle,
-                WorkflowFile = req.WorkflowFile,
+                Verb = "create-from-github",
+                SessionId = "",
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
             };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            try
-            {
-                var session = sessionManager.CreateGitHubActionsSession(config);
-                return Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[ControlEndpoints] POST /sessions/github FAILED: {ex.Message}");
-                return Results.Problem(ex.Message, statusCode: 500);
-            }
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.Problem(result.Error ?? "create-from-github failed", statusCode: 500);
+
+            var created = SessionCommandExecutor.Deserialize<SessionDto>(result.BodyJson);
+            if (created is null || !Guid.TryParse(created.SessionId, out var newGuid))
+                return Results.Problem("created session id missing", statusCode: 500);
+            var session = sessionManager.GetSession(newGuid);
+            return session is null
+                ? Results.Problem("created session not found", statusCode: 500)
+                : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
         });
 
         // ===== REST: Kill a session =====
@@ -3142,10 +3076,19 @@ internal static class ControlEndpoints
         // This machine's claimed dirty crash journals - Directors that died abnormally here,
         // with their recoverable session rosters. The Gateway aggregates these across the fleet
         // for the Cockpit's Interrupted sessions list.
-        app.MapGet("/interrupted", () =>
+        // Gateway Cleanup Phase 0 (Worker R2): the read runs through the shared CatalogReadExecutor core so
+        // this REST path and the Gateway stream down-channel are identical and cannot drift. Phase 1 deletes
+        // this route.
+        app.MapGet("/interrupted", async () =>
         {
-            var pending = Core.Sessions.DirectorCrashJournal.ListPendingRecoveries();
-            return Results.Json(pending);
+            var command = new DirectorCommand { Verb = "interrupted-list" };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<List<Core.Sessions.DirectorCrashJournalData>>(result.BodyJson)),
+                _ => Results.Problem(result.Error ?? "interrupted-list command failed"),
+            };
         });
 
         // Dismiss one claimed dirty journal once its sessions are recovered or no longer wanted.
@@ -3249,7 +3192,9 @@ internal static class ControlEndpoints
     }
 
     /// <summary>Folder name of a repo path, for display fallback. Empty path -> "Unknown Project".</summary>
-    private static string ProjectNameOf(string repoPath)
+    // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's claude-sessions core
+    // (lifted verbatim from GET /claude-sessions) calls the SAME helper - no drift, no duplication.
+    internal static string ProjectNameOf(string repoPath)
     {
         if (string.IsNullOrEmpty(repoPath))
             return "Unknown Project";
@@ -3270,7 +3215,9 @@ internal static class ControlEndpoints
     /// case-insensitive). Callers must filter null/empty first; Path.GetFullPath throws
     /// only on empty or embedded-NUL input, which the global error envelope surfaces loudly.
     /// </summary>
-    private static string NormalizeRepoPath(string path)
+    // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's claude-sessions core
+    // (lifted verbatim from GET /claude-sessions) calls the SAME helper - no drift, no duplication.
+    internal static string NormalizeRepoPath(string path)
     {
         return Path.GetFullPath(path).TrimEnd('\\', '/').ToLowerInvariant();
     }
@@ -3279,7 +3226,9 @@ internal static class ControlEndpoints
     /// List sub-directories of <paramref name="path"/> for the remote folder browser. A null or
     /// empty path returns the drive roots. Solo-tailnet: no path sandboxing (see remote-experience-plan.md).
     /// </summary>
-    private static DirectoryListingDto ListDirectory(string? path)
+    // Gateway Cleanup Phase 0 (Worker R2): widened to internal so CatalogReadExecutor's fs-list core (the
+    // list-directory read, lifted from GET /fs/list) calls the SAME helper - no drift, no duplication.
+    internal static DirectoryListingDto ListDirectory(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -3344,12 +3293,6 @@ internal static class ControlEndpoints
             return "";
         }
     }
-
-    /// <summary>Project a session's prompt queue to the wire shape the Cockpit renders.</summary>
-    private static IReadOnlyList<object> ProjectQueue(Session s) =>
-        s.PromptQueue.Items
-            .Select(i => (object)new { id = i.Id.ToString(), text = i.Text, createdAt = i.CreatedAt })
-            .ToList();
 
     /// <summary>The session driver's capability flags as names, for UIs to render
     /// action buttons from (no per-agent special cases client-side).</summary>

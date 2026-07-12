@@ -4,8 +4,9 @@
 #
 # After this runs you'll have:
 #   • "CC Director" — your stable copy, in /Applications AND pinned to the Dock.
-#   • "CC Director 1".."CC Director 4" — dev test slots, in /Applications
-#     (find them in Launchpad or Spotlight). Build a slot when you want to test.
+#   • "CC Director 1".."CC Director 4" — normal-work slots, in /Applications
+#     (find them in Launchpad or Spotlight).
+#   • "CC Director 5" — the testing slot, started and stopped freely.
 #
 # Re-running is safe (idempotent). Requires the .NET 10 SDK (see scripts/local-build/mac/README.md).
 #
@@ -18,9 +19,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # bundle id and would confuse LaunchServices/Dock about which app to open.
 rm -rf "$REPO_ROOT/local_builds/mac/CC Director.app"
 
-echo "Setting up CC Director apps (1 main + 4 test slots)..."
+echo "Setting up CC Director apps (1 main + 5 slots)..."
 
-# 1) Lay down all five app icons first (instant; slots have no binary yet).
+# 0) Create and trust the stable local code-signing certificate (idempotent;
+#    may ask for your administrator password). Without it every rebuild
+#    re-triggers the macOS privacy popups ("... would like to access files in
+#    your Desktop folder"), which stall unattended Directors.
+"$SCRIPT_DIR/local-build/mac/make-signing-certificate.sh" || \
+    echo "WARNING: signing certificate not set up - privacy popups will return after every rebuild."
+
+# 1) Lay down all six app icons first (instant; slots have no binary yet).
 "$SCRIPT_DIR/mac-rebuild.sh" apps
 
 # 2) Build the main copy and pin it to the Dock.
@@ -33,9 +41,10 @@ cat <<'EOF'
   • "CC Director" is now in your Dock (bottom toolbar) and in /Applications.
     Click the Dock icon any time — this is your everyday copy.
 
-  • Test slots "CC Director 1" … "CC Director 4" are in /Applications.
-    Find them with Spotlight (press Cmd+Space, type "CC Director 2") or in
-    Launchpad. They aren't built yet — clicking one tells you how to build it.
+  • Slots "CC Director 1" … "CC Director 4" (normal work) and "CC Director 5"
+    (testing) are in /Applications. Find them with Spotlight (press Cmd+Space,
+    type "CC Director 2") or in Launchpad. A slot that isn't built yet tells
+    you how to build it when you click it.
 
 Everyday commands (run from the repo root):
 
@@ -44,4 +53,10 @@ Everyday commands (run from the repo root):
     scripts/mac-rebuild.sh all      # rebuild everything
 
 Each app launches under launchd, so the Terminal/Wingman tabs work correctly.
+
+To stop the macOS privacy popups from ever interrupting unattended work, grant
+the slot binaries Full Disk Access once: System Settings → Privacy & Security →
+Full Disk Access → press the plus button → press Command+Shift+G → go to
+<repo>/local_builds/mac → add each cc-director-mac binary. Thanks to the
+signing certificate created above, that grant survives rebuilds.
 EOF

@@ -98,4 +98,44 @@ public sealed class AuthMiddlewareTests
         var key = devices.Register("phone-3", "PHONE").DeviceKey;
         Assert.True(AuthMiddleware.HasValidToken(WithBearer(key), SharedToken, devices));
     }
+
+    // Epic #1069 (fresh-device unblock): the sign-in enrollment endpoint must be reachable by a
+    // token-less device, or a brand-new co-located Director can never earn its first key (the deadlock).
+    // It carries its own loopback + signed-in guards, so opening the route is safe. This pins that the
+    // route is in the public set so the gate can never silently re-close it.
+    [Fact]
+    public async Task Enroll_signed_in_is_public_and_reachable_without_a_credential()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Path = "/devices/enroll-signed-in";
+        ctx.Request.Method = "POST";
+
+        var passedThrough = false;
+        await AuthMiddleware.Run(
+            ctx,
+            new AuthMiddleware.RequireToken { Token = SharedToken, Devices = TempRegistry() },
+            () => { passedThrough = true; return Task.CompletedTask; });
+
+        Assert.True(passedThrough, "a token-less enroll-signed-in must reach the endpoint (it self-guards loopback + signed-in)");
+        Assert.NotEqual(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
+
+    // The corrective half: a DATA endpoint (account status returns email/provider/credits) must STILL be
+    // gated - opening enroll-signed-in must not have widened the hole to account data.
+    [Fact]
+    public async Task Account_status_stays_gated_without_a_credential()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Path = "/account/status";
+        ctx.Request.Method = "GET";
+
+        var passedThrough = false;
+        await AuthMiddleware.Run(
+            ctx,
+            new AuthMiddleware.RequireToken { Token = SharedToken, Devices = TempRegistry() },
+            () => { passedThrough = true; return Task.CompletedTask; });
+
+        Assert.False(passedThrough, "account status must not be reachable without a credential");
+        Assert.Equal(StatusCodes.Status401Unauthorized, ctx.Response.StatusCode);
+    }
 }

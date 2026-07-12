@@ -8,6 +8,14 @@
         <Style Selector="ScrollViewer">
             <Setter Property="AllowAutoHide" Value="False" />
         </Style>
+        <!-- AllowAutoHide keeps the bar from fading out, but the Fluent theme still
+             draws it as a thin sliver until the pointer is over it: the thumb carries
+             a scale transform that only the IsExpanded (hover) state removes. Strip
+             that transform unconditionally so a scrollbar that is present is drawn at
+             full thickness and is unmistakably there, not a hard-to-see hairline. -->
+        <Style Selector="ScrollBar /template/ Thumb">
+            <Setter Property="RenderTransform" Value="none" />
+        </Style>
     </Application.Styles>
 
     <Application.Resources>
