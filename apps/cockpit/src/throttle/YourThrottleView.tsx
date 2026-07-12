@@ -9,6 +9,7 @@ import {
   type ThrottleData,
   type ThrottleSummary,
   type ConcurrencyHour,
+  type InputHour,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
@@ -63,6 +64,47 @@ function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
         );
       })}
     </div>
+  );
+}
+
+/** A 24-hour bar chart of turns submitted per hour - the "working day" shape. Each bar is the total turns
+ * that hour, stacked voice (accent) over typed (muted). Pure CSS bars, theme-aware. */
+function TurnsPerHourChart({ hourly }: { hourly: InputHour[] }) {
+  const recent = hourly.slice(-24);
+  const peak = Math.max(1, ...recent.map((h) => h.turns));
+  return (
+    <>
+      <div
+        className="thr-chart"
+        role="img"
+        aria-label={`Turns submitted per hour for the last ${recent.length} hours`}
+      >
+        {recent.map((h, i) => {
+          const totalPct = (h.turns / peak) * 100;
+          const voicePortion = h.turns > 0 ? (h.voiceTurns / h.turns) * 100 : 0;
+          const typedPortion = h.turns > 0 ? (h.typedTurns / h.turns) * 100 : 0;
+          return (
+            <div
+              className="thr-bar-col"
+              key={h.hour}
+              title={`${h.hour}:00 UTC - ${h.turns} turns (${h.voiceTurns} voice, ${h.typedTurns} typed), ${h.characters.toLocaleString()} chars`}
+            >
+              <div className="thr-bar-track">
+                <div className="thr-turns-bar" style={{ height: `${totalPct}%` }}>
+                  <div className="thr-turns-typed" style={{ height: `${typedPortion}%` }} />
+                  <div className="thr-turns-voice" style={{ height: `${voicePortion}%` }} />
+                </div>
+              </div>
+              <div className="thr-bar-label">{i % 4 === 0 ? h.hour.slice(-2) : ""}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="thr-legend">
+        <span className="thr-legend-item"><span className="thr-swatch thr-swatch-voice" /> Voice</span>
+        <span className="thr-legend-item"><span className="thr-swatch thr-swatch-typed" /> Typed</span>
+      </div>
+    </>
   );
 }
 
@@ -164,6 +206,17 @@ export function YourThrottleView() {
             actively working. Hover a bar for that hour's distinct sessions and machines.
           </p>
           <ConcurrencyChart hourly={data.concurrency.hourly} />
+        </div>
+      )}
+
+      {data !== null && data.hourlyTurns.length > 0 && (
+        <div className="thr-section">
+          <h2>Turns per hour (last 24h)</h2>
+          <p className="thr-hint">
+            Your working day: how many turns you submitted each hour (UTC), voice over typed. Empty hours
+            are when you were away.
+          </p>
+          <TurnsPerHourChart hourly={data.hourlyTurns} />
         </div>
       )}
 

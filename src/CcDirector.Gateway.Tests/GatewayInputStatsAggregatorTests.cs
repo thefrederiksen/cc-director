@@ -125,4 +125,48 @@ public sealed class GatewayInputStatsAggregatorTests : IDisposable
         Assert.Equal(4, Turns(agg2.CurrentTotals(), "voice", "phone"));
         Assert.Equal(160, Chars(agg2.CurrentTotals(), "voice", "phone"));
     }
+
+    private static readonly DateTime H17 = new(2026, 7, 11, 17, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime H18 = new(2026, 7, 11, 18, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void HourlyTurns_LogsTurnDeltasByHourAndModality()
+    {
+        var agg = new GatewayInputStatsAggregator(_path);
+
+        // Hour 17: 3 voice/phone turns and 1 typed/desktop turn arrive.
+        agg.Observe(Session("s1", ("voice", "phone", 3, 300)), H17);
+        agg.Observe(Session("s2", ("typed", "desktop", 1, 50)), H17);
+        // Hour 18: s1 grows by 2 more voice turns (5 total) - only the +2 delta lands in hour 18.
+        agg.Observe(Session("s1", ("voice", "phone", 5, 500)), H18);
+
+        var hours = agg.HourlyTurns();
+        Assert.Equal(2, hours.Count);
+
+        var h17 = hours.First(h => h.Hour == "2026-07-11T17");
+        Assert.Equal(4, h17.Turns);       // 3 voice + 1 typed
+        Assert.Equal(3, h17.VoiceTurns);
+        Assert.Equal(1, h17.TypedTurns);
+        Assert.Equal(350, h17.Characters);
+
+        var h18 = hours.First(h => h.Hour == "2026-07-11T18");
+        Assert.Equal(2, h18.Turns);       // only the +2 voice delta
+        Assert.Equal(2, h18.VoiceTurns);
+        Assert.Equal(0, h18.TypedTurns);
+        Assert.Equal(200, h18.Characters);
+    }
+
+    [Fact]
+    public void HourlyTurns_SurviveRestart()
+    {
+        var a = new GatewayInputStatsAggregator(_path);
+        a.Observe(Session("s1", ("voice", "phone", 3, 300)), H17);
+
+        var b = new GatewayInputStatsAggregator(_path); // reload from disk
+        var hours = b.HourlyTurns();
+        Assert.Single(hours);
+        Assert.Equal("2026-07-11T17", hours[0].Hour);
+        Assert.Equal(3, hours[0].VoiceTurns);
+        Assert.Equal(300, hours[0].Characters);
+    }
 }
