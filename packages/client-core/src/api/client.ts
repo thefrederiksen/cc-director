@@ -78,12 +78,22 @@ export function authHeaders(): HeadersInit {
 // cannot set an Authorization header, so the live terminal stream (GET /sessions/{sid}/stream)
 // authenticates via this cookie, which the same-origin handshake carries and the Gateway's
 // AuthMiddleware accepts (HasValidToken checks the cookie against the shared token OR an active
-// per-device key). The key is already in this origin's storage, so the cookie exposes nothing new; it
-// is scoped to this origin. A no-op before enrollment (no key yet - the stream is never opened then).
+// per-device key). The same constraint applies to any bare <img>/<iframe> src that hits a gated
+// Gateway route - the Local Files viewer's image/PDF/HTML modes - because those elements also cannot
+// carry a Bearer header; they authenticate through this cookie exactly as the stream does.
+// The key is already in this origin's storage, so the cookie exposes nothing new; it is scoped to this
+// origin. A no-op before enrollment (no key yet - the stream is never opened then).
+//
+// PERSISTENT (Max-Age one year), not a session cookie: an installed PWA (the phone) can evict a
+// session cookie between launches, after which a bare <img>/<iframe> src loads with no credential and
+// gets a 401 - the Local Files viewer's "Could not load image" failure. Because the credential already
+// lives on disk in localStorage, persisting it in the cookie exposes nothing further; it just keeps the
+// cookie-authenticated resource loads working after the app is closed and reopened.
 export function ensureGatewayCookie(): void {
   const token = gatewayToken();
   if (!token) return;
-  document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax`;
+  const oneYearSeconds = 60 * 60 * 24 * 365;
+  document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax; Max-Age=${oneYearSeconds}`;
 }
 
 // The redirect target when a credentialed call is rejected (401) mid-session is SHELL-AWARE, because

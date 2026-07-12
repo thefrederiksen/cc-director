@@ -4,6 +4,7 @@ import { classifyFile, formatFileSize } from "@devthrottle/client-core/history/f
 import type { FileViewerType } from "@devthrottle/client-core/history/fileTypes";
 import {
   GatewayError,
+  ensureGatewayCookie,
   fetchSessionFileSize,
   fetchSessionFileText,
   sessionFileUrl,
@@ -48,6 +49,14 @@ function fileLoadMessage(err: unknown): string {
 }
 
 export function FileView() {
+  // The image / PDF / HTML modes below render a bare <img>/<iframe> whose src hits a gated Gateway
+  // route. Those elements cannot carry a Bearer header, so - exactly like the terminal stream before it
+  // opens its WebSocket (terminal/stream.ts) - they authenticate through the cc-gateway-token cookie.
+  // Re-mirror it here, on mount, so the cookie is present the moment those elements load even if an
+  // installed PWA evicted the app-startup cookie between launches (the "Could not load image" failure).
+  // Synchronous, not an effect: an effect runs after the first paint, too late for the initial request.
+  ensureGatewayCookie();
+
   const { sessionId } = useParams<{ sessionId: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
