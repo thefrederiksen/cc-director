@@ -148,6 +148,9 @@ export interface CarModeTelemetryPost {
   /** True when the reply clip played fully to its natural end; false when it was cut off (interrupt / End
    *  Car Mode). A cut-off reply - the bug this telemetry makes visible - reads as false. */
   completed: boolean;
+  /** True when the reply's play() was REJECTED - the mobile autoplay block (a play() not tied to a live
+   *  user gesture is refused), so the reply never sounded. The unlock-on-Start fix drives this to false. */
+  playRejected: boolean;
   /** True when the rolling-"stop" watch re-opened the microphone WHILE the reply was playing (the current
    *  behavior). The mic-contention hypothesis: on mobile this ducks/interrupts the reply. */
   micReacquiredDuringPlayback: boolean;

@@ -58,13 +58,45 @@ export default defineConfig({
         // worker and re-import the new push handler (an unchanged sw.js is never re-fetched). The
         // Gateway serves push-sw.js ignoring the query, with no-cache.
         importScripts: ["push-sw.js?v=2"],
-        // App shell precache. index.html is served by the Gateway (token injection) and is
-        // navigation-fallback cached so a cold offline open still renders the shell.
-        navigateFallback: "/m/index.html",
-        globPatterns: ["**/*.{js,css,html,png,svg,woff2}"],
-        // Cache the last /sessions response so an offline open shows the last-known roster.
+        // NETWORK-FIRST APP SHELL (root cause fix): the app shell and the JS/CSS bundle are NO LONGER
+        // precached and served cache-first. A precached, cache-first index.html was serving the phone a
+        // STALE bundle for a whole load even though the Gateway serves a fresh index.html (no-cache) - so
+        // deploys never reached Soren's installed PWA, and skipWaiting/clientsClaim lost the race because
+        // the old worker served the stale shell before the update could win. Car Mode is under active
+        // iteration, so correctness beats offline caching here: only rarely-changing icons/fonts are
+        // precached, and the shell + bundle go through network-first runtime rules below (fresh when
+        // online, last-known copy only as an offline fallback). No navigateFallback: navigations are the
+        // network-first "m-shell" route below, not a cache-first precached page.
+        globPatterns: ["**/*.{png,svg,ico,woff2}"],
         runtimeCaching: [
           {
+            // The app shell: EVERY navigation under /m fetches the current index.html from the Gateway
+            // first (served no-cache), so the phone always loads the latest bundle with no manual cache
+            // clear. Falls back to the last-served shell ONLY when the network is unavailable (offline
+            // open), after a short timeout so a slow network does not stall the open.
+            urlPattern: ({ request, url }) => request.mode === "navigate" && url.pathname.startsWith("/m"),
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "m-shell",
+              networkTimeoutSeconds: 4,
+              expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // The hashed JS/CSS bundle: network-first so an iterating build is picked up immediately. The
+            // filenames are content-hashed, so the cached copy is always a correct offline fallback.
+            urlPattern: ({ url }) => url.pathname.startsWith("/m/assets/"),
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "m-assets",
+              networkTimeoutSeconds: 4,
+              expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 * 7 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // Cache the last /sessions response so an offline open shows the last-known roster.
             urlPattern: ({ url }) => url.pathname === "/sessions",
             handler: "NetworkFirst",
             options: {

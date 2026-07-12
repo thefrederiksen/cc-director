@@ -63,7 +63,7 @@ internal static class CarModeTelemetryPage
 <body>
 <div class="wrap">
   <h1>Car Mode Timing</h1>
-  <p class="sub">Per-turn, per-stage latency AND the two mobile failure diagnostics for hands-free Car Mode. The pipeline a real phone turn walks: pause, transcode (phone), transcribe, brain round trip, the network gap (brain minus server), each model call, the fleet read, text-to-speech, and first audio. The "over and out" finickiness shows as End-phrase tries (how many transcribe attempts before the turn was taken). The cut-off reply is split three ways: Clip length (the whole reply synthesized), Played to (how far playback reached), and Mic in playback (whether the rolling "stop" watch re-opened the microphone while the reply was playing - the mic-contention suspect). All times are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
+  <p class="sub">Per-turn, per-stage latency AND the two mobile failure diagnostics for hands-free Car Mode. The pipeline a real phone turn walks: pause, transcode (phone), transcribe, brain round trip, the network gap (brain minus server), each model call, the fleet read, text-to-speech, and first audio. The "over and out" finickiness shows as End-phrase tries (how many transcribe attempts before the turn was taken). The cut-off reply is split several ways: Clip length (the whole reply synthesized), Played to (how far playback reached), Play blocked (the reply's play() was refused by the mobile autoplay policy so it never sounded - the data-confirmed failure), and Mic in playback (whether the rolling "stop" watch re-opened the microphone while the reply was playing - a secondary suspect). All times are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
 
   <div class="cards" id="cards"></div>
 
@@ -90,6 +90,7 @@ internal static class CarModeTelemetryPage
           <th>Clip<br>length</th>
           <th>Played<br>to</th>
           <th>Whole<br>reply?</th>
+          <th>Play<br>blocked</th>
           <th>Mic in<br>playback</th>
           <th>Stop<br>polls</th>
           <th>Clips</th>
@@ -136,7 +137,7 @@ internal static class CarModeTelemetryPage
 
     if (!recs.length) {
       cards.appendChild(card("-", "No turns recorded yet", "Take a turn in Car Mode on the phone"));
-      document.getElementById("rows").innerHTML = '<tr><td colspan="24" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
+      document.getElementById("rows").innerHTML = '<tr><td colspan="25" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
       document.getElementById("foot").textContent = "";
       return;
     }
@@ -162,11 +163,17 @@ internal static class CarModeTelemetryPage
     cards.appendChild(card(tries.length ? String(median(tries)) : "-", "Median 'over and out' tries",
       "1 = landed first try; higher = finicky"));
 
+    // The data-confirmed mobile failure: how many recent replies were BLOCKED by the autoplay policy so
+    // they never sounded. With the unlock-on-Start fix this should be 0.
+    var blocked = recs.filter(function (r) { return r.playRejected === true; }).length;
+    cards.appendChild(card(blocked + " / " + recs.length, "Replies BLOCKED (autoplay)",
+      blocked > 0 ? "play() refused - the reply never sounded" : "no autoplay block - replies could sound"));
+
     // The mic-contention suspect: how many recent replies had the microphone re-opened WHILE they played.
-    // On mobile this is the prime suspect for the cut-off / half-heard reply.
+    // On mobile this is a secondary suspect for a cut-off / half-heard reply.
     var micIn = recs.filter(function (r) { return r.micReacquiredDuringPlayback === true; }).length;
     cards.appendChild(card(micIn + " / " + recs.length, "Mic re-opened during the reply",
-      "the mobile cut-off suspect: mic grabbed mid-playback"));
+      "secondary cut-off suspect: mic grabbed mid-playback"));
 
     var body = document.getElementById("rows"); body.innerHTML = "";
     recs.forEach(function (r) {
@@ -210,6 +217,9 @@ internal static class CarModeTelemetryPage
       tr.appendChild(td(ms(r.clipDurationMs)));
       tr.appendChild(td(ms(r.playedToMs), playedShort ? "slow" : ""));
       tr.appendChild(td(r.completed == null ? "-" : (r.completed ? "yes" : "CUT OFF"), r.completed === false ? "slow" : ""));
+      // Play blocked: the reply's play() was refused by the mobile autoplay policy so it never sounded -
+      // the data-confirmed mobile failure. Called out in red; "no" (with the unlock fix) is the good state.
+      tr.appendChild(td(r.playRejected == null ? "-" : (r.playRejected ? "BLOCKED" : "no"), r.playRejected === true ? "slow" : ""));
       tr.appendChild(td(r.micReacquiredDuringPlayback == null ? "-" : (r.micReacquiredDuringPlayback ? "YES" : "no"),
         r.micReacquiredDuringPlayback === true ? "slow" : ""));
       tr.appendChild(td(r.speakingPollCount == null ? "-" : r.speakingPollCount));

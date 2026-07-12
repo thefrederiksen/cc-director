@@ -3,7 +3,7 @@ import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
 import { playReadyCue, playYourTurnCue } from "../dictation/readyCue";
 import { detectEndPhrase, detectInterrupt } from "./controlPhrases";
-import { playClip, type PlayOutcome } from "./audioPlayback";
+import { playClip, type PlayOutcome, type PlayClipHooks } from "./audioPlayback";
 import {
   postCarModeTelemetry,
   postCarModeWarmup,
@@ -79,6 +79,7 @@ interface TurnMetrics {
   clipDurationMs: number; // the SYNTHESIZED reply clip's media length (audio.duration): the whole reply the phone got
   playedToMs: number; // how far INTO the clip playback reached at end/cutoff (audio.currentTime): media-time, not wall-clock
   completed: boolean; // true when the reply clip played fully to its natural end; false when cut off (interrupt / End)
+  playRejected: boolean; // true when the reply's play() was REJECTED (mobile autoplay block) so it never sounded
   // ----- The mic-contention hypothesis (does grabbing the mic mid-playback cut the reply off on mobile?) -----
   micReacquiredDuringPlayback: boolean; // did the rolling-"stop" watch re-open the microphone WHILE the reply was playing
   speakingPollCount: number; // how many rolling-"stop" transcriptions ran during this reply (each re-reads the open mic)
@@ -161,6 +162,36 @@ function isCaptureSupported(): boolean {
   if (typeof navigator === "undefined" || typeof window === "undefined") return false;
   const md = navigator.mediaDevices as MediaDevices | undefined;
   return Boolean(md && md.getUserMedia) && typeof MediaRecorder !== "undefined";
+}
+
+// A tiny, silent WAV clip (a valid RIFF/WAVE header with zero audio samples) used ONLY to unlock the
+// reply <audio> element inside the Start tap gesture. It is a data URI so it needs no network and no
+// bundled asset.
+const SILENT_WAV_DATA_URI =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+
+// Unlock an <audio> element for later programmatic playback, called INSIDE the Start tap gesture. Mobile
+// Chrome blocks a play() that is not tied to a live user gesture (NotAllowedError), and Car Mode's reply
+// plays SECONDS after the tap - after the transcribe -> brain -> speak pipeline - so by then the gesture
+// is gone and the reply is silently refused (the mobile cut-off / "heard nothing" bug). Playing a silent
+// clip now, within the tap, marks THIS element as user-activated, so every later reply on the SAME element
+// is allowed to play with no fresh gesture. Best-effort: a rejection here is logged, never thrown, because
+// the unlock is a courtesy on top of the normal play path.
+function unlockAudioElement(audio: HTMLAudioElement): void {
+  try {
+    audio.src = SILENT_WAV_DATA_URI;
+    const played = audio.play();
+    if (played && typeof played.then === "function") {
+      played
+        .then(() => console.log("[CarMode] reply audio element unlocked for autoplay"))
+        .catch((error: unknown) => {
+          const name = error instanceof Error ? error.name : "unknown";
+          console.log(`[CarMode] audio unlock play() rejected (will retry on first reply): ${name}`);
+        });
+    }
+  } catch (error) {
+    console.log(`[CarMode] audio unlock threw: ${String(error)}`);
+  }
 }
 
 export function useCarMode(options: UseCarModeOptions): CarModeView {
@@ -257,6 +288,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       clipDurationMs: m.clipDurationMs,
       playedToMs: m.playedToMs,
       completed: m.completed,
+      playRejected: m.playRejected,
       micReacquiredDuringPlayback: m.micReacquiredDuringPlayback,
       speakingPollCount: m.speakingPollCount,
       serverTotalMs: m.server.totalMs,
@@ -280,10 +312,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // clip cleanly; playClip clears it (registers a no-op) once the clip is done. The optional lifecycle
   // hooks feed the cut-off-reply telemetry (play-started, play-ended, completed-vs-cutoff).
   const playBlob = useCallback(
-    (
-      url: string,
-      hooks?: { onPlayStarted?: () => void; onPlayEnded?: (outcome: PlayOutcome) => void },
-    ): Promise<PlayOutcome> => {
+    (url: string, hooks?: PlayClipHooks): Promise<PlayOutcome> => {
       const audio = audioRef.current;
       if (audio === null) return Promise.resolve<PlayOutcome>("stopped");
       return playClip(
@@ -423,6 +452,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             // Post the merged timing record now that the clip's whole lifecycle is known - including a
             // cut-off - so a truncated reply is VISIBLE at /carmode/telemetry (fire-and-forget).
             postTurnTelemetry(metrics);
+          },
+          onPlayRejected: () => {
+            // The reply's play() was refused (mobile autoplay block): record it so the telemetry shows the
+            // reply never sounded. onPlayEnded still fires (as "stopped") and posts the record.
+            if (metrics !== null) metrics.playRejected = true;
           },
         });
 
@@ -576,6 +610,7 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             clipDurationMs: 0,
             playedToMs: 0,
             completed: false,
+            playRejected: false,
             micReacquiredDuringPlayback: false,
             speakingPollCount: 0,
             posted: false,
@@ -686,7 +721,12 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     recorderRef.current = new MicRecorder();
     // The reply's sentence chunks are played by playBlob, which sets onended per clip; the speak loop hands
     // the microphone back after the LAST chunk, so no global onended handler is needed here.
-    audioRef.current = new Audio();
+    const audio = new Audio();
+    audioRef.current = audio;
+    // Unlock this element for autoplay WHILE we are still inside the Start tap's user gesture, BEFORE the
+    // first await below. The same element is reused for every reply, so once unlocked here, later replies
+    // (which play seconds after the tap, past the gesture window) are allowed to sound on mobile.
+    unlockAudioElement(audio);
 
     // The single silence-detector loop, live for the whole session; it only acts while Listening. When the
     // level drops below the threshold for PAUSE_MS AFTER speech was heard, it fires a pause probe.

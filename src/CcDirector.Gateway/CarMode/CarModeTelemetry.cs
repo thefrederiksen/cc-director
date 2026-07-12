@@ -120,6 +120,11 @@ public sealed record CarModeTelemetryRecord
     ///  false: the reply was synthesized but the owner did not hear all of it.</summary>
     public bool Completed { get; init; }
 
+    /// <summary>True when the reply's play() was REJECTED - the mobile autoplay block (a play() not tied to
+    ///  a live user gesture is refused with NotAllowedError), so the reply never sounded at all. This is the
+    ///  data-confirmed mobile failure; the unlock-on-Start fix drives it to false.</summary>
+    public bool PlayRejected { get; init; }
+
     // ----- The mic-contention hypothesis (does re-opening the mic mid-playback cut the reply on mobile?) -----
 
     /// <summary>True when the rolling-"stop" watch re-opened the microphone WHILE the reply was playing (the
