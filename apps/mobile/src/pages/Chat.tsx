@@ -62,9 +62,12 @@ export function Chat() {
   }, []);
 
   // Local Files (Phase 3): a detected file path opens the full-screen file viewer for that path (the
-  // copy button below is unchanged). The absolute path rides as ?path= so a reload/deep-link resolves.
+  // copy button below is unchanged). The absolute path rides as ?path= so a reload/deep-link resolves,
+  // and ?from= records THIS tab so the viewer's Back returns to Chat (not a dead history.back()).
   const openFile = useCallback((path: string) => {
-    navigate(`/session/${encodeURIComponent(sessionId ?? "")}/file?path=${encodeURIComponent(path)}`);
+    const sid = encodeURIComponent(sessionId ?? "");
+    const from = encodeURIComponent(`/session/${sessionId ?? ""}/chat`);
+    navigate(`/session/${sid}/file?path=${encodeURIComponent(path)}&from=${from}`);
   }, [navigate, sessionId]);
 
   const copyLink = useCallback(async (text: string) => {

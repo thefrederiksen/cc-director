@@ -40,7 +40,10 @@ export function Terminal() {
   // path. A stable callback so the TerminalMirror (constructed once per session) holds it across renders
   // without being torn down. http/https URLs are opened by the mirror itself and never reach here.
   const openFile = useCallback((path: string) => {
-    navigate(`/session/${encodeURIComponent(sessionId ?? "")}/file?path=${encodeURIComponent(path)}`);
+    const sid = encodeURIComponent(sessionId ?? "");
+    // ?from= records THIS tab so the viewer's Back returns to Terminal (not a dead history.back()).
+    const from = encodeURIComponent(`/session/${sessionId ?? ""}/terminal`);
+    navigate(`/session/${sid}/file?path=${encodeURIComponent(path)}&from=${from}`);
   }, [navigate, sessionId]);
 
   const [name, setName] = useState<string | null>(null);
