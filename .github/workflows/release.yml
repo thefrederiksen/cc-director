@@ -75,12 +75,14 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Publish for macOS arm64
+        # Do NOT add EnableCompressionInSingleFile here: on macOS arm64 under .NET 10 the
+        # compressed bundle corrupts memory in the HTTP stack (AccessViolationException,
+        # crash on the first outbound request). Proven on hardware in issue #1442.
         run: >
           dotnet publish src/CcDirector.Avalonia/CcDirector.Avalonia.csproj
           -c Release -r osx-arm64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
           -p:UpdaterEnabled=true
 
       - name: Package distributable .app bundle (zip)
@@ -145,12 +147,12 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Publish setup wizard for macOS arm64
+        # No EnableCompressionInSingleFile on macOS - memory corruption, issue #1442.
         run: >
           dotnet publish tools/cc-director-setup-avalonia/CcDirectorSetup.csproj
           -c Release -r osx-arm64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
 
       - name: Package distributable Setup .app bundle (zip)
         run: >
@@ -426,12 +428,12 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Publish Launcher for macOS arm64
+        # No EnableCompressionInSingleFile on macOS - memory corruption, issue #1442.
         run: >
           dotnet publish src/CcDirector.Launcher/CcDirector.Launcher.csproj
           -c Release -f net10.0 -r osx-arm64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
 
       - name: Upload launcher mac artifact
         uses: actions/upload-artifact@v6

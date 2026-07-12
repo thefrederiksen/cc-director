@@ -123,9 +123,6 @@ PUBLISH_ARGS=(
     --nologo
     -v q
 )
-if [[ "$SELF_CONTAINED" == true ]]; then
-    PUBLISH_ARGS+=(-p:EnableCompressionInSingleFile=true)
-fi
 dotnet "${PUBLISH_ARGS[@]}"
 
 # ----------------------------------------------------------------------------
