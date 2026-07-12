@@ -294,7 +294,7 @@ public partial class MainWindow : Window
         HomeView.OpenToolsRequested += (_, _) => { FileLog.Write("[MainWindow] Home -> Tools tab in Settings"); _ = OpenSettingsAsync(onToolsTab: true); };
         HomeView.RepairToolsRequested += (_, _) => _ = RepairToolsAsync();
         HomeView.OpenSettingsRequested += (_, _) => BtnSettings_Click(this, new RoutedEventArgs());
-        HomeView.GatewayClicked += (_, _) => OpenGatewayTroubleshooter();
+        HomeView.GatewayClicked += (_, _) => OpenGatewayConnectionPanel();
         UpdateHomeVisibility();
 
         // Start session git status polling (15s interval)
@@ -508,7 +508,6 @@ public partial class MainWindow : Window
 
     private global::Avalonia.Threading.DispatcherTimer? _gatewayAttachTimer;
     private GatewayConnectionMonitor? _gatewayMonitor;
-    private bool _troubleshooterOpen;
 
     private const string GatewayIconRing = "M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 Z M8,3 A5,5 0 1 1 8,13 A5,5 0 1 1 8,3 Z";
     private const string GatewayIconCheck = "M6.2,12.4 L1.6,7.8 L3,6.4 L6.2,9.6 L13,2.8 L14.4,4.2 Z";
@@ -723,9 +722,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            var step = GatewayConnectionStateResolver.Resolve(BuildStatusBoxInputs()).TargetStep;
-            FileLog.Write($"[MainWindow] GatewayStatusBox clicked; opening panel on step {step}");
-            OpenGatewayConnectionPanel(step);
+            FileLog.Write("[MainWindow] GatewayStatusBox clicked; opening the connection panel on its current step");
+            OpenGatewayConnectionPanel();
         }
         catch (Exception ex)
         {
@@ -733,38 +731,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OpenGatewayTroubleshooter()
-    {
-        try
-        {
-            if (_troubleshooterOpen) return;
-            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-            if (host is null)
-            {
-                FileLog.Write("[MainWindow] OpenGatewayTroubleshooter: Control API not started yet");
-                return;
-            }
-            _troubleshooterOpen = true;
-            var dialog = new GatewayTroubleshootDialog(host);
-            dialog.Closed += (_, _) => _troubleshooterOpen = false;
-            // Non-modal on purpose: the troubleshooter is a tool window (its fixes take
-            // seconds and the user may want the session list meanwhile); auto-popup as a
-            // modal would also steal an active typing session.
-            dialog.Show(this);
-            FileLog.Write("[MainWindow] Gateway troubleshooter opened");
-        }
-        catch (Exception ex)
-        {
-            FileLog.Write($"[MainWindow] OpenGatewayTroubleshooter FAILED: {ex.Message}");
-            _troubleshooterOpen = false;
-        }
-    }
-
-    // Open the one reusable Gateway Connection panel in a tool window, on the given step (spec section 6:
-    // the status-box click opens the panel on the resolver's current step). Phase 4 also embeds this panel
-    // in Settings and the onboarding wizard; the temporary View-menu entry (which opens it on Step 1) is
-    // removed then.
-    private void OpenGatewayConnectionPanel(GatewayPanelStep step)
+    // Open the one reusable Gateway Connection panel in a tool window, on the resolver's current step
+    // (spec section 6). CreateForCurrentState resolves the step from the live handshake state: a proven
+    // connection opens on Done/Step 2, a prior failure opens Step 1 in REPAIR mode (Phase 5), everything
+    // else opens the first-time scan.
+    private void OpenGatewayConnectionPanel()
     {
         try
         {
@@ -775,10 +746,10 @@ public partial class MainWindow : Window
                 Height = 660,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Background = global::Avalonia.Media.Brush.Parse("#252526"),
-                Content = new Controls.GatewayConnectionPanel(step),
+                Content = Controls.GatewayConnectionPanel.CreateForCurrentState(),
             };
             window.Show(this);
-            FileLog.Write($"[MainWindow] Gateway Connection panel opened on step {step}");
+            FileLog.Write("[MainWindow] Gateway Connection panel opened (on the resolver's current step)");
         }
         catch (Exception ex)
         {
@@ -786,9 +757,8 @@ public partial class MainWindow : Window
         }
     }
 
-    // TEMPORARY (Gateway Connection mission): the View-menu entry opens the panel on Step 1 for testing.
-    // Removed in Phase 4 when the panel adopts its Settings + onboarding hosts.
-    private void OpenGatewayConnectionPreview() => OpenGatewayConnectionPanel(GatewayPanelStep.Connect);
+    // TEMPORARY (Gateway Connection mission): the View-menu entry opens the panel for testing.
+    private void OpenGatewayConnectionPreview() => OpenGatewayConnectionPanel();
 
     // ==================== GATEWAY STATUS BOX - ACCOUNT LINE (line 2) ====================
 

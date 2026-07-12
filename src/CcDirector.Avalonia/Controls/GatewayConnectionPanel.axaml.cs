@@ -82,15 +82,25 @@ public partial class GatewayConnectionPanel : UserControl
     // signed-in state directly, because the handshake is already proven in those states.
     private readonly GatewayPanelStep _initialStep;
 
-    public GatewayConnectionPanel() : this(GatewayPanelStep.Connect)
+    // True when the panel opened because a prior connection failed or a connected Gateway became
+    // unreachable (spec section 7, Phase 5). Step 1 then opens in repair mode: it names the failing leg,
+    // renders the troubleshooter diagnostics inline, and the rediscovery scan offers the new address.
+    private readonly bool _repairMode;
+
+    public GatewayConnectionPanel() : this(GatewayPanelStep.Connect, false)
     {
     }
 
-    public GatewayConnectionPanel(GatewayPanelStep initialStep)
+    public GatewayConnectionPanel(GatewayPanelStep initialStep) : this(initialStep, false)
+    {
+    }
+
+    private GatewayConnectionPanel(GatewayPanelStep initialStep, bool repairMode)
     {
         _initialStep = initialStep;
+        _repairMode = repairMode;
         InitializeComponent();
-        FileLog.Write($"[GatewayConnectionPanel] constructed (initialStep={initialStep})");
+        FileLog.Write($"[GatewayConnectionPanel] constructed (initialStep={initialStep}, repairMode={repairMode})");
     }
 
     /// <summary>
@@ -110,10 +120,19 @@ public partial class GatewayConnectionPanel : UserControl
     public static GatewayConnectionPanel CreateForCurrentState()
     {
         var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-        var step = host?.GatewayMonitor?.Status == GatewayConnectionStatus.Verified
-            ? GatewayPanelStep.Done
-            : GatewayPanelStep.Connect;
-        return new GatewayConnectionPanel(step);
+        var status = host?.GatewayMonitor?.Status;
+
+        // A proven handshake opens on the signed-in view (Step 2 vs Done settles from account status).
+        if (status == GatewayConnectionStatus.Verified)
+            return new GatewayConnectionPanel(GatewayPanelStep.Done, repairMode: false);
+
+        // A prior failure (or a lost tailnet identity) opens Step 1 in REPAIR mode (Phase 5): the failing
+        // leg is named, diagnostics render inline, and the rediscovery scan offers the new address.
+        if (status is GatewayConnectionStatus.Failed or GatewayConnectionStatus.NoTailnetIdentity)
+            return new GatewayConnectionPanel(GatewayPanelStep.Connect, repairMode: true);
+
+        // Otherwise Step 1, the normal first-time scan.
+        return new GatewayConnectionPanel(GatewayPanelStep.Connect, repairMode: false);
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -123,15 +142,24 @@ public partial class GatewayConnectionPanel : UserControl
         // signed-in or done, the handshake is proven - go straight to the signed-in view rather than
         // re-scanning from Step 1. Otherwise start the automatic scan (there is no Detect button, decision 5).
         if (_initialStep is GatewayPanelStep.SignIn or GatewayPanelStep.Done)
+        {
             _ = RefreshSignedInViewAsync();
+        }
         else
+        {
+            // Repair mode (Phase 5): name the failing leg, kick the inline diagnostics, THEN scan - the
+            // rediscovery scan offers the Gateway's current address as a one-click fix.
+            if (_repairMode)
+                EnterRepairMode();
             StartScan();
+        }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
         StopPolling();
+        _diagCts?.Cancel();
         if (_subscribed && _monitor is not null)
         {
             _monitor.Changed -= OnMonitorChanged;
@@ -181,6 +209,270 @@ public partial class GatewayConnectionPanel : UserControl
     }
 
     private void Rescan_Click(object? sender, RoutedEventArgs e) => StartScan();
+
+    // ---- Repair mode (Phase 5): named failing leg + inline diagnostics --------------------------
+
+    private CancellationTokenSource? _diagCts;
+
+    // Show the repair banner and name the failing leg from the live monitor. The rediscovery scan
+    // (StartScan, kicked right after in OnAttached) provides the one-click new-address fix; the
+    // diagnostics ladder runs on demand when the user expands it.
+    private void EnterRepairMode()
+    {
+        var monitor = (global::Avalonia.Application.Current as App)?.ControlApiHost?.GatewayMonitor;
+
+        // The teaching intro is for a first-time connect; in repair we lead with the problem instead.
+        IntroText.IsVisible = false;
+        ConnectHeaderTitle.Text = "Reconnect to your Gateway";
+        RepairBanner.IsVisible = true;
+
+        var (title, summary) = RepairCopyFor(monitor);
+        RepairTitle.Text = title;
+        RepairSummary.Text = summary;
+        FileLog.Write($"[GatewayConnectionPanel] repair mode: {title}");
+    }
+
+    // Name the failing leg (decision 11) from the monitor's already-earned verdict.
+    private static (string Title, string Summary) RepairCopyFor(GatewayConnectionMonitor? monitor)
+    {
+        if (monitor is null)
+            return ("Reconnect to your Gateway",
+                "The connection stopped working. Pick your Gateway below to reconnect - we re-scanned for its current address.");
+
+        if (monitor.Status == GatewayConnectionStatus.NoTailnetIdentity)
+            return ("This machine has no Tailscale identity",
+                (monitor.FailureSummary ?? "Start Tailscale on this machine, or set the Director public URL under Advanced.")
+                + " Once Tailscale is up this heals automatically; you can also pick your Gateway below to reconnect.");
+
+        var callbackFailed = monitor.LastResult is { CallbackOk: false };
+        var wasWorking = monitor.LastVerifiedAt is not null;
+        var title = wasWorking ? "Your Gateway became unreachable" : "Could not connect to your Gateway";
+        var summary = callbackFailed
+            ? "The Gateway could not reach this Director back (the callback leg). It may have moved - pick its current address below to reconnect. Show diagnostics for the full check."
+            : (monitor.FailureSummary ?? "The connection could not be completed.")
+              + " It may have moved - pick its current address below to reconnect. Show diagnostics for the full check.";
+        return (title, summary);
+    }
+
+    private void DiagnosticsToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        var open = DiagnosticsToggle.IsChecked == true;
+        // Guard: fires during control construction, before the sibling fields are assigned.
+        if (DiagnosticsPanel is not null) DiagnosticsPanel.IsVisible = open;
+        if (DiagnosticsCaret is not null) DiagnosticsCaret.Text = open ? "^" : "v";
+        // Run (or re-run) the ladder each time it is opened, so it is always fresh.
+        if (open) _ = RunDiagnosticsAsync();
+    }
+
+    // Reuse the troubleshooter's diagnostic engine INLINE (spec section 8: the dialog-as-destination is
+    // gone, the logic is reused): re-run the handshake, then walk GatewayConnectivitySelfTest's ladder and
+    // render each rung. No new verification is built here.
+    private async Task RunDiagnosticsAsync()
+    {
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        if (host is null)
+        {
+            DiagnosticsVerdict.Text = "The Control API is not running yet, so diagnostics cannot run.";
+            return;
+        }
+
+        _diagCts?.Cancel();
+        _diagCts = new CancellationTokenSource();
+        var ct = _diagCts.Token;
+
+        DiagnosticsHost.Children.Clear();
+        DiagnosticsRunning.IsVisible = true;
+        DiagnosticsVerdict.Text = "Running the two-way handshake and the diagnostic ladder...";
+        try
+        {
+            await host.VerifyGatewayNowAsync(ct);
+            DiagnosticsVerdict.Text = DiagnosticsVerdictText(host.GatewayMonitor);
+
+            var monitor = host.GatewayMonitor;
+            var port = host.Port;
+            var (gatewayUrl, endpoint) = await Task.Run(() =>
+            {
+                var cfg = GatewayConfig.Load();
+                var ep = monitor.LastResult?.CallbackEndpoint;
+                if (string.IsNullOrEmpty(ep))
+                    ep = TailscaleIdentity.TryGetMagicDnsName() is { } dns ? $"https://{dns}:{port}" : cfg.TailnetEndpoint;
+                return (cfg.IsEnabled ? cfg.Url : null, ep);
+            }, ct);
+
+            var selfTest = new GatewayConnectivitySelfTest(
+                port, host.DirectorId, endpoint, gatewayUrl, host.ServeProvisioner?.LastError);
+
+            DiagnosticsHost.Children.Clear();
+            var index = 0;
+            await foreach (var rung in selfTest.RunAsync(ct))
+            {
+                index++;
+                DiagnosticsHost.Children.Add(BuildRungRow(index, rung));
+            }
+        }
+        catch (OperationCanceledException) { /* panel left or re-run superseded */ }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] diagnostics failed: {ex.Message}");
+            DiagnosticsVerdict.Text = $"Diagnostics failed to run: {ex.Message}";
+        }
+        finally
+        {
+            DiagnosticsRunning.IsVisible = false;
+        }
+    }
+
+    private static string DiagnosticsVerdictText(GatewayConnectionMonitor m) => m.Status switch
+    {
+        GatewayConnectionStatus.Verified => "Two-way verification PASSED - the Gateway and this Director can each reach the other.",
+        GatewayConnectionStatus.Failed => $"Two-way verification FAILED - {m.FailureSummary}",
+        GatewayConnectionStatus.NoTailnetIdentity => $"No tailnet identity - {m.FailureSummary}",
+        GatewayConnectionStatus.Connecting => "Still verifying - the handshake is in flight. Re-open diagnostics in a few seconds.",
+        _ => "No Gateway is configured.",
+    };
+
+    // Render one ladder rung: a mark, the title + what was found, and the fix (with Copy command, and
+    // "Fix it now" for the auto-fixable serve-mapping rung - the same reused capability).
+    private Control BuildRungRow(int index, LadderRung rung)
+    {
+        var (mark, markColor) = rung.Status switch
+        {
+            RungStatus.Pass => ("OK", "#22C55E"),
+            RungStatus.Fail => ("X", "#EF4444"),
+            RungStatus.Info => ("i", "#3B82F6"),
+            _ => ("-", "#666666"),
+        };
+        var dim = rung.Status == RungStatus.Skipped;
+
+        var body = new StackPanel();
+        body.Children.Add(new TextBlock
+        {
+            Text = $"{index}. {rung.Title}",
+            Foreground = Brush(dim ? "#666666" : "#CCCCCC"),
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+        });
+        body.Children.Add(new TextBlock
+        {
+            Text = rung.Found,
+            Foreground = Brush(dim ? "#666666" : "#999999"),
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+        });
+
+        if (rung.Fix is { } fix)
+        {
+            body.Children.Add(new Border
+            {
+                Background = Brush("#1E1E1E"),
+                BorderBrush = Brush("#3C3C3C"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(8, 5),
+                Margin = new Thickness(0, 6, 0, 0),
+                Child = new TextBlock
+                {
+                    Text = fix,
+                    Foreground = Brush("#CCCCCC"),
+                    FontSize = 11,
+                    FontFamily = MonoFont,
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            });
+
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                Margin = new Thickness(0, 8, 0, 0),
+            };
+            var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+            if (rung.CanAutoFix && host?.ServeProvisioner is not null)
+            {
+                var fixBtn = new Button
+                {
+                    Content = "Fix it now",
+                    Padding = new Thickness(12, 4),
+                    Background = Brush("#007ACC"),
+                    Foreground = Brushes.White,
+                    BorderThickness = new Thickness(0),
+                    Cursor = new Cursor(StandardCursorType.Hand),
+                };
+                fixBtn.Click += (_, _) => _ = FixServeMappingAsync(fixBtn);
+                buttons.Children.Add(fixBtn);
+            }
+            var copyBtn = new Button
+            {
+                Content = "Copy command",
+                Padding = new Thickness(12, 4),
+                Background = Brush("#3C3C3C"),
+                Foreground = Brush("#CCCCCC"),
+                BorderThickness = new Thickness(0),
+                Cursor = new Cursor(StandardCursorType.Hand),
+            };
+            copyBtn.Click += async (_, _) =>
+            {
+                try
+                {
+                    var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+                    if (clipboard is not null) await clipboard.SetTextAsync(fix);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[GatewayConnectionPanel] copy command failed: {ex.Message}");
+                }
+            };
+            buttons.Children.Add(copyBtn);
+            body.Children.Add(buttons);
+        }
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("28,*"), Margin = new Thickness(4, 0, 4, 0) };
+        var markBlock = new TextBlock
+        {
+            Text = mark,
+            Foreground = Brush(markColor),
+            FontSize = 12,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 1, 0, 0),
+        };
+        Grid.SetColumn(markBlock, 0);
+        Grid.SetColumn(body, 1);
+        row.Children.Add(markBlock);
+        row.Children.Add(body);
+
+        return new Border
+        {
+            BorderBrush = Brush("#2E2E2E"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(0, 8),
+            Child = row,
+        };
+    }
+
+    // "Fix it now" on the serve-mapping rung: run the provisioner's EnsureMapping (the same command the
+    // Fix box shows), then re-run the ladder to prove or disprove the fix.
+    private async Task FixServeMappingAsync(Button fixBtn)
+    {
+        var provisioner = (global::Avalonia.Application.Current as App)?.ControlApiHost?.ServeProvisioner;
+        if (provisioner is null) return;
+        try
+        {
+            fixBtn.IsEnabled = false;
+            fixBtn.Content = "Fixing...";
+            var (ok, error) = await provisioner.EnsureMappingAsync(_diagCts?.Token ?? CancellationToken.None);
+            FileLog.Write($"[GatewayConnectionPanel] fix-it-now serve mapping: ok={ok}{(ok ? "" : $", error={error}")}");
+            await RunDiagnosticsAsync();
+        }
+        catch (OperationCanceledException) { /* panel left mid-fix */ }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[GatewayConnectionPanel] fix-it-now failed: {ex.Message}");
+            fixBtn.IsEnabled = true;
+            fixBtn.Content = "Fix it now";
+        }
+    }
 
     // The Recommended rule (spec section 5): the most stable LOCAL name reachable, in priority order This
     // computer > On your network > Over Tailscale. Tailscale wins only when it is the sole find, which the
