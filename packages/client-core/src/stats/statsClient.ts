@@ -57,11 +57,23 @@ export interface ConcurrencyStats {
   hourly: ConcurrencyHour[];
 }
 
+/** One hour of the "working day" log: turns (total + by modality) and characters submitted that UTC hour
+ * (hour key "yyyy-MM-ddTHH"). */
+export interface InputHour {
+  hour: string;
+  turns: number;
+  voiceTurns: number;
+  typedTurns: number;
+  characters: number;
+}
+
 /** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
 export interface ThrottleData {
   /** When the Gateway generated this snapshot (ISO 8601 UTC), or "" when absent. */
   generatedAtUtc: string;
   buckets: ThrottleBucket[];
+  /** Turns per UTC hour (the "working day" series), oldest hour first. */
+  hourlyTurns: InputHour[];
   /** Fleet concurrency (both series), or null when nothing tracked yet. */
   concurrency: ConcurrencyStats | null;
   /** Plain-English caveats about what the numbers do and do not include. */
@@ -131,18 +143,32 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
   const body = (await res.json()) as {
     generatedAtUtc?: unknown;
     buckets?: unknown;
+    hourlyTurns?: unknown;
     concurrency?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
+  const hourlyTurns = Array.isArray(body?.hourlyTurns) ? body!.hourlyTurns.map(normalizeInputHour) : [];
   const notCaptured = Array.isArray(body?.notCaptured)
     ? body!.notCaptured.filter((x): x is string => typeof x === "string")
     : [];
   return {
     generatedAtUtc: typeof body?.generatedAtUtc === "string" ? body.generatedAtUtc : "",
     buckets,
+    hourlyTurns,
     concurrency: normalizeConcurrency(body?.concurrency),
     notCaptured,
+  };
+}
+
+function normalizeInputHour(raw: unknown): InputHour {
+  const h = (raw ?? {}) as Partial<Record<keyof InputHour, unknown>>;
+  return {
+    hour: String(h.hour ?? ""),
+    turns: num(h.turns),
+    voiceTurns: num(h.voiceTurns),
+    typedTurns: num(h.typedTurns),
+    characters: num(h.characters),
   };
 }
 

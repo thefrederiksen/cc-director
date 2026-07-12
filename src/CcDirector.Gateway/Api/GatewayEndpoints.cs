@@ -725,7 +725,7 @@ internal static class GatewayEndpoints
             // fold only runs when stream mode is on, which it is not in production). The aggregator's
             // per-session high-water logic makes folding the full roster on every read idempotent - only a
             // genuine increase is added, so repeated /sessions polls never double-count.
-            inputStats?.ObserveSnapshot(all);
+            inputStats?.ObserveSnapshot(all, DateTime.UtcNow);
 
             // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same
             // assembled roster - max concurrent loaded/running (live) and actively working, plus how many

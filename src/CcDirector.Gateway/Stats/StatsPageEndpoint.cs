@@ -44,6 +44,8 @@ public static class StatsPageEndpoint
             {
                 generatedAtUtc = DateTime.UtcNow,
                 buckets = totals.Buckets,
+                // DevThrottle Stats: the "working day" series - turns (by modality) + characters per UTC hour.
+                hourlyTurns = aggregator.HourlyTurns(),
                 // DevThrottle Stats: fleet concurrency (both series: live loaded/running, and actively
                 // working). Null until the aggregator is wired (old callers / tests).
                 concurrency = concurrency?.Snapshot(DateTime.UtcNow),

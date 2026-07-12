@@ -162,6 +162,49 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Turns-per-hour stacked bar (voice over typed) */
+.thr-turns-bar {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-radius: 3px 3px 0 0;
+  overflow: hidden;
+  min-height: 1px;
+}
+.thr-turns-voice {
+  width: 100%;
+  background: var(--accent);
+}
+.thr-turns-typed {
+  width: 100%;
+  background: color-mix(in srgb, var(--text-dim) 55%, transparent);
+}
+.thr-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.thr-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.thr-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.thr-swatch-voice {
+  background: var(--accent);
+}
+.thr-swatch-typed {
+  background: color-mix(in srgb, var(--text-dim) 55%, transparent);
+}
+
 /* Honesty caveats */
 .thr-caveats {
   background: var(--surface-2);
