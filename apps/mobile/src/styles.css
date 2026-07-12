@@ -1828,6 +1828,10 @@ a.banner-btn {
   font-weight: 600;
   word-break: break-all;
 }
+.file-view-download-size {
+  color: var(--text-dim);
+  font-size: 12px;
+}
 .file-view-download-btn {
   display: inline-block;
   padding: 9px 16px;

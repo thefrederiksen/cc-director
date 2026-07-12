@@ -53,7 +53,22 @@ const hoisted = vi.hoisted(() => {
     disposed = false;
     // getLine backs the Local Files link provider's per-line lookup; the existing tests never trigger a
     // hover, so returning null is enough to satisfy the shape.
-    buffer = { active: { viewportY: 0, baseY: 0, getLine: (_y: number) => null } };
+    // getLine backs the Local Files link provider's per-line lookup. lineText is set by the link tests
+    // to the rendered text of buffer row 1; every other row returns null (no links).
+    lineText = "";
+    buffer = {
+      active: {
+        viewportY: 0,
+        baseY: 0,
+        getLine: (y: number) =>
+          y === 0 && this.lineText
+            ? { translateToString: (_trim?: boolean) => this.lineText }
+            : null,
+      },
+    };
+    // The Local Files link provider registered on open; captured so the tests can drive provideLinks
+    // and activate the returned links directly (no real hover).
+    linkProvider: unknown = null;
     linkProviderDisposed = false;
     // The render service, torn down on dispose. `dimensions` reads through it, mirroring xterm's
     // `get dimensions(){return this._renderer.value.dimensions}` - so it throws once disposed.
@@ -77,7 +92,8 @@ const hoisted = vi.hoisted(() => {
     }
     // The Local Files link provider (Phase 2) is registered on open; return a disposable so dispose()
     // can tear it down, matching xterm's registerLinkProvider contract.
-    registerLinkProvider(_provider: unknown): { dispose: () => void } {
+    registerLinkProvider(provider: unknown): { dispose: () => void } {
+      this.linkProvider = provider;
       return { dispose: () => { this.linkProviderDisposed = true; } };
     }
     write(data: unknown): void {
@@ -107,6 +123,8 @@ const hoisted = vi.hoisted(() => {
 
 const sendPrompt = hoisted.sendPrompt;
 const ensureGatewayCookie = hoisted.ensureGatewayCookie;
+// window.open is used by the link provider to open URLs in a new tab (never routed to the app).
+const windowOpen = vi.fn();
 
 vi.mock("@xterm/xterm", () => ({ Terminal: hoisted.FakeTerminal }));
 vi.mock("../api/client", () => ({
@@ -176,12 +194,14 @@ beforeEach(() => {
   sendPrompt.mockReset();
   sendPrompt.mockImplementation((_sid: string, _text: string, _appendEnter: boolean) => Promise.resolve());
   ensureGatewayCookie.mockClear();
+  windowOpen.mockReset();
   vi.useFakeTimers();
   // Minimal window/global surface the engine touches. setTimeout/clearTimeout delegate to globalThis
   // at CALL time so vitest's fake timers drive them; requestAnimationFrame/cancelAnimationFrame use the
   // drivable queue above so tests step frames explicitly (issue #1029).
   (globalThis as unknown as { window: unknown }).window = {
     location: { protocol: "http:", host: "gateway.local:8080" },
+    open: (...args: unknown[]) => windowOpen(...args),
     setTimeout: (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms),
     clearTimeout: (id: unknown) => globalThis.clearTimeout(id as ReturnType<typeof setTimeout>),
     requestAnimationFrame: (fn: () => void) => {
@@ -463,5 +483,70 @@ describe("InteractiveTerminal xterm lifecycle safety (issue #1029)", () => {
     t.dispose(); // cancels the pending bring-up before it ever opens
     runFrames();
     expect(hoisted.terminals.length).toBe(0);
+  });
+});
+
+describe("InteractiveTerminal link provider (Local Files, Phase 2/4)", () => {
+  // The xterm link shape the provider hands back (a subset of xterm's ILink).
+  type XLink = {
+    text: string;
+    range: { start: { x: number; y: number }; end: { x: number; y: number } };
+    activate: (event: MouseEvent) => void;
+  };
+
+  // Build a terminal with an onFileLink callback, set buffer row 1 to `lineText`, drive the registered
+  // link provider over that row, and return the xterm links it produced plus the callback spy. This is
+  // the exact path xterm walks on hover, without a browser.
+  function linksFor(lineText: string): { onFileLink: ReturnType<typeof vi.fn>; links: XLink[] } {
+    const onFileLink = vi.fn();
+    const t = new InteractiveTerminal(host(), SID, onFileLink);
+    t.start();
+    runFrames();
+    const term = hoisted.terminals[0];
+    term.lineText = lineText;
+    const provider = term.linkProvider as {
+      provideLinks: (bufferLineNumber: number, cb: (links: XLink[] | undefined) => void) => void;
+    };
+    let links: XLink[] | undefined;
+    provider.provideLinks(1, (l) => { links = l; }); // row 1 -> getLine(0) -> lineText
+    return { onFileLink, links: links ?? [] };
+  }
+
+  it("routes a clicked FILE path to onFileLink and does NOT open a browser tab", () => {
+    const line = "wrote C:\\reports\\out.html now";
+    const { onFileLink, links } = linksFor(line);
+    const fileLink = links.find((l) => l.text === "C:\\reports\\out.html");
+    expect(fileLink).toBeDefined();
+    fileLink!.activate({} as MouseEvent);
+    expect(onFileLink).toHaveBeenCalledWith("C:\\reports\\out.html");
+    expect(windowOpen).not.toHaveBeenCalled();
+  });
+
+  it("opens a clicked http/https URL in a new tab and does NOT route it to onFileLink", () => {
+    const line = "see https://example.com/page for details";
+    const { onFileLink, links } = linksFor(line);
+    const urlLink = links.find((l) => l.text === "https://example.com/page");
+    expect(urlLink).toBeDefined();
+    urlLink!.activate({} as MouseEvent);
+    expect(windowOpen).toHaveBeenCalledWith("https://example.com/page", "_blank", "noopener,noreferrer");
+    expect(onFileLink).not.toHaveBeenCalled();
+  });
+
+  it("gives each link an xterm buffer range that lines up with the on-screen columns", () => {
+    // xterm ranges are 1-based inclusive; findLineLinks columns are 0-based half-open [start, end). The
+    // provider maps them to start.x = start+1, end.x = end, so (start.x - 1, end.x) re-slices the text.
+    const line = "C:\\a\\b.png and http://host/x";
+    const { links } = linksFor(line);
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link.range.start.y).toBe(1);
+      expect(link.range.end.y).toBe(1);
+      expect(line.slice(link.range.start.x - 1, link.range.end.x)).toBe(link.text);
+    }
+  });
+
+  it("returns no links for a line with none, so xterm leaves the line undecorated", () => {
+    const { links } = linksFor("just some ordinary output text");
+    expect(links).toEqual([]);
   });
 });

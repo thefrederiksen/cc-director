@@ -499,6 +499,19 @@ internal static class SessionWsProxyEndpoints
             if (!string.IsNullOrEmpty(_fleetToken))
                 req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _fleetToken);
 
+            // Local Files (Phase 4): forward the client's Range / If-Range so a large PDF or image can
+            // seek and resume THROUGH the proxy. The Director serves /sessions/{sid}/file with
+            // enableRangeProcessing on, but without carrying the Range header across it never sees the
+            // request and always streams the whole file back as 200. The download panel's one-byte size
+            // probe (fetchSessionFileSize: Range bytes=0-0 -> read the total from Content-Range) depends
+            // on this too. Only these two conditional headers are forwarded - the rest of the request
+            // header set (Host, Connection, Content-Length, ...) is intentionally re-derived by the
+            // outbound HttpClient, exactly as before.
+            if (ctx.Request.Headers.TryGetValue("Range", out var rangeHeader))
+                req.Headers.TryAddWithoutValidation("Range", rangeHeader.ToArray());
+            if (ctx.Request.Headers.TryGetValue("If-Range", out var ifRangeHeader))
+                req.Headers.TryAddWithoutValidation("If-Range", ifRangeHeader.ToArray());
+
             HttpResponseMessage resp;
             try
             {
