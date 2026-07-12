@@ -1848,28 +1848,39 @@ internal static class ControlEndpoints
 
         // ===== Git WRITE actions (mirror the desktop Source Control view) =====
         // Reads stay on GET /git above; these mutate the working tree of the session's repo.
-        var gitWrite = new Core.Git.GitWriteService();
-
-        async Task<IResult> RunGitWrite(string sid, Func<string, Task<Core.Git.GitWriteResult>> op)
+        // Gateway Cleanup Phase 0 (Worker W2): each git write now runs through the shared QueueGitExecutor
+        // core so the REST route and the Gateway tunnel down-channel cannot drift. The command body (the
+        // git result) rides back verbatim; a non-zero git exit surfaces as accepted=false, which this route
+        // maps to HTTP 409 exactly as the old RunGitWrite helper did.
+        async Task<IResult> DispatchGitWrite(string verb, string sid, object? payload)
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null) return Results.NotFound(new { error = "session not found" });
-            var r = await op(session.RepoPath);
-            return r.Success
-                ? Results.Json(new { accepted = true, output = r.Output })
-                : Results.Json(new { accepted = false, error = r.Error, exitCode = r.ExitCode }, statusCode: StatusCodes.Status409Conflict);
+            var command = new DirectorCommand
+            {
+                Verb = verb,
+                SessionId = sid,
+                PayloadJson = payload is null ? "" : SessionCommandExecutor.Serialize(payload),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok =>
+                    SessionCommandExecutor.Deserialize<GitWriteEnvelope>(result.BodyJson)!.Accepted
+                        ? Results.Content(result.BodyJson ?? "", "application/json")
+                        : Results.Content(result.BodyJson ?? "", "application/json", null, StatusCodes.Status409Conflict),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "git command failed"),
+            };
         }
 
         app.MapPost("/sessions/{sid}/git/stage", (string sid, GitPathsRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.StageAsync(repo, req?.Paths ?? new())));
+            DispatchGitWrite("git-stage", sid, req));
         app.MapPost("/sessions/{sid}/git/unstage", (string sid, GitPathsRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.UnstageAsync(repo, req?.Paths ?? new())));
+            DispatchGitWrite("git-unstage", sid, req));
         app.MapPost("/sessions/{sid}/git/discard", (string sid, GitPathsRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.DiscardAsync(repo, req?.Paths ?? new())));
+            DispatchGitWrite("git-discard", sid, req));
         app.MapPost("/sessions/{sid}/git/commit", (string sid, GitCommitRequest? req) =>
-            RunGitWrite(sid, repo => gitWrite.CommitAsync(repo, req?.Message ?? "")));
+            DispatchGitWrite("git-commit", sid, req));
 
         // Re-point a Director session at a different Claude session id (mirrors the desktop
         // Relink button - recover continuity when the underlying Claude session id changed).
@@ -2195,118 +2206,91 @@ internal static class ControlEndpoints
         // Messages the user composed while the agent was busy. Stored on the session's
         // PromptQueue; the Cockpit's Queue button adds here, the queue panel lists/removes,
         // and "send" delivers an item to the PTY now. Mirrors the existing desktop queue.
-        app.MapGet("/sessions/{sid}/queue", (string sid) =>
+        // Gateway Cleanup Phase 0 (Worker W2): every queue verb now runs through the shared QueueGitExecutor
+        // core so the REST route and the Gateway tunnel down-channel cannot drift. Each route packages its
+        // arguments into a DirectorCommand, dispatches, and maps the typed result back to the same HTTP shape
+        // the old lambda returned (the success body is the queue projection, shipped verbatim).
+        IResult MapQueueResult(DirectorCommandResult result) => result.Status switch
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            return Results.Json(new { items = ProjectQueue(session) });
-        });
+            DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+            DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+            DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+            _ => Results.Problem(result.Error ?? "queue command failed"),
+        };
+
+        async Task<IResult> DispatchQueue(string verb, string sid, object? payload)
+        {
+            var command = new DirectorCommand
+            {
+                Verb = verb,
+                SessionId = sid,
+                PayloadJson = payload is null ? "" : SessionCommandExecutor.Serialize(payload),
+            };
+            return MapQueueResult(await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command));
+        }
+
+        app.MapGet("/sessions/{sid}/queue", (string sid) =>
+            DispatchQueue("queue-read", sid, null));
 
         app.MapPost("/sessions/{sid}/queue", (string sid, PromptRequest req) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue enqueue: sid={sid}, len={req?.Text?.Length ?? 0}");
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            if (req is null || string.IsNullOrWhiteSpace(req.Text))
-                return Results.BadRequest(new { error = "text is required" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.PromptQueue.Enqueue(req.Text);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-add", sid, new QueueItemCommand(Text: req?.Text));
         });
 
         app.MapDelete("/sessions/{sid}/queue/{itemId}", (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] DELETE queue item: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-
-            session.PromptQueue.Remove(itemGuid);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-remove", sid, new QueueItemCommand(ItemId: itemId));
         });
 
         // Edit the text of a queued item in place.
         app.MapPatch("/sessions/{sid}/queue/{itemId}", (string sid, string itemId, PromptRequest req) =>
         {
             FileLog.Write($"[ControlEndpoints] PATCH queue edit: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            if (req is null || string.IsNullOrWhiteSpace(req.Text))
-                return Results.BadRequest(new { error = "text is required" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.UpdateText(itemGuid, req.Text);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-update", sid, new QueueItemCommand(ItemId: itemId, Text: req?.Text));
         });
 
         app.MapPost("/sessions/{sid}/queue/{itemId}/move-up", (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue move-up: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.MoveUp(itemGuid);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-move-up", sid, new QueueItemCommand(ItemId: itemId));
         });
 
         app.MapPost("/sessions/{sid}/queue/{itemId}/move-down", (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue move-down: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.MoveDown(itemGuid);
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-move-down", sid, new QueueItemCommand(ItemId: itemId));
         });
 
         app.MapDelete("/sessions/{sid}/queue", (string sid) =>
         {
             FileLog.Write($"[ControlEndpoints] DELETE queue clear: sid={sid}");
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            session.PromptQueue.Clear();
-            return Results.Json(new { items = ProjectQueue(session) });
+            return DispatchQueue("queue-clear", sid, null);
         });
 
         // Deliver one queued item to the PTY now (and drop it from the queue). Used by the
-        // queue panel's per-item "send" and by a "send next" action.
+        // queue panel's per-item "send" and by a "send next" action. Unlike the other queue verbs
+        // this one can return 409 (an Exited/Failed session), returned here as an empty 409 exactly
+        // as the old lambda did.
         app.MapPost("/sessions/{sid}/queue/{itemId}/send", async (string sid, string itemId) =>
         {
             FileLog.Write($"[ControlEndpoints] POST queue send: sid={sid}, item={itemId}");
-            if (!Guid.TryParse(sid, out var guid) || !Guid.TryParse(itemId, out var itemGuid))
-                return Results.BadRequest(new { error = "invalid id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
-            if (session.Status is SessionStatus.Exited or SessionStatus.Failed)
-                return Results.StatusCode(StatusCodes.Status409Conflict);
-
-            var item = session.PromptQueue.FindById(itemGuid);
-            if (item is null)
-                return Results.NotFound(new { error = "queue item not found" });
-
-            var text = item.Text;
-            session.PromptQueue.Remove(itemGuid);
-            // Queue drain is an explicit, ordered mechanism (issue #1181, Task 3b lists it exempt): the
-            // user asked to release this queued item, so it is not blocked by the dictation lock.
-            await session.SendTextAsync(text, SendSource.Internal);
-            return Results.Json(new { items = ProjectQueue(session) });
+            var command = new DirectorCommand
+            {
+                Verb = "queue-send",
+                SessionId = sid,
+                PayloadJson = SessionCommandExecutor.Serialize(new QueueItemCommand(ItemId: itemId)),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
+            return result.Status switch
+            {
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "", "application/json"),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                DirectorCommandStatus.Conflict => Results.StatusCode(StatusCodes.Status409Conflict),
+                _ => Results.Problem(result.Error ?? "queue send command failed"),
+            };
         });
 
         // Hard interrupt via the session's agent driver (Ctrl+C for Claude). Drivers
@@ -3017,43 +3001,35 @@ internal static class ControlEndpoints
         });
 
         // ===== REST: Create a GitHub Actions remote session =====
-        app.MapPost("/sessions/github", (GitHubSessionRequest req) =>
+        // Gateway Cleanup Phase 0 (Worker W2): the whole create-from-github - the validation guards and the
+        // CreateGitHubActionsSession call - runs through the shared QueueGitExecutor so this REST path and the
+        // Gateway tunnel down-channel create identically. The Director's own 201 response is still built with
+        // the identity-stamped MapWithIdentity (unchanged), so this endpoint stays byte-identical; the executor
+        // returns the plain stream DTO. Mirrors CreateLocalSessionAsync for the local `create` verb.
+        app.MapPost("/sessions/github", async (GitHubSessionRequest req) =>
         {
             FileLog.Write($"[ControlEndpoints] POST /sessions/github: {req?.Owner}/{req?.Repo} mode={req?.TriggerMode}");
 
-            if (req is null || string.IsNullOrWhiteSpace(req.Owner) || string.IsNullOrWhiteSpace(req.Repo))
-                return Results.BadRequest(new { error = "owner and repo are required" });
-            if (string.IsNullOrWhiteSpace(req.InitialPrompt))
-                return Results.BadRequest(new { error = "initialPrompt is required" });
-            if (!Enum.TryParse<RemoteTriggerMode>(req.TriggerMode, ignoreCase: true, out var mode))
-                return Results.BadRequest(new { error = $"unknown triggerMode: {req.TriggerMode}. Valid: NewIssue, ExistingThread, WorkflowDispatch" });
-            if (mode == RemoteTriggerMode.ExistingThread && (req.ThreadNumber is null || req.ThreadNumber <= 0))
-                return Results.BadRequest(new { error = "threadNumber is required (and must be positive) for ExistingThread mode" });
-            if (mode == RemoteTriggerMode.WorkflowDispatch && string.IsNullOrWhiteSpace(req.WorkflowFile))
-                return Results.BadRequest(new { error = "workflowFile is required for WorkflowDispatch mode" });
-
-            var config = new RemoteSessionConfig
+            var command = new DirectorCommand
             {
-                Owner = req.Owner.Trim(),
-                Repo = req.Repo.Trim(),
-                BaseBranch = string.IsNullOrWhiteSpace(req.BaseBranch) ? "main" : req.BaseBranch.Trim(),
-                TriggerMode = mode,
-                InitialPrompt = req.InitialPrompt.Trim(),
-                ThreadNumber = req.ThreadNumber,
-                IssueTitle = req.IssueTitle,
-                WorkflowFile = req.WorkflowFile,
+                Verb = "create-from-github",
+                SessionId = "",
+                PayloadJson = req is null ? "" : SessionCommandExecutor.Serialize(req),
             };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            try
-            {
-                var session = sessionManager.CreateGitHubActionsSession(config);
-                return Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[ControlEndpoints] POST /sessions/github FAILED: {ex.Message}");
-                return Results.Problem(ex.Message, statusCode: 500);
-            }
+            if (result.Status == DirectorCommandStatus.BadRequest)
+                return Results.BadRequest(new { error = result.Error });
+            if (result.Status != DirectorCommandStatus.Ok)
+                return Results.Problem(result.Error ?? "create-from-github failed", statusCode: 500);
+
+            var created = SessionCommandExecutor.Deserialize<SessionDto>(result.BodyJson);
+            if (created is null || !Guid.TryParse(created.SessionId, out var newGuid))
+                return Results.Problem("created session id missing", statusCode: 500);
+            var session = sessionManager.GetSession(newGuid);
+            return session is null
+                ? Results.Problem("created session not found", statusCode: 500)
+                : Results.Json(MapWithIdentity(session, turnSummaryCache), statusCode: 201);
         });
 
         // ===== REST: Kill a session =====
@@ -3344,12 +3320,6 @@ internal static class ControlEndpoints
             return "";
         }
     }
-
-    /// <summary>Project a session's prompt queue to the wire shape the Cockpit renders.</summary>
-    private static IReadOnlyList<object> ProjectQueue(Session s) =>
-        s.PromptQueue.Items
-            .Select(i => (object)new { id = i.Id.ToString(), text = i.Text, createdAt = i.CreatedAt })
-            .ToList();
 
     /// <summary>The session driver's capability flags as names, for UIs to render
     /// action buttons from (no per-agent special cases client-side).</summary>
