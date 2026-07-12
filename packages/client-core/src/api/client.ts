@@ -235,16 +235,55 @@ function isGatewayUnreachable(err: unknown): boolean {
 // used by isGatewayUnreachable; it does not invent a second taxonomy. Exported so the fleet client
 // (fleetClient.ts) routes its reads - including the roster envelope the mobile app now polls - through
 // the SAME choke point, keeping the connection-health signal fed no matter which reader is on screen.
-export async function gatewayFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+//
+// timeoutMs (mobile-resilience mission, Phase 4): a hardening cap for the repeating POLL reads (the
+// roster, chat history, voice). Without it a request that HANGS (a half-open connection on a flaky
+// mobile network - the TCP never resets, so fetch neither resolves nor rejects) would sit in flight
+// forever, so the health signal never flips to bad and the banner never shows. With it, a poll that
+// exceeds the cap is aborted and reported UNREACHABLE (a timed-out request could not reach a healthy
+// backend), distinct from a caller-initiated abort. One-shot writes pass no timeout and are unchanged.
+export async function gatewayFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  opts?: { timeoutMs?: number },
+): Promise<Response> {
+  const timeoutMs = opts?.timeoutMs;
+  const callerSignal = init?.signal ?? undefined;
+  let controller: AbortController | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let onCallerAbort: (() => void) | undefined;
+  let signal = callerSignal;
+  if (timeoutMs !== undefined) {
+    // Race the fetch against the timeout via our own controller, and forward a caller abort to it so
+    // both an unmount and a timeout cancel the in-flight request.
+    controller = new AbortController();
+    signal = controller.signal;
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort();
+      else { onCallerAbort = () => controller!.abort(); callerSignal.addEventListener("abort", onCallerAbort, { once: true }); }
+    }
+    timer = setTimeout(() => { timedOut = true; controller!.abort(); }, timeoutMs);
+  }
+
   let res: Response;
   try {
-    res = await fetch(input, init);
+    res = await fetch(input, signal ? { ...init, signal } : init);
   } catch (err) {
+    // A timeout is a connection failure (the request could not reach a healthy backend in time), so it
+    // is reported and surfaced as an error rather than swallowed like a caller cancel.
+    if (timedOut) {
+      reportGatewayUnreachable();
+      throw new GatewayError(504, "Gateway request timed out");
+    }
     // A caller-initiated abort (the browser throws a DOMException named "AbortError", which extends
     // Error) is a cancel, not a connection signal - rethrow it without recording anything.
     if (err instanceof Error && err.name === "AbortError") throw err;
     reportGatewayUnreachable();
     throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onCallerAbort && callerSignal) callerSignal.removeEventListener("abort", onCallerAbort);
   }
   if (res.status === 0 || res.status === 502 || res.status === 503 || res.status === 504) {
     reportGatewayUnreachable();
@@ -253,6 +292,11 @@ export async function gatewayFetch(input: RequestInfo | URL, init?: RequestInit)
   }
   return res;
 }
+
+// The cap for the repeating poll reads (roster, chat history, voice). Long enough not to trip on a slow
+// but alive mobile connection, short enough that a hung request surfaces as a bad connection within one
+// or two poll cycles instead of never (mobile-resilience mission, Phase 4).
+export const POLL_TIMEOUT_MS = 10000;
 
 // Map any error thrown by a Gateway read/write into ONE user-facing line, never leaking the internal
 // "METHOD /path failed: NNN" diagnostic the client throws on a non-2xx, nor the browser's bare
@@ -312,7 +356,7 @@ export async function listSessions(signal?: AbortSignal): Promise<SessionDto[]> 
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
-  });
+  }, { timeoutMs: POLL_TIMEOUT_MS });
   if (res.status === 401) {
     // The device key was revoked (or is otherwise invalid): forget it and re-gate to Sign in. The
     // roster is the first credentialed call the app makes, so this is where a revoke surfaces.
@@ -341,7 +385,7 @@ export async function getSessionHistory(
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
-  });
+  }, { timeoutMs: POLL_TIMEOUT_MS });
   if (!res.ok) {
     throw new GatewayError(res.status, `GET history failed: ${res.status}`);
   }

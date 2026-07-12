@@ -7,7 +7,7 @@
 // Gateway-only-ingress rule the rest of client-core obeys, and carries the same Bearer via
 // authHeaders(). A non-2xx throws GatewayError so the caller surfaces the real reason instead of a
 // silently empty list (no fallback that hides the problem).
-import { authHeaders, gatewayFetch, GatewayError, type SessionDto } from "../api/client";
+import { authHeaders, gatewayFetch, GatewayError, POLL_TIMEOUT_MS, type SessionDto } from "../api/client";
 
 // ===== Directors registry (GET /directors) =====
 
@@ -120,11 +120,13 @@ export interface SessionsEnvelope {
 // reachability. Throws GatewayError on non-2xx so the page surfaces the failure rather than showing a
 // silently empty roster.
 export async function getSessionsEnvelope(signal?: AbortSignal): Promise<SessionsEnvelope> {
+  // The mobile roster polls this every couple of seconds; cap it so a hung request cannot leave the
+  // health signal stuck "good" during an outage (mobile-resilience mission, Phase 4).
   const res = await gatewayFetch("/sessions?envelope=true", {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
-  });
+  }, { timeoutMs: POLL_TIMEOUT_MS });
   if (!res.ok) {
     throw new GatewayError(res.status, `GET /sessions?envelope=true failed: ${res.status}`);
   }
