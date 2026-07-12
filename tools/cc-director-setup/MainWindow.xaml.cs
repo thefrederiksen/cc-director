@@ -119,6 +119,10 @@ public partial class MainWindow : Window
             // together: switching to "I already have a gateway" (Workstation) drops Sign-in and adds the
             // mandatory Connect step; switching back to the Gateway "first machine" role does the inverse.
             _role = _welcomeStep?.SelectedRole ?? _role;
+            // The Prerequisites step is cached (??=) and its Tailscale wording is role-aware, so
+            // drop the cached instance when the role flips - it rebuilds with the correct copy the
+            // next time the user reaches it.
+            _prerequisitesStep = null;
             UpdateSidebar();
         };
         return step;
@@ -238,7 +242,7 @@ public partial class MainWindow : Window
         StepContent.Content = step switch
         {
             1 => _welcomeStep ??= BuildWelcomeStep(),
-            2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate),
+            2 => _prerequisitesStep ??= new PrerequisitesStep(OnPrerequisitesChecked, _isUpdate, _role),
             StepSignIn => _signInStep ??= BuildSignInStep(),
             StepPrivacy => _privacyStep ??= BuildPrivacyStep(),
             StepConnect => _gatewayConnectStep ??= BuildGatewayConnectStep(),
