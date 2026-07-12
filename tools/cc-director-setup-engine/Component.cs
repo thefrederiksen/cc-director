@@ -12,12 +12,18 @@ namespace CcDirector.Setup.Engine;
 /// (e.g. "cc-director-win-x64.exe"). This is the key into the release manifest.
 /// </param>
 /// <param name="Roles">Which install roles include this component.</param>
+/// <param name="MacAsset">
+/// The release-asset filename this component ships as, on macOS
+/// (e.g. "cc-launcher-mac-arm64"), or null when the component has no macOS build.
+/// Like <paramref name="WindowsAsset"/>, this is the key into the release manifest.
+/// </param>
 public sealed record Component(
     string Id,
     ComponentKind Kind,
     string DisplayName,
     string WindowsAsset,
-    IReadOnlySet<InstallRole> Roles)
+    IReadOnlySet<InstallRole> Roles,
+    string? MacAsset = null)
 {
     public bool InRole(InstallRole role) => Roles.Contains(role);
 }

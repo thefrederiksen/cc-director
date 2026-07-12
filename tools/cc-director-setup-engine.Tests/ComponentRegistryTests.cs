@@ -79,4 +79,25 @@ public class ComponentRegistryTests
 
         Assert.Equal(new[] { "cc-html", "cc-pdf", "cc-word" }, ids);
     }
+
+    [Fact]
+    public void Launcher_MacAsset_IsTheSingleFileMacBinary()
+    {
+        // The macOS launcher ships as a self-contained single-file executable; this name is the
+        // contract between the release workflow, the release manifest, and the Mac installer.
+        Assert.Equal("cc-launcher-mac-arm64", ComponentRegistry.Launcher.MacAsset);
+    }
+
+    [Fact]
+    public void Director_MacAsset_MatchesTheAppBundleZipThatMacAppPlacerPlaces()
+    {
+        Assert.Equal(MacAppPlacer.DirectorAsset, ComponentRegistry.Director.MacAsset);
+    }
+
+    [Fact]
+    public void ToolComponent_HasNoMacAsset()
+    {
+        // Tools ship to macOS through the shared Python bundle, not as per-tool release assets.
+        Assert.Null(ComponentRegistry.ToolComponent("cc-pdf").MacAsset);
+    }
 }
