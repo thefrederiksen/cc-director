@@ -174,6 +174,17 @@ public sealed class DirectorSupervisor
     }
 
     /// <summary>
+    /// The Control API port of the RUNNING installed Director, or 0 when it is not running
+    /// (or wrote no instance registration). This is how the update guardian reaches the
+    /// Director's health endpoint without any configuration.
+    /// </summary>
+    public int InstalledDirectorPort()
+    {
+        var proc = FindDirectorProcess();
+        return proc is null ? 0 : FindDirectorPort(proc.Id);
+    }
+
+    /// <summary>
     /// Find a running process that IS the installed Director.
     /// Windows: match the image path of any cc-director process (MainModule works there).
     /// macOS: walk the instance registration files - the registered process must be alive

@@ -84,16 +84,25 @@ internal static class ControlEndpoints
         }
 
         // ===== Healthz =====
-        app.MapGet("/healthz", () => Results.Json(new HealthDto
+        app.MapGet("/healthz", () =>
         {
-            Status = "ok",
-            Directors = 1,
-            Sessions = sessionManager.ListSessions().Count,
-            Version = version,
-            ServerTime = DateTime.UtcNow,
-            DirectorId = directorId,
-            MachineName = Environment.MachineName,
-        }));
+            var sessions = sessionManager.ListSessions();
+            return Results.Json(new HealthDto
+            {
+                Status = "ok",
+                Directors = 1,
+                Sessions = sessions.Count,
+                // "Busy" means starting up or mid-turn. Idle, waiting for input or a
+                // permission, and exited sessions are all restart-safe; the launcher's
+                // restart policy requires this count to be zero before applying an update.
+                BusySessions = sessions.Count(s =>
+                    s.ActivityState is ActivityState.Working or ActivityState.Starting),
+                Version = version,
+                ServerTime = DateTime.UtcNow,
+                DirectorId = directorId,
+                MachineName = Environment.MachineName,
+            });
+        });
 
         // ===== Two-way handshake callback (issues #223/#224) =====
         // The Gateway dials this with the nonce the Director just POSTed to its

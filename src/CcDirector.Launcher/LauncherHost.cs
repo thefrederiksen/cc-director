@@ -156,6 +156,9 @@ public sealed class LauncherHost : IAsyncDisposable
                     running = _directorSupervisor.IsRunning,
                     exeExists = _directorSupervisor.DirectorExeExists,
                     exePath = _directorSupervisor.DirectorExePath,
+                    // The "new version waiting" notice: set while a staged Director update is
+                    // blocked by the restart policy (owner ruling, decision 8), null otherwise.
+                    pendingUpdate = DirectorUpdateGuardian.PendingUpdateNotice,
                 },
                 launchedPids = _launchService.LaunchedPids,
             }, JsonOpts);

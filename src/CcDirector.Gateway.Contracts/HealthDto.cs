@@ -16,4 +16,12 @@ public sealed class HealthDto
 
     /// <summary>OS host name reporting the response.</summary>
     public string? MachineName { get; set; }
+
+    /// <summary>
+    /// How many sessions are actively working (starting up or mid-turn) right now. The
+    /// launcher's restart policy requires this to be zero before it may restart the Director
+    /// to apply an update. Null when reported by a build that predates the field - which the
+    /// policy treats as "unknown, do not restart".
+    /// </summary>
+    public int? BusySessions { get; set; }
 }
