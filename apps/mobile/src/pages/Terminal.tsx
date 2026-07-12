@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import "@xterm/xterm/css/xterm.css";
 import { listSessions } from "@devthrottle/client-core/api/client";
-import { TerminalMirror } from "@devthrottle/client-core/terminal/stream";
+import { TerminalMirror, type TerminalStreamStatus } from "@devthrottle/client-core/terminal/stream";
 import { DictationStatusStrip } from "../components/DictationStatusStrip";
 import { SessionControls } from "../components/SessionControls";
 import { SessionManageBar } from "../components/SessionManageBar";
@@ -48,6 +48,10 @@ export function Terminal() {
   const [status, setStatus] = useState<string>(STATUS_BASE);
   const [showKeys, setShowKeys] = useState(false); // controls hidden by default (Android parity)
   const [fitLabel, setFitLabel] = useState<"Fit" | "1:1">("1:1");
+  // The live-stream connection state (mobile-resilience Phase 3). While it is not "live" a small note
+  // shows over the terminal that it is (re)connecting - the last-known screen stays visible underneath,
+  // never blanked, and the note is the only sign of trouble.
+  const [streamStatus, setStreamStatus] = useState<TerminalStreamStatus>("connecting");
 
   // One-shot fetch of the session's display name for the header (the mirror itself never needs it).
   useEffect(() => {
@@ -64,7 +68,7 @@ export function Terminal() {
   // The live mirror: a real xterm.js terminal fed by the WebSocket session stream.
   useEffect(() => {
     if (!sessionId || wrapRef.current === null || hostRef.current === null) return;
-    const mirror = new TerminalMirror(wrapRef.current, hostRef.current, sessionId, setFitLabel, openFile);
+    const mirror = new TerminalMirror(wrapRef.current, hostRef.current, sessionId, setFitLabel, openFile, setStreamStatus);
     mirrorRef.current = mirror;
     mirror.start();
     return () => { mirror.dispose(); mirrorRef.current = null; };
@@ -107,6 +111,14 @@ export function Terminal() {
       {/* The terminal fills all remaining space. .term-wrap is the only scroll container (vertical
           scrollback + horizontal pan); the Fit and A-/A+ controls float over its corners. */}
       <div className="term-stage">
+        {/* Mobile-resilience Phase 3: while the live stream is down, a small note floats over the top of
+            the terminal. The last-known screen stays visible underneath (never blanked); this note is the
+            only sign the mirror is (re)connecting, and it clears itself the instant the socket reopens. */}
+        {streamStatus !== "live" && (
+          <div className="term-reconnecting" role="status">
+            {streamStatus === "connecting" ? "Connecting to the live terminal..." : "Reconnecting to the live terminal..."}
+          </div>
+        )}
         <div className="term-wrap" ref={wrapRef}><div className="term-xterm" ref={hostRef} /></div>
         <div className="term-zoom">
           <button type="button" className="term-zoom-btn" aria-label="Zoom out"
