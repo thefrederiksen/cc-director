@@ -1,6 +1,4 @@
-using CcDirector.Core.Configuration;
-using CcDirector.Core.Diagnostics;
-using CcDirector.Core.Tools;
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.Builder;
@@ -19,37 +17,30 @@ namespace CcDirector.ControlApi;
 /// (GET /directors/{id}/facts) - the "Director emits/serves everything the hub will
 /// need" half of Phase 1. Loopback-only and subject to the host's auth middleware,
 /// exactly like the other routes.
+///
+/// Gateway Cleanup mission, Phase 0 (wave 3): the inventory is built by the shared
+/// <see cref="CatalogReadExecutor.Facts"/> core, reached here through the tunnel dispatch, so this REST
+/// route and the Gateway stream down-channel are byte-identical and cannot drift. The Director version -
+/// the one dependency the tunnel command surface did not carry - is passed in through
+/// <see cref="SessionCommandServices.DirectorVersion"/>. Phase 1 deletes this route and leaves the core
+/// reached only over the tunnel.
 /// </summary>
 internal static class FactsEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, string directorId, string version)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId, string version)
     {
-        var catalog = new ToolCatalogService();
-
-        app.MapGet("/facts", () =>
+        app.MapGet("/facts", async () =>
         {
             FileLog.Write("[FactsEndpoint] GET /facts");
-            var tools = ToolInventory.Build(catalog, AboutInfo.InstalledComponents());
-            var launcher = LauncherDiscovery.Read();
-            return Results.Json(new DirectorFactsDto
+            var command = new DirectorCommand { Verb = "facts", SessionId = "" };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command,
+                new SessionCommandServices { DirectorVersion = version });
+
+            return result.Status switch
             {
-                DirectorId = directorId,
-                MachineName = Environment.MachineName,
-                Version = version,
-                Tools = tools.Select(t => new ToolInventoryItemDto
-                {
-                    Name = t.Name,
-                    Category = t.Category,
-                    Version = t.Version,
-                    IsBuilt = t.IsBuilt,
-                }).ToList(),
-                Launcher = new LauncherFactDto
-                {
-                    Installed = launcher.Installed,
-                    Port = launcher.Port,
-                    Error = launcher.Error,
-                },
-            });
+                DirectorCommandStatus.Ok => Results.Content(result.BodyJson ?? "{}", "application/json"),
+                _ => Results.Problem(result.Error ?? "facts command failed"),
+            };
         });
     }
 }
