@@ -155,8 +155,8 @@
   </div>
 
   <h2>8. The end-to-end success test + Windows go-live (spec 11.3)</h2>
-  <div class="card note">
-    <strong>Honest status:</strong> the three legs of the happy path are individually shown across the phase screenshots, but the strict 11.3 claim &mdash; a <em>token-less fresh device</em> completing "Sign in with DevThrottle" and <em>earning</em> two green checks &mdash; is <strong>pending the Part B live run</strong> (below). The Windows go-live table proves a device that <em>already held</em> a token boots green; that is a different, weaker claim. Green is earned, never assumed (section 3), so 11.3 stays open until the fresh sign-in actually earns it.
+  <div class="card">
+    <strong class="ok">11.3 MET (live).</strong> A blocker surfaced first: on an auth-enforced Gateway a token-less device was locked out (register, account-status, AND the loopback enrollment all sat behind the token wall). It was fixed under epic #1069 A (PR #1430) &mdash; see <code>gateway-connection-fresh-device-auth-DESIGN.md</code>. After the merged Gateway was deployed to the live fleet, a <em>fresh, never-configured</em> Director on a clean profile picked "This computer" and <em>earned</em> two green checks with zero extra clicks (the Gateway was already signed in), and a working Director on the same build reached green and started a session cleanly &mdash; the owner confirmed "it works" on 2026-07-12. Green is earned, not assumed: the key is minted only by the loopback enrollment after sign-in.
   </div>
   <p>The happy path, from a clean profile to two green checks without typing a URL: <strong>click the amber box &rarr; click Connect &rarr; sign in with DevThrottle</strong>. Each leg's UI is shown above:</p>
   <ul>
@@ -185,7 +185,7 @@
     <tr><th>#</th><th>Criterion</th><th>Status</th></tr>
     <tr><td>11.1</td><td>All five phases merged to origin/main, each with resolver/presenter unit tests, each human-verified on Windows against the real Gateway</td><td class="ok">Met</td></tr>
     <tr><td>11.2</td><td>The section-8 deletion list fully executed &mdash; none of the removed buttons, boxes, or dialogs reachable from the UI</td><td class="ok">Met (grep = 0)</td></tr>
-    <tr><td>11.3</td><td>The end-to-end success test passes on a fresh profile: clean start to two green checks without typing a URL</td><td class="note">In progress &mdash; pending the fresh-profile live sign-in (Part B). A token-less device must EARN green; the go-live table only proves a token-holding device.</td></tr>
+    <tr><td>11.3</td><td>The end-to-end success test passes on a fresh profile: clean start to two green checks without typing a URL</td><td class="ok">Met &mdash; a token-less fresh Director earned green live after the epic #1069 A fix + Gateway deploy (owner-confirmed 2026-07-12)</td></tr>
     <tr><td>11.4</td><td>The Mac verification pass (network discovery, browser launch, per-device token storage path)</td><td class="note" id="dod-mac">Deferred &mdash; tracked as issue #1420 (section 7)</td></tr>
     <tr><td>11.5</td><td>This final verification report with screenshots from the running app</td><td class="ok">This document</td></tr>
   </table>
