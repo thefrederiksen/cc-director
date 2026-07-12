@@ -20,13 +20,15 @@ public static class ComponentRegistry
     private static readonly IReadOnlySet<InstallRole> GatewayOnly =
         new HashSet<InstallRole> { InstallRole.Gateway };
 
-    /// <summary>The Director ships to every machine, in both roles.</summary>
+    /// <summary>The Director ships to every machine, in both roles. On macOS it ships as the
+    /// application-bundle zip that <see cref="MacAppPlacer"/> places (not a single file).</summary>
     public static readonly Component Director = new(
         Id: "director",
         Kind: ComponentKind.Director,
         DisplayName: "DevThrottle",
         WindowsAsset: "cc-director-win-x64.exe",
-        Roles: BothRoles);
+        Roles: BothRoles,
+        MacAsset: MacAppPlacer.DirectorAsset);
 
     /// <summary>The Gateway service ships only to the one Gateway-role machine.</summary>
     public static readonly Component Gateway = new(
@@ -37,15 +39,18 @@ public static class ComponentRegistry
         Roles: GatewayOnly);
 
     /// <summary>
-    /// The CC Launcher tray app (issue #250): always-on Windows launcher with clean process
+    /// The CC Launcher tray app (issue #250): always-on launcher with clean process
     /// parentage and a loopback REST API. Ships to both roles so any machine can use it.
+    /// On macOS it ships as a self-contained single-file executable and runs as a user
+    /// launch agent (the CC Launcher mission, 2026-07-11).
     /// </summary>
     public static readonly Component Launcher = new(
         Id: "cc-launcher",
         Kind: ComponentKind.Launcher,
         DisplayName: "DevThrottle Launcher",
         WindowsAsset: "cc-launcher-win-x64.exe",
-        Roles: BothRoles);
+        Roles: BothRoles,
+        MacAsset: "cc-launcher-mac-arm64");
 
     /// <summary>The fixed app components (Director, Gateway, Launcher).</summary>
     public static readonly IReadOnlyList<Component> Apps = [Director, Gateway, Launcher];

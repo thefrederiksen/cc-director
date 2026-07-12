@@ -380,9 +380,11 @@ jobs:
 
       - name: Publish Launcher tray app for Windows x64
         # Framework-dependent: requires the .NET 10 ASP.NET Core + desktop runtime on the target.
+        # The explicit framework is required once the launcher project multi-targets for macOS
+        # (net10.0-windows;net10.0) and is harmless before that.
         run: >
           dotnet publish src/CcDirector.Launcher/CcDirector.Launcher.csproj
-          -c Release -r win-x64 --self-contained false
+          -c Release -f net10.0-windows -r win-x64 --self-contained false
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
 
@@ -401,6 +403,41 @@ jobs:
         with:
           name: launcher-win
           path: src/CcDirector.Launcher/bin/Release/net10.0-windows/win-x64/publish/cc-launcher.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 1c3: Build the CC Launcher (macOS arm64)
+  # ---------------------------------------------------------------
+  # The CC Launcher mission (2026-07-11): the same launcher, published for Apple-silicon Macs as a
+  # self-contained single-file executable. It installs to the per-user launcher directory and runs
+  # as a user launch agent (label com.devthrottle.cc-launcher). The project multi-targets
+  # net10.0-windows;net10.0, so the plain net10.0 framework must be selected explicitly here.
+  # Ad-hoc signed like the other macOS binaries; the installer strips the Gatekeeper quarantine.
+  build-launcher-mac:
+    name: Build CC Launcher (macOS arm64)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish Launcher for macOS arm64
+        run: >
+          dotnet publish src/CcDirector.Launcher/CcDirector.Launcher.csproj
+          -c Release -f net10.0 -r osx-arm64 --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+
+      - name: Upload launcher mac artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: launcher-mac
+          path: src/CcDirector.Launcher/bin/Release/net10.0/osx-arm64/publish/cc-launcher
           if-no-files-found: error
 
   # The Blazor Server Cockpit had its own build job here; it was retired in the epic #967 cutover
@@ -526,6 +563,7 @@ jobs:
       - build-director-mac
       - build-gateway-win
       - build-launcher-win
+      - build-launcher-mac
       - build-python-bundle-win
       - build-python-bundle-mac
       - build-setup-wizard-win
@@ -590,6 +628,10 @@ jobs:
           # Windows Launcher tray app (publish emits cc-launcher.exe)
           cp release-artifacts/launcher-win/cc-launcher.exe "$RELEASE_DIR/cc-launcher-win-x64.exe"
 
+          # macOS Launcher (publish emits cc-launcher; the asset name is what
+          # ComponentRegistry.Launcher.MacAsset and the Mac installer expect)
+          cp release-artifacts/launcher-mac/cc-launcher "$RELEASE_DIR/cc-launcher-mac-arm64"
+
           # The Cockpit is served in-process by the Gateway (issue #979): its React bundle is baked into
           # the Gateway exe by the BuildCockpitApp MSBuild target, so there is no separate Cockpit asset.
 
@@ -622,6 +664,7 @@ jobs:
             devthrottle-gateway-cockpit-win-x64.zip
             ffmpeg-win-x64.zip
             cc-launcher-win-x64.exe
+            cc-launcher-mac-arm64
             devthrottle-setup-win-x64.exe
             devthrottle-setup-cli-win-x64.exe
             cc-python-win-x64.zip
