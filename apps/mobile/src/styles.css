@@ -2844,3 +2844,51 @@ a.banner-btn {
   color: var(--text-dim);
   margin-bottom: 6px;
 }
+
+/* 24-hour concurrency bar chart */
+.thr-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 110px;
+  padding: 8px 2px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-top: 8px;
+}
+.thr-bar-col {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+}
+.thr-bar-track {
+  width: 100%;
+  max-width: 16px;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-end;
+}
+.thr-bar-live {
+  width: 100%;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 2px 2px 0 0;
+  display: flex;
+  align-items: flex-end;
+  min-height: 1px;
+}
+.thr-bar-work {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+}
+.thr-bar-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  height: 11px;
+  font-variant-numeric: tabular-nums;
+}

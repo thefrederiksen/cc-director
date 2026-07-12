@@ -34,15 +34,27 @@ export interface ConcurrencySeries {
   allTimeMaxAtUtc: string | null;
   /** Highest count in the last 7 days, derived from the hourly history. */
   weeklyMax: number;
-  /** Per-hour max history, oldest hour first (hour key "yyyy-MM-ddTHH" UTC). */
-  hourly: { hour: string; max: number }[];
+}
+
+/** One hour of the fleet activity log (hour key "yyyy-MM-ddTHH" UTC): the max concurrent live and
+ * working counts, and how many distinct sessions, machines, and repositories ran that hour. */
+export interface ConcurrencyHour {
+  hour: string;
+  maxLive: number;
+  maxWorking: number;
+  sessions: number;
+  machines: number;
+  repos: number;
 }
 
 /** Fleet concurrency: how many sessions are loaded/running at once (live) and how many are actively
- * working at once (working). Null when the Gateway has not tracked any yet. */
+ * working at once (working), plus the per-hour activity log. Null when the Gateway has not tracked any
+ * yet. */
 export interface ConcurrencyStats {
   live: ConcurrencySeries;
   working: ConcurrencySeries;
+  /** Per-hour activity log, oldest hour first. */
+  hourly: ConcurrencyHour[];
 }
 
 /** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
@@ -134,31 +146,41 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
   };
 }
 
+function num(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function normalizeSeries(raw: unknown): ConcurrencySeries {
   const s = (raw ?? {}) as Partial<Record<keyof ConcurrencySeries, unknown>>;
-  const num = (v: unknown): number => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-  const hourly = Array.isArray(s.hourly)
-    ? s.hourly.map((h) => {
-        const o = (h ?? {}) as { hour?: unknown; max?: unknown };
-        return { hour: String(o.hour ?? ""), max: num(o.max) };
-      })
-    : [];
   return {
     current: num(s.current),
     allTimeMax: num(s.allTimeMax),
     allTimeMaxAtUtc: typeof s.allTimeMaxAtUtc === "string" ? s.allTimeMaxAtUtc : null,
     weeklyMax: num(s.weeklyMax),
-    hourly,
+  };
+}
+
+function normalizeHour(raw: unknown): ConcurrencyHour {
+  const h = (raw ?? {}) as Partial<Record<keyof ConcurrencyHour, unknown>>;
+  return {
+    hour: String(h.hour ?? ""),
+    maxLive: num(h.maxLive),
+    maxWorking: num(h.maxWorking),
+    sessions: num(h.sessions),
+    machines: num(h.machines),
+    repos: num(h.repos),
   };
 }
 
 function normalizeConcurrency(raw: unknown): ConcurrencyStats | null {
   if (raw === null || typeof raw !== "object") return null;
-  const c = raw as { live?: unknown; working?: unknown };
-  return { live: normalizeSeries(c.live), working: normalizeSeries(c.working) };
+  const c = raw as { live?: unknown; working?: unknown; hourly?: unknown };
+  return {
+    live: normalizeSeries(c.live),
+    working: normalizeSeries(c.working),
+    hourly: Array.isArray(c.hourly) ? c.hourly.map(normalizeHour) : [],
+  };
 }
 
 /** Derive the honest headline summary from a tally snapshot. Turn shares are over counted turns only;
