@@ -13,6 +13,9 @@ export interface AiProviderSnapshot {
   /** The model Car Mode's fleet brain runs on - its OWN setting, separate from the Wingman (Car Mode
    *  runs a fast tier + tool_choice=required). The user's saved choice, or the Qwen2.5-72B default. */
   carModeModel: string;
+  /** Car Mode's hands-free sign-off phrase (default "over and out"). A Gateway setting so the Cockpit can
+   *  set it and the phone, where Car Mode runs, picks it up. */
+  carModeEndPhrase: string;
   transcriptionModel: string;
   ttsModel: string;
   ttsVoice: string;
@@ -98,6 +101,13 @@ export function setWingmanFastModel(model: string): Promise<{ model: string }> {
 // override, then this saved setting, then the Qwen2.5-72B default.
 export function setCarModeModel(model: string): Promise<{ model: string }> {
   return putJson<{ model: string }>("/gateway/ai/car-mode-model", { model });
+}
+
+// PUT /gateway/ai/car-mode-end-phrase { phrase } - persist Car Mode's hands-free sign-off phrase. A blank
+// phrase resets to the "over and out" default (an empty phrase would end every turn). Returns the effective
+// phrase the Gateway stored.
+export function setCarModeEndPhrase(phrase: string): Promise<{ phrase: string }> {
+  return putJson<{ phrase: string }>("/gateway/ai/car-mode-end-phrase", { phrase });
 }
 
 export function setTtsModel(model: string): Promise<{ model: string }> {

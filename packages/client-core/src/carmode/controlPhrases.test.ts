@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideControlAction, detectEndPhrase, detectInterrupt, normalizeTranscript } from "./controlPhrases";
+import { decideControlAction, detectEndPhrase, detectInterrupt, detectPhraseAtEnd, normalizeTranscript } from "./controlPhrases";
 
 // The walkie-talkie discipline is load-bearing: the assistant must never speak until "over and out",
 // and must never mistake a mid-sentence "over" or "stopover" for the end word. These tests pin the
@@ -95,5 +95,34 @@ describe("decideControlAction (the turn-taking decision)", () => {
   it("ignores control words entirely while Thinking (nothing to interrupt, turn committed)", () => {
     expect(decideControlAction("thinking", "over and out")).toBe("none");
     expect(decideControlAction("thinking", "stop")).toBe("none");
+  });
+});
+
+// detectPhraseAtEnd is the configurable end-phrase matcher behind the hands-free end-of-turn watch and the
+// Car Mode settings (the owner chooses his own sign-off phrase). Same trailing-only, whole-phrase rule as
+// detectEndPhrase, but for any phrase.
+describe("detectPhraseAtEnd (configurable end phrase)", () => {
+  it("ends and strips the phrase when the transcript ends with it", () => {
+    expect(detectPhraseAtEnd("start the tests over and out", "over and out")).toEqual({
+      ended: true,
+      command: "start the tests",
+    });
+    expect(detectPhraseAtEnd("read me that one, I'm done.", "i am done")).toEqual({ ended: false, command: "" });
+    expect(detectPhraseAtEnd("read me that one im done", "im done")).toEqual({ ended: true, command: "read me that one" });
+  });
+
+  it("matches a custom phrase the same way (case/punctuation-insensitive, trailing only)", () => {
+    expect(detectPhraseAtEnd("How many need me, GO AHEAD.", "go ahead")).toEqual({ ended: true, command: "how many need me" });
+    expect(detectPhraseAtEnd("go ahead and start it", "go ahead")).toEqual({ ended: false, command: "" }); // mid-sentence
+    expect(detectPhraseAtEnd("go ahead", "go ahead")).toEqual({ ended: true, command: "" }); // whole transcript is the phrase
+  });
+
+  it("never ends on an empty phrase (an unset setting must not end every turn)", () => {
+    expect(detectPhraseAtEnd("anything at all", "")).toEqual({ ended: false, command: "" });
+    expect(detectPhraseAtEnd("anything at all", "   ")).toEqual({ ended: false, command: "" });
+  });
+
+  it("does not fire when the transcript is empty", () => {
+    expect(detectPhraseAtEnd("", "over and out")).toEqual({ ended: false, command: "" });
   });
 });

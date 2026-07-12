@@ -8,6 +8,7 @@ import { Chat } from "./pages/Chat";
 import { FileView } from "./pages/FileView";
 import { VoiceMode } from "./pages/VoiceMode";
 import { CarMode } from "./pages/CarMode";
+import { EndWordTest } from "./pages/EndWordTest";
 import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
 import { YourThrottle } from "./pages/YourThrottle";
@@ -110,6 +111,10 @@ const router = createBrowserRouter(
             // Car Mode (Car Mode mission): its own chrome-less, full-screen route, NOT nested in any
             // tabbed session view. Hands-free voice control of the whole fleet with a screen wake-lock.
             { path: "/car", element: <CarMode /> },
+            // Car Mode End Word Test (harness for the spoken end-of-turn phrase): set a configurable
+            // phrase and test detecting it live. Standalone for now; folds into the Cockpit Car Mode
+            // settings tab once the approach is proven.
+            { path: "/endword", element: <EndWordTest /> },
             { path: "/settings", element: <AiSettings /> },
             { path: "/about", element: <About /> },
             // Your Throttle (devthrottle-stats mission): the in-app port of the standalone Gateway

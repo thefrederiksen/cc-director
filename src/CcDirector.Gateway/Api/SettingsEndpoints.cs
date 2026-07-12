@@ -489,6 +489,9 @@ internal static class SettingsEndpoints
             // The snapshot shows the user's saved setting (or the Qwen2.5-72B default); the env override
             // is not reflected here because it is a per-install debug switch, not the user's choice.
             carModeModel = Core.Configuration.CarModeModelConfig.Get(),
+            // Car Mode's hands-free sign-off phrase, a Gateway setting so the Cockpit can set it and the
+            // phone (where Car Mode runs) picks it up. Default "over and out".
+            carModeEndPhrase = Core.Configuration.CarModeEndPhraseConfig.Get(),
             transcriptionModel = Core.Configuration.TranscriptionEndpointResolver.Resolve(mode).Model,
             ttsModel = Core.Configuration.TtsModelConfig.Resolve(mode),
             ttsVoice = Core.Configuration.TtsVoiceConfig.Resolve(mode),

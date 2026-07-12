@@ -7,20 +7,64 @@
 // Best-effort by design: a cue is a courtesy, so a browser without Web Audio, or an autoplay block,
 // must never disrupt the dictation turn - it is skipped silently.
 
+// A SINGLE shared AudioContext for a whole Car Mode session. Priming this inside the Start tap gesture and
+// reusing it for every cue is what makes the HANDS-FREE cues work: a cue fired later from a background timer
+// (the end-phrase watch) can no longer create a fresh, suspended context that lags AND churns the mobile
+// audio session enough to duck the spoken reply to silence (the v7 no-voice bug). Dictation does not prime
+// it, so its cues keep the original per-call behaviour (they always fire from a gesture, so that is fine).
+let sharedCueCtx: AudioContext | null = null;
+
+function audioCtor(): typeof AudioContext | null {
+  return window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext || null;
+}
+
+/** Car Mode: open (or resume) the shared cue AudioContext. MUST be called inside the Start tap gesture so
+ *  mobile lets it run; then every cue this session uses it and stays audible even when fired from a timer. */
+export function primeCueAudio(): void {
+  try {
+    const Ctor = audioCtor();
+    if (!Ctor) return;
+    if (sharedCueCtx === null || sharedCueCtx.state === "closed") sharedCueCtx = new Ctor();
+    if (sharedCueCtx.state === "suspended") void sharedCueCtx.resume();
+  } catch {
+    // Best-effort: if audio is unavailable the cues fall back to silence.
+  }
+}
+
+/** Car Mode: release the shared cue AudioContext at session end so it does not outlive Car Mode. */
+export function releaseCueAudio(): void {
+  try {
+    if (sharedCueCtx !== null && sharedCueCtx.state !== "closed") void sharedCueCtx.close();
+  } catch {
+    // already closed
+  }
+  sharedCueCtx = null;
+}
+
+// Return the context a cue should play on, and whether the cue OWNS it (must close it after) or is borrowing
+// the shared Car Mode context (must NOT close it - that churn is exactly the mobile duck we are avoiding).
+function cueContext(): { ctx: AudioContext; owned: boolean } | null {
+  if (sharedCueCtx !== null && sharedCueCtx.state !== "closed") {
+    if (sharedCueCtx.state === "suspended") void sharedCueCtx.resume();
+    return { ctx: sharedCueCtx, owned: false };
+  }
+  const Ctor = audioCtor();
+  if (!Ctor) return null;
+  const ctx = new Ctor();
+  if (ctx.state === "suspended") void ctx.resume();
+  return { ctx, owned: true };
+}
+
 /**
  * Play the dictation "ready" water-drop bloop once. Returns immediately; the sound plays on the
- * Web Audio clock. Never throws. Should be called from within/just after a user gesture (the Speak
- * tap that opened dictation) so the browser permits playback.
+ * Web Audio clock. Never throws. Uses the shared Car Mode cue context when primed (so it sounds even from a
+ * background timer); otherwise creates a per-call context, which dictation calls from within its Speak tap.
  */
 export function playReadyCue(): void {
   try {
-    const AudioCtor =
-      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtor) return;
-
-    const ctx = new AudioCtor();
-    // A context created outside a gesture can start "suspended"; resume so the cue is audible.
-    if (ctx.state === "suspended") void ctx.resume();
+    const acquired = cueContext();
+    if (acquired === null) return;
+    const { ctx, owned } = acquired;
 
     const now = ctx.currentTime;
     const duration = 0.2;
@@ -43,7 +87,8 @@ export function playReadyCue(): void {
     osc.connect(gain).connect(ctx.destination);
     osc.start(now);
     osc.stop(now + duration + 0.02);
-    osc.onended = () => void ctx.close();
+    // Close ONLY a per-call context; never close the shared Car Mode context (that churn is the mobile duck).
+    if (owned) osc.onended = () => void ctx.close();
   } catch {
     // Best-effort courtesy cue; never disrupt dictation if audio output is unavailable.
   }
@@ -64,12 +109,9 @@ export function playReadyCue(): void {
  */
 export function startThinkingCue(): () => void {
   try {
-    const AudioCtor =
-      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtor) return () => {};
-
-    const ctx = new AudioCtor();
-    if (ctx.state === "suspended") void ctx.resume();
+    const acquired = cueContext();
+    if (acquired === null) return () => {};
+    const { ctx, owned } = acquired;
 
     let stopped = false;
 
@@ -105,10 +147,14 @@ export function startThinkingCue(): () => void {
       if (stopped) return;
       stopped = true;
       window.clearInterval(timer);
-      try {
-        void ctx.close();
-      } catch {
-        // context already closed; nothing to do
+      // Close ONLY a per-call context. The shared Car Mode context stays open (idle) for the reply that
+      // follows - closing it here is the churn that ducked the reply on mobile.
+      if (owned) {
+        try {
+          void ctx.close();
+        } catch {
+          // context already closed; nothing to do
+        }
       }
     };
   } catch {
@@ -129,12 +175,9 @@ export function startThinkingCue(): () => void {
  */
 export function playYourTurnCue(): void {
   try {
-    const AudioCtor =
-      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtor) return;
-
-    const ctx = new AudioCtor();
-    if (ctx.state === "suspended") void ctx.resume();
+    const acquired = cueContext();
+    if (acquired === null) return;
+    const { ctx, owned } = acquired;
 
     const now = ctx.currentTime;
 
@@ -166,7 +209,7 @@ export function playYourTurnCue(): void {
     osc.connect(gain).connect(ctx.destination);
     osc.start(now);
     osc.stop(now + total + 0.02);
-    osc.onended = () => void ctx.close();
+    if (owned) osc.onended = () => void ctx.close();
   } catch {
     // Best-effort courtesy cue; never disrupt the turn if audio output is unavailable.
   }
