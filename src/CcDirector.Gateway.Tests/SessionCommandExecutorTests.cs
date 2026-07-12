@@ -939,4 +939,220 @@ public sealed class SessionCommandExecutorTests
             sm.Dispose();
         }
     }
+
+    [Fact]
+    public async Task DispatchAsync_UnknownVerb_NamesTheVerb()
+    {
+        // Fail loud: the unknown-verb result names the offending verb (Gateway Cleanup Phase 0, Ruling B).
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var command = new DirectorCommand { Verb = "totally-made-up-verb", SessionId = Guid.NewGuid().ToString() };
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", command);
+
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+            Assert.Contains("totally-made-up-verb", result.Error);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- turns (Gateway Cleanup Phase 0: representative READ exemplar) ----------
+
+    private static DirectorCommand TurnsCommand(string sid) => new() { CommandId = "t1", Verb = "turns", SessionId = sid };
+
+    [Fact]
+    public async Task DispatchAsync_Turns_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", TurnsCommand("not-a-guid"));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Turns_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", TurnsCommand(Guid.NewGuid().ToString()));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Turns_ClaudeSessionNotYetLinked_ReturnsOkWithNoSessionIdStatus()
+    {
+        // A fresh ClaudeCode session has no Claude session id yet: the REST route returned this as a 200 with
+        // status "no_session_id" (a domain state, not an error), so the tunnel verb returns DirectorCommandStatus.Ok
+        // with that body. This exercises the read returning a serialized DTO on the success path.
+        var (sm, session, _) = NewSession();
+        try
+        {
+            Assert.True(string.IsNullOrEmpty(session.ClaudeSessionId));
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", TurnsCommand(session.Id.ToString()));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("t1", result.CommandId);
+            var resp = JsonSerializer.Deserialize<TurnsResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.Equal("no_session_id", resp.Status);
+            Assert.Equal(session.Id.ToString(), resp.SessionId);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- resize (Gateway Cleanup Phase 0: representative WRITE exemplar) ----------
+
+    private static DirectorCommand ResizeCommand(string sid, int cols, int rows) => new()
+    {
+        CommandId = "rz1",
+        Verb = "resize",
+        SessionId = sid,
+        PayloadJson = JsonSerializer.Serialize(new ResizeRequest { Cols = cols, Rows = rows }, Json),
+    };
+
+    [Fact]
+    public async Task DispatchAsync_Resize_ValidGrid_ReturnsAcceptedAndSettledGrid()
+    {
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", ResizeCommand(session.Id.ToString(), 100, 40));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("rz1", result.CommandId);
+            var resp = JsonSerializer.Deserialize<ResizeResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.True(resp.Accepted);
+            // The verb reports the grid the session actually settled on (clamped to the PTY's limits).
+            Assert.Equal((int)session.CurrentCols, resp.Cols);
+            Assert.Equal((int)session.CurrentRows, resp.Rows);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Resize_NonPositiveGrid_ReturnsBadRequest()
+    {
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", ResizeCommand(session.Id.ToString(), 0, 40));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Resize_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", ResizeCommand(Guid.NewGuid().ToString(), 100, 40));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Resize_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", ResizeCommand("not-a-guid", 100, 40));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- terminal-input (Gateway Cleanup Phase 0: the unary keystroke write, NOT a stream verb) ----------
+
+    private static DirectorCommand TerminalInputCommand(string sid, string base64Bytes) => new()
+    {
+        CommandId = "ti1",
+        Verb = "terminal-input",
+        SessionId = sid,
+        PayloadJson = JsonSerializer.Serialize(new TerminalInputRequest { Bytes = base64Bytes }, Json),
+    };
+
+    [Fact]
+    public async Task DispatchAsync_TerminalInput_DeliversBytesToSession()
+    {
+        var (sm, session, backend) = NewSession();
+        try
+        {
+            var bytes = Encoding.UTF8.GetBytes("hi");
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", TerminalInputCommand(session.Id.ToString(), Convert.ToBase64String(bytes)));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("ti1", result.CommandId);
+            Assert.NotNull(backend.Buffer);
+            var written = Encoding.UTF8.GetString(backend.Buffer.DumpAll());
+            Assert.Contains("hi", written);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_TerminalInput_NotBase64_ReturnsBadRequest()
+    {
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", TerminalInputCommand(session.Id.ToString(), "not valid base64 !!!"));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_TerminalInput_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", TerminalInputCommand(Guid.NewGuid().ToString(), Convert.ToBase64String(new byte[] { 1, 2, 3 })));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- composition: fail loud on a duplicate verb (Gateway Cleanup Phase 0, Ruling B) ----------
+
+    private sealed class StubArea : ISessionCommandArea
+    {
+        public StubArea(params string[] verbs) => Verbs = verbs;
+        public IReadOnlyCollection<string> Verbs { get; }
+        public Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(DirectorCommandResult.Success());
+    }
+
+    [Fact]
+    public void BuildVerbMap_DuplicateVerbAcrossAreas_ThrowsNamingTheVerb()
+    {
+        var areas = new ISessionCommandArea[] { new StubArea("alpha", "beta"), new StubArea("beta", "gamma") };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => SessionCommandExecutor.BuildVerbMap(areas));
+        Assert.Contains("beta", ex.Message);
+    }
+
+    [Fact]
+    public void BuildVerbMap_DistinctVerbs_BuildsMap()
+    {
+        var areas = new ISessionCommandArea[] { new StubArea("one", "two"), new StubArea("three") };
+
+        var map = SessionCommandExecutor.BuildVerbMap(areas);
+
+        Assert.Equal(3, map.Count);
+        Assert.True(map.ContainsKey("one"));
+        Assert.True(map.ContainsKey("three"));
+    }
 }

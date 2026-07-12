@@ -48,30 +48,69 @@ internal static class SessionCommandExecutor
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     /// <summary>
-    /// Execute a command by verb. Resolves the payload and target session with the shared guards, then
-    /// dispatches to the matching verb handler. An unknown verb is a <see cref="DirectorCommandStatus.BadRequest"/>.
+    /// Gateway Cleanup mission, Phase 0 (spine): every command AREA, pre-created ONCE. The verb-to-area map
+    /// below is built from these. A worker fills its own area class; this list changes only when a whole new
+    /// area is introduced (never for adding a verb), so it is not a merge chokepoint.
     /// </summary>
-    public static async Task<DirectorCommandResult> DispatchAsync(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services = null, SendSource source = SendSource.UserInput)
+    private static readonly ISessionCommandArea[] Areas =
+    {
+        new SessionReadExecutor(),
+        new CatalogReadExecutor(),
+        new SessionWriteExecutor(),
+        new QueueGitExecutor(),
+        new SessionByteExecutor(),
+    };
+
+    /// <summary>
+    /// Gateway Cleanup mission, Phase 0 (spine): the single verb-to-area dictionary, the one source of truth
+    /// for which area owns which verb. Built ONCE at type initialization from the areas' declared verb lists;
+    /// a duplicate verb across two areas throws immediately (fail loud, no silent shadow).
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, ISessionCommandArea> VerbMap = BuildVerbMap(Areas);
+
+    internal static IReadOnlyDictionary<string, ISessionCommandArea> BuildVerbMap(IReadOnlyList<ISessionCommandArea> areas)
+    {
+        var map = new Dictionary<string, ISessionCommandArea>(StringComparer.Ordinal);
+        foreach (var area in areas)
+        {
+            foreach (var verb in area.Verbs)
+            {
+                if (map.TryGetValue(verb, out var existing))
+                    throw new InvalidOperationException(
+                        $"Duplicate command verb '{verb}' declared by both {existing.GetType().Name} and {area.GetType().Name}. Each verb must be owned by exactly one command area.");
+                map[verb] = area;
+            }
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Execute a command by verb. Looks the verb up in the single verb-to-area map and routes it to the
+    /// owning area, which resolves the payload and target session with the shared guards and executes it.
+    /// An unknown verb is a fail-loud <see cref="DirectorCommandStatus.BadRequest"/> naming the verb. The
+    /// four connection-bound stream verbs are NOT dispatched here - they branch earlier, in the connection
+    /// layer (Architect ruling A) - so this map is exactly the unary read and write surface.
+    /// </summary>
+    public static async Task<DirectorCommandResult> DispatchAsync(SessionManager sessionManager, string directorId, DirectorCommand command, SessionCommandServices? services = null, SendSource source = SendSource.UserInput, CancellationToken cancellationToken = default)
     {
         if (sessionManager is null) throw new ArgumentNullException(nameof(sessionManager));
         if (command is null) throw new ArgumentNullException(nameof(command));
 
         FileLog.Write($"[SessionCommandExecutor] DispatchAsync: verb={command.Verb}, sid={command.SessionId}, cmdId={command.CommandId}, source={source}, director={directorId}");
 
-        var result = command.Verb switch
+        if (!VerbMap.TryGetValue(command.Verb, out var area))
         {
-            "prompt" => await PromptAsync(sessionManager, command, source),
-            "interrupt" => await InterruptAsync(sessionManager, command),
-            "escape" => await EscapeAsync(sessionManager, command),
-            "hold" => Hold(sessionManager, command),
-            "kill" => await KillAsync(sessionManager, command),
-            "patch" => Patch(sessionManager, directorId, command),
-            "create" => Create(sessionManager, directorId, command, services),
-            "wingman-goal" => WingmanGoal(sessionManager, command, services),
-            "set-role" => SetRole(sessionManager, directorId, command),
-            "attach-mission" => AttachMission(sessionManager, directorId, command, services),
-            _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unknown verb '{command.Verb}'"),
-        };
+            FileLog.Write($"[SessionCommandExecutor] DispatchAsync: unknown verb '{command.Verb}'");
+            return new DirectorCommandResult
+            {
+                CommandId = command.CommandId,
+                Status = DirectorCommandStatus.BadRequest,
+                Error = $"unknown verb '{command.Verb}'",
+            };
+        }
+
+        var context = new SessionCommandContext(sessionManager, directorId, services, source);
+        var result = await area.ExecuteAsync(context, command, cancellationToken);
 
         result.CommandId = command.CommandId;
         FileLog.Write($"[SessionCommandExecutor] DispatchAsync result: verb={command.Verb}, sid={command.SessionId}, status={result.Status}");
