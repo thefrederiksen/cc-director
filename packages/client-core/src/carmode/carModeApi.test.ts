@@ -107,7 +107,7 @@ describe("carModeTurn", () => {
 
 describe("postCarModeTelemetry", () => {
   const record = {
-    turnId: "t1", pauseToTranscribeMs: 900, brainMs: 1200, ttsMs: 300, firstAudioMs: 350,
+    turnId: "t1", pauseToTranscribeMs: 900, transcodeMs: 120, brainMs: 1200, ttsMs: 300, firstAudioMs: 350,
     totalTurnMs: 2450, serverTotalMs: 1100, modelCallCount: 1, modelMsTotal: 1050,
     modelMs: [1050], fleetReadCount: 0, fleetReadMsTotal: 0, rounds: 1, commandChars: 20,
     replyChars: 40, actionsCount: 0, pendingConfirmation: false,

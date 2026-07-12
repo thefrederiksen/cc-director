@@ -63,7 +63,7 @@ internal static class CarModeTelemetryPage
 <body>
 <div class="wrap">
   <h1>Car Mode Timing</h1>
-  <p class="sub">Per-turn, per-stage latency for hands-free Car Mode - measured end to end, client and server. All numbers are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
+  <p class="sub">Per-turn, per-stage latency for hands-free Car Mode - the full pipeline a real phone turn walks: pause, transcode (phone), transcribe, brain round trip, the network gap (brain minus server), each model call, the fleet read, text-to-speech, and first audio. All numbers are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
 
   <div class="cards" id="cards"></div>
 
@@ -75,14 +75,16 @@ internal static class CarModeTelemetryPage
           <th>When</th>
           <th>Total<br>(felt)</th>
           <th>Pause-&gt;<br>transcribe</th>
+          <th>Transcode<br>(phone)</th>
           <th>Brain<br>(round trip)</th>
-          <th>First<br>audio</th>
-          <th>TTS<br>(1st)</th>
+          <th>Network<br>(brain-server)</th>
           <th>Server<br>total</th>
           <th>Model<br>calls</th>
           <th>Model<br>ms</th>
           <th>Fleet<br>reads</th>
           <th>Fleet<br>ms</th>
+          <th>TTS<br>(1st)</th>
+          <th>First<br>audio</th>
           <th>Rounds</th>
           <th>Cmd<br>chars</th>
           <th>Reply<br>chars</th>
@@ -126,7 +128,7 @@ internal static class CarModeTelemetryPage
 
     if (!recs.length) {
       cards.appendChild(card("-", "No turns recorded yet", "Take a turn in Car Mode on the phone"));
-      document.getElementById("rows").innerHTML = '<tr><td colspan="14" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
+      document.getElementById("rows").innerHTML = '<tr><td colspan="16" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
       document.getElementById("foot").textContent = "";
       return;
     }
@@ -151,17 +153,22 @@ internal static class CarModeTelemetryPage
         return c;
       }
       var when = r.receivedAtUtc ? new Date(r.receivedAtUtc).toLocaleTimeString() : "-";
+      // Network the browser saw (its brain round trip minus what the server spent inside), so a bad phone
+      // network shows up as a large gap that the loopback numbers can never reveal.
+      var net = (r.brainMs != null && r.serverTotalMs != null) ? Math.max(0, r.brainMs - r.serverTotalMs) : null;
       tr.appendChild(td(when));
       tr.appendChild(td(ms(r.totalTurnMs), r.totalTurnMs > 6000 ? "slow" : ""));
-      tr.appendChild(td(ms(r.pauseToTranscribeMs)));
+      tr.appendChild(td(ms(r.pauseToTranscribeMs), r.pauseToTranscribeMs > 4000 ? "slow" : ""));
+      tr.appendChild(td(ms(r.transcodeMs)));
       tr.appendChild(td(ms(r.brainMs), r.brainMs > 5000 ? "slow" : ""));
-      tr.appendChild(td(ms(r.firstAudioMs)));
-      tr.appendChild(td(ms(r.ttsMs)));
+      tr.appendChild(td(ms(net), (net != null && net > 2000) ? "slow" : ""));
       tr.appendChild(td(ms(r.serverTotalMs)));
       tr.appendChild(td(r.modelCallCount == null ? "-" : r.modelCallCount));
       tr.appendChild(td(ms(r.modelMsTotal)));
       tr.appendChild(td(r.fleetReadCount == null ? "-" : r.fleetReadCount, (r.fleetReadCount || 0) === 0 ? "zero" : ""));
       tr.appendChild(td(ms(r.fleetReadMsTotal)));
+      tr.appendChild(td(ms(r.ttsMs), r.ttsMs > 3000 ? "slow" : ""));
+      tr.appendChild(td(ms(r.firstAudioMs)));
       tr.appendChild(td(r.rounds == null ? "-" : r.rounds));
       tr.appendChild(td(r.commandChars == null ? "-" : r.commandChars));
       tr.appendChild(td(r.replyChars == null ? "-" : r.replyChars));
