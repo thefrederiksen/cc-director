@@ -1,20 +1,30 @@
 using System.Diagnostics;
 using System.Net.Http;
+using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
 using CcDirector.Setup.Engine;
 
 namespace CcDirector.Launcher;
 
 /// <summary>
-/// Supervises the installed CC Director tray app.
+/// Supervises the installed CC Director app.
 ///
-/// Resolves the Director exe via <see cref="InstallLayout"/> (the installed path at
-/// %LOCALAPPDATA%/cc-director/app/cc-director.exe). Provides start / stop / restart
-/// operations with FileLog audit trail.
+/// Resolves the installed Director via <see cref="InstallLayout"/>:
+///   - Windows: %LOCALAPPDATA%/cc-director/app/cc-director.exe
+///   - macOS:   ~/Applications/CC Director.app (an application bundle - a directory)
 ///
-/// Stop strategy: POST /shutdown to the Director's Control API (graceful). The Director
-/// discovers its own port via the instances json files; we probe for a running instance
-/// by reading the instance registration files in the known directory.
+/// Provides start / stop / restart operations with a FileLog audit trail.
+///
+/// Start strategy: on Windows the exe is started directly with UseShellExecute = true
+/// (clean parentage, no pseudo-console inheritance). On macOS the bundle is handed to
+/// /usr/bin/open, so the Director becomes a child of launchd, not of this launcher.
+///
+/// Stop strategy: POST /shutdown to the Director's Control API (graceful, portable).
+/// The running Director and its Control API port are discovered through the instance
+/// registration files every Director writes to config/director/instances/{id}.json
+/// (see CcStorage.DirectorInstances). A registration counts only when its process is
+/// alive AND that process's executable is the installed Director - a stale file or a
+/// development-slot Director never matches.
 /// </summary>
 public sealed class DirectorSupervisor
 {
@@ -30,31 +40,35 @@ public sealed class DirectorSupervisor
     }
 
     /// <summary>
-    /// The installed Director exe path (per InstallLayout). This is what the supervisor
-    /// manages. To launch arbitrary slot builds, use LaunchService directly with an
-    /// explicit path.
+    /// The installed Director path (per InstallLayout): the exe on Windows, the
+    /// application bundle directory on macOS. This is what the supervisor manages.
+    /// To launch arbitrary slot builds, use LaunchService directly with an explicit path.
     /// </summary>
     public string DirectorExePath => _layout.PathFor(ComponentRegistry.Director);
 
-    /// <summary>Whether the installed Director exe exists on disk.</summary>
-    public bool DirectorExeExists => File.Exists(DirectorExePath);
+    /// <summary>Whether the installed Director exists on disk (exe on Windows, bundle directory on macOS).</summary>
+    public bool DirectorExeExists => OperatingSystem.IsWindows()
+        ? File.Exists(DirectorExePath)
+        : Directory.Exists(DirectorExePath) || File.Exists(DirectorExePath);
 
     /// <summary>
-    /// Whether the installed Director appears to be running (a process with the resolved
-    /// exe path exists). Best-effort: does not prove the Control API is healthy.
+    /// Whether the installed Director appears to be running (a live instance registration
+    /// whose process belongs to the installed Director, or on Windows a process whose
+    /// image path matches). Best-effort: does not prove the Control API is healthy.
     /// </summary>
     public bool IsRunning => FindDirectorProcess() is not null;
 
     /// <summary>
     /// Start the installed Director if it is not already running.
-    /// Uses UseShellExecute=true for clean parentage (no ConPty inheritance).
+    /// Windows: UseShellExecute = true for clean parentage (no pseudo-console inheritance).
+    /// macOS: /usr/bin/open so the Director is parented by launchd, not this launcher.
     /// </summary>
     public void Start()
     {
-        FileLog.Write($"[DirectorSupervisor] Start: exe={DirectorExePath}");
+        FileLog.Write($"[DirectorSupervisor] Start: target={DirectorExePath}");
 
-        if (!File.Exists(DirectorExePath))
-            throw new FileNotFoundException($"Director exe not found: {DirectorExePath}", DirectorExePath);
+        if (!DirectorExeExists)
+            throw new FileNotFoundException($"Installed Director not found: {DirectorExePath}", DirectorExePath);
 
         if (FindDirectorProcess() is { } running)
         {
@@ -62,17 +76,38 @@ public sealed class DirectorSupervisor
             return;
         }
 
-        var psi = new ProcessStartInfo
+        if (OperatingSystem.IsWindows())
         {
-            FileName = DirectorExePath,
-            WorkingDirectory = Path.GetDirectoryName(DirectorExePath) ?? "",
-            UseShellExecute = true,
+            var psi = new ProcessStartInfo
+            {
+                FileName = DirectorExePath,
+                WorkingDirectory = Path.GetDirectoryName(DirectorExePath) ?? "",
+                UseShellExecute = true,
+            };
+
+            using var proc = Process.Start(psi)
+                ?? throw new InvalidOperationException($"Process.Start returned null for: {DirectorExePath}");
+
+            FileLog.Write($"[DirectorSupervisor] Start: launched Director pid={proc.Id}");
+            return;
+        }
+
+        // macOS: hand the bundle to launchd via /usr/bin/open. open exits immediately;
+        // the Director's own PID becomes visible through its instance registration file.
+        var openPsi = new ProcessStartInfo
+        {
+            FileName = "/usr/bin/open",
+            UseShellExecute = false,
         };
+        openPsi.ArgumentList.Add(DirectorExePath);
 
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Process.Start returned null for: {DirectorExePath}");
+        using var open = Process.Start(openPsi)
+            ?? throw new InvalidOperationException($"Process.Start returned null for: /usr/bin/open {DirectorExePath}");
+        open.WaitForExit();
+        if (open.ExitCode != 0)
+            throw new InvalidOperationException($"/usr/bin/open exited with code {open.ExitCode} for: {DirectorExePath}");
 
-        FileLog.Write($"[DirectorSupervisor] Start: launched Director pid={proc.Id}");
+        FileLog.Write($"[DirectorSupervisor] Start: /usr/bin/open accepted launch of {DirectorExePath}");
     }
 
     /// <summary>
@@ -91,7 +126,7 @@ public sealed class DirectorSupervisor
         }
 
         // Try graceful shutdown via Control API.
-        var port = FindDirectorPort();
+        var port = FindDirectorPort(proc.Id);
         if (port > 0)
         {
             try
@@ -138,23 +173,41 @@ public sealed class DirectorSupervisor
         FileLog.Write("[DirectorSupervisor] RestartAsync: Director restarted");
     }
 
-    /// <summary>Find a running Director process whose image path matches the installed exe.</summary>
+    /// <summary>
+    /// Find a running process that IS the installed Director.
+    /// Windows: match the image path of any cc-director process (MainModule works there).
+    /// macOS: walk the instance registration files - the registered process must be alive
+    /// and its executable must live inside the installed bundle. MainModule is not used
+    /// on macOS (unreliable); the executable path comes from /bin/ps.
+    /// </summary>
     private Process? FindDirectorProcess()
     {
         try
         {
-            foreach (var proc in Process.GetProcessesByName("cc-director"))
+            if (OperatingSystem.IsWindows())
             {
-                try
+                foreach (var proc in Process.GetProcessesByName("cc-director"))
                 {
-                    var exePath = proc.MainModule?.FileName ?? "";
-                    if (string.Equals(exePath, DirectorExePath, StringComparison.OrdinalIgnoreCase))
-                        return proc;
+                    try
+                    {
+                        var exePath = proc.MainModule?.FileName ?? "";
+                        if (string.Equals(exePath, DirectorExePath, StringComparison.OrdinalIgnoreCase))
+                            return proc;
+                    }
+                    catch
+                    {
+                        // MainModule access may fail for elevated processes; skip.
+                    }
                 }
-                catch
-                {
-                    // MainModule access may fail for elevated processes; skip.
-                }
+                return null;
+            }
+
+            foreach (var instance in ReadInstanceRegistrations())
+            {
+                var proc = TryGetLiveProcess(instance.Pid);
+                if (proc is null) continue;
+                if (BelongsToInstalledDirector(ExecutablePathForPid(instance.Pid)))
+                    return proc;
             }
         }
         catch (Exception ex)
@@ -165,33 +218,17 @@ public sealed class DirectorSupervisor
     }
 
     /// <summary>
-    /// Find the Director's Control API port by reading instance registration files.
-    /// Returns 0 if not found.
+    /// Find the installed Director's Control API port: the instance registration whose
+    /// Pid is the process we identified as the installed Director. Returns 0 if not found.
     /// </summary>
-    private int FindDirectorPort()
+    private int FindDirectorPort(int directorPid)
     {
         try
         {
-            var instancesDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "cc-director", "instances");
-
-            if (!Directory.Exists(instancesDir)) return 0;
-
-            foreach (var file in Directory.GetFiles(instancesDir, "*.json"))
+            foreach (var instance in ReadInstanceRegistrations())
             {
-                try
-                {
-                    var json = File.ReadAllText(file);
-                    // Parse port field from the instance JSON: {"port":7879,...}
-                    using var doc = System.Text.Json.JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("port", out var portEl) && portEl.TryGetInt32(out var p))
-                        return p;
-                }
-                catch
-                {
-                    // Skip malformed files.
-                }
+                if (instance.Pid == directorPid && instance.Port > 0)
+                    return instance.Port;
             }
         }
         catch (Exception ex)
@@ -199,6 +236,97 @@ public sealed class DirectorSupervisor
             FileLog.Write($"[DirectorSupervisor] FindDirectorPort error: {ex.Message}");
         }
         return 0;
+    }
+
+    /// <summary>One parsed instance registration file: config/director/instances/{id}.json.</summary>
+    private readonly record struct InstanceRegistration(int Pid, int Port);
+
+    /// <summary>
+    /// Read every Director instance registration file (CcStorage.DirectorInstances).
+    /// Each running Director writes {DirectorId, Pid, ControlEndpoint, ...}; files of
+    /// dead Directors may linger, so callers must verify the Pid is alive.
+    /// </summary>
+    private static List<InstanceRegistration> ReadInstanceRegistrations()
+    {
+        var result = new List<InstanceRegistration>();
+        var dir = CcStorage.DirectorInstances();
+        if (!Directory.Exists(dir)) return result;
+
+        foreach (var file in Directory.GetFiles(dir, "*.json"))
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("Pid", out var pidEl) || !pidEl.TryGetInt32(out var pid))
+                    continue;
+                var port = 0;
+                if (root.TryGetProperty("ControlEndpoint", out var epEl)
+                    && Uri.TryCreate(epEl.GetString(), UriKind.Absolute, out var ep))
+                    port = ep.Port;
+                result.Add(new InstanceRegistration(pid, port));
+            }
+            catch
+            {
+                // Skip malformed files.
+            }
+        }
+        return result;
+    }
+
+    /// <summary>The live process for a pid, or null when it no longer exists.</summary>
+    private static Process? TryGetLiveProcess(int pid)
+    {
+        try
+        {
+            var proc = Process.GetProcessById(pid);
+            return proc.HasExited ? null : proc;
+        }
+        catch (ArgumentException)
+        {
+            return null; // no such process
+        }
+    }
+
+    /// <summary>True when the executable path is the installed Director (inside the bundle on macOS).</summary>
+    private bool BelongsToInstalledDirector(string executablePath)
+    {
+        if (executablePath.Length == 0) return false;
+        return OperatingSystem.IsWindows()
+            ? string.Equals(executablePath, DirectorExePath, StringComparison.OrdinalIgnoreCase)
+            : executablePath.StartsWith(DirectorExePath + "/", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The full executable path of a pid on macOS, via /bin/ps (comm holds the absolute
+    /// path). Returns "" when the process is gone or ps fails. Not used on Windows.
+    /// </summary>
+    private static string ExecutablePathForPid(int pid)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "/bin/ps",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+            };
+            psi.ArgumentList.Add("-o");
+            psi.ArgumentList.Add("comm=");
+            psi.ArgumentList.Add("-p");
+            psi.ArgumentList.Add(pid.ToString());
+
+            using var ps = Process.Start(psi);
+            if (ps is null) return "";
+            var output = ps.StandardOutput.ReadToEnd().Trim();
+            ps.WaitForExit();
+            return ps.ExitCode == 0 ? output : "";
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[DirectorSupervisor] ExecutablePathForPid({pid}) error: {ex.Message}");
+            return "";
+        }
     }
 
     private static async Task WaitForExitAsync(Process proc, TimeSpan timeout, CancellationToken ct)

@@ -8,14 +8,27 @@ namespace CcDirector.Launcher;
 /// Launches arbitrary executables with clean process parentage.
 ///
 /// The launcher itself runs outside any ConPty (started by the HKCU Run key or
-/// Start Menu), so a child it starts has clean parentage - the rule-0b fix.
+/// Start Menu on Windows, by launchd on macOS), so a child it starts has clean
+/// parentage - the rule-0b fix.
 ///
-/// Parentage modes:
+/// Windows parentage modes:
 ///   - GUI apps (UseShellExecute = true): launched with shell association, no ConPty.
 ///   - Headless/silent apps (UseShellExecute = false, CreateNoWindow = true): no console
 ///     handle inherited.
 ///   - .cmd / .bat files: routed through cmd.exe (Windows limitation: shell scripts
 ///     cannot be launched directly with UseShellExecute = false in all contexts).
+///
+/// macOS parentage modes:
+///   - Application bundles (a directory ending in .app): launched through /usr/bin/open,
+///     so the application is a child of launchd, not of this launcher - the cleanest
+///     parentage macOS offers. /usr/bin/open exits immediately; the returned PID is
+///     open's, so the audit records the bundle path, not a supervised PID.
+///   - Shell scripts (.sh): routed through /bin/bash (works whether or not the script
+///     carries an execute bit).
+///   - Plain executables: spawned directly (UseShellExecute = false). The launcher runs
+///     as a launch agent with no controlling terminal, so the child starts with clean
+///     standard input/output and launchd-session parentage.
+///   - .cmd / .bat files are refused explicitly - they cannot run on macOS.
 ///
 /// Every launch is FileLog-audited with the resolved path and the caller description.
 /// </summary>
@@ -32,6 +45,9 @@ public sealed class LaunchService
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.Path))
             throw new ArgumentException("Path must not be empty.", nameof(request));
+
+        if (!OperatingSystem.IsWindows())
+            return BuildStartInfoMac(request);
 
         if (!File.Exists(request.Path))
             throw new FileNotFoundException($"Executable not found: {request.Path}", request.Path);
@@ -78,6 +94,90 @@ public sealed class LaunchService
         }
 
         return psi;
+    }
+
+    /// <summary>
+    /// The macOS half of <see cref="BuildStartInfo"/>. See the class summary for the
+    /// parentage modes. Pure, unit-testable seam like the Windows half.
+    /// </summary>
+    private static ProcessStartInfo BuildStartInfoMac(LaunchRequest request)
+    {
+        var ext = Path.GetExtension(request.Path).ToUpperInvariant();
+        if (ext is ".CMD" or ".BAT")
+            throw new NotSupportedException($"Windows batch files cannot be launched on macOS: {request.Path}");
+
+        var isAppBundle = ext == ".APP" && Directory.Exists(request.Path);
+        if (!isAppBundle && !File.Exists(request.Path))
+            throw new FileNotFoundException($"Executable not found: {request.Path}", request.Path);
+
+        if (isAppBundle)
+        {
+            // /usr/bin/open hands the launch to launchd: the application is NOT a child of
+            // this launcher. --args forwards arguments to the application itself.
+            var psi = new ProcessStartInfo
+            {
+                FileName = "/usr/bin/open",
+                WorkingDirectory = request.Cwd ?? "",
+                UseShellExecute = false,
+            };
+            psi.ArgumentList.Add(request.Path);
+            if (request.Args is { Length: > 0 })
+            {
+                psi.ArgumentList.Add("--args");
+                foreach (var arg in SplitArguments(request.Args))
+                    psi.ArgumentList.Add(arg);
+            }
+            return psi;
+        }
+
+        if (ext == ".SH")
+        {
+            // Route shell scripts through bash so a missing execute bit never fails the launch.
+            var psi = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                WorkingDirectory = request.Cwd ?? Path.GetDirectoryName(request.Path) ?? "",
+                UseShellExecute = false,
+            };
+            psi.ArgumentList.Add(request.Path);
+            foreach (var arg in SplitArguments(request.Args ?? ""))
+                psi.ArgumentList.Add(arg);
+            return psi;
+        }
+
+        // Plain executable: direct spawn. The launcher (a launch agent) has no controlling
+        // terminal, so the child inherits clean standard input/output and session context.
+        return new ProcessStartInfo
+        {
+            FileName = request.Path,
+            Arguments = request.Args ?? "",
+            WorkingDirectory = request.Cwd ?? Path.GetDirectoryName(request.Path) ?? "",
+            UseShellExecute = false,
+        };
+    }
+
+    /// <summary>
+    /// Split a single argument string into argv entries: whitespace separates, double
+    /// quotes group. Needed on macOS where /usr/bin/open and /bin/bash take an argument
+    /// LIST (ProcessStartInfo.ArgumentList), while the request carries one string.
+    /// </summary>
+    internal static IReadOnlyList<string> SplitArguments(string args)
+    {
+        var result = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inQuotes = false;
+        foreach (var c in args)
+        {
+            if (c == '"') { inQuotes = !inQuotes; continue; }
+            if (char.IsWhiteSpace(c) && !inQuotes)
+            {
+                if (current.Length > 0) { result.Add(current.ToString()); current.Clear(); }
+                continue;
+            }
+            current.Append(c);
+        }
+        if (current.Length > 0) result.Add(current.ToString());
+        return result;
     }
 
     /// <summary>

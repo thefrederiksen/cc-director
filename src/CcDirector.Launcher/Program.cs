@@ -42,6 +42,20 @@ public static class Program
         {
             return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
+        catch (Exception ex) when (!App.FrameworkInitialized)
+        {
+            // The user-interface platform itself could not initialize - on macOS this happens
+            // when the launcher starts while the screen is locked (the window server refuses a
+            // render timer). An unattended supervisor must not die because an icon cannot be
+            // drawn: fall back to HEADLESS mode - web host, Gateway registration, and command
+            // stream all run; only the tray icon is missing. /healthz reports
+            // userInterface=degraded so the Gateway can see the difference. This fallback is
+            // ONLY for platform initialization failures (before any App code ran); a fault in
+            // the running app still exits loudly below.
+            FileLog.Write($"[Program] User-interface platform failed to initialize: {ex.Message}");
+            FileLog.Write("[Program] DEGRADED: running HEADLESS (no tray icon) - web host + Gateway stream only");
+            return RunHeadless();
+        }
         catch (Exception ex)
         {
             FileLog.Write($"[Program] FATAL: {ex}");
@@ -51,6 +65,48 @@ public static class Program
         {
             FileLog.Write("[Program] CC Launcher exited");
             FileLog.Stop();
+        }
+    }
+
+    /// <summary>
+    /// Headless degraded mode: everything except the tray icon. Runs until a /shutdown
+    /// request arrives on the web host or the process receives SIGTERM/SIGINT (launchd
+    /// bootout sends SIGTERM; the graceful stop unregisters from the Gateway).
+    /// </summary>
+    private static int RunHeadless()
+    {
+        var shutdown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task RequestShutdown() { shutdown.TrySetResult(); return Task.CompletedTask; }
+
+        using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+            System.Runtime.InteropServices.PosixSignal.SIGTERM,
+            ctx => { ctx.Cancel = true; FileLog.Write("[Program] SIGTERM received"); shutdown.TrySetResult(); });
+        using var sigint = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+            System.Runtime.InteropServices.PosixSignal.SIGINT,
+            ctx => { ctx.Cancel = true; FileLog.Write("[Program] SIGINT received"); shutdown.TrySetResult(); });
+
+        using var lifetime = new CancellationTokenSource();
+        var core = new LauncherCore(LauncherAppOptions.Port, LauncherCore.ReadVersion());
+        try
+        {
+            core.StartAsync(RequestShutdown, userInterfaceState: "degraded").GetAwaiter().GetResult();
+            LauncherCore.RegisterAutostartSafe();
+            if (LauncherAppOptions.Managed)
+                _ = LauncherCore.RunUpdateLoopAsync(lifetime.Token);
+
+            FileLog.Write($"[Program] Headless launcher running on :{LauncherAppOptions.Port}");
+            shutdown.Task.GetAwaiter().GetResult();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            FileLog.Write($"[Program] Headless FATAL: {ex}");
+            return 1;
+        }
+        finally
+        {
+            lifetime.Cancel();
+            core.StopAsync().GetAwaiter().GetResult();
         }
     }
 
@@ -129,5 +185,8 @@ public static class Program
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()
+            // The launcher is a tray-only app: on macOS it lives in the menu bar and must
+            // not occupy the Dock or the application switcher.
+            .With(new MacOSPlatformOptions { ShowInDock = false })
             .LogToTrace();
 }
