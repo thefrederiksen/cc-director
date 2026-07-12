@@ -105,6 +105,16 @@ public sealed class NewSessionRequest
     public Guid? MissionId { get; set; }
 
     /// <summary>
+    /// Optional resolved display name of the Mission named by <see cref="MissionId"/>. Set by the Gateway
+    /// when it spawns a session into a GATEWAY-NATIVE mission: the Gateway validates the mission against its
+    /// OWN store, then forwards BOTH <see cref="MissionId"/> and this name so the Director stamps the
+    /// attachment directly WITHOUT any local mission-store lookup (the Gateway is the source of truth). Left
+    /// null by a caller hitting a Director's POST /sessions directly for an old Director-store mission, in
+    /// which case the Director resolves the name locally (the transitional bridge in SessionCommandExecutor).
+    /// </summary>
+    public string? MissionName { get; set; }
+
+    /// <summary>
     /// Optional target machine for spawn routing ("start a session on another computer"). Null,
     /// empty, or the local machine name spawns on the LOCAL machine (the default, unchanged); a
     /// remote machine name routes the spawn via the Gateway to a Director on that machine (first

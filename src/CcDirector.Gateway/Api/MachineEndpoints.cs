@@ -54,7 +54,13 @@ internal static class MachineEndpoints
 
     public static void Map(IEndpointRouteBuilder app, LauncherRegistry launchers,
         MachineSessionSpawner spawner,
-        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null)
+        LauncherCommandRouter.SendLauncherCommandAsync? sendLauncherCommand = null,
+        // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store. When non-null, a
+        // mission-scoped spawn (req.MissionId set) is validated against it here - the Gateway is the source
+        // of truth - and the resolved mission NAME is stamped onto the create request so the Director stamps
+        // the attachment without any local lookup. Null (old callers, tests) leaves MissionId to flow through
+        // to the Director's transitional local-store bridge unchanged.
+        Core.Sessions.MissionStore? missions = null)
     {
         if (spawner is null) throw new ArgumentNullException(nameof(spawner));
 
@@ -129,6 +135,21 @@ internal static class MachineEndpoints
             FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: repo={req?.RepoPath}, agent={req?.Agent}");
             if (req is null || string.IsNullOrWhiteSpace(req.RepoPath))
                 return Results.BadRequest(new { error = "repoPath is required" });
+
+            // Gateway Cleanup mission (Wave 4b): a mission-scoped spawn is validated against the Gateway's OWN
+            // mission store (the source of truth) and the resolved NAME is stamped onto the create request, so
+            // the Director stamps the attachment directly with no local-store lookup. Reject an unknown mission
+            // here rather than forwarding it to a Director that no longer owns mission validation.
+            if (req.MissionId is Guid spawnMissionId && missions is not null)
+            {
+                var mission = missions.Get(spawnMissionId);
+                if (mission is null)
+                {
+                    FileLog.Write($"[MachineEndpoints] POST /machines/{machine}/sessions: unknown mission {spawnMissionId}");
+                    return Results.BadRequest(new { error = $"unknown mission '{spawnMissionId}'. Create it first with POST /missions." });
+                }
+                req.MissionName = mission.MissionName;
+            }
 
             var (ok, dto, error, _) = await spawner.SpawnOnMachineAsync(machine, req, ct);
             if (!ok || dto is null)

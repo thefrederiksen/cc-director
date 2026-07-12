@@ -52,6 +52,17 @@ public sealed class GatewayHost : IAsyncDisposable
     public Streaming.PushedSessionStore PushedSessions { get; }
 
     /// <summary>
+    /// Gateway Cleanup mission (Wave 4b): the Gateway's OWN store of Missions. Missions are a fleet-level
+    /// concept (they span Directors and machines and nest), so the source of truth lives at the Gateway,
+    /// like fleet messaging and scheduling - not on any one Director. Reuses the same JSON-file-backed
+    /// <see cref="Core.Sessions.MissionStore"/> the Director uses, pointed at a Gateway-side file. The
+    /// mission REST endpoints (POST/GET /missions) read and write this, and a mission-scoped spawn
+    /// validates against it before forwarding the create to a Director. The Director's own /missions
+    /// routes stay until a later phase; this is the additive Gateway-native equivalent.
+    /// </summary>
+    public Core.Sessions.MissionStore Missions { get; }
+
+    /// <summary>
     /// Gateway Cleanup mission, Phase 0 (up-stream): the registry of live Director up-streams (terminal output
     /// and finite file/screenshot reads), keyed by the stream id the Gateway mints per browser request. The
     /// director-stream hub's StreamUp method pumps the Director's frames into this registry, which forwards
@@ -397,7 +408,12 @@ public sealed class GatewayHost : IAsyncDisposable
     /// <see cref="Account"/> null on a non-Windows host, where the operating-system credential store is
     /// not yet implemented).
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null)
+    /// <param name="missionsPath">
+    /// Override the Gateway-native mission store file (Gateway Cleanup mission, Wave 4b). Tests pass an
+    /// isolated temp path; production omits it for the shared default at
+    /// <c>CcStorage.Root()\missions.json</c>.
+    /// </param>
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
@@ -407,6 +423,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
         Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
+        // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, at a Gateway-side file path
+        // (CcStorage.Root(), the same location the cron and snooze stores use), NOT the Director's tool-config
+        // missions.json. Reuses Core.Sessions.MissionStore unchanged.
+        Missions = new Core.Sessions.MissionStore(missionsPath ?? Path.Combine(CcStorage.Root(), "missions.json"));
         StreamRegistry = new Streaming.GatewayStreamRegistry();
         InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
         SessionConcurrency = new Stats.GatewaySessionConcurrencyStats();
@@ -964,6 +984,9 @@ public sealed class GatewayHost : IAsyncDisposable
                 o.StreamBufferCapacity = Contracts.DirectorStreamLimits.StreamBufferCapacity;
             });
         builder.Services.AddSingleton(PushedSessions);
+        // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store, so the mission endpoints and
+        // spawn validation share the one instance.
+        builder.Services.AddSingleton(Missions);
         // Gateway Cleanup Phase 0: the one up-stream registry the DirectorHub (constructed per-invocation by
         // SignalR) pumps StreamUp frames into.
         builder.Services.AddSingleton(StreamRegistry);
@@ -1187,7 +1210,10 @@ public sealed class GatewayHost : IAsyncDisposable
             // Snooze Length mission: the Gateway-owned snooze registry. POST /sessions/{sid}/hold records
             // (or clears) a snooze-until here, and the /sessions fold overlays an EXPIRED snooze back into
             // "needs you" so the session returns on its own even after its Director dies.
-            snoozeRegistry: _snoozeRegistry);
+            snoozeRegistry: _snoozeRegistry,
+            // Gateway Cleanup mission (Wave 4b): the Gateway-native mission store backs POST/GET /missions and
+            // mission-scoped spawn validation. Missions are a fleet concept, so their source of truth is here.
+            missions: Missions);
 
         // Issue #268: the two raw per-session WebSocket legs (live Terminal stream + dictation)
         // proxied through the Gateway so a remote Cockpit talks same-origin to the Gateway and
@@ -1429,7 +1455,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // /machines/{machine}/director/restart|start|stop to reach that machine's Director.
         // launcher-persistent-join: pass the stream-send hook only when stream mode is on. The relay tries
         // this first and falls back to the REST relay when it returns null (stream off, or launcher offline).
-        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, _streamMode ? SendLauncherCommandAsync : null);
+        MachineEndpoints.Map(_app, Launchers, _machineSessionSpawner, _streamMode ? SendLauncherCommandAsync : null,
+            // Gateway Cleanup mission (Wave 4b): validate a mission-scoped spawn against the Gateway store and
+            // stamp the resolved mission name onto the create request forwarded to the Director.
+            missions: Missions);
 
         // The Cockpit Settings page surface (docs/architecture/gateway/SETTINGS_OWNERSHIP.md):
         // one snapshot GET plus brain-restart and autostart actions. Reads this host directly

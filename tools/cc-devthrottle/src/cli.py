@@ -448,7 +448,7 @@ def mission_create(
         None, "--parent", help="Parent Mission id to nest this Mission under (a tree of Missions)."
     ),
 ) -> None:
-    """Create a Mission record on the local Director and print its id."""
+    """Create a Mission record on the Gateway and print its id."""
     mission_ops.create_mission(name, parent)
 
 
@@ -456,7 +456,7 @@ def mission_create(
 def mission_list(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
 ) -> None:
-    """List every Mission record on the local Director."""
+    """List every Mission record on the Gateway."""
     mission_ops.list_missions(json_output)
 
 
