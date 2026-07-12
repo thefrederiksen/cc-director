@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import "@xterm/xterm/css/xterm.css";
 import { InteractiveTerminal } from "@devthrottle/client-core/terminal/interactive";
+import { FileViewerModal } from "../components/FileViewerModal";
 
 // The live, interactive terminal pane for the React desktop Cockpit (issue #971) - the load-bearing
 // pane and the reason for the whole rebuild. A one-to-one port of the Blazor Cockpit's
@@ -23,13 +24,18 @@ import { InteractiveTerminal } from "@devthrottle/client-core/terminal/interacti
 export function TerminalPane() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // Local Files (Phase 2): the file path a terminal link click opened, or null when the viewer is
+  // closed. openFile is a stable callback so the InteractiveTerminal (constructed once per session) can
+  // hold it across renders without being torn down.
+  const [viewerPath, setViewerPath] = useState<string | null>(null);
+  const openFile = useCallback((path: string) => setViewerPath(path), []);
 
   useEffect(() => {
     if (!sessionId || hostRef.current === null) return;
-    const terminal = new InteractiveTerminal(hostRef.current, sessionId);
+    const terminal = new InteractiveTerminal(hostRef.current, sessionId, openFile);
     terminal.start();
     return () => terminal.dispose();
-  }, [sessionId]);
+  }, [sessionId, openFile]);
 
   if (!sessionId) {
     return (
@@ -50,6 +56,10 @@ export function TerminalPane() {
           grid is anchored to the bottom so a too-tall PTY shows its live input box in view. Keyed by
           sessionId so React remounts the whole pane (and the engine) when the session changes. */}
       <div className="term-host" ref={hostRef} key={sessionId} />
+
+      {viewerPath !== null && (
+        <FileViewerModal sessionId={sessionId} path={viewerPath} onClose={() => setViewerPath(null)} />
+      )}
     </div>
   );
 }
