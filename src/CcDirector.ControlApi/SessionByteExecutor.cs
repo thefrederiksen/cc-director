@@ -17,7 +17,10 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal sealed class SessionByteExecutor : ISessionCommandArea
 {
-    public IReadOnlyCollection<string> Verbs { get; } = new[] { "screenshots-list", "upload-image" };
+    // Gateway Cleanup Phase 0 (Wave 4a): screenshot-delete is the third unary byte verb - a plain file delete
+    // keyed by a traversal-safe bare name, the tunnel twin of DELETE /screenshots/file. Its core reproduces
+    // that route verbatim, so the REST route and the tunnel verb share one core and cannot drift.
+    public IReadOnlyCollection<string> Verbs { get; } = new[] { "screenshots-list", "upload-image", "screenshot-delete" };
 
     public Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
     {
@@ -25,6 +28,7 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
         {
             "screenshots-list" => ScreenshotsList(command),
             "upload-image" => UploadImage(context.SessionManager, command),
+            "screenshot-delete" => ScreenshotDelete(command),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the byte area"),
         };
         return Task.FromResult(result);
@@ -138,6 +142,32 @@ internal sealed class SessionByteExecutor : ISessionCommandArea
         {
             Path = fullPath,
             FileName = name,
+        }));
+    }
+
+    /// <summary>
+    /// The <c>screenshot-delete</c> verb: delete one screenshot from disk (the per-card "Del" action). Mirrors
+    /// the Director's <c>DELETE /screenshots/file</c> lambda - the bare name is resolved traversal-safe by the
+    /// SAME <see cref="ControlEndpoints.ResolveScreenshot"/> helper the file GET/read used, so a name that
+    /// escapes the screenshots folder, is not a bare image file, or does not exist -&gt; NotFound (the route's
+    /// 404) - and returns <c>{ deleted = true, fileName }</c> on success. The name rides in the payload. This
+    /// is a plain unary write.
+    /// </summary>
+    internal static DirectorCommandResult ScreenshotDelete(DirectorCommand command)
+    {
+        var request = SessionCommandExecutor.Deserialize<ScreenshotDeleteRequest>(command.PayloadJson);
+        var name = request?.Name;
+        FileLog.Write($"[SessionByteExecutor] screenshot-delete: name={name}");
+
+        var full = ControlEndpoints.ResolveScreenshot(name);
+        if (full is null)
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "screenshot not found");
+
+        File.Delete(full);
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new ScreenshotDeleteResponse
+        {
+            Deleted = true,
+            FileName = Path.GetFileName(full),
         }));
     }
 }

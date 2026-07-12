@@ -3,6 +3,7 @@ using CcDirector.Core.AgentPlugins;
 using CcDirector.Core.Agents;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Claude;
+using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Wingman;
@@ -39,6 +40,13 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
         // per-session writes that call static services (no new dependency). Each core reproduces its old
         // REST lambda verbatim, so the REST route and the tunnel verb share one core and cannot drift.
         "handover-generate", "wingman-ask", "recap-generate",
+        // Gateway Cleanup Phase 0 (Wave 4a): the remaining director-level orphan WRITE verbs. repo-delete
+        // reads the live registry from the services (as repos-list does); the two interrupted-* verbs and
+        // backfill-numbers touch static Director state. None targets a session (SessionId is ""), except that
+        // interrupted-remove names a recoverable session inside a dead Director's journal via its payload.
+        // Each core reproduces its old REST lambda verbatim, so the REST route and the tunnel verb share one
+        // core and cannot drift.
+        "repo-delete", "interrupted-dismiss", "interrupted-remove", "backfill-numbers",
     };
 
     public async Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -70,6 +78,10 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
             "handover-generate" => await HandoverGenerateAsync(sessionManager, context.DirectorId, command),
             "wingman-ask" => await WingmanAskAsync(context, command, cancellationToken),
             "recap-generate" => await RecapGenerateAsync(sessionManager, context.DirectorId, command, cancellationToken),
+            "repo-delete" => RepoDelete(command, context.Services?.Repositories),
+            "interrupted-dismiss" => InterruptedDismiss(command),
+            "interrupted-remove" => InterruptedRemove(command),
+            "backfill-numbers" => BackfillNumbers(sessionManager),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the session write area"),
         };
     }
@@ -688,5 +700,85 @@ internal sealed class SessionWriteExecutor : ISessionCommandArea
                 Error = ex.Message,
             }));
         }
+    }
+
+    /// <summary>
+    /// The <c>repo-delete</c> verb (director-level, no session): remove a repository from the recent-repository
+    /// registry (the New Session picker's list). Mirrors the Director's <c>DELETE /repos</c> lambda - a null /
+    /// blank path -&gt; BadRequest, a null registry -&gt; a 200 <c>{ removed = false }</c> - and otherwise
+    /// returns the registry's own <see cref="RepositoryRegistry.Remove"/> result. The live registry rides in
+    /// the services, exactly as the <c>repos-list</c> read reads it; a null registry lists/removes nothing, as
+    /// the REST route returned when no registry was wired.
+    /// </summary>
+    internal static DirectorCommandResult RepoDelete(DirectorCommand command, RepositoryRegistry? repositories)
+    {
+        var request = SessionCommandExecutor.Deserialize<RepoDeleteRequest>(command.PayloadJson);
+        var path = request?.Path;
+        FileLog.Write($"[SessionWriteExecutor] repo-delete: path={path}");
+        if (string.IsNullOrWhiteSpace(path))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "path is required");
+        if (repositories is null)
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RepoDeleteResponse { Removed = false }));
+
+        var removed = repositories.Remove(path);
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new RepoDeleteResponse { Removed = removed }));
+    }
+
+    /// <summary>
+    /// The <c>interrupted-dismiss</c> verb (director-level, no target session): dismiss one claimed dirty
+    /// crash journal once its sessions are recovered or no longer wanted. Mirrors the Director's
+    /// <c>DELETE /interrupted/{deadDirectorId}/{deadPid}</c> lambda - <see cref="DirectorCrashJournal.Dismiss"/>
+    /// returning true -&gt; a 200 <c>{ dismissed = true }</c>, false -&gt; NotFound (the route's 404). The
+    /// dead-Director id and process id ride in the payload. The caller-identity boundary log stays on the REST
+    /// endpoint (it reads the HTTP connection).
+    /// </summary>
+    internal static DirectorCommandResult InterruptedDismiss(DirectorCommand command)
+    {
+        var request = SessionCommandExecutor.Deserialize<InterruptedDismissRequest>(command.PayloadJson);
+        if (request is null || string.IsNullOrEmpty(request.DeadDirectorId))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "deadDirectorId is required");
+
+        FileLog.Write($"[SessionWriteExecutor] interrupted-dismiss: deadDirectorId={request.DeadDirectorId} deadPid={request.DeadPid}");
+        var removed = DirectorCrashJournal.Dismiss(request.DeadDirectorId, request.DeadPid);
+        return removed
+            ? DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new InterruptedDismissResponse { Dismissed = true }))
+            : DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such interrupted journal");
+    }
+
+    /// <summary>
+    /// The <c>interrupted-remove</c> verb (director-level; names a recoverable session inside a dead Director's
+    /// journal, issue #212 W4): remove ONE session from a claimed dirty journal after it has been restored, so
+    /// the rest of the journal stays in the Interrupted sessions list. Mirrors the Director's
+    /// <c>DELETE /interrupted/{deadDirectorId}/{deadPid}/sessions/{sessionId}</c> lambda -
+    /// <see cref="DirectorCrashJournal.RemoveSession"/> returning true -&gt; a 200 <c>{ removed = true }</c>,
+    /// false -&gt; NotFound (the route's 404). The dead-Director id, process id, and the recoverable session id
+    /// ride in the payload. The caller-identity boundary log stays on the REST endpoint.
+    /// </summary>
+    internal static DirectorCommandResult InterruptedRemove(DirectorCommand command)
+    {
+        var request = SessionCommandExecutor.Deserialize<InterruptedRemoveRequest>(command.PayloadJson);
+        if (request is null || string.IsNullOrEmpty(request.DeadDirectorId) || string.IsNullOrEmpty(request.SessionId))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "deadDirectorId and sessionId are required");
+
+        FileLog.Write($"[SessionWriteExecutor] interrupted-remove: deadDirectorId={request.DeadDirectorId} deadPid={request.DeadPid} sessionId={request.SessionId}");
+        var removed = DirectorCrashJournal.RemoveSession(request.DeadDirectorId, request.DeadPid, request.SessionId);
+        return removed
+            ? DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new InterruptedRemoveResponse { Removed = true }))
+            : DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such interrupted session");
+    }
+
+    /// <summary>
+    /// The <c>backfill-numbers</c> verb (director-level, no session; issue #846): trigger
+    /// <see cref="SessionManager.BackfillNumbers"/> on a RUNNING Director - no restart - so an operator can
+    /// number sessions that predate #820 (or were restored without a number). Mirrors the Director's
+    /// <c>POST /admin/backfill-numbers</c> lambda - always a 200 - and returns the count newly numbered.
+    /// Idempotent: a second call returns 0. The caller-identity boundary log stays on the REST endpoint.
+    /// </summary>
+    internal static DirectorCommandResult BackfillNumbers(SessionManager sessionManager)
+    {
+        FileLog.Write("[SessionWriteExecutor] backfill-numbers");
+        var assigned = sessionManager.BackfillNumbers();
+        FileLog.Write($"[SessionWriteExecutor] backfill-numbers assigned {assigned} number(s)");
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new BackfillNumbersResponse { Assigned = assigned }));
     }
 }
