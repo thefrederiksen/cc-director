@@ -3,6 +3,7 @@ import { MicRecorder } from "../dictation/recorder";
 import { blobToWav16kMono } from "../dictation/wav";
 import { playReadyCue, playYourTurnCue } from "../dictation/readyCue";
 import { detectEndPhrase, detectInterrupt } from "./controlPhrases";
+import { playClip, type PlayOutcome } from "./audioPlayback";
 import {
   postCarModeTelemetry,
   postCarModeWarmup,
@@ -66,9 +67,14 @@ interface TurnMetrics {
   server: CarModeServerTiming | null;
   actionsCount: number;
   pendingConfirmation: boolean;
-  ttsMs: number; // first-chunk text-to-speech round trip
+  ttsMs: number; // text-to-speech round trip for the whole reply (one clip since the split was reverted)
   firstAudioMs: number; // reply-in-hand to first audio playing
   totalTurnMs: number; // pause detected to first audio playing (what the owner feels)
+  // ----- Reply-audio lifecycle (the cut-off-reply diagnostic): how the spoken reply's one clip played -----
+  chunks: number; // how many audio clips the reply played (1 after the split revert; a guard for a future regression)
+  playStartedAt: number; // performance.now() when the reply clip's play() was requested, or 0
+  playMs: number; // how long the reply clip was actually audible: play-started to play-ended / cut off
+  completed: boolean; // true when the reply clip played fully to its natural end; false when cut off (interrupt / End)
   posted: boolean;
 }
 
@@ -141,23 +147,6 @@ const SPEAKING_POLL_MS = 1500;
 const KEEP_WARM_MS = 3 * 60 * 1000;
 // A snapshot smaller than this is just the container header with no real audio - skip transcribing it.
 const MIN_CLIP_BYTES = 2000;
-
-/**
- * Split a reply into the first sentence and the remainder, so the browser can start synthesizing and
- * PLAYING the first sentence while the rest is still being synthesized - the owner hears an answer sooner
- * (performance round: begin playback on the first sentence, not the whole reply). Returns exactly two parts
- * so at most one extra text-to-speech call is ever made; the remainder is an empty string when the reply is
- * a single sentence (then it is one synthesis, unchanged). A very short lead fragment (for example "Okay.")
- * is NOT split off on its own - it would just add a round trip for a word - so the whole reply stays as one.
- */
-export function splitFirstSentence(text: string): [string, string] {
-  const trimmed = text.trim();
-  const match = trimmed.match(/^(.+?[.!?]+)\s+(\S.*)$/s);
-  if (match && match[1].trim().length >= 12 && match[2].trim().length > 0) {
-    return [match[1].trim(), match[2].trim()];
-  }
-  return [trimmed, ""];
-}
 
 /** Whether this browser can capture audio for Car Mode. Car Mode is Chromium-first (decision 7); elsewhere
  *  the page tells the owner plainly instead of silently degrading (no fallback, decision 8). */
@@ -246,6 +235,9 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       ttsMs: m.ttsMs,
       firstAudioMs: m.firstAudioMs,
       totalTurnMs: m.totalTurnMs,
+      chunks: m.chunks,
+      playMs: m.playMs,
+      completed: m.completed,
       serverTotalMs: m.server.totalMs,
       modelCallCount: m.server.modelCallCount,
       modelMsTotal: m.server.modelMsTotal,
@@ -260,31 +252,30 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     });
   }, []);
 
-  // Play one audio clip and resolve when it FINISHES ("ended") or is stopped early ("stopped" - an
-  // interrupt or End Car Mode). Used to play the reply's sentence chunks in order: the loop awaits each
-  // clip, so the next sentence starts the instant the previous one ends. A play() rejection (autoplay
-  // block) resolves "stopped" so the loop never hangs.
-  const playBlob = useCallback((url: string): Promise<"ended" | "stopped"> => {
-    return new Promise((resolve) => {
+  // Play the reply's one audio clip and resolve when it FINISHES ("ended") or is stopped early ("stopped" -
+  // an interrupt or End Car Mode). Delegates to the extracted, unit-tested playClip, which assigns the
+  // element's src EXACTLY ONCE, so a clip that is still playing can never be clobbered. The stop function
+  // playClip hands back is parked in playbackStopRef so the interrupt watch and End Car Mode can end the
+  // clip cleanly; playClip clears it (registers a no-op) once the clip is done. The optional lifecycle
+  // hooks feed the cut-off-reply telemetry (play-started, play-ended, completed-vs-cutoff).
+  const playBlob = useCallback(
+    (
+      url: string,
+      hooks?: { onPlayStarted?: () => void; onPlayEnded?: (outcome: PlayOutcome) => void },
+    ): Promise<PlayOutcome> => {
       const audio = audioRef.current;
-      if (audio === null) {
-        resolve("stopped");
-        return;
-      }
-      let done = false;
-      const finish = (how: "ended" | "stopped") => {
-        if (done) return;
-        done = true;
-        audio.onended = null;
-        playbackStopRef.current = null;
-        resolve(how);
-      };
-      audio.onended = () => finish("ended");
-      playbackStopRef.current = () => finish("stopped");
-      audio.src = url;
-      void audio.play().catch(() => finish("stopped"));
-    });
-  }, []);
+      if (audio === null) return Promise.resolve<PlayOutcome>("stopped");
+      return playClip(
+        audio,
+        url,
+        (stop) => {
+          playbackStopRef.current = stop;
+        },
+        hooks,
+      );
+    },
+    [],
+  );
 
   // Stop whatever clip is playing right now (pause the element and resolve its play promise), so the
   // chunked-playback loop unwinds cleanly. Shared by the touch Stop button, the voice interrupt watch, and
@@ -354,61 +345,59 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     async (text: string, signal: AbortSignal) => {
       try {
         const metrics = turnMetricsRef.current;
-        // Begin on the FIRST sentence: synthesize and play it while the remainder is still synthesizing, so
-        // the owner hears an answer sooner (performance round). A single-sentence reply stays one synthesis.
-        const [first, rest] = splitFirstSentence(text);
 
+        // Synthesize the WHOLE reply as ONE clip and play it once. The perf-round first-sentence split was
+        // REVERTED here: it synthesized the first sentence and the remainder separately and played them on
+        // the SAME reused <audio> element, and on the phone the second clip clobbered the first while it was
+        // still playing, so the owner heard only the tail of the reply (the cut-off-reply bug). Correctness
+        // first: hearing the WHOLE reply is non-negotiable; the ~1 second streaming shave is not worth
+        // cutting off the answer. (Streaming can return LATER, but only behind separate audio elements per
+        // chunk plus the on-device audio-event test - never one reused element.) The other performance wins
+        // of that round - keep-warm and the fleet-read suppression - are untouched, so Car Mode stays fast.
         const ttsStart = performance.now();
-        const firstBlob = await speakCarModeText(first, signal);
+        const clip = await speakCarModeText(text, signal);
         if (signal.aborted) return;
         if (metrics !== null) metrics.ttsMs = performance.now() - ttsStart;
 
-        // Prefetch the remainder in parallel so it is ready by the time the first sentence finishes.
-        const restPromise = rest.length > 0 ? speakCarModeText(rest, signal) : null;
-
         revokeClip();
-        const url0 = URL.createObjectURL(firstBlob);
-        clipUrlRef.current = url0;
+        const url = URL.createObjectURL(clip);
+        clipUrlRef.current = url;
         const audio = audioRef.current;
         if (audio === null) throw new Error("The audio player was not ready.");
 
         setPhaseBoth("speaking");
         setCaptureState("watching for stop");
 
-        // Begin playing the first sentence; record when the owner first hears audio, then post the merged
-        // timing record for the turn (fire-and-forget - it never delays playback).
-        const firstPlayed = playBlob(url0);
-        if (metrics !== null && metrics.replyReadyAt > 0) {
-          const nowMs = performance.now();
-          metrics.firstAudioMs = nowMs - metrics.replyReadyAt;
-          metrics.totalTurnMs = metrics.pauseDetectedAt > 0 ? nowMs - metrics.pauseDetectedAt : 0;
-          postTurnTelemetry(metrics);
-        }
+        // Play the reply. The lifecycle hooks record the cut-off-reply diagnostic: when playback actually
+        // starts, how long it stayed audible, and whether it played to its natural end or was cut off.
+        const played = playBlob(url, {
+          onPlayStarted: () => {
+            if (metrics === null) return;
+            const nowMs = performance.now();
+            metrics.chunks = 1;
+            metrics.playStartedAt = nowMs;
+            if (metrics.replyReadyAt > 0) {
+              metrics.firstAudioMs = nowMs - metrics.replyReadyAt;
+              metrics.totalTurnMs = metrics.pauseDetectedAt > 0 ? nowMs - metrics.pauseDetectedAt : 0;
+            }
+          },
+          onPlayEnded: (outcome) => {
+            if (metrics === null) return;
+            metrics.completed = outcome === "ended";
+            metrics.playMs = metrics.playStartedAt > 0 ? performance.now() - metrics.playStartedAt : 0;
+            // Post the merged timing record now that the clip's whole lifecycle is known - including a
+            // cut-off - so a truncated reply is VISIBLE at /carmode/telemetry (fire-and-forget).
+            postTurnTelemetry(metrics);
+          },
+        });
 
         // Barge-in: a fresh capture segment plus the rolling-window transcription watch for "stop".
         await restartCapture();
         stopSpeakingPoll();
         speakingPollRef.current = window.setInterval(() => onSpeakingTickRef.current(), SPEAKING_POLL_MS);
 
-        const how0 = await firstPlayed;
-        if (how0 === "stopped" || signal.aborted) return; // interrupted / ended session mid-reply
-
-        // Play the remainder (if any) right after the first sentence, back to back.
-        if (restPromise !== null) {
-          let restBlob: Blob;
-          try {
-            restBlob = await restPromise;
-          } catch (err) {
-            if (signal.aborted) return;
-            throw err;
-          }
-          if (signal.aborted) return;
-          revokeClip();
-          const url1 = URL.createObjectURL(restBlob);
-          clipUrlRef.current = url1;
-          const how1 = await playBlob(url1);
-          if (how1 === "stopped" || signal.aborted) return;
-        }
+        const how = await played;
+        if (how === "stopped" || signal.aborted) return; // interrupted / ended session mid-reply
 
         // The reply finished on its own: hand the microphone back to the owner.
         await enterListening();
@@ -537,6 +526,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
             ttsMs: 0,
             firstAudioMs: 0,
             totalTurnMs: 0,
+            chunks: 0,
+            playStartedAt: 0,
+            playMs: 0,
+            completed: false,
             posted: false,
           };
           void takeTurn(command);

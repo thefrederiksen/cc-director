@@ -76,15 +76,32 @@ public sealed record CarModeTelemetryRecord
     ///  included (so it is >= the server TotalMs by the network cost).</summary>
     public double BrainMs { get; init; }
 
-    /// <summary>The text-to-speech round trip for the FIRST spoken chunk (POST /wingman/tts).</summary>
+    /// <summary>The text-to-speech round trip for the whole reply (POST /wingman/tts). It is the whole
+    ///  reply since the first-sentence split was reverted - the reply is synthesized as one clip.</summary>
     public double TtsMs { get; init; }
 
     /// <summary>Reply text in hand to audio actually playing: the time the owner waits after the brain
-    ///  answers before he hears anything (first-chunk synthesis plus the play call).</summary>
+    ///  answers before he hears anything (reply synthesis plus the play call).</summary>
     public double FirstAudioMs { get; init; }
 
     /// <summary>The whole turn as the owner feels it: pause detected to first audio playing.</summary>
     public double TotalTurnMs { get; init; }
+
+    // ----- Reply-audio lifecycle (the cut-off-reply diagnostic), measured in the browser -----
+
+    /// <summary>How many audio clips the reply played. It is 1 after the first-sentence split was reverted
+    ///  (the whole reply is synthesized and played as one clip); a future streaming regression that clobbers
+    ///  the reply would show here as a value other than 1.</summary>
+    public int Chunks { get; init; }
+
+    /// <summary>How long the reply clip was actually audible: play-started to play-ended (or to a cut-off),
+    ///  milliseconds. A value far short of what the reply length implies flags a truncated reply.</summary>
+    public double PlayMs { get; init; }
+
+    /// <summary>True when the reply clip played fully to its natural end; false when it was cut off (a voice
+    ///  or touch interrupt, or End Car Mode). The cut-off-reply bug this telemetry makes visible reads as
+    ///  false: the reply was synthesized but the owner did not hear all of it.</summary>
+    public bool Completed { get; init; }
 
     // ----- Server stamps (from CarModeTurnTiming, echoed back by the client) -----
 

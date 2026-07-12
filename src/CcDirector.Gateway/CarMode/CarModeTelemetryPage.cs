@@ -83,8 +83,11 @@ internal static class CarModeTelemetryPage
           <th>Model<br>ms</th>
           <th>Fleet<br>reads</th>
           <th>Fleet<br>ms</th>
-          <th>TTS<br>(1st)</th>
+          <th>TTS<br>(reply)</th>
           <th>First<br>audio</th>
+          <th>Reply<br>played</th>
+          <th>Whole<br>reply?</th>
+          <th>Clips</th>
           <th>Rounds</th>
           <th>Cmd<br>chars</th>
           <th>Reply<br>chars</th>
@@ -128,7 +131,7 @@ internal static class CarModeTelemetryPage
 
     if (!recs.length) {
       cards.appendChild(card("-", "No turns recorded yet", "Take a turn in Car Mode on the phone"));
-      document.getElementById("rows").innerHTML = '<tr><td colspan="16" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
+      document.getElementById("rows").innerHTML = '<tr><td colspan="19" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
       document.getElementById("foot").textContent = "";
       return;
     }
@@ -142,6 +145,11 @@ internal static class CarModeTelemetryPage
     cards.appendChild(card(ms(median(brains)), "Median brain round trip", "p90 " + ms(pctile(brains, 90))));
     cards.appendChild(card(ms(median(firsts)), "Median time to first audio", "p90 " + ms(pctile(firsts, 90))));
     cards.appendChild(card(fleetHit + " / " + recs.length, "Turns that read the fleet", "the rest answered without it"));
+    // The cut-off-reply watch: how many recent replies were synthesized but NOT heard to the end. This is
+    // the card that would have made the "only the last couple of words" bug obvious the first time.
+    var cutOff = recs.filter(function (r) { return r.completed === false; }).length;
+    cards.appendChild(card(cutOff + " / " + recs.length, "Replies NOT fully heard",
+      cutOff > 0 ? "these were cut off before the end" : "every reply played to its end"));
 
     var body = document.getElementById("rows"); body.innerHTML = "";
     recs.forEach(function (r) {
@@ -169,6 +177,12 @@ internal static class CarModeTelemetryPage
       tr.appendChild(td(ms(r.fleetReadMsTotal)));
       tr.appendChild(td(ms(r.ttsMs), r.ttsMs > 3000 ? "slow" : ""));
       tr.appendChild(td(ms(r.firstAudioMs)));
+      // The reply-audio lifecycle (the cut-off-reply diagnostic): how long the reply was actually audible,
+      // whether it played to its end, and how many clips it took (1 since the split was reverted). A reply
+      // that was NOT fully heard is called out in red so a truncated reply is impossible to miss.
+      tr.appendChild(td(ms(r.playMs)));
+      tr.appendChild(td(r.completed == null ? "-" : (r.completed ? "yes" : "CUT OFF"), r.completed === false ? "slow" : ""));
+      tr.appendChild(td(r.chunks == null ? "-" : r.chunks, (r.chunks != null && r.chunks !== 1) ? "slow" : ""));
       tr.appendChild(td(r.rounds == null ? "-" : r.rounds));
       tr.appendChild(td(r.commandChars == null ? "-" : r.commandChars));
       tr.appendChild(td(r.replyChars == null ? "-" : r.replyChars));

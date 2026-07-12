@@ -121,6 +121,9 @@ internal static class CarModeEndpoint
                 TtsMs = req.TtsMs,
                 FirstAudioMs = req.FirstAudioMs,
                 TotalTurnMs = req.TotalTurnMs,
+                Chunks = req.Chunks,
+                PlayMs = req.PlayMs,
+                Completed = req.Completed,
                 ServerTotalMs = req.ServerTotalMs,
                 ModelCallCount = req.ModelCallCount,
                 ModelMsTotal = req.ModelMsTotal,
@@ -187,6 +190,9 @@ public sealed class CarModeTelemetryPost
     public double TtsMs { get; set; }
     public double FirstAudioMs { get; set; }
     public double TotalTurnMs { get; set; }
+    public int Chunks { get; set; }
+    public double PlayMs { get; set; }
+    public bool Completed { get; set; }
     public double ServerTotalMs { get; set; }
     public int ModelCallCount { get; set; }
     public double ModelMsTotal { get; set; }
