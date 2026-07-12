@@ -425,14 +425,16 @@ public sealed class ControlApiHost : IAsyncDisposable
             _sessionManager.Options, Core.Configuration.GatewayConfig.Load);
         DictationEndpoint.Map(_app, _sessionManager.Options, dictionaryResolver);
         TerminalStreamEndpoint.Map(_app, _sessionManager);
-        SessionUsageEndpoint.Map(_app, _sessionManager);
+        // Gateway Cleanup Phase 0: these three reads now dispatch through the shared SessionReadExecutor,
+        // which needs this Director's id (for the command context/logging), so it is passed in.
+        SessionUsageEndpoint.Map(_app, _sessionManager, DirectorId);
         // GET /sessions/{sid}/context (issue #799): the always-visible "how full is the window"
         // gauge data, via the session driver's ContextUsage capability (Claude today).
-        SessionContextEndpoint.Map(_app, _sessionManager);
+        SessionContextEndpoint.Map(_app, _sessionManager, DirectorId);
         // GET /sessions/{sid}/history (epic #733): the parsed, agent-agnostic conversation
         // history (reuses Core SessionHistoryReader) plus the transcript-derived history state.
         // Forwarded to the Cockpit verbatim by the Gateway's generic /sessions/{sid}/{**rest} proxy.
-        SessionHistoryEndpoint.Map(_app, _sessionManager);
+        SessionHistoryEndpoint.Map(_app, _sessionManager, DirectorId);
         ClaudeTranscriptsEndpoint.Map(_app);
         SettingsEndpoint.Map(_app, ReapplyGatewayAsync, () => Port);
         // /settings/agents (issue #584): full Settings-dialog Agents-tab parity over REST -

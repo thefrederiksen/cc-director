@@ -20,28 +20,25 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class SessionHistoryEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId)
     {
-        app.MapGet("/sessions/{sid}/history", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core (verb
+        // "history"), which calls the SAME BuildHistory mapper below, so this REST path and the Gateway
+        // stream down-channel are identical and cannot drift. The route's read-fault 500 is preserved by the
+        // core and mapped back here. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/history", async (string sid) =>
         {
             FileLog.Write($"[SessionHistoryEndpoint] GET /sessions/{sid}/history");
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
+            var command = new DirectorCommand { Verb = "history", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            try
+            return result.Status switch
             {
-                var dto = BuildHistory(session, sid);
-                FileLog.Write($"[SessionHistoryEndpoint] history: sid={sid} agent={dto.Agent} status={dto.Status} messages={dto.Messages.Count} state={dto.HistoryState ?? "(none)"}");
-                return Results.Json(dto);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[SessionHistoryEndpoint] history FAILED: sid={sid} {ex.Message}");
-                return Results.Problem($"history read failed: {ex.Message}");
-            }
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<SessionHistoryDto>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "history command failed"),
+            };
         });
     }
 

@@ -1,6 +1,5 @@
-using CcDirector.Core.Drivers;
 using CcDirector.Core.Sessions;
-using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -17,39 +16,24 @@ namespace CcDirector.ControlApi;
 /// </summary>
 internal static class SessionContextEndpoint
 {
-    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager)
+    public static void Map(IEndpointRouteBuilder app, SessionManager sessionManager, string directorId)
     {
-        app.MapGet("/sessions/{sid}/context", (string sid) =>
+        // Gateway Cleanup Phase 0: the read runs through the shared SessionReadExecutor core (verb
+        // "context") so this REST path and the Gateway stream down-channel are identical and cannot drift.
+        // The route's capability/no-turn 404s and its read-fault 500 are preserved by the core and mapped
+        // back here. Phase 1 deletes this route.
+        app.MapGet("/sessions/{sid}/context", async (string sid) =>
         {
-            if (!Guid.TryParse(sid, out var guid))
-                return Results.BadRequest(new { error = "invalid session id format" });
-            var session = sessionManager.GetSession(guid);
-            if (session is null)
-                return Results.NotFound(new { error = "session not found" });
+            var command = new DirectorCommand { Verb = "context", SessionId = sid };
+            var result = await SessionCommandExecutor.DispatchAsync(sessionManager, directorId, command);
 
-            var driver = session.Driver;
-            if (!driver.Capabilities.HasFlag(DriverCapabilities.ContextUsage))
-                return Results.NotFound(new { error = $"agent {driver.Kind} does not report context usage" });
-
-            // No agent-session-id guard here: only Claude carries a preassigned ClaudeSessionId.
-            // Codex and pi have none - they locate their rollout/session by repo path - so requiring
-            // it would make the gauge permanently dark for them. Each driver decides what it needs;
-            // a driver that cannot resolve a transcript yet returns null below (handled as 404).
-            try
+            return result.Status switch
             {
-                // EffectiveLaunchArgs (the merged launch line) carries the launched --model even when
-                // it came from the configured default; ClaudeArgs alone is null in that case (#803).
-                var launchArgs = session.EffectiveLaunchArgs ?? session.ClaudeArgs;
-                var context = driver.ReadContextUsage(session.ClaudeSessionId ?? "", session.RepoPath, launchArgs);
-                if (context is null)
-                    return Results.NotFound(new { error = "no context usage yet (no completed turn)" });
-                return Results.Json(context);
-            }
-            catch (Exception ex)
-            {
-                FileLog.Write($"[SessionContextEndpoint] context FAILED: sid={sid} {ex.Message}");
-                return Results.Problem($"context usage read failed: {ex.Message}");
-            }
+                DirectorCommandStatus.Ok => Results.Json(SessionCommandExecutor.Deserialize<ContextUsageDto>(result.BodyJson)),
+                DirectorCommandStatus.BadRequest => Results.BadRequest(new { error = result.Error }),
+                DirectorCommandStatus.NotFound => Results.NotFound(new { error = result.Error }),
+                _ => Results.Problem(result.Error ?? "context command failed"),
+            };
         });
     }
 }
