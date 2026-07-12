@@ -17,6 +17,7 @@ import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { ensureGatewayCookie, configureUnauthorizedRedirect, mobileSignInRedirect } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
+import { ConnectionBanner } from "./components/ConnectionBanner";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
@@ -41,7 +42,15 @@ function GatedLayout() {
   React.useEffect(() => {
     void resumePendingDictations();
   }, []);
-  return <Outlet />;
+  // The one global bad-connection banner (mobile-resilience mission): mounted once here so it pins to
+  // the top of every gated screen and is the single voice for a bad connection. Hidden while the
+  // connection is good; the pages keep their last-known content underneath either way.
+  return (
+    <>
+      <ConnectionBanner />
+      <Outlet />
+    </>
+  );
 }
 
 // Mirror the enrolled per-device key into the cc-gateway-token cookie at startup so the live
