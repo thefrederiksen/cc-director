@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { listSessions } from "@devthrottle/client-core/api/client";
 import { useSessionChat } from "@devthrottle/client-core/history/useSessionChat";
 import { chatLinkLabel } from "@devthrottle/client-core/history/chatView";
@@ -20,6 +20,7 @@ const BOTTOM_THRESHOLD_PX = 40;
 
 export function Chat() {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
 
   const [name, setName] = useState<string | null>(null);
   const { bubbles, emptyText, loadFailed, filter, setFilter } = useSessionChat(sessionId);
@@ -59,6 +60,12 @@ export function Chat() {
     setStatus(message);
     window.setTimeout(() => setStatus((cur) => (cur === message ? STATUS_BASE : cur)), 1500);
   }, []);
+
+  // Local Files (Phase 3): a detected file path opens the full-screen file viewer for that path (the
+  // copy button below is unchanged). The absolute path rides as ?path= so a reload/deep-link resolves.
+  const openFile = useCallback((path: string) => {
+    navigate(`/session/${encodeURIComponent(sessionId ?? "")}/file?path=${encodeURIComponent(path)}`);
+  }, [navigate, sessionId]);
 
   const copyLink = useCallback(async (text: string) => {
     try {
@@ -151,7 +158,16 @@ export function Chat() {
                             {chatLinkLabel(link.text)}
                           </a>
                         ) : (
-                          <span className="chat-link-text" title={link.text}>{chatLinkLabel(link.text)}</span>
+                          // Local Files (Phase 3): the file path is now a clickable control that opens
+                          // the full-screen viewer for that path (the copy button below is unchanged).
+                          <button
+                            type="button"
+                            className="chat-link-open chat-link-view"
+                            title={link.text}
+                            onClick={() => openFile(link.text)}
+                          >
+                            {chatLinkLabel(link.text)}
+                          </button>
                         )}
                         <button type="button" className="chat-link-copy" onClick={() => copyLink(link.text)}>
                           {link.isUrl ? "Copy URL" : "Copy path"}

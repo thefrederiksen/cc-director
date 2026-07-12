@@ -5,6 +5,7 @@ import { Home } from "./pages/Home";
 import { NewSession } from "./pages/NewSession";
 import { Terminal } from "./pages/Terminal";
 import { Chat } from "./pages/Chat";
+import { FileView } from "./pages/FileView";
 import { VoiceMode } from "./pages/VoiceMode";
 import { CarMode } from "./pages/CarMode";
 import { AiSettings } from "./pages/AiSettings";
@@ -93,6 +94,10 @@ const router = createBrowserRouter(
             { path: "/session/:sessionId/chat", element: <Chat /> },
             { path: "/session/:sessionId/terminal", element: <Terminal /> },
             { path: "/session/:sessionId/voice", element: <VoiceMode /> },
+            // Local Files (Phase 3): the full-screen file viewer. Reached from a clicked file path in
+            // the session's Chat or Terminal; the absolute path rides as ?path=. Not a tab in ViewTabs
+            // (it is a leaf view of the session, dismissed with Back), matching the Cockpit modal.
+            { path: "/session/:sessionId/file", element: <FileView /> },
           ],
         },
       ],
