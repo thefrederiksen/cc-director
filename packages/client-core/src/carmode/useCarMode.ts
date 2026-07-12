@@ -544,9 +544,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       const command = parsed.ended ? parsed.command : transcript;
       setCaptureState(`heard: "${transcript}"`);
 
-      // Fire the "my turn" cue the INSTANT the command is in hand (before the brain responds) for an
-      // immediate audible acknowledgement, seed the turn metrics the brain + speak steps fill, then take it.
-      playReadyCue();
+      // Seed the turn metrics the brain + speak steps fill, then take the turn. (v4: the "my turn" cue is
+      // no longer fired here - it now fires SYNCHRONOUSLY in the endTurn tap handler, before this async
+      // transcode+transcribe work, so the owner hears the acknowledgement the instant he taps, not ~2s
+      // later. See endTurn below.)
       turnMetricsRef.current = {
         turnId: "",
         pauseDetectedAt,
@@ -587,6 +588,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // interrupt, since no voice "stop" watch runs).
   const endTurn = useCallback(() => {
     if (phaseRef.current !== "listening") return;
+    // v4: fire the "my turn" acknowledgement cue SYNCHRONOUSLY as the FIRST thing on tap, before any of
+    // the async end-of-turn work (mic snapshot -> WAV transcode -> transcribe round trip). That async
+    // work took ~2 seconds, so the cue used to lag the tap badly; firing it here gives an immediate
+    // (<150ms) audible "got it". Firing inside the tap gesture also guarantees mobile permits it to sound.
+    playReadyCue();
     void transcribeAndTake();
   }, [transcribeAndTake]);
 
