@@ -581,6 +581,15 @@ public sealed class Session : IDisposable
     }
     private bool _onHold;
 
+    /// <summary>
+    /// True while a genuine, submitted turn is underway: set when a real submission enters the session
+    /// (a human Enter, or a delivered prompt/message), and cleared the moment the session settles again.
+    /// It is the anchor that lets a turn-END lift the Hold (the agent finishing a turn takes the session
+    /// off hold) WITHOUT the cosmetic terminal repaints - which flicker Working -> WaitingForInput with no
+    /// submission behind them - ever clearing it. Runtime-only, same lifetime semantics as <see cref="OnHold"/>.
+    /// </summary>
+    private bool _turnInFlight;
+
     /// <summary>Fires when <see cref="OnHold"/> changes. Arg: new value. The desktop
     /// session list subscribes so the color strip can repaint dark blue (held) without
     /// the wingman touching <see cref="StatusColor"/>; OnHold sits on top of it.</summary>
@@ -1557,6 +1566,8 @@ public sealed class Session : IDisposable
             // stale Hold deferral no longer reflects intent -- clear it (issue #470).
             // The OnHold setter no-ops + skips OnHoldChanged when already false.
             OnHold = false;
+            // A real turn is now underway; arm the turn-END hold lift (see SetActivityState).
+            _turnInFlight = true;
             SetActivityState(ActivityState.Working);
         }
     }
@@ -1667,6 +1678,8 @@ public sealed class Session : IDisposable
         // session again, so clear any stale Hold deferral (issue #470). The OnHold
         // setter no-ops + skips OnHoldChanged when already false.
         OnHold = false;
+        // A real turn is now underway; arm the turn-END hold lift (see SetActivityState).
+        _turnInFlight = true;
         SetActivityState(ActivityState.Working);
         // DevThrottle Stats: a SendTextAsync is exactly one submitted turn. Count it (plus its character
         // volume) for the tagged origin. Null origin = framework-internal (handover, queue drain) - not
@@ -1782,6 +1795,25 @@ public sealed class Session : IDisposable
         var old = ActivityState;
         if (old == newState) return;
         ActivityState = newState;
+        // Hold auto-lift on turns: a genuine turn boundary takes a snoozed session OFF hold so it can
+        // never silently change state under the user. The INTO-a-turn edge is handled at the submission
+        // sites (SendInput / SendTextAsync clear OnHold as the turn starts, so the user sees it go blue
+        // right away); this is the OUT-of-a-turn edge - the agent finishing a real turn and landing at a
+        // "needs you" settle. It is gated on _turnInFlight so the periodic cosmetic repaints (which reach
+        // WaitingForInput with no submission behind them) never lift the hold. _turnInFlight is consumed on
+        // ANY settle, including a quiet return to Idle, so a stale flag cannot let a later repaint pose as a
+        // turn-end.
+        if (newState is ActivityState.WaitingForInput or ActivityState.WaitingForPerm
+            or ActivityState.Idle or ActivityState.Exited)
+        {
+            if (_turnInFlight && newState is ActivityState.WaitingForInput or ActivityState.WaitingForPerm)
+            {
+                if (OnHold)
+                    FileLog.Write($"[Session] Turn ended ({newState}) - lifting hold: session={Id}");
+                OnHold = false;
+            }
+            _turnInFlight = false;
+        }
         // A real activity change ends any Wingman "running in the background" overlay: once the
         // terminal produces output again (Working), or the session otherwise leaves the parked
         // turn-end it was judged at, the background-wait verdict is stale. The next turn-end

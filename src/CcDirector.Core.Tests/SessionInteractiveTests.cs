@@ -99,6 +99,72 @@ public sealed class SessionInteractiveTests
         Assert.False(events[0]);        // with value false
     }
 
+    // ---- Hold auto-lift on turns: the OUT-of-a-turn edge ----
+    // A snoozed session must come off hold when the agent FINISHES a real turn and lands at a
+    // "needs you" settle - so a session parked mid-work cannot silently sit there needing the user.
+    // The lift is anchored to a real submission, so the periodic cosmetic terminal repaints (which
+    // reach WaitingForInput with no submission behind them) never break the hold.
+
+    [Fact]
+    public async Task TurnEnd_AfterMidWorkSnooze_LiftsHold()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("do the thing"); // real submission arms the turn (also clears hold on the way in)
+        s.OnHold = true;                        // user snoozes WHILE it is still working
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput); // agent finishes -> needs you
+
+        Assert.False(s.OnHold); // the completed turn took it off hold
+    }
+
+    [Fact]
+    public async Task TurnEnd_WaitingForPerm_LiftsHold()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("run it");
+        s.OnHold = true;
+
+        s.ApplyTerminalActivityState(ActivityState.WaitingForPerm); // agent stops to ask permission
+
+        Assert.False(s.OnHold);
+    }
+
+    [Fact]
+    public void CosmeticRepaint_OnHeldIdleSession_KeepsHold()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Idle);
+        s.OnHold = true; // parked while idle - no turn in flight
+
+        // A periodic Claude repaint: a byte blip to Working, then settling straight back to needs-you.
+        s.ApplyTerminalActivityState(ActivityState.Working);
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+
+        Assert.True(s.OnHold); // no real submission behind it -> the hold survives the repaint
+    }
+
+    [Fact]
+    public async Task TurnEndingAtIdle_ConsumesArming_SoLaterRepaintCannotLiftHold()
+    {
+        var backend = new RecordingBackend();
+        using var s = NewSession(backend, ActivityState.Working);
+
+        await s.SendTextAsync("go"); // arms the turn
+        s.OnHold = true;
+
+        s.ApplyTerminalActivityState(ActivityState.Idle); // quiet return to ready - not a "needs you" settle
+        Assert.True(s.OnHold);       // a turn ending at ready does not surface a held session
+
+        // The arming was consumed at the Idle settle, so a later cosmetic repaint cannot pose as a turn-end.
+        s.ApplyTerminalActivityState(ActivityState.Working);
+        s.ApplyTerminalActivityState(ActivityState.WaitingForInput);
+        Assert.True(s.OnHold);
+    }
+
     // ---- #5 PTY resize guard ----
 
     [Fact]
