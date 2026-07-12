@@ -105,6 +105,33 @@ public sealed class SnoozeExpirySweepTests : IDisposable
     }
 
     [Fact]
+    public async Task A_re_snooze_during_the_pass_is_not_nudged_off_hold()
+    {
+        // Arrange an expired entry, but simulate the user re-snoozing exactly while the sweep reads the
+        // Director: the read callback moves the entry into the future, then reports still-held. The sweep
+        // must re-check the LIVE registry and NOT nudge the freshly re-snoozed session off hold.
+        var reg = new SnoozeRegistry(Path_);
+        reg.Snooze("s1", _now.AddMinutes(-1), "dir-1"); // expired at snapshot time
+        var nudged = new List<string>();
+        var sweep = new SnoozeExpirySweep(
+            reg,
+            resolveEndpoint: _ => "http://dir-1",
+            readOnHold: (ep, sid, ct) =>
+            {
+                reg.Snooze(sid, _now.AddMinutes(59), "dir-1"); // re-snooze lands mid-pass -> future
+                return Task.FromResult<bool?>(true);           // Director still reports held
+            },
+            forwardUnhold: (ep, sid, ct) => { nudged.Add(sid); return Task.CompletedTask; },
+            utcNow: () => _now);
+
+        await sweep.RunOnceAsync(CancellationToken.None);
+
+        Assert.Empty(nudged);                                  // the fresh snooze was not cancelled
+        Assert.True(reg.Contains("s1"));
+        Assert.False(reg.IsExpired("s1", _now));               // it now holds the future time
+    }
+
+    [Fact]
     public async Task An_absent_or_missed_read_does_not_lose_the_pending_snooze()
     {
         // A reachable Director but the read returned null (session momentarily absent / transient miss).

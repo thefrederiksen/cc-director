@@ -68,6 +68,24 @@ public sealed class SnoozeRegistryTests : IDisposable
     }
 
     [Fact]
+    public void ClearIfUnchanged_clears_only_when_the_time_has_not_moved()
+    {
+        var reg = new SnoozeRegistry(Path_);
+        var now = new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc);
+        var until = now.AddMinutes(60);
+        reg.Snooze("s1", until, "dir-1");
+
+        // A re-snooze moved the time: a stale sweep decision must NOT clobber the fresh snooze.
+        reg.Snooze("s1", now.AddMinutes(120), "dir-1");
+        Assert.False(reg.ClearIfUnchanged("s1", until));   // old time no longer matches -> refused
+        Assert.True(reg.Contains("s1"));                   // the fresh snooze stands
+
+        // Unchanged since the read -> it clears.
+        Assert.True(reg.ClearIfUnchanged("s1", now.AddMinutes(120)));
+        Assert.False(reg.Contains("s1"));
+    }
+
+    [Fact]
     public void ClearForDirector_drops_only_that_directors_entries()
     {
         var reg = new SnoozeRegistry(Path_);

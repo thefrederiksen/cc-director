@@ -125,6 +125,29 @@ public sealed class SnoozeRegistry
     }
 
     /// <summary>
+    /// Compare-and-clear: remove the entry for <paramref name="sessionId"/> ONLY if it still carries
+    /// exactly <paramref name="expectedUntilUtc"/>. The sweep uses this so a stale decision (taken from a
+    /// snapshot at the start of a pass) can never clobber a snooze the user re-armed in the meantime - a
+    /// re-snooze moves the time, so the compare fails and the fresh snooze stands. This protects the one
+    /// invariant that matters most: a live snooze is never silently lost. Returns true when it cleared.
+    /// </summary>
+    public bool ClearIfUnchanged(string sessionId, DateTime expectedUntilUtc)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        lock (_gate)
+        {
+            if (_entries.TryGetValue(sessionId, out var e) && e.SnoozeUntilUtc == expectedUntilUtc.ToUniversalTime())
+            {
+                _entries.Remove(sessionId);
+                Save();
+                FileLog.Write($"[SnoozeRegistry] ClearIfUnchanged: sid={sessionId} (unchanged since the sweep read it)");
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Drop every entry owned by <paramref name="directorId"/> whose session is NOT in
     /// <paramref name="liveSessionIds"/>. Called from the aggregation for a Director that actually
     /// answered (its returned list is authoritative), so a session that has permanently exited is
