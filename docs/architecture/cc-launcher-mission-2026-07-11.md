@@ -4,6 +4,16 @@
 > hold. Work already produced before the stand-down is preserved on draft pull requests 1365
 > (Mac port), 1364 (installer), and 1367 (Director-side update safety) and their branches.
 > The open questions below are withdrawn and must be re-asked if the mission resumes.
+>
+> **Resume gates** - what remained unproven at stand-down, in merge order:
+> 1. Pull request 1365 (Mac port): the Director-restart-over-the-stream proof leg needs the
+>    screen unlocked or the never-lock posture applied; everything else was proven live.
+> 2. Pull request 1364 (installer): merges after 1365 (shared launch agent label constant),
+>    and the end-to-end clean-install proof needs a release that ships cc-launcher-mac-arm64.
+> 3. Pull request 1367 (mutual updates): the live deliberate-bad-build rollback proof never
+>    ran; that is the gate before it could be undrafted.
+> 4. Fleet-wide: the production Gateway must be updated to a build containing the launcher
+>    stream before remote commands work outside a local test Gateway.
 
 Status: parked. Originally an active mission. Written 2026-07-11 by the Architect session
 ("CC Launcher Mission - Architect", session 7b78e474, machine Sorens-Mac-mini). The Architect
