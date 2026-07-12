@@ -1158,6 +1158,28 @@ a.banner-btn {
   cursor: pointer;
 }
 
+/* Regenerate response: a secondary action sitting just above Turn voice off. More emphasis than the
+   muted off-toggle (full text color, accent-tinted border) so it reads as an action, but still a
+   ghost button so it never competes with the primary in-state controls (Respond, the player). */
+.voice-regen-btn {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  border: 1px solid #5b2bd6;
+  border-radius: 10px;
+  padding: 11px 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.voice-regen-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* Status bar: a state pill on the left, an optional reference note on the right. */
 .voice-statusbar {
   display: flex;
@@ -1276,7 +1298,8 @@ a.banner-btn {
 }
 
 /* "Turn voice off" stays a fixed strip at the very bottom, below the scrolling narrative. */
-.voice-body-speaking .voice-off-toggle {
+.voice-body-speaking .voice-off-toggle,
+.voice-body-speaking .voice-regen-btn {
   flex: 0 0 auto;
 }
 
