@@ -165,6 +165,24 @@ public sealed class WingmanVoiceService
     /// <summary>True when this session currently has a fresh, playable cached summary.</summary>
     public bool HasVoice(string sid) => _ready.ContainsKey(sid);
 
+    /// <summary>
+    /// Whether a turn-end should (re)generate the spoken narration for this session. True when there is
+    /// something to say (<paramref name="currentReply"/> non-empty) and it is NOT already the exact
+    /// reply we hold cached audio for. This replaces the old bare "does any narration exist" guard
+    /// (issue #1322): comparing the reply TEXT means a genuinely new or changed reply always regenerates
+    /// even when the Working transition that would have cleared the cache was never observed (a racy
+    /// sampled edge, missed on multi-part turns), while a redundant re-hit of the SAME turn still stays
+    /// quiet so a client already playing this turn's clip is never disturbed (no re-mint, no yellow flip).
+    /// Reply text is compared trimmed + ordinal - the two sources (cache vs the live /turns widget) are
+    /// the same JSONL text block, so an unchanged turn matches exactly.
+    /// </summary>
+    internal bool ShouldRegenerate(string sid, string? currentReply)
+    {
+        if (string.IsNullOrWhiteSpace(currentReply)) return false;   // nothing to narrate yet
+        if (!_ready.TryGetValue(sid, out var cached)) return true;    // never narrated -> make it
+        return !string.Equals(cached.Reply?.Trim(), currentReply.Trim(), StringComparison.Ordinal);
+    }
+
     /// <summary>The sessions that currently have a ready, playable spoken summary.</summary>
     public IReadOnlyCollection<string> ReadySessionIds() => _ready.Keys.ToArray();
 
@@ -316,17 +334,18 @@ public sealed class WingmanVoiceService
     {
         Mark(sid);
 
-        // Do not re-narrate a turn that already has a fresh, current narration. A genuinely new turn
-        // clears this cache first (OnSessionWorking on the Working transition), so a cache that is
-        // still present means the current turn is already narrated - regenerating it would only flip
-        // the session yellow again and mint a new generatedAt, restarting the clip a listening client
-        // is already playing (issue #1322). The idle sweep already skips cached sessions this way; the
-        // turn-end path must too. Checked before the backpressure gates - a no-op costs nothing.
-        if (HasVoice(sid))
-        {
-            FileLog.Write($"[WingmanVoiceService] GenerateAsync skip (current turn already narrated): sid={sid}");
-            return;
-        }
+        // The "already narrated" skip is now IDENTITY-AWARE and lives in GenerateOnceAsync, after the
+        // current reply has actually been read (issue #1322 done right). The old guard here was a bare
+        // "does ANY narration exist" check (HasVoice), which assumed every genuinely new turn cleared
+        // the cache first via OnSessionWorking on the Working transition. That assumption breaks: the
+        // Working transition is observed on a racy sampled edge and, on a multi-part turn (an interim
+        // reply, then a sub-agent, then the real answer), the intermediate Working can fall between two
+        // samples that both read "waiting" - so the cache is never cleared and the bare guard wrongly
+        // suppressed narration of the final answer forever (the phone replayed the stale interim clip).
+        // Comparing the reply TEXT instead removes the dependency on catching that edge: a changed reply
+        // always regenerates, the same reply still stays quiet so a client mid-play is never disturbed.
+        // The idle sweep still guards on HasVoice at its own call site, so it never reaches here for a
+        // cached session; only the turn-end path does, and it pays one cheap /turns read to compare.
 
         // Backpressure #1 (issue #1324) - respect a provider rate-limit cooldown. A 429 means "stop
         // calling", so while the cooldown is in effect we skip the model call entirely. Both callers
@@ -385,6 +404,16 @@ public sealed class WingmanVoiceService
         var widgets = turns?.Widgets ?? new List<TurnWidgetDto>();
         var lastReply = widgets.LastOrDefault(w => w.Kind == "Text")?.Content;
         if (string.IsNullOrWhiteSpace(lastReply)) return;  // nothing to say yet
+        // Identity-aware skip (issue #1322 done right): only skip when the CURRENT last reply is the
+        // exact one already narrated. Unlike the old bare HasVoice guard this does not depend on having
+        // observed the Working transition, so a genuinely new/changed reply is never suppressed by a
+        // stale cache the missed edge left behind - while the same reply stays quiet (no re-mint, no
+        // yellow flip), preserving the "never disturb a listener mid-play" guarantee.
+        if (!ShouldRegenerate(sid, lastReply))
+        {
+            FileLog.Write($"[WingmanVoiceService] GenerateOnce skip (same reply already narrated): sid={sid}");
+            return;
+        }
         // Recent conversation so the wingman can add context to a short/terse latest reply.
         var recentContext = WingmanTranslator.BuildRecentContext(widgets);
         // The wingman is now running for this session - show it yellow until the summary lands, but
