@@ -58,6 +58,28 @@ Names are how the fleet sorts, so compose them so related sessions group togethe
 `session rename "name"` renames the current session using `CC_SESSION_ID`.
 `session rename <target> "name"` renames another session selected by id prefix or exact name.
 
+### Phased missions: a fresh Manager each phase (the Architect's job)
+
+When an implementation runs in phases, do NOT keep one Manager alive across all of them. At each
+phase boundary the Architect **retires the current Manager and spawns a fresh one**, briefed on only
+what is done and what this phase needs.
+
+Why it is worth it: a long-lived Manager drags every earlier phase's context forward - it drifts,
+answers worse (a fast model can even hallucinate that work is done), and burns tokens re-reading
+stale history it no longer needs. The durable truth - decisions, what shipped, what is next - lives
+in the mission document and memory, so a fresh Manager reads those and starts clean with nothing
+important lost. Cheaper and sharper, every phase.
+
+At each phase boundary:
+1. Confirm the current Manager is stood down (its tree is clean, nothing in flight).
+2. Reap it: `curl -X DELETE http://127.0.0.1:7878/sessions/<full-session-id>` (the Gateway routes to
+   whichever Director hosts it), or have the user close its tab. This build has no `session done` verb.
+3. Spawn a fresh Manager with a tight brief: `session spawn <repo> --name "<Mission> - Manager"`,
+   pointing it at the mission document, stating plainly what is DONE and only THIS phase's goal.
+
+This only works because the mission document and memory hold the state - keep them current so a reset
+never loses anything.
+
 ## Messages
 
 ```
