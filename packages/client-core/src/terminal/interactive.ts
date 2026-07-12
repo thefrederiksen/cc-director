@@ -41,7 +41,9 @@
 //    unreachable; it is NOT proof of a live stream, so it must not reset the reconnect streak.
 
 import { Terminal as Xterm } from "@xterm/xterm";
+import type { IDisposable, ILink, ILinkProvider } from "@xterm/xterm";
 import { ensureGatewayCookie, sendPrompt } from "../api/client";
+import { findLineLinks, type LineLink } from "./lineLinks";
 
 // Match the desktop terminal (TerminalFonts.Family + TerminalControl metrics): Cascadia MONO (not
 // Code - no ligatures, crisper glyphs), then the same macOS/Linux fallbacks; 14px with lineHeight 1.2.
@@ -90,10 +92,18 @@ function wsHostOf(url: string): string {
 export class InteractiveTerminal {
   private readonly hostEl: HTMLElement;
   private readonly sessionId: string;
+  // Local Files (Phase 2): the app supplies this to open its own file viewer when a FILE path in the
+  // terminal is clicked. client-core stays app-agnostic (it must not import app UI - brief decision 6),
+  // so the click routes back out through this callback. http/https URLs are opened here directly (a new
+  // tab) and never go through this callback. Optional: with no callback the terminal is unchanged except
+  // that URLs become clickable.
+  private readonly onFileLink?: (path: string) => void;
 
   private term: Xterm | null = null;
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
+  // The registered xterm link provider (Local Files, Phase 2), disposed with the terminal.
+  private linkProvider: IDisposable | null = null;
   // The pending animation frame that waits for the host to be laid out before opening the terminal.
   // It is cancelled on dispose so a pane torn down before layout never opens a terminal. See
   // start()/dispose() for the lifecycle bug this fixes (issue #1029).
@@ -116,9 +126,10 @@ export class InteractiveTerminal {
   private pendingInput = "";
   private inputPumping = false;
 
-  constructor(hostEl: HTMLElement, sessionId: string) {
+  constructor(hostEl: HTMLElement, sessionId: string, onFileLink?: (path: string) => void) {
     this.hostEl = hostEl;
     this.sessionId = sessionId;
+    this.onFileLink = onFileLink;
   }
 
   start(): void {
@@ -187,7 +198,54 @@ export class InteractiveTerminal {
       this.enqueueInput(data);
     });
 
+    this.registerLinks(term);
+
     this.openWs();
+  }
+
+  // Local Files (Phase 2): make absolute file paths and http/https URLs in the terminal clickable.
+  // xterm asks per line via provideLinks; we run the shared detector over that line's rendered text and
+  // hand back one xterm link per detected span with its column range. A FILE path click routes to the
+  // app's onFileLink (its viewer); a URL opens in a new tab here. The provider is disposed with the
+  // terminal so it never outlives the render service.
+  private registerLinks(term: Xterm): void {
+    const provider: ILinkProvider = {
+      provideLinks: (bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) => {
+        const bufLine = term.buffer.active.getLine(bufferLineNumber - 1);
+        if (!bufLine) {
+          callback(undefined);
+          return;
+        }
+        const text = bufLine.translateToString(true);
+        const found = findLineLinks(text);
+        if (found.length === 0) {
+          callback(undefined);
+          return;
+        }
+        const links: ILink[] = found.map((l) => ({
+          text: l.text,
+          // xterm buffer ranges are 1-based and inclusive on both ends. l is a 0-based half-open
+          // [start, end) column range, so the first cell is start+1 and the last cell is end.
+          range: {
+            start: { x: l.start + 1, y: bufferLineNumber },
+            end: { x: l.end, y: bufferLineNumber },
+          },
+          activate: (event: MouseEvent) => this.onLinkActivate(l, event),
+        }));
+        callback(links);
+      },
+    };
+    this.linkProvider = term.registerLinkProvider(provider);
+  }
+
+  // A terminal link was clicked. URLs open in a new tab (never routed to the app); a FILE path is
+  // handed to the app's viewer via onFileLink when one was supplied.
+  private onLinkActivate(link: LineLink, _event: MouseEvent): void {
+    if (link.isUrl) {
+      window.open(link.text, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (this.onFileLink) this.onFileLink(link.text);
   }
 
   // Append typed bytes to the FIFO buffer and make sure the pump is running. Synchronous and
@@ -239,6 +297,14 @@ export class InteractiveTerminal {
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.linkProvider !== null) {
+      try {
+        this.linkProvider.dispose();
+      } catch {
+        /* already disposed */
+      }
+      this.linkProvider = null;
     }
     if (this.ws) {
       try {

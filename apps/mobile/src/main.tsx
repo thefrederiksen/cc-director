@@ -5,16 +5,19 @@ import { Home } from "./pages/Home";
 import { NewSession } from "./pages/NewSession";
 import { Terminal } from "./pages/Terminal";
 import { Chat } from "./pages/Chat";
+import { FileView } from "./pages/FileView";
 import { VoiceMode } from "./pages/VoiceMode";
 import { CarMode } from "./pages/CarMode";
 import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
+import { YourThrottle } from "./pages/YourThrottle";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
 import { hasDeviceKey } from "@devthrottle/client-core/auth/deviceKey";
 import { ensureGatewayCookie, configureUnauthorizedRedirect, mobileSignInRedirect } from "@devthrottle/client-core/api/client";
 import { ensurePushSubscribed } from "@devthrottle/client-core/push/register";
 import { CreditsNotice } from "./components/CreditsNotice";
+import { ConnectionBanner } from "./components/ConnectionBanner";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
@@ -39,7 +42,15 @@ function GatedLayout() {
   React.useEffect(() => {
     void resumePendingDictations();
   }, []);
-  return <Outlet />;
+  // The one global bad-connection banner (mobile-resilience mission): mounted once here so it pins to
+  // the top of every gated screen and is the single voice for a bad connection. Hidden while the
+  // connection is good; the pages keep their last-known content underneath either way.
+  return (
+    <>
+      <ConnectionBanner />
+      <Outlet />
+    </>
+  );
 }
 
 // Mirror the enrolled per-device key into the cc-gateway-token cookie at startup so the live
@@ -58,6 +69,23 @@ configureUnauthorizedRedirect(mobileSignInRedirect);
 // subscription so the Gateway's record stays current (subscriptions can rotate). Never prompts here -
 // that needs a user gesture (the "Enable notifications" button on the roster). Non-fatal on failure.
 void ensurePushSubscribed();
+
+// Force the newest bundle into a long-lived Progressive Web App. The service worker is network-first for
+// the shell + bundle (vite.config.ts), so a plain reopen already fetches the latest; this handles the
+// other case - the app has been open in the background while a NEW build deployed. When the new service
+// worker takes control (skipWaiting + clientsClaim on activate), reload ONCE so the page drops the old
+// in-memory JS and runs the new build. Armed ONLY when the page is ALREADY controlled at load (a
+// returning install): a first visit that starts uncontrolled is claimed by clientsClaim, which is NOT an
+// update and must not trigger a reload. The one-shot flag prevents any reload loop.
+if ("serviceWorker" in navigator && navigator.serviceWorker.controller !== null) {
+  let reloadingForNewWorker = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadingForNewWorker) return;
+    reloadingForNewWorker = true;
+    console.log("[mobile] a new service worker took control - reloading to run the latest build");
+    window.location.reload();
+  });
+}
 
 // The app is served under /m, so the router is rooted there. A hard navigation to a deep link
 // (e.g. /m/session/<id>) is served the injected index.html by the Gateway and the router then
@@ -84,11 +112,18 @@ const router = createBrowserRouter(
             { path: "/car", element: <CarMode /> },
             { path: "/settings", element: <AiSettings /> },
             { path: "/about", element: <About /> },
+            // Your Throttle (devthrottle-stats mission): the in-app port of the standalone Gateway
+            // /stats page, reading the same GET /stats/data feed through client-core.
+            { path: "/throttle", element: <YourThrottle /> },
             { path: "/new", element: <NewSession /> },
             { path: "/session/:sessionId", element: <Chat /> },
             { path: "/session/:sessionId/chat", element: <Chat /> },
             { path: "/session/:sessionId/terminal", element: <Terminal /> },
             { path: "/session/:sessionId/voice", element: <VoiceMode /> },
+            // Local Files (Phase 3): the full-screen file viewer. Reached from a clicked file path in
+            // the session's Chat or Terminal; the absolute path rides as ?path=. Not a tab in ViewTabs
+            // (it is a leaf view of the session, dismissed with Back), matching the Cockpit modal.
+            { path: "/session/:sessionId/file", element: <FileView /> },
           ],
         },
       ],

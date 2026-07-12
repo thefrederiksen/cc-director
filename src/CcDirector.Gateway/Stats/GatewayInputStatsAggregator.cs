@@ -34,6 +34,20 @@ public sealed class GatewayInputStatsAggregator
     // Per-live-session last-seen counts, so only the INCREASE is folded into the totals.
     private readonly Dictionary<string, Dictionary<(string Modality, string Surface), Counters>> _highWater = new();
 
+    // Per UTC clock hour: the turns (by modality) and characters SUBMITTED in that hour - the "working day"
+    // series. Accumulated from the same high-water deltas as the totals, attributed to the hour the delta
+    // was observed. Pruned past the retention window so the store stays bounded.
+    private const string HourFormat = "yyyy-MM-ddTHH";
+    private const int RetentionDays = 90;
+    private readonly Dictionary<string, HourTurns> _hourly = new(StringComparer.Ordinal);
+
+    private sealed class HourTurns
+    {
+        public long VoiceTurns;
+        public long TypedTurns;
+        public long Characters;
+    }
+
     private sealed class Counters
     {
         public long Turns { get; set; }
@@ -50,26 +64,30 @@ public sealed class GatewayInputStatsAggregator
         Load();
     }
 
-    /// <summary>Fold every session in a full snapshot into the totals.</summary>
-    public void ObserveSnapshot(IEnumerable<SessionDto>? sessions)
+    /// <summary>Fold every session in a full snapshot into the totals and the per-hour turn log.</summary>
+    public void ObserveSnapshot(IEnumerable<SessionDto>? sessions, DateTime? nowUtc = null)
     {
         if (sessions is null) return;
+        var now = nowUtc ?? DateTime.UtcNow;
+        var hourKey = HourKey(now);
         lock (_lock)
         {
             var changed = false;
             foreach (var s in sessions)
-                changed |= FoldLocked(s);
-            if (changed) Save();
+                changed |= FoldLocked(s, hourKey);
+            if (changed) { PruneLocked(now); Save(); }
         }
     }
 
-    /// <summary>Fold one session (a delta) into the totals.</summary>
-    public void Observe(SessionDto? session)
+    /// <summary>Fold one session (a delta) into the totals and the per-hour turn log.</summary>
+    public void Observe(SessionDto? session, DateTime? nowUtc = null)
     {
         if (session is null) return;
+        var now = nowUtc ?? DateTime.UtcNow;
+        var hourKey = HourKey(now);
         lock (_lock)
         {
-            if (FoldLocked(session)) Save();
+            if (FoldLocked(session, hourKey)) { PruneLocked(now); Save(); }
         }
     }
 
@@ -95,9 +113,45 @@ public sealed class GatewayInputStatsAggregator
         }
     }
 
-    // Fold one session's tally into the totals via the high-water increment. Returns true when the totals
-    // changed. Caller holds the lock.
-    private bool FoldLocked(SessionDto s)
+    /// <summary>The per-hour turn log (the "working day" series: turns by modality and character volume per
+    /// UTC clock hour), oldest hour first.</summary>
+    public IReadOnlyList<InputHourDto> HourlyTurns()
+    {
+        lock (_lock)
+        {
+            var list = new List<InputHourDto>(_hourly.Count);
+            foreach (var kvp in _hourly)
+                list.Add(new InputHourDto
+                {
+                    Hour = kvp.Key,
+                    VoiceTurns = kvp.Value.VoiceTurns,
+                    TypedTurns = kvp.Value.TypedTurns,
+                    Turns = kvp.Value.VoiceTurns + kvp.Value.TypedTurns,
+                    Characters = kvp.Value.Characters,
+                });
+            list.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
+            return list;
+        }
+    }
+
+    private static string HourKey(DateTime utc) =>
+        utc.ToUniversalTime().ToString(HourFormat, System.Globalization.CultureInfo.InvariantCulture);
+
+    private static bool TryParseHour(string key, out DateTime utc) =>
+        DateTime.TryParseExact(key, HourFormat, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out utc);
+
+    private void PruneLocked(DateTime nowUtc)
+    {
+        var cutoff = nowUtc.AddDays(-RetentionDays);
+        var stale = _hourly.Keys.Where(k => TryParseHour(k, out var dt) && dt < cutoff).ToList();
+        foreach (var k in stale) _hourly.Remove(k);
+    }
+
+    // Fold one session's tally into the totals via the high-water increment, attributing each increase to
+    // <paramref name="hourKey"/> in the per-hour turn log. Returns true when the totals changed. Caller
+    // holds the lock.
+    private bool FoldLocked(SessionDto s, string hourKey)
     {
         if (string.IsNullOrEmpty(s.SessionId) || s.InputStats?.Buckets is null || s.InputStats.Buckets.Count == 0)
             return false;
@@ -131,6 +185,21 @@ public sealed class GatewayInputStatsAggregator
                 }
                 total.Turns += deltaTurns;
                 total.Characters += deltaChars;
+
+                // Attribute this increase to the hour it was observed (the "working day" series). Turns are
+                // split by modality; characters are summed. Surface is not split here - the hourly log is
+                // about WHEN work happened, not from where.
+                if (!_hourly.TryGetValue(hourKey, out var hour))
+                {
+                    hour = new HourTurns();
+                    _hourly[hourKey] = hour;
+                }
+                if (string.Equals(key.Item1, "voice", StringComparison.OrdinalIgnoreCase))
+                    hour.VoiceTurns += deltaTurns;
+                else
+                    hour.TypedTurns += deltaTurns;
+                hour.Characters += deltaChars;
+
                 changed = true;
             }
 
@@ -159,6 +228,14 @@ public sealed class GatewayInputStatsAggregator
     {
         public List<InputStatBucketDto> Totals { get; set; } = new();
         public Dictionary<string, List<InputStatBucketDto>> HighWater { get; set; } = new();
+        public Dictionary<string, HourTurnsStore> Hourly { get; set; } = new();
+    }
+
+    private sealed class HourTurnsStore
+    {
+        public long VoiceTurns { get; set; }
+        public long TypedTurns { get; set; }
+        public long Characters { get; set; }
     }
 
     private void Load()
@@ -194,7 +271,9 @@ public sealed class GatewayInputStatsAggregator
                 hw[(b.Modality ?? "", b.Surface ?? "")] = new Counters { Turns = b.Turns, Characters = b.Characters };
             _highWater[sid] = hw;
         }
-        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s) from {_path}");
+        foreach (var (hour, ht) in parsed.Hourly)
+            _hourly[hour] = new HourTurns { VoiceTurns = ht.VoiceTurns, TypedTurns = ht.TypedTurns, Characters = ht.Characters };
+        FileLog.Write($"[GatewayInputStatsAggregator] Load: restored {_totals.Count} total bucket(s), {_highWater.Count} live session(s), {_hourly.Count} hourly bucket(s) from {_path}");
     }
 
     private void Quarantine(string reason)
@@ -218,6 +297,8 @@ public sealed class GatewayInputStatsAggregator
             var file = new StoreFile { Totals = ToDtoLocked(_totals).Buckets };
             foreach (var (sid, hw) in _highWater)
                 file.HighWater[sid] = ToDtoLocked(hw).Buckets;
+            foreach (var (hour, ht) in _hourly)
+                file.Hourly[hour] = new HourTurnsStore { VoiceTurns = ht.VoiceTurns, TypedTurns = ht.TypedTurns, Characters = ht.Characters };
 
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
             var tmp = _path + ".tmp";
@@ -230,4 +311,15 @@ public sealed class GatewayInputStatsAggregator
             throw;
         }
     }
+}
+
+/// <summary>One hour of the input "working day" log: the turns (total and by modality) and character
+/// volume submitted in that UTC clock hour ("yyyy-MM-ddTHH").</summary>
+public sealed class InputHourDto
+{
+    public string Hour { get; set; } = "";
+    public long Turns { get; set; }
+    public long VoiceTurns { get; set; }
+    public long TypedTurns { get; set; }
+    public long Characters { get; set; }
 }

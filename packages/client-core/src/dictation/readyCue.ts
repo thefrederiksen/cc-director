@@ -50,6 +50,74 @@ export function playReadyCue(): void {
 }
 
 /**
+ * Start the Car Mode "thinking" ambient cue and return a function that stops it. Played WHILE the brain
+ * works (after the owner taps "Over and out"), so the ~2s of transcribe -> brain -> text-to-speech is not
+ * dead silence - the owner hears, gently, that his turn was taken and is being worked. It reuses the
+ * dictation water-droplet character (playReadyCue) but SOFT and LOW-VOLUME (Grok-style gentle, peak ~0.07
+ * vs the ack cue's 0.5), repeating slowly, so it is an unobtrusive "working" texture, NOT the sharp ack
+ * "plink". The caller stops it the instant the reply audio starts (see useCarMode speakAndPlay). Same
+ * best-effort contract as the other cues - it is synthesized with the Web Audio API (no bundled asset) and
+ * never throws; if audio output is unavailable the returned stop function is a harmless no-op.
+ *
+ * It MUST be started from within a user gesture (the "Over and out" tap) so mobile lets its AudioContext
+ * run; a context created past the gesture would stay suspended and silent.
+ */
+export function startThinkingCue(): () => void {
+  try {
+    const AudioCtor =
+      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtor) return () => {};
+
+    const ctx = new AudioCtor();
+    if (ctx.state === "suspended") void ctx.resume();
+
+    let stopped = false;
+
+    // One soft droplet: the same rising-glide plink as the ack cue but at a fraction of the volume, so it
+    // reads as a calm, distant "working" tone rather than a foreground beep.
+    const drop = () => {
+      if (stopped || ctx.state === "closed") return;
+      const now = ctx.currentTime;
+      const duration = 0.18;
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(300, now);
+      osc.frequency.exponentialRampToValueAtTime(640, now + duration * 0.9);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      // Peak ~0.07 - deliberately gentle (the ack cue peaks at 0.5). Low enough to sit under the room, so
+      // it never competes with the reply that follows.
+      gain.gain.exponentialRampToValueAtTime(0.07, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.02);
+    };
+
+    drop();
+    // A slow, unhurried repeat (~1.4s) so it is an ambient pulse, not a rapid alarm.
+    const timer = window.setInterval(drop, 1400);
+
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      window.clearInterval(timer);
+      try {
+        void ctx.close();
+      } catch {
+        // context already closed; nothing to do
+      }
+    };
+  } catch {
+    // Best-effort courtesy cue; if audio output is unavailable, hand back a no-op stopper.
+    return () => {};
+  }
+}
+
+/**
  * Play the Car Mode "your turn" cue once - the second, deliberately DIFFERENT turn-boundary tone
  * (Car Mode mission, "The audible handshake"). It fires when the assistant finishes speaking (or is
  * interrupted) and the microphone is live again for the owner, so - eyes-free, phone in pocket - he

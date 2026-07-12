@@ -54,6 +54,35 @@ public sealed class GatewayAccountStatusClientTests
         Assert.Equal("tok-123", handler.Request.Headers.Authorization.Parameter);
     }
 
+    // Issue #1357: the client surfaces the nickname when the Gateway includes it.
+    [Fact]
+    public async Task GetStatusAsync_SignedInWithNickname_ReadsNickname()
+    {
+        var handler = new CapturingHandler(HttpStatusCode.OK,
+            "{\"signedIn\":true,\"email\":\"person@example.com\",\"provider\":\"google\",\"nickname\":\"Starlord\"}");
+        var client = new GatewayAccountStatusClient(new HttpClient(handler));
+
+        var status = await client.GetStatusAsync(new GatewayConfig { Url = GatewayUrl });
+
+        Assert.True(status.SignedIn);
+        Assert.Equal("person@example.com", status.Email);
+        Assert.Equal("Starlord", status.Nickname);
+    }
+
+    // Issue #1357: when the Gateway omits nickname, the client leaves it null (email fallback happens downstream).
+    [Fact]
+    public async Task GetStatusAsync_SignedInNoNickname_NicknameIsNull()
+    {
+        var handler = new CapturingHandler(HttpStatusCode.OK,
+            "{\"signedIn\":true,\"email\":\"person@example.com\",\"provider\":\"google\"}");
+        var client = new GatewayAccountStatusClient(new HttpClient(handler));
+
+        var status = await client.GetStatusAsync(new GatewayConfig { Url = GatewayUrl });
+
+        Assert.True(status.SignedIn);
+        Assert.Null(status.Nickname);
+    }
+
     [Fact]
     public async Task GetStatusAsync_NoToken_SendsNoAuthorizationHeader()
     {

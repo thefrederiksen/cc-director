@@ -24,18 +24,21 @@ var NOTIFICATION_ICON = '/m/icon-192.png';
 
 self.addEventListener('push', function (event) {
   var count = 0;
+  var snoozeEnded = false;
   if (event.data) {
     try {
       var payload = event.data.json();
       count = Number(payload && payload.count) || 0;
+      snoozeEnded = !!(payload && payload.snoozeEnded);
     } catch (e) {
       count = 0;
+      snoozeEnded = false;
     }
   }
-  event.waitUntil(applyNeedsYou(count));
+  event.waitUntil(applyNeedsYou(count, snoozeEnded));
 });
 
-function applyNeedsYou(count) {
+function applyNeedsYou(count, snoozeEnded) {
   var tasks = [];
 
   // App badge where the browser supports it (installed desktop PWA / some Chromium builds). Harmless
@@ -59,7 +62,12 @@ function applyNeedsYou(count) {
   // (see WebPushNeedsYouNotifier.Decide), so renotify:true is correct here - each push is real news and
   // should re-alert - while the shared tag REPLACES the previous notification rather than stacking a new
   // one. Clicking it focuses the Cockpit and lands on the waiting session (see notificationclick).
-  var body = count === 1 ? '1 session needs you' : count + ' sessions need you';
+  // Snooze Length mission: a returned-from-snooze announcement (sent once when a snooze first expires)
+  // carries the distinct "Snooze ended" copy so the owner knows it is a "go investigate why it went
+  // quiet" item rather than a fresh turn-end.
+  var body = snoozeEnded
+    ? 'Snooze ended - still waiting on you'
+    : (count === 1 ? '1 session needs you' : count + ' sessions need you');
   tasks.push(
     self.registration.showNotification('DevThrottle', {
       tag: NEEDS_YOU_TAG,

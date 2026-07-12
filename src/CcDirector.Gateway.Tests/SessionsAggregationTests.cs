@@ -40,7 +40,8 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
     {
         _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
             instancesDirectory: _instancesDir,
-            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"));
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
@@ -123,6 +124,45 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         var parkedOut = Assert.Single(sessions, s => s.SessionId == "hold1");
         Assert.Equal("grey", parkedOut.EffectiveColor);
         Assert.Equal("onHold", parkedOut.TriageBucket);
+    }
+
+    // ---------- snooze expiry overlay (Snooze Length mission) ----------
+
+    [Fact]
+    public async Task Snooze_that_has_not_expired_still_reads_as_snoozed()
+    {
+        // A held session with a snooze that is still in the future stays parked (grey / onHold).
+        var held = Sample("snz1", "ClaudeCode", "repo", "WaitingForInput", "red");
+        held.OnHold = true;
+        var fake = await StartFake("M", "u", new[] { held });
+        await Register(fake);
+        _gateway.SnoozeRegistry.Snooze("snz1", DateTime.UtcNow.AddMinutes(30), fake.DirectorId);
+
+        var s = Assert.Single(await GetSessions());
+        Assert.True(s.OnHold);
+        Assert.Equal("grey", s.EffectiveColor);
+        Assert.Equal("onHold", s.TriageBucket);
+    }
+
+    [Fact]
+    public async Task Expired_snooze_overlays_the_session_back_into_needs_you()
+    {
+        // The Director still reports the session held, but its snooze has elapsed. The /sessions fold
+        // must override OnHold=false so the session reads as "needs you" again on its own - the whole
+        // point of the mission. This holds even though the Director itself has not yet cleared the hold.
+        var held = Sample("snz2", "ClaudeCode", "repo", "WaitingForInput", "red");
+        held.OnHold = true;
+        var fake = await StartFake("M", "u", new[] { held });
+        await Register(fake);
+        _gateway.SnoozeRegistry.Snooze("snz2", DateTime.UtcNow.AddMinutes(-1), fake.DirectorId); // already due
+
+        var s = Assert.Single(await GetSessions());
+        Assert.False(s.OnHold);                    // overlay flipped it
+        Assert.Equal("red", s.EffectiveColor);     // back to needs-you red
+        Assert.Equal("needsYou", s.TriageBucket);
+        // Phase 2: the returned-from-snooze marker is stamped so clients show a distinct "Snooze ended"
+        // badge and the phone push announces it once.
+        Assert.True(s.SnoozeExpired);
     }
 
     // ---------- automatic session roles (chunk 1) ----------

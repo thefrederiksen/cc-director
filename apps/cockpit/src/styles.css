@@ -732,6 +732,14 @@ body {
   color: var(--text-dim);
 }
 
+/* Snooze Length mission: a returned-from-snooze session wears a distinct amber "Snooze ended" tag so
+   it reads as a "go investigate why it went quiet" item, not a plain needs-you. */
+.roster-tag.snooze-ended {
+  background: rgba(217, 145, 32, 0.16);
+  border-color: rgba(217, 145, 32, 0.55);
+  color: #d99120;
+}
+
 /* The machine name yields FIRST when the meta line is tight (it truncates before the state does). */
 .roster-machine {
   flex: 0 1 auto;
@@ -1493,6 +1501,20 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Local Files (Phase 2): the file path is a clickable button that opens the viewer. Reset the native
+   button chrome so it reads as the same inline link as .chat-link-open, with a pointer cursor. */
+.chat-link-view {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.chat-link-view:hover {
+  text-decoration: underline;
 }
 
 .chat-link-copy {

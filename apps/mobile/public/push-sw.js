@@ -20,18 +20,21 @@ var NEEDS_YOU_TAG = 'devthrottle-needs-you';
 
 self.addEventListener('push', function (event) {
   var count = 0;
+  var snoozeEnded = false;
   if (event.data) {
     try {
       var payload = event.data.json();
       count = Number(payload && payload.count) || 0;
+      snoozeEnded = !!(payload && payload.snoozeEnded);
     } catch (e) {
       count = 0;
+      snoozeEnded = false;
     }
   }
-  event.waitUntil(applyNeedsYou(count));
+  event.waitUntil(applyNeedsYou(count, snoozeEnded));
 });
 
-function applyNeedsYou(count) {
+function applyNeedsYou(count, snoozeEnded) {
   var tasks = [];
 
   // App badge: iOS installed PWA + desktop. Not present on Android (harmless - the notification
@@ -46,6 +49,26 @@ function applyNeedsYou(count) {
 
   if (count <= 0) {
     tasks.push(closeNeedsYou());
+    return Promise.all(tasks);
+  }
+
+  // Snooze Length mission: a returned-from-snooze ANNOUNCEMENT. The Gateway sends this exactly once when
+  // a session's snooze first expires (see WebPushNeedsYouNotifier), so it is allowed to BUZZ with its own
+  // copy even though a dot may already be up - it is genuinely new "go investigate why it went quiet"
+  // news. Uses the same tag so it replaces the quiet dot; the next silent heartbeat folds it back into
+  // the plain dot, and it never buzzes again while the snooze lingers.
+  if (snoozeEnded) {
+    tasks.push(
+      self.registration.showNotification('DevThrottle', {
+        tag: NEEDS_YOU_TAG,
+        body: 'Snooze ended - still waiting on you',
+        renotify: true,
+        silent: false,
+        icon: '/m/icon-192.png',
+        badge: '/m/icon-192.png',
+        data: { url: '/m/' }
+      })
+    );
     return Promise.all(tasks);
   }
 

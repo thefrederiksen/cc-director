@@ -1,3 +1,4 @@
+using CcDirector.Core.Account;
 using CcDirector.Core.Pi;
 using Xunit;
 
@@ -5,6 +6,28 @@ namespace CcDirector.Core.Tests.Pi;
 
 public class PiPreambleWriterTests
 {
+    // Issue #1357: when a signed-in user is supplied, the Pi preamble file names that user.
+    [Fact]
+    public void WriteForSession_WithSignedInUser_WritesIdentityLine()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pi-preamble-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var sid = "abc12345-1111-2222-3333-444455556666";
+            var path = PiPreambleWriter.WriteForSession(
+                sid, "myrepo", "MACHINE_A", @"D:\repo\myrepo", dir,
+                new SignedInUser("soren@example.com", "Starlord"));
+
+            var text = File.ReadAllText(path);
+            Assert.Contains("The user of this session is Starlord (soren@example.com).", text);
+            Assert.Contains("do not guess identity from usage or the database", text);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
     [Fact]
     public void WriteForSession_WritesPreambleFile_WithIdentityAndCommands()
     {

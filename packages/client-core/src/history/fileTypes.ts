@@ -77,6 +77,25 @@ function fileBaseName(path: string): string {
 }
 
 /**
+ * A human-readable file size for the download panel (Local Files, Phase 4). Binary units (1 KB =
+ * 1024 B): bytes are shown whole, KB and up carry one decimal - e.g. 820 -> "820 B", 15360 ->
+ * "15.0 KB", 1500000 -> "1.4 MB". A non-finite or negative value returns "" so the caller shows the
+ * file name with NO size rather than a nonsense value (the brief's "no fake size" rule).
+ */
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+/**
  * Classify an absolute file path into the viewer type that should render it. Unknown or binary
  * extensions return "download" - the caller offers a Download button rather than guessing a render.
  */

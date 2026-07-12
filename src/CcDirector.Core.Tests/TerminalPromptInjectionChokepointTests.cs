@@ -70,7 +70,7 @@ public sealed class TerminalPromptInjectionChokepointTests
         var directorClient = File.ReadAllText(Path.Combine(root, "src", "CcDirector.Gateway", "Discovery", "DirectorEndpointClient.cs"));
         var stream = File.ReadAllText(Path.Combine(root, "src", "CcDirector.ControlApi", "TerminalStreamEndpoint.cs"));
 
-        Assert.Contains("fetch(`/sessions/${sid}/prompt`", client);
+        Assert.Contains("gatewayFetch(`/sessions/${sid}/prompt`", client);
         Assert.Contains("await sendPrompt(sessionId, text, true);", cockpit);
         Assert.Contains("await sendPrompt(sessionId, text, true);", mobileControls);
         Assert.Contains("await sendPrompt(sessionId, combined, true);", mobileControls);

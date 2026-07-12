@@ -1,22 +1,6 @@
-import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
-
-// The client build id, injected at build time so a page can show at a glance which bundle it is
-// running (Car Mode diagnostic: the owner must be able to tell a fresh page from an old cached one).
-// The build timestamp alone proves a fresh build (it changes every time); the git short commit sha
-// pins the bundle to an exact commit so it can be matched against the Gateway version from /healthz.
-//
-// No fallback (CLAUDE.md): the mobile app is only ever built from a git checkout - the redeploy
-// script builds from an isolated git worktree, and the release builds from a git clone - so reading
-// the commit sha MUST succeed. A missing git is a broken build environment, surfaced loudly here
-// rather than shipping an "unknown" marker that would defeat the whole point of the indicator.
-function resolveClientBuildId(): string {
-  const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-  const builtAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  return `${sha} ${builtAt}`;
-}
 
 // The app is served by the Gateway under /m, so every asset URL must be /m-rooted.
 // The PWA service worker caches the app shell (Issue 1, AC7) so the roster opens offline
@@ -24,11 +8,6 @@ function resolveClientBuildId(): string {
 // MSBuild target copies into wwwroot/m/.
 export default defineConfig({
   base: "/m/",
-  // Compile-time constant read by the app (see apps/mobile/src/vite-env.d.ts for its type). Stringified
-  // so it is inlined as a literal, exactly like Vite's own import.meta.env values.
-  define: {
-    __CLIENT_BUILD_ID__: JSON.stringify(resolveClientBuildId()),
-  },
   plugins: [
     react(),
     VitePWA({
@@ -79,13 +58,45 @@ export default defineConfig({
         // worker and re-import the new push handler (an unchanged sw.js is never re-fetched). The
         // Gateway serves push-sw.js ignoring the query, with no-cache.
         importScripts: ["push-sw.js?v=2"],
-        // App shell precache. index.html is served by the Gateway (token injection) and is
-        // navigation-fallback cached so a cold offline open still renders the shell.
-        navigateFallback: "/m/index.html",
-        globPatterns: ["**/*.{js,css,html,png,svg,woff2}"],
-        // Cache the last /sessions response so an offline open shows the last-known roster.
+        // NETWORK-FIRST APP SHELL (root cause fix): the app shell and the JS/CSS bundle are NO LONGER
+        // precached and served cache-first. A precached, cache-first index.html was serving the phone a
+        // STALE bundle for a whole load even though the Gateway serves a fresh index.html (no-cache) - so
+        // deploys never reached Soren's installed PWA, and skipWaiting/clientsClaim lost the race because
+        // the old worker served the stale shell before the update could win. Car Mode is under active
+        // iteration, so correctness beats offline caching here: only rarely-changing icons/fonts are
+        // precached, and the shell + bundle go through network-first runtime rules below (fresh when
+        // online, last-known copy only as an offline fallback). No navigateFallback: navigations are the
+        // network-first "m-shell" route below, not a cache-first precached page.
+        globPatterns: ["**/*.{png,svg,ico,woff2}"],
         runtimeCaching: [
           {
+            // The app shell: EVERY navigation under /m fetches the current index.html from the Gateway
+            // first (served no-cache), so the phone always loads the latest bundle with no manual cache
+            // clear. Falls back to the last-served shell ONLY when the network is unavailable (offline
+            // open), after a short timeout so a slow network does not stall the open.
+            urlPattern: ({ request, url }) => request.mode === "navigate" && url.pathname.startsWith("/m"),
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "m-shell",
+              networkTimeoutSeconds: 4,
+              expiration: { maxEntries: 8, maxAgeSeconds: 60 * 60 * 24 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // The hashed JS/CSS bundle: network-first so an iterating build is picked up immediately. The
+            // filenames are content-hashed, so the cached copy is always a correct offline fallback.
+            urlPattern: ({ url }) => url.pathname.startsWith("/m/assets/"),
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "m-assets",
+              networkTimeoutSeconds: 4,
+              expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 * 7 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // Cache the last /sessions response so an offline open shows the last-known roster.
             urlPattern: ({ url }) => url.pathname === "/sessions",
             handler: "NetworkFirst",
             options: {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using CcDirector.Core.Utilities;
 
@@ -46,6 +47,66 @@ public sealed class CarModeBrain
     /// </summary>
     public async Task<CarModeTurnResponse> RunTurnAsync(string deviceKey, string userText, CancellationToken ct)
     {
+        // Time the WHOLE turn from here, and collect per-model-call and per-fleet-read timings inside the
+        // core loop, so the endpoint returns a real per-stage breakdown to the browser (performance round).
+        var timer = new TurnTimer();
+        var response = await RunTurnCoreAsync(deviceKey, userText, timer, ct);
+        timer.Total.Stop();
+        var timing = timer.ToTiming();
+        _log($"[CarModeBrain] turn timing: total={timing.TotalMs:F0}ms, models={timing.ModelCallCount} ({timing.ModelMsTotal:F0}ms), "
+            + $"fleetReads={timing.FleetReadCount} ({timing.FleetReadMsTotal:F0}ms), rounds={timing.Rounds}");
+        return response with { Timing = timing };
+    }
+
+    /// <summary>Collects the per-stage server timing for one turn: the whole-turn stopwatch, each hosted-model
+    ///  round trip, and each fleet/roster read. Mutated in-place by the core loop, then frozen to a
+    ///  <see cref="CarModeTurnTiming"/>.</summary>
+    private sealed class TurnTimer
+    {
+        public readonly Stopwatch Total = Stopwatch.StartNew();
+        public readonly List<double> ModelMs = new();
+        public int FleetReadCount;
+        public double FleetReadMs;
+        public int Rounds;
+
+        /// <summary>Time one hosted-model round trip.</summary>
+        public async Task<T> TimeModelAsync<T>(Func<Task<T>> call)
+        {
+            var sw = Stopwatch.StartNew();
+            try { return await call(); }
+            finally { sw.Stop(); ModelMs.Add(sw.Elapsed.TotalMilliseconds); }
+        }
+
+        /// <summary>Time one fleet/roster read (or directors/repos read).</summary>
+        public async Task<T> TimeFleetAsync<T>(Func<Task<T>> call)
+        {
+            var sw = Stopwatch.StartNew();
+            try { return await call(); }
+            finally { sw.Stop(); FleetReadCount++; FleetReadMs += sw.Elapsed.TotalMilliseconds; }
+        }
+
+        /// <summary>Time one fleet act (start/message/approve/delete) as a fleet read for accounting.</summary>
+        public async Task TimeFleetAsync(Func<Task> call)
+        {
+            var sw = Stopwatch.StartNew();
+            try { await call(); }
+            finally { sw.Stop(); FleetReadCount++; FleetReadMs += sw.Elapsed.TotalMilliseconds; }
+        }
+
+        public CarModeTurnTiming ToTiming() => new()
+        {
+            TotalMs = Total.Elapsed.TotalMilliseconds,
+            ModelCallCount = ModelMs.Count,
+            ModelMsTotal = ModelMs.Sum(),
+            ModelMs = ModelMs.ToArray(),
+            FleetReadCount = FleetReadCount,
+            FleetReadMsTotal = FleetReadMs,
+            Rounds = Rounds,
+        };
+    }
+
+    private async Task<CarModeTurnResponse> RunTurnCoreAsync(string deviceKey, string userText, TurnTimer timer, CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(userText))
             throw new ArgumentException("The command text is required.", nameof(userText));
 
@@ -62,7 +123,7 @@ public sealed class CarModeBrain
             _pending.Clear(deviceKey);
             if (CarModeConfirm.IsAffirmative(userText))
             {
-                var (spokenDone, action) = await ExecuteConfirmedAsync(armed, ct);
+                var (spokenDone, action) = await ExecuteConfirmedAsync(armed, timer, ct);
                 _conversations.Append(deviceKey, userText, spokenDone);
                 _log($"[CarModeBrain] confirmed {armed.Tool} for {armed.TargetName}");
                 return new CarModeTurnResponse { Spoken = spokenDone, Actions = new[] { action } };
@@ -90,8 +151,9 @@ public sealed class CarModeBrain
 
         for (var round = 0; round < MaxRounds; round++)
         {
+            timer.Rounds = round + 1;
             var messagesJson = JsonSerializer.Serialize(messages);
-            var turn = await _chat.CompleteAsync(messagesJson, ToolCatalogJson, ct);
+            var turn = await timer.TimeModelAsync(() => _chat.CompleteAsync(messagesJson, ToolCatalogJson, ct));
 
             // Under tool_choice=required the model normally calls a tool every turn, and says its final
             // words by calling speak_answer. Defensive path: if a model still answers in plain content with
@@ -142,7 +204,7 @@ public sealed class CarModeBrain
                     }
                     continue;
                 }
-                var outcome = await ExecuteToolAsync(deviceKey, call, ct);
+                var outcome = await ExecuteToolAsync(deviceKey, call, timer, ct);
                 if (outcome.Action is not null) actions.Add(outcome.Action);
                 if (outcome.ArmedConfirmation) armedThisTurn = true;
                 messages.Add(new { role = "tool", tool_call_id = call.Id, content = outcome.ResultJson });
@@ -175,14 +237,14 @@ public sealed class CarModeBrain
     ///  a tool error (the model can recover next round); a genuine fleet failure throws (a loud, specific,
     ///  spoken failure). Ordinary acts (start / message / approve) run immediately; the destructive act
     ///  (delete) is NOT run - it arms a confirmation the owner must speak next turn (decision 3).</summary>
-    private async Task<ToolOutcome> ExecuteToolAsync(string deviceKey, CarModeToolCall call, CancellationToken ct)
+    private async Task<ToolOutcome> ExecuteToolAsync(string deviceKey, CarModeToolCall call, TurnTimer timer, CancellationToken ct)
     {
         _log($"[CarModeBrain] tool: {call.Name}");
         switch (call.Name)
         {
             case "list_sessions":
             {
-                var sessions = await _fleet.ListSessionsAsync(ct);
+                var sessions = await timer.TimeFleetAsync(() => _fleet.ListSessionsAsync(ct));
                 return Result(new
                 {
                     needsYouCount = sessions.Count(s => s.NeedsYou),
@@ -199,7 +261,7 @@ public sealed class CarModeBrain
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
                 if (string.IsNullOrWhiteSpace(reference))
                     return Result(new { error = "Provide a session name, repo, or number." });
-                var activity = await _fleet.GetSessionActivityAsync(reference, ct);
+                var activity = await timer.TimeFleetAsync(() => _fleet.GetSessionActivityAsync(reference, ct));
                 if (activity is null)
                     return Result(new { error = $"No session matched \"{reference}\"." });
                 return Result(new { activity.Name, activity.Repo, activity.State, activity.NeedsYou, activity.Summary });
@@ -209,7 +271,7 @@ public sealed class CarModeBrain
                 var repo = ReadStringArg(call.ArgumentsJson, "repo");
                 if (string.IsNullOrWhiteSpace(repo))
                     return Result(new { error = "Provide the repository name to start a session in." });
-                var summary = await _fleet.StartSessionAsync(repo, ct);
+                var summary = await timer.TimeFleetAsync(() => _fleet.StartSessionAsync(repo, ct));
                 return Acted(new { status = "started", summary }, new CarModeActionRecord("start_session", summary));
             }
             case "message_session":
@@ -218,10 +280,10 @@ public sealed class CarModeBrain
                 var message = ReadStringArg(call.ArgumentsJson, "message");
                 if (string.IsNullOrWhiteSpace(reference) || string.IsNullOrWhiteSpace(message))
                     return Result(new { error = "Provide both the session and the message to send." });
-                var target = await _fleet.ResolveSessionAsync(reference, ct);
+                var target = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
                 if (target is null)
                     return Result(new { error = $"No session matched \"{reference}\"." });
-                await _fleet.MessageSessionAsync(target.SessionId, message, ct);
+                await timer.TimeFleetAsync(() => _fleet.MessageSessionAsync(target.SessionId, message, ct));
                 var summary = $"Messaged {target.Name}.";
                 return Acted(new { status = "sent", session = target.Name }, new CarModeActionRecord("message_session", summary));
             }
@@ -230,10 +292,10 @@ public sealed class CarModeBrain
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
                 if (string.IsNullOrWhiteSpace(reference))
                     return Result(new { error = "Provide the session to approve." });
-                var target = await _fleet.ResolveSessionAsync(reference, ct);
+                var target = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
                 if (target is null)
                     return Result(new { error = $"No session matched \"{reference}\"." });
-                await _fleet.ApproveSessionAsync(target.SessionId, ct);
+                await timer.TimeFleetAsync(() => _fleet.ApproveSessionAsync(target.SessionId, ct));
                 var summary = $"Approved {target.Name}.";
                 return Acted(new { status = "approved", session = target.Name }, new CarModeActionRecord("approve_session", summary));
             }
@@ -242,7 +304,7 @@ public sealed class CarModeBrain
                 var reference = ReadStringArg(call.ArgumentsJson, "session");
                 if (string.IsNullOrWhiteSpace(reference))
                     return Result(new { error = "Provide the session to delete." });
-                var target = await _fleet.ResolveSessionAsync(reference, ct);
+                var target = await timer.TimeFleetAsync(() => _fleet.ResolveSessionAsync(reference, ct));
                 if (target is null)
                     return Result(new { error = $"No session matched \"{reference}\"." });
                 // Destructive: do NOT delete. Arm a confirmation the owner must speak next turn.
@@ -265,12 +327,12 @@ public sealed class CarModeBrain
 
     /// <summary>Execute a destructive action the owner has just confirmed out loud, returning the spoken
     ///  acknowledgement and the action record. A fleet failure throws (a loud, specific, spoken failure).</summary>
-    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(CarModePendingAction pending, CancellationToken ct)
+    private async Task<(string Spoken, CarModeActionRecord Action)> ExecuteConfirmedAsync(CarModePendingAction pending, TurnTimer timer, CancellationToken ct)
     {
         switch (pending.Tool)
         {
             case "delete":
-                await _fleet.DeleteSessionAsync(pending.SessionId, ct);
+                await timer.TimeFleetAsync(() => _fleet.DeleteSessionAsync(pending.SessionId, ct));
                 return ($"Done. I deleted {pending.TargetName}.", new CarModeActionRecord("delete_session", $"Deleted {pending.TargetName}."));
             default:
                 throw new InvalidOperationException($"Unknown pending action \"{pending.Tool}\".");
@@ -331,7 +393,13 @@ public sealed class CarModeBrain
         + "- Always refer to a session by its human NAME and its repository, never by its number "
         + "(for example: \"Local Files Manager, in the devthrottle repo\"). Only use a number if the owner "
         + "used one.\n"
-        + "- Use the tools to get REAL facts before you answer. Never guess a count, a name, or a state.\n"
+        + "- When a question is ABOUT THE FLEET - how many sessions there are, which need you, what a session "
+        + "is doing, the latest one, or an action on a session - use the tools to get REAL facts first. Never "
+        + "guess a count, a name, or a state.\n"
+        + "- But when a question is GENERAL and is NOT about the fleet - a greeting, \"what can you do\", "
+        + "\"what can you help me with\", how Car Mode works, a thank-you, or small talk - answer it "
+        + "DIRECTLY by calling speak_answer. Do NOT call list_sessions or any fleet tool for these. Reading "
+        + "the fleet you do not need only makes the owner wait longer, so skip it.\n"
         + "- \"need me\", \"need you\", \"waiting\", and \"who wants me\" all mean sessions whose needsYou is "
         + "true. \"The latest one\" is the first session in the list (it is ordered newest first).\n"
         + "- If a request is ambiguous or you cannot tell which session is meant, ask one short clarifying "

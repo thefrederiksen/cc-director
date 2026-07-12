@@ -11,6 +11,7 @@ import type { SessionHistoryDto } from "../history/types";
 import { planUploadChunks } from "./chunking";
 import { getDeviceKey, clearDeviceKey } from "../auth/deviceKey";
 import { publishDictationStatus } from "../dictation/status";
+import { reportGatewayReachable, reportGatewayUnreachable } from "../connection/health";
 
 export type SessionDto = components["schemas"]["SessionDto"];
 
@@ -77,12 +78,22 @@ export function authHeaders(): HeadersInit {
 // cannot set an Authorization header, so the live terminal stream (GET /sessions/{sid}/stream)
 // authenticates via this cookie, which the same-origin handshake carries and the Gateway's
 // AuthMiddleware accepts (HasValidToken checks the cookie against the shared token OR an active
-// per-device key). The key is already in this origin's storage, so the cookie exposes nothing new; it
-// is scoped to this origin. A no-op before enrollment (no key yet - the stream is never opened then).
+// per-device key). The same constraint applies to any bare <img>/<iframe> src that hits a gated
+// Gateway route - the Local Files viewer's image/PDF/HTML modes - because those elements also cannot
+// carry a Bearer header; they authenticate through this cookie exactly as the stream does.
+// The key is already in this origin's storage, so the cookie exposes nothing new; it is scoped to this
+// origin. A no-op before enrollment (no key yet - the stream is never opened then).
+//
+// PERSISTENT (Max-Age one year), not a session cookie: an installed PWA (the phone) can evict a
+// session cookie between launches, after which a bare <img>/<iframe> src loads with no credential and
+// gets a 401 - the Local Files viewer's "Could not load image" failure. Because the credential already
+// lives on disk in localStorage, persisting it in the cookie exposes nothing further; it just keeps the
+// cookie-authenticated resource loads working after the app is closed and reopened.
 export function ensureGatewayCookie(): void {
   const token = gatewayToken();
   if (!token) return;
-  document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax`;
+  const oneYearSeconds = 60 * 60 * 24 * 365;
+  document.cookie = `cc-gateway-token=${encodeURIComponent(token)}; path=/; SameSite=Lax; Max-Age=${oneYearSeconds}`;
 }
 
 // The redirect target when a credentialed call is rejected (401) mid-session is SHELL-AWARE, because
@@ -223,6 +234,80 @@ function isGatewayUnreachable(err: unknown): boolean {
   return err instanceof Error;
 }
 
+// The ONE transport choke point every Gateway contact in this client routes through, so the shared
+// connection-health signal (connection/health.ts) is fed in exactly one place instead of hand-wired
+// into each page's poll. It is a transparent wrapper around the browser fetch: it returns the same
+// Response and rethrows the same error, adding only a health report. An answered request whose status
+// means the backend was unreachable (502/503/504, or a synthetic 0) reports UNREACHABLE; every other
+// answered status - including 4xx/500 application errors - reports REACHABLE (the Gateway answered). A
+// bare fetch rejection (the backend is down) reports UNREACHABLE. A caller-initiated abort is not a
+// connection signal, so it is rethrown without any report. This mirrors the issue #1028 classification
+// used by isGatewayUnreachable; it does not invent a second taxonomy. Exported so the fleet client
+// (fleetClient.ts) routes its reads - including the roster envelope the mobile app now polls - through
+// the SAME choke point, keeping the connection-health signal fed no matter which reader is on screen.
+//
+// timeoutMs (mobile-resilience mission, Phase 4): a hardening cap for the repeating POLL reads (the
+// roster, chat history, voice). Without it a request that HANGS (a half-open connection on a flaky
+// mobile network - the TCP never resets, so fetch neither resolves nor rejects) would sit in flight
+// forever, so the health signal never flips to bad and the banner never shows. With it, a poll that
+// exceeds the cap is aborted and reported UNREACHABLE (a timed-out request could not reach a healthy
+// backend), distinct from a caller-initiated abort. One-shot writes pass no timeout and are unchanged.
+export async function gatewayFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  opts?: { timeoutMs?: number },
+): Promise<Response> {
+  const timeoutMs = opts?.timeoutMs;
+  const callerSignal = init?.signal ?? undefined;
+  let controller: AbortController | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let onCallerAbort: (() => void) | undefined;
+  let signal = callerSignal;
+  if (timeoutMs !== undefined) {
+    // Race the fetch against the timeout via our own controller, and forward a caller abort to it so
+    // both an unmount and a timeout cancel the in-flight request.
+    controller = new AbortController();
+    signal = controller.signal;
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort();
+      else { onCallerAbort = () => controller!.abort(); callerSignal.addEventListener("abort", onCallerAbort, { once: true }); }
+    }
+    timer = setTimeout(() => { timedOut = true; controller!.abort(); }, timeoutMs);
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(input, signal ? { ...init, signal } : init);
+  } catch (err) {
+    // A timeout is a connection failure (the request could not reach a healthy backend in time), so it
+    // is reported and surfaced as an error rather than swallowed like a caller cancel.
+    if (timedOut) {
+      reportGatewayUnreachable();
+      throw new GatewayError(504, "Gateway request timed out");
+    }
+    // A caller-initiated abort (the browser throws a DOMException named "AbortError", which extends
+    // Error) is a cancel, not a connection signal - rethrow it without recording anything.
+    if (err instanceof Error && err.name === "AbortError") throw err;
+    reportGatewayUnreachable();
+    throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onCallerAbort && callerSignal) callerSignal.removeEventListener("abort", onCallerAbort);
+  }
+  if (res.status === 0 || res.status === 502 || res.status === 503 || res.status === 504) {
+    reportGatewayUnreachable();
+  } else {
+    reportGatewayReachable();
+  }
+  return res;
+}
+
+// The cap for the repeating poll reads (roster, chat history, voice). Long enough not to trip on a slow
+// but alive mobile connection, short enough that a hung request surfaces as a bad connection within one
+// or two poll cycles instead of never (mobile-resilience mission, Phase 4).
+export const POLL_TIMEOUT_MS = 10000;
+
 // Map any error thrown by a Gateway read/write into ONE user-facing line, never leaking the internal
 // "METHOD /path failed: NNN" diagnostic the client throws on a non-2xx, nor the browser's bare
 // "Failed to fetch" when the backend is down (issue #1028). An unreachable Gateway collapses to the
@@ -277,11 +362,11 @@ async function readGatewayErrorBody(res: Response): Promise<string | undefined> 
 // Mobile page consumes. Throws GatewayError on a non-2xx so the caller surfaces it (no silent
 // fallback). The request is same-origin against the Gateway front door.
 export async function listSessions(signal?: AbortSignal): Promise<SessionDto[]> {
-  const res = await fetch("/sessions", {
+  const res = await gatewayFetch("/sessions", {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
-  });
+  }, { timeoutMs: POLL_TIMEOUT_MS });
   if (res.status === 401) {
     // The device key was revoked (or is otherwise invalid): forget it and re-gate to Sign in. The
     // roster is the first credentialed call the app makes, so this is where a revoke surfaces.
@@ -306,11 +391,11 @@ export async function getSessionHistory(
   signal?: AbortSignal,
 ): Promise<SessionHistoryDto> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/history`, {
+  const res = await gatewayFetch(`/sessions/${sid}/history`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
-  });
+  }, { timeoutMs: POLL_TIMEOUT_MS });
   if (!res.ok) {
     throw new GatewayError(res.status, `GET history failed: ${res.status}`);
   }
@@ -328,7 +413,7 @@ export async function sendPrompt(
 ): Promise<void> {
   const sid = encodeURIComponent(sessionId);
   const body: PromptRequest = { text, appendEnter };
-  const res = await fetch(`/sessions/${sid}/prompt`, {
+  const res = await gatewayFetch(`/sessions/${sid}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify(body),
@@ -342,7 +427,7 @@ export async function sendPrompt(
 // Soft-stop the current turn (the agent driver's Escape). POST /sessions/{sid}/escape.
 export async function sendEscape(sessionId: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/escape`, {
+  const res = await gatewayFetch(`/sessions/${sid}/escape`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -355,7 +440,7 @@ export async function sendEscape(sessionId: string, signal?: AbortSignal): Promi
 // Interrupt a running agent turn (Ctrl+C). POST /sessions/{sid}/interrupt.
 export async function sendInterrupt(sessionId: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/interrupt`, {
+  const res = await gatewayFetch(`/sessions/${sid}/interrupt`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -370,7 +455,7 @@ export async function sendInterrupt(sessionId: string, signal?: AbortSignal): Pr
 // ClearContext capability; the caller gates the button on SessionDto.driverCapabilities.
 export async function sendClearContext(sessionId: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/clear-context`, {
+  const res = await gatewayFetch(`/sessions/${sid}/clear-context`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -384,7 +469,7 @@ export async function sendClearContext(sessionId: string, signal?: AbortSignal):
 // /sessions/{sid}/history-picker. Gated on the History capability - a visible-terminal feature.
 export async function sendHistoryPicker(sessionId: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/history-picker`, {
+  const res = await gatewayFetch(`/sessions/${sid}/history-picker`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -421,7 +506,7 @@ async function readQueue(res: Response, label: string): Promise<QueueItem[]> {
 // GET /sessions/{sid}/queue - the session's current queued prompts, in order.
 export async function getQueue(sessionId: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/queue`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -462,7 +547,7 @@ export interface GitSnapshot {
 // result the caller renders ("not a git repository" / "git failed"), not an error.
 export async function getGitStatus(sessionId: string, signal?: AbortSignal): Promise<GitSnapshot> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/git`, {
+  const res = await gatewayFetch(`/sessions/${sid}/git`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -481,7 +566,7 @@ export async function getGitStatus(sessionId: string, signal?: AbortSignal): Pro
 // POST /sessions/{sid}/queue { text } - append a prompt to the queue; returns the new queue.
 export async function enqueuePrompt(sessionId: string, text: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/queue`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ text }),
@@ -494,7 +579,7 @@ export async function enqueuePrompt(sessionId: string, text: string, signal?: Ab
 export async function deleteQueueItem(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
   const id = encodeURIComponent(itemId);
-  const res = await fetch(`/sessions/${sid}/queue/${id}`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue/${id}`, {
     method: "DELETE",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -506,7 +591,7 @@ export async function deleteQueueItem(sessionId: string, itemId: string, signal?
 export async function sendQueueItem(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
   const id = encodeURIComponent(itemId);
-  const res = await fetch(`/sessions/${sid}/queue/${id}/send`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue/${id}/send`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -518,7 +603,7 @@ export async function sendQueueItem(sessionId: string, itemId: string, signal?: 
 export async function editQueueItem(sessionId: string, itemId: string, text: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
   const id = encodeURIComponent(itemId);
-  const res = await fetch(`/sessions/${sid}/queue/${id}`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ text }),
@@ -531,7 +616,7 @@ export async function editQueueItem(sessionId: string, itemId: string, text: str
 export async function moveQueueItemUp(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
   const id = encodeURIComponent(itemId);
-  const res = await fetch(`/sessions/${sid}/queue/${id}/move-up`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue/${id}/move-up`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -543,7 +628,7 @@ export async function moveQueueItemUp(sessionId: string, itemId: string, signal?
 export async function moveQueueItemDown(sessionId: string, itemId: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
   const id = encodeURIComponent(itemId);
-  const res = await fetch(`/sessions/${sid}/queue/${id}/move-down`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue/${id}/move-down`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -554,7 +639,7 @@ export async function moveQueueItemDown(sessionId: string, itemId: string, signa
 // DELETE /sessions/{sid}/queue - clear the whole queue; returns the (empty) queue.
 export async function clearQueue(sessionId: string, signal?: AbortSignal): Promise<QueueItem[]> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/queue`, {
+  const res = await gatewayFetch(`/sessions/${sid}/queue`, {
     method: "DELETE",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -618,7 +703,7 @@ export function sessionFileUrl(sessionId: string, path: string): string {
 // so the viewer can show the real reason - 404 for a missing file, 503 for an offline Director -
 // never a silent blank.
 export async function fetchSessionFileText(sessionId: string, path: string, signal?: AbortSignal): Promise<string> {
-  const res = await fetch(sessionFileUrl(sessionId, path), {
+  const res = await gatewayFetch(sessionFileUrl(sessionId, path), {
     method: "GET",
     headers: { ...authHeaders() },
     signal,
@@ -629,6 +714,39 @@ export async function fetchSessionFileText(sessionId: string, path: string, sign
   return res.text();
 }
 
+// The on-disk SIZE of a file on the owning Director, for the download panel's "name - size" display
+// (Local Files, Phase 4). We do NOT download the file to weigh it: a Range: bytes=0-0 request makes the
+// Director - which already serves this route with enableRangeProcessing on - answer 206 Partial Content
+// with a Content-Range header ("bytes 0-0/<total>") whose total is the full size, transferring a single
+// byte. This reuses the existing range support and needs no new server or Gateway route (the per-session
+// catch-all proxy forwards any verb/headers unchanged). A missing file or offline machine is thrown as a
+// GatewayError (404 / 503) so the panel can fail loud. When the total cannot be read - an old or odd
+// server that ignored the range and returned 200 - null is returned and the caller shows the name and
+// Download with NO guessed size (the brief's "no fake size" rule; no fallback programming).
+export async function fetchSessionFileSize(sessionId: string, path: string, signal?: AbortSignal): Promise<number | null> {
+  const res = await fetch(sessionFileUrl(sessionId, path), {
+    method: "GET",
+    headers: { ...authHeaders(), Range: "bytes=0-0" },
+    signal,
+  });
+  // 206 (range honored) and 200 (range ignored, full body) are both "ok"; anything else is a real error.
+  if (!res.ok) {
+    throw new GatewayError(res.status, `GET file size failed: ${res.status}`);
+  }
+  // We never read the body - drop it so a 200 (full-file) response does not stream needlessly.
+  void res.body?.cancel();
+  const contentRange = res.headers.get("Content-Range");
+  if (contentRange) {
+    // "bytes 0-0/<total>" - the number after the last slash is the full file size.
+    const slash = contentRange.lastIndexOf("/");
+    if (slash >= 0) {
+      const total = Number(contentRange.slice(slash + 1).trim());
+      if (Number.isFinite(total) && total >= 0) return total;
+    }
+  }
+  return null;
+}
+
 // GET /sessions/{sid}/screenshots[?count=N] - the newest screenshots' metadata (not the bytes).
 // count <= 0 fetches everything (the folder can hold thousands, so callers pass a cap). A 503 means
 // the owning Director is offline (the Gateway could not reach it for this leg, issue #412); it is
@@ -636,7 +754,7 @@ export async function fetchSessionFileText(sessionId: string, path: string, sign
 export async function getScreenshots(sessionId: string, count = 0, signal?: AbortSignal): Promise<ScreenshotsResult> {
   const sid = encodeURIComponent(sessionId);
   const path = count > 0 ? `/sessions/${sid}/screenshots?count=${count}` : `/sessions/${sid}/screenshots`;
-  const res = await fetch(path, {
+  const res = await gatewayFetch(path, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -655,7 +773,7 @@ export async function getScreenshots(sessionId: string, count = 0, signal?: Abor
 // DELETE /sessions/{sid}/screenshots/file?name=... - delete one screenshot file from the Director's disk.
 export async function deleteScreenshot(sessionId: string, fileName: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/screenshots/file?name=${encodeURIComponent(fileName)}`, {
+  const res = await gatewayFetch(`/sessions/${sid}/screenshots/file?name=${encodeURIComponent(fileName)}`, {
     method: "DELETE",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -673,7 +791,7 @@ export async function uploadImage(sessionId: string, file: File, signal?: AbortS
   const sid = encodeURIComponent(sessionId);
   const form = new FormData();
   form.append("file", file, file.name);
-  const res = await fetch(`/sessions/${sid}/upload-image`, {
+  const res = await gatewayFetch(`/sessions/${sid}/upload-image`, {
     method: "POST",
     headers: { ...authHeaders() },
     body: form,
@@ -706,7 +824,7 @@ export interface SessionHandover {
 // panel): 404 when the session is unknown to every Director, 502 when the owning Director is offline.
 export async function getHandover(sessionId: string, signal?: AbortSignal): Promise<SessionHandover> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/handover`, {
+  const res = await gatewayFetch(`/sessions/${sid}/handover`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -733,7 +851,7 @@ export async function getHandover(sessionId: string, signal?: AbortSignal): Prom
 // GET /healthz - the running Gateway's own status and version. No auth needed. Backs the mobile
 // About screen so the user can confirm which build they are on.
 export async function getGatewayHealth(signal?: AbortSignal): Promise<GatewayHealth> {
-  const res = await fetch("/healthz", {
+  const res = await gatewayFetch("/healthz", {
     method: "GET",
     headers: { Accept: "application/json" },
     signal,
@@ -749,7 +867,7 @@ export async function getGatewayHealth(signal?: AbortSignal): Promise<GatewayHea
 // Entries with no directorId are dropped (they cannot be addressed). Throws GatewayError on non-2xx
 // so the picker shows the real reason instead of a silently empty list.
 export async function getDirectors(signal?: AbortSignal): Promise<DirectorInfo[]> {
-  const res = await fetch("/directors", {
+  const res = await gatewayFetch("/directors", {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -781,7 +899,7 @@ export async function getDirectors(signal?: AbortSignal): Promise<DirectorInfo[]
 // FleetParser.ParseRepos). Entries with no path are dropped. Throws GatewayError on non-2xx.
 export async function getRepos(directorId: string, signal?: AbortSignal): Promise<RepoInfo[]> {
   const id = encodeURIComponent(directorId);
-  const res = await fetch(`/directors/${id}/repos`, {
+  const res = await gatewayFetch(`/directors/${id}/repos`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -821,7 +939,7 @@ export async function createSession(
   const body: NewSessionRequest = { repoPath: repoPath.trim(), agent: "ClaudeCode", wingmanEnabled: false };
   const trimmedArgs = (launchArgs ?? "").trim();
   if (trimmedArgs.length > 0) body.args = trimmedArgs;
-  const res = await fetch(`/directors/${id}/sessions`, {
+  const res = await gatewayFetch(`/directors/${id}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify(body),
@@ -849,7 +967,7 @@ export async function holdSession(
   signal?: AbortSignal,
 ): Promise<boolean> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/hold`, {
+  const res = await gatewayFetch(`/sessions/${sid}/hold`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ onHold }),
@@ -875,7 +993,7 @@ export async function setTranscribing(
   signal?: AbortSignal,
 ): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/transcribing`, {
+  const res = await gatewayFetch(`/sessions/${sid}/transcribing`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ transcribing }),
@@ -891,7 +1009,7 @@ export async function setTranscribing(
 // the Director through the Gateway catch-all session proxy with the injected Bearer.
 export async function killSession(sessionId: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}`, {
+  const res = await gatewayFetch(`/sessions/${sid}`, {
     method: "DELETE",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -934,7 +1052,7 @@ export async function transcribeUtterance(
   onProgress?: (uploadedChunks: number, totalChunks: number) => void,
 ): Promise<string> {
   // 1. Register the upload (mints an id the chunk + complete calls address).
-  const reg = await fetch(`/wingman/utterance/upload`, {
+  const reg = await gatewayFetch(`/wingman/utterance/upload`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -959,7 +1077,7 @@ export async function transcribeUtterance(
   for (const range of ranges) {
     const part = bytes.subarray(range.start, range.end);
     const sha = await sha256Hex(part);
-    const put = await fetch(`/wingman/utterance/${id}/chunk/${range.index}`, {
+    const put = await gatewayFetch(`/wingman/utterance/${id}/chunk/${range.index}`, {
       method: "PUT",
       headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
       body: part,
@@ -975,7 +1093,7 @@ export async function transcribeUtterance(
   // 3. Complete with the real chunk count -> the server reassembles all chunks, transcribes the clip
   //    (the pipeline itself splits the reassembled audio into bounded transcription requests), applies
   //    the dictionary correction, and returns the cleaned transcript.
-  const comp = await fetch(`/wingman/utterance/${id}/complete`, {
+  const comp = await gatewayFetch(`/wingman/utterance/${id}/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({
@@ -1103,7 +1221,7 @@ export async function uploadDictationToSession(
   publishDictationStatus({ sessionId: sid, uploadId, phase: "uploading", uploaded: 0, total: 1 });
   let reg: Response;
   try {
-    reg = await fetch(`/dictation/upload`, {
+    reg = await gatewayFetch(`/dictation/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", "Idempotency-Key": args.uploadId, ...authHeaders() },
       body: JSON.stringify({ sessionId: args.sessionId, baselineBufferBytes: args.baselineBufferBytes }),
@@ -1154,7 +1272,7 @@ export async function uploadDictationToSession(
     resumed: args.resumed,
   };
   const complete = (): Promise<Response> =>
-    fetch(`/dictation/${id}/complete`, {
+    gatewayFetch(`/dictation/${id}/complete`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
       body: JSON.stringify(completeBody),
@@ -1193,7 +1311,7 @@ export async function uploadDictationToSession(
         const sha = await sha256Hex(part);
         let put: Response;
         try {
-          put = await fetch(`/dictation/${id}/chunk/${r.index}`, {
+          put = await gatewayFetch(`/dictation/${id}/chunk/${r.index}`, {
             method: "PUT",
             headers: { "Content-Type": "application/octet-stream", "X-Chunk-Sha256": sha, ...authHeaders() },
             body: part,
@@ -1282,7 +1400,7 @@ function permanentReasonFrom(permanent: boolean | undefined, reason: string | un
 // a failed ack must never turn a delivered turn into an error.
 async function ackDictation(encodedUploadId: string): Promise<void> {
   try {
-    await fetch(`/dictation/${encodedUploadId}/ack`, {
+    await gatewayFetch(`/dictation/${encodedUploadId}/ack`, {
       method: "POST",
       headers: { Accept: "application/json", ...authHeaders() },
     });
@@ -1298,7 +1416,7 @@ async function ackDictation(encodedUploadId: string): Promise<void> {
 // call could not reach a healthy Gateway, so the caller keeps the abandoning record and retries.
 export async function abandonDictation(uploadId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/dictation/${encodeURIComponent(uploadId)}/abandon`, {
+    const res = await gatewayFetch(`/dictation/${encodeURIComponent(uploadId)}/abandon`, {
       method: "POST",
       headers: { Accept: "application/json", ...authHeaders() },
     });
@@ -1442,7 +1560,7 @@ export interface WingmanMenu {
 // voice mode fires; the Gateway caches the spoken text + audio so the phone can then download it.
 export async function markVoiceAndExplain(sessionId: string, signal?: AbortSignal): Promise<WingmanExplain> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/wingman/explain`, {
+  const res = await gatewayFetch(`/sessions/${sid}/wingman/explain`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -1465,7 +1583,7 @@ export async function markVoiceAndExplain(sessionId: string, signal?: AbortSigna
 // current (latest) narration. ready=false means the Gateway has nothing cached yet.
 export async function getWingmanVoice(sessionId: string, signal?: AbortSignal): Promise<WingmanVoice> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/wingman/voice`, {
+  const res = await gatewayFetch(`/sessions/${sid}/wingman/voice`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -1487,7 +1605,7 @@ export async function getWingmanVoice(sessionId: string, signal?: AbortSignal): 
 // and expose a "phone-ready" state distinct from "gateway-ready". Binary, never base64 over the wire.
 export async function fetchWingmanVoiceAudio(sessionId: string, signal?: AbortSignal): Promise<ArrayBuffer> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/wingman/voice/audio`, {
+  const res = await gatewayFetch(`/sessions/${sid}/wingman/voice/audio`, {
     method: "GET",
     headers: { Accept: "audio/mpeg", ...authHeaders() },
     signal,
@@ -1505,7 +1623,7 @@ export async function fetchWingmanVoiceAudio(sessionId: string, signal?: AbortSi
 // isMenu=false cheaply (no model call) when the terminal does not look like a menu.
 export async function getWingmanMenu(sessionId: string, signal?: AbortSignal): Promise<WingmanMenu> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/wingman/menu`, {
+  const res = await gatewayFetch(`/sessions/${sid}/wingman/menu`, {
     method: "GET",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,
@@ -1542,7 +1660,7 @@ export async function pressWingmanMenu(
 ): Promise<void> {
   const sid = encodeURIComponent(sessionId);
   const body: { send: string; submit?: string } = submit ? { send, submit } : { send };
-  const res = await fetch(`/sessions/${sid}/wingman/menu-press`, {
+  const res = await gatewayFetch(`/sessions/${sid}/wingman/menu-press`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify(body),
@@ -1562,7 +1680,7 @@ export async function pressWingmanMenu(
 // markVoiceAndExplain (which marks the Gateway's turn-end re-narration set and reads the first turn).
 export async function setVoiceMode(sessionId: string, enabled: boolean, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/voice-mode`, {
+  const res = await gatewayFetch(`/sessions/${sid}/voice-mode`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ enabled }),
@@ -1582,7 +1700,7 @@ export async function setVoiceMode(sessionId: string, enabled: boolean, signal?:
 // it sends nothing into the session.
 export async function stopWingmanVoice(sessionId: string, signal?: AbortSignal): Promise<void> {
   const sid = encodeURIComponent(sessionId);
-  const res = await fetch(`/sessions/${sid}/wingman/voice/stop`, {
+  const res = await gatewayFetch(`/sessions/${sid}/wingman/voice/stop`, {
     method: "POST",
     headers: { Accept: "application/json", ...authHeaders() },
     signal,

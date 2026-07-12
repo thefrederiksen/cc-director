@@ -7,6 +7,7 @@ import {
   effectiveColor,
   inBucket,
   inDesktopOrder,
+  snoozeExpired,
 } from "@devthrottle/client-core/sessions/ordering";
 import { useNow, waitingLabel } from "@devthrottle/client-core/sessions/waiting";
 import {
@@ -207,6 +208,7 @@ function RosterRow({
           <span className="roster-meta">
             <span className="roster-state">{contextLine(session)}</span>
             {session.onHold && <span className="roster-tag">snoozed</span>}
+            {snoozeExpired(session) && <span className="roster-tag snooze-ended">Snooze ended</span>}
             {session.voiceMode && <span className="roster-tag voice">voice</span>}
             {machine && <span className="roster-machine" title={session.directorId ?? undefined}>{machine}</span>}
             {lastSeen && <span className="roster-lastseen">{lastSeen}</span>}

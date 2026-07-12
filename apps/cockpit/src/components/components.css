@@ -212,6 +212,164 @@
   margin-top: 4px;
 }
 
+/* ===== FileViewerModal (Local Files, Phase 2) ================================================= */
+/* The remote file viewer. It shares the ui-modal-backdrop dimming with ConfirmDialog, but is a large
+   content surface rather than a small prompt: a fixed head (name + Download + Close) and a body that
+   fills the rest, each render mode governing its own scroll. */
+.file-viewer {
+  width: min(1100px, 96vw);
+  height: min(860px, 92vh);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.file-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.file-viewer-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-viewer-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.file-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* pdf and sandboxed-html modes: the iframe fills the body. White backing so a transparent page reads. */
+.file-viewer-frame {
+  border: 0;
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+}
+
+/* image mode: scroll the natural-size image if it is larger than the body. */
+.file-viewer-scroll {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+}
+
+.file-viewer-image {
+  max-width: 100%;
+  height: auto;
+}
+
+/* text/code mode: a monospace pre that scrolls both ways, no wrap, so code stays readable. */
+.file-viewer-pre {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 14px 16px;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre;
+  background: var(--surface);
+}
+
+/* markdown mode: the shared sanitized render, scrolled. */
+.file-viewer-md {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 16px 20px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.file-viewer-md img {
+  max-width: 100%;
+}
+
+.file-viewer-loading,
+.file-viewer-error,
+.file-viewer-download-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.file-viewer-loading {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.file-viewer-error {
+  color: var(--attention);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.file-viewer-download-note {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.file-viewer-download-name {
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.file-viewer-download-size {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* The Download control appears both in the head (small) and in the download-mode body (button). */
+.file-viewer-download,
+.file-viewer-download-btn {
+  display: inline-block;
+  padding: 7px 14px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #ffffff;
+  text-decoration: none;
+  font-size: 13px;
+}
+.file-viewer-download:hover,
+.file-viewer-download-btn:hover {
+  filter: brightness(1.08);
+}
+
 /* ===== StatusMessage ========================================================================== */
 .ui-status {
   font-size: 12px;
