@@ -52,6 +52,15 @@ public sealed class GatewayHost : IAsyncDisposable
     public Streaming.PushedSessionStore PushedSessions { get; }
 
     /// <summary>
+    /// Gateway Cleanup mission, Phase 0 (up-stream): the registry of live Director up-streams (terminal output
+    /// and finite file/screenshot reads), keyed by the stream id the Gateway mints per browser request. The
+    /// director-stream hub's StreamUp method pumps the Director's frames into this registry, which forwards
+    /// them to the browser-facing sink with pull-then-forward backpressure. Phase 2 wires the browser-facing
+    /// legs to it; Phase 0 delivers and unit-tests the machinery.
+    /// </summary>
+    public Streaming.GatewayStreamRegistry StreamRegistry { get; }
+
+    /// <summary>
     /// DevThrottle Stats: the always-available aggregate of every session's input tally (turns + character
     /// volume by modality and surface). Fed by the director-stream hub from the pushed
     /// <see cref="Contracts.SessionDto.InputStats"/> and read by the private Gateway dashboard at
@@ -398,6 +407,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // own stale/unreachable sweep, so this never fires for a merely momentarily-unreachable Director.
         Registry.OnDirectorRemoved += directorId => SessionNumbers.ReleaseForDirector(directorId);
         PushedSessions = new Streaming.PushedSessionStore();
+        StreamRegistry = new Streaming.GatewayStreamRegistry();
         InputStats = new Stats.GatewayInputStatsAggregator(inputStatsPath);
         SessionConcurrency = new Stats.GatewaySessionConcurrencyStats();
         RosterCache = new Discovery.FleetRosterCache();
@@ -942,8 +952,21 @@ public sealed class GatewayHost : IAsyncDisposable
         // Issue #1176 (Phase 1a): the Director-push stream. The hub and its two collaborators are
         // registered as singletons so the hub (constructed per-invocation by SignalR's container) and the
         // /sessions aggregation (wired explicitly below) share the one PushedSessionStore instance.
-        builder.Services.AddSignalR();
+        // Gateway Cleanup mission, Phase 0 (up-stream): set the DirectorHub's message-size and stream-buffer
+        // bounds from the shared DirectorStreamLimits so the hub and the Director's producer can never drift
+        // (Architect ruling 2 + 1). MaximumReceiveMessageSize must admit a full-size framed binary frame
+        // (the cap plus a small envelope allowance); StreamBufferCapacity is small so a slow browser sink
+        // pushes back onto the producer's yield - the backpressure invariant, not an optimization.
+        builder.Services.AddSignalR()
+            .AddHubOptions<Streaming.DirectorHub>(o =>
+            {
+                o.MaximumReceiveMessageSize = Contracts.DirectorStreamLimits.MaxBinaryFrameBytes + Contracts.DirectorStreamLimits.FrameEnvelopeAllowanceBytes;
+                o.StreamBufferCapacity = Contracts.DirectorStreamLimits.StreamBufferCapacity;
+            });
         builder.Services.AddSingleton(PushedSessions);
+        // Gateway Cleanup Phase 0: the one up-stream registry the DirectorHub (constructed per-invocation by
+        // SignalR) pumps StreamUp frames into.
+        builder.Services.AddSingleton(StreamRegistry);
         // DevThrottle Stats: the hub (constructed per-invocation by SignalR) folds each pushed session's
         // tally into this one aggregator instance, which the /stats dashboard reads.
         builder.Services.AddSingleton(InputStats);

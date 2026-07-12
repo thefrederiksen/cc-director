@@ -1,4 +1,5 @@
 using CcDirector.Core.Configuration;
+using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -30,6 +31,13 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     private readonly Func<DirectorCommand, Task<DirectorCommandResult>>? _commandDispatcher;
     private readonly TimeSpan _rePushInterval;
 
+    /// <summary>
+    /// Gateway Cleanup mission, Phase 0 (up-stream): the handler for the four connection-bound stream verbs.
+    /// Null when no <see cref="SessionManager"/> was supplied (older callers and tests that never drive a
+    /// stream verb); in that case a stream verb returns a typed Error, exactly as an absent dispatcher does.
+    /// </summary>
+    private readonly DirectorUpStreamHandler? _upStreamHandler;
+
     private HubConnection? _connection;
     private long _sequence;
     private int _started;
@@ -50,9 +58,16 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     /// QUIET session's pushed cache never ages past the Gateway's stale window. Null uses half the default
     /// stale window (comfortably under it). A test seam; production passes null.
     /// </param>
+    /// <param name="sessionManager">
+    /// Issue: Gateway Cleanup mission, Phase 0 (up-stream). When supplied, enables the four connection-bound
+    /// stream verbs (open-terminal-stream / read-file / screenshot-file / close-stream) by building the
+    /// up-stream handler, whose producer sends frames up this same connection. Null (older callers, tests)
+    /// leaves stream verbs declined with a typed Error, so behaviour is unchanged for them.
+    /// </param>
     public GatewayStreamClient(GatewayConfig config, string directorId, string version, Func<List<SessionDto>> snapshot,
         Func<DirectorCommand, Task<DirectorCommandResult>>? commandDispatcher = null,
-        TimeSpan? rePushInterval = null)
+        TimeSpan? rePushInterval = null,
+        SessionManager? sessionManager = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _directorId = string.IsNullOrWhiteSpace(directorId) ? throw new ArgumentException("directorId is required", nameof(directorId)) : directorId;
@@ -60,6 +75,9 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _commandDispatcher = commandDispatcher;
         _rePushInterval = rePushInterval ?? TimeSpan.FromSeconds(GatewayConfig.DefaultStreamStaleAfterSeconds / 2.0);
+        _upStreamHandler = sessionManager is null
+            ? null
+            : new DirectorUpStreamHandler(sessionManager, (streamId, frames) => _connection!.SendAsync("StreamUp", streamId, frames));
     }
 
     /// <summary>True when stream mode is enabled for a configured Gateway. When false, <see cref="Start"/> is a no-op.</summary>
@@ -124,8 +142,17 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             })
             .Build();
 
-        _connection.Reconnecting += ex => { FileLog.Write($"[GatewayStreamClient] reconnecting: {ex?.Message}"); return Task.CompletedTask; };
+        _connection.Reconnecting += ex =>
+        {
+            FileLog.Write($"[GatewayStreamClient] reconnecting: {ex?.Message}");
+            // Gateway Cleanup Phase 0 (Architect ruling A): the tunnel dropped, so no frame can reach the
+            // Gateway - tear down every live up-stream instead of leaving a producer sending into a dead socket.
+            _upStreamHandler?.CancelAll();
+            return Task.CompletedTask;
+        };
         _connection.Reconnected += async _ => await ReseedAsync();
+        // Also tear streams down on a full close (auto-reconnect gave up); the supervise loop then re-dials.
+        _connection.Closed += _ => { _upStreamHandler?.CancelAll(); return Task.CompletedTask; };
 
         // Issue #1176 (Phase 1b): the down-channel proof. The Gateway can call this and await the reply
         // over the same connection (SignalR client results), demonstrating request-both-ways on one
@@ -140,13 +167,30 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         {
             try
             {
-                if (_commandDispatcher is null)
-                {
-                    FileLog.Write($"[GatewayStreamClient] Command declined (no dispatcher): verb={cmd?.Verb}, cmdId={cmd?.CommandId}");
-                    return DirectorCommandResult.Fail(DirectorCommandStatus.Error, "director has no command dispatcher");
-                }
                 if (cmd is null)
                     return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "command is required");
+
+                // Gateway Cleanup Phase 0 (Architect ruling A): the four connection-bound stream verbs branch
+                // here - they need this live connection and the per-stream cancellation registry, so they are
+                // NOT in the unary verb-to-area dictionary. Everything else forwards to the unary dispatcher.
+                if (DirectorUpStreamHandler.IsStreamVerb(cmd.Verb))
+                {
+                    if (_upStreamHandler is null)
+                    {
+                        FileLog.Write($"[GatewayStreamClient] stream verb declined (no up-stream handler): verb={cmd.Verb}, cmdId={cmd.CommandId}");
+                        return DirectorCommandResult.Fail(DirectorCommandStatus.Error, "director has no up-stream handler");
+                    }
+                    FileLog.Write($"[GatewayStreamClient] stream verb received: verb={cmd.Verb}, sid={cmd.SessionId}, cmdId={cmd.CommandId}");
+                    var streamResult = _upStreamHandler.Handle(cmd);
+                    streamResult.CommandId = cmd.CommandId;
+                    return streamResult;
+                }
+
+                if (_commandDispatcher is null)
+                {
+                    FileLog.Write($"[GatewayStreamClient] Command declined (no dispatcher): verb={cmd.Verb}, cmdId={cmd.CommandId}");
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.Error, "director has no command dispatcher");
+                }
 
                 FileLog.Write($"[GatewayStreamClient] Command received: verb={cmd.Verb}, sid={cmd.SessionId}, cmdId={cmd.CommandId}");
                 return await _commandDispatcher(cmd);
