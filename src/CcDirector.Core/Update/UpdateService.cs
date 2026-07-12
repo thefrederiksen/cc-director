@@ -306,13 +306,21 @@ public sealed class UpdateService
         return Version.TryParse(t, out var v) ? Normalize(v) : null;
     }
 
-    /// <summary>True when <paramref name="latest"/> is newer than <paramref name="current"/> and not dismissed.</summary>
+    /// <summary>
+    /// True when <paramref name="latest"/> is newer than <paramref name="current"/>, not dismissed,
+    /// and not pinned as a version that already failed its post-update health check. Without the
+    /// pin gate a rolled-back bad version would be re-downloaded and re-staged on every check,
+    /// only to be cleared again at the next startup - on an unattended machine that is an endless
+    /// download-restart loop.
+    /// </summary>
     public static bool ShouldStage(Version current, Version latest, UpdaterState state)
     {
         var cur = Normalize(current);
         var lat = Normalize(latest);
         if (lat <= cur) return false;
         if (state.DismissedVersion is { } d && Version.TryParse(d, out var dv) && Normalize(dv) == lat)
+            return false;
+        if (state.PinnedBadVersion is { } p && Version.TryParse(p, out var pv) && Normalize(pv) == lat)
             return false;
         return true;
     }

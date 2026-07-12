@@ -47,10 +47,10 @@ internal static class Program
                 // couple of these and boot the working version with its own notice.
                 FileLog.Write($"[Program] ApplyUpdate FAILED: {ex}");
                 WriteCrashFile("apply-update", ex);
-                MessageBoxW(IntPtr.Zero,
+                ShowStartupNotice(
                     $"Director could not apply an update:\n\n{ex.Message}\n\n" +
                     "It will continue on the current version.",
-                    "Director - Update failed", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                    "Director - Update failed", MB_ICONWARNING);
                 FileLog.Stop();
                 return 1;
             }
@@ -70,14 +70,30 @@ internal static class Program
         if (rollbackNotice is not null)
         {
             FileLog.Write("[Program] Rolled back a failed update; relaunching the restored build.");
-            MessageBoxW(IntPtr.Zero, rollbackNotice, "Director - Update rolled back", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            ShowStartupNotice(rollbackNotice, "Director - Update rolled back", MB_ICONWARNING);
             try
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                // On macOS the restored build is the whole application bundle at the install
+                // target; relaunch the bundle with /usr/bin/open (launching the bare binary
+                // inside it through the shell-execute path misbehaves). On Windows the restored
+                // build sits at our own process path.
+                if (OperatingSystem.IsMacOS())
                 {
-                    FileName = Environment.ProcessPath ?? "",
-                    UseShellExecute = true,
-                });
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "/usr/bin/open",
+                        ArgumentList = { UpdateInstaller.InstallTarget() },
+                        UseShellExecute = false,
+                    });
+                }
+                else
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = Environment.ProcessPath ?? "",
+                        UseShellExecute = true,
+                    });
+                }
             }
             catch (Exception ex)
             {
@@ -93,7 +109,7 @@ internal static class Program
         UpdateInstaller.CleanupAfterUpdate();
 
         if (recoveryNotice is not null)
-            MessageBoxW(IntPtr.Zero, recoveryNotice, "Director - Update recovered", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+            ShowStartupNotice(recoveryNotice, "Director - Update recovered", MB_ICONWARNING);
 
         // Apply a staged update at startup -- before any session exists, so no
         // running work is ever lost. If one is pending, the relauncher takes over

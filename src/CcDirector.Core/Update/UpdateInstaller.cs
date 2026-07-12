@@ -216,22 +216,33 @@ public static class UpdateInstaller
     }
 
     /// <summary>
-    /// Startup housekeeping: delete the leftover "<c>.old</c>" file from a previous
-    /// Windows swap and prune staging directories older than 7 days. Safe to call
+    /// Startup housekeeping: delete leftovers from a previous swap and prune staging
+    /// directories older than 7 days. The "<c>.old</c>" backup is deliberately KEPT while a
+    /// post-update health check is still pending - it is the only thing a health rollback can
+    /// restore, and the marker clears (and the backup is deleted) in
+    /// <see cref="MarkCurrentBuildHealthy"/> once the new build proves itself. Safe to call
     /// unconditionally; never throws.
     /// </summary>
     public static void CleanupAfterUpdate()
     {
         try
         {
-            // Remove leftovers from a prior swap: ".old" backup and any ".new" that
-            // an interrupted swap left behind (a file on Windows, a dir on macOS).
+            // Remove leftovers from a prior swap: any ".new" an interrupted swap left behind
+            // and any ".failed" a rollback set aside (each is a file on Windows, a bundle
+            // directory on macOS). The ".old" backup is removed only when no health check is
+            // pending; deleting it on the first boot of a freshly-swapped build would leave a
+            // later health rollback with nothing to restore.
             var target = InstallTarget();
-            foreach (var leftover in new[] { target + ".old", target + ".new" })
+            var healthPending = !string.IsNullOrEmpty(UpdaterState.Load().PendingHealthCheckVersion);
+            var leftovers = healthPending
+                ? new[] { target + ".new", target + ".failed" }
+                : new[] { target + ".new", target + ".failed", target + ".old" };
+            if (healthPending)
+                FileLog.Write("[UpdateInstaller] CleanupAfterUpdate: keeping the .old backup until the new build proves healthy.");
+            foreach (var leftover in leftovers)
             {
-                if (File.Exists(leftover)) File.Delete(leftover);
-                else if (Directory.Exists(leftover)) Directory.Delete(leftover, recursive: true);
-                else continue;
+                if (!EntryExists(leftover)) continue;
+                DeleteEntry(leftover);
                 FileLog.Write($"[UpdateInstaller] CleanupAfterUpdate: removed {leftover}");
             }
 
@@ -266,30 +277,40 @@ public static class UpdateInstaller
     {
         try
         {
-            // Windows-only: the .old backup is produced by SwapWindows. On macOS the bundle
-            // swap is a single atomic rename with no zero-length intermediate to recover from.
-            if (!OperatingSystem.IsWindows())
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
                 return null;
 
             var target = InstallTarget();
             var old = target + ".old";
 
-            var installInfo = new FileInfo(target);
-            var oldInfo = new FileInfo(old);
-            var installExists = installInfo.Exists;
-            var installLength = installExists ? installInfo.Length : 0;
-            var oldExists = oldInfo.Exists;
-            var oldLength = oldExists ? oldInfo.Length : 0;
+            var installExists = EntryExists(target);
+            var installLength = installExists ? EntryExecutableLength(target) : 0;
+            var oldExists = EntryExists(old);
+            var oldLength = oldExists ? EntryExecutableLength(old) : 0;
 
             if (!NeedsHalfSwapRecovery(installExists, installLength, oldExists, oldLength))
                 return null;
 
             FileLog.Start();
-            FileLog.Write($"[UpdateInstaller] RecoverHalfAppliedSwap: install exe is " +
-                $"{(installExists ? $"zero-length ({installLength} bytes)" : "missing")}; restoring from {old} ({oldLength} bytes).");
+            FileLog.Write($"[UpdateInstaller] RecoverHalfAppliedSwap: install is " +
+                $"{(installExists ? $"broken (executable {installLength} bytes)" : "missing")}; restoring from {old} ({oldLength} bytes).");
 
-            if (installExists) File.Delete(target);
-            File.Copy(old, target);
+            if (OperatingSystem.IsMacOS())
+            {
+                // The install is a bundle directory (or a bare development binary). A directory
+                // cannot be restored by an atomic copy, so restore by rename: the backup becomes
+                // the install again. The backup is consumed, which is fine - the restored build
+                // was the last known-good one and its next boot needs no backup.
+                DeleteEntry(target);
+                MoveEntry(old, target);
+            }
+            else
+            {
+                // Windows behavior unchanged: restore by copy so the backup survives for
+                // another recovery attempt.
+                if (installExists) File.Delete(target);
+                File.Copy(old, target);
+            }
             FileLog.Write($"[UpdateInstaller] RecoverHalfAppliedSwap: restored {target} from backup.");
 
             return "Director detected a half-finished update and restored the previous working " +
@@ -315,7 +336,7 @@ public static class UpdateInstaller
     {
         try
         {
-            if (!OperatingSystem.IsWindows())
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
                 return null;
 
             var state = UpdaterState.Load();
@@ -326,9 +347,8 @@ public static class UpdateInstaller
             var running = (Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
             var target = InstallTarget();
             var old = target + ".old";
-            var oldInfo = new FileInfo(old);
-            var oldExists = oldInfo.Exists;
-            var oldLength = oldExists ? oldInfo.Length : 0;
+            var oldExists = EntryExists(old);
+            var oldLength = oldExists ? EntryExecutableLength(old) : 0;
 
             if (!NeedsHealthRollback(pending, running, oldExists, oldLength))
                 return null;
@@ -337,12 +357,28 @@ public static class UpdateInstaller
             FileLog.Write($"[UpdateInstaller] TryRollBackFailedUpdate: update {pending} never became healthy " +
                 $"(running {running}); rolling back to backup {old} ({oldLength} bytes) and pinning the bad version.");
 
-            // Restore the previous build over the failing one.
-            var newPath = target + ".new";
-            if (File.Exists(newPath)) File.Delete(newPath);
-            File.Copy(old, newPath);
-            if (File.Exists(target)) File.Replace(newPath, target, null);
-            else File.Move(newPath, target);
+            if (OperatingSystem.IsMacOS())
+            {
+                // Restore by rename. The bad build is set aside FIRST (never deleted before
+                // the backup is in place), then the backup is renamed in. If the second rename
+                // fails the install is momentarily missing, and the next startup's
+                // RecoverHalfAppliedSwap restores the still-present backup.
+                var failed = target + ".failed";
+                DeleteEntry(failed);
+                if (EntryExists(target)) MoveEntry(target, failed);
+                MoveEntry(old, target);
+                DeleteEntry(failed);
+            }
+            else
+            {
+                // Windows behavior unchanged: restore the previous build over the failing one
+                // by copy, keeping the backup.
+                var newPath = target + ".new";
+                if (File.Exists(newPath)) File.Delete(newPath);
+                File.Copy(old, newPath);
+                if (File.Exists(target)) File.Replace(newPath, target, null);
+                else File.Move(newPath, target);
+            }
 
             // Pin the bad version and clear the health marker so we do not loop.
             state.PinnedBadVersion = pending;
@@ -384,6 +420,24 @@ public static class UpdateInstaller
             FileLog.Write($"[UpdateInstaller] MarkCurrentBuildHealthy: clearing pending health check for {state.PendingHealthCheckVersion}.");
             state.PendingHealthCheckVersion = null;
             state.Save();
+
+            // The update is now trusted, so the ".old" backup has served its purpose. Delete it
+            // in the background: this method is called from the UI thread right after the main
+            // window shows, and on macOS the backup is a whole application bundle.
+            var old = InstallTarget() + ".old";
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    if (!EntryExists(old)) return;
+                    DeleteEntry(old);
+                    FileLog.Write($"[UpdateInstaller] MarkCurrentBuildHealthy: removed backup {old} after a healthy boot.");
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Write($"[UpdateInstaller] MarkCurrentBuildHealthy: backup cleanup FAILED: {ex.Message}");
+                }
+            });
             return true;
         }
         catch (Exception ex)
@@ -402,6 +456,37 @@ public static class UpdateInstaller
         state.PendingHealthCheckVersion = version;
         state.Save();
         FileLog.Write($"[UpdateInstaller] ArmHealthCheck: armed post-update health check for {version}.");
+    }
+
+    /// <summary>True when a file OR a directory exists at the path (an install target is a single-file executable on Windows, a bundle directory on macOS).</summary>
+    private static bool EntryExists(string path) => File.Exists(path) || Directory.Exists(path);
+
+    /// <summary>
+    /// The byte length of the executable an install entry represents: the file itself for a
+    /// single-file install, or the apphost binary inside a ".app" bundle directory. Returns 0
+    /// when the executable is missing - a bundle directory without its binary is as broken as
+    /// a zero-length file, and the recovery decisions treat both the same way.
+    /// </summary>
+    private static long EntryExecutableLength(string path)
+    {
+        var file = new FileInfo(path);
+        if (file.Exists) return file.Length;
+        var bundled = new FileInfo(Path.Combine(path, "Contents", "MacOS", ExecutableName));
+        return bundled.Exists ? bundled.Length : 0;
+    }
+
+    /// <summary>Rename a file or a directory. Both installs live on one volume, so this is a true rename, never a copy.</summary>
+    private static void MoveEntry(string from, string to)
+    {
+        if (Directory.Exists(from)) Directory.Move(from, to);
+        else File.Move(from, to);
+    }
+
+    /// <summary>Delete a file or a directory tree; no-op when nothing is there.</summary>
+    private static void DeleteEntry(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+        else if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
     }
 
     /// <summary>
@@ -446,18 +531,26 @@ public static class UpdateInstaller
             ?? throw new InvalidOperationException("Staged build is not inside an .app bundle; cannot swap.");
 
         // Build the replacement bundle fully BESIDE the target first (de-quarantined
-        // and executable), then swap with a fast rename so the install is never left
-        // half-written. macOS keeps this process's running binary alive via its inode
-        // even after the old bundle is unlinked, so replacing it underfoot is safe.
+        // and executable), then swap with two back-to-back renames so the install is
+        // never left half-written. The previous build is kept as a ".old" backup, the
+        // rollback target if this new build never proves healthy; it is deleted only
+        // when the new build marks itself healthy. A running process keeps its file
+        // node across a rename, so renaming a live bundle is safe; the quarantine
+        // strip below must stay BEFORE anything could launch the new bundle (once
+        // Gatekeeper assesses a quarantined bundle the attribute becomes permanently
+        // unremovable for the user).
         var newApp = targetApp + ".new";
+        var oldApp = targetApp + ".old";
         Run("/bin/rm", "-rf", newApp);
         Run("/usr/bin/ditto", stagedApp, newApp);
         Run("/usr/bin/xattr", "-dr", "com.apple.quarantine", newApp);
         Run("/bin/chmod", "+x", Path.Combine(newApp, "Contents", "MacOS", ExecutableName));
 
-        Run("/bin/rm", "-rf", targetApp);
+        Run("/bin/rm", "-rf", oldApp);
+        if (Directory.Exists(targetApp) || File.Exists(targetApp))
+            Run("/bin/mv", targetApp, oldApp);
         Run("/bin/mv", newApp, targetApp);
-        FileLog.Write($"[UpdateInstaller] SwapMac: installed staged bundle at {targetApp}");
+        FileLog.Write($"[UpdateInstaller] SwapMac: installed staged bundle at {targetApp} (backup: {oldApp})");
     }
 
     private static void Relaunch(string targetPath)

@@ -101,6 +101,24 @@ public class UpdateServiceTests
         Assert.True(UpdateService.ShouldStage(new Version(0, 3, 1), new Version(0, 3, 3), state));
     }
 
+    [Fact]
+    public void ShouldStage_PinnedBadVersion_False()
+    {
+        // A version that failed its post-update health check and was rolled back must not be
+        // re-downloaded and re-staged on the next check - on an unattended machine that would
+        // be an endless download-restart loop.
+        var state = new UpdaterState { PinnedBadVersion = "0.3.3" };
+        Assert.False(UpdateService.ShouldStage(new Version(0, 3, 2), new Version(0, 3, 3), state));
+    }
+
+    [Fact]
+    public void ShouldStage_NewerThanPinnedBadVersion_True()
+    {
+        // The pin blocks only the exact bad version; a strictly newer release stages normally.
+        var state = new UpdaterState { PinnedBadVersion = "0.3.3" };
+        Assert.True(UpdateService.ShouldStage(new Version(0, 3, 2), new Version(0, 3, 4), state));
+    }
+
     // ---- Sha256Matches ----------------------------------------------------
 
     [Fact]
