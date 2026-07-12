@@ -139,7 +139,12 @@
                                 </Grid>
 
                                 <TextBlock Classes="hint" Margin="0,4,0,0"
-                                           Text="Set or change the Gateway connection on the Gateway tab. Sign in or out from the Cockpit." />
+                                           Text="Manage the Gateway connection and sign-in from the connection panel on the Gateway tab." />
+                                <Button x:Name="ManageConnectionButton" Classes="dialogButton"
+                                        Content="Manage connection..." Width="200"
+                                        HorizontalAlignment="Left" Margin="0,8,0,0"
+                                        Click="BtnManageConnection_Click"
+                                        ToolTip.Tip="Open the Gateway connection panel on its current step" />
                             </StackPanel>
                         </Border>
 
@@ -148,60 +153,14 @@
             </TabItem>
 
             <TabItem Header="Gateway">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,14,0">
-                    <StackPanel Spacing="8" Margin="0,4,0,0">
-                        <TextBlock Classes="sectionTitle" Text="Gateway" />
-                        <TextBlock Classes="hint" Text="Connect this Director to a central gateway so it shows up there. A Gateway URL is required - features such as voice keys, the fleet view, cross-machine sessions, and central key management need a connected gateway. Works on any network, not just a tailnet." />
-
-                        <TextBlock Classes="fieldLabel" Text="Gateway URL" />
-                        <Grid ColumnDefinitions="*,Auto,Auto">
-                            <TextBox x:Name="GatewayUrlBox" Grid.Column="0" Classes="settingsInput"
-                                     Watermark="e.g. http://gateway-host:7878" />
-                            <Button x:Name="DetectGatewayButton" Grid.Column="1" Classes="dialogButton"
-                                    Content="Detect" Margin="8,0,0,0"
-                                    ToolTip.Tip="Look for a gateway running on this machine"
-                                    Click="BtnDetectGateway_Click" />
-                            <Button x:Name="TestGatewayButton" Grid.Column="2" Classes="dialogButton"
-                                    Content="Test" Margin="8,0,0,0"
-                                    ToolTip.Tip="Check the gateway URL is reachable"
-                                    Click="BtnTestGateway_Click" />
-                        </Grid>
-
-                        <TextBlock Classes="fieldLabel" Text="Director public URL (any network)" />
-                        <Grid ColumnDefinitions="*,Auto">
-                            <TextBox x:Name="GatewayAdvertisedBox" Grid.Column="0" Classes="settingsInput"
-                                     Watermark="how the gateway reaches THIS Director, e.g. http://this-host:7879" />
-                            <Button x:Name="DetectPublicUrlButton" Grid.Column="1" Classes="dialogButton"
-                                    Content="Detect" Margin="8,0,0,0"
-                                    ToolTip.Tip="Fill from this machine's network address + control port"
-                                    Click="BtnDetectPublicUrl_Click" />
-                        </Grid>
-                        <TextBlock Classes="hint" Text="Required when the gateway runs on a different machine. The gateway calls back to this URL, so it must be reachable from the gateway." />
-
-                        <TextBlock x:Name="GatewayTestStatus" Text="" Foreground="#888888"
-                                   FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0" IsVisible="False" />
-
-                        <TextBlock Classes="fieldLabel" Text="Gateway token (optional)" />
-                        <TextBox x:Name="GatewayTokenBox" Classes="settingsInput"
-                                 Watermark="only if the gateway requires one" />
-
-                        <TextBlock Classes="sectionTitle" Text="Connect this device" Margin="0,16,0,0" />
-                        <TextBlock Classes="hint" Text="Enter your Gateway's URL, test it's reachable, then sign in to your DevThrottle account to connect. The Gateway issues this device a unique key (saved on this machine) and the connection uses the live stream, so the Gateway can control this Director remotely. Access can be revoked for this device alone." />
-                        <Button x:Name="ConnectToGatewayButton" Classes="dialogButton"
-                                Content="Connect to Gateway..." Width="200"
-                                HorizontalAlignment="Left" Margin="0,4,0,0"
-                                Click="BtnConnectToGateway_Click"
-                                ToolTip.Tip="Enter the Gateway URL and sign in to connect this device" />
-
-                        <TextBlock Classes="sectionTitle" Text="First-run setup" Margin="0,16,0,0" />
-                        <TextBlock Classes="hint" Text="Re-run the guided onboarding wizard that walks you through the gateway connection, the agent check, and creating a first session." />
-                        <Button x:Name="RerunOnboardingButton" Classes="dialogButton"
-                                Content="Re-run setup wizard..." Width="200"
-                                HorizontalAlignment="Left" Margin="0,4,0,0"
-                                Click="BtnRerunOnboarding_Click"
-                                ToolTip.Tip="Open the first-run onboarding wizard again" />
-                    </StackPanel>
-                </ScrollViewer>
+                <!-- Gateway Connection mission, Phase 4 (design spec section 8): this tab IS the one
+                     reusable GatewayConnectionPanel now. The old scattered controls (Gateway URL box,
+                     Detect, Test, Director public URL + Detect, plain-text token box, "Connect to
+                     Gateway..." and "Re-run setup wizard...") are all gone - the panel does the guided
+                     scan, connect (which IS the test), and DevThrottle sign-in, and keeps manual address
+                     entry + the masked token under its own Advanced disclosure. The panel is created in
+                     code-behind (LoadAsync) so it opens on the resolver's current step. -->
+                <Border x:Name="GatewaySettingsHost" Padding="0,4,14,0" />
             </TabItem>
 
             <TabItem Header="Agents">

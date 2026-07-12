@@ -93,6 +93,29 @@ public partial class GatewayConnectionPanel : UserControl
         FileLog.Write($"[GatewayConnectionPanel] constructed (initialStep={initialStep})");
     }
 
+    /// <summary>
+    /// Raised once the two-way handshake proves Connected (Phase 4). Hosts that gate their own flow on
+    /// a live connection - the onboarding wizard's Gateway step - listen for this instead of the deleted
+    /// Test button's verdict.
+    /// </summary>
+    public event EventHandler? ConnectionVerified;
+
+    /// <summary>
+    /// Build a panel opened on the resolver's current step (spec section 6), for the three hosts that
+    /// embed it (Settings Gateway tab, onboarding Gateway step, and the status-box window). Uses the cheap
+    /// synchronous signal - the live handshake state - to choose the opening step: a proven handshake
+    /// opens on the signed-in view (which itself reads account status and settles Step 2 vs Done), and
+    /// anything else opens on Step 1 (the automatic scan).
+    /// </summary>
+    public static GatewayConnectionPanel CreateForCurrentState()
+    {
+        var host = (global::Avalonia.Application.Current as App)?.ControlApiHost;
+        var step = host?.GatewayMonitor?.Status == GatewayConnectionStatus.Verified
+            ? GatewayPanelStep.Done
+            : GatewayPanelStep.Connect;
+        return new GatewayConnectionPanel(step);
+    }
+
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
@@ -522,6 +545,7 @@ public partial class GatewayConnectionPanel : UserControl
     {
         _connecting = false;
         FileLog.Write("[GatewayConnectionPanel] connected (handshake verified); resolving sign-in state");
+        ConnectionVerified?.Invoke(this, EventArgs.Empty);
         await RefreshSignedInViewAsync();
     }
 

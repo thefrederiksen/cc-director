@@ -3906,11 +3906,7 @@ public partial class MainWindow : Window
     private async Task OpenSettingsAsync(bool onGatewayTab = false, bool onToolsTab = false)
     {
         FileLog.Write($"[MainWindow] OpenSettingsAsync: onGatewayTab={onGatewayTab}, onToolsTab={onToolsTab}");
-        var controlApi = (global::Avalonia.Application.Current as App)?.ControlApiHost;
-        var dialog = new SettingsDialog(
-            controlApi is not null ? controlApi.ReapplyGatewayAsync : null,
-            controlApi?.Port ?? 0,
-            ReloadScreenshotsPanelAsync);
+        var dialog = new SettingsDialog(ReloadScreenshotsPanelAsync);
         if (onGatewayTab)
             dialog.SelectGatewayTab();
         else if (onToolsTab)
