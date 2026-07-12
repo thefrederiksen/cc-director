@@ -340,17 +340,32 @@ public sealed class UnixProcessHost : IDisposable
 
     /// <summary>
     /// Build the child environment: inherit the parent's, force TERM, apply any
-    /// caller overrides, and strip CLAUDECODE so Claude does not treat the session
-    /// as a nested Claude Code invocation. Returns a null-terminated KEY=VALUE array.
+    /// caller overrides, and strip parent-agent variables (same list as the
+    /// Windows ProcessHost) so a Director that was itself launched from inside a
+    /// terminal agent does not poison its children. In particular an inherited
+    /// CLAUDE_CODE_CHILD_SESSION=1 makes interactive Claude Code treat itself as
+    /// a subagent and silently skip writing its session transcript, which broke
+    /// session history on macOS. Returns a null-terminated KEY=VALUE array.
     /// </summary>
-    private static string?[] BuildEnvironment(Dictionary<string, string>? overrides)
+    internal static string?[] BuildEnvironment(Dictionary<string, string>? overrides)
     {
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (System.Collections.DictionaryEntry kv in Environment.GetEnvironmentVariables())
-            env[(string)kv.Key] = kv.Value?.ToString() ?? string.Empty;
+        {
+            var key = (string)kv.Key;
+            if (key.Equals("CLAUDECODE", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (key.StartsWith("CLAUDE_CODE_", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (key.StartsWith("CODEX_", StringComparison.OrdinalIgnoreCase)
+                && !key.Equals("CODEX_HOME", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (key.Equals("GIT_EDITOR", StringComparison.OrdinalIgnoreCase))
+                continue;
+            env[key] = kv.Value?.ToString() ?? string.Empty;
+        }
 
         env["TERM"] = "xterm-256color";
-        env.Remove("CLAUDECODE");
 
         if (overrides != null)
             foreach (var kv in overrides)
