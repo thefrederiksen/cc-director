@@ -26,8 +26,9 @@ namespace CcDirector.ControlApi;
 /// Gateway Cleanup Phase 0 (wave 3): the two reads R2 originally left out are now lifted, because the shared
 /// dependency they needed was threaded through <see cref="SessionCommandServices"/>: <c>facts</c> stamps the
 /// Director version (<see cref="SessionCommandServices.DirectorVersion"/>); <c>repos-list</c> reads the live
-/// <see cref="RepositoryRegistry"/> (<see cref="SessionCommandServices.Repositories"/>). This <c>facts</c>
-/// lift ships with that dependency change; <c>repos-list</c> follows in the wave-3 lift PR.
+/// <see cref="RepositoryRegistry"/> (<see cref="SessionCommandServices.Repositories"/>). The <c>facts</c>
+/// lift shipped with that dependency change; the wave-3 lift PR now adds <c>repos-list</c>, which reads that
+/// same registry and lists nothing when it is absent (exactly as the REST route returned with no registry).
 /// </summary>
 internal sealed class CatalogReadExecutor : ISessionCommandArea
 {
@@ -46,6 +47,7 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
         "interrupted-list",
         "fs-list",
         "facts",
+        "repos-list",
     };
 
     public async Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -58,6 +60,7 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             "interrupted-list" => InterruptedList(),
             "fs-list" => FsList(command),
             "facts" => Facts(context.DirectorId, context.Services?.DirectorVersion),
+            "repos-list" => ReposList(context.Services?.Repositories),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the catalog read area"),
         };
     }
@@ -95,6 +98,32 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
                 Error = launcher.Error,
             },
         }));
+    }
+
+    /// <summary>
+    /// The <c>repos-list</c> verb (director-level, no session): the recent-repository picker list. Mirrors the
+    /// Director's <c>GET /repos</c> lambda - always a 200 - and returns a serialized
+    /// <see cref="List{RepositoryDto}"/> ordered by last-used descending. The live registry is the one
+    /// dependency the tunnel command surface did not carry before wave 3; it rides in
+    /// <see cref="SessionCommandServices.Repositories"/>. A null registry lists nothing (an empty array),
+    /// exactly as the REST route returned when no registry was wired.
+    /// </summary>
+    internal static DirectorCommandResult ReposList(RepositoryRegistry? repositories)
+    {
+        FileLog.Write("[CatalogReadExecutor] repos-list");
+        if (repositories is null)
+            return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(Array.Empty<RepositoryDto>()));
+
+        var repos = repositories.Repositories
+            .Select(r => new RepositoryDto
+            {
+                Name = string.IsNullOrEmpty(r.Name) ? Path.GetFileName(r.Path.TrimEnd('\\', '/')) : r.Name,
+                Path = r.Path,
+                LastUsed = r.LastUsed,
+            })
+            .OrderByDescending(r => r.LastUsed ?? DateTime.MinValue)
+            .ToList();
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(repos));
     }
 
     /// <summary>

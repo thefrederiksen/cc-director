@@ -232,4 +232,58 @@ public sealed class CatalogReadExecutorTests
         }
         finally { sm.Dispose(); }
     }
+
+    // ---------- repos-list (Gateway Cleanup Phase 0 wave 3: needs the live registry via SessionCommandServices) ----------
+
+    [Fact]
+    public async Task DispatchAsync_ReposList_NoRegistryInServices_ReturnsOkWithEmptyArray()
+    {
+        // repos-list is director-level (no session), always a 200. With no registry wired (no services) the
+        // core lists nothing - an empty array - exactly as the REST route returned when no registry was set.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("repos-list"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("r2", result.CommandId);
+            var repos = JsonSerializer.Deserialize<List<RepositoryDto>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(repos);
+            Assert.Empty(repos!);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ReposList_WithRegistry_ReturnsRegisteredRepos()
+    {
+        // The live registry rides in the services - the one dependency the tunnel command surface did not carry
+        // before wave 3 - and the core reads the same instance the REST route read at Map time.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        var registryFile = Path.Combine(Path.GetTempPath(), "ccd-repos-" + Guid.NewGuid().ToString("N") + ".json");
+        var repoDir = Path.Combine(Path.GetTempPath(), "ccd-repo-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(repoDir);
+        try
+        {
+            var registry = new Core.Configuration.RepositoryRegistry(registryFile);
+            Assert.True(registry.TryAdd(repoDir));
+
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Cmd("repos-list"),
+                new SessionCommandServices { Repositories = registry });
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var repos = JsonSerializer.Deserialize<List<RepositoryDto>>(result.BodyJson ?? "", Json);
+            Assert.NotNull(repos);
+            Assert.Contains(repos!, r => string.Equals(
+                Path.GetFullPath(r.Path).TrimEnd('\\', '/'),
+                Path.GetFullPath(repoDir).TrimEnd('\\', '/'),
+                StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            sm.Dispose();
+            try { if (File.Exists(registryFile)) File.Delete(registryFile); } catch { /* best effort */ }
+            try { if (Directory.Exists(repoDir)) Directory.Delete(repoDir, true); } catch { /* best effort */ }
+        }
+    }
 }

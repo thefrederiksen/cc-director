@@ -43,6 +43,7 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
         "github-urls",
         "wingman-view",
         "wingman-explain",
+        "handover",
     };
 
     public Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -63,6 +64,7 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             "github-urls" => GithubUrls(sessionManager, command),
             "wingman-view" => WingmanView(context, command),
             "wingman-explain" => WingmanExplain(sessionManager, command),
+            "handover" => Handover(sessionManager, context.DirectorId, context.Services?.DirectorVersion, command),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the session read area"),
         };
         return Task.FromResult(result);
@@ -591,6 +593,47 @@ internal sealed class SessionReadExecutor : ISessionCommandArea
             WhatClaudeWants = session.CachedExplainWhatClaudeWants,
             ClaudeVerbatim = session.CachedExplainClaudeVerbatim,
             Say = session.CachedExplainSay,
+        }));
+    }
+
+    /// <summary>
+    /// The <c>handover</c> verb (issue #1214): the small identity/locate block the desktop app's "Copy
+    /// Handover Info" menu item shows for a session (name, session id, repo, director id, machine, version).
+    /// Mirrors the Director's <c>GET /sessions/{sid}/handover</c> lambda - invalid id -&gt; BadRequest,
+    /// missing session -&gt; NotFound - and returns a serialized <see cref="HandoverInfoDto"/>. It is a pure
+    /// read of the live session record: no transcript parsing, no I/O. The Director version - the one
+    /// dependency the tunnel command surface did not carry - rides in
+    /// <see cref="SessionCommandServices.DirectorVersion"/> and is stamped exactly as the REST route stamped
+    /// <c>ControlApiHost._version</c>, so both paths serve an identical block. Deliberately does NOT include
+    /// this Director's Control API endpoint (issue #1214: the browser must never learn a Director address).
+    /// </summary>
+    internal static DirectorCommandResult Handover(SessionManager sessionManager, string directorId, string? version, DirectorCommand command)
+    {
+        FileLog.Write($"[SessionReadExecutor] handover: sid={command.SessionId}");
+        if (!Guid.TryParse(command.SessionId, out var guid))
+            return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, "invalid session id format");
+
+        var session = sessionManager.GetSession(guid);
+        if (session is null)
+        {
+            FileLog.Write($"[SessionReadExecutor] handover: session not found sid={command.SessionId}");
+            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "session not found");
+        }
+
+        // Issue #800: the display name goes through the single composer so it is never the bare
+        // folder name (legacy sessions with no CustomName get folder + type + disambiguator).
+        var name = SessionName.DisplayName(session.CustomName,
+            SessionName.FolderName(session.RepoPath),
+            SessionName.Disambiguator(session.Id));
+
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new HandoverInfoDto
+        {
+            SessionId = command.SessionId,
+            DisplayName = name,
+            RepoPath = session.RepoPath,
+            DirectorId = directorId,
+            MachineName = Environment.MachineName,
+            Version = version ?? string.Empty,
         }));
     }
 }

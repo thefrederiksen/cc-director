@@ -415,4 +415,197 @@ public sealed class SessionWriteExecutorTests
         }
         finally { sm.Dispose(); }
     }
+
+    // ---------- handover-generate (Gateway Cleanup Phase 0 wave 3: director-level, no target session id) ----------
+
+    [Fact]
+    public async Task DispatchAsync_HandoverGenerate_MissingFromSessionId_ReturnsBadRequest()
+    {
+        // An empty payload deserializes to null -> the fromSessionId guard fires (the route's 400).
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Command("handover-generate", ""));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoverGenerate_BothTargets_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var req = new HandoverRequest
+            {
+                FromSessionId = Guid.NewGuid().ToString(),
+                ToSessionId = Guid.NewGuid().ToString(),
+                ToRepoPath = Path.GetTempPath(),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Command("handover-generate", "", req));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoverGenerate_MissingSource_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var req = new HandoverRequest
+            {
+                FromSessionId = Guid.NewGuid().ToString(),
+                ToSessionId = Guid.NewGuid().ToString(),
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Command("handover-generate", "", req));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_HandoverGenerate_ExistingSourceAndTarget_ReturnsOkWithTargetSession()
+    {
+        // Source and target are both embedded sessions on this manager. Neither has a Claude session id, so the
+        // context is built from the simple branch (no file IO); the target receives it via SendTextAsync. The
+        // core returns the target mapped through the plain Map, exactly as the create verb does.
+        var (sm, source, _) = NewSession();
+        try
+        {
+            var target = sm.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
+            var req = new HandoverRequest
+            {
+                FromSessionId = source.Id.ToString(),
+                ToSessionId = target.Id.ToString(),
+                ArchiveToVault = false,
+            };
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Command("handover-generate", "", req));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("cmd-w1", result.CommandId);
+            var resp = JsonSerializer.Deserialize<HandoverResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.True(resp!.Accepted);
+            Assert.NotNull(resp.TargetSession);
+            Assert.Equal(target.Id.ToString(), resp.TargetSession!.SessionId);
+            Assert.False(string.IsNullOrEmpty(resp.ContextSent));
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- wingman-ask (Gateway Cleanup Phase 0 wave 3: static WingmanService, no new dependency) ----------
+
+    [Fact]
+    public async Task DispatchAsync_WingmanAsk_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                Command("wingman-ask", "not-a-guid", new WingmanAskRequest { Question = "hi" }));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WingmanAsk_EmptyQuestion_ReturnsOkWithBadRequestOutcome()
+    {
+        // The question-required guard is the wingman's own bad_request OUTCOME (a 200 carrying the result), not
+        // an id/session error - the REST route maps that Status to its original 400.
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                Command("wingman-ask", session.Id.ToString(), new WingmanAskRequest { Question = "" }));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var ask = JsonSerializer.Deserialize<WingmanAskResult>(result.BodyJson ?? "", Json);
+            Assert.NotNull(ask);
+            Assert.Equal("bad_request", ask!.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WingmanAsk_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                Command("wingman-ask", Guid.NewGuid().ToString(), new WingmanAskRequest { Question = "hi" }));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_WingmanAsk_NoClaudeConfigured_ReturnsOkWithNoClaudeStatus()
+    {
+        // With an empty ClaudePath, AnswerViaSessionAsync returns Status="no_claude" without spawning a
+        // process (the fail-open contract), so the free-text ask wire path is verifiable without a CLI.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions { ClaudePath = "" });
+        try
+        {
+            var session = sm.CreateEmbeddedSession(Path.GetTempPath(), null, new ExecuteActionTestBackend());
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                Command("wingman-ask", session.Id.ToString(), new WingmanAskRequest { Question = "what is going on" }));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var ask = JsonSerializer.Deserialize<WingmanAskResult>(result.BodyJson ?? "", Json);
+            Assert.NotNull(ask);
+            Assert.Equal("no_claude", ask!.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    // ---------- recap-generate (Gateway Cleanup Phase 0 wave 3: static RecapGenerator, no new dependency) ----------
+
+    [Fact]
+    public async Task DispatchAsync_RecapGenerate_InvalidSessionId_ReturnsBadRequest()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Command("recap-generate", "not-a-guid"));
+            Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_RecapGenerate_MissingSession_ReturnsNotFound()
+    {
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Command("recap-generate", Guid.NewGuid().ToString()));
+            Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_RecapGenerate_NoClaudeSessionId_ReturnsOkWithNoSessionIdStatus()
+    {
+        // A fresh embedded session has no linked Claude session id, so the core short-circuits to the domain
+        // state the route returned as a 200 body (Status="no_session_id") - no generation runs, no process
+        // spawns. The resolved model is stamped exactly as the route did.
+        var (sm, session, _) = NewSession();
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A", Command("recap-generate", session.Id.ToString()));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var resp = JsonSerializer.Deserialize<RecapResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.Equal("no_session_id", resp!.Status);
+            Assert.False(string.IsNullOrEmpty(resp.Model));
+        }
+        finally { sm.Dispose(); }
+    }
 }
