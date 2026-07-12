@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.Http;
 
@@ -11,15 +13,19 @@ namespace CcDirector.Gateway.Api;
 /// verb, or a Director with no active stream, returns false so the caller keeps the existing HTTP proxy path -
 /// byte-identical when stream mode is off.
 ///
-/// The catch-all carries the session verbs that do NOT have their own literal Gateway route (turns, buffer-html,
-/// usage, context, history, github-urls, and the session writes/queue in a later increment). The verb's request
-/// DTO and core are the SAME the Director REST route used, so the reply body is identical; the Gateway marshals
-/// the request into the verb payload and maps <see cref="DirectorCommandResult"/> back to the HTTP response the
-/// browser expects.
+/// The catch-all carries the session verbs that do NOT have their own literal Gateway route: the reads (turns,
+/// buffer-html, usage, context, history, github-urls, queue-read) and the writes (resize, clear-context,
+/// history-picker, mobile-mode, voice-mode, wingman-enabled, relink, execute-action, and the voice queue's
+/// add/update/remove/move/clear/send). The verb's request DTO and core are the SAME the Director REST route
+/// used (Phase 0), so the reply body is identical; the Gateway only marshals method + path + body into the verb
+/// payload and maps <see cref="DirectorCommandResult"/> back to the HTTP response.
 ///
-/// This increment (PR B1) handles the catch-all READS - all of them take only the session id (no payload) and
-/// return a JSON DTO, so the mapping is uniform. Writes and the queue path-parameterised verbs come next, on the
-/// same dispatch mechanism.
+/// Marshaling:
+///  - reads and the no-body writes carry no payload (the target session is the command's SessionId);
+///  - the body-shaped writes pass the raw request body straight through as PayloadJson (the REST route and the
+///    tunnel verb share one DTO+core, so the bytes are identical);
+///  - the queue path-parameterised verbs FOLD the {itemId} path segment into the payload (Architect note): the
+///    request body (a JSON object or empty) gets an "itemId" field overlaid before it is sent.
 /// </summary>
 internal sealed class TunnelCatchAllDispatch
 {
@@ -28,10 +34,12 @@ internal sealed class TunnelCatchAllDispatch
     public TunnelCatchAllDispatch(DirectorCommandRouter.SendDirectorCommandAsync sendCommand) =>
         _sendCommand = sendCommand ?? throw new ArgumentNullException(nameof(sendCommand));
 
-    // The session READ verbs that flow through the catch-all (no literal Gateway route). Each takes only the
-    // session id and returns a JSON DTO body. buffer / summary / git / handover / recap / wingman-view /
-    // snapshot have their own literal Gateway routes and are re-pointed there, NOT here.
-    private static readonly Dictionary<string, string> GetVerbByRest = new(StringComparer.OrdinalIgnoreCase)
+    private enum Payload { None, Body }
+
+    private sealed record Plan(string Verb, Payload Payload, string? ItemId = null);
+
+    // Flat GET reads (session id only, JSON DTO body).
+    private static readonly Dictionary<string, string> GetReads = new(StringComparer.OrdinalIgnoreCase)
     {
         ["turns"] = "turns",
         ["buffer/html"] = "buffer-html",
@@ -39,6 +47,22 @@ internal sealed class TunnelCatchAllDispatch
         ["context"] = "context",
         ["history"] = "history",
         ["github-urls"] = "github-urls",
+        ["queue"] = "queue-read",
+    };
+
+    // Flat writes keyed by "METHOD rest". Payload is the raw request body (empty for the no-body writes).
+    private static readonly Dictionary<string, string> BodyWrites = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["POST resize"] = "resize",
+        ["POST clear-context"] = "clear-context",
+        ["POST history-picker"] = "history-picker",
+        ["POST mobile-mode"] = "mobile-mode",
+        ["POST voice-mode"] = "voice-mode",
+        ["POST wingman-enabled"] = "wingman-enabled",
+        ["POST relink"] = "relink",
+        ["POST execute-action"] = "execute-action",
+        ["POST queue"] = "queue-add",
+        ["DELETE queue"] = "queue-clear",
     };
 
     /// <summary>
@@ -47,33 +71,106 @@ internal sealed class TunnelCatchAllDispatch
     /// </summary>
     public async Task<bool> TryDispatchAsync(HttpContext ctx, string sid, string directorId, string? rest)
     {
-        var verb = ResolveVerb(ctx.Request.Method, rest);
-        if (verb is null) return false;
+        var plan = Resolve(ctx.Request.Method, rest);
+        if (plan is null) return false;
 
-        var result = await DirectorCommandRouter.TrySendAsync(_sendCommand, directorId, verb, sid, null, ctx.RequestAborted);
+        string payloadJson = "";
+        if (plan.Payload == Payload.Body || plan.ItemId is not null)
+        {
+            // Buffer the request body so an HTTP fallback (no active stream) can still re-forward it.
+            ctx.Request.EnableBuffering();
+            var body = await ReadBodyAsync(ctx);
+            ctx.Request.Body.Position = 0;
+            payloadJson = plan.ItemId is not null ? FoldItemId(body, plan.ItemId) : body;
+        }
+
+        var command = new DirectorCommand
+        {
+            CommandId = Guid.NewGuid().ToString("N"),
+            Verb = plan.Verb,
+            SessionId = sid,
+            PayloadJson = payloadJson,
+        };
+
+        var result = await _sendCommand(directorId, command, ctx.RequestAborted);
+        FileLog.Write($"[TunnelCatchAllDispatch] {ctx.Request.Method} {rest} -> verb={plan.Verb} sid={sid}: {(result is null ? "no stream -> HTTP fallback" : result.Status.ToString())}");
         if (result is null) return false; // no active stream -> HTTP fallback
 
         await WriteResultAsync(ctx, result);
         return true;
     }
 
-    private static string? ResolveVerb(string method, string? rest)
+    private static Plan? Resolve(string method, string? rest)
     {
         if (rest is null) return null;
-        if (HttpMethods.IsGet(method) && GetVerbByRest.TryGetValue(rest, out var verb)) return verb;
+
+        if (HttpMethods.IsGet(method) && GetReads.TryGetValue(rest, out var readVerb))
+            return new Plan(readVerb, Payload.None);
+
+        if (BodyWrites.TryGetValue($"{method} {rest}", out var writeVerb))
+            return new Plan(writeVerb, Payload.Body);
+
+        // Queue path-parameterised verbs: queue/{itemId}[/move-up|/move-down|/send].
+        var segments = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length >= 2 && string.Equals(segments[0], "queue", StringComparison.OrdinalIgnoreCase))
+        {
+            var itemId = segments[1];
+            if (segments.Length == 2)
+            {
+                if (HttpMethods.IsDelete(method)) return new Plan("queue-remove", Payload.Body, itemId);
+                if (HttpMethods.IsPatch(method)) return new Plan("queue-update", Payload.Body, itemId);
+            }
+            else if (segments.Length == 3 && HttpMethods.IsPost(method))
+            {
+                return segments[2].ToLowerInvariant() switch
+                {
+                    "move-up" => new Plan("queue-move-up", Payload.Body, itemId),
+                    "move-down" => new Plan("queue-move-down", Payload.Body, itemId),
+                    "send" => new Plan("queue-send", Payload.Body, itemId),
+                    _ => null,
+                };
+            }
+        }
+
         return null;
+    }
+
+    private static async Task<string> ReadBodyAsync(HttpContext ctx)
+    {
+        using var reader = new StreamReader(ctx.Request.Body, leaveOpen: true);
+        return await reader.ReadToEndAsync();
+    }
+
+    // Overlay the path {itemId} onto the request body's JSON object (empty body -> a fresh object), so the
+    // verb payload carries both the id from the path and any fields from the body (queue-update's text).
+    private static string FoldItemId(string body, string itemId)
+    {
+        JsonObject obj;
+        try
+        {
+            obj = string.IsNullOrWhiteSpace(body) ? new JsonObject() : (JsonNode.Parse(body)?.AsObject() ?? new JsonObject());
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            obj = new JsonObject();
+        }
+        obj["itemId"] = itemId;
+        return obj.ToJsonString();
     }
 
     // Map a DirectorCommandResult back to the HTTP response the browser expects - the same shape the Director
     // REST route returned (200 + application/json for Ok; the matching typed error code otherwise). BodyJson is
-    // already the serialized resource DTO, so it is written verbatim.
+    // already the serialized DTO, so it is written verbatim.
     private static async Task WriteResultAsync(HttpContext ctx, DirectorCommandResult result)
     {
         if (result.Ok)
         {
             ctx.Response.StatusCode = StatusCodes.Status200OK;
-            ctx.Response.ContentType = "application/json";
-            await ctx.Response.WriteAsync(result.BodyJson ?? "");
+            if (!string.IsNullOrEmpty(result.BodyJson))
+            {
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(result.BodyJson);
+            }
             return;
         }
 
