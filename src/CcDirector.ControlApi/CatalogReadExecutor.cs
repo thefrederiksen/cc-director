@@ -1,8 +1,11 @@
 using CcDirector.Core.Claude;
+using CcDirector.Core.Configuration;
+using CcDirector.Core.Diagnostics;
 using CcDirector.Core.Git;
 using CcDirector.Core.History;
 using CcDirector.Core.Sessions;
 using CcDirector.Core.Storage;
+using CcDirector.Core.Tools;
 using CcDirector.Core.Utilities;
 using CcDirector.Core.Wingman;
 using CcDirector.Gateway.Contracts;
@@ -20,12 +23,11 @@ namespace CcDirector.ControlApi;
 /// deletes the routes and leaves the cores reached only over the tunnel. A preserved try/catch is kept ONLY
 /// where the source route had one (<c>fs-list</c>), so behaviour is byte-identical.
 ///
-/// Two of the group's REST reads were NOT lifted, because they depend on host state that the tunnel command
-/// surface does not carry (routing either faithfully would require a spine change, not a single-area edit):
-/// <c>GET /facts</c> embeds the host's injected version string (<c>ControlApiHost._version</c>), which is
-/// absent from <see cref="SessionCommandContext"/>; and <c>GET /repos</c> reads the live per-host
-/// <c>RepositoryRegistry</c> instance, which is a Map-time dependency not carried by the context or the
-/// stream client's <see cref="SessionCommandServices"/>. Both stay as their own REST routes for now.
+/// Gateway Cleanup Phase 0 (wave 3): the two reads R2 originally left out are now lifted, because the shared
+/// dependency they needed was threaded through <see cref="SessionCommandServices"/>: <c>facts</c> stamps the
+/// Director version (<see cref="SessionCommandServices.DirectorVersion"/>); <c>repos-list</c> reads the live
+/// <see cref="RepositoryRegistry"/> (<see cref="SessionCommandServices.Repositories"/>). This <c>facts</c>
+/// lift ships with that dependency change; <c>repos-list</c> follows in the wave-3 lift PR.
 /// </summary>
 internal sealed class CatalogReadExecutor : ISessionCommandArea
 {
@@ -43,6 +45,7 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
         "claude-sessions",
         "interrupted-list",
         "fs-list",
+        "facts",
     };
 
     public async Task<DirectorCommandResult> ExecuteAsync(SessionCommandContext context, DirectorCommand command, CancellationToken cancellationToken)
@@ -54,8 +57,44 @@ internal sealed class CatalogReadExecutor : ISessionCommandArea
             "claude-sessions" => ClaudeSessions(command),
             "interrupted-list" => InterruptedList(),
             "fs-list" => FsList(command),
+            "facts" => Facts(context.DirectorId, context.Services?.DirectorVersion),
             _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"verb '{command.Verb}' is not handled by the catalog read area"),
         };
+    }
+
+    /// <summary>
+    /// The <c>facts</c> verb (director-level, no session): this machine's cc-tool inventory (names, categories,
+    /// versions, built-state) plus the launcher presence/port fact. Mirrors the Director's <c>GET /facts</c>
+    /// lambda exactly - always a 200 - and returns a serialized <see cref="DirectorFactsDto"/>. The Director
+    /// version is the one dependency the tunnel command surface did not carry before; it now rides in
+    /// <see cref="SessionCommandServices.DirectorVersion"/>, and the producing Director stamps its own version
+    /// exactly as the REST route stamped <c>ControlApiHost._version</c>, so the value is identical on both paths.
+    /// </summary>
+    internal static DirectorCommandResult Facts(string directorId, string? version)
+    {
+        FileLog.Write("[CatalogReadExecutor] facts");
+        var catalog = new ToolCatalogService();
+        var tools = ToolInventory.Build(catalog, AboutInfo.InstalledComponents());
+        var launcher = LauncherDiscovery.Read();
+        return DirectorCommandResult.Success(SessionCommandExecutor.Serialize(new DirectorFactsDto
+        {
+            DirectorId = directorId,
+            MachineName = Environment.MachineName,
+            Version = version ?? string.Empty,
+            Tools = tools.Select(t => new ToolInventoryItemDto
+            {
+                Name = t.Name,
+                Category = t.Category,
+                Version = t.Version,
+                IsBuilt = t.IsBuilt,
+            }).ToList(),
+            Launcher = new LauncherFactDto
+            {
+                Installed = launcher.Installed,
+                Port = launcher.Port,
+                Error = launcher.Error,
+            },
+        }));
     }
 
     /// <summary>

@@ -447,8 +447,9 @@ public sealed class ControlApiHost : IAsyncDisposable
         // POST /dispatch (issue #329): null accessor means "no Engine hosted here" (tests
         // that don't care, embedded hosts) - the endpoint then answers 503, never throws.
         DispatchEndpoint.Map(_app, _commDispatcherAccessor ?? (() => null));
-        // GET /facts (issue #330): the tool inventory + launcher facts the Gateway pulls.
-        FactsEndpoint.Map(_app, DirectorId, _version);
+        // GET /facts (issue #330): the tool inventory + launcher facts the Gateway pulls. Gateway Cleanup
+        // Phase 0 (wave 3): routes through the shared CatalogReadExecutor.Facts core, so it needs the SessionManager.
+        FactsEndpoint.Map(_app, _sessionManager, DirectorId, _version);
         // POST /sessions/{id}/voice-turn (issue #351): server-side walkie-talkie turn
         // (transcribe -> wait -> send -> poll -> summarize -> TTS -> SSE reply).
         VoiceTurnEndpoint.Map(_app, _sessionManager);
@@ -664,8 +665,11 @@ public sealed class ControlApiHost : IAsyncDisposable
             // The services are read per-command (inside the lambda) so they reflect the fields once
             // StartAsync has initialized them - BuildStreamClient runs before _proactiveExplain /
             // _turnSummaryCache are set. Additive: verbs that need no service ignore it (issue #1177 inc 6).
+            // Gateway Cleanup mission, Phase 0 (wave 3): also carry the Director version and the repository
+            // registry so the director-level reads that stamp/read them (facts, handover, repos-list) serve the
+            // same value over the tunnel that their REST route served.
             cmd => SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
-                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore }),
+                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore, DirectorVersion = _version, Repositories = _repositoryRegistry }),
             // Gateway Cleanup mission, Phase 0 (up-stream): pass the SessionManager so the four connection-bound
             // stream verbs work - their terminal/file producers read session and file state from it and stream
             // frames up this same connection.

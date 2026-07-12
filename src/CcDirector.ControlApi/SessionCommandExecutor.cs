@@ -29,6 +29,21 @@ internal sealed class SessionCommandServices
     /// <summary>The Mission record store (attaching a session to a Mission, and honoring a create-time
     /// MissionId, resolve the Mission's display name through it). Null skips Mission resolution.</summary>
     public MissionStore? MissionStore { get; init; }
+
+    /// <summary>
+    /// Gateway Cleanup mission, Phase 0 (wave 3): this Director's build version string, so a director-level
+    /// read that stamps it into its response (the <c>facts</c> and <c>handover</c> verbs) can serve the same
+    /// value over the tunnel that the REST route stamped from <c>ControlApiHost._version</c>. The producing
+    /// Director always stamps its own version, so the value is identical on both paths.
+    /// </summary>
+    public string? DirectorVersion { get; init; }
+
+    /// <summary>
+    /// Gateway Cleanup mission, Phase 0 (wave 3): the live per-host repository registry, so the <c>repos-list</c>
+    /// verb reads the same instance the REST route read at Map time. Null lists nothing (as the REST route
+    /// returned when no registry was wired).
+    /// </summary>
+    public RepositoryRegistry? Repositories { get; init; }
 }
 
 /// <summary>

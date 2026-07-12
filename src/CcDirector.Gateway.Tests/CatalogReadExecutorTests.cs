@@ -189,4 +189,47 @@ public sealed class CatalogReadExecutorTests
         }
         finally { sm.Dispose(); }
     }
+
+    // ---------- facts (Gateway Cleanup Phase 0 wave 3: needs the Director version via SessionCommandServices) ----------
+
+    [Fact]
+    public async Task DispatchAsync_Facts_ReturnsOkWithDirectorIdAndVersionFromServices()
+    {
+        // facts is director-level (no session), always a 200. The Director version rides in the services -
+        // the one dependency the tunnel command surface did not carry before wave 3 - and is stamped into the
+        // DTO exactly as the REST route stamped ControlApiHost._version.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-facts", Cmd("facts"),
+                new SessionCommandServices { DirectorVersion = "9.9.9-test" });
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            Assert.Equal("r2", result.CommandId);
+            var dto = JsonSerializer.Deserialize<DirectorFactsDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal("dir-facts", dto!.DirectorId);
+            Assert.Equal("9.9.9-test", dto.Version);
+            Assert.NotNull(dto.Launcher);
+        }
+        finally { sm.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Facts_NoVersionInServices_ReturnsOkWithEmptyVersion()
+    {
+        // No services (or no version) is not an error: facts still lists tools/launcher, version just falls back
+        // to empty - the same additive-null tolerance the other services fields have.
+        var sm = new SessionManager(new Core.Configuration.AgentOptions());
+        try
+        {
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-facts", Cmd("facts"));
+
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var dto = JsonSerializer.Deserialize<DirectorFactsDto>(result.BodyJson ?? "", Json);
+            Assert.NotNull(dto);
+            Assert.Equal(string.Empty, dto!.Version);
+        }
+        finally { sm.Dispose(); }
+    }
 }
