@@ -14,6 +14,7 @@ import { SessionsEmpty, SessionsView } from "./sessions/SessionsView";
 import { SessionDetail } from "./sessions/SessionDetail";
 import { SessionRedirect } from "./sessions/SessionRedirect";
 import { FleetMapView } from "./fleet/FleetMapView";
+import { MissionsView } from "./missions/MissionsView";
 import { DirectorsView } from "./fleet/DirectorsView";
 import { DirectorDetailView } from "./fleet/DirectorDetailView";
 import { ScheduleView } from "./schedule/ScheduleView";
@@ -33,6 +34,7 @@ import "./styles.css";
 import "./components/components.css";
 import "./fleet/fleet.css";
 import "./fleet/fleetmap.css";
+import "./missions/missions.css";
 import "./schedule/schedule.css";
 import "./wingman/wingman.css";
 import "./dictionary/dictionary.css";
@@ -139,6 +141,10 @@ const router = createBrowserRouter(
             // page lists, pivotable by machine / repository / agent. Reads the same GET /sessions
             // envelope through client-core.
             { path: "/fleet-map", element: <FleetMapView /> },
+            // The Missions page (issue #1405, Phase 1a): the same GET /sessions roster the Fleet Map
+            // reads, grouped by mission (derived from the session name) with each session row linking
+            // into /session/:id. Full width - the Phase 2 chat pane is not shipped yet.
+            { path: "/missions", element: <MissionsView /> },
             { path: "/directors", element: <DirectorsView /> },
             { path: "/directors/:directorId", element: <DirectorDetailView /> },
             // The Schedule + Wingman-pipeline pages (issue #976): one-to-one ports of the Blazor
