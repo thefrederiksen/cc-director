@@ -136,6 +136,31 @@ public sealed record CarModeTelemetryRecord
     ///  stream; more polls mean more mic contention while the reply was supposed to be playing.</summary>
     public int SpeakingPollCount { get; init; }
 
+    // ----- Real viewport measurements (v5: the button-cut-off diagnostic, read from the phone) -----
+
+    /// <summary>window.innerHeight on the phone at telemetry time - the layout viewport height (the tall,
+    ///  toolbar-hidden height on mobile).</summary>
+    public double ViewportInnerHeight { get; init; }
+
+    /// <summary>window.visualViewport.height - the ACTUALLY visible height (minus the browser toolbars and
+    ///  the on-screen keyboard), or 0 if the API is unavailable. This is the height the fixed Car Mode screen
+    ///  must match; `dvh` proved unreliable at tracking it in the owner's Android PWA, which is why v5 pins
+    ///  the container to this number.</summary>
+    public double VisualViewportHeight { get; init; }
+
+    /// <summary>document.documentElement.clientHeight - a third, independent viewport read to cross-check the
+    ///  other two.</summary>
+    public double DocumentClientHeight { get; init; }
+
+    /// <summary>The .car-foot element's getBoundingClientRect().bottom in pixels: where the primary buttons
+    ///  actually end on screen.</summary>
+    public double FooterBottom { get; init; }
+
+    /// <summary>FooterBottom &lt;= the visible viewport height: true only when the primary buttons are
+    ///  ON-SCREEN. The direct, from-the-phone proof of whether the button-cut-off bug is fixed - false means
+    ///  the buttons were still cut off on the owner's device.</summary>
+    public bool FooterVisible { get; init; }
+
     // ----- Server stamps (from CarModeTurnTiming, echoed back by the client) -----
 
     public double ServerTotalMs { get; init; }

@@ -156,6 +156,20 @@ export interface CarModeTelemetryPost {
   micReacquiredDuringPlayback: boolean;
   /** How many rolling-"stop" transcriptions ran during this reply (each re-reads the open mic). */
   speakingPollCount: number;
+  /** window.innerHeight on the phone at telemetry time - the layout viewport height (the tall,
+   *  toolbar-hidden height on mobile). */
+  viewportInnerHeight: number;
+  /** window.visualViewport.height - the ACTUALLY visible height (minus the browser toolbars / keyboard), or
+   *  0 if the API is unavailable. This is the height the fixed Car Mode screen must match, and dvh proved
+   *  unreliable at tracking it in the owner's Android PWA (why v5 pins the container to this number). */
+  visualViewportHeight: number;
+  /** document.documentElement.clientHeight - a third, independent viewport read to cross-check the other two. */
+  documentClientHeight: number;
+  /** The .car-foot element's getBoundingClientRect().bottom in pixels: where the primary buttons actually end. */
+  footerBottom: number;
+  /** footerBottom <= the visible viewport height: TRUE only when the buttons are ON-SCREEN. The direct,
+   *  from-the-phone proof of whether the button-cut-off bug is fixed - false means still cut off. */
+  footerVisible: boolean;
   serverTotalMs: number;
   modelCallCount: number;
   modelMsTotal: number;

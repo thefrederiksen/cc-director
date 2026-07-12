@@ -63,7 +63,7 @@ internal static class CarModeTelemetryPage
 <body>
 <div class="wrap">
   <h1>Car Mode Timing</h1>
-  <p class="sub">Per-turn, per-stage latency AND the two mobile failure diagnostics for hands-free Car Mode. The pipeline a real phone turn walks: pause, transcode (phone), transcribe, brain round trip, the network gap (brain minus server), each model call, the fleet read, text-to-speech, and first audio. The "over and out" finickiness shows as End-phrase tries (how many transcribe attempts before the turn was taken). The cut-off reply is split several ways: Clip length (the whole reply synthesized), Played to (how far playback reached), Play blocked (the reply's play() was refused by the mobile autoplay policy so it never sounded - the data-confirmed failure), and Mic in playback (whether the rolling "stop" watch re-opened the microphone while the reply was playing - a secondary suspect). All times are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
+  <p class="sub">Per-turn, per-stage latency AND the two mobile failure diagnostics for hands-free Car Mode. The pipeline a real phone turn walks: pause, transcode (phone), transcribe, brain round trip, the network gap (brain minus server), each model call, the fleet read, text-to-speech, and first audio. The "over and out" finickiness shows as End-phrase tries (how many transcribe attempts before the turn was taken). The cut-off reply is split several ways: Clip length (the whole reply synthesized), Played to (how far playback reached), Play blocked (the reply's play() was refused by the mobile autoplay policy so it never sounded - the data-confirmed failure), and Mic in playback (whether the rolling "stop" watch re-opened the microphone while the reply was playing - a secondary suspect). The button-cut-off bug is proven from the phone: Buttons on-screen (were the primary buttons within the visible viewport this turn), Footer bottom (where the buttons end, in pixels), and the three raw viewport reads (Visual vp = window.visualViewport.height, Inner vp = window.innerHeight, Client vp = documentElement.clientHeight). All times are milliseconds. Counts and timings only; no command or reply text is ever recorded.</p>
 
   <div class="cards" id="cards"></div>
 
@@ -97,6 +97,11 @@ internal static class CarModeTelemetryPage
           <th>Rounds</th>
           <th>Cmd<br>chars</th>
           <th>Reply<br>chars</th>
+          <th>Buttons<br>on-screen</th>
+          <th>Footer<br>bottom</th>
+          <th>Visual<br>vp</th>
+          <th>Inner<br>vp</th>
+          <th>Client<br>vp</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -137,7 +142,7 @@ internal static class CarModeTelemetryPage
 
     if (!recs.length) {
       cards.appendChild(card("-", "No turns recorded yet", "Take a turn in Car Mode on the phone"));
-      document.getElementById("rows").innerHTML = '<tr><td colspan="25" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
+      document.getElementById("rows").innerHTML = '<tr><td colspan="30" class="empty">No turns recorded yet. Open Car Mode on the phone, say something and "over and out", and it will appear here.</td></tr>';
       document.getElementById("foot").textContent = "";
       return;
     }
@@ -174,6 +179,13 @@ internal static class CarModeTelemetryPage
     var micIn = recs.filter(function (r) { return r.micReacquiredDuringPlayback === true; }).length;
     cards.appendChild(card(micIn + " / " + recs.length, "Mic re-opened during the reply",
       "secondary cut-off suspect: mic grabbed mid-playback"));
+
+    // v5 button-cut-off proof, read from the phone: how many recent turns had the footer's primary buttons
+    // fall PAST the visible viewport (footerBottom > the visible height). 0 means the buttons were on-screen
+    // every turn - the direct, from-the-device confirmation that the cut-off is fixed.
+    var btnCut = recs.filter(function (r) { return r.footerVisible === false; }).length;
+    cards.appendChild(card(btnCut + " / " + recs.length, "Turns with buttons CUT OFF",
+      btnCut > 0 ? "footer fell past the visible viewport" : "buttons on-screen every turn"));
 
     var body = document.getElementById("rows"); body.innerHTML = "";
     recs.forEach(function (r) {
@@ -227,6 +239,13 @@ internal static class CarModeTelemetryPage
       tr.appendChild(td(r.rounds == null ? "-" : r.rounds));
       tr.appendChild(td(r.commandChars == null ? "-" : r.commandChars));
       tr.appendChild(td(r.replyChars == null ? "-" : r.replyChars));
+      // v5 button-visibility (from the phone): were the primary buttons on-screen, where did the footer end,
+      // and the three raw viewport reads. "CUT OFF" in red is the bug this whole round is chasing.
+      tr.appendChild(td(r.footerVisible == null ? "-" : (r.footerVisible ? "yes" : "CUT OFF"), r.footerVisible === false ? "slow" : ""));
+      tr.appendChild(td(ms(r.footerBottom)));
+      tr.appendChild(td(ms(r.visualViewportHeight)));
+      tr.appendChild(td(ms(r.viewportInnerHeight)));
+      tr.appendChild(td(ms(r.documentClientHeight)));
       body.appendChild(tr);
     });
 

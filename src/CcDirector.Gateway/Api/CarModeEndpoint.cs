@@ -130,6 +130,11 @@ internal static class CarModeEndpoint
                 PlayRejected = req.PlayRejected,
                 MicReacquiredDuringPlayback = req.MicReacquiredDuringPlayback,
                 SpeakingPollCount = req.SpeakingPollCount,
+                ViewportInnerHeight = req.ViewportInnerHeight,
+                VisualViewportHeight = req.VisualViewportHeight,
+                DocumentClientHeight = req.DocumentClientHeight,
+                FooterBottom = req.FooterBottom,
+                FooterVisible = req.FooterVisible,
                 ServerTotalMs = req.ServerTotalMs,
                 ModelCallCount = req.ModelCallCount,
                 ModelMsTotal = req.ModelMsTotal,
@@ -205,6 +210,11 @@ public sealed class CarModeTelemetryPost
     public bool PlayRejected { get; set; }
     public bool MicReacquiredDuringPlayback { get; set; }
     public int SpeakingPollCount { get; set; }
+    public double ViewportInnerHeight { get; set; }
+    public double VisualViewportHeight { get; set; }
+    public double DocumentClientHeight { get; set; }
+    public double FooterBottom { get; set; }
+    public bool FooterVisible { get; set; }
     public double ServerTotalMs { get; set; }
     public int ModelCallCount { get; set; }
     public double ModelMsTotal { get; set; }
