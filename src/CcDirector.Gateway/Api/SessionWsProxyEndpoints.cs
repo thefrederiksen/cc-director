@@ -47,14 +47,49 @@ internal static class SessionWsProxyEndpoints
     /// owning Director from <paramref name="registry"/> via <paramref name="client"/>; 404 when
     /// the session is unknown across the fleet, 503 when the owning Director cannot be reached.
     /// </summary>
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client, SessionOwnerCache owners, string? fleetToken = null)
+    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client, SessionOwnerCache owners, string? fleetToken = null,
+        Streaming.PushedSessionStore? pushedSessions = null, Streaming.GatewayStreamRegistry? streamRegistry = null,
+        DirectorCommandRouter.SendDirectorCommandAsync? sendCommand = null, TimeSpan? streamStaleAfter = null)
     {
         var proxy = new SessionWsForwarder(fleetToken);
 
-        // Live terminal stream: forward to the owning Director's /sessions/{sid}/stream .
+        // Gateway Cleanup Phase 2: when stream mode is on (all three non-null), the browser-facing UP-STREAM
+        // legs (terminal, file, screenshot) ride the tunnel instead of dialing the owning Director over HTTP.
+        // Null => stream mode off => every leg keeps its existing HTTP proxy path, byte-identical. The owner is
+        // resolved from the pushed session store, which only returns a stream-connected, fresh Director, so a
+        // located owner is reachable over the tunnel.
+        var tunnel = (pushedSessions is not null && streamRegistry is not null && sendCommand is not null)
+            ? new TunnelStreamLegs(streamRegistry, sendCommand)
+            : null;
+        var stale = streamStaleAfter ?? TimeSpan.FromSeconds(10);
+
+        // Live terminal stream: over the tunnel (open-terminal-stream up-stream) when the owner is
+        // stream-connected, else forward to the owning Director's /sessions/{sid}/stream over HTTP.
         app.MapGet("/sessions/{sid}/stream", async (string sid, HttpContext ctx) =>
         {
+            if (tunnel is not null && pushedSessions!.TryLocate(sid, stale) is { } loc)
+            {
+                await tunnel.ServeTerminalAsync(ctx, sid, loc.DirectorId);
+                return;
+            }
             await ProxyAsync(ctx, sid, "stream", $"/sessions/{sid}/stream", registry, client, proxy, owners);
+        });
+
+        // Local Files viewer (session file read): over the tunnel (read-file up-stream) when the owner is
+        // stream-connected and this is a whole-file GET, else the owning Director's /sessions/{sid}/file over
+        // HTTP. This LITERAL route shadows the generic catch-all below for the file path. A Range request
+        // (large-PDF/media seek) keeps the HTTP path - the up-stream read is whole-file today, so partial
+        // content is a tracked Phase 2 follow-up, never a silent truncation.
+        app.MapGet("/sessions/{sid}/file", async (string sid, HttpContext ctx) =>
+        {
+            if (tunnel is not null && !ctx.Request.Headers.ContainsKey("Range")
+                && pushedSessions!.TryLocate(sid, stale) is { } loc)
+            {
+                ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+                if (await tunnel.TryServeFileAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["path"].ToString()))
+                    return;
+            }
+            await ProxyAsync(ctx, sid, "file", $"/sessions/{sid}/file", registry, client, proxy, owners, fastPath: true);
         });
 
         // Dictation: the Gateway exposes a sid-scoped path; the Director's own endpoint is /dictate .
@@ -76,6 +111,16 @@ internal static class SessionWsProxyEndpoints
         // the screenshot forward itself.
         app.Map("/sessions/{sid}/screenshots/file", async (string sid, HttpContext ctx) =>
         {
+            // GET screenshot bytes over the tunnel (screenshot-file up-stream) when the owner is
+            // stream-connected and this is a non-Range GET; DELETE and Range GETs keep the HTTP path.
+            if (tunnel is not null && HttpMethods.IsGet(ctx.Request.Method) && !ctx.Request.Headers.ContainsKey("Range")
+                && pushedSessions!.TryLocate(sid, stale) is { } loc)
+            {
+                ctx.Response.Headers["Access-Control-Allow-Origin"] = "*";
+                ctx.Response.Headers["Cache-Control"] = "public, max-age=3600";
+                if (await tunnel.TryServeScreenshotAsync(ctx, sid, loc.DirectorId, ctx.Request.Query["name"].ToString()))
+                    return;
+            }
             await ProxyAsync(ctx, sid, "shot", "/screenshots/file", registry, client, proxy, owners, fastPath: true);
         });
 

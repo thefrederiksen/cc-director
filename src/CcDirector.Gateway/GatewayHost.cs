@@ -1221,7 +1221,14 @@ public sealed class GatewayHost : IAsyncDisposable
         // fallback Cockpit proxy below.
         // Pass the fleet token (issue #457): the proxy injects it as the Bearer on every forward
         // so an auth-enabled Director (LAN mode) accepts the call. Harmless for auth-off Directors.
-        SessionWsProxyEndpoints.Map(_app, Registry, _client, SessionOwners, Token);
+        // Gateway Cleanup Phase 2: pass the tunnel hooks so the browser-facing up-stream legs (terminal, file,
+        // screenshot) ride the tunnel when stream mode is on. Null when off => the legs keep their HTTP proxy
+        // path, byte-identical. StreamRegistry is the SAME singleton the DirectorHub pumps StreamUp frames into.
+        SessionWsProxyEndpoints.Map(_app, Registry, _client, SessionOwners, Token,
+            pushedSessions: _streamMode ? PushedSessions : null,
+            streamRegistry: _streamMode ? StreamRegistry : null,
+            sendCommand: _streamMode ? SendCommandAsync : null,
+            streamStaleAfter: _streamStaleAfter);
 
         // Issue #469: device enrollment via local pairing code (the ONLY way a new device gets in).
         // POST /devices/register verifies+consumes the 4-digit code and issues a unique per-device
