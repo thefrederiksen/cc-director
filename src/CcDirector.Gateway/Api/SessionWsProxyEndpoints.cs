@@ -61,6 +61,9 @@ internal static class SessionWsProxyEndpoints
         var tunnel = (pushedSessions is not null && streamRegistry is not null && sendCommand is not null)
             ? new TunnelStreamLegs(streamRegistry, sendCommand)
             : null;
+        // The catch-all's session-verb dispatch (turns, buffer-html, usage, ... and, in later increments, the
+        // session writes). Enabled under the same stream-mode guard; null => the catch-all keeps its HTTP dial.
+        var catchAll = sendCommand is not null ? new TunnelCatchAllDispatch(sendCommand) : null;
         var stale = streamStaleAfter ?? TimeSpan.FromSeconds(10);
 
         // Live terminal stream: over the tunnel (open-terminal-stream up-stream) when the owner is
@@ -160,6 +163,12 @@ internal static class SessionWsProxyEndpoints
                 await ctx.Response.WriteAsJsonAsync(new { error = "git write actions are not available through the Gateway" });
                 return;
             }
+
+            // Gateway Cleanup Phase 2: serve a mapped session verb over the tunnel when the owner is
+            // stream-connected; an unmapped verb (or no active stream) falls through to the HTTP forward below.
+            if (catchAll is not null && pushedSessions!.TryLocate(sid, stale) is { } loc
+                && await catchAll.TryDispatchAsync(ctx, sid, loc.DirectorId, rest))
+                return;
 
             var directorPath = string.IsNullOrEmpty(rest) ? $"/sessions/{sid}" : $"/sessions/{sid}/{rest}";
             // fastPath: this leg carries high-frequency calls (per-keystroke input POSTs), so try the
