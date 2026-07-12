@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { listSessions, type SessionDto } from "@devthrottle/client-core/api/client";
 import { classify, contextLine, dotColor, effectiveColor, inBucket, inDesktopOrder, inWaitingOrder, isWorking, repoLeaf } from "@devthrottle/client-core/sessions/ordering";
@@ -20,7 +20,6 @@ const POLL_INTERVAL_MS = 5000;
 export function Home() {
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const loadedOnce = useRef(false);
   // The roster filter (by machine and/or repo) and whether its full-screen panel is open. The filter
   // is persisted across navigations and restarts by the hook; the panel is transient UI state.
   const [filter, setFilter] = useSessionFilter();
@@ -35,7 +34,6 @@ export function Home() {
       const data = await listSessions(signal);
       setSessions(data);
       setError(null);
-      loadedOnce.current = true;
       // Keep the app-icon "needs you" dot in sync while the app is open: set the badge to the live
       // count, or clear the badge and the service worker's dot notification when nothing is waiting.
       void reconcileBadge(inBucket(data, "needsYou").length);
@@ -44,7 +42,11 @@ export function Home() {
       void syncVoiceSessions(data);
     } catch (err) {
       if (signal?.aborted) return;
-      // Keep the last-known roster on screen (offline shell); only show the error banner.
+      // Keep the last-known roster on screen (never clear good data on a bad connection). The global
+      // ConnectionBanner - fed by the same failed contact through the shared health signal - is now the
+      // single voice for "bad connection, showing last known", so this page no longer shows its own
+      // offline strip. The error is kept only to stop the "Loading sessions..." line from lying after a
+      // first-load failure.
       setError(err instanceof Error ? err.message : "Failed to load sessions");
     }
   }, []);
@@ -114,12 +116,6 @@ export function Home() {
           <button type="button" className="filter-strip-clear" onClick={() => setFilter({ machines: [], repos: [] })}>
             Clear
           </button>
-        </div>
-      )}
-
-      {error !== null && (
-        <div className="banner banner-error" role="alert">
-          {loadedOnce.current ? "Offline - showing last-known roster" : error}
         </div>
       )}
 

@@ -164,6 +164,39 @@ a.banner-btn {
   border-color: rgba(255, 255, 255, 0.25);
 }
 
+/* Mobile-resilience mission: the ONE global bad-connection banner. A slim strip pinned to the very top
+   of every gated screen, shown only when the shared connection-health signal reads bad. It OVERLAYS the
+   top edge (fixed, not in flow) so it never reflows the fixed-height session screens or pushes the
+   terminal, and it names the bad connection plus how stale the data is - the single voice for "showing
+   last known information". Amber (a warning, not an error): the data underneath is fine, the network is
+   not. Sits above the sticky app bar and per-session headers (z-index 5) but below full-screen modals. */
+.conn-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  padding: calc(6px + env(safe-area-inset-top)) 12px 6px;
+  background: #7a5200;
+  border-bottom: 1px solid #b8860b;
+  color: #ffe6a3;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.conn-banner-age {
+  color: #ffcf7a;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
 .status-line {
   color: var(--text-dim);
   font-size: 14px;
