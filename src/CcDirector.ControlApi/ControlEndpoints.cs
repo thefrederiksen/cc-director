@@ -3737,7 +3737,9 @@ internal static class ControlEndpoints
     /// folder, or null if it escapes the folder, is not a bare file name, has a non-image
     /// extension, or does not exist. Defends GET/DELETE /screenshots/file against traversal.
     /// </summary>
-    private static string? ResolveScreenshot(string? name)
+    // Internal (Gateway Cleanup Phase 0) so the screenshot-file stream verb resolves the same traversal-safe
+    // path this REST route does - one resolver, no drift.
+    internal static string? ResolveScreenshot(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return null;
@@ -3756,7 +3758,7 @@ internal static class ControlEndpoints
         return File.Exists(full) ? full : null;
     }
 
-    private static string ScreenshotContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    internal static string ScreenshotContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".png" => "image/png",
         ".jpg" or ".jpeg" => "image/jpeg",
@@ -3772,7 +3774,7 @@ internal static class ControlEndpoints
     /// new type is added in exactly one place. The octet-stream fallback means an unknown extension is
     /// served as an opaque download, never guessed as text or an image.
     /// </summary>
-    private static string FileContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    internal static string FileContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".html" or ".htm" => "text/html; charset=utf-8",
         ".pdf"            => "application/pdf",

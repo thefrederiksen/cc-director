@@ -663,7 +663,11 @@ public sealed class ControlApiHost : IAsyncDisposable
             // StartAsync has initialized them - BuildStreamClient runs before _proactiveExplain /
             // _turnSummaryCache are set. Additive: verbs that need no service ignore it (issue #1177 inc 6).
             cmd => SessionCommandExecutor.DispatchAsync(_sessionManager, DirectorId, cmd,
-                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore }));
+                new SessionCommandServices { ProactiveExplain = _proactiveExplain, TurnSummaryCache = _turnSummaryCache, MissionStore = _missionStore }),
+            // Gateway Cleanup mission, Phase 0 (up-stream): pass the SessionManager so the four connection-bound
+            // stream verbs work - their terminal/file producers read session and file state from it and stream
+            // frames up this same connection.
+            sessionManager: _sessionManager);
     }
 
     /// <summary>

@@ -30,12 +30,29 @@ public sealed class DirectorHub : Hub
     private readonly PushedSessionStore _store;
     private readonly DirectorRegistry _registry;
     private readonly GatewayInputStatsAggregator _inputStats;
+    private readonly GatewayStreamRegistry _streamRegistry;
 
-    public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats)
+    public DirectorHub(PushedSessionStore store, DirectorRegistry registry, GatewayInputStatsAggregator inputStats, GatewayStreamRegistry streamRegistry)
     {
         _store = store;
         _registry = registry;
         _inputStats = inputStats;
+        _streamRegistry = streamRegistry;
+    }
+
+    /// <summary>
+    /// Gateway Cleanup mission, Phase 0 (up-stream): the Director streams a byte/frame stream UP under the
+    /// stream id the Gateway minted when it opened the stream over the tunnel. This is native client-to-server
+    /// streaming (the Director is the SignalR client). The registry pumps the frames into the browser-facing
+    /// sink with pull-then-forward backpressure, so a slow browser blocks the pull, which - with a small
+    /// StreamBufferCapacity - blocks the Director's producer. One primitive serves both the live terminal and a
+    /// finite file/screenshot read (keyed by the stream id). Requires the connection be bound first (Hello).
+    /// </summary>
+    public Task StreamUp(string streamId, IAsyncEnumerable<DirectorStreamFrame> frames)
+    {
+        var directorId = RequireBoundDirector();
+        FileLog.Write($"[DirectorHub] StreamUp: director={directorId}, stream={streamId}, conn={Short(Context.ConnectionId)}");
+        return _streamRegistry.ConsumeAsync(streamId, frames, Context.ConnectionAborted);
     }
 
     /// <summary>Bind this connection to a Director. Must be the first message; aborts the connection on a bad id.</summary>
