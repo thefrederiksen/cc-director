@@ -1,28 +1,33 @@
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type SessionDto } from "@devthrottle/client-core/api/client";
 import { dotColor, effectiveColor, stateLabel } from "@devthrottle/client-core/sessions/ordering";
 import { useSharedRoster } from "@devthrottle/client-core/fleet/rosterStore";
+import { getMissionNotes, setMissionNote } from "@devthrottle/client-core/missions/missionNotes";
 import { repoBasename, relativeTime } from "../fleet/format";
 import { groupByMission, type MissionGroup } from "./missionGrouping";
 
-// The Missions page (issue #1405, Phase 1a): the same live fleet the Fleet Map draws, seen the way the
-// owner actually thinks about the work - grouped into MISSIONS rather than machines or repos. A mission
-// is derived purely from the session name ("<Mission> - <Role>") by the pure module missionGrouping.ts;
+// The Missions page (issue #1405): the same live fleet the Fleet Map draws, seen the way the owner
+// actually thinks about the work - grouped into MISSIONS rather than machines or repos. A mission is
+// derived purely from the session name ("<Mission> - <Role>") by the pure module missionGrouping.ts;
 // this page only lays the result out. Sessions that are not a mission member fall into a Standalone
 // group shown last.
 //
 // It reads the ONE shared fleet roster store (issue #1239) - the same GET /sessions envelope the Fleet
 // Map, Sessions, and Directors pages read from a single poll loop - never a Director address, and reuses
 // the ONE shared effective-color + state-label rule so a status dot here matches every other Cockpit
-// surface. Clicking a session row opens that session (/session/:id) - the "linking" this phase delivers.
+// surface. Clicking a session row opens that session (/session/:id) - the "linking".
 //
-// Phase 1a shows a WHY slot on every card with a loud "No why set" flag; Phase 1b wires a durable,
-// shared store behind it. Nothing here writes; nothing here parses (that is missionGrouping.ts).
+// The WHY (Phase 1b): every card carries its mission's WHY, front and center, from the durable + shared
+// Gateway mission-notes store (getMissionNotes / setMissionNote in client-core) - keyed by the SAME
+// normalized mission key groupByMission produces, so every client and the future chat/API read the same
+// WHY. A mission with no WHY shows a loud flag (the mission's founding rule), never a silent blank; the
+// flag is the button that adds one, and the WHY is editable inline. Roster parsing stays in
+// missionGrouping.ts; the only writes here go through the WHY store.
 
-// The Phase 1a placeholder for a mission's WHY, shown until Phase 1b wires the durable store. It is a
-// deliberately loud flag - a mission with no stated WHY is a red flag the screen makes obvious (the
-// mission's founding rule), never a silent blank.
+// The loud flag shown when a mission has no WHY set - a mission with no stated WHY is a red flag the
+// screen makes obvious (the mission's founding rule), never a silent blank. It is also the button that
+// opens the inline editor to add one.
 const NO_WHY_TEXT = "No why set - add one";
 
 export function MissionsView() {
@@ -30,6 +35,36 @@ export function MissionsView() {
   // Sessions, the unreachable-machine list, and the keep-last error banner all come from the ONE shared
   // roster store; no poll of its own.
   const { sessions, machineErrors, error: lastError } = useSharedRoster();
+
+  // The mission WHYs, keyed by the normalized mission key (the same key groupByMission produces). Read
+  // once on mount from the durable, shared Gateway store; refreshed in place after an inline edit. A
+  // failed read is non-fatal - the page still renders the fleet, every card just shows its flag.
+  const [whyByKey, setWhyByKey] = useState<Map<string, string>>(new Map());
+
+  const refreshNotes = useCallback(() => {
+    getMissionNotes()
+      .then((notes) => setWhyByKey(new Map(notes.map((n) => [n.key, n.why]))))
+      .catch(() => {
+        /* non-fatal: the WHYs are unavailable this load; the cards fall back to the flag */
+      });
+  }, []);
+
+  useEffect(() => {
+    refreshNotes();
+  }, [refreshNotes]);
+
+  // Save (or clear) one mission's WHY through the shared store, then reflect it locally. The store
+  // treats an empty why as "unset", so clearing returns the card to its flag.
+  const saveWhy = useCallback(async (missionName: string, why: string) => {
+    const note = await setMissionNote(missionName, why);
+    setWhyByKey((prev) => {
+      const next = new Map(prev);
+      const key = missionName.trim().toLowerCase();
+      if (note === null) next.delete(key);
+      else next.set(note.key, note.why);
+      return next;
+    });
+  }, []);
 
   const list = useMemo(() => sessions ?? [], [sessions]);
   const grouped = useMemo(() => groupByMission(list), [list]);
@@ -101,7 +136,13 @@ export function MissionsView() {
       {list.length > 0 && (
         <div className="msn-list">
           {grouped.missions.map((m) => (
-            <MissionCard key={m.key} mission={m} onOpen={openSession} />
+            <MissionCard
+              key={m.key}
+              mission={m}
+              why={whyByKey.get(m.key) ?? ""}
+              onSaveWhy={saveWhy}
+              onOpen={openSession}
+            />
           ))}
 
           {grouped.standalone.length > 0 && (
@@ -129,10 +170,12 @@ export function MissionsView() {
 
 interface MissionCardProps {
   mission: MissionGroup;
+  why: string;
+  onSaveWhy: (missionName: string, why: string) => Promise<void>;
   onOpen: (sessionId: string | null | undefined) => void;
 }
 
-function MissionCard({ mission, onOpen }: MissionCardProps) {
+function MissionCard({ mission, why, onSaveWhy, onOpen }: MissionCardProps) {
   const sessions = mission.members.map((m) => m.session);
 
   // The card's accent (left border) and status pill follow the same color rule as everything else: red
@@ -166,12 +209,9 @@ function MissionCard({ mission, onOpen }: MissionCardProps) {
         <MissionPill needs={needs} working={working} />
       </div>
 
-      {/* The WHY slot (issue #1405): first-class on every card from Phase 1a, shown as a loud flag until
-          Phase 1b wires the durable store. */}
-      <div className="msn-why msn-why-empty">
-        <span className="msn-why-k">Why</span>
-        <span className="msn-why-flag">{NO_WHY_TEXT}</span>
-      </div>
+      {/* The WHY slot (issue #1405): first-class on every card, front and center. The WHY comes from the
+          durable, shared Gateway store and is editable inline; a missing WHY shows the loud flag. */}
+      <WhySlot missionName={mission.name} why={why} onSave={onSaveWhy} />
 
       <div className="msn-sessions">
         {mission.members.map((m) => (
@@ -184,6 +224,94 @@ function MissionCard({ mission, onOpen }: MissionCardProps) {
         ))}
       </div>
     </section>
+  );
+}
+
+interface WhySlotProps {
+  missionName: string;
+  why: string;
+  onSave: (missionName: string, why: string) => Promise<void>;
+}
+
+// The WHY slot on a mission card: shows the mission's WHY front and center, or a loud flag when none is
+// set. Either the flag or an "Edit" affordance opens an inline editor; saving writes through the shared
+// store (an empty value clears the WHY back to the flag). Save errors are shown loudly and keep the
+// editor open rather than silently dropping the edit.
+function WhySlot({ missionName, why, onSave }: WhySlotProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(why);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const beginEdit = () => {
+    setDraft(why);
+    setError(null);
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setError(null);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(missionName, draft);
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the why");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="msn-why msn-why-editing">
+        <span className="msn-why-k">Why</span>
+        <div className="msn-why-edit">
+          <textarea
+            className="msn-why-input"
+            value={draft}
+            autoFocus
+            rows={2}
+            placeholder="Why are we on this mission?"
+            disabled={saving}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <div className="msn-why-actions">
+            <button type="button" className="msn-why-save" disabled={saving} onClick={save}>
+              {saving ? "Saving..." : "Save"}
+            </button>
+            <button type="button" className="msn-why-cancel" disabled={saving} onClick={cancel}>
+              Cancel
+            </button>
+          </div>
+          {error !== null && <div className="msn-why-error">{error}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  const hasWhy = why.trim().length > 0;
+  return (
+    <div className={hasWhy ? "msn-why" : "msn-why msn-why-empty"}>
+      <span className="msn-why-k">Why</span>
+      {hasWhy ? (
+        <>
+          <span className="msn-why-text">{why}</span>
+          <button type="button" className="msn-why-editbtn" onClick={beginEdit}>
+            Edit
+          </button>
+        </>
+      ) : (
+        <button type="button" className="msn-why-flag" onClick={beginEdit}>
+          {NO_WHY_TEXT}
+        </button>
+      )}
+    </div>
   );
 }
 

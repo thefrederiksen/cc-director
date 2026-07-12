@@ -200,15 +200,132 @@
   flex: 0 0 auto;
 }
 
-/* A missing WHY is a loud flag, never a silent blank (the mission's founding rule). */
+/* The set WHY, shown front and center on the card. */
+.msn-why-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A missing WHY is a loud flag, never a silent blank (the mission's founding rule). It is also the
+   button that opens the inline editor to add one. */
 .msn-why-flag {
   color: var(--warn);
   background: rgba(245, 158, 11, 0.1);
   border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: 5px;
-  padding: 2px 8px;
+  padding: 3px 8px;
   font-size: 11px;
   font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.msn-why-flag:hover {
+  background: rgba(245, 158, 11, 0.18);
+}
+
+/* The small "Edit" affordance next to a set WHY. */
+.msn-why-editbtn {
+  flex: 0 0 auto;
+  background: var(--btn, var(--surface-2));
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.msn-why-editbtn:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+/* Inline editor: the slot lays its label at the top while the editor column grows. */
+.msn-why-editing {
+  align-items: flex-start;
+}
+
+.msn-why-k {
+  padding-top: 3px;
+}
+
+.msn-why-edit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.msn-why-input {
+  width: 100%;
+  resize: vertical;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.msn-why-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.msn-why-input::placeholder {
+  color: var(--text-dim);
+}
+
+.msn-why-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.msn-why-save {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 13px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.msn-why-save:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.msn-why-cancel {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 13px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.msn-why-cancel:hover:not(:disabled) {
+  color: var(--text);
+}
+
+/* A save failure is shown loudly and keeps the editor open (no silent drop). */
+.msn-why-error {
+  color: var(--attention);
+  font-size: 11.5px;
 }
 
 /* ---- session rows ---- */
