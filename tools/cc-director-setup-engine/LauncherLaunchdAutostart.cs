@@ -173,6 +173,21 @@ public static class LauncherLaunchdAutostart
         return exit == 0;
     }
 
+    /// <summary>
+    /// Restart (or start) the agent with "launchctl kickstart -k": launchd stops any running
+    /// instance and spawns a fresh one from whatever binary now sits at the property list's
+    /// path - the one programmatic restart every update flow uses, so launchd always owns the
+    /// launcher process. Returns false (with a log line) when the agent is not loaded; the
+    /// caller then starts the launcher directly and it re-registers itself at startup.
+    /// </summary>
+    [SupportedOSPlatform("macos")]
+    public static bool Kickstart()
+    {
+        var (exit, text) = ProcessRunner.Run("/bin/launchctl", $"kickstart -k gui/{UserId()}/{Label}");
+        EngineLog.Write($"[LauncherLaunchdAutostart] Kickstart -> exit={exit} {Trim(text)}");
+        return exit == 0;
+    }
+
     private static string UserId()
     {
         var (exit, output) = ProcessRunner.Run("/usr/bin/id", "-u");

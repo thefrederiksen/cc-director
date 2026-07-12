@@ -147,17 +147,41 @@ public static class Program
             },
             startLauncher: () =>
             {
+                // macOS: "launchctl kickstart -k" is THE restart - launchd stops whatever runs
+                // and starts the swapped-in binary, so launchd always owns the launcher process.
+                // When the launch agent is not loaded (a bare development run, or the test
+                // harness), fall through to the direct start below and the launcher re-registers
+                // its own agent at startup.
+                if (OperatingSystem.IsMacOS())
+                {
+                    try
+                    {
+                        if (LauncherLaunchdAutostart.Kickstart())
+                        {
+                            FileLog.Write("[Program] restarted the Launcher via launchctl kickstart");
+                            return true;
+                        }
+                        FileLog.Write("[Program] launch agent not loaded; starting the Launcher directly");
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.Write($"[Program] launchctl kickstart FAILED ({ex.Message}); starting the Launcher directly");
+                    }
+                }
                 try
                 {
-                    // UseShellExecute=true so the relaunched Launcher does NOT inherit this helper's
-                    // stdio handles - an inherited stdout pipe keeps the caller's pipe open for the
-                    // Launcher's whole lifetime (observed as a hang in any script that pipes output).
+                    // Windows: UseShellExecute=true so the relaunched Launcher does NOT inherit
+                    // this helper's stdio handles - an inherited stdout pipe keeps the caller's
+                    // pipe open for the Launcher's whole lifetime (observed as a hang in any
+                    // script that pipes output). macOS: UseShellExecute=true would route a bare
+                    // binary through /usr/bin/open (which opens Terminal), so start it plainly;
+                    // the helper is itself detached, so no pipe ties lifetimes together.
                     var psi = new ProcessStartInfo
                     {
                         FileName = target,
                         Arguments = relaunchArgs,
                         WorkingDirectory = Path.GetDirectoryName(target) ?? Environment.CurrentDirectory,
-                        UseShellExecute = true,
+                        UseShellExecute = OperatingSystem.IsWindows(),
                     };
                     using var proc = Process.Start(psi);
                     FileLog.Write($"[Program] relaunched Launcher pid={proc?.Id}");

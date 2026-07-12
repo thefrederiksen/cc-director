@@ -146,7 +146,7 @@ public sealed class LauncherCore : IAsyncDisposable
         while (!ct.IsCancellationRequested)
         {
             var cfg = AutoUpdateConfig.Load(layout);
-            if (cfg.Enabled && OperatingSystem.IsWindows())
+            if (cfg.Enabled && (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()))
             {
                 try
                 {

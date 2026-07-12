@@ -25,6 +25,15 @@ public sealed class LauncherSelfUpdate
     /// <summary>
     /// Swap in <paramref name="stagedExePath"/> as the Launcher exe and verify the new build is
     /// healthy, rolling back to .old (and pinning <paramref name="newVersion"/>) if it is not.
+    ///
+    /// Two orders exist, chosen by <paramref name="stopBeforeSwap"/> (null picks by operating
+    /// system). Windows must stop first: the running executable is file-locked, so nothing can
+    /// be swapped until the process exits. macOS must NOT stop first: there are no file locks,
+    /// a rename-based swap under a running process is safe (verified by experiment, see
+    /// docs/plans/cc-launcher-mutual-update-research-2026-07-11.md), and the restart
+    /// ("launchctl kickstart -k") replaces the process atomically - while a separate clean stop
+    /// would STAY stopped under the launch agent's SuccessfulExit=false KeepAlive, leaving the
+    /// machine without a launcher if this helper died before restarting it.
     /// </summary>
     public async Task<SelfUpdateResult> ApplyAsync(
         string targetExePath,
@@ -34,7 +43,8 @@ public sealed class LauncherSelfUpdate
         Func<bool> startLauncher,
         Func<CancellationToken, Task<bool>> isHealthy,
         TimeSpan healthTimeout,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool? stopBeforeSwap = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetExePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(stagedExePath);
@@ -43,17 +53,27 @@ public sealed class LauncherSelfUpdate
         ArgumentNullException.ThrowIfNull(startLauncher);
         ArgumentNullException.ThrowIfNull(isHealthy);
 
+        var stopFirst = stopBeforeSwap ?? OperatingSystem.IsWindows();
         var steps = new List<string>();
         var target = targetExePath;
-        EngineLog.Write($"[LauncherSelfUpdate] applying {newVersion} -> {target}");
+        EngineLog.Write($"[LauncherSelfUpdate] applying {newVersion} -> {target} (stopBeforeSwap={stopFirst})");
 
-        // 1. Stop the running Launcher so its exe unlocks, then swap. The writability wait is the
-        // real exit barrier: a single-file exe stays locked until its process has fully exited
-        // (which also releases the tray app's single-instance mutex for the relaunch).
-        stopLauncher();
-        steps.Add("stopped the running Launcher");
-        if (!WaitUntilWritable(target))
-            return Fail(steps, $"Launcher exe still locked after stop ({target}); aborting swap.");
+        // 1. Make the target replaceable, then swap. Windows: stop the running Launcher so its
+        // exe unlocks - the writability wait is the real exit barrier (a single-file exe stays
+        // locked until its process has fully exited, which also releases the tray app's
+        // single-instance mutex for the relaunch). macOS: swap under the running Launcher; it
+        // keeps serving from the renamed file node until the restart below replaces it.
+        if (stopFirst)
+        {
+            stopLauncher();
+            steps.Add("stopped the running Launcher");
+            if (!WaitUntilWritable(target))
+                return Fail(steps, $"Launcher exe still locked after stop ({target}); aborting swap.");
+        }
+        else
+        {
+            steps.Add("swapping under the running Launcher (rename-based; the restart replaces the process)");
+        }
 
         string? backup;
         try
@@ -63,11 +83,14 @@ public sealed class LauncherSelfUpdate
         }
         catch (Exception ex)
         {
-            startLauncher(); // leave the Launcher running on the old (still-installed) exe
+            // Windows: the Launcher was stopped above, so bring the old build back up. macOS:
+            // the old build never stopped and the target was not replaced; nothing to restart.
+            if (stopFirst) startLauncher();
             return Fail(steps, $"swap failed: {ex.Message}");
         }
 
-        // 2. Relaunch the new build and health-check it.
+        // 2. Start the new build (on macOS the kickstart also stops the old process) and
+        // health-check it.
         startLauncher();
         steps.Add("relaunched the Launcher (new build)");
         if (await WaitHealthyAsync(isHealthy, healthTimeout, ct))
@@ -78,11 +101,16 @@ public sealed class LauncherSelfUpdate
             return new SelfUpdateResult(SelfUpdateOutcome.Updated, $"Launcher updated to {newVersion}.", steps);
         }
 
-        // 3. The new build did not come up -> roll back to .old and pin the bad version.
+        // 3. The new build did not come up -> roll back to .old and pin the bad version. The
+        // rollback mirrors the swap order: Windows stops the unhealthy new build to unlock the
+        // exe; macOS renames the backup in and lets the restart replace the process.
         steps.Add($"new build NOT healthy within {healthTimeout.TotalSeconds:F0}s; rolling back");
         EngineLog.Write($"[LauncherSelfUpdate] {newVersion} unhealthy; rolling back");
-        stopLauncher();
-        WaitUntilWritable(target);
+        if (stopFirst)
+        {
+            stopLauncher();
+            WaitUntilWritable(target);
+        }
         var restored = InstallSwapper.Rollback(target);
         Pin(newVersion);
         startLauncher();

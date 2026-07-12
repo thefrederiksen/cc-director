@@ -236,6 +236,30 @@ harness for this mission should use `HttpListener`.
    to reason about than two racing ones, and the launcher is itself rescued by the Director
    and launchd. If the fleet later runs Directors on machines with no launcher, revisit.
 
+## Part 3a - Owner ruling on the restart policy (received 2026-07-11, decision 8 in the mission brief)
+
+Version 1, the one to build now:
+
+- The launcher must **never** restart a Director that has any actively working session.
+- An automatic restart is allowed only when **all** of the Director's sessions are idle or
+  waiting **and** the current time is inside a nightly maintenance window.
+- Both are configurable: the window's start and end hours, and a switch that disables
+  automatic restarts entirely.
+- When an update is staged but the policy blocks the restart, force nothing - surface a
+  "new version waiting" notification to the owner instead.
+
+Build the restart step as a **policy seam** (an injected decision, not logic hard-coded into
+the update loop), because version 2 is explicitly deferred and undecided: it may save the
+running sessions as handover documents through the existing /handover endpoints, apply the
+update, and restore them - or stay notify-only. That choice will be made later, with
+version 1 evidence in hand. Do not build any part of version 2 now.
+
+Implementation note for the policy check: the Director's health endpoint reports only a
+session **count**; "all sessions idle or waiting" needs the per-session activity state from
+the Director's session-list endpoint, which sits behind the Control API's authentication.
+The launcher's supervisor already talks to the Control API for graceful stop, so the policy
+check rides the same authenticated channel.
+
 ## Part 4 - Coordination notes and blockers
 
 - **Implementation is sequenced behind Session 1** ("CC Launcher - Mac Port", 5ad3c44f), per

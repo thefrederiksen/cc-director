@@ -42,7 +42,8 @@ public class LauncherSelfUpdateTests : IDisposable
             stopLauncher: () => { stops++; return true; },
             startLauncher: () => { starts++; return true; },
             isHealthy: _ => Task.FromResult(true),
-            healthTimeout: TimeSpan.FromSeconds(2));
+            healthTimeout: TimeSpan.FromSeconds(2),
+            stopBeforeSwap: true); // the Windows order, regardless of the test host's OS
 
         Assert.Equal(SelfUpdateOutcome.Updated, result.Outcome);
         Assert.Equal("launcher-NEW", File.ReadAllText(_target));            // swapped in
@@ -63,11 +64,58 @@ public class LauncherSelfUpdateTests : IDisposable
             stopLauncher: () => true,
             startLauncher: () => true,
             isHealthy: _ => Task.FromResult(false),    // new build never comes up
-            healthTimeout: TimeSpan.FromMilliseconds(200));
+            healthTimeout: TimeSpan.FromMilliseconds(200),
+            stopBeforeSwap: true); // the Windows order, regardless of the test host's OS
 
         Assert.Equal(SelfUpdateOutcome.RolledBack, result.Outcome);
         Assert.Equal("launcher-OLD", File.ReadAllText(_target));   // restored from .old
         Assert.True(PinStore.Load(_layout).IsPinned(ComponentRegistry.Launcher.Id, "0.4.0")); // pinned away from the bad version
+    }
+
+    [Fact]
+    public async Task Apply_MacOrder_SwapsWithoutStopping_HealthyNewBuild()
+    {
+        // The macOS order (ratified 2026-07-11): swap under the running launcher, then a single
+        // start call (the kickstart) replaces the process. No stop call anywhere - under the
+        // launch agent's SuccessfulExit=false KeepAlive a clean stop would STAY stopped, so a
+        // helper crash between stop and start would leave the machine with no launcher at all.
+        var stops = 0; var starts = 0;
+        var su = new LauncherSelfUpdate(_layout, unlockTimeout: TimeSpan.FromSeconds(1));
+
+        var result = await su.ApplyAsync(
+            _target, _staged, "0.4.0",
+            stopLauncher: () => { stops++; return true; },
+            startLauncher: () => { starts++; return true; },
+            isHealthy: _ => Task.FromResult(true),
+            healthTimeout: TimeSpan.FromSeconds(2),
+            stopBeforeSwap: false);
+
+        Assert.Equal(SelfUpdateOutcome.Updated, result.Outcome);
+        Assert.Equal("launcher-NEW", File.ReadAllText(_target));
+        Assert.Equal("launcher-OLD", File.ReadAllText(_target + ".old"));
+        Assert.Equal(0, stops);   // never stopped - the start call IS the process replacement
+        Assert.Equal(1, starts);
+    }
+
+    [Fact]
+    public async Task Apply_MacOrder_UnhealthyNewBuild_RollsBackWithoutStopping()
+    {
+        var stops = 0; var starts = 0;
+        var su = new LauncherSelfUpdate(_layout, unlockTimeout: TimeSpan.FromSeconds(1));
+
+        var result = await su.ApplyAsync(
+            _target, _staged, "0.4.0",
+            stopLauncher: () => { stops++; return true; },
+            startLauncher: () => { starts++; return true; },
+            isHealthy: _ => Task.FromResult(false),    // new build never comes up
+            healthTimeout: TimeSpan.FromMilliseconds(200),
+            stopBeforeSwap: false);
+
+        Assert.Equal(SelfUpdateOutcome.RolledBack, result.Outcome);
+        Assert.Equal("launcher-OLD", File.ReadAllText(_target));   // restored from .old
+        Assert.True(PinStore.Load(_layout).IsPinned(ComponentRegistry.Launcher.Id, "0.4.0"));
+        Assert.Equal(0, stops);   // rollback also never stops: rename back, then kickstart again
+        Assert.Equal(2, starts);  // one start for the bad build, one for the restored build
     }
 }
 
@@ -92,15 +140,19 @@ public class LauncherUpdaterTests : IDisposable
 
     private ResolvedRelease BuildRelease(string version)
     {
-        var name = ComponentRegistry.Launcher.WindowsAsset; // cc-launcher-win-x64.exe
+        // The updater stages the asset for the operating system the test runs on, so the test
+        // release must carry that asset (cc-launcher-win-x64.exe or cc-launcher-mac-arm64).
+        var name = LauncherUpdater.AssetNameForThisOs()
+            ?? throw new InvalidOperationException("No launcher asset for this operating system.");
         var path = Path.Combine(_releaseDir, name);
         File.WriteAllText(path, $"launcher@{version}");
+        var platform = OperatingSystem.IsWindows() ? "windows" : "mac";
         var manifest = new
         {
             version,
             assets = new Dictionary<string, object>
             {
-                [name] = new { version, sha256 = Hashing.Sha256OfFile(path), platform = "windows", size = new FileInfo(path).Length },
+                [name] = new { version, sha256 = Hashing.Sha256OfFile(path), platform, size = new FileInfo(path).Length },
             },
         };
         File.WriteAllText(Path.Combine(_releaseDir, "release-manifest.json"), JsonSerializer.Serialize(manifest));
