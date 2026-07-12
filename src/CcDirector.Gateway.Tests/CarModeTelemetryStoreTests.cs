@@ -117,9 +117,10 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
         {
             TranscribeAttempts = 4,             // "over and out" took four tries to land - finicky
             ClipDurationMs = 5200,              // the whole reply the phone received
-            PlayedToMs = 2100,                  // but playback only reached 2.1s in
+            PlayedToMs = 0,                     // but playback never advanced - it was blocked
             Completed = false,
-            MicReacquiredDuringPlayback = true, // the mic was re-opened while the reply played
+            PlayRejected = true,                // the mobile autoplay block: play() was refused
+            MicReacquiredDuringPlayback = true, // the mic was re-opened while the reply "played"
             SpeakingPollCount = 2,
         };
         store.Add(turn);
@@ -128,7 +129,8 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
 
         Assert.Equal(4, reloaded.TranscribeAttempts);
         Assert.Equal(5200, reloaded.ClipDurationMs);
-        Assert.Equal(2100, reloaded.PlayedToMs);
+        Assert.Equal(0, reloaded.PlayedToMs);
+        Assert.True(reloaded.PlayRejected);
         Assert.True(reloaded.MicReacquiredDuringPlayback);
         Assert.Equal(2, reloaded.SpeakingPollCount);
     }

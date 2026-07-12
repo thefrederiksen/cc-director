@@ -22,6 +22,10 @@ export interface PlayClipHooks {
   onPlayStarted?: () => void;
   /** Fired once when the clip is done, with how it ended, so the caller can record completed-vs-cutoff. */
   onPlayEnded?: (outcome: PlayOutcome) => void;
+  /** Fired when the element's play() promise REJECTS - on mobile this is the autoplay block (a play() not
+   *  tied to a live user gesture is refused with NotAllowedError). Lets the caller record that the reply
+   *  never actually sounded (the mobile cut-off bug), distinct from a normal early stop. */
+  onPlayRejected?: (error: unknown) => void;
 }
 
 /**
@@ -61,6 +65,16 @@ export function playClip(
     registerStop(() => finish("stopped"));
     audio.src = url;
     hooks?.onPlayStarted?.();
-    void audio.play().catch(() => finish("stopped"));
+    // A play() rejection is the mobile autoplay block (NotAllowedError when the play is not tied to a live
+    // user gesture): log the specific reason and mark it so the turn telemetry can show the reply never
+    // sounded, then treat it as a stop so the turn loop unwinds and the microphone returns (no silent
+    // stall). The unlock-on-Start-gesture (useCarMode) is what prevents this from happening.
+    void audio.play().catch((error: unknown) => {
+      const name = error instanceof Error ? error.name : "unknown";
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`[CarMode] reply audio play() rejected: ${name}: ${message}`);
+      hooks?.onPlayRejected?.(error);
+      finish("stopped");
+    });
   });
 }

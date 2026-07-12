@@ -127,6 +127,7 @@ internal static class CarModeEndpoint
                 ClipDurationMs = req.ClipDurationMs,
                 PlayedToMs = req.PlayedToMs,
                 Completed = req.Completed,
+                PlayRejected = req.PlayRejected,
                 MicReacquiredDuringPlayback = req.MicReacquiredDuringPlayback,
                 SpeakingPollCount = req.SpeakingPollCount,
                 ServerTotalMs = req.ServerTotalMs,
@@ -201,6 +202,7 @@ public sealed class CarModeTelemetryPost
     public double ClipDurationMs { get; set; }
     public double PlayedToMs { get; set; }
     public bool Completed { get; set; }
+    public bool PlayRejected { get; set; }
     public bool MicReacquiredDuringPlayback { get; set; }
     public int SpeakingPollCount { get; set; }
     public double ServerTotalMs { get; set; }

@@ -9,7 +9,7 @@ import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 // the old git short-sha + timestamp badge was replaced by a plain human version. BUMP THIS INTEGER BY HAND
 // ON EVERY DEPLOY of the mobile app (v1 -> v2 -> v3 ...), so a glance at the corner tells the owner and the
 // Architect exactly which page is live and what to look for after a deploy.
-const CAR_MODE_VERSION = "v1";
+const CAR_MODE_VERSION = "v2";
 
 // Car Mode (Car Mode mission): the standalone, chrome-less, full-screen page the owner opens to run
 // the whole fleet by voice, hands-free, phone in his pocket. It is a THIN view over the shared

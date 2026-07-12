@@ -70,6 +70,23 @@ configureUnauthorizedRedirect(mobileSignInRedirect);
 // that needs a user gesture (the "Enable notifications" button on the roster). Non-fatal on failure.
 void ensurePushSubscribed();
 
+// Force the newest bundle into a long-lived Progressive Web App. The service worker is network-first for
+// the shell + bundle (vite.config.ts), so a plain reopen already fetches the latest; this handles the
+// other case - the app has been open in the background while a NEW build deployed. When the new service
+// worker takes control (skipWaiting + clientsClaim on activate), reload ONCE so the page drops the old
+// in-memory JS and runs the new build. Armed ONLY when the page is ALREADY controlled at load (a
+// returning install): a first visit that starts uncontrolled is claimed by clientsClaim, which is NOT an
+// update and must not trigger a reload. The one-shot flag prevents any reload loop.
+if ("serviceWorker" in navigator && navigator.serviceWorker.controller !== null) {
+  let reloadingForNewWorker = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadingForNewWorker) return;
+    reloadingForNewWorker = true;
+    console.log("[mobile] a new service worker took control - reloading to run the latest build");
+    window.location.reload();
+  });
+}
+
 // The app is served under /m, so the router is rooted there. A hard navigation to a deep link
 // (e.g. /m/session/<id>) is served the injected index.html by the Gateway and the router then
 // resolves it client-side.
