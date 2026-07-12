@@ -12,7 +12,8 @@
 #
 # Targets:
 #   main         -> "CC Director.app"   <- cc-director-mac-main   (your stable copy)
-#   1|2|3|4      -> "CC Director N.app" <- cc-director-macN       (dev test slots)
+#   1|2|3|4      -> "CC Director N.app" <- cc-director-macN       (normal-work slots)
+#   5            -> "CC Director 5.app" <- cc-director-mac5       (testing slot)
 #
 # Each target gets a distinct CFBundleIdentifier so macOS treats them as separate
 # apps (own Dock tile, own Spotlight entry, can run side by side). The bundle's
@@ -75,13 +76,13 @@ case "$TARGET" in
         BIN="cc-director-mac-main"
         BID="com.devthrottle.ccdirector"
         REBUILD="scripts/mac-rebuild.sh main" ;;
-    1|2|3|4)
+    1|2|3|4|5)
         APP_NAME="CC Director $TARGET"
         BIN="cc-director-mac$TARGET"
         BID="com.devthrottle.ccdirector.slot$TARGET"
         REBUILD="scripts/mac-rebuild.sh $TARGET" ;;
     *)
-        echo "ERROR: invalid --target '$TARGET' (use: main|1|2|3|4)" >&2; exit 1 ;;
+        echo "ERROR: invalid --target '$TARGET' (use: main|1|2|3|4|5)" >&2; exit 1 ;;
 esac
 
 BIN_PATH="$BIN_DIR/$BIN"
