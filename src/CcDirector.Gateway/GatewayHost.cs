@@ -146,6 +146,14 @@ public sealed class GatewayHost : IAsyncDisposable
     internal Snooze.SnoozeRegistry SnoozeRegistry => _snoozeRegistry;
 
     /// <summary>
+    /// Snooze Length mission: run one pass of the REAL wired snooze watchdog synchronously, so an
+    /// end-to-end test can prove the expiry nudge and the confirm-clear without waiting on the timer.
+    /// No-op before <see cref="StartAsync"/> builds the sweep.
+    /// </summary>
+    internal Task RunSnoozeSweepOnceAsync(CancellationToken cancellationToken = default)
+        => _snoozeSweep?.RunOnceAsync(cancellationToken) ?? Task.CompletedTask;
+
+    /// <summary>
     /// Issue #469: the registry of enrolled devices and their unique per-device keys - the single
     /// issuer and record of credentials in the per-device-key trust model. Persisted under the
     /// config root so issued keys survive a Gateway restart.

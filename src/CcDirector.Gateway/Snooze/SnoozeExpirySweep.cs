@@ -120,13 +120,18 @@ public sealed class SnoozeExpirySweep : IDisposable
         if (onHold == false)
         {
             // The Director itself reports the session is no longer held - it came back on its own
-            // (issue #470) or a prior nudge took. The snooze is done; clear it.
-            _registry.Clear(entry.SessionId);
-            FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: director reports not-held -> cleared");
+            // (issue #470) or a prior nudge took. The snooze is done; clear it - but only if the entry is
+            // unchanged since this pass snapshotted it, so a re-snooze that landed in between is never
+            // clobbered (compare-and-clear; the fresh snooze wins).
+            if (_registry.ClearIfUnchanged(entry.SessionId, entry.SnoozeUntilUtc))
+                FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: director reports not-held -> cleared");
             return;
         }
 
-        if (onHold == true && now >= entry.SnoozeUntilUtc)
+        // Re-check expiry against the LIVE registry (not the snapshot): if the user re-snoozed this
+        // session since the pass began, its time has moved into the future and it must NOT be nudged off
+        // hold. This keeps a fresh snooze from being cancelled by a stale expiry decision.
+        if (onHold == true && _registry.IsExpired(entry.SessionId, now))
         {
             // Expired and still held on a live Director: nudge it off hold so its own state and voice
             // rotation resume. Keep the entry; the overlay already reads the session as "needs you",
