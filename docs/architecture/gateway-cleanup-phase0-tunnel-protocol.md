@@ -396,3 +396,31 @@ Start wave 3 immediately; nothing waits on the verification pass:
 Only after every one of the ~14 is either a tunnel verb or an explicitly-ratified Director-local/removable does
 the Phase 0 -> Phase 1 checkpoint open. That checkpoint (the first deletions) comes to me before anything is
 deleted.
+
+### Wave 3 classification RATIFIED 2026-07-12 (grep evidence in hand)
+
+The Manager's verify-then-ratify grep (Gateway DirectorEndpointClient + client-core + command-line tools) is
+ratified:
+
+- SIX TUNNEL VERBS (a Gateway dial site is the strongest remote signal, since Phase 2 re-points it onto the
+  tunnel): `facts` (GetFactsAsync), `repos-list` (ListReposAsync), `handover` (GetHandoverAsync + client-core
+  Handover view), `handover-generate` (PostHandoverAsync), `wingman-ask` (AskWingmanAsync), `recap-generate`
+  (PostRecapAsync). Exactly the six certain. Lift on top of the shared-spine dependency addition.
+- EIGHT DIRECTOR-LOCAL (zero remote consumer found in Gateway + client-core + CLI): `handover-context`,
+  `brief`, `chat` (the client-core /chat hits are chat-history rendering in chatView, NOT the Director POST
+  /chat route), `wingman-act`, `turn-summaries-generate`, `rule-violations`, `recovery-prompt`, `state-vote`.
+  Director-local means the route is deleted at Phase 1 and the handler is kept in-process only if the desktop
+  app uses it (else removed). RE-CONFIRM at the Phase 1 checkpoint, before the route is actually deleted, the
+  two whose names suggest a driver we might have missed - `wingman-act` and `recovery-prompt` - as cheap
+  insurance; any missed remote consumer also surfaces when Phase 2 re-points the Gateway leg, so this is not a
+  blocker, just a checkpoint verification.
+
+Slow-LLM verbs (`wingman-ask`, `recap-generate`) - decision (A) taken: in Phase 0 lift all six as plain unary
+verbs that share the existing core; nothing drives them over the tunnel in Phase 0 (the Gateway still dials
+HTTP until Phase 2), so the invocation strategy does not bite yet and Phase 0 stays purely additive. The
+strategy is a PHASE 2 carry-forward, decided per verb when the Gateway leg actually moves: a nuance to apply
+then - a pending SignalR InvokeAsync does NOT block the shared connection (invocations multiplex by id), so the
+real risk of a slow synchronous unary is the client-result TIMEOUT, not connection monopoly. So the Phase 2
+choice per slow verb is "synchronous unary with an adequate client-result timeout if the call is bounded to a
+few seconds" versus "trigger-and-acknowledge if it can run long or unbounded" - do not naively re-point them as
+default-timeout synchronous calls.
