@@ -64,13 +64,29 @@ export interface CarModeAction {
   summary: string;
 }
 
+/** The per-stage SERVER timing the brain measured for one turn (performance round): every hosted-model
+ *  round trip and every fleet/roster read, plus the whole-turn server wall-clock. Milliseconds. The browser
+ *  echoes this back merged with its own client stamps as one telemetry record. */
+export interface CarModeServerTiming {
+  totalMs: number;
+  modelCallCount: number;
+  modelMsTotal: number;
+  modelMs: number[];
+  fleetReadCount: number;
+  fleetReadMsTotal: number;
+  rounds: number;
+}
+
 /** The brain's answer for one turn (POST /carmode/turn). `spoken` is what the assistant says out loud;
  *  `actions` is what it did this turn (empty for a pure question); `pendingConfirmation` is true when the
- *  assistant is holding a destructive action and is waiting for a spoken "confirm" next turn. */
+ *  assistant is holding a destructive action and is waiting for a spoken "confirm" next turn. `turnId` and
+ *  `timing` feed the telemetry record the browser posts back. */
 export interface CarModeTurnResult {
+  turnId: string;
   spoken: string;
   actions: CarModeAction[];
   pendingConfirmation: boolean;
+  timing: CarModeServerTiming | null;
 }
 
 /**
@@ -94,8 +110,53 @@ export async function carModeTurn(text: string, signal?: AbortSignal): Promise<C
   }
   const body = (await res.json().catch(() => ({}))) as Partial<CarModeTurnResult>;
   return {
+    turnId: typeof body.turnId === "string" ? body.turnId : "",
     spoken: (body.spoken ?? "").trim(),
     actions: Array.isArray(body.actions) ? body.actions : [],
     pendingConfirmation: Boolean(body.pendingConfirmation),
+    timing: body.timing ?? null,
   };
+}
+
+/** One merged per-turn timing record the browser posts to the Gateway telemetry store (performance round):
+ *  the client stamps it measured, plus the server timing it received in the turn response, plus small
+ *  non-text turn facts (character counts, action count). The server fills the received-at time, the device
+ *  hash, and the Gateway build from its own side. No command or reply text is ever included. */
+export interface CarModeTelemetryPost {
+  turnId: string;
+  pauseToTranscribeMs: number;
+  brainMs: number;
+  ttsMs: number;
+  firstAudioMs: number;
+  totalTurnMs: number;
+  serverTotalMs: number;
+  modelCallCount: number;
+  modelMsTotal: number;
+  modelMs: number[];
+  fleetReadCount: number;
+  fleetReadMsTotal: number;
+  rounds: number;
+  commandChars: number;
+  replyChars: number;
+  actionsCount: number;
+  pendingConfirmation: boolean;
+}
+
+/**
+ * Post one turn's merged timing record to the Gateway telemetry store (POST /carmode/telemetry). Best-effort
+ * observability: it never throws into the turn loop and never blocks the spoken reply - a failed post is
+ * logged and swallowed, because losing a timing record must never disrupt the drive. Same-origin, with the
+ * enrolled per-device key like every other Car Mode call.
+ */
+export async function postCarModeTelemetry(record: CarModeTelemetryPost): Promise<void> {
+  try {
+    await fetch("/carmode/telemetry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(record),
+      keepalive: true,
+    });
+  } catch (err) {
+    console.log(`[CarMode] telemetry post failed (ignored): ${String(err)}`);
+  }
 }

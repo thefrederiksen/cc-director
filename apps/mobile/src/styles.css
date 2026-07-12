@@ -2289,7 +2289,10 @@ a.banner-btn {
   font-size: 14px;
 }
 
-/* The full-screen Car Mode page. Chrome-less, high-contrast, thumb-reachable controls at the bottom. */
+/* The full-screen Car Mode page. Chrome-less, high-contrast, thumb-reachable controls at the bottom. It
+   fills exactly one viewport and never page-scrolls: the header and the control footer are pinned, and only
+   the middle scrolls if its content is taller than the space, so End Car Mode and the buttons are always
+   visible (docs/VisualStyle.md, the app-like session-screen rule). */
 .car-screen {
   position: fixed;
   inset: 0;
@@ -2297,7 +2300,25 @@ a.banner-btn {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+.car-bar {
+  flex: 0 0 auto;
+}
+/* The flexible middle between the pinned header and the pinned footer: it takes the remaining height and
+   scrolls INTERNALLY only when its content does not fit, so the page itself never scrolls. */
+.car-middle {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.car-foot {
+  flex: 0 0 auto;
 }
 .car-bar {
   display: flex;
@@ -2335,34 +2356,6 @@ a.banner-btn {
   white-space: nowrap;
 }
 
-/* The always-visible diagnostic readout: which page/Gateway is live, and whether the phone is hearing
-   the owner. Compact and monospace so it stays out of the way but is legible at a glance. */
-.car-debug {
-  margin: 0 12px 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.car-debug-row {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  align-items: baseline;
-}
-.car-debug-label {
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-.car-debug-value {
-  color: var(--text);
-  text-align: right;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
 .car-error {
   margin: 12px 16px 0;
   padding: 12px 14px;
@@ -2596,34 +2589,6 @@ a.banner-btn {
   color: #6b7391;
   border-color: transparent;
   cursor: default;
-}
-
-.car-history {
-  margin: 0 16px 20px;
-  color: var(--text-dim);
-  font-size: 13px;
-}
-.car-history summary {
-  cursor: pointer;
-  padding: 6px 0;
-}
-.car-history ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.car-history li {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 0;
-  border-top: 1px solid var(--border);
-}
-.car-history-you {
-  color: var(--text);
-}
-.car-history-said {
-  color: var(--text-dim);
 }
 
 /* ===== Your Throttle (devthrottle-stats mission) - the in-app port of the Gateway /stats page ===== */

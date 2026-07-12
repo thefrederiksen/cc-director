@@ -279,6 +279,9 @@ public sealed class GatewayHost : IAsyncDisposable
     // Car Mode (decision 3): the per-device store of a destructive action armed and awaiting the owner's
     // spoken confirmation, so a delete never runs without a clear spoken "confirm".
     private readonly CarMode.CarModePendingStore _carModePending = new();
+    // Car Mode performance round: the durable, Gateway-local store of per-turn timing records. The browser
+    // posts ONE record per turn; GET /carmode/telemetry reads them back. Retained about 90 days by age.
+    private readonly CarMode.CarModeTelemetryStore _carModeTelemetry = new();
     // Gateway-owned set of sessions whose dictated utterance is being transcribed in the background
     // (the phone released the Speak dialog and the audio is uploading/transcribing). Stamps the
     // orange "Transcribing..." roster color so nobody else grabs the session mid-dictation.
@@ -1149,7 +1152,7 @@ public sealed class GatewayHost : IAsyncDisposable
         var carModeChat = new CarMode.HostedCarModeChat(CarMode.HostedCarModeChat.DefaultResolver(_keyVault.Get));
         var carModeFleet = new CarMode.LoopbackCarModeFleet(Port, Token);
         var carModeBrain = new CarMode.CarModeBrain(carModeChat, carModeFleet, _carModeConversations, _carModePending);
-        Api.CarModeEndpoint.Map(_app, carModeBrain);
+        Api.CarModeEndpoint.Map(_app, carModeBrain, _carModeTelemetry);
         // Editable/versioned wingman instructions settings surface (issue #537), incl. A/B test
         // over saved training sessions (reads the shared training store; uses the hosted wingman brain).
         WingmanInstructionsEndpoint.Map(_app, _instructionsStore, _trainingStore, WingmanBrainAsync);

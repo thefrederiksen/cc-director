@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCarMode, type CarModeReply } from "@devthrottle/client-core/carmode/useCarMode";
 import { carModeTurn } from "@devthrottle/client-core/carmode/carModeApi";
-import { getGatewayHealth, gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 import { useScreenWakeLock } from "../hooks/useScreenWakeLock";
 
 // The client build id, inlined by Vite's `define` at build time (git short sha + build timestamp; see
@@ -33,26 +32,18 @@ export function CarMode() {
   // Phase 1: a standalone page under /m with a screen wake-lock).
   useScreenWakeLock();
 
-  // The live Gateway version, read once from /healthz, so the on-screen indicator pairs the CLIENT
-  // build id (which page bundle) with the SERVER version (which Gateway build) - together they tell the
-  // owner exactly what he is talking to. A read failure shows the specific reason, never a silent blank.
-  const [gatewayVersion, setGatewayVersion] = useState("loading...");
-  useEffect(() => {
-    const controller = new AbortController();
-    getGatewayHealth(controller.signal)
-      .then((h) => setGatewayVersion(h.version))
-      .catch((err) => {
-        if (!controller.signal.aborted) setGatewayVersion(gatewayErrorMessage(err));
-      });
-    return () => controller.abort();
-  }, []);
-
   // The injected brain responder. Phase 2+: the real fleet brain. The stand-in (below) just echoes the
   // heard command so Phase 1's barge-in proof needs no server and no credits.
   const respond = useCallback(async (command: string, signal: AbortSignal): Promise<CarModeReply> => {
     if (USE_FLEET_BRAIN) {
       const result = await carModeTurn(command, signal);
-      return { spoken: result.spoken, actions: result.actions, pendingConfirmation: result.pendingConfirmation };
+      return {
+        spoken: result.spoken,
+        actions: result.actions,
+        pendingConfirmation: result.pendingConfirmation,
+        turnId: result.turnId,
+        timing: result.timing,
+      };
     }
     // Phase 1 stand-in: a canned acknowledgement that repeats the command back, so the owner can hear
     // the whole loop (transcribe -> speak -> interrupt) working before the brain exists.
@@ -68,10 +59,6 @@ export function CarMode() {
     pendingConfirmation,
     error,
     unsupported,
-    history,
-    lastHeard,
-    captureState,
-    captureError,
     getMicLevel,
     endTurn,
     interrupt,
@@ -89,82 +76,74 @@ export function CarMode() {
         </Link>
         <span className="car-title">Car Mode</span>
         {/* The client build id in the corner: the owner glances here to confirm he is on the latest page,
-            not an old cached bundle. The full build id + Gateway version are in the debug readout below. */}
+            not an old cached bundle. The full build id is in the title tooltip. */}
         <span className="car-build" title={`Client build ${CLIENT_BUILD_ID}`}>
           {shortBuild(CLIENT_BUILD_ID)}
         </span>
       </header>
 
-      {error !== null && (
-        <div className="car-error" role="alert">
-          {error}
-        </div>
-      )}
+      {/* The scrollable middle: everything between the fixed header and the fixed control footer. It flexes
+          to fill the viewport and scrolls internally ONLY if its content is taller than the space, so the
+          End Car Mode button and the controls in the footer are ALWAYS visible with no page scroll. */}
+      <div className="car-middle">
+        {error !== null && (
+          <div className="car-error" role="alert">
+            {error}
+          </div>
+        )}
 
-      {unsupported && (
-        <div className="car-error" role="alert">
-          Car Mode needs Chrome or another Chromium browser for hands-free voice. Open this page in
-          Chrome.
-        </div>
-      )}
+        {unsupported && (
+          <div className="car-error" role="alert">
+            Car Mode needs Chrome or another Chromium browser for hands-free voice. Open this page in
+            Chrome.
+          </div>
+        )}
 
-      <main className="car-body">
-        {/* The one big status orb + word: whose turn it is, readable at a glance / audible by the two
-            cues. Its color is the whole state at a distance. */}
-        <div className={`car-orb car-orb-${phase}`} aria-hidden="true">
-          <span className="car-orb-pulse" />
-        </div>
-        <p className="car-status" aria-live="polite">
-          {started ? statusText : "Tap Start, then just talk."}
-        </p>
-
-        {/* Live microphone level meter (Architect direction): visibly shows the owner his voice is being
-            picked up. Reads the capture stream's AnalyserNode via getMicLevel on an animation frame. It
-            only moves while the microphone is actually capturing (the Listening phase); flat otherwise. */}
-        {started && <MicMeter getLevel={getMicLevel} active={phase === "listening"} />}
-
-        {pendingConfirmation && (
-          <p className="car-confirm" role="status">
-            Waiting for you to say "confirm" - or say "cancel".
+        <main className="car-body">
+          {/* The one big status orb + word: whose turn it is, readable at a glance / audible by the two
+              cues. Its color is the whole state at a distance. */}
+          <div className={`car-orb car-orb-${phase}`} aria-hidden="true">
+            <span className="car-orb-pulse" />
+          </div>
+          <p className="car-status" aria-live="polite">
+            {started ? statusText : "Tap Start, then just talk."}
           </p>
-        )}
 
-        {/* The heard command and the spoken reply. The interface is sound; this text is for eyes-on
-            confirmation and debugging over chrome://inspect (mission decision 9). */}
-        {transcript.length > 0 && (
-          <div className="car-heard">
-            <span className="car-label">You said</span>
-            <span className="car-heard-text">{transcript}</span>
-          </div>
-        )}
-        {reply.length > 0 && (
-          <div className="car-said">
-            <span className="car-label">Assistant</span>
-            <span className="car-said-text">{reply}</span>
-          </div>
-        )}
-        {actions.length > 0 && (
-          <ul className="car-actions">
-            {actions.map((a, i) => (
-              <li key={`${a.tool}-${i}`} className="car-action">
-                {a.summary}
-              </li>
-            ))}
-          </ul>
-        )}
-      </main>
+          {/* Live microphone level meter (Architect direction): visibly shows the owner his voice is being
+              picked up. Reads the capture stream's AnalyserNode via getMicLevel on an animation frame. It
+              only moves while the microphone is actually capturing (the Listening phase); flat otherwise. */}
+          {started && <MicMeter getLevel={getMicLevel} active={phase === "listening"} />}
 
-      {/* Diagnostic readout (always visible). This is the eyes-on channel for confirming, at a glance,
-          which page/Gateway is live and whether the phone is actually hearing the owner - the exact
-          things a cached-bundle or dead-microphone failure would hide. Kept compact and monospace. */}
-      <section className="car-debug" aria-label="Car Mode diagnostics">
-        <DebugRow label="Client build" value={CLIENT_BUILD_ID} />
-        <DebugRow label="Gateway" value={gatewayVersion} />
-        <DebugRow label="Audio capture" value={unsupported ? "NOT supported" : "supported"} />
-        <DebugRow label="State" value={started ? captureState : "not started"} />
-        <DebugRow label="Last transcribe error" value={captureError ?? "none"} />
-        <DebugRow label="Heard" value={lastHeard.length > 0 ? lastHeard : "(nothing yet)"} />
-      </section>
+          {pendingConfirmation && (
+            <p className="car-confirm" role="status">
+              Waiting for you to say "confirm" - or say "cancel".
+            </p>
+          )}
+
+          {/* The heard command and the spoken reply, for eyes-on confirmation. */}
+          {transcript.length > 0 && (
+            <div className="car-heard">
+              <span className="car-label">You said</span>
+              <span className="car-heard-text">{transcript}</span>
+            </div>
+          )}
+          {reply.length > 0 && (
+            <div className="car-said">
+              <span className="car-label">Assistant</span>
+              <span className="car-said-text">{reply}</span>
+            </div>
+          )}
+          {actions.length > 0 && (
+            <ul className="car-actions">
+              {actions.map((a, i) => (
+                <li key={`${a.tool}-${i}`} className="car-action">
+                  {a.summary}
+                </li>
+              ))}
+            </ul>
+          )}
+        </main>
+      </div>
 
       <footer className="car-foot">
         {!started ? (
@@ -205,20 +184,6 @@ export function CarMode() {
           </>
         )}
       </footer>
-
-      {history.length > 1 && (
-        <details className="car-history">
-          <summary>Recent turns ({history.length})</summary>
-          <ul>
-            {history.map((h, i) => (
-              <li key={i}>
-                <span className="car-history-you">{h.command}</span>
-                <span className="car-history-said">{h.spoken}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
     </div>
   );
 }
@@ -261,16 +226,6 @@ function MicMeter({ getLevel, active }: { getLevel: () => number; active: boolea
           <span className="car-meter-bar" style={{ height: `${8 + v * 84}%` }} />
         </span>
       ))}
-    </div>
-  );
-}
-
-// One label/value line in the diagnostic readout.
-function DebugRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="car-debug-row">
-      <span className="car-debug-label">{label}</span>
-      <span className="car-debug-value">{value}</span>
     </div>
   );
 }
