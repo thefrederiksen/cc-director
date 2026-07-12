@@ -3,6 +3,7 @@ import { classifyFile, formatFileSize } from "@devthrottle/client-core/history/f
 import type { FileViewerType } from "@devthrottle/client-core/history/fileTypes";
 import {
   GatewayError,
+  ensureGatewayCookie,
   fetchSessionFileSize,
   fetchSessionFileText,
   sessionFileUrl,
@@ -55,6 +56,12 @@ function fileLoadMessage(err: unknown): string {
 }
 
 export function FileViewerModal({ sessionId, path, onClose }: FileViewerModalProps) {
+  // The image / PDF / HTML modes render a bare <img>/<iframe> whose src hits a gated Gateway route and
+  // so cannot carry a Bearer header; like the terminal stream (terminal/stream.ts), they authenticate
+  // through the cc-gateway-token cookie. Re-mirror it on mount so it is present the moment those
+  // elements load even if the startup cookie was evicted. Synchronous: an effect would run too late.
+  ensureGatewayCookie();
+
   const type = classifyFile(path);
   const url = sessionFileUrl(sessionId, path);
   const name = baseName(path);
