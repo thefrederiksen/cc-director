@@ -1,9 +1,9 @@
 # Verification: CC Launcher on macOS (mission Session 1 - Mac port)
 
-> **PARKED by owner decision 2026-07-11.** The mission was stood down before the last
-> proof leg ran. Everything below section 8 is complete and evidenced; section 8 never
-> executed because it required an unlocked screen, which did not happen before the
-> stand-down. Do not merge; the branch is preserved as-is.
+> **ACTIVE.** An erroneous stand-down was relayed on the evening of 2026-07-11 and
+> reversed the same evening by the owner directly. Everything below except section 8 is
+> complete and evidenced; section 8 (the full Director restart cycle) runs as soon as
+> the screen is unlocked.
 
 Branch `cc-launcher-mac-port`, pull request #1365. All evidence gathered live on
 Sorens-Mac-mini (Apple silicon, macOS, Darwin 25.5.0) on 2026-07-11, driven by the
