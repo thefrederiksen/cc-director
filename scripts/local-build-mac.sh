@@ -149,13 +149,27 @@ DEST_PATH="$DEST_DIR/$EXE_NAME"
 cp -f "$EXE_PATH" "$DEST_PATH"
 chmod +x "$DEST_PATH"
 
-# Re-apply an ad-hoc signature to the copy. A single-file macOS binary is signed by the SDK at
-# publish time, but the app bundle is appended into the host AFTER signing and `cp` does not carry
-# the signature across intact - so the copied slot binary is seen as having an invalid/adhoc-rejected
-# signature and macOS SIGKILLs it at exec ("Killed: 9"; `spctl` reports "rejected"), with no output.
-# Forcing a fresh ad-hoc signature on the destination makes the slot binary launchable.
+# Re-sign the copy. A single-file macOS binary is signed by the SDK at publish time, but the app
+# bundle is appended into the host AFTER signing and `cp` does not carry the signature across
+# intact - so the copied slot binary is seen as having an invalid/adhoc-rejected signature and
+# macOS SIGKILLs it at exec ("Killed: 9"; `spctl` reports "rejected"), with no output.
+#
+# Prefer the stable local identity "CC Director Local Signing" (created once by
+# scripts/local-build/mac/make-signing-certificate.sh). macOS privacy grants (Desktop/Documents
+# folder access, Full Disk Access) are keyed to the code signature; with the stable identity plus
+# a stable per-slot identifier they survive rebuilds, so the permission popups are answered once
+# and never come back. Fall back to an ad-hoc signature when the identity is absent - the binary
+# still runs, but every rebuild then re-triggers the privacy popups.
 xattr -cr "$DEST_PATH" 2>/dev/null || true
-codesign --force --sign - "$DEST_PATH"
+SIGN_IDENTITY="CC Director Local Signing"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+    codesign --force --sign "$SIGN_IDENTITY" --identifier "com.devthrottle.$EXE_NAME" "$DEST_PATH"
+    echo "  Signed with '$SIGN_IDENTITY' (macOS privacy grants survive rebuilds)"
+else
+    codesign --force --sign - "$DEST_PATH"
+    echo "  WARNING: ad-hoc signed - macOS privacy popups will return after every rebuild."
+    echo "           Fix once with: scripts/local-build/mac/make-signing-certificate.sh"
+fi
 
 EXE_SIZE_MB="$(echo "scale=1; $(stat -f%z "$DEST_PATH") / 1048576" | bc)"
 echo ""

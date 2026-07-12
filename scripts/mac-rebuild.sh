@@ -8,9 +8,10 @@
 #
 # Targets:
 #   main        Build the stable copy -> "CC Director.app", pinned to the Dock.
-#   1|2|3|4     Build a dev test slot -> "CC Director N.app" (run several at once).
-#   all         Build main + all four slots.
-#   apps        (Re)create all five .app bundles WITHOUT building — fast, used by
+#   1|2|3|4     Build a normal-work slot -> "CC Director N.app" (run several at once).
+#   5           Build the testing slot -> "CC Director 5.app" (started and stopped freely).
+#   all         Build main + slots 1 through 5.
+#   apps        (Re)create all six .app bundles WITHOUT building — fast, used by
 #               mac-setup.sh to lay down the icons before anything is built.
 #
 # Usage:
@@ -25,7 +26,7 @@ set -euo pipefail
 
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
-    echo "Usage: scripts/mac-rebuild.sh <main|1|2|3|4|all|apps>" >&2
+    echo "Usage: scripts/mac-rebuild.sh <main|1|2|3|4|5|all|apps>" >&2
     exit 1
 fi
 
@@ -79,16 +80,16 @@ case "$TARGET" in
     main)
         build_one main
         pin_dock ;;
-    1|2|3|4)
+    1|2|3|4|5)
         build_one "$TARGET"
         echo "Open it from Launchpad/Spotlight, or: open \"$APPS_DIR/CC Director $TARGET.app\"" ;;
     all)
         build_one main
-        for n in 1 2 3 4; do build_one "$n"; done
+        for n in 1 2 3 4 5; do build_one "$n"; done
         pin_dock ;;
     apps)
-        for t in main 1 2 3 4; do "$MAC_HELPERS/make-app-bundle.sh" --target "$t"; done ;;
+        for t in main 1 2 3 4 5; do "$MAC_HELPERS/make-app-bundle.sh" --target "$t"; done ;;
     *)
-        echo "ERROR: invalid target '$TARGET' (use: main|1|2|3|4|all|apps)" >&2
+        echo "ERROR: invalid target '$TARGET' (use: main|1|2|3|4|5|all|apps)" >&2
         exit 1 ;;
 esac
