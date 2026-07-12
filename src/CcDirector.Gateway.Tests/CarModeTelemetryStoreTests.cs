@@ -82,6 +82,30 @@ public sealed class CarModeTelemetryStoreTests : IDisposable
     }
 
     [Fact]
+    public void Add_ThenRecent_RoundTripsTheCutOffReplyLifecycleFields()
+    {
+        // The cut-off-reply diagnostic: a reply that was synthesized but NOT heard to the end must persist
+        // as Completed=false with its played duration and clip count, so a truncated reply is visible at
+        // /carmode/telemetry the next time it happens - the whole reason these fields were added.
+        var store = new CarModeTelemetryStore(_path, _ => { });
+        var cutOff = Record("cut", DateTime.UtcNow.ToString("o")) with
+        {
+            Chunks = 1,
+            PlayMs = 640,
+            Completed = false,
+            ReplyChars = 180,
+        };
+        store.Add(cutOff);
+
+        var reloaded = new CarModeTelemetryStore(_path, _ => { }).Recent(1)[0];
+
+        Assert.False(reloaded.Completed); // the reply did not play to its end
+        Assert.Equal(1, reloaded.Chunks);
+        Assert.Equal(640, reloaded.PlayMs);
+        Assert.Equal(180, reloaded.ReplyChars);
+    }
+
+    [Fact]
     public void Load_QuarantinesCorruptFile_AndStartsEmpty()
     {
         File.WriteAllText(_path, "{ this is not valid json ][");

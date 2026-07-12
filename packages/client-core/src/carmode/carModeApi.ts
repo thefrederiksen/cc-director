@@ -130,6 +130,14 @@ export interface CarModeTelemetryPost {
   ttsMs: number;
   firstAudioMs: number;
   totalTurnMs: number;
+  /** How many audio clips the reply played (1 after the first-sentence split was reverted). A future
+   *  streaming regression that clobbers the reply would show as a value other than 1 here. */
+  chunks: number;
+  /** How long the reply clip was actually audible (play-started to play-ended / cut off), milliseconds. */
+  playMs: number;
+  /** True when the reply clip played fully to its natural end; false when it was cut off (interrupt / End
+   *  Car Mode). A cut-off reply - the bug this telemetry makes visible - reads as false. */
+  completed: boolean;
   serverTotalMs: number;
   modelCallCount: number;
   modelMsTotal: number;
