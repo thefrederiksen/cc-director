@@ -8,6 +8,7 @@ import {
   SURFACE_ORDER,
   type ThrottleData,
   type ThrottleSummary,
+  type ConcurrencyHour,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
@@ -27,6 +28,40 @@ function HeadlineCard({ label, value, sub }: { label: string; value: string; sub
       <div className="thr-card-value">{value}</div>
       <div className="thr-card-label">{label}</div>
       <div className="thr-card-sub">{sub}</div>
+    </div>
+  );
+}
+
+/** A 24-hour bar chart of the hourly peak concurrent sessions. Each bar is the max loaded/running in
+ * that hour; the darker inner portion is the max actively-working. Pure CSS bars, theme-aware. */
+function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
+  const recent = hourly.slice(-24);
+  const peak = Math.max(1, ...recent.map((h) => h.maxLive));
+  return (
+    <div
+      className="thr-chart"
+      role="img"
+      aria-label={`Peak concurrent sessions per hour for the last ${recent.length} hours`}
+    >
+      {recent.map((h, i) => {
+        const livePct = (h.maxLive / peak) * 100;
+        const workPct = h.maxLive > 0 ? (h.maxWorking / h.maxLive) * 100 : 0;
+        const hourNum = h.hour.slice(-2);
+        return (
+          <div
+            className="thr-bar-col"
+            key={h.hour}
+            title={`${h.hour}:00 UTC - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} distinct sessions, ${h.machines} machine(s)`}
+          >
+            <div className="thr-bar-track">
+              <div className="thr-bar-live" style={{ height: `${livePct}%` }}>
+                <div className="thr-bar-work" style={{ height: `${workPct}%` }} />
+              </div>
+            </div>
+            <div className="thr-bar-label">{i % 4 === 0 ? hourNum : ""}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -118,6 +153,17 @@ export function YourThrottleView() {
               </tr>
             </tbody>
           </table>
+        </div>
+      )}
+
+      {data !== null && data.concurrency !== null && data.concurrency.hourly.length > 0 && (
+        <div className="thr-section">
+          <h2>Sessions per hour (last 24h)</h2>
+          <p className="thr-hint">
+            Peak concurrent sessions in each hour (UTC). The bar is loaded/running; the darker portion is
+            actively working. Hover a bar for that hour's distinct sessions and machines.
+          </p>
+          <ConcurrencyChart hourly={data.concurrency.hourly} />
         </div>
       )}
 

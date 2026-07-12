@@ -9,6 +9,7 @@ import {
   SURFACE_ORDER,
   type ThrottleData,
   type ThrottleSummary,
+  type ConcurrencyHour,
 } from "@devthrottle/client-core/stats/statsClient";
 import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 
@@ -19,6 +20,39 @@ import { gatewayErrorMessage } from "@devthrottle/client-core/api/client";
 // live as the user drives by voice.
 
 const REFRESH_MS = 10_000;
+
+/** A 24-hour bar chart of the hourly peak concurrent sessions. Bar = max loaded/running that hour;
+ * darker inner portion = max actively-working. Pure CSS bars, theme-aware. */
+function ConcurrencyChart({ hourly }: { hourly: ConcurrencyHour[] }) {
+  const recent = hourly.slice(-24);
+  const peak = Math.max(1, ...recent.map((h) => h.maxLive));
+  return (
+    <div
+      className="thr-chart"
+      role="img"
+      aria-label={`Peak concurrent sessions per hour for the last ${recent.length} hours`}
+    >
+      {recent.map((h, i) => {
+        const livePct = (h.maxLive / peak) * 100;
+        const workPct = h.maxLive > 0 ? (h.maxWorking / h.maxLive) * 100 : 0;
+        return (
+          <div
+            className="thr-bar-col"
+            key={h.hour}
+            title={`${h.hour}:00 UTC - ${h.maxLive} loaded, ${h.maxWorking} working, ${h.sessions} sessions`}
+          >
+            <div className="thr-bar-track">
+              <div className="thr-bar-live" style={{ height: `${livePct}%` }}>
+                <div className="thr-bar-work" style={{ height: `${workPct}%` }} />
+              </div>
+            </div>
+            <div className="thr-bar-label">{i % 6 === 0 ? h.hour.slice(-2) : ""}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export function YourThrottle() {
   const [data, setData] = useState<ThrottleData | null>(null);
@@ -89,6 +123,13 @@ export function YourThrottle() {
               {data.concurrency.working.current} now, {data.concurrency.working.allTimeMax} peak
             </span>
           </div>
+        </section>
+      )}
+
+      {data !== null && data.concurrency !== null && data.concurrency.hourly.length > 0 && (
+        <section className="thr-list" aria-label="Sessions per hour">
+          <div className="thr-list-title">Sessions per hour (last 24h)</div>
+          <ConcurrencyChart hourly={data.concurrency.hourly} />
         </section>
       )}
 

@@ -727,19 +727,12 @@ internal static class GatewayEndpoints
             // genuine increase is added, so repeated /sessions polls never double-count.
             inputStats?.ObserveSnapshot(all);
 
-            // DevThrottle Stats: record fleet concurrency from the same assembled roster - how many
-            // sessions are loaded/running (live = non-exited) and how many are actively working right now
-            // (activityState = Working). Fleet-wide with no per-Director instrumentation, since the roster
-            // already sees every session on every machine. The tracker keeps only the higher value per
-            // hour, so folding on every /sessions read captures peaks without inflating anything.
-            if (concurrency is not null)
-            {
-                var liveCount = all.Count(s =>
-                    !string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase));
-                var workingCount = all.Count(s =>
-                    string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase));
-                concurrency.Observe(liveCount, workingCount, DateTime.UtcNow);
-            }
+            // DevThrottle Stats: record fleet concurrency and the hourly activity log from the same
+            // assembled roster - max concurrent loaded/running (live) and actively working, plus how many
+            // distinct sessions/machines/repositories ran each hour. Fleet-wide with no per-Director
+            // instrumentation, since the roster already sees every session on every machine. The tracker
+            // keeps only the higher value per hour, so folding on every /sessions read never inflates.
+            concurrency?.Observe(all, DateTime.UtcNow);
 
             // Issue #1292: adopt every observed number into the fleet allocator's in-use set. This is how
             // the Gateway learns numbers it did not hand out - a number a Director assigned offline, or any

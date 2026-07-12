@@ -2,67 +2,63 @@ using System.Globalization;
 using System.Text.Json;
 using CcDirector.Core.Storage;
 using CcDirector.Core.Utilities;
+using CcDirector.Gateway.Contracts;
 
 namespace CcDirector.Gateway.Stats;
 
 /// <summary>
-/// The Gateway's durable record of fleet CONCURRENCY - how many sessions run at once across every machine,
-/// and how many are actively working at once. Unlike the input tally, a session COUNT needs no per-Director
-/// instrumentation: the Gateway's assembled /sessions roster already sees every session on every machine
-/// (new build or old), so this is fleet-wide from day one. Observed from that same assembled roster on
-/// every read.
+/// The Gateway's durable record of fleet CONCURRENCY and an hourly activity log. Unlike the input tally, a
+/// session count needs no per-Director instrumentation: the Gateway's assembled /sessions roster already
+/// sees every session on every machine (new build or old), so this is fleet-wide from day one. Observed
+/// from that same assembled roster on every read.
 ///
-/// Two honest series are tracked so a public number is never overstated:
-///   - LIVE: sessions loaded/running (non-exited) - the parallel capacity in flight.
-///   - WORKING: sessions whose agent is processing a turn right now (activityState = Working) - the count
-///     actually churning at an instant, which is smaller and fluctuates.
-/// Each series keeps the current value, the all-time peak (and when it happened), and a per-hour max
-/// history keyed by UTC clock hour. Weekly max (or any window) is DERIVED from the hourly history - we
-/// store hourly once and compute the rest, so there is no separate weekly store to keep consistent.
+/// Two headline series track the peak "how many at once":
+///   - LIVE: sessions loaded/running (non-exited) - parallel capacity in flight.
+///   - WORKING: sessions whose agent is processing a turn right now (activityState = Working).
+/// Each keeps the current value and the all-time peak (+when).
 ///
-/// Persisted (atomic temp-write + rename, corrupt file quarantined) so a Gateway restart keeps the peaks
-/// and the history. Hourly buckets past the retention window are pruned so the store stays bounded.
+/// An hourly log (keyed by UTC clock hour "yyyy-MM-ddTHH") records, for every hour:
+///   - the max concurrent LIVE and WORKING seen that hour (the "24-hour chart" series),
+///   - how many DISTINCT sessions, machines, and repositories were seen that hour (the "how much ran"
+///     totals). Distinct counts dedupe across the hour's observations via a current-hour id set that is
+///     persisted too, so a Gateway restart mid-hour keeps counting the same hour correctly.
+/// Weekly max (or any window) is DERIVED from the hourly log. Persisted (atomic temp-write + rename,
+/// corrupt file quarantined); hourly buckets past the retention window are pruned so the store stays
+/// bounded.
 /// </summary>
 public sealed class GatewaySessionConcurrencyStats
 {
     private static readonly JsonSerializerOptions FileJsonOptions = new() { WriteIndented = true };
-    // ~90 days of hourly buckets: enough for weekly/monthly windows and a long chartable history, bounded
-    // so the store never grows without limit.
     private const int RetentionDays = 90;
     private const string HourFormat = "yyyy-MM-ddTHH";
 
     private readonly string _path;
     private readonly object _lock = new();
-    private readonly Series _live = new();
-    private readonly Series _working = new();
 
-    // One tracked dimension: current value, all-time peak (+when), and per-hour max history.
-    private sealed class Series
+    private int _liveCurrent;
+    private int _workingCurrent;
+    private int _liveAllTimeMax;
+    private DateTime? _liveAllTimeMaxAtUtc;
+    private int _workingAllTimeMax;
+    private DateTime? _workingAllTimeMaxAtUtc;
+
+    // Per-hour log, keyed by UTC clock hour.
+    private readonly Dictionary<string, HourStat> _hours = new(StringComparer.Ordinal);
+
+    // Dedup sets for the CURRENT hour only, so distinct counts are correct across many observations. Rolled
+    // when the clock hour changes; persisted so a restart mid-hour resumes the same hour's dedup.
+    private string _currentHourKey = "";
+    private readonly HashSet<string> _curSessions = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _curMachines = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _curRepos = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class HourStat
     {
-        public int Current;
-        public int AllTimeMax;
-        public DateTime? AllTimeMaxAtUtc;
-        public readonly Dictionary<string, int> HourlyMax = new(StringComparer.Ordinal);
-
-        // Fold one observation. Returns true when the persisted state (peak or an hour's max) changed;
-        // a bare Current refresh is not persisted on its own.
-        public bool Observe(int count, DateTime nowUtc, string hourKey)
-        {
-            Current = count;
-            var changed = false;
-            if (count > AllTimeMax)
-            {
-                AllTimeMax = count;
-                AllTimeMaxAtUtc = nowUtc;
-                changed = true;
-            }
-            if (!HourlyMax.TryGetValue(hourKey, out var m) || count > m)
-            {
-                HourlyMax[hourKey] = count;
-                changed = true;
-            }
-            return changed;
-        }
+        public int MaxLive;
+        public int MaxWorking;
+        public int DistinctSessions;
+        public int DistinctMachines;
+        public int DistinctRepos;
     }
 
     /// <param name="path">The durable store file. Defaults to gateway-concurrency-stats.json under the
@@ -79,22 +75,56 @@ public sealed class GatewaySessionConcurrencyStats
         utc.ToUniversalTime().ToString(HourFormat, CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// Observe the current fleet counts at <paramref name="nowUtc"/>: <paramref name="liveCount"/> is the
-    /// non-exited session count, <paramref name="workingCount"/> the subset actively processing a turn.
-    /// Idempotent within an hour - only a value higher than this hour's max (or the all-time peak) is
-    /// persisted, so folding on every roster read never inflates anything.
+    /// Observe the current fleet <paramref name="roster"/> at <paramref name="nowUtc"/>: update the live and
+    /// working current values and all-time peaks, and fold this hour's max concurrency plus its distinct
+    /// session / machine / repository counts. Idempotent within an hour - a peak or distinct count only ever
+    /// grows - so folding on every /sessions read captures the hourly log without inflating anything.
     /// </summary>
-    public void Observe(int liveCount, int workingCount, DateTime nowUtc)
+    public void Observe(IReadOnlyCollection<SessionDto>? roster, DateTime nowUtc)
     {
-        if (liveCount < 0) liveCount = 0;
-        if (workingCount < 0) workingCount = 0;
-        if (workingCount > liveCount) workingCount = liveCount;
-
+        if (roster is null) return;
         var key = HourKey(nowUtc);
         lock (_lock)
         {
-            var changed = _live.Observe(liveCount, nowUtc, key);
-            changed |= _working.Observe(workingCount, nowUtc, key);
+            if (key != _currentHourKey)
+            {
+                _currentHourKey = key;
+                _curSessions.Clear();
+                _curMachines.Clear();
+                _curRepos.Clear();
+            }
+
+            var liveCount = 0;
+            var workingCount = 0;
+            foreach (var s in roster)
+            {
+                if (string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase)) continue;
+                liveCount++;
+                if (string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase)) workingCount++;
+                if (!string.IsNullOrEmpty(s.SessionId)) _curSessions.Add(s.SessionId);
+                if (!string.IsNullOrWhiteSpace(s.MachineName)) _curMachines.Add(s.MachineName);
+                if (!string.IsNullOrWhiteSpace(s.RepoPath)) _curRepos.Add(s.RepoPath);
+            }
+
+            _liveCurrent = liveCount;
+            _workingCurrent = workingCount;
+
+            var changed = false;
+            if (liveCount > _liveAllTimeMax) { _liveAllTimeMax = liveCount; _liveAllTimeMaxAtUtc = nowUtc; changed = true; }
+            if (workingCount > _workingAllTimeMax) { _workingAllTimeMax = workingCount; _workingAllTimeMaxAtUtc = nowUtc; changed = true; }
+
+            if (!_hours.TryGetValue(key, out var h))
+            {
+                h = new HourStat();
+                _hours[key] = h;
+                changed = true;
+            }
+            if (liveCount > h.MaxLive) { h.MaxLive = liveCount; changed = true; }
+            if (workingCount > h.MaxWorking) { h.MaxWorking = workingCount; changed = true; }
+            if (_curSessions.Count > h.DistinctSessions) { h.DistinctSessions = _curSessions.Count; changed = true; }
+            if (_curMachines.Count > h.DistinctMachines) { h.DistinctMachines = _curMachines.Count; changed = true; }
+            if (_curRepos.Count > h.DistinctRepos) { h.DistinctRepos = _curRepos.Count; changed = true; }
+
             if (changed)
             {
                 PruneLocked(nowUtc);
@@ -103,66 +133,73 @@ public sealed class GatewaySessionConcurrencyStats
         }
     }
 
-    /// <summary>A read-only snapshot for the dashboard / agent API: both series with current, all-time peak
-    /// (+when), the derived weekly max (max hourly bucket in the last 7 days), and the hourly history.</summary>
+    /// <summary>A read-only snapshot for the dashboard / agent API: the live and working series (current,
+    /// all-time peak, derived weekly max) and the full hourly log.</summary>
     public ConcurrencySnapshot Snapshot(DateTime nowUtc)
     {
         lock (_lock)
         {
-            return new ConcurrencySnapshot(SeriesSnapshot(_live, nowUtc), SeriesSnapshot(_working, nowUtc));
+            var weeklyCutoff = nowUtc.AddDays(-7);
+            var liveWeekly = 0;
+            var workingWeekly = 0;
+            var hourly = new List<ConcurrencyHourDto>(_hours.Count);
+            foreach (var kvp in _hours)
+            {
+                var h = kvp.Value;
+                hourly.Add(new ConcurrencyHourDto
+                {
+                    Hour = kvp.Key,
+                    MaxLive = h.MaxLive,
+                    MaxWorking = h.MaxWorking,
+                    Sessions = h.DistinctSessions,
+                    Machines = h.DistinctMachines,
+                    Repos = h.DistinctRepos,
+                });
+                if (TryParseHour(kvp.Key, out var dt) && dt >= weeklyCutoff)
+                {
+                    if (h.MaxLive > liveWeekly) liveWeekly = h.MaxLive;
+                    if (h.MaxWorking > workingWeekly) workingWeekly = h.MaxWorking;
+                }
+            }
+            hourly.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
+            return new ConcurrencySnapshot(
+                new ConcurrencySeriesDto { Current = _liveCurrent, AllTimeMax = _liveAllTimeMax, AllTimeMaxAtUtc = _liveAllTimeMaxAtUtc, WeeklyMax = liveWeekly },
+                new ConcurrencySeriesDto { Current = _workingCurrent, AllTimeMax = _workingAllTimeMax, AllTimeMaxAtUtc = _workingAllTimeMaxAtUtc, WeeklyMax = workingWeekly },
+                hourly);
         }
-    }
-
-    private static ConcurrencySeriesDto SeriesSnapshot(Series s, DateTime nowUtc)
-    {
-        var weeklyCutoff = nowUtc.AddDays(-7);
-        var weeklyMax = 0;
-        var hourly = new List<ConcurrencyHourDto>(s.HourlyMax.Count);
-        foreach (var kvp in s.HourlyMax)
-        {
-            if (TryParseHour(kvp.Key, out var dt) && dt >= weeklyCutoff && kvp.Value > weeklyMax)
-                weeklyMax = kvp.Value;
-            hourly.Add(new ConcurrencyHourDto { Hour = kvp.Key, Max = kvp.Value });
-        }
-        hourly.Sort((a, b) => string.CompareOrdinal(a.Hour, b.Hour));
-        return new ConcurrencySeriesDto
-        {
-            Current = s.Current,
-            AllTimeMax = s.AllTimeMax,
-            AllTimeMaxAtUtc = s.AllTimeMaxAtUtc,
-            WeeklyMax = weeklyMax,
-            Hourly = hourly,
-        };
     }
 
     private void PruneLocked(DateTime nowUtc)
     {
         var cutoff = nowUtc.AddDays(-RetentionDays);
-        Prune(_live, cutoff);
-        Prune(_working, cutoff);
-    }
-
-    private static void Prune(Series s, DateTime cutoff)
-    {
-        var stale = s.HourlyMax.Keys.Where(k => TryParseHour(k, out var dt) && dt < cutoff).ToList();
-        foreach (var k in stale) s.HourlyMax.Remove(k);
+        var stale = _hours.Keys.Where(k => TryParseHour(k, out var dt) && dt < cutoff).ToList();
+        foreach (var k in stale) _hours.Remove(k);
     }
 
     private static bool TryParseHour(string key, out DateTime utc) =>
         DateTime.TryParseExact(key, HourFormat, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out utc);
 
-    private sealed class SeriesStore
+    private sealed class HourStatStore
     {
-        public int AllTimeMax { get; set; }
-        public DateTime? AllTimeMaxAtUtc { get; set; }
-        public Dictionary<string, int> HourlyMax { get; set; } = new();
+        public int MaxLive { get; set; }
+        public int MaxWorking { get; set; }
+        public int DistinctSessions { get; set; }
+        public int DistinctMachines { get; set; }
+        public int DistinctRepos { get; set; }
     }
 
     private sealed class StoreFile
     {
-        public SeriesStore Live { get; set; } = new();
-        public SeriesStore Working { get; set; } = new();
+        public int LiveAllTimeMax { get; set; }
+        public DateTime? LiveAllTimeMaxAtUtc { get; set; }
+        public int WorkingAllTimeMax { get; set; }
+        public DateTime? WorkingAllTimeMaxAtUtc { get; set; }
+        public Dictionary<string, HourStatStore> Hours { get; set; } = new();
+        public string CurrentHourKey { get; set; } = "";
+        public List<string> CurrentSessions { get; set; } = new();
+        public List<string> CurrentMachines { get; set; } = new();
+        public List<string> CurrentRepos { get; set; } = new();
     }
 
     private void Load()
@@ -189,18 +226,24 @@ public sealed class GatewaySessionConcurrencyStats
             return;
         }
 
-        RestoreSeries(_live, parsed.Live);
-        RestoreSeries(_working, parsed.Working);
-        FileLog.Write($"[GatewaySessionConcurrencyStats] Load: live peak {_live.AllTimeMax}, working peak {_working.AllTimeMax}, {_live.HourlyMax.Count} live + {_working.HourlyMax.Count} working hourly bucket(s) from {_path}");
-    }
-
-    private static void RestoreSeries(Series s, SeriesStore? store)
-    {
-        if (store is null) return;
-        s.AllTimeMax = store.AllTimeMax;
-        s.AllTimeMaxAtUtc = store.AllTimeMaxAtUtc;
-        foreach (var (hour, max) in store.HourlyMax)
-            s.HourlyMax[hour] = max;
+        _liveAllTimeMax = parsed.LiveAllTimeMax;
+        _liveAllTimeMaxAtUtc = parsed.LiveAllTimeMaxAtUtc;
+        _workingAllTimeMax = parsed.WorkingAllTimeMax;
+        _workingAllTimeMaxAtUtc = parsed.WorkingAllTimeMaxAtUtc;
+        foreach (var (hour, hs) in parsed.Hours)
+            _hours[hour] = new HourStat
+            {
+                MaxLive = hs.MaxLive,
+                MaxWorking = hs.MaxWorking,
+                DistinctSessions = hs.DistinctSessions,
+                DistinctMachines = hs.DistinctMachines,
+                DistinctRepos = hs.DistinctRepos,
+            };
+        _currentHourKey = parsed.CurrentHourKey ?? "";
+        foreach (var s in parsed.CurrentSessions) _curSessions.Add(s);
+        foreach (var m in parsed.CurrentMachines) _curMachines.Add(m);
+        foreach (var r in parsed.CurrentRepos) _curRepos.Add(r);
+        FileLog.Write($"[GatewaySessionConcurrencyStats] Load: live peak {_liveAllTimeMax}, working peak {_workingAllTimeMax}, {_hours.Count} hourly bucket(s) from {_path}");
     }
 
     private void Quarantine(string reason)
@@ -223,9 +266,25 @@ public sealed class GatewaySessionConcurrencyStats
 
             var file = new StoreFile
             {
-                Live = ToStore(_live),
-                Working = ToStore(_working),
+                LiveAllTimeMax = _liveAllTimeMax,
+                LiveAllTimeMaxAtUtc = _liveAllTimeMaxAtUtc,
+                WorkingAllTimeMax = _workingAllTimeMax,
+                WorkingAllTimeMaxAtUtc = _workingAllTimeMaxAtUtc,
+                CurrentHourKey = _currentHourKey,
+                CurrentSessions = _curSessions.ToList(),
+                CurrentMachines = _curMachines.ToList(),
+                CurrentRepos = _curRepos.ToList(),
             };
+            foreach (var (hour, h) in _hours)
+                file.Hours[hour] = new HourStatStore
+                {
+                    MaxLive = h.MaxLive,
+                    MaxWorking = h.MaxWorking,
+                    DistinctSessions = h.DistinctSessions,
+                    DistinctMachines = h.DistinctMachines,
+                    DistinctRepos = h.DistinctRepos,
+                };
+
             var json = JsonSerializer.Serialize(file, FileJsonOptions);
             var tmp = _path + ".tmp";
             File.WriteAllText(tmp, json);
@@ -237,37 +296,32 @@ public sealed class GatewaySessionConcurrencyStats
             throw;
         }
     }
-
-    private static SeriesStore ToStore(Series s) => new()
-    {
-        AllTimeMax = s.AllTimeMax,
-        AllTimeMaxAtUtc = s.AllTimeMaxAtUtc,
-        HourlyMax = new Dictionary<string, int>(s.HourlyMax, StringComparer.Ordinal),
-    };
 }
 
-/// <summary>One hour of the concurrency history: the UTC clock-hour key ("yyyy-MM-ddTHH") and the max
-/// concurrent count seen in that hour.</summary>
+/// <summary>One tracked concurrency dimension (live or working): current, all-time peak (+when), and the
+/// derived weekly max.</summary>
+public sealed class ConcurrencySeriesDto
+{
+    public int Current { get; set; }
+    public int AllTimeMax { get; set; }
+    public DateTime? AllTimeMaxAtUtc { get; set; }
+    public int WeeklyMax { get; set; }
+}
+
+/// <summary>One hour of the fleet activity log (UTC clock hour "yyyy-MM-ddTHH"): the max concurrent live
+/// and working counts, and how many distinct sessions, machines, and repositories were seen that hour.</summary>
 public sealed class ConcurrencyHourDto
 {
     public string Hour { get; set; } = "";
-    public int Max { get; set; }
+    public int MaxLive { get; set; }
+    public int MaxWorking { get; set; }
+    public int Sessions { get; set; }
+    public int Machines { get; set; }
+    public int Repos { get; set; }
 }
 
-/// <summary>One tracked concurrency dimension (live or working) for the dashboard / agent API.</summary>
-public sealed class ConcurrencySeriesDto
-{
-    /// <summary>The most recently observed count.</summary>
-    public int Current { get; set; }
-    /// <summary>The highest count ever observed.</summary>
-    public int AllTimeMax { get; set; }
-    /// <summary>When the all-time peak was observed (UTC), or null if never.</summary>
-    public DateTime? AllTimeMaxAtUtc { get; set; }
-    /// <summary>The highest count in the last 7 days, derived from the hourly history.</summary>
-    public int WeeklyMax { get; set; }
-    /// <summary>The per-hour max history, oldest hour first.</summary>
-    public List<ConcurrencyHourDto> Hourly { get; set; } = new();
-}
-
-/// <summary>Both concurrency dimensions: sessions loaded/running (live) and sessions actively working.</summary>
-public sealed record ConcurrencySnapshot(ConcurrencySeriesDto Live, ConcurrencySeriesDto Working);
+/// <summary>The concurrency snapshot: both headline series plus the hourly activity log (oldest hour first).</summary>
+public sealed record ConcurrencySnapshot(
+    ConcurrencySeriesDto Live,
+    ConcurrencySeriesDto Working,
+    IReadOnlyList<ConcurrencyHourDto> Hourly);

@@ -115,6 +115,53 @@
   color: var(--text-dim);
 }
 
+/* 24-hour concurrency bar chart */
+.thr-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 130px;
+  padding: 8px 2px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.thr-bar-col {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+}
+.thr-bar-track {
+  width: 100%;
+  max-width: 22px;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-end;
+}
+.thr-bar-live {
+  width: 100%;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 3px 3px 0 0;
+  display: flex;
+  align-items: flex-end;
+  min-height: 1px;
+}
+.thr-bar-work {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 3px 3px 0 0;
+}
+.thr-bar-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  height: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Honesty caveats */
 .thr-caveats {
   background: var(--surface-2);
