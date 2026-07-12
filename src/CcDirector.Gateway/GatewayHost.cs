@@ -301,6 +301,11 @@ public sealed class GatewayHost : IAsyncDisposable
     // built and started in StartAsync (it needs the live Director client) and disposed in StopAsync.
     private readonly Snooze.SnoozeRegistry _snoozeRegistry;
     private Snooze.SnoozeExpirySweep? _snoozeSweep;
+    // Mission Screen mission (Phase 1b, issue #1405): the Gateway-owned, restart-surviving store of each
+    // mission's WHY, keyed by the mission's normalized name. Durable + shared so every Cockpit, the phone,
+    // and the future Mission-Control chat/API read the same WHY. Constructed here (load-on-construct
+    // re-serves every WHY after a restart); exposed to the client over MissionNotesEndpoint.
+    private readonly MissionNotes.MissionNoteStore _missionNotes;
     private readonly CronJobStore _cronJobs;
     private readonly CronRunHistoryStore _cronRuns;
     private readonly Running.CronEngine _cronEngine;
@@ -413,7 +418,12 @@ public sealed class GatewayHost : IAsyncDisposable
     /// isolated temp path; production omits it for the shared default at
     /// <c>CcStorage.Root()\missions.json</c>.
     /// </param>
-    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null)
+    /// <param name="missionNotesPath">
+    /// Override the mission-WHY store file (Mission Screen mission, Phase 1b, issue #1405). Tests pass an
+    /// isolated temp path; production omits it for the shared default at
+    /// <c>CcStorage.Root()\mission-notes.json</c>.
+    /// </param>
+    public GatewayHost(int port = DefaultPort, string? token = null, bool? authEnabled = null, string? instancesDirectory = null, string? turnBriefDirectory = null, string? keyVaultPath = null, string? workListsPath = null, string? cronJobsPath = null, string? cronRunsPath = null, string? devicesPath = null, string? telemetryQueuePath = null, int? telemetryQueueMaxSize = null, TimeSpan? telemetryRetryInterval = null, Core.Account.DevThrottleAccountService? account = null, bool? streamMode = null, string? inputStatsPath = null, string? snoozePath = null, string? missionsPath = null, string? missionNotesPath = null)
     {
         Port = port;
         Token = token ?? GatewayAuth.LoadOrCreate();
@@ -484,6 +494,10 @@ public sealed class GatewayHost : IAsyncDisposable
         // registry is bounded by dropping a removed Director's entries so they do not accumulate on disk.
         _snoozeRegistry = new Snooze.SnoozeRegistry(snoozePath ?? Path.Combine(CcStorage.Root(), "snooze.json"));
         Registry.OnDirectorRemoved += id => _snoozeRegistry.ClearForDirector(id);
+        // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY store, at a Gateway-side file
+        // (CcStorage.Root(), the same location the snooze and cron stores use). Loaded here so a Gateway
+        // restart re-serves every WHY. Tests MUST pass an isolated path so they never touch the real store.
+        _missionNotes = new MissionNotes.MissionNoteStore(missionNotesPath ?? Path.Combine(CcStorage.Root(), "mission-notes.json"));
         // Cron-job definitions persist across a Gateway restart (epic #479, #482): one JSON file in
         // the Gateway data dir, loaded here (next-run times recomputed) and written through on every
         // mutation - the WorkListStore precedent. Tests MUST pass an isolated path so they never
@@ -1478,6 +1492,12 @@ public sealed class GatewayHost : IAsyncDisposable
         TurnBriefGatewayEndpoints.Map(_app, _turnBriefStore,
             sid => _turnBriefStore.Latest(sid) is not null ? "Briefed" : "None",
             requestExplainAsync: null);
+
+        // Mission Screen mission (Phase 1b, issue #1405): the mission-WHY read/set surface. A device-authed
+        // client route under /gateway/missions/notes - the host-wide token middleware gates it (proven by
+        // MissionNotesEndpointTests). Deliberately NOT in GatewayEndpoints.cs and NOT on the bare /missions
+        // prefix (the Gateway-native mission store owns that), so it stays clear of the Gateway Cleanup work.
+        MissionNotesEndpoint.Map(_app, _missionNotes);
 
         // Issue #806 (mobile foundation): the OpenAPI document the mobile codegen consumes, and the
         // mobile app static serving at /m (built shell + token-injected index.html). Mapped before
