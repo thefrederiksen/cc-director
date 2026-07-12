@@ -24,11 +24,34 @@ export interface ThrottleBucket {
   characters: number;
 }
 
+/** One tracked concurrency dimension (live loaded/running, or actively working). */
+export interface ConcurrencySeries {
+  /** Most recently observed count. */
+  current: number;
+  /** Highest count ever observed. */
+  allTimeMax: number;
+  /** When the all-time peak was observed (ISO 8601 UTC), or null if never. */
+  allTimeMaxAtUtc: string | null;
+  /** Highest count in the last 7 days, derived from the hourly history. */
+  weeklyMax: number;
+  /** Per-hour max history, oldest hour first (hour key "yyyy-MM-ddTHH" UTC). */
+  hourly: { hour: string; max: number }[];
+}
+
+/** Fleet concurrency: how many sessions are loaded/running at once (live) and how many are actively
+ * working at once (working). Null when the Gateway has not tracked any yet. */
+export interface ConcurrencyStats {
+  live: ConcurrencySeries;
+  working: ConcurrencySeries;
+}
+
 /** The GET /stats/data body: the fleet-wide aggregated tally plus the honesty caveats. */
 export interface ThrottleData {
   /** When the Gateway generated this snapshot (ISO 8601 UTC), or "" when absent. */
   generatedAtUtc: string;
   buckets: ThrottleBucket[];
+  /** Fleet concurrency (both series), or null when nothing tracked yet. */
+  concurrency: ConcurrencyStats | null;
   /** Plain-English caveats about what the numbers do and do not include. */
   notCaptured: string[];
 }
@@ -96,6 +119,7 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
   const body = (await res.json()) as {
     generatedAtUtc?: unknown;
     buckets?: unknown;
+    concurrency?: unknown;
     notCaptured?: unknown;
   } | null;
   const buckets = Array.isArray(body?.buckets) ? body!.buckets.map(normalizeBucket) : [];
@@ -105,8 +129,36 @@ export async function getThrottle(signal?: AbortSignal): Promise<ThrottleData> {
   return {
     generatedAtUtc: typeof body?.generatedAtUtc === "string" ? body.generatedAtUtc : "",
     buckets,
+    concurrency: normalizeConcurrency(body?.concurrency),
     notCaptured,
   };
+}
+
+function normalizeSeries(raw: unknown): ConcurrencySeries {
+  const s = (raw ?? {}) as Partial<Record<keyof ConcurrencySeries, unknown>>;
+  const num = (v: unknown): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const hourly = Array.isArray(s.hourly)
+    ? s.hourly.map((h) => {
+        const o = (h ?? {}) as { hour?: unknown; max?: unknown };
+        return { hour: String(o.hour ?? ""), max: num(o.max) };
+      })
+    : [];
+  return {
+    current: num(s.current),
+    allTimeMax: num(s.allTimeMax),
+    allTimeMaxAtUtc: typeof s.allTimeMaxAtUtc === "string" ? s.allTimeMaxAtUtc : null,
+    weeklyMax: num(s.weeklyMax),
+    hourly,
+  };
+}
+
+function normalizeConcurrency(raw: unknown): ConcurrencyStats | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const c = raw as { live?: unknown; working?: unknown };
+  return { live: normalizeSeries(c.live), working: normalizeSeries(c.working) };
 }
 
 /** Derive the honest headline summary from a tally snapshot. Turn shares are over counted turns only;

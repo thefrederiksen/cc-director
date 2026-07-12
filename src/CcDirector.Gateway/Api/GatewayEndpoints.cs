@@ -80,7 +80,11 @@ internal static class GatewayEndpoints
         // /sessions roster (the path that carries SessionDto.InputStats whether stream mode is on or off),
         // so "Your Throttle" is fed by the same roster the fleet already reads, not only by the SignalR
         // push path (which is unmapped when stream mode is off). Null (old callers, tests) folds nothing.
-        Stats.GatewayInputStatsAggregator? inputStats = null)
+        Stats.GatewayInputStatsAggregator? inputStats = null,
+        // DevThrottle Stats: the durable fleet concurrency record. Observed from the same assembled roster
+        // (live count + actively-working count), so the peak is captured fleet-wide whether stream mode is
+        // on or off. Null (old callers, tests) records nothing.
+        Stats.GatewaySessionConcurrencyStats? concurrency = null)
     {
         // The old issue #1188 "session lock" (423 Locked on human input while a PENDING dictation record
         // existed) was removed deliberately (issue #1308). This is a single-operator tool: a collision
@@ -710,6 +714,20 @@ internal static class GatewayEndpoints
             // per-session high-water logic makes folding the full roster on every read idempotent - only a
             // genuine increase is added, so repeated /sessions polls never double-count.
             inputStats?.ObserveSnapshot(all);
+
+            // DevThrottle Stats: record fleet concurrency from the same assembled roster - how many
+            // sessions are loaded/running (live = non-exited) and how many are actively working right now
+            // (activityState = Working). Fleet-wide with no per-Director instrumentation, since the roster
+            // already sees every session on every machine. The tracker keeps only the higher value per
+            // hour, so folding on every /sessions read captures peaks without inflating anything.
+            if (concurrency is not null)
+            {
+                var liveCount = all.Count(s =>
+                    !string.Equals(s.ActivityState, "Exited", StringComparison.OrdinalIgnoreCase));
+                var workingCount = all.Count(s =>
+                    string.Equals(s.ActivityState, "Working", StringComparison.OrdinalIgnoreCase));
+                concurrency.Observe(liveCount, workingCount, DateTime.UtcNow);
+            }
 
             // Issue #1292: adopt every observed number into the fleet allocator's in-use set. This is how
             // the Gateway learns numbers it did not hand out - a number a Director assigned offline, or any
