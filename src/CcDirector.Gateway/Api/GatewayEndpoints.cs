@@ -215,7 +215,7 @@ internal static class GatewayEndpoints
         CommQueueEndpoints.Map(app);
 
         // Local-machine exe/slot management (the "Exes" page).
-        ExesEndpoints.Map(app, registry, client);
+        ExesEndpoints.Map(app, registry, client, pushedSessions, streamStaleResolved);
 
         // ===== HTML pages =====
         // The Gateway serves NO UI pages anymore (docs/plans/one-url-cockpit.md): "/" and every
@@ -273,6 +273,11 @@ internal static class GatewayEndpoints
             // pay one client timeout per Director sequentially.
             var counts = await Task.WhenAll(directors.Select(async d =>
             {
+                // Gateway Cleanup Phase 2 (PR E, Group C): under streamMode the roster lives in the push store,
+                // so count from there and skip the HTTP pull entirely; a stale/absent cache falls through to
+                // the byte-identical HTTP pull (the coexistence path removed when the tunnel is made mandatory).
+                var cached = pushedSessions?.TryGetFresh(d.DirectorId, streamStaleResolved);
+                if (cached is not null) return cached.Count;
                 var sessions = await client.ListSessionsAsync(d.ControlEndpoint);
                 return sessions?.Count ?? 0;
             }));
@@ -1722,7 +1727,13 @@ internal static class GatewayEndpoints
                 return Results.BadRequest(new { error = "reason is required: state why this Director is being shut down" });
             }
 
-            var sessions = await client.ListSessionsAsync(director.ControlEndpoint);
+            // Gateway Cleanup Phase 2 (PR E, Group C): under streamMode read the live session list from the push
+            // store (it carries the same SessionDto incl. Status); a stale/absent cache falls through to the
+            // byte-identical HTTP pull.
+            var cachedSessions = pushedSessions?.TryGetFresh(director.DirectorId, streamStaleResolved);
+            var sessions = cachedSessions is not null
+                ? cachedSessions.ToList()
+                : await client.ListSessionsAsync(director.ControlEndpoint);
             if (sessions is not null)
             {
                 var live = sessions

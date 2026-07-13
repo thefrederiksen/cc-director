@@ -250,28 +250,34 @@ Classified:
   - `WingmanTrainingStore.cs` - GetBuffer.
   - `MachineSessionSpawner.cs` / `DirectorImplSessionDriver.cs` - CreateSession + GetBuffer (cron/worklist spawn
     and the seed-prompt impl driver).
-- GROUP C - roster / health PULLS for which there is NO pull verb today (the roster is a PUSH store). Needs an
-  Architect ruling (see the open question below):
-  - `ExesEndpoints.cs` - ListSessionsWithStatusAsync (per-Director session+status list).
-  - `Briefing/TurnEndWatcher.cs` - ListSessionsWithStatusAsync (turn-end detection poll).
-  - `GatewayHost.cs` - the roster fan-out (ListSessions / ListSessionsWithStatus) + GetHealthDetailedAsync.
+- GROUP C - roster / health PULLS for which there is NO pull verb (the roster is a PUSH store). RULING SETTLED
+  (Architect, 2026-07-13): the roster is served from the PUSH store, so re-point the pulls to READ
+  `PushedSessions` - NO pull verb - and DROP `GetHealthDetailedAsync` in favour of tunnel-connectedness (the
+  PushedSessionStore connection binding already answers "is this Director stream-connected") - NO health verb.
+  One check owed: verify `PushedSessions` carries EVERY field each pull consumer reads (parity) so nothing goes
+  missing.
+  - `ExesEndpoints.cs` - ListSessionsWithStatusAsync (per-Director session+status list) -> read PushedSessions.
+    DONE (PR E-C).
+  - `GatewayEndpoints.cs` /healthz session count (was ListSessionsAsync) and the DELETE /directors/{id} live
+    session gate (was ListSessionsAsync) -> read PushedSessions. DONE (PR E-C).
+  - `Briefing/TurnEndWatcher.cs` - ListSessionsWithStatusAsync (turn-end catch-up sweep) -> read PushedSessions.
+    Deferred into the voice PR (PR E-B voice cluster) because the sweep hands the owning Director's endpoint to
+    WingmanVoiceService.GenerateAsync, so the endpoint->directorId change must land together with the voice
+    service's own tunnel re-point.
+  - `GetHealthDetailedAsync` -> DROP: its ONLY caller is `AdvertisedEndpointMonitor` (GROUP D, deleted Phase 3),
+    so tunnel-connectedness becomes the health signal with NO Phase-2 re-point (the caller dies with the class).
+    The GatewayEndpoints roster fan-out (`:549` ListSessionsWithStatus) was ALREADY re-pointed in Phase 1a - it
+    reads PushedSessions first and only falls through to the HTTP pull as the coexistence path.
 - GROUP D - dialing machinery DELETED in Phase 3 (NOT re-pointed): `AdvertisedEndpointMonitor` (whole class);
   `SessionWsProxyEndpoints` SessionWsForwarder + the `/sessions/{sid}/{**rest}` catch-all + LocateOwningDirector
   (the browser stream/file/screenshot legs already tunnel-branched in PR A); the verify / verify-ws callbacks;
   ControlEndpoint advertisement reads (DeriveDirectorBaseUrl).
 
-OPEN QUESTION for the Architect (Group C): the roster is served from the PUSH store under streamMode for
-`GET /sessions`, but ExesEndpoints, TurnEndWatcher, and the GatewayHost fan-out each do their OWN
-`ListSessionsWithStatusAsync` pull. To reach zero `DirectorEndpointClient` callers, do these read the push store
-(`PushedSessions`) instead of pulling, or is a `list-sessions` pull verb wanted? And `GetHealthDetailedAsync` -
-is the tunnel connection liveness itself the health signal (so the caller is dropped as machinery), or is a
-health verb kept? Manager recommendation: push-store reads for the roster pulls (no new pull verb - the roster is
-authoritative in the push store under streamMode), and drop `GetHealthDetailedAsync` in favour of tunnel
-connectedness (Group D). Awaiting the ruling before PR E's Group-C leg.
-
-On the zero-callers timing: Groups A/B/C keep an HTTP fallback branch during streamMode coexistence, so the
-literal "zero DirectorEndpointClient callers" grep passes only when those fallback branches are removed (tunnel
-made mandatory) together with the Group-D deletions - i.e. AT the cut, not before it. Before the whole-surface
-proof, the guarantee is that every caller HAS a tunnel branch (Groups A/B/C re-pointed, Group D confirmed
-machinery); the zero-callers grep is the definition-of-done verified at the Phase 3 deletion. (Flagged to the
-Architect to confirm this reading of "re-point in Phase 2, then verify zero callers".)
+On the zero-callers timing (CONFIRMED by the Architect, 2026-07-13): Groups A/B/C keep an HTTP fallback
+else-branch during streamMode coexistence, so the literal "zero `DirectorEndpointClient` callers" grep passes
+only when those fallback branches are removed (tunnel made mandatory) together with the Group-D deletions - i.e.
+AT the cut, not before it. The PRE-PROOF gate the Architect clears the cut on is: EVERY `DirectorEndpointClient`
+caller HAS a tunnel branch, AND the whole-surface real-exe proof (streamMode ON) exercises all of them. The
+fallback else-branches still referencing `DirectorEndpointClient` are FINE pre-cut (they are the coexistence
+path). The literal zero-callers grep is the at-cut check run right before deleting `DirectorEndpointClient`
+(remove the streamMode-off fallbacks + delete Group D + grep-confirm zero callers + delete the client).

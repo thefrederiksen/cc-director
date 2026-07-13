@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using CcDirector.Gateway.Discovery;
+using CcDirector.Gateway.Streaming;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -31,8 +32,14 @@ internal static class ExesEndpoints
     private static readonly Regex SlotFromExe =
         new(@"cc-director(\d+)\.exe$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client)
+    public static void Map(IEndpointRouteBuilder app, DirectorRegistry registry, DirectorEndpointClient client,
+        PushedSessionStore? pushedSessions = null, TimeSpan? streamStaleAfter = null)
     {
+        // Gateway Cleanup Phase 2 (PR E, Group C): under streamMode the roster lives in the push store; resolve
+        // the same freshness window the /sessions roster uses so a stream-connected Director's sessions are read
+        // from the store instead of pulled over HTTP.
+        var streamStale = streamStaleAfter ?? TimeSpan.FromSeconds(Core.Configuration.GatewayConfig.DefaultStreamStaleAfterSeconds);
+
         // ----- list local directors + slot status (JSON; /exes itself is the HTML page) -----
         app.MapGet("/exes/list", async (HttpContext ctx) =>
         {
@@ -51,7 +58,19 @@ internal static class ExesEndpoints
                 var directorTasks = local.Select(async d =>
                 {
                     var exePath = TryGetExePath(d.Pid);
-                    var (sessions, error) = await client.ListSessionsWithStatusAsync(d.ControlEndpoint, false);
+                    // Group C: prefer the push store; a stale/absent cache falls through to the HTTP pull.
+                    IReadOnlyList<SessionDto>? sessions;
+                    string? error;
+                    var cached = pushedSessions?.TryGetFresh(d.DirectorId, streamStale);
+                    if (cached is not null)
+                    {
+                        sessions = cached;
+                        error = null;
+                    }
+                    else
+                    {
+                        (sessions, error) = await client.ListSessionsWithStatusAsync(d.ControlEndpoint, false);
+                    }
                     return new
                     {
                         directorId = d.DirectorId,
@@ -66,7 +85,7 @@ internal static class ExesEndpoints
                         startedAt = d.StartedAt,
                         source = d.Source,
                         sessionError = error,
-                        sessions = (sessions ?? new()).Select(s => new
+                        sessions = (sessions ?? new List<SessionDto>()).Select(s => new
                         {
                             sessionId = s.SessionId,
                             name = s.Name,
