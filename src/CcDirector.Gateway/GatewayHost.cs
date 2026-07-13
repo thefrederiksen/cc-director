@@ -376,6 +376,8 @@ public sealed class GatewayHost : IAsyncDisposable
     private readonly Push.PushSubscriptionStore _pushSubscriptions;
     private readonly HttpClient _pushLoopbackHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
     private Push.WebPushNeedsYouNotifier? _pushNotifier;
+    private Api.NetDiagMonitor? _netDiagMonitor;
+    private Api.NetDiagRollupStore? _netDiagRollup;
     private WebApplication? _app;
     private bool _stopped;
 
@@ -1155,7 +1157,13 @@ public sealed class GatewayHost : IAsyncDisposable
 
         // Product version stamped by Directory.Build.props; full form carries the commit SHA.
         var version = AppVersion.Full;
+        // Network Diagnostics mission (P1): the shared hourly quality rollup - POST /diag/result folds
+        // client results into it, and the monitor (started below) folds its per-tick observations into the
+        // same instance, so both writers share one thread-safe in-memory state + file.
+        _netDiagRollup = new Api.NetDiagRollupStore(Path.Combine(CcStorage.Root(), "netdiag-rollup.json"));
+
         GatewayEndpoints.Map(_app, Registry, _client, version, Token, AuthEnabled,
+            netDiagRollup: _netDiagRollup,
             requestShutdown: () =>
             {
                 var handler = OnShutdownRequested;
@@ -1652,6 +1660,13 @@ public sealed class GatewayHost : IAsyncDisposable
             _vapidStore.PublicKey, _vapidStore.PrivateKey, "mailto:support@devthrottle.com");
         _pushNotifier = new Push.WebPushNeedsYouNotifier(_pushSubscriptions, GetNeedsYouCountAsync, pushSender);
         _pushNotifier.Start();
+
+        // Network Diagnostics monitor (Network Diagnostics mission, Phase 1): on a timer, watch each
+        // connected device's direct-vs-relay path and log persistent home-relay drift QUIETLY. Alert
+        // channels (doorbell + owner email) are wired in P5 onto the same Decide-machine state.
+        var netDiagDeviceStore = new Api.NetDiagDeviceStore(Path.Combine(CcStorage.Root(), "netdiag-devices.json"));
+        _netDiagMonitor = new Api.NetDiagMonitor(Api.TailscaleDiagnostics.Collect, Api.LanPresenceProbe.TryResolveMac, netDiagDeviceStore, _netDiagRollup);
+        _netDiagMonitor.Start();
     }
 
     /// <summary>
@@ -1801,6 +1816,7 @@ public sealed class GatewayHost : IAsyncDisposable
         // loopback HTTP client it read /sessions with. Subscriptions are already on disk (written through
         // on every change), so stopping loses nothing.
         try { _pushNotifier?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push notifier dispose error: {ex.Message}"); }
+        try { _netDiagMonitor?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] netdiag monitor dispose error: {ex.Message}"); }
         try { _snoozeSweep?.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] snooze sweep dispose error: {ex.Message}"); }
         _pushNotifier = null;
         try { _pushLoopbackHttp.Dispose(); } catch (Exception ex) { FileLog.Write($"[GatewayHost] push loopback client dispose error: {ex.Message}"); }

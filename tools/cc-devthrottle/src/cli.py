@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
+from . import diag_ops
 from . import email_ops
 from . import mission_ops
 from . import schedule_ops
@@ -51,6 +52,11 @@ setup_app = typer.Typer(
 email_app = typer.Typer(
     help="Send email to the account owner.", add_completion=False, no_args_is_help=True
 )
+diag_app = typer.Typer(
+    help="Run network diagnostics (Tailscale direct-vs-relay, speed results).",
+    add_completion=False,
+    no_args_is_help=True,
+)
 app.add_typer(session_app, name="session")
 app.add_typer(mission_app, name="mission")
 app.add_typer(message_app, name="message")
@@ -58,6 +64,7 @@ app.add_typer(settings_app, name="settings")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(setup_app, name="setup")
 app.add_typer(email_app, name="email")
+app.add_typer(diag_app, name="diag")
 console = Console()
 
 _ACTIONS = [
@@ -458,6 +465,26 @@ def mission_list(
 ) -> None:
     """List every Mission record on the Gateway."""
     mission_ops.list_missions(json_output)
+
+
+@diag_app.command("network")
+def diag_network(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """Server-side network check: per connected device, direct-vs-DERP-relay + latency, plus UDP/NAT.
+
+    Runs on the Gateway with no phone and no app open - the check an agent uses to tell "warming up on
+    the relay" apart from "genuinely slow".
+    """
+    diag_ops.show_network(json_output)
+
+
+@diag_app.command("results")
+def diag_results(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output raw JSON."),
+) -> None:
+    """Recent speed-test results users submitted from the app or Cockpit (newest first)."""
+    diag_ops.show_results(json_output)
 
 
 @message_app.command("send")

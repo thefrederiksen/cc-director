@@ -24,6 +24,7 @@ import { ExesView } from "./exes/ExesView";
 import { LearningView } from "./learning/LearningView";
 import { YourThrottleView } from "./throttle/YourThrottleView";
 import { TranscriptionHealthView } from "./transcription/TranscriptionHealthView";
+import { NetworkDiagnosticsView } from "./network/NetworkDiagnosticsView";
 import { AccountView } from "./account/AccountView";
 import { AboutView } from "./about/AboutView";
 import { SettingsView } from "./settings/SettingsView";
@@ -178,6 +179,7 @@ const router = createBrowserRouter(
             // Transcription Health: read-only view over the local transcription telemetry the Gateway
             // records (latency, failures, most-corrected words). Same Gateway REST surface via client-core.
             { path: "/transcription", element: <TranscriptionHealthView /> },
+            { path: "/network", element: <NetworkDiagnosticsView /> },
             { path: "/account", element: <AccountView /> },
             { path: "/about", element: <AboutView /> },
             // The Settings page (issue #1025): a real React port of the retired Blazor

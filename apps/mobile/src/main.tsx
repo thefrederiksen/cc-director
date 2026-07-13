@@ -11,6 +11,7 @@ import { CarMode } from "./pages/CarMode";
 import { EndWordTest } from "./pages/EndWordTest";
 import { AiSettings } from "./pages/AiSettings";
 import { About } from "./pages/About";
+import { Diagnostics } from "./pages/Diagnostics";
 import { YourThrottle } from "./pages/YourThrottle";
 import { SignIn } from "@devthrottle/client-core/auth/SignIn";
 import { DeviceCallback } from "@devthrottle/client-core/auth/DeviceCallback";
@@ -22,6 +23,7 @@ import { ConnectionBanner } from "./components/ConnectionBanner";
 import { useScreenWakeLock } from "./hooks/useScreenWakeLock";
 import { resumePendingDictations } from "@devthrottle/client-core/dictation/backgroundSend";
 import { RouteRecoveryBoundary, RootLayout } from "./components/StaleShellRecovery";
+import { StatusPill } from "./components/StatusPill";
 import "./styles.css";
 
 // The auth gate (issue #908): every real screen requires an enrolled device key. Without one, the
@@ -49,6 +51,7 @@ function GatedLayout() {
   return (
     <>
       <ConnectionBanner />
+      <StatusPill />
       <Outlet />
     </>
   );
@@ -117,6 +120,9 @@ const router = createBrowserRouter(
             { path: "/endword", element: <EndWordTest /> },
             { path: "/settings", element: <AiSettings /> },
             { path: "/about", element: <About /> },
+            // Diagnostics (auto-network-switching mission): a phone-side connection tester - route
+            // (direct LAN vs Tailscale relay), latency, and download/upload throughput, with a verdict.
+            { path: "/diagnostics", element: <Diagnostics /> },
             // Your Throttle (devthrottle-stats mission): the in-app port of the standalone Gateway
             // /stats page, reading the same GET /stats/data feed through client-core.
             { path: "/throttle", element: <YourThrottle /> },

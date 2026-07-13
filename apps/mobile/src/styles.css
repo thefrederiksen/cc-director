@@ -2547,6 +2547,165 @@ a.banner-btn {
   text-align: right;
 }
 
+/* Diagnostics page (auto-network-switching mission): the connection-route banner, the big run button,
+   the three speed metrics, and the plain-English verdict. Rating colors reuse the theme tokens plus a
+   local green/amber for the good/ok states (the theme ships only accent-blue and attention-red). */
+.diag-route {
+  margin: 16px 0;
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--text-dim);
+  border-radius: 8px;
+}
+.diag-route-lan { border-left-color: #37c26d; }
+.diag-route-tailscale { border-left-color: #e8a33d; }
+.diag-route-local { border-left-color: var(--accent); }
+.diag-route-label {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.diag-route-value {
+  font-size: 17px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+.diag-route-detail {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+.diag-run {
+  width: 100%;
+  min-height: 48px;
+  margin: 4px 0 16px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+}
+.diag-run:disabled {
+  opacity: 0.6;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
+.diag-metrics {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.diag-metric {
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.diag-metric-label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.diag-metric-value {
+  font-size: 22px;
+  font-weight: 800;
+  margin-top: 2px;
+}
+.diag-metric-sub {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.diag-verdict {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--text-dim);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.diag-verdict-fast { border-left-color: #37c26d; }
+.diag-verdict-ok { border-left-color: #e8a33d; }
+.diag-verdict-slow { border-left-color: var(--attention); }
+.diag-verdict-headline {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.diag-verdict-advice {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+}
+
+/* The always-visible network status pill (Network Diagnostics mission, P1): a small green/amber/red/grey
+   dot + label pinned to the top-right, tappable to open Diagnostics. Colour = authoritative direct-vs-relay
+   for this device; never red on the cold-start. */
+.net-pill {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  right: 10px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  line-height: 1;
+}
+.net-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: 0 0 auto;
+}
+.net-pill-green .net-pill-dot { background: #37c26d; }
+.net-pill-amber .net-pill-dot { background: #e8a33d; }
+.net-pill-red .net-pill-dot { background: var(--attention); }
+.net-pill-grey .net-pill-dot { background: var(--text-dim); }
+.net-pill-green { color: #37c26d; }
+.net-pill-amber { color: #e8a33d; }
+.net-pill-red { color: var(--attention); }
+
+/* The "how to make it faster" checklist, shown when the connection is relaying or slow. */
+.diag-checklist {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.diag-checklist-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.diag-checklist ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.diag-checklist li {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
 /* The Control API port shown on each machine row in the New session picker, so several cc-director
    slots on one machine are told apart and the number can be quoted to an agent. */
 .row-port {

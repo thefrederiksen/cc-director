@@ -1,0 +1,105 @@
+/* Network Diagnostics view (Cockpit). Uses the shared cockpit theme tokens plus a local green/red for
+   the direct/relay states. */
+
+.netdiag-lede {
+  color: var(--text-dim);
+  max-width: 70ch;
+  line-height: 1.5;
+  margin: 0 0 16px;
+}
+
+.netdiag-section {
+  margin-bottom: 24px;
+}
+.netdiag-section h2 {
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+
+.netdiag-refresh,
+.netdiag-run {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.netdiag-run {
+  border-color: var(--accent);
+}
+.netdiag-refresh:disabled,
+.netdiag-run:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.netdiag-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.netdiag-summary strong {
+  color: var(--text);
+}
+
+.netdiag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.netdiag-table th,
+.netdiag-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.netdiag-table th {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.netdiag-direct {
+  color: #37c26d;
+  font-weight: 600;
+}
+.netdiag-relay {
+  color: var(--warn, #e8a33d);
+  font-weight: 700;
+}
+.netdiag-muted {
+  color: var(--text-dim);
+}
+.netdiag-note {
+  color: var(--warn, #e8a33d);
+  font-size: 12px;
+  margin-top: 8px;
+}
+.netdiag-error {
+  color: var(--warn, #e8a33d);
+}
+
+.netdiag-metrics {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+}
+.netdiag-metric {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  min-width: 120px;
+}
+.netdiag-metric-label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.netdiag-metric-value {
+  font-size: 20px;
+  font-weight: 700;
+  margin-top: 2px;
+}
