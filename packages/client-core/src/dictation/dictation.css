@@ -125,6 +125,18 @@
   color: var(--text-dim);
 }
 
+/* Sticky dropped-audio warning: amber, not red - the dictation continues, but the user must review
+   the (possibly truncated) text before committing it. */
+.dictate-warning {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(220, 170, 60, 0.12);
+  border: 1px solid rgba(220, 170, 60, 0.45);
+  border-radius: 8px;
+  color: #e8c878;
+  font-size: 13px;
+}
+
 .dictate-error {
   margin-top: 8px;
   padding: 10px 12px;

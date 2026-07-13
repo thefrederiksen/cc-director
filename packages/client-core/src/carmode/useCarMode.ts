@@ -953,8 +953,10 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     const pauseDetectedAt = prefetched ? prefetched.pauseDetectedAt : performance.now();
 
     // Acquire the raw command audio for BOTH paths (the voice end-phrase path passes the very clip it
-    // transcribed). This is what gets persisted so speech is never lost.
-    const clip = prefetched ? prefetched.clip : rec.snapshot();
+    // transcribed). This is what gets persisted so speech is never lost. The snapshot is FLUSHED:
+    // MediaRecorder's still-buffered tail is forced out first, so the last words before the tap are in
+    // the clip - a bare snapshot() clips up to 100ms off the end, exactly where the final word lands.
+    const clip = prefetched ? prefetched.clip : await rec.snapshotFlushed();
     if (!prefetched && clip.size < MIN_CLIP_BYTES) {
       void takeTurn("", null); // nothing captured: a canned nudge, no server turn, no durable record
       return;
@@ -1083,7 +1085,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     endPollBusyRef.current = true;
     const startedAt = performance.now();
     try {
-      const clip = rec.snapshot();
+      // Flushed snapshot: without forcing MediaRecorder's buffered tail out first, the just-spoken
+      // sign-off ("over and out") can be missing from the clip and the phrase is never detected -
+      // and when it IS detected, this very clip becomes the persisted command audio, so the tail
+      // must be complete here too.
+      const clip = await rec.snapshotFlushed();
       if (clip.size < MIN_CLIP_BYTES) return;
       const transcodeStart = performance.now();
       const { wav } = await blobToWav16kMono(clip);

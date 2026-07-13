@@ -24,6 +24,12 @@ function pickMimeType(): string {
 // change the captured clip: the chunks are concatenated in order on stop exactly as before.
 const CHUNK_MS = 100;
 
+// Backstop for snapshotFlushed(): how long to wait for MediaRecorder to deliver the flushed tail
+// before snapshotting whatever has arrived. The browser twin of the desktop recorder's 750ms
+// RecordingStopped drain backstop - a wedged recorder must not hang the turn, and the timeout is
+// logged so a real occurrence is visible.
+const FLUSH_BACKSTOP_MS = 500;
+
 export class MicRecorder {
   private stream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;
@@ -110,6 +116,50 @@ export class MicRecorder {
   snapshot(): Blob {
     const mime = this.mimeType || "audio/webm";
     return new Blob(this.chunks, { type: mime });
+  }
+
+  /**
+   * Snapshot ALL audio captured up to now - INCLUDING the tail still buffered inside MediaRecorder -
+   * without stopping the recorder; the microphone keeps capturing and chunks keep accumulating.
+   *
+   * A plain snapshot() only sees chunks the recorder has already delivered, so up to CHUNK_MS of the
+   * most recent speech (exactly where the final word or the sign-off phrase lands) is missing from it.
+   * This variant calls requestData(), which makes MediaRecorder emit its buffered audio as an immediate
+   * dataavailable, and waits for that delivery before assembling the blob - so the last words are in.
+   * Any turn-taking path (Car Mode "Over and out", the end-phrase watch) must use this, never a bare
+   * snapshot(). When the recorder is not actively recording there is nothing buffered to flush and the
+   * plain snapshot is returned as-is.
+   */
+  async snapshotFlushed(): Promise<Blob> {
+    const rec = this.recorder;
+    if (rec === null || rec.state !== "recording") return this.snapshot();
+    await new Promise<void>((resolve) => {
+      let backstop: ReturnType<typeof setTimeout> | undefined;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (backstop !== undefined) clearTimeout(backstop);
+        resolve();
+      };
+      // The ondataavailable handler assigned in start() was registered first, so it has already
+      // pushed the flushed chunk into this.chunks by the time this once-listener runs (event
+      // listeners fire in registration order).
+      rec.addEventListener("dataavailable", finish, { once: true });
+      backstop = setTimeout(() => {
+        console.warn(`[MicRecorder] snapshotFlushed: no flush within ${FLUSH_BACKSTOP_MS}ms; snapshotting what has arrived`);
+        finish();
+      }, FLUSH_BACKSTOP_MS);
+      try {
+        rec.requestData();
+      } catch (err) {
+        // The recorder went inactive between the state check and here (a concurrent stop). Nothing
+        // is buffered any more; the chunks list already holds everything that was delivered.
+        console.warn(`[MicRecorder] snapshotFlushed: requestData failed: ${err instanceof Error ? err.message : String(err)}`);
+        finish();
+      }
+    });
+    return this.snapshot();
   }
 
   /** Current input level in 0..1, sampled live. Returns 0 when not recording. */
