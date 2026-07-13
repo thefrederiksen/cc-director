@@ -146,4 +146,22 @@ public sealed class BackgroundDictationSendTests : IDisposable
         Assert.Equal("the words", failedComposed); // the words survive as restorable text...
         Assert.Empty(SavedRecordings()); // ...so the audio copy is not needed and does not pile up
     }
+
+    [Fact]
+    public async Task SubmitFails_WithNoFailureCallback_RecordingIsKept()
+    {
+        // Without an onFailed callback nobody restores the words as text, so the saved WAV is the
+        // only copy of what was said - deleting it here would lose the speech outright. The single
+        // production caller always passes onFailed; this pins the guard for any future caller.
+        var recorder = await NewRecordingRecorderAsync(new byte[] { 1, 2, 3, 4 });
+
+        await BackgroundDictationSend.RunAsync(
+            recorder, prefix: "", NewSession(),
+            new FakeTranscriber { Text = "the words" },
+            submit: _ => throw new InvalidOperationException("composer refused"),
+            onFailed: null,
+            recordingsDirectory: _dir);
+
+        Assert.Single(SavedRecordings());
+    }
 }

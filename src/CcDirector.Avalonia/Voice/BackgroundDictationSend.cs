@@ -109,7 +109,16 @@ public static class BackgroundDictationSend
             catch (Exception ex)
             {
                 FileLog.Write($"[BackgroundDictationSend] submit FAILED for session {target.Id} ({DiagnosticState(target)}): {ex.Message}");
-                onFailed?.Invoke(ex.Message, text);
+                if (onFailed is null)
+                {
+                    // No failure callback means nobody restored the words as text - the saved WAV is
+                    // then the only copy of what was said, so it is kept and the log names it. The
+                    // single production caller always passes onFailed; this guards a future caller.
+                    FileLog.Write($"[BackgroundDictationSend] no onFailed callback; keeping savedRecording={savedPath ?? "none"}");
+                    savedPath = null; // kept; do not delete below
+                    return;
+                }
+                onFailed.Invoke(ex.Message, text);
             }
             DictationRecordingStore.TryDelete(savedPath);
             savedPath = null;
