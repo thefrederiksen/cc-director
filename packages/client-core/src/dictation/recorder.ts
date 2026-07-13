@@ -125,10 +125,17 @@ export class MicRecorder {
    * A plain snapshot() only sees chunks the recorder has already delivered, so up to CHUNK_MS of the
    * most recent speech (exactly where the final word or the sign-off phrase lands) is missing from it.
    * This variant calls requestData(), which makes MediaRecorder emit its buffered audio as an immediate
-   * dataavailable, and waits for that delivery before assembling the blob - so the last words are in.
-   * Any turn-taking path (Car Mode "Over and out", the end-phrase watch) must use this, never a bare
-   * snapshot(). When the recorder is not actively recording there is nothing buffered to flush and the
-   * plain snapshot is returned as-is.
+   * dataavailable, and waits for a delivery before assembling the blob - so the last words are in.
+   *
+   * RESIDUAL CAVEAT: the wait resolves on the FIRST dataavailable after the call, which under load can
+   * be an earlier timeslice chunk that was already queued - the requestData flush then lands just after
+   * the snapshot was assembled. So this is a large improvement over snapshot(), not an absolute
+   * guarantee. It is the right tool ONLY for the rolling end-phrase watch, where a short miss is
+   * self-correcting: the watch re-ticks every second, and a clip it commits provably contains the
+   * spoken sign-off phrase (that is how the phrase was detected). A path that ENDS the turn must not
+   * rely on this - it stops the recorder instead (stop() resolves only after the final chunk was
+   * delivered, which is race-free). When the recorder is not actively recording there is nothing
+   * buffered to flush and the plain snapshot is returned as-is.
    */
   async snapshotFlushed(): Promise<Blob> {
     const rec = this.recorder;
