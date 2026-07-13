@@ -3,6 +3,7 @@ using CcDirector.Core.Sessions;
 using CcDirector.Core.Utilities;
 using CcDirector.Gateway.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection; // AddMessagePackProtocol (client)
 
 namespace CcDirector.ControlApi;
 
@@ -140,6 +141,11 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             {
                 TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10),
             })
+            // Gateway Cleanup mission: MessagePack (binary) so a full-cap 48KB up-stream byte[] frame stays
+            // ~48KB on the wire. Under JSON it base64-inflates to ~64KB and exceeds the hub's receive limit,
+            // dropping the tunnel on any file read >48KB or a terminal burst. The hub also speaks JSON, so this
+            // is safe to roll out per-Director.
+            .AddMessagePackProtocol()
             .Build();
 
         _connection.Reconnecting += ex =>

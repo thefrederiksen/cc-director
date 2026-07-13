@@ -17,6 +17,11 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- Gateway Cleanup mission: the SignalR MessagePack protocol for the DirectorHub (the tunnel). NOT in
+         the shared framework, so it is referenced explicitly. Binary framing keeps a 48KB byte[] up-stream
+         frame ~48KB on the wire (not ~64KB base64 under JSON), so the MaxBinaryFrameBytes+envelope receive
+         limit is correct and there is no 33% base64 tax on every tunnel byte. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.9" />
     <!-- Direct HTTP forwarding (IHttpForwarder) for the one-URL front door: every request no
          explicit Gateway endpoint claims falls through to the loopback Cockpit. -->
     <PackageReference Include="Yarp.ReverseProxy" Version="2.2.0" />
