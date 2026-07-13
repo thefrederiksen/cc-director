@@ -313,10 +313,43 @@ DONE and merged in PR E-B:
   mapping) and `TunnelWingmanVoiceProofTests` (unreachable-Director + PushSnapshot: the wingman menu reads the
   session buffer over the tunnel by construction, proving the Map wiring threads sendCommand + the push store).
 
-DEFERRED to a follow-up PR (PR E-B2), still Group B: `MachineSessionSpawner.cs` / `DirectorImplSessionDriver.cs`
-(cron / worklist spawn + seed-prompt). These need the create + buffer verbs on the tunnel and touch the
-cron/worklist launcher plumbing (ICronWorkListDrainLauncher + its runner + the driver factory + tests); split out
-to keep the voice PR a coherent, tested unit. They MUST land before the completeness gate / the cut.
+DONE and merged in PR E-B2 (#1465, Manager a2de9030): `MachineSessionSpawner.cs` / `DirectorImplSessionDriver.cs`
+(cron / worklist spawn + seed-prompt). `SessionVerbClient` gained a director-level `CreateSessionAsync` (the
+`create` verb, empty session id, `NewSessionRequest` payload -> `SessionDto`) plus a `ForDirector` factory for
+callers that hold only a director id + control endpoint; the spawner + driver route create tunnel-first through
+the resolved director id (HTTP fallback on the control endpoint) and the driver reads the session buffer through
+the same `SessionVerbClient`. Director id + the stream hook threaded through `ICronWorkListDrainLauncher.LaunchAsync`,
+the driver factory, `DirectorCronWorkListRunner`, `WorkListRunnerEndpoints.Map`, and the `GatewayHost` wiring.
+Proof: `SessionVerbClientTests` (director-level create) + `TunnelSpawnerDriverProofTests` (unreachable control
+endpoint => success can only be the tunnel).
+
+## PR E-B3 (Group B, completeness-gate find) - 2026-07-13 (Manager a2de9030)
+
+The Phase-2 completeness-gate sweep (run after E-B2) found ONE `DirectorEndpointClient` caller not in the A-D
+classification and with NO tunnel branch and NO stream-mode guard: the **snooze expiry watchdog**
+(`SnoozeExpirySweep`, Snooze Length mission), wired in `GatewayHost` with `readOnHold` = `client.GetSessionAsync`
+and `forwardUnhold` = `client.SetHoldAsync` dialed unconditionally on the Director's control endpoint. `hold` and
+the session snapshot are NOT in the 6-item Director floor, so post-cut those dials 404 and snooze expiry silently
+stops (a snoozed session stuck on hold forever). Architect RULING (2026-07-13): re-point NOW as PR E-B3, additive
+- per the completeness invariant every `DirectorEndpointClient` caller must have a tunnel branch before the cut.
+
+DONE and merged in PR E-B3 (#1468): new choke point `SnoozeSweepDirectorClient`
+(`src/CcDirector.Gateway/Api/SnoozeSweepDirectorClient.cs`), tunnel-first under stream mode with the existing
+HTTP dial as the byte-identical fallback:
+- the RAW `OnHold` READ rides the `snapshot` read verb (chosen over reading `PushedSessions`: the sweep's
+  nudge->next-sweep-clears cycle needs the Director's post-nudge raw state promptly and byte-identically to the
+  old `GetSession`; the round-trip is negligible for the few snoozed entries - Architect gave the call);
+- the expiry NUDGE rides the `hold` write verb (`OnHold=false`).
+- `SnoozeExpirySweep` is now director-id addressed: its resolve-to-an-endpoint gate became `isDirectorReachable`
+  (reachable over the tunnel - stream-connected - OR over HTTP - advertised endpoint), so it survives the cut (a
+  stream-only Director with no HTTP endpoint is still reachable); the read/nudge seams take the director id. The
+  three-way decision logic is unchanged.
+- Proof: `TunnelSnoozeSweepProofTests` (snapshot/hold verbs + payload + reachability gate, by construction);
+  `SnoozeExpirySweepTests` updated to the id-addressed seams.
+
+With E-B2 + E-B3 merged, every remaining `DirectorEndpointClient` caller is either a tunnel-first HTTP-fallback
+branch (Groups A/B/C - fine pre-cut) or Group-D machinery deleted at the cut. The literal zero-callers grep lands
+AT the cut (remove the fallbacks + delete Group D + delete the client), as ruled above.
 
 ## Architect ruling (retire the client-dead async voice-turn path) - SETTLED 2026-07-13 (session 51f1898e)
 

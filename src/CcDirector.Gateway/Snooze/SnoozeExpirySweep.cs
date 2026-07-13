@@ -42,7 +42,7 @@ public sealed class SnoozeExpirySweep : IDisposable
     public static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(12);
 
     private readonly SnoozeRegistry _registry;
-    private readonly Func<string, string?> _resolveEndpoint;
+    private readonly Func<string, bool> _isDirectorReachable;
     private readonly Func<string, string, CancellationToken, Task<bool?>> _readOnHold;
     private readonly Func<string, string, CancellationToken, Task> _forwardUnhold;
     private readonly Func<DateTime> _utcNow;
@@ -51,27 +51,29 @@ public sealed class SnoozeExpirySweep : IDisposable
     private int _busy; // 0 = idle, 1 = a tick is running (reentrancy guard)
 
     /// <param name="registry">The pending-snooze registry to sweep.</param>
-    /// <param name="resolveEndpoint">
-    /// Maps an owning Director id to the base URL the Gateway dials to reach it, or null when that
-    /// Director has no reachable endpoint (offline/dead) - the dead-man's-switch case, which the sweep
-    /// leaves untouched.
+    /// <param name="isDirectorReachable">
+    /// Whether the owning Director (by id) is reachable at all - over the tunnel (stream-connected) OR over
+    /// HTTP (an advertised endpoint). False when it is offline/dead: the dead-man's-switch case, which the
+    /// sweep leaves untouched. (Gateway Cleanup mission, Phase 2 PR E-B3: this replaced the earlier
+    /// resolve-to-an-endpoint gate so the sweep no longer depends on a dialable HTTP URL - the read/forward
+    /// seams reach the Director by id, tunnel-first.)
     /// </param>
     /// <param name="readOnHold">
-    /// Reads the owning Director's RAW hold state for a session: true = still held, false = no longer
-    /// held, null = the session is absent from that Director or the read did not land. Reads the
-    /// Director directly, never the overlaid roster.
+    /// Reads the owning Director's RAW hold state for a session, addressed by DIRECTOR ID: true = still held,
+    /// false = no longer held, null = the session is absent from that Director or the read did not land.
+    /// Reads the Director directly (its own pushed/snapshotted state), never the overlaid roster.
     /// </param>
-    /// <param name="forwardUnhold">Forwards a hold=false to the owning Director (the expiry nudge).</param>
+    /// <param name="forwardUnhold">Forwards a hold=false to the owning Director (by id) - the expiry nudge.</param>
     /// <param name="utcNow">The clock; injected so the expiry boundary is deterministic in tests.</param>
     public SnoozeExpirySweep(
         SnoozeRegistry registry,
-        Func<string, string?> resolveEndpoint,
+        Func<string, bool> isDirectorReachable,
         Func<string, string, CancellationToken, Task<bool?>> readOnHold,
         Func<string, string, CancellationToken, Task> forwardUnhold,
         Func<DateTime> utcNow)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        _resolveEndpoint = resolveEndpoint ?? throw new ArgumentNullException(nameof(resolveEndpoint));
+        _isDirectorReachable = isDirectorReachable ?? throw new ArgumentNullException(nameof(isDirectorReachable));
         _readOnHold = readOnHold ?? throw new ArgumentNullException(nameof(readOnHold));
         _forwardUnhold = forwardUnhold ?? throw new ArgumentNullException(nameof(forwardUnhold));
         _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
@@ -107,8 +109,7 @@ public sealed class SnoozeExpirySweep : IDisposable
 
     private async Task HandleEntryAsync(SnoozeRegistry.SnoozeEntry entry, DateTime now, CancellationToken ct)
     {
-        var endpoint = _resolveEndpoint(entry.DirectorId);
-        if (endpoint is null)
+        if (!_isDirectorReachable(entry.DirectorId))
         {
             // Owning Director unreachable/dead: leave the entry alone. The aggregation overlay
             // surfaces the session as "needs you" from the cached roster (the dead-man's-switch);
@@ -116,7 +117,7 @@ public sealed class SnoozeExpirySweep : IDisposable
             return;
         }
 
-        var onHold = await _readOnHold(endpoint, entry.SessionId, ct);
+        var onHold = await _readOnHold(entry.DirectorId, entry.SessionId, ct);
         if (onHold == false)
         {
             // The Director itself reports the session is no longer held - it came back on its own
@@ -137,7 +138,7 @@ public sealed class SnoozeExpirySweep : IDisposable
             // rotation resume. Keep the entry; the overlay already reads the session as "needs you",
             // and the next sweep clears the entry once the Director reports OnHold=false.
             FileLog.Write($"[SnoozeExpirySweep] sid={entry.SessionId}: expired (untilUtc={entry.SnoozeUntilUtc:O}) -> nudging director off hold");
-            await _forwardUnhold(endpoint, entry.SessionId, ct);
+            await _forwardUnhold(entry.DirectorId, entry.SessionId, ct);
         }
 
         // onHold == null (session absent from a reachable Director, or the read did not land): keep the

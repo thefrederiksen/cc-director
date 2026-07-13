@@ -33,9 +33,9 @@ public sealed class SnoozeExpirySweepTests : IDisposable
         var nudged = new List<string>();
         var sweep = new SnoozeExpirySweep(
             reg,
-            resolveEndpoint: dir => (unreachableDirectors?.Contains(dir) ?? false) ? null : $"http://{dir}",
-            readOnHold: (ep, sid, ct) => Task.FromResult(onHoldBySid.TryGetValue(sid, out var v) ? v : (bool?)null),
-            forwardUnhold: (ep, sid, ct) => { nudged.Add(sid); return Task.CompletedTask; },
+            isDirectorReachable: dir => !(unreachableDirectors?.Contains(dir) ?? false),
+            readOnHold: (dir, sid, ct) => Task.FromResult(onHoldBySid.TryGetValue(sid, out var v) ? v : (bool?)null),
+            forwardUnhold: (dir, sid, ct) => { nudged.Add(sid); return Task.CompletedTask; },
             utcNow: () => now);
         return (reg, sweep, nudged);
     }
@@ -115,13 +115,13 @@ public sealed class SnoozeExpirySweepTests : IDisposable
         var nudged = new List<string>();
         var sweep = new SnoozeExpirySweep(
             reg,
-            resolveEndpoint: _ => "http://dir-1",
-            readOnHold: (ep, sid, ct) =>
+            isDirectorReachable: _ => true,
+            readOnHold: (dir, sid, ct) =>
             {
                 reg.Snooze(sid, _now.AddMinutes(59), "dir-1"); // re-snooze lands mid-pass -> future
                 return Task.FromResult<bool?>(true);           // Director still reports held
             },
-            forwardUnhold: (ep, sid, ct) => { nudged.Add(sid); return Task.CompletedTask; },
+            forwardUnhold: (dir, sid, ct) => { nudged.Add(sid); return Task.CompletedTask; },
             utcNow: () => _now);
 
         await sweep.RunOnceAsync(CancellationToken.None);
