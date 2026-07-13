@@ -251,15 +251,6 @@
                               Margin="0,12,0,0"
                               ToolTip.Tip="When checked, Claude Code will not prompt for permission to execute tools" />
 
-                    <CheckBox x:Name="WingmanCheckBox" Grid.Row="7"
-                              IsVisible="False"
-                              Content="Wingman (auto-explain on turn-end + Voice tabs)"
-                              IsChecked="False"
-                              HorizontalAlignment="Right"
-                              Foreground="#CCCCCC"
-                              Margin="0,8,0,0"
-                              ToolTip.Tip="When checked, the session auto-runs the Wingman briefing on every turn-end and shows Voice/Wingman tabs. Uncheck for a plain terminal-only session." />
-
                     <!-- Quick-launch cards (alpha feature - hidden unless alpha mode is on) -->
                     <StackPanel x:Name="QuickLaunchPanel" Grid.Row="8" Orientation="Horizontal" Margin="0,16,0,0">
                         <!-- Assistant card -->
