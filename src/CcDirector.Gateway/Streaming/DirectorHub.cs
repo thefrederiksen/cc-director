@@ -76,8 +76,11 @@ public sealed class DirectorHub : Hub
 
         Context.Items[DirectorIdItemKey] = directorId;
         _store.RegisterConnection(directorId, Context.ConnectionId);
-        _registry.MarkStateReporting(directorId);
-        FileLog.Write($"[DirectorHub] Hello: director={directorId} bound to conn={Short(Context.ConnectionId)} (version={hello.Version})");
+        // Gateway Cleanup mission (tunnel-only): the stream IS the registration now (HTTP register is gone).
+        // Register this Director from the Hello identity so registry.Get(id) - the gate on create-session and
+        // the other director-level routes - resolves it. Source="stream", no dialable endpoint.
+        _registry.RegisterFromStream(directorId, hello.MachineName, hello.User, hello.Version, hello.Pid, hello.StartedAt);
+        FileLog.Write($"[DirectorHub] Hello: director={directorId} bound to conn={Short(Context.ConnectionId)} (version={hello.Version}, machine={hello.MachineName})");
     }
 
     /// <summary>A full snapshot: replaces the bound Director's session set (pruning anything absent).</summary>
@@ -128,7 +131,14 @@ public sealed class DirectorHub : Hub
     {
         var directorId = BoundDirectorId();
         if (directorId is not null)
+        {
+            // Clear the active connection so aggregation falls back to the cached roster. Gateway Cleanup
+            // mission (tunnel-only): do NOT drop the registry entry here - a dead Director's cached roster must
+            // survive the sweep window (so a Gateway-owned snooze still fires it back to "needs you" from the
+            // cache) and a brief reconnect blip must not flap the roster. The stale sweeper ages out a Director
+            // that stops refreshing LastSeen (HttpHeartbeatTimeout); a reconnect re-Hellos and refreshes it.
             _store.UnregisterConnection(directorId, Context.ConnectionId);
+        }
         FileLog.Write($"[DirectorHub] disconnected: conn={Short(Context.ConnectionId)}, director={directorId ?? "(unbound)"} ({exception?.Message ?? "clean"})");
         return base.OnDisconnectedAsync(exception);
     }

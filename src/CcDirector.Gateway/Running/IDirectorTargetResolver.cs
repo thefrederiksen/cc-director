@@ -75,10 +75,13 @@ public sealed class RegistryDirectorTargetResolver : IDirectorTargetResolver
         return new DirectorTargetResult(null, null, $"launched a Director on '{machine}' but none registered within {_launchTimeout.TotalSeconds:0}s");
     }
 
-    /// <summary>First registered, reachable Director on the machine with a usable control endpoint.</summary>
+    /// <summary>
+    /// First registered Director on the machine. Gateway Cleanup mission (tunnel-only): a registered Director
+    /// IS reachable - it is reached over its tunnel by id, not by dialing a control endpoint - so this no
+    /// longer requires a non-empty ControlEndpoint or an advertised-endpoint reachability state (both are
+    /// artifacts of the deleted HTTP-dial path).
+    /// </summary>
     private DirectorDto? PickReachable(string machine) =>
         _listDirectors().FirstOrDefault(x =>
-            string.Equals(x.MachineName, machine, StringComparison.OrdinalIgnoreCase) &&
-            !string.IsNullOrEmpty(x.ControlEndpoint) &&
-            x.AdvertisedEndpointState != DirectorDto.EndpointStateUnreachableByName);
+            string.Equals(x.MachineName, machine, StringComparison.OrdinalIgnoreCase));
 }

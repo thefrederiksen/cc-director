@@ -33,11 +33,21 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     private readonly TimeSpan _rePushInterval;
 
     /// <summary>
+    /// Gateway Cleanup mission (tunnel-only): the connectivity indicator. The tunnel IS the Gateway
+    /// connection now, so its up/down state IS the desktop's green/yellow. Null in tests/older callers.
+    /// </summary>
+    private readonly GatewayConnectionMonitor? _monitor;
+
+    /// <summary>
     /// Gateway Cleanup mission, Phase 0 (up-stream): the handler for the four connection-bound stream verbs.
     /// Null when no <see cref="SessionManager"/> was supplied (older callers and tests that never drive a
     /// stream verb); in that case a stream verb returns a typed Error, exactly as an absent dispatcher does.
     /// </summary>
     private readonly DirectorUpStreamHandler? _upStreamHandler;
+
+    // Gateway Cleanup mission (tunnel-only): the Hello now carries this Director's identity so the Gateway
+    // registers it from the stream (HTTP register is gone). Captured once at construction.
+    private readonly DateTime _startedAt = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime();
 
     private HubConnection? _connection;
     private long _sequence;
@@ -68,21 +78,27 @@ public sealed class GatewayStreamClient : IAsyncDisposable
     public GatewayStreamClient(GatewayConfig config, string directorId, string version, Func<List<SessionDto>> snapshot,
         Func<DirectorCommand, Task<DirectorCommandResult>>? commandDispatcher = null,
         TimeSpan? rePushInterval = null,
-        SessionManager? sessionManager = null)
+        SessionManager? sessionManager = null,
+        GatewayConnectionMonitor? monitor = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _directorId = string.IsNullOrWhiteSpace(directorId) ? throw new ArgumentException("directorId is required", nameof(directorId)) : directorId;
         _version = version ?? "";
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _commandDispatcher = commandDispatcher;
+        _monitor = monitor;
         _rePushInterval = rePushInterval ?? TimeSpan.FromSeconds(GatewayConfig.DefaultStreamStaleAfterSeconds / 2.0);
         _upStreamHandler = sessionManager is null
             ? null
             : new DirectorUpStreamHandler(sessionManager, (streamId, frames) => _connection!.SendAsync("StreamUp", streamId, frames));
     }
 
-    /// <summary>True when stream mode is enabled for a configured Gateway. When false, <see cref="Start"/> is a no-op.</summary>
-    public bool IsEnabled => _config.IsEnabled && _config.StreamMode;
+    /// <summary>
+    /// True when a Gateway is configured. Gateway Cleanup mission (tunnel-only): the streamMode gate is
+    /// GONE - the tunnel is the ONLY Gateway connection, so a configured Director always dials it. When
+    /// no gateway.url is set (local-only) this is false and <see cref="Start"/> is a no-op.
+    /// </summary>
+    public bool IsEnabled => _config.IsEnabled;
 
     /// <summary>Start dialing the Gateway. Idempotent; inert when <see cref="IsEnabled"/> is false.</summary>
     public void Start()
@@ -154,11 +170,12 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             // Gateway Cleanup Phase 0 (Architect ruling A): the tunnel dropped, so no frame can reach the
             // Gateway - tear down every live up-stream instead of leaving a producer sending into a dead socket.
             _upStreamHandler?.CancelAll();
+            _monitor?.MarkTunnelConnecting();
             return Task.CompletedTask;
         };
-        _connection.Reconnected += async _ => await ReseedAsync();
+        _connection.Reconnected += async _ => { await ReseedAsync(); _monitor?.MarkTunnelConnected(); };
         // Also tear streams down on a full close (auto-reconnect gave up); the supervise loop then re-dials.
-        _connection.Closed += _ => { _upStreamHandler?.CancelAll(); return Task.CompletedTask; };
+        _connection.Closed += _ => { _upStreamHandler?.CancelAll(); _monitor?.MarkTunnelConnecting(); return Task.CompletedTask; };
 
         // Issue #1176 (Phase 1b): the down-channel proof. The Gateway can call this and await the reply
         // over the same connection (SignalR client results), demonstrating request-both-ways on one
@@ -213,9 +230,11 @@ public sealed class GatewayStreamClient : IAsyncDisposable
             if (await TryConnectAsync())
             {
                 await ReseedAsync();
+                _monitor?.MarkTunnelConnected();   // tunnel up = the two-way connection is proven (green)
                 await WaitUntilClosedAsync();      // returns when auto-reconnect has exhausted its attempts
             }
             if (_disposed) break;
+            _monitor?.MarkTunnelConnecting();      // dropped / dialing again (yellow) until the next connect
             await Task.Delay(RestartDelay);        // long-outage restart
         }
     }
@@ -260,7 +279,15 @@ public sealed class GatewayStreamClient : IAsyncDisposable
         try
         {
             var seq = Interlocked.Increment(ref _sequence);
-            await conn.InvokeAsync("Hello", new DirectorStreamHello { DirectorId = _directorId, Version = _version });
+            await conn.InvokeAsync("Hello", new DirectorStreamHello
+            {
+                DirectorId = _directorId,
+                Version = _version,
+                MachineName = Environment.MachineName,
+                User = Environment.UserName,
+                Pid = Environment.ProcessId,
+                StartedAt = _startedAt,
+            });
             await conn.InvokeAsync("PushSnapshot", seq, _snapshot().ToArray());
             FileLog.Write($"[GatewayStreamClient] reseeded full snapshot seq={seq}");
         }

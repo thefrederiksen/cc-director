@@ -642,22 +642,6 @@ public sealed class StreamCommandTests : IAsyncLifetime
         }
     }
 
-    [Fact]
-    public async Task StreamModeOff_NoPeriodicRePush_PushedCacheStaysEmpty()
-    {
-        // Flag-off regression: a stream-mode-OFF client's Start() is a no-op (IsEnabled false), so no timer is
-        // armed and nothing is ever pushed - byte-identical to a Gateway with no stream at all.
-        var config = new GatewayConfig { Url = $"http://127.0.0.1:{_gateway.Port}", Token = Token, StreamMode = false };
-        await using var client = new GatewayStreamClient(config, "dir-off-repush", "test", SnapshotDirectorSessions,
-            rePushInterval: TimeSpan.FromMilliseconds(100));
-        client.Start();
-
-        // Even after several would-be re-push intervals, this Director never connected and never pushed.
-        await Task.Delay(500);
-        Assert.False(_gateway.PushedSessions.IsStreamConnected("dir-off-repush"));
-        Assert.Null(_gateway.PushedSessions.TryGetFresh("dir-off-repush", TimeSpan.FromSeconds(30)));
-    }
-
     // OS shell used as a harmless RawCli agent so create tests exercise the REAL create path (ConPty
     // spawn) without depending on an installed coding-agent CLI.
     private static string TestShellPath =>

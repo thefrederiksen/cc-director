@@ -89,6 +89,44 @@ public sealed class GatewayConnectionMonitor
     }
 
     /// <summary>
+    /// Gateway Cleanup mission (tunnel-only): the Director's outbound tunnel to the Gateway is UP
+    /// (the SignalR connection established and the Hello/PushSnapshot reseed ran). This is the ONE
+    /// truth of connectivity now - the Gateway reaches this Director only over this stream, so a live
+    /// stream IS a proven two-way connection. Green. Sticky NotConfigured (a local-only Director with
+    /// no gateway.url never goes green).
+    /// </summary>
+    public void MarkTunnelConnected()
+    {
+        lock (_lock)
+        {
+            if (Status == GatewayConnectionStatus.NotConfigured) return;
+            if (Status == GatewayConnectionStatus.Verified) return; // no churn
+            Status = GatewayConnectionStatus.Verified;
+            LastVerifiedAt = DateTime.UtcNow;
+            FailureSummary = null;
+        }
+        FileLog.Write("[GatewayConnectionMonitor] tunnel connected (two-way stream up)");
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Gateway Cleanup mission (tunnel-only): the tunnel dropped and is reconnecting (or dialing for the
+    /// first time). Yellow. Sticky NotConfigured. LastVerifiedAt survives so the UI can show "connected
+    /// until HH:mm" beside the reconnecting state.
+    /// </summary>
+    public void MarkTunnelConnecting()
+    {
+        lock (_lock)
+        {
+            if (Status == GatewayConnectionStatus.NotConfigured) return;
+            if (Status == GatewayConnectionStatus.Connecting) return; // no churn
+            Status = GatewayConnectionStatus.Connecting;
+        }
+        FileLog.Write("[GatewayConnectionMonitor] tunnel connecting/reconnecting");
+        Changed?.Invoke();
+    }
+
+    /// <summary>
     /// A registration attempt failed before any handshake could run (Gateway unreachable,
     /// own front door refused verification, no tailnet endpoint to advertise). Surfaces as
     /// Failed: an indicator stuck on yellow "connecting" while registration loops forever

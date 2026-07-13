@@ -55,9 +55,12 @@ internal static class WorkListRunnerEndpoints
             if (store.Get(name) is null)
                 return Results.NotFound(new { error = "no such list", name });
 
+            // Gateway Cleanup mission (tunnel-only): a Director is reached over the tunnel, not by dialing a
+            // control endpoint, so a registered Director with an empty ControlEndpoint is perfectly routable.
+            // Gate on existence only; the run itself dispatches the create verb down the stream.
             var director = registry.Get(body.DirectorId);
-            if (director is null || string.IsNullOrEmpty(director.ControlEndpoint))
-                return Results.NotFound(new { error = "no such director (or it has no control endpoint)", directorId = body.DirectorId });
+            if (director is null)
+                return Results.NotFound(new { error = "no such director", directorId = body.DirectorId });
 
             // The machine guard key defaults to the target Director's machine name (criterion 8):
             // one slot-5 test Director per machine, so one drain per machine.

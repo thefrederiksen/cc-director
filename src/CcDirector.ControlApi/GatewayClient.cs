@@ -470,13 +470,20 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
         _monitor?.Reset(gatewayConfigured: true);
 
         _cts = new CancellationTokenSource();
-        FileLog.Write($"[GatewayClient] Start: candidates=[{string.Join(", ", _config.CandidateUrls)}], directorId={_directorId}, port={_port}");
+        FileLog.Write($"[GatewayClient] Start: candidates=[{string.Join(", ", _config.CandidateUrls)}], directorId={_directorId} (tunnel-only: no HTTP register/heartbeat/verify)");
 
-        // Choose the reachable gateway address from the ordered candidate list (issue #1233), THEN
-        // register. Both run in the background so a slow probe never blocks Director startup.
-        _ = Task.Run(() => SelectActiveUrlThenRegisterAsync(_cts.Token));
-
-        _heartbeat = new Timer(_ => HeartbeatTick(), null, HeartbeatInterval, HeartbeatInterval);
+        // Gateway Cleanup mission (tunnel-only): the HTTP register/heartbeat/verify connection loop is GONE.
+        // The tunnel (GatewayStreamClient) is the ONLY Gateway connection - its Hello registers this Director
+        // with the Gateway and its live state drives the connectivity light. This client survives ONLY as the
+        // on-demand caller for the Director's outbound Gateway operations (fleet send/ask/fanout/spawn, hold,
+        // session-number). Select the reachable Gateway address once so those calls have a base address; do
+        // NOT register, heartbeat, or run the two-way verify handshake (the Gateway no longer dials back).
+        _ = Task.Run(async () =>
+        {
+            try { await SelectActiveUrlAsync(_cts.Token); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { FileLog.Write($"[GatewayClient] candidate selection failed, using {_activeUrl}: {ex.Message}"); }
+        });
     }
 
     /// <summary>
@@ -742,7 +749,10 @@ public sealed class GatewayClient : IGatewayHold, IDisposable
     /// announces a lifecycle moment; null = a plain activity-transition ping (pre-#330 shape).</param>
     public void NotifySessionState(string sessionId, string newState, string? eventName = null)
     {
-        if (!_config.IsEnabled || _disposed || !_registered) return;
+        // Gateway Cleanup mission (tunnel-only): no longer gated on HTTP registration (which is gone) - the
+        // doorbell is an outbound Director->Gateway front-door notify that fires whenever a Gateway is
+        // configured. Failures are dropped; the tunnel's periodic snapshot re-push reconciles roster state.
+        if (!_config.IsEnabled || _disposed) return;
         var cts = _cts;
         if (cts is null || cts.IsCancellationRequested) return;
 

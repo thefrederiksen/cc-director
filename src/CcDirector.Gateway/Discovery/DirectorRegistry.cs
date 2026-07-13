@@ -111,6 +111,48 @@ public sealed class DirectorRegistry : IDisposable
     }
 
     /// <summary>
+    /// Gateway Cleanup mission (tunnel-only): register (or refresh) a Director from its DirectorHub stream
+    /// Hello. The tunnel is the ONLY registration path now (HTTP register is gone), so a live stream IS the
+    /// Director's presence. Stamped <c>Source="stream"</c> with an EMPTY control/tailnet endpoint - the Gateway
+    /// never dials a Director, it only reaches it down this stream. Marks it state-reporting so the reconcile
+    /// poll skips it. Idempotent; refreshes LastSeen on every Hello (connect + reconnect + periodic re-push).
+    /// </summary>
+    public DirectorDto RegisterFromStream(string directorId, string machineName, string user, string version, int pid, DateTime startedAt)
+    {
+        if (string.IsNullOrEmpty(directorId))
+            throw new ArgumentException("directorId is required", nameof(directorId));
+
+        var now = DateTime.UtcNow;
+        // Merge with any existing entry: a Hello field that arrives empty must not wipe a value the entry
+        // already carries (e.g. a file-discovered entry's machine name). Production Hellos always carry the
+        // full identity; this just makes re-registration and mixed-source ordering safe.
+        _directors.TryGetValue(directorId, out var existing);
+        var dto = new DirectorDto
+        {
+            DirectorId = directorId,
+            Pid = pid > 0 ? pid : (existing?.Pid ?? 0),
+            StartedAt = startedAt != default ? startedAt : (existing?.StartedAt ?? now),
+            ControlEndpoint = "",     // tunnel-only: the Gateway never dials this Director
+            TailnetEndpoint = null,
+            MachineName = !string.IsNullOrEmpty(machineName) ? machineName : (existing?.MachineName ?? ""),
+            User = !string.IsNullOrEmpty(user) ? user : (existing?.User ?? ""),
+            Version = !string.IsNullOrEmpty(version) ? version : (existing?.Version ?? ""),
+            SchemaVersion = 1,
+            LastSeen = now,
+            Source = "stream",
+        };
+        var existed = existing is not null;
+        _directors[directorId] = dto;
+        _stateReporting.TryAdd(directorId, true);
+        if (!existed)
+        {
+            FileLog.Write($"[DirectorRegistry] RegisterFromStream: id={directorId}, machine={machineName}, version={version}");
+            OnDirectorAdded?.Invoke(dto);
+        }
+        return dto;
+    }
+
+    /// <summary>
     /// Refresh the heartbeat timestamp on an existing HTTP-registered Director.
     /// Returns false if the id is unknown (caller can choose to ask the Director to re-register).
     /// </summary>
@@ -294,18 +336,22 @@ public sealed class DirectorRegistry : IDisposable
             var now = DateTime.UtcNow;
             foreach (var kv in _directors.ToArray())
             {
-                if (kv.Value.Source == "http")
+                // Gateway Cleanup mission (tunnel-only): "stream" entries are aged out exactly like "http" -
+                // by staleness. A connected Director refreshes LastSeen on every Hello + the ~10s periodic
+                // re-push, so it never ages; a Director whose tunnel closed stops refreshing and is swept after
+                // HttpHeartbeatTimeout. This is why the DirectorHub does NOT drop the entry the instant the
+                // stream closes: a dead Director's cached roster must survive the sweep window so a Gateway-owned
+                // snooze can still fire it back to "needs you" from the cache, and a brief reconnect blip never
+                // flaps the roster.
+                if (kv.Value.Source == "http" || kv.Value.Source == "stream")
                 {
-                    // HTTP entries: drop if no heartbeat for HttpHeartbeatTimeout. (Post-cut: the
-                    // reachability circuit-breaker's unreachable-evict branch is gone - liveness is the
-                    // tunnel connection, and a dead heartbeat is the only eviction signal that remains.)
                     var lastSeen = kv.Value.LastSeen ?? DateTime.MinValue;
                     if (now - lastSeen > HttpHeartbeatTimeout)
                     {
                         if (_directors.TryRemove(kv.Key, out _))
                         {
                             _everReachable.TryRemove(kv.Key, out _);
-                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale http entry: {kv.Key} (last heartbeat {(now - lastSeen).TotalSeconds:F0}s ago)");
+                            FileLog.Write($"[DirectorRegistry] Sweeper removed stale {kv.Value.Source} entry: {kv.Key} (last seen {(now - lastSeen).TotalSeconds:F0}s ago)");
                             OnDirectorRemoved?.Invoke(kv.Key);
                         }
                     }
