@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeUtterance } from "../api/client";
 import type { CapturedUtterance } from "./backgroundSend";
-import { logCaptureHealth } from "./captureHealth";
+import { captureLossWarning, logCaptureHealth } from "./captureHealth";
 import { playReadyCue } from "./readyCue";
 import { MicRecorder } from "./recorder";
 import { joinText } from "./transcript";
@@ -90,6 +90,11 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
 
   const [transcript, setTranscript] = useState<string>("");
   const [hint, setHint] = useState<string>("");
+  // Sticky dropped-audio warning (issue #863 made the loss measurable; this makes it VISIBLE).
+  // Once a segment shows a material capture deficit the warning stays for the rest of the dialog -
+  // the loss happened and the text may be missing words, so it must not be cleared by a later
+  // healthy segment.
+  const [captureWarning, setCaptureWarning] = useState<string>("");
   const [errorText, setErrorText] = useState<string>("");
   const [elapsed, setElapsed] = useState<number>(0);
   const [levels, setLevels] = useState<number[]>(() => new Array(BAR_COUNT).fill(0));
@@ -178,12 +183,14 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
     };
   }, [onCaptureLive, armReadyBackstop, clearReadyBackstop]);
 
-  // Stop the current segment, transcode to WAV, and transcribe it. Returns the segment text, or
-  // null when there was no audio / transcription failed (the reason is shown). The recorder is
-  // consumed here, so a segment is never transcribed twice.
-  const transcribeCurrentSegment = useCallback(async (): Promise<string | null> => {
+  // Stop the current segment, transcode to WAV, and transcribe it. Returns the segment text plus a
+  // dropped-audio warning when the capture-health check found a material deficit, or null when there
+  // was no audio / transcription failed (the reason is shown). The recorder is consumed here, so a
+  // segment is never transcribed twice.
+  const transcribeCurrentSegment = useCallback(async (): Promise<{ text: string; lossWarning: string | null } | null> => {
     let wav: Blob;
     let health;
+    let lossWarning: string | null = null;
     try {
       const captured = await recorderRef.current.stop();
       const transcoded = await blobToWav16kMono(captured);
@@ -197,6 +204,11 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
         sourceBytes: transcoded.sourceBytes,
       };
       logCaptureHealth("mobile", health);
+      // Material loss is surfaced to the USER, not just the console: the transcript may be missing
+      // words, and a silent commit of truncated speech is exactly the failure mode this dialog
+      // exists to prevent. The caller shows the warning and parks instead of auto-committing.
+      lossWarning = captureLossWarning(health);
+      if (lossWarning !== null) setCaptureWarning(lossWarning);
     } catch (err) {
       setHint(err instanceof Error ? err.message : "Could not capture the recording.");
       return null;
@@ -207,7 +219,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
         // several, so show which piece is going up before the "Transcribing..." wait.
         if (total > 1) setHint(`Uploading recording... ${uploaded} of ${total}`);
       });
-      return text;
+      return { text, lossWarning };
     } catch (err) {
       setHint(err instanceof Error ? err.message : "The transcription service had a problem and couldn't process your recording.");
       return null;
@@ -224,7 +236,7 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
       setHint("Transcribing what you have said so far...");
       const segment = await transcribeCurrentSegment();
       if (segment !== null) {
-        accumulatedRef.current = joinText(accumulatedRef.current, segment);
+        accumulatedRef.current = joinText(accumulatedRef.current, segment.text);
         setTranscript(accumulatedRef.current);
         setHint("");
       }
@@ -263,7 +275,17 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
           busyRef.current = false;
           return;
         }
-        accumulatedRef.current = joinText(accumulatedRef.current, segment);
+        accumulatedRef.current = joinText(accumulatedRef.current, segment.text);
+        if (segment.lossWarning !== null) {
+          // The capture dropped audio, so this text may be missing words. Committing it silently
+          // (worst of all straight into a session via Send) would hide the loss - park in PAUSED
+          // with the warning showing so the user reviews or re-dictates, then commits by hand.
+          setTranscript(accumulatedRef.current);
+          setHint("");
+          setStage("paused");
+          busyRef.current = false;
+          return;
+        }
         busyRef.current = false;
         action(accumulatedRef.current.trim());
         onClose();
@@ -373,6 +395,10 @@ export function DictationDialog({ onInsert, onSend, onSendAudio, onClose, showIn
         )}
 
         <div className="dictate-hint" role="status">{hint}</div>
+
+        {captureWarning !== "" && !isError && (
+          <div className="dictate-warning" role="alert">{captureWarning}</div>
+        )}
 
         {isError ? (
           <div className="dictate-error" role="alert">{errorText}</div>
