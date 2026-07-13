@@ -805,16 +805,24 @@ internal static class GatewayEndpoints
         // per recoverable session, and enrich each with the Gateway's last-known brief so the
         // Cockpit Interrupted sessions list is triageable. Directors on one machine share the journal dir, so the
         // same dead journal can be reported by several live Directors - dedupe by directorId+pid.
-        app.MapGet("/interrupted", async () =>
+        app.MapGet("/interrupted", async (CancellationToken ct) =>
         {
             var directors = registry.ListDirectors();
             var fanout = directors.Select(async d =>
             {
+                // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (interrupted-list verb, director-level).
+                // A non-null stream result is authoritative for this Director - Ok carries its journals, a non-Ok
+                // is treated as no journals (skipped), exactly as a failed HTTP read returned null and was
+                // skipped below. A null return (no stream) falls back to the existing reachability-gated HTTP read.
+                var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, d.DirectorId, "interrupted-list", "", null, ct);
+                if (sr is not null)
+                    return (Director: d, Journals: sr.Ok ? DirectorCommandRouter.ReadBody<List<CrashJournalDto>>(sr) : null);
+
                 if (!registry.ShouldProbe(d.DirectorId)) return (Director: d, Journals: (List<CrashJournalDto>?)null);
                 // Issue #324: a flagged no-endpoint registration has nothing to dial.
                 if (string.IsNullOrEmpty(d.ControlEndpoint)) return (Director: d, Journals: (List<CrashJournalDto>?)null);
                 var ep = d.ControlEndpoint.TrimEnd('/');
-                return (Director: d, Journals: await client.GetInterruptedAsync(ep));
+                return (Director: d, Journals: await client.GetInterruptedAsync(ep, ct));
             }).ToList();
             var results = await Task.WhenAll(fanout);
 
@@ -854,7 +862,7 @@ internal static class GatewayEndpoints
 
         // Dismiss one interrupted journal once recovered or unwanted. Routed to the live
         // Director that surfaced it (via=reportedByDirectorId), which owns its machine's dir.
-        app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}", async (string deadDirectorId, int deadPid, string? via) =>
+        app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}", async (string deadDirectorId, int deadPid, string? via, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayEndpoints] DELETE /interrupted/{deadDirectorId}/{deadPid} via={via}");
             if (string.IsNullOrWhiteSpace(via))
@@ -862,14 +870,23 @@ internal static class GatewayEndpoints
             var d = registry.Get(via);
             if (d is null)
                 return Results.NotFound(new { error = "reporting director not found" });
-            var ok = await client.DismissInterruptedAsync(d.ControlEndpoint, deadDirectorId, deadPid);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (interrupted-dismiss verb on the reporting
+            // Director). The HTTP path collapsed any non-success (incl a 404) to false -> 502, so a non-Ok
+            // stream result maps to 502 to stay byte-identical.
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, via, "interrupted-dismiss", "",
+                new InterruptedDismissRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid }, ct);
+            if (sr is not null)
+                return sr.Ok ? Results.Json(new { dismissed = true }) : Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            var ok = await client.DismissInterruptedAsync(d.ControlEndpoint, deadDirectorId, deadPid, ct);
             return ok ? Results.Json(new { dismissed = true }) : Results.StatusCode(StatusCodes.Status502BadGateway);
         });
 
         // Dismiss ONE session from an interrupted journal (issue #212 W4): the rest of the
         // journal stays in the Interrupted sessions list. Routed like the journal-level dismiss above.
         app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}/sessions/{sessionId}",
-            async (string deadDirectorId, int deadPid, string sessionId, string? via) =>
+            async (string deadDirectorId, int deadPid, string sessionId, string? via, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayEndpoints] DELETE /interrupted/{deadDirectorId}/{deadPid}/sessions/{sessionId} via={via}");
             if (string.IsNullOrWhiteSpace(via))
@@ -877,7 +894,15 @@ internal static class GatewayEndpoints
             var d = registry.Get(via);
             if (d is null)
                 return Results.NotFound(new { error = "reporting director not found" });
-            var ok = await client.RemoveInterruptedSessionAsync(d.ControlEndpoint, deadDirectorId, deadPid, sessionId);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (interrupted-remove verb on the reporting
+            // Director). Non-Ok -> 502, matching the HTTP path's false -> 502 collapse.
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, via, "interrupted-remove", "",
+                new InterruptedRemoveRequest { DeadDirectorId = deadDirectorId, DeadPid = deadPid, SessionId = sessionId }, ct);
+            if (sr is not null)
+                return sr.Ok ? Results.Json(new { removed = true }) : Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            var ok = await client.RemoveInterruptedSessionAsync(d.ControlEndpoint, deadDirectorId, deadPid, sessionId, ct);
             return ok ? Results.Json(new { removed = true }) : Results.StatusCode(StatusCodes.Status502BadGateway);
         });
 
@@ -889,7 +914,7 @@ internal static class GatewayEndpoints
         // path is valid there. After a successful create the restored session is removed
         // from the dirty journal so the Interrupted sessions list reflects what is still unrecovered.
         app.MapPost("/interrupted/{deadDirectorId}/{deadPid:int}/restore",
-            async (string deadDirectorId, int deadPid, RestoreInterruptedRequest req) =>
+            async (string deadDirectorId, int deadPid, RestoreInterruptedRequest req, CancellationToken ct) =>
         {
             FileLog.Write($"[GatewayEndpoints] POST /interrupted/{deadDirectorId}/{deadPid}/restore: sid={req?.SessionId} via={req?.Via} toDir={req?.ToDirectorId}");
             if (req is null || string.IsNullOrWhiteSpace(req.SessionId))
@@ -905,8 +930,15 @@ internal static class GatewayEndpoints
                 return Results.NotFound(new { error = "target director not found" });
 
             // The journal is the source of truth for what is restorable - never trust the
-            // caller for repo/name. Re-read it from the reporting Director.
-            var journals = await client.GetInterruptedAsync((reporter.ControlEndpoint ?? "").TrimEnd('/'));
+            // caller for repo/name. Re-read it from the reporting Director. Gateway Cleanup Phase 2 (PR D):
+            // ride the tunnel first (interrupted-list verb on the reporting Director); a null return falls
+            // back to the HTTP read. A non-Ok stream result surfaces as the same 502 the HTTP null produced.
+            List<CrashJournalDto>? journals;
+            var journalsSr = await DirectorCommandRouter.TrySendAsync(sendCommand, req.Via, "interrupted-list", "", null, ct);
+            if (journalsSr is not null)
+                journals = journalsSr.Ok ? DirectorCommandRouter.ReadBody<List<CrashJournalDto>>(journalsSr) : null;
+            else
+                journals = await client.GetInterruptedAsync((reporter.ControlEndpoint ?? "").TrimEnd('/'), ct);
             if (journals is null)
                 return Results.Problem("reporting director did not serve its crash journals", statusCode: StatusCodes.Status502BadGateway);
             var journal = journals.FirstOrDefault(j =>
@@ -1438,11 +1470,22 @@ internal static class GatewayEndpoints
             return Results.Json(new { path, fileName });
         });
 
-        app.MapGet("/directors/{id}/repos", async (string id) =>
+        app.MapGet("/directors/{id}/repos", async (string id, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
-            var repos = await client.ListReposAsync(d.ControlEndpoint);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (repos-list verb, director-level so SessionId
+            // is ""); a null return means no stream, so fall back to the byte-identical HTTP dial. A non-Ok stream
+            // result collapses to 502, exactly as the HTTP path surfaced a null.
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repos-list", "", null, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(DirectorCommandRouter.ReadBody<List<RepositoryDto>>(sr) ?? new List<RepositoryDto>());
+            }
+
+            var repos = await client.ListReposAsync(d.ControlEndpoint, ct);
             if (repos is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(repos);
         });
@@ -1452,11 +1495,22 @@ internal static class GatewayEndpoints
         // demand rather than pushed in registration/heartbeat: the inventory is large and
         // changes rarely, so riding the 15s heartbeat would bloat the hot path for a fact
         // a consumer reads occasionally.
-        app.MapGet("/directors/{id}/facts", async (string id) =>
+        app.MapGet("/directors/{id}/facts", async (string id, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
-            var facts = await client.GetFactsAsync(d.ControlEndpoint);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (facts verb, director-level).
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "facts", "", null, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                var body = DirectorCommandRouter.ReadBody<DirectorFactsDto>(sr);
+                if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(body);
+            }
+
+            var facts = await client.GetFactsAsync(d.ControlEndpoint, ct);
             if (facts is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(facts);
         });
@@ -1492,57 +1546,121 @@ internal static class GatewayEndpoints
             return Results.Json(body, statusCode: 201);
         });
 
-        app.MapDelete("/directors/{id}/repos", async (string id, string? path) =>
+        app.MapDelete("/directors/{id}/repos", async (string id, string? path, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
             if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { error = "path is required" });
-            var removed = await client.DeleteRepoAsync(d.ControlEndpoint, path);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (repo-delete verb, director-level). The
+            // Director core returns { removed } in its body; a non-Ok stream result collapses to 502.
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "repo-delete", "", new RepoDeleteRequest { Path = path }, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Content(sr.BodyJson ?? "{\"removed\":false}", "application/json");
+            }
+
+            var removed = await client.DeleteRepoAsync(d.ControlEndpoint, path, ct);
             return Results.Json(new { removed });
         });
 
-        app.MapGet("/directors/{id}/coaching/categories", async (string id) =>
+        app.MapGet("/directors/{id}/coaching/categories", async (string id, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
-            var cats = await client.ListCoachingCategoriesAsync(d.ControlEndpoint);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (coaching-categories verb, director-level).
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "coaching-categories", "", null, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(DirectorCommandRouter.ReadBody<List<CoachingCategoryDto>>(sr) ?? new List<CoachingCategoryDto>());
+            }
+
+            var cats = await client.ListCoachingCategoriesAsync(d.ControlEndpoint, ct);
             if (cats is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(cats);
         });
 
-        app.MapGet("/directors/{id}/claude-sessions", async (string id) =>
+        app.MapGet("/directors/{id}/claude-sessions", async (string id, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
-            var sessions = await client.ListClaudeSessionsAsync(d.ControlEndpoint);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (claude-sessions verb, director-level; no
+            // repo filter on this route, so the payload is empty).
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "claude-sessions", "", null, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(DirectorCommandRouter.ReadBody<List<ClaudeSessionDto>>(sr) ?? new List<ClaudeSessionDto>());
+            }
+
+            var sessions = await client.ListClaudeSessionsAsync(d.ControlEndpoint, ct);
             if (sessions is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(sessions);
         });
 
-        app.MapGet("/directors/{id}/handovers", async (string id) =>
+        app.MapGet("/directors/{id}/handovers", async (string id, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
-            var handovers = await client.ListHandoversAsync(d.ControlEndpoint);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (handovers-list verb, director-level; this
+            // route has no repo filter, so the payload is empty).
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handovers-list", "", null, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(DirectorCommandRouter.ReadBody<List<HandoverDto>>(sr) ?? new List<HandoverDto>());
+            }
+
+            var handovers = await client.ListHandoversAsync(d.ControlEndpoint, ct);
             if (handovers is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(handovers);
         });
 
-        app.MapGet("/directors/{id}/handovers/content", async (string id, string? path) =>
+        app.MapGet("/directors/{id}/handovers/content", async (string id, string? path, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
             if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { error = "path is required" });
-            var content = await client.GetHandoverContentAsync(d.ControlEndpoint, path);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (handovers-content verb, director-level; the
+            // ?path query rides in the payload). A non-Ok stream result collapses to 502, matching the HTTP null.
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "handovers-content", "", new HandoverContentRequest { Path = path }, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                var body = DirectorCommandRouter.ReadBody<HandoverContentDto>(sr);
+                if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(body);
+            }
+
+            var content = await client.GetHandoverContentAsync(d.ControlEndpoint, path, ct);
             if (content is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(content);
         });
 
-        app.MapGet("/directors/{id}/fs/list", async (string id, string? path) =>
+        app.MapGet("/directors/{id}/fs/list", async (string id, string? path, CancellationToken ct) =>
         {
             var d = registry.Get(id);
             if (d is null) return Results.NotFound(new { error = "director not found" });
-            var listing = await client.ListDirectoryAsync(d.ControlEndpoint, path);
+
+            // Gateway Cleanup Phase 2 (PR D): ride the tunnel first (fs-list verb, director-level; the ?path
+            // query rides in the payload). A non-Ok stream result (e.g. the Director core's bad-path BadRequest)
+            // collapses to 502, exactly as the HTTP path surfaced a null.
+            var sr = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "fs-list", "", new FsListRequest { Path = path }, ct);
+            if (sr is not null)
+            {
+                if (!sr.Ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                var body = DirectorCommandRouter.ReadBody<DirectoryListingDto>(sr);
+                if (body is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.Json(body);
+            }
+
+            var listing = await client.ListDirectoryAsync(d.ControlEndpoint, path, ct);
             if (listing is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(listing);
         });
