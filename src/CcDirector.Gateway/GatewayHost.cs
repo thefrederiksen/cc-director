@@ -994,7 +994,12 @@ public sealed class GatewayHost : IAsyncDisposable
         // (Architect ruling 2 + 1). MaximumReceiveMessageSize must admit a full-size framed binary frame
         // (the cap plus a small envelope allowance); StreamBufferCapacity is small so a slow browser sink
         // pushes back onto the producer's yield - the backpressure invariant, not an optimization.
+        // AddMessagePackProtocol is ADDITIVE: the hub now negotiates MessagePack OR JSON, so a MessagePack
+        // Director gets binary framing (a 48KB byte[] up-stream frame stays ~48KB, not ~64KB base64 that would
+        // blow past MaximumReceiveMessageSize and drop the connection) while a JSON-only client still connects
+        // (backward-compat for the fleet rollout). It removes the 33% base64 tax on every tunnel byte.
         builder.Services.AddSignalR()
+            .AddMessagePackProtocol()
             .AddHubOptions<Streaming.DirectorHub>(o =>
             {
                 o.MaximumReceiveMessageSize = Contracts.DirectorStreamLimits.MaxBinaryFrameBytes + Contracts.DirectorStreamLimits.FrameEnvelopeAllowanceBytes;
