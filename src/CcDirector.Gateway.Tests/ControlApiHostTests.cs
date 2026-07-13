@@ -1,9 +1,9 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
-using CcDirector.Core.Network;
 using CcDirector.Core.Sessions;
 using CcDirector.Gateway.Contracts;
 using Xunit;
@@ -63,55 +63,27 @@ public sealed class ControlApiHostTests : IAsyncLifetime
         Assert.Equal("1.0.0-test", dto.Version);
     }
 
-    [Fact]
-    public async Task Sessions_empty_when_none_running()
-    {
-        var sessions = await _client.GetFromJsonAsync<List<SessionDto>>("sessions");
-        Assert.NotNull(sessions);
-        Assert.Empty(sessions!);
-    }
-
-    [Fact]
-    public async Task Sessions_get_by_id_returns_404_for_unknown_guid()
-    {
-        var resp = await _client.GetAsync($"sessions/{Guid.NewGuid()}");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Sessions_get_by_id_returns_400_for_bad_format()
-    {
-        var resp = await _client.GetAsync("sessions/not-a-guid");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Sessions_prompt_returns_404_for_unknown_guid()
-    {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/prompt", new PromptRequest { Text = "hi" });
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Sessions_prompt_returns_400_for_empty_text()
-    {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/prompt", new PromptRequest { Text = "" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Sessions_buffer_returns_404_for_unknown_guid()
-    {
-        var resp = await _client.GetAsync($"sessions/{Guid.NewGuid()}/buffer");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Sessions_interrupt_returns_404_for_unknown_guid()
-    {
-        var resp = await _client.PostAsync($"sessions/{Guid.NewGuid()}/interrupt", null);
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
+    // Gateway Cleanup mission (the cut): the Director loopback Control API no longer serves ANY session
+    // routes - GET /sessions (list), GET /sessions/{sid}, POST /sessions/{sid}/prompt, GET .../buffer and
+    // POST .../interrupt are all deleted. The roster is read from the Gateway push store now, and every
+    // per-session verb is dispatched over the tunnel into the shared verb core (SessionCommandExecutor).
+    // The following seven tests, which drove those deleted loopback routes, were removed because the routes
+    // are gone and their behaviour is proven against the verb core elsewhere (byte-identical logic):
+    //   * Sessions_empty_when_none_running        -> roster now = push store (TunnelRosterPushReadProofTests).
+    //   * Sessions_get_by_id_returns_400_for_bad_format  -> SessionReadExecutorTests
+    //         .DispatchAsync_Snapshot_InvalidSessionId_ReturnsBadRequest (the GET /sessions/{sid} bad-guid guard).
+    //   * Sessions_get_by_id_returns_404_for_unknown_guid -> SessionReadExecutorTests
+    //         .DispatchAsync_Snapshot_MissingSession_ReturnsNotFound.
+    //   * Sessions_prompt_returns_400_for_empty_text  -> SessionCommandExecutorTests
+    //         .DispatchAsync_Prompt_EmptyText_ReturnsBadRequest.
+    //   * Sessions_prompt_returns_404_for_unknown_guid -> SessionCommandExecutorTests
+    //         .DispatchAsync_Prompt_MissingSession_ReturnsNotFound.
+    //   * Sessions_buffer_returns_404_for_unknown_guid -> SessionReadExecutorTests
+    //         .DispatchAsync_Buffer_MissingSession_ReturnsNotFound.
+    //   * Sessions_interrupt_returns_404_for_unknown_guid -> SessionCommandExecutorTests
+    //         .DispatchAsync_Interrupt_MissingSession_ReturnsNotFound.
+    // (The four "404 for unknown guid" tests still passed by accident - a deleted route returns 404 for
+    // route-not-found, not session-not-found - so they green-lit machinery that no longer exists.)
 
     [Fact]
     public async Task Shutdown_triggers_callback()
@@ -148,60 +120,17 @@ public sealed class ControlApiHostTests : IAsyncLifetime
         Assert.Null(_host.StartupError);
     }
 
-    // OS shell used as a harmless RawCli agent so these tests exercise the real create
-    // path without depending on an installed coding-agent CLI.
-    private static string TestShellPath =>
-        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
-            System.Runtime.InteropServices.OSPlatform.Windows) ? "cmd.exe" : "/bin/sh";
-
-    [Fact]
-    public async Task Post_sessions_applies_explicit_name_at_birth()
-    {
-        // Issue #807 regression: a session created via POST /sessions with a meaningful Name
-        // must come back with THAT name immediately (name-at-birth, issue #800) - the create
-        // response AND a subsequent GET must both show it, with no PATCH. The reported failure
-        // was the session born unnamed, then displaying as the bare repo folder name.
-        var repo = Path.GetTempPath();
-        const string name = "mobile PWA - impl loop #806";
-
-        var resp = await _client.PostAsJsonAsync("sessions", new NewSessionRequest
-        {
-            RepoPath = repo,
-            Agent = "RawCli",
-            Command = TestShellPath,
-            Name = name,
-        });
-
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-        var created = await resp.Content.ReadFromJsonAsync<SessionDto>();
-        Assert.NotNull(created);
-        Assert.Equal(name, created!.Name);
-
-        // GET by id returns the same name with no PATCH in between.
-        var fetched = await _client.GetFromJsonAsync<SessionDto>($"sessions/{created.SessionId}");
-        Assert.NotNull(fetched);
-        Assert.Equal(name, fetched!.Name);
-        Assert.NotEqual(Path.GetFileName(repo.TrimEnd('\\', '/')), fetched.Name);
-    }
-
-    [Fact]
-    public async Task Post_sessions_rejects_weak_explicit_name()
-    {
-        // The other half of issue #800: an explicit name equal to the bare repository folder
-        // name is refused with 400, so a caller that bothers to pass a name passes a useful one.
-        var repo = Path.GetTempPath();
-        var folder = Path.GetFileName(repo.TrimEnd('\\', '/'));
-
-        var resp = await _client.PostAsJsonAsync("sessions", new NewSessionRequest
-        {
-            RepoPath = repo,
-            Agent = "RawCli",
-            Command = TestShellPath,
-            Name = folder,
-        });
-
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
+    // Gateway Cleanup mission (the cut): POST /sessions (create) is deleted from the Director loopback -
+    // session creation is a tunnel verb now. The two issue #800/#807 create tests that drove that route
+    // (name-at-birth applied, and a weak explicit name rejected with 400) were removed because the exact
+    // create core - including the name-at-birth validation - is proven against the verb core elsewhere:
+    //   * name-at-birth applied  -> SessionCommandExecutorTests.DispatchAsync_Create_MakesSessionWithRightAgentNameAndWingman
+    //         and .DispatchAsync_Create_ExplicitName_IsNotAutoNamed (the create verb returns the meaningful
+    //         name on the SessionDto).
+    //   * weak explicit name rejected (issue #800) -> SessionCommandExecutorTests
+    //         .DispatchAsync_Create_WeakExplicitName_ReturnsBadRequest (bare repo folder name -> BadRequest).
+    // The "subsequent GET shows the same name with no PATCH" half is gone with the deleted GET /sessions/{sid}
+    // loopback route; the create verb returning the name is the surviving, byte-identical guarantee.
 }
 
 /// <summary>
@@ -311,152 +240,24 @@ public sealed class SessionStateServicesDecouplingTests
     }
 }
 
-/// <summary>
-/// Issue #335 regression tests: the Director's own /sessions and /sessions/{sid} endpoints
-/// always populate machineName, user, tailnetEndpoint, and viewUrl when a tailnet identity
-/// resolves. Uses a pinned resolver so the test never requires a live Tailscale daemon.
-/// Fails red if any of the four identity fields is empty when the resolver returns a resolved
-/// endpoint.
-/// </summary>
-[Collection("DirectorRoot")]
-public sealed class DirectorSessionIdentityFieldsTests : IAsyncLifetime
-{
-    private const string PinnedEndpoint = "https://testmachine.testnet.ts.net:7879";
-
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
-
-    public async Task InitializeAsync()
-    {
-        _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        // Issue #335 test seam: pin the resolver so the four identity fields always resolve.
-        _host.TailnetEndpointResolverOverride = () => new TailnetEndpointResolution
-        {
-            Endpoint = PinnedEndpoint,
-            Source = "test-pin",
-        };
-        var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-        _client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
-    }
-
-    public async Task DisposeAsync()
-    {
-        _client.Dispose();
-        await _host.StopAsync();
-        _sm.Dispose();
-        try
-        {
-            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
-            if (File.Exists(f)) File.Delete(f);
-        }
-        catch { /* test cleanup */ }
-    }
-
-    [Fact]
-    public async Task SessionsEndpoint_WithResolvedIdentity_PopulatesAllFourIdentityFields()
-    {
-        // Arrange: create a pipe-mode session (no process spawned) so the list is non-empty.
-        // PipeBackend.Start only requires a non-empty executable path and an existing directory,
-        // so it succeeds in tests without a real Claude installation.
-        var session = _sm.CreatePipeModeSession(Path.GetTempPath());
-        var sessionId = session.Id.ToString();
-
-        // Act: GET /sessions (the Director-local endpoint, no Gateway).
-        var sessions = await _client.GetFromJsonAsync<List<SessionDto>>("sessions?includeExited=true");
-
-        // Assert: ALL four identity fields must be non-empty (the regression pin: if any
-        // of them goes empty, this test catches the regression before it ships).
-        Assert.NotNull(sessions);
-        var s = Assert.Single(sessions!);
-        Assert.False(string.IsNullOrEmpty(s.MachineName),
-            "MachineName must be populated by the Director (issue #335 regression)");
-        Assert.False(string.IsNullOrEmpty(s.User),
-            "User must be populated by the Director (issue #335 regression)");
-        Assert.False(string.IsNullOrEmpty(s.TailnetEndpoint),
-            "TailnetEndpoint must be populated by the Director (issue #335 regression)");
-        Assert.False(string.IsNullOrEmpty(s.ViewUrl),
-            "ViewUrl must be populated by the Director (issue #335 regression)");
-
-        // Verify the exact values match the pinned resolver.
-        Assert.Equal(Environment.MachineName, s.MachineName);
-        Assert.Equal(Environment.UserName, s.User);
-        Assert.Equal(PinnedEndpoint, s.TailnetEndpoint);
-        Assert.Contains($"{PinnedEndpoint}/sessions/{sessionId}/view", s.ViewUrl);
-    }
-
-    [Fact]
-    public async Task SingleSessionEndpoint_WithResolvedIdentity_PopulatesAllFourIdentityFields()
-    {
-        // Arrange: same pipe-mode session trick as above.
-        var session = _sm.CreatePipeModeSession(Path.GetTempPath());
-        var sessionId = session.Id.ToString();
-
-        // Act: GET /sessions/{sid}.
-        var resp = await _client.GetAsync($"sessions/{sessionId}");
-        Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
-        var s = await resp.Content.ReadFromJsonAsync<SessionDto>();
-
-        // Assert.
-        Assert.NotNull(s);
-        Assert.False(string.IsNullOrEmpty(s!.MachineName),
-            "MachineName must be populated by the Director (issue #335 regression)");
-        Assert.False(string.IsNullOrEmpty(s.User),
-            "User must be populated by the Director (issue #335 regression)");
-        Assert.False(string.IsNullOrEmpty(s.TailnetEndpoint),
-            "TailnetEndpoint must be populated by the Director (issue #335 regression)");
-        Assert.False(string.IsNullOrEmpty(s.ViewUrl),
-            "ViewUrl must be populated by the Director (issue #335 regression)");
-        Assert.Contains($"{PinnedEndpoint}/sessions/{sessionId}/view", s.ViewUrl);
-    }
-
-    [Fact]
-    public async Task SessionsEndpoint_WithUnresolvedIdentity_EmitsEmptyTailnetFields()
-    {
-        // When the resolver returns unresolved (Tailscale not running, no override),
-        // tailnetEndpoint and viewUrl must be empty so the Gateway back-compat pass
-        // can enrich them. machineName and user still resolve from the environment.
-        var sm2 = new SessionManager(new AgentOptions());
-        var unresolvedHost = new ControlApiHost(sm2, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        unresolvedHost.TailnetEndpointResolverOverride = () => new TailnetEndpointResolution
-        {
-            FailureReason = "Tailscale not running (pinned test failure)",
-        };
-        var port2 = await unresolvedHost.StartAsync();
-        using var client2 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port2}/") };
-        client2.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
-
-        try
-        {
-            sm2.CreatePipeModeSession(Path.GetTempPath());
-
-            var sessions = await client2.GetFromJsonAsync<List<SessionDto>>("sessions?includeExited=true");
-            Assert.NotNull(sessions);
-            var s = Assert.Single(sessions!);
-            // Tailnet fields must be empty when unresolved (Gateway will enrich them).
-            Assert.Empty(s.TailnetEndpoint);
-            Assert.Empty(s.ViewUrl);
-            // Environment-based fields still resolve.
-            Assert.False(string.IsNullOrEmpty(s.MachineName));
-            Assert.False(string.IsNullOrEmpty(s.User));
-        }
-        finally
-        {
-            await unresolvedHost.StopAsync();
-            sm2.Dispose();
-            try
-            {
-                var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{unresolvedHost.DirectorId}.json");
-                if (File.Exists(f)) File.Delete(f);
-            }
-            catch { }
-        }
-    }
-}
+// Gateway Cleanup mission (the cut): the DirectorSessionIdentityFieldsTests class (issue #335) was removed.
+// It asserted the Director's OWN /sessions and /sessions/{sid} loopback endpoints stamped the four identity
+// fields (machineName, user, tailnetEndpoint, viewUrl). Those loopback routes are deleted, AND - verified in
+// production - the Director no longer stamps identity at all: its push snapshot is built by
+// ControlApiHost.SnapshotFullSessions -> ControlEndpoints.Map(session, directorId), the plain overload whose
+// machineName/user/tailnetEndpoint default to "" (and viewUrl derives from an empty tailnet, so it is ""
+// too). The resolveTailnetEndpoint resolver is now an unused leftover parameter on ControlEndpoints.Map(app,
+// ...). By design the identity fields are stamped by the GATEWAY aggregation pass for pushed rows, exactly as
+// ControlEndpoints.Map documents ("the Gateway aggregator stamps machine/user/tailnet/view-url during
+// aggregation, for pushed and pulled alike"). The #335 regression is therefore covered at the Gateway
+// aggregation seam, not the Director: SessionsAggregationTests
+//   * Aggregator_back_compat_enriches_old_director_empty_identity_fields (a Director sending EMPTY identity -
+//     which is now EVERY Director - gets all four fields enriched by the Gateway), and
+//   * Aggregator_preserves_director_supplied_identity_fields_and_does_not_overwrite_them (mixed-version
+//     back-compat).
+// There is no reachable Director-side seam that stamps identity, so re-pointing these three tests to a
+// Director snapshot seam would assert the OPPOSITE of the shipped behaviour (the fields are empty on the
+// Director side by design). See the worker report: flagged for Manager review, not deleted silently.
 
 /// <summary>
 /// Issue #697: when the fixed Control-API range [7879..7898] is genuinely exhausted, the production
@@ -513,11 +314,13 @@ public sealed class ControlApiHostEphemeralFallbackTests : IDisposable
             Assert.True(host.IsListening);
             Assert.Null(host.StartupError);
 
-            // The Control API actually answers on the ephemeral port.
+            // The Control API actually answers on the ephemeral port. Gateway Cleanup mission (the cut):
+            // GET /sessions is gone from the loopback floor, so the liveness probe uses a floor route that
+            // survives - GET /healthz - which is all this test needs to prove the fallback host is listening.
             using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
-            var resp = await client.GetAsync("sessions");
+            var resp = await client.GetAsync("healthz");
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         }
         finally
@@ -532,26 +335,25 @@ public sealed class ControlApiHostEphemeralFallbackTests : IDisposable
 /// Issue #846: the session-number backfill is now wired into production. These tests prove the two
 /// wirings that were missing (BackfillNumbers had no caller before): (1) a single backfill pass runs
 /// at Director startup (ControlApiHost.StartAsync), numbering any tracked session that lacks a number;
-/// and (2) the POST /admin/backfill-numbers endpoint triggers the same backfill on a RUNNING Director
-/// (no restart), returns the count newly numbered, is idempotent (a second call returns 0), and the
-/// assigned numbers are unique and within the 100-999 range.
+/// and (2) the "backfill-numbers" verb triggers the same backfill on a RUNNING Director (no restart),
+/// returns the count newly numbered, is idempotent (a second call returns 0), and the assigned numbers
+/// are unique and within the 100-999 range. Gateway Cleanup mission (the cut): (2) used to be the
+/// POST /admin/backfill-numbers loopback route; that route is deleted and the backfill is now a tunnel
+/// verb dispatched through the shared command core, so the test drives that verb core directly.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class SessionNumberBackfillTests : IDisposable
 {
-    private sealed record BackfillResult(int Assigned);
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     private readonly string _root;
     private readonly string? _prevRoot;
 
     public SessionNumberBackfillTests()
     {
-        // Isolate the machine-global director root (issue #1055): BackfillEndpoint_RequiresBearerToken_
-        // WhenAuthEnabled starts an auth-enabled host, which resolves its accepted token from
-        // GatewayConfig.Load().Token. On a fleet machine whose config.json carries a gateway.token, the
-        // host would accept that fleet token while the test presents the local token file token - a
-        // mismatch that 401s the authed call and fails the test. A fresh temp root gives an empty config
-        // (no fleet token) so host and client share the same token, deterministically.
+        // Isolate the machine-global director root (issue #1055) so StartAsync_NumbersTrackedSessionsThatLackANumber
+        // writes its registration file into a fresh temp root instead of the fleet machine's real director root,
+        // keeping the startup-backfill test deterministic regardless of the host machine's config.json.
         _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
         _root = Path.Combine(Path.GetTempPath(), "ccd-backfill-root-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
@@ -596,96 +398,60 @@ public sealed class SessionNumberBackfillTests : IDisposable
     }
 
     [Fact]
-    public async Task BackfillEndpoint_NumbersUnnumberedSessions_AndIsIdempotent()
+    public async Task BackfillVerb_NumbersUnnumberedSessions_AndIsIdempotent()
     {
+        // Gateway Cleanup mission (the cut): POST /admin/backfill-numbers is deleted from the Director
+        // loopback; the backfill runs on a RUNNING Director as the "backfill-numbers" tunnel verb, dispatched
+        // through the SAME shared command core the Gateway reaches over the tunnel. Re-pointed from the old
+        // loopback POST to that verb core, preserving every original assertion: two tracked-but-unnumbered
+        // sessions get numbered (no restart), the count is reported, the numbers are unique and in range, and
+        // a second call is idempotent (0). The numbers are read straight off the live session records now that
+        // there is no loopback GET /sessions to enumerate.
         var sm = new SessionManager(new AgentOptions());
-        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
         try
         {
-            var port = await host.StartAsync();
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-            client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
-
             // Arrange: two tracked sessions, both made unnumbered (the gap the backfill closes).
             var a = sm.CreatePipeModeSession(Path.GetTempPath());
             var b = sm.CreatePipeModeSession(Path.GetTempPath());
             a.Number = null;
             b.Number = null;
 
-            // Act: trigger the backfill on the running Director (no restart).
-            var resp = await client.PostAsync("admin/backfill-numbers", null);
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-            var result = await resp.Content.ReadFromJsonAsync<BackfillResult>();
+            // Act: trigger the backfill verb on the running Director (no restart).
+            var result = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                new DirectorCommand { CommandId = "bf1", Verb = "backfill-numbers", SessionId = "" });
 
             // Assert: both were numbered and the count is reported.
-            Assert.NotNull(result);
-            Assert.Equal(2, result!.Assigned);
+            Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+            var resp = JsonSerializer.Deserialize<BackfillNumbersResponse>(result.BodyJson ?? "", Json);
+            Assert.NotNull(resp);
+            Assert.Equal(2, resp!.Assigned);
             Assert.NotNull(a.Number);
             Assert.NotNull(b.Number);
 
-            // GET /sessions now shows the numbers (proves the live roster reflects them, no restart).
-            var sessions = await client.GetFromJsonAsync<List<SessionDto>>("sessions?includeExited=true");
-            Assert.NotNull(sessions);
-            foreach (var s in sessions!)
-                Assert.NotNull(s.Number);
+            // The live roster now reflects the numbers (proves the running-Director backfill, no restart).
+            var numbers = sm.ListSessions().Select(s => s.Number).ToList();
+            Assert.All(numbers, n => Assert.NotNull(n));
 
             // Uniqueness + range (AC5).
-            var numbers = sessions.Select(s => s.Number!.Value).ToList();
-            Assert.Equal(numbers.Count, numbers.Distinct().Count());
-            Assert.All(numbers, n =>
+            var values = numbers.Select(n => n!.Value).ToList();
+            Assert.Equal(values.Count, values.Distinct().Count());
+            Assert.All(values, n =>
                 Assert.InRange(n, SessionNumberAllocator.MinNumber, SessionNumberAllocator.MaxNumber));
 
             // Act + Assert: a SECOND call changes nothing (idempotent, AC4).
-            var resp2 = await client.PostAsync("admin/backfill-numbers", null);
-            Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
-            var result2 = await resp2.Content.ReadFromJsonAsync<BackfillResult>();
-            Assert.NotNull(result2);
-            Assert.Equal(0, result2!.Assigned);
+            var result2 = await SessionCommandExecutor.DispatchAsync(sm, "dir-A",
+                new DirectorCommand { CommandId = "bf2", Verb = "backfill-numbers", SessionId = "" });
+            Assert.Equal(DirectorCommandStatus.Ok, result2.Status);
+            var resp2 = JsonSerializer.Deserialize<BackfillNumbersResponse>(result2.BodyJson ?? "", Json);
+            Assert.NotNull(resp2);
+            Assert.Equal(0, resp2!.Assigned);
         }
-        finally
-        {
-            await host.StopAsync();
-            sm.Dispose();
-            try
-            {
-                var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{host.DirectorId}.json");
-                if (File.Exists(f)) File.Delete(f);
-            }
-            catch { /* test cleanup */ }
-        }
+        finally { sm.Dispose(); }
     }
 
-    [Fact]
-    public async Task BackfillEndpoint_RequiresBearerToken_WhenAuthEnabled()
-    {
-        // AC3: the endpoint is protected (not in DirectorAuth.PublicPaths). With auth enabled, a call
-        // WITHOUT the bearer token is rejected 401; WITH it, the call succeeds.
-        var sm = new SessionManager(new AgentOptions());
-        var host = new ControlApiHost(sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true, authEnabled: true);
-        try
-        {
-            var port = await host.StartAsync();
-            using var noAuth = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-            var denied = await noAuth.PostAsync("admin/backfill-numbers", null);
-            Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
-
-            using var authed = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-            authed.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", DirectorAuth.LoadOrCreateToken());
-            var ok = await authed.PostAsync("admin/backfill-numbers", null);
-            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
-        }
-        finally
-        {
-            await host.StopAsync();
-            sm.Dispose();
-            try
-            {
-                var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{host.DirectorId}.json");
-                if (File.Exists(f)) File.Delete(f);
-            }
-            catch { /* test cleanup */ }
-        }
-    }
+    // Gateway Cleanup mission (the cut): BackfillEndpoint_RequiresBearerToken_WhenAuthEnabled was removed. It
+    // proved the loopback POST /admin/backfill-numbers route was bearer-protected (401 without a token). That
+    // route is deleted - the backfill is a tunnel verb now, whose authentication is the authenticated SignalR
+    // tunnel connection itself, not a per-call bearer header - so there is no longer a loopback route to
+    // protect and nothing left to assert.
 }

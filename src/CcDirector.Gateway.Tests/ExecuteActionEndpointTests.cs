@@ -1,7 +1,5 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text;
+using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Backends;
 using CcDirector.Core.Configuration;
@@ -13,10 +11,10 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// In-process stub backend for execute-action endpoint tests: provides a real
-/// CircularTerminalBuffer so every byte the executor injects is observable, never spawns
-/// a process, and can simulate a process exit on demand (drives Session.Status to Exited
-/// through the same backend event a real ConPty exit uses).
+/// In-process stub backend for execute-action tests: provides a real CircularTerminalBuffer so
+/// every byte the executor injects is observable, never spawns a process, and can simulate a
+/// process exit on demand (drives Session.Status to Exited through the same backend event a real
+/// ConPty exit uses).
 /// </summary>
 internal sealed class ExecuteActionTestBackend : ISessionBackend
 {
@@ -60,58 +58,39 @@ internal sealed class ExecuteActionTestBackend : ISessionBackend
 }
 
 /// <summary>
-/// End-to-end tests for <c>POST /sessions/{sid}/execute-action</c> (issue #327) - the
-/// Phase-1B mechanical verb: the caller supplies the complete structured WingmanAction
-/// and the Director executes it verbatim through WingmanActionExecutor with zero decision
-/// logic. Runs against a real ControlApiHost (auth ENABLED, so the token gate is exercised
-/// on every request) with embedded buffer-only sessions, so the exact bytes written to the
-/// PTY are asserted, not inferred.
+/// Gateway Cleanup mission (the cut): the Director's <c>POST /sessions/{sid}/execute-action</c> HTTP
+/// route is DELETED. The DUMB execute leg of the Wingman decide/execute split (issue #327) now rides
+/// the tunnel as the "execute-action" verb, whose shared core is
+/// <see cref="SessionWriteExecutor.ExecuteAction"/> - it validates the id/session, deserializes the
+/// caller's <see cref="WingmanAction"/>, and runs it verbatim through the single write chokepoint
+/// <see cref="Core.Wingman.WingmanActionExecutor"/> with zero decision logic and no LLM.
+///
+/// These tests drive that core DIRECTLY against real buffer-only sessions, so the exact bytes written
+/// to the PTY are asserted, not inferred, and the executor's outcome contract is pinned exactly as the
+/// Gateway boundary now surfaces it:
+///   - a caller/target error is a FAILED <see cref="DirectorCommandResult"/> (BadRequest / NotFound),
+///     which the Gateway maps to 400 / 404;
+///   - an executor OUTCOME (ok / suppressed / session_gone / bad_request) rides back INSIDE the
+///     serialized <see cref="WingmanActResult"/> on a successful command, which the Gateway maps to
+///     its HTTP code (session_gone -&gt; 410, bad_request -&gt; 400) - so the outcome, not the transport
+///     status, is what these tests assert.
+///
+/// The old HTTP token-gate test is dropped: authentication is enforced once at the tunnel/Gateway
+/// boundary now, not on a per-Director HTTP route.
 /// </summary>
 [Collection("DirectorRoot")]
-public sealed class ExecuteActionEndpointTests : IAsyncLifetime
+public sealed class ExecuteActionEndpointTests : IDisposable
 {
-    private readonly string _instancesDir;
-    private readonly string _root;
-    private readonly string? _prevRoot;
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
+    private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
+
+    private readonly SessionManager _sm;
 
     public ExecuteActionEndpointTests()
     {
-        var unique = Guid.NewGuid().ToString("N");
-        _instancesDir = Path.Combine(Path.GetTempPath(), "ccd-exec-action-test-" + unique);
-
-        // Isolate the machine-global director root (issue #1055): with auth enabled the host resolves
-        // its accepted token from GatewayConfig.Load().Token. On a fleet machine whose config.json
-        // carries a gateway.token, the host would accept that fleet token while this test presents the
-        // local token file token - a mismatch that 401s every call and reds the whole class. A fresh
-        // temp root gives an empty config (no fleet token) so host and client share the same token.
-        _prevRoot = Environment.GetEnvironmentVariable("CC_DIRECTOR_ROOT");
-        _root = Path.Combine(Path.GetTempPath(), "ccd-exec-action-root-" + unique);
-        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _root);
-    }
-
-    public async Task InitializeAsync()
-    {
         _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask,
-            useEphemeralPort: true, authEnabled: true, instancesDirectory: _instancesDir);
-        var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-        var token = DirectorAuth.LoadOrCreateToken();
-        _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
     }
 
-    public async Task DisposeAsync()
-    {
-        _client.Dispose();
-        await _host.StopAsync();
-        _sm.Dispose();
-        Environment.SetEnvironmentVariable("CC_DIRECTOR_ROOT", _prevRoot);
-        try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, recursive: true); } catch { /* best effort */ }
-        try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
-    }
+    public void Dispose() => _sm.Dispose();
 
     private (Session session, ExecuteActionTestBackend backend) NewSession()
     {
@@ -127,19 +106,36 @@ public sealed class ExecuteActionEndpointTests : IAsyncLifetime
         return backend.Buffer.DumpAll();
     }
 
+    // Build + run the "execute-action" verb core exactly as the tunnel dispatch does.
+    private DirectorCommandResult Exec(string sessionId, WingmanAction? action)
+    {
+        var payload = action is null ? "null" : JsonSerializer.Serialize(action, Web);
+        return SessionWriteExecutor.ExecuteAction(_sm, new DirectorCommand
+        {
+            Verb = "execute-action",
+            SessionId = sessionId,
+            PayloadJson = payload,
+        });
+    }
+
+    private static WingmanActResult Body(DirectorCommandResult result)
+    {
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status); // the executor outcome rides inside the body
+        var body = JsonSerializer.Deserialize<WingmanActResult>(result.BodyJson!, Web);
+        Assert.NotNull(body);
+        return body!;
+    }
+
     // ---------- The verb executes exactly what the caller passed ----------
 
     [Fact]
-    public async Task ExecuteAction_Submit_WritesTextThenEnterAndEchoesActionVerbatim()
+    public void ExecuteAction_Submit_WritesTextThenEnterAndEchoesActionVerbatim()
     {
         var (session, backend) = NewSession();
 
         var action = new WingmanAction { Action = WingmanAction.ActSubmit, Text = "hello from execute-action", Reason = "caller decided" };
-        var resp = await _client.PostAsJsonAsync($"sessions/{session.Id}/execute-action", action);
+        var result = Body(Exec(session.Id.ToString(), action));
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var result = await resp.Content.ReadFromJsonAsync<WingmanActResult>();
-        Assert.NotNull(result);
         Assert.True(result.Performed);
         Assert.Equal(WingmanActResult.StatusOk, result.Status);
         // Untransformed mapping: the result echoes the exact action/text/reason passed in.
@@ -160,17 +156,14 @@ public sealed class ExecuteActionEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ExecuteAction_SendKeys_WritesExactMappedBytes()
+    public void ExecuteAction_SendKeys_WritesExactMappedBytes()
     {
         var (session, backend) = NewSession();
 
         var action = new WingmanAction { Action = WingmanAction.ActSendKeys };
         action.Keys.AddRange(new[] { "Down", "Enter" });
-        var resp = await _client.PostAsJsonAsync($"sessions/{session.Id}/execute-action", action);
+        var result = Body(Exec(session.Id.ToString(), action));
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var result = await resp.Content.ReadFromJsonAsync<WingmanActResult>();
-        Assert.NotNull(result);
         Assert.True(result.Performed);
         Assert.Equal(new[] { "Down", "Enter" }, result.Keys);
 
@@ -178,10 +171,10 @@ public sealed class ExecuteActionEndpointTests : IAsyncLifetime
         Assert.Equal(new byte[] { 0x1B, 0x5B, 0x42, 0x0D }, BufferBytes(backend));
     }
 
-    // ---------- Executor invariants surface through the endpoint ----------
+    // ---------- Executor invariants surface through the verb ----------
 
     [Fact]
-    public async Task ExecuteAction_RepeatWithinCooldownOnUnchangedScreen_ReportsSuppressed()
+    public void ExecuteAction_RepeatWithinCooldownOnUnchangedScreen_ReportsSuppressed()
     {
         var (session, backend) = NewSession();
 
@@ -190,34 +183,27 @@ public sealed class ExecuteActionEndpointTests : IAsyncLifetime
         var action = new WingmanAction { Action = WingmanAction.ActSendKeys };
         action.Keys.Add("Ctrl+C");
 
-        var first = await _client.PostAsJsonAsync($"sessions/{session.Id}/execute-action", action);
-        var firstResult = await first.Content.ReadFromJsonAsync<WingmanActResult>();
-        Assert.NotNull(firstResult);
-        Assert.True(firstResult.Performed);
+        var first = Body(Exec(session.Id.ToString(), action));
+        Assert.True(first.Performed);
 
-        var second = await _client.PostAsJsonAsync($"sessions/{session.Id}/execute-action", action);
-        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        var secondResult = await second.Content.ReadFromJsonAsync<WingmanActResult>();
-        Assert.NotNull(secondResult);
-        Assert.False(secondResult.Performed);
-        Assert.Equal(WingmanActResult.StatusSuppressed, secondResult.Status);
+        var second = Body(Exec(session.Id.ToString(), action));
+        Assert.False(second.Performed);
+        Assert.Equal(WingmanActResult.StatusSuppressed, second.Status);
 
         // Exactly one Ctrl+C byte reached the PTY.
         Assert.Equal(new byte[] { 0x03 }, BufferBytes(backend));
     }
 
     [Fact]
-    public async Task ExecuteAction_OnExitedSession_Returns410AndInjectsNothing()
+    public void ExecuteAction_OnExitedSession_Returns410AndInjectsNothing()
     {
         var (session, backend) = NewSession();
         backend.RaiseProcessExited(1); // drives Session.Status -> Exited via the real backend event
 
         var action = new WingmanAction { Action = WingmanAction.ActSubmit, Text = "must not land" };
-        var resp = await _client.PostAsJsonAsync($"sessions/{session.Id}/execute-action", action);
+        // The exited-session outcome (which the Gateway maps to 410) rides inside the result body.
+        var result = Body(Exec(session.Id.ToString(), action));
 
-        Assert.Equal(HttpStatusCode.Gone, resp.StatusCode);
-        var result = await resp.Content.ReadFromJsonAsync<WingmanActResult>();
-        Assert.NotNull(result);
         Assert.False(result.Performed);
         Assert.Equal(WingmanActResult.StatusSessionGone, result.Status);
         Assert.NotNull(result.Error);
@@ -227,16 +213,12 @@ public sealed class ExecuteActionEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ExecuteAction_None_IsAcceptedAsNoOp()
+    public void ExecuteAction_None_IsAcceptedAsNoOp()
     {
         var (session, backend) = NewSession();
 
-        var resp = await _client.PostAsJsonAsync($"sessions/{session.Id}/execute-action",
-            new WingmanAction { Action = WingmanAction.ActNone });
+        var result = Body(Exec(session.Id.ToString(), new WingmanAction { Action = WingmanAction.ActNone }));
 
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var result = await resp.Content.ReadFromJsonAsync<WingmanActResult>();
-        Assert.NotNull(result);
         Assert.False(result.Performed);
         Assert.Equal(WingmanActResult.StatusOk, result.Status);
 
@@ -244,62 +226,41 @@ public sealed class ExecuteActionEndpointTests : IAsyncLifetime
         Assert.Empty(session.RecentWingmanActions);
     }
 
-    // ---------- Caller errors are 4xx and inject nothing ----------
+    // ---------- Caller errors inject nothing ----------
 
     [Fact]
-    public async Task ExecuteAction_UnknownActionName_Returns400()
+    public void ExecuteAction_UnknownActionName_Returns400()
     {
         var (session, backend) = NewSession();
 
-        var resp = await _client.PostAsJsonAsync($"sessions/{session.Id}/execute-action",
-            new WingmanAction { Action = "frobnicate", Text = "x" });
+        // An unknown action name is an executor OUTCOME (bad_request rides in the body); the Gateway
+        // maps that body status to 400.
+        var result = Body(Exec(session.Id.ToString(), new WingmanAction { Action = "frobnicate", Text = "x" }));
 
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-        var result = await resp.Content.ReadFromJsonAsync<WingmanActResult>();
-        Assert.NotNull(result);
         Assert.Equal(WingmanActResult.StatusBadRequest, result.Status);
         Assert.Empty(BufferBytes(backend));
     }
 
     [Fact]
-    public async Task ExecuteAction_NullBody_Returns400()
+    public void ExecuteAction_NullBody_Returns400()
     {
         var (session, _) = NewSession();
 
-        var content = new StringContent("null", Encoding.UTF8, "application/json");
-        var resp = await _client.PostAsync($"sessions/{session.Id}/execute-action", content);
-
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var result = Exec(session.Id.ToString(), null);
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
     }
 
     [Fact]
-    public async Task ExecuteAction_UnknownSession_Returns404()
+    public void ExecuteAction_UnknownSession_Returns404()
     {
-        var resp = await _client.PostAsJsonAsync($"sessions/{Guid.NewGuid()}/execute-action",
-            new WingmanAction { Action = WingmanAction.ActNone });
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        var result = Exec(Guid.NewGuid().ToString(), new WingmanAction { Action = WingmanAction.ActNone });
+        Assert.Equal(DirectorCommandStatus.NotFound, result.Status);
     }
 
     [Fact]
-    public async Task ExecuteAction_InvalidSessionIdFormat_Returns400()
+    public void ExecuteAction_InvalidSessionIdFormat_Returns400()
     {
-        var resp = await _client.PostAsJsonAsync("sessions/not-a-guid/execute-action",
-            new WingmanAction { Action = WingmanAction.ActNone });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    // ---------- The verb is token-gated like every other verb ----------
-
-    [Fact]
-    public async Task ExecuteAction_WithoutBearerToken_Returns401()
-    {
-        var (session, backend) = NewSession();
-
-        using var anonymous = new HttpClient { BaseAddress = _client.BaseAddress };
-        var resp = await anonymous.PostAsJsonAsync($"sessions/{session.Id}/execute-action",
-            new WingmanAction { Action = WingmanAction.ActSubmit, Text = "should be rejected" });
-
-        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
-        Assert.Empty(BufferBytes(backend));
+        var result = Exec("not-a-guid", new WingmanAction { Action = WingmanAction.ActNone });
+        Assert.Equal(DirectorCommandStatus.BadRequest, result.Status);
     }
 }

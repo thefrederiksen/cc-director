@@ -76,9 +76,11 @@ public sealed class SpaFallbackNonGetTests : IAsyncLifetime
     [Fact]
     public async Task Post_ToUnmatchedRoute_Answers404_NotTheShell()
     {
-        // A POST to a route no endpoint claims (here a hub negotiate with the hub not mapped) must be a
-        // 404 even though the Cockpit shell is present - the fallback must not serve it a 200.
-        var resp = await _http.PostAsync("director-stream/negotiate?negotiateVersion=1", content: null);
+        // A POST to a route no endpoint claims must be a 404 even though the Cockpit shell is present - the
+        // SPA fallback must not serve it a 200. (Gateway Cleanup mission (the cut): the tunnel is now mandatory
+        // so the DirectorHub is always mapped - its negotiate is no longer an "unmatched" route. This uses a
+        // genuinely unclaimed path outside /sessions so it exercises the fallback's GET/HEAD-only narrowing.)
+        var resp = await _http.PostAsync("no/such/api/route", content: null);
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
 

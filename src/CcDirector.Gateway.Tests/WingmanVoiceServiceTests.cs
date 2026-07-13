@@ -188,51 +188,29 @@ public sealed class WingmanVoiceServiceTests
 
     // ---------- Re-narrate only when the reply actually changed (issue #1322, identity-aware) ----------
 
-    /// <summary>A loopback "Director" whose /turns (and /history) endpoint returns a fixed JSON body and
-    /// counts how many times it was hit. Lets a test prove whether GenerateAsync fetched and what it did
-    /// with the result.</summary>
-    private sealed class LoopbackDirector : IDisposable
+    /// <summary>Gateway Cleanup mission (the cut): a tunnel-connected "Director" whose "turns" verb returns a
+    /// fixed JSON body and counts how many times it was read. GenerateAsync reads the session over the
+    /// TUNNEL-ONLY SessionVerbClient now (the HTTP fallback is gone), so this stub is the sendCommand the client
+    /// dispatches to - it proves whether GenerateAsync fetched and what it did with the result.</summary>
+    private sealed class TunnelReadStub
     {
-        private readonly HttpListener _listener;
-        private readonly Task _serve;
+        private readonly string _turnsJson;
         private int _hits;
         public int Hits => _hits;
-        public string Endpoint { get; }
 
-        public LoopbackDirector(string json)
+        public TunnelReadStub(string turnsJson) => _turnsJson = turnsJson;
+
+        public CcDirector.Gateway.Api.DirectorCommandRouter.SendDirectorCommandAsync SendCommand => (_, command, _) =>
         {
-            // Grab a free loopback port, then release it for the HttpListener.
-            var probe = new TcpListener(IPAddress.Loopback, 0);
-            probe.Start();
-            var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-            probe.Stop();
-
-            var prefix = $"http://127.0.0.1:{port}/";
-            Endpoint = prefix.TrimEnd('/');
-            _listener = new HttpListener();
-            _listener.Prefixes.Add(prefix);
-            _listener.Start();
-            _serve = Task.Run(async () =>
+            if (string.Equals(command.Verb, "turns", StringComparison.Ordinal))
             {
-                while (_listener.IsListening)
-                {
-                    HttpListenerContext ctx;
-                    try { ctx = await _listener.GetContextAsync(); }
-                    catch { break; }   // listener stopped
-                    Interlocked.Increment(ref _hits);
-                    ctx.Response.StatusCode = 200;
-                    var body = Encoding.UTF8.GetBytes(json);
-                    await ctx.Response.OutputStream.WriteAsync(body);
-                    ctx.Response.Close();
-                }
-            });
-        }
-
-        public void Dispose()
-        {
-            _listener.Stop();
-            try { _serve.Wait(TimeSpan.FromSeconds(5)); } catch { /* stopping */ }
-        }
+                Interlocked.Increment(ref _hits);
+                return Task.FromResult<CcDirector.Gateway.Contracts.DirectorCommandResult?>(
+                    CcDirector.Gateway.Contracts.DirectorCommandResult.Success(_turnsJson));
+            }
+            return Task.FromResult<CcDirector.Gateway.Contracts.DirectorCommandResult?>(
+                CcDirector.Gateway.Contracts.DirectorCommandResult.Success());
+        };
     }
 
     /// <summary>A brain that records how many times it was asked and returns a canned, marker-wrapped
@@ -269,13 +247,12 @@ public sealed class WingmanVoiceServiceTests
         return new WingmanVoiceService((_, _) => Task.FromResult(brain), vault, persistPath, ttsHttpClient: http);
     }
 
-    /// <summary>Gateway Cleanup mission, Phase 2: GenerateAsync now takes a tunnel-first SessionVerbClient
-    /// instead of a bare endpoint URL. This binds one to a loopback Director with NO stream (sendCommand
-    /// null), so generation exercises the HTTP fallback dial - the exact path these tests asserted before
-    /// the re-point (director.Hits still counts the reads).</summary>
-    private static CcDirector.Gateway.Api.SessionVerbClient RouteFor(string endpoint) =>
-        new(new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = endpoint },
-            null);
+    /// <summary>Gateway Cleanup mission (the cut): GenerateAsync takes a tunnel-only SessionVerbClient. This
+    /// binds one to the stub's sendCommand so the "turns" read rides the tunnel (the HTTP fallback is gone);
+    /// the stub's Hits still counts the reads, the exact signal these tests assert.</summary>
+    private static CcDirector.Gateway.Api.SessionVerbClient RouteFor(TunnelReadStub stub) =>
+        new(new CcDirector.Gateway.Contracts.DirectorDto { DirectorId = "d1", ControlEndpoint = "http://tunnel-only" },
+            stub.SendCommand);
 
     [Fact]
     public async Task GenerateAsync_WhenCurrentReplyDiffersFromCache_Regenerates()
@@ -284,7 +261,7 @@ public sealed class WingmanVoiceServiceTests
         // differs from the one already narrated, the turn-end MUST regenerate - even though a cached clip
         // exists. The old guard skipped here whenever the Working transition was missed, leaving the
         // phone replaying a stale interim narration while the history had moved on to the real answer.
-        using var director = new LoopbackDirector("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the NEW final answer\"}]}");
+        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the NEW final answer\"}]}");
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-regen-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
@@ -294,7 +271,7 @@ public sealed class WingmanVoiceServiceTests
             svc.StoreReadyAudioForTest("sid-1", "old spoken", "the OLD interim reply", new byte[] { 1, 2, 3 });
             Assert.True(svc.HasVoice("sid-1"));
 
-            await svc.GenerateAsync("sid-1", RouteFor(director.Endpoint), CancellationToken.None, showReadingWindow: false);
+            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: false);
 
             Assert.Equal(1, brain.AskCount);                          // it regenerated (translated the new reply)
             var ready = svc.Get("sid-1");
@@ -310,7 +287,7 @@ public sealed class WingmanVoiceServiceTests
         // Issue #1322 preserved: when the CURRENT last reply is the EXACT one already narrated, the
         // turn-end fetches to compare but does NOT regenerate - it never calls the brain, never re-mints
         // audio, and never flips the session yellow, so a client mid-play is not disturbed.
-        using var director = new LoopbackDirector("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the same reply\"}]}");
+        var director = new TunnelReadStub("{\"widgets\":[{\"kind\":\"Text\",\"content\":\"the same reply\"}]}");
         var dir = Path.Combine(Path.GetTempPath(), "wmvs-same-" + Guid.NewGuid().ToString("N"));
         var persistPath = Path.Combine(dir, "voice-sessions.json");
         try
@@ -320,7 +297,7 @@ public sealed class WingmanVoiceServiceTests
             svc.StoreReadyAudioForTest("sid-1", "old spoken", "the same reply", new byte[] { 1, 2, 3 });
             Assert.True(svc.HasVoice("sid-1"));
 
-            await svc.GenerateAsync("sid-1", RouteFor(director.Endpoint), CancellationToken.None, showReadingWindow: true);
+            await svc.GenerateAsync("sid-1", RouteFor(director), CancellationToken.None, showReadingWindow: true);
 
             Assert.Equal(0, brain.AskCount);              // never regenerated
             Assert.True(director.Hits >= 1);              // but it DID fetch to compare (identity-aware, not blind)

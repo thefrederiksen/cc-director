@@ -366,3 +366,22 @@ dedicated tests (`GatewayVoiceTurnAsyncTests`, `VoiceTurnNoMicE2EHarnessTests`) 
 compile dep on the Gateway - they harmlessly 404). The Director SSE `VoiceTurnEndpoint.cs` is on the Phase 1
 DROP list, deleted AT the cut. The Gateway-side `GatewayTurnJobStore` / `VoiceTurnArchive` become dead once the
 endpoint is gone; leaving them is harmless (a phase-1-cut cleanup, not this PR).
+
+## CUT RESTORATION (SB-3b, do NOT re-delete): the /sessions/{sid}/{**rest} catch-all ROUTE
+
+Seat-7 OVER-DELETED at the cut: it removed the whole `/sessions/{sid}/{**rest}` catch-all ROUTE (and its tunnel
+dispatch wiring) when it should have deleted ONLY the HTTP-passthrough reverse-proxy LEG inside it. That orphaned
+`TunnelCatchAllDispatch` (zero callers) and left the entire remaining browser-facing session verb set with NO
+Gateway route: the reads turns/buffer-html/usage/context/history/github-urls/queue-read and the writes
+resize/clear-context/history-picker/mobile-mode/voice-mode/wingman-enabled/relink/execute-action plus the voice
+queue add/update/remove/move-up/move-down/send/clear. client-core actively calls these; the Cockpit/mobile
+terminal + voice queue were broken. Surfaced by TunnelMechanismProofTests.Turns_read (404) during SB-3b.
+
+RESTORED (Architect-approved Option A, SB-3b): `SessionWsProxyEndpoints.Map` re-maps the catch-all route
+`/sessions/{sid}/{**rest}` -> resolve owner via `PushedSessionStore.TryLocate` (push store; a located owner is
+always tunnel-connected) -> `TunnelCatchAllDispatch.TryDispatchAsync` (dispatch the verb over THE TUNNEL). The
+dispatcher's verb TABLE is the EXPLICIT verb set (unknown verb -> 404), NOT a generic HTTP passthrough. An owner
+not tunnel-connected -> 503. There is NO HTTP fallback (the HTTP reverse-proxy stays deleted). The catch-all is
+the least-specific `/sessions/{sid}/...` route, so every literal route (stream/file/screenshots/buffer/prompt/
+patch/...) wins over it; it is mapped before the Cockpit SPA site-root fallback so it claims these verb paths.
+The SB-4 floor-only real-exe proof RE-VERIFIES this whole restored verb set works over the tunnel post-cut.

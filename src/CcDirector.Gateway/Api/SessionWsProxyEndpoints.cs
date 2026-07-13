@@ -127,6 +127,31 @@ internal static class SessionWsProxyEndpoints
             var result = await DirectorCommandRouter.TrySendAsync(sendCommand, id, "backfill-numbers", "", payload: null, ctx.RequestAborted);
             await WriteVerbJsonAsync(ctx, result, "backfill-numbers");
         });
+
+        // Gateway Cleanup mission (the cut): the remaining browser-facing session verbs that never had their own
+        // literal Gateway route - the reads (turns, buffer/html, usage, context, history, github-urls, queue) and
+        // the writes (resize, clear-context, history-picker, mobile-mode, voice-mode, wingman-enabled, relink,
+        // execute-action, and the voice queue add/update/remove/move/clear/send) - used to reach the owning
+        // Director through the /sessions/{sid}/{**rest} catch-all. The catch-all's HTTP reverse-proxy was DELETED
+        // at the cut, but these verbs still need a same-origin browser entry point, so they ride the TUNNEL here
+        // via TunnelCatchAllDispatch. The owning Director is resolved from the push store (a located owner is
+        // always tunnel-connected). An unmapped verb -> 404; an owner not tunnel-connected -> 503. There is no
+        // HTTP fallback. This catch-all is the LEAST specific /sessions/{sid}/... route, so every literal route
+        // above and in GatewayEndpoints (stream, file, screenshots, buffer, prompt, patch, ...) wins over it; it
+        // MUST still be mapped before the Cockpit SPA site-root fallback so it claims these verb paths.
+        var catchAll = new TunnelCatchAllDispatch(sendCommand);
+        app.Map("/sessions/{sid}/{**rest}", async (string sid, string? rest, HttpContext ctx) =>
+        {
+            if (pushedSessions.TryLocate(sid, stale) is not { } loc)
+            {
+                await RejectAsync(ctx, sid, "verb");
+                return;
+            }
+            // TryDispatchAsync writes the response and returns true when the (method, rest) is a mapped verb and
+            // the owner answered over the tunnel; false means the verb is not one this dispatcher knows -> 404.
+            if (!await catchAll.TryDispatchAsync(ctx, sid, loc.DirectorId, rest) && !ctx.Response.HasStarted)
+                ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        });
     }
 
     /// <summary>

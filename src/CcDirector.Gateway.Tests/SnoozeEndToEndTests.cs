@@ -4,22 +4,16 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// End-to-end proof of the Snooze Length Phase 1 round-trip, entirely in-process (Snooze Length
-/// mission, docs/architecture/snooze-length-mission-2026-07-11.md). This replaces the owner-clickable
-/// live proof: it boots a REAL <see cref="GatewayHost"/> on an ephemeral loopback port (no Tailscale
-/// front door - CC_GATEWAY_NO_TAILSCALE=1, so it never binds the 443 serve mapping), drives the REAL
-/// POST /sessions/{sid}/hold, and asserts the whole state machine end to end:
+/// mission, docs/architecture/snooze-length-mission-2026-07-11.md). It boots a REAL
+/// <see cref="GatewayHost"/> on an ephemeral loopback port (no Tailscale front door -
+/// CC_GATEWAY_NO_TAILSCALE=1), drives the REAL POST /sessions/{sid}/hold, and asserts the whole
+/// state machine end to end:
 ///
 ///   1. Holding a session through the Gateway records a snooze-until at now + the per-user default.
 ///   2. Once that time passes, the /sessions fold returns the session to "needs you" on its own -
@@ -27,6 +21,15 @@ namespace CcDirector.Gateway.Tests;
 ///   3. The wired watchdog nudges the live Director off hold and clears the entry once the Director
 ///      confirms it is no longer held.
 ///   4. A pending snooze survives a full Gateway restart (re-armed from the on-disk registry).
+///   5. A snooze survives the Director itself dying (dead-man's switch, served from the cached roster).
+///
+/// Gateway Cleanup mission (the cut): the roster is the PUSH store and every Director verb rides THE
+/// TUNNEL. Each Director registers UNREACHABLE, connects the stream, PUSHES its sessions, and answers
+/// the snooze watchdog's read/write verbs ("snapshot" for the raw OnHold read, "hold" for the nudge)
+/// and the hold endpoint's "hold" forward over the tunnel. Because the advertised endpoint is dead, a
+/// working result proves the tunnel. A DEAD Director drops its stream, so its sessions leave the push
+/// store; the last-known roster (FleetRosterCache) still carries the session so the expiry overlay
+/// returns it to "needs you" on its own.
 ///
 /// CC_DIRECTOR_ROOT is redirected to a temp dir so the snooze-default setting and the registry file
 /// live in an isolated store, never the real one. In the "DirectorRoot" collection so it never runs
@@ -35,6 +38,7 @@ namespace CcDirector.Gateway.Tests;
 [Collection("DirectorRoot")]
 public sealed class SnoozeEndToEndTests : IAsyncLifetime
 {
+    private const string Token = "test-token";
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
     private readonly string _root;
@@ -45,7 +49,7 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
 
     private GatewayHost _gw = null!;
     private HttpClient _http = null!;
-    private readonly List<FakeDirector> _fakes = new();
+    private readonly List<SnoozeFake> _fakes = new();
 
     public SnoozeEndToEndTests()
     {
@@ -78,13 +82,14 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     // disposing the first) is a genuine Gateway restart that must re-arm the persisted registry.
     private async Task<(GatewayHost, HttpClient)> StartGatewayAsync()
     {
-        var gw = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        var gw = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_root, "worklists", "worklists.json"),
-            snoozePath: _snoozePath);
+            snoozePath: _snoozePath,
+            streamMode: true);
         await gw.StartAsync();
         var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{gw.Port}/") };
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
         return (gw, http);
     }
 
@@ -96,14 +101,16 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, putResp.StatusCode);
 
         var fake = await StartFakeAsync("s1", onHold: false);
-        await Register(fake);
 
         // Drive the REAL Gateway hold endpoint - exactly what the phone/cockpit Snooze button calls.
         var holdResp = await _http.PostAsJsonAsync("sessions/s1/hold", new HoldRequest { OnHold = true });
         Assert.Equal(HttpStatusCode.OK, holdResp.StatusCode);
 
-        // The Director now reports it held, and the Gateway recorded a snooze-until at ~now + 1 minute.
+        // The Director now reports it held (the hold verb rode the tunnel), and the Gateway recorded a
+        // snooze-until at ~now + 1 minute. The Director pushes its new held state up the stream.
         Assert.True(fake.CurrentOnHold("s1"));
+        await fake.PushAsync();
+
         var entry = Assert.Single(_gw.SnoozeRegistry.Entries());
         Assert.Equal("s1", entry.SessionId);
         var minutesOut = entry.SnoozeUntilUtc - DateTime.UtcNow;
@@ -130,13 +137,13 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     {
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s2", onHold: true); // already held on the Director
-        await Register(fake);
         // Arm an already-expired snooze directly (the record path is covered by the test above).
         _gw.SnoozeRegistry.Snooze("s2", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
 
         // First sweep: sees the Director still holding + expired -> nudges it off hold, keeps the entry.
+        // ReadOnHold rides the "snapshot" verb; the nudge rides the "hold" verb with OnHold=false.
         await _gw.RunSnoozeSweepOnceAsync();
-        Assert.Contains(false, fake.HoldCalls("s2"));   // a hold=false was forwarded
+        Assert.Contains(false, fake.HoldCalls("s2"));   // a hold=false was forwarded over the tunnel
         Assert.False(fake.CurrentOnHold("s2"));         // the Director applied it
         Assert.True(_gw.SnoozeRegistry.Contains("s2")); // entry KEPT until the Director confirms
 
@@ -150,7 +157,6 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     {
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s3", onHold: true);
-        await Register(fake);
         _gw.SnoozeRegistry.Snooze("s3", DateTime.UtcNow.AddMinutes(30), fake.DirectorId); // NOT expired
 
         // The user drove the session again (issue #470): the Director reports it no longer held.
@@ -165,7 +171,6 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     {
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s4", onHold: true);
-        await Register(fake);
         // An already-expired snooze written to disk. It must still fire after a restart.
         _gw.SnoozeRegistry.Snooze("s4", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
 
@@ -177,9 +182,9 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         // The pending snooze was re-armed from disk.
         Assert.True(_gw.SnoozeRegistry.Contains("s4"));
 
-        // And it still drives the fold: re-register the (still-running) Director and the expired snooze
-        // returns the session to "needs you" on its own after the restart.
-        await Register(fake);
+        // And it still drives the fold: the (still-running) Director reconnects its tunnel to the fresh
+        // Gateway and re-pushes, and the expired snooze returns the session to "needs you" on its own.
+        await fake.ReconnectAsync(_gw);
         var returned = await GetSession("s4");
         Assert.False(returned.OnHold);
         Assert.Equal("needsYou", returned.TriageBucket);
@@ -194,19 +199,18 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         // "needs you" on its own even though the Director is gone.
         await SetDefaultMinutes(1);
         var fake = await StartFakeAsync("s5", onHold: true); // held on the Director
-        await Register(fake);
 
         // Prime the last-known-good roster while the Director is still alive.
         var alive = await GetSession("s5");
         Assert.True(alive.OnHold); // shown as snoozed while held (no expiry entry yet)
 
-        // Arm an already-expired snooze, then the Director DIES (its host stops).
+        // Arm an already-expired snooze, then the Director DIES (its stream drops).
         _gw.SnoozeRegistry.Snooze("s5", DateTime.UtcNow.AddSeconds(-1), fake.DirectorId);
-        await fake.DisposeAsync();
+        await fake.DisconnectAsync();
         _fakes.Remove(fake);
 
-        // The Gateway can no longer reach the Director, but the cached roster still carries s5 and the
-        // expiry overlay returns it to "needs you" - the session was NOT lost by snoozing.
+        // The Gateway can no longer reach the Director (its sessions left the push store), but the cached
+        // roster still carries s5 and the expiry overlay returns it to "needs you" - not lost by snoozing.
         var returned = await GetSession("s5");
         Assert.False(returned.OnHold);
         Assert.Equal("needsYou", returned.TriageBucket);
@@ -227,26 +231,10 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         return Assert.Single(sessions, s => s.SessionId == sid);
     }
 
-    private async Task Register(FakeDirector fake)
+    private async Task<SnoozeFake> StartFakeAsync(string sid, bool onHold)
     {
-        var req = new DirectorRegistrationRequest
-        {
-            DirectorId = fake.DirectorId,
-            TailnetEndpoint = fake.BaseUrl,
-            Pid = 1234,
-            MachineName = fake.MachineName,
-            User = "u",
-            Version = "test",
-            StartedAt = DateTime.UtcNow,
-        };
-        var resp = await _http.PostAsJsonAsync("directors/register", req);
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-    }
-
-    private async Task<FakeDirector> StartFakeAsync(string sid, bool onHold)
-    {
-        var fake = new FakeDirector(sid, onHold);
-        await fake.StartAsync();
+        var fake = new SnoozeFake(sid, onHold);
+        await fake.ConnectAsync(_gw, Token);
         _fakes.Add(fake);
         return fake;
     }
@@ -260,23 +248,24 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A minimal Director that serves the surface the snooze flow touches: GET /sessions (+ /{sid}) and
-    /// POST /sessions/{sid}/hold, with a MUTABLE per-session OnHold the hold verb updates - so the
-    /// Gateway's forward is observable and the next roster read reflects it. MachineName is this machine
-    /// so the Gateway treats its loopback endpoint as same-machine reachable (the sweep can forward to it).
+    /// A tunnel-connected stand-in Director for the snooze flow: it registers UNREACHABLE, pushes its
+    /// sessions into the roster, and answers the two verbs the flow touches - "snapshot" (the raw
+    /// per-session OnHold read the watchdog does) and "hold" (the park/un-park write) - with a MUTABLE
+    /// per-session OnHold the hold verb updates, so the Gateway's forward is observable. MachineName is
+    /// this machine so the sweep treats it as reachable. It can reconnect to a fresh Gateway after a
+    /// restart under the SAME director id, so the persisted snooze still addresses it.
     /// </summary>
-    private sealed class FakeDirector : IAsyncDisposable
+    private sealed class SnoozeFake : IAsyncDisposable
     {
         public string DirectorId { get; } = Guid.NewGuid().ToString();
         public string MachineName { get; } = Environment.MachineName;
-        public string BaseUrl { get; private set; } = "";
 
         private readonly object _gate = new();
         private readonly Dictionary<string, SessionDto> _sessions = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<bool>> _holdCalls = new(StringComparer.Ordinal);
-        private WebApplication? _app;
+        private FakeTunnelDirector? _director;
 
-        public FakeDirector(string sid, bool onHold)
+        public SnoozeFake(string sid, bool onHold)
         {
             _sessions[sid] = new SessionDto
             {
@@ -297,10 +286,60 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
         public IReadOnlyList<bool> HoldCalls(string sid) { lock (_gate) return _holdCalls[sid].ToList(); }
         public void SetOnHold(string sid, bool value) { lock (_gate) _sessions[sid].OnHold = value; }
 
-        private SessionDto[] Snapshot()
+        // Register UNREACHABLE + connect the stream + push the current snapshot.
+        public async Task ConnectAsync(GatewayHost gw, string token)
         {
-            lock (_gate)
-                return _sessions.Values.Select(Clone).ToArray();
+            _director = await FakeTunnelDirector.StartAsync(gw, token, DirectorId, MachineName, Dispatch);
+            await PushAsync();
+        }
+
+        // After a Gateway restart the OLD stream is dead; reconnect the same director id to the fresh host.
+        public async Task ReconnectAsync(GatewayHost gw)
+        {
+            await DisconnectAsync();
+            await ConnectAsync(gw, Token);
+        }
+
+        public Task PushAsync()
+        {
+            SessionDto[] snap;
+            lock (_gate) snap = _sessions.Values.Select(Clone).ToArray();
+            return _director!.PushSnapshotAsync(snap);
+        }
+
+        public async Task DisconnectAsync()
+        {
+            if (_director is not null)
+            {
+                await _director.DisposeAsync();
+                _director = null;
+            }
+        }
+
+        private DirectorCommandResult Dispatch(DirectorCommand cmd)
+        {
+            switch (cmd.Verb)
+            {
+                case "snapshot":
+                    lock (_gate)
+                        return _sessions.TryGetValue(cmd.SessionId, out var s)
+                            ? FakeTunnelDirector.Ok(Clone(s))
+                            : DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session");
+                case "hold":
+                {
+                    var req = JsonSerializer.Deserialize<HoldRequest>(cmd.PayloadJson, FakeTunnelDirector.WebJson) ?? new HoldRequest();
+                    lock (_gate)
+                    {
+                        if (!_sessions.TryGetValue(cmd.SessionId, out var s))
+                            return DirectorCommandResult.Fail(DirectorCommandStatus.NotFound, "no such session");
+                        s.OnHold = req.OnHold;
+                        _holdCalls[cmd.SessionId].Add(req.OnHold);
+                        return FakeTunnelDirector.Ok(new HoldResponse { OnHold = s.OnHold });
+                    }
+                }
+                default:
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
+            }
         }
 
         private static SessionDto Clone(SessionDto s) => new()
@@ -316,48 +355,6 @@ public sealed class SnoozeEndToEndTests : IAsyncLifetime
             LastActivityAt = s.LastActivityAt,
         };
 
-        public async Task StartAsync()
-        {
-            var port = FreePort();
-            BaseUrl = $"http://127.0.0.1:{port}";
-
-            var builder = WebApplication.CreateBuilder(new WebApplicationOptions { ApplicationName = "FakeDirector" });
-            builder.WebHost.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
-            builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, port));
-            builder.Logging.ClearProviders();
-            builder.Services.AddRoutingCore();
-
-            _app = builder.Build();
-            _app.UseRouting();
-            _app.MapGet("/sessions", () => Results.Json(Snapshot()));
-            _app.MapGet("/sessions/{sid}", (string sid) =>
-            {
-                lock (_gate)
-                    return _sessions.TryGetValue(sid, out var s) ? Results.Json(Clone(s)) : Results.NotFound();
-            });
-            _app.MapPost("/sessions/{sid}/hold", async (string sid, HttpContext ctx) =>
-            {
-                var req = await JsonSerializer.DeserializeAsync<HoldRequest>(ctx.Request.Body, JsonOpts) ?? new HoldRequest();
-                lock (_gate)
-                {
-                    if (!_sessions.TryGetValue(sid, out var s)) return Results.NotFound();
-                    s.OnHold = req.OnHold;
-                    _holdCalls[sid].Add(req.OnHold);
-                    return Results.Json(new HoldResponse { OnHold = s.OnHold });
-                }
-            });
-
-            await _app.StartAsync();
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_app is not null)
-            {
-                try { await _app.StopAsync(TimeSpan.FromSeconds(2)); } catch { }
-                await _app.DisposeAsync();
-                _app = null;
-            }
-        }
+        public async ValueTask DisposeAsync() => await DisconnectAsync();
     }
 }

@@ -4,19 +4,18 @@ using System.Text;
 using System.Text.Json;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
 /// Runner-level proof for the devops source adapter (issue #300, decision D-4 level (a)) against
-/// the REAL production <see cref="GatewayHost"/> wiring, driven over real HTTP. A lightweight STUB
-/// Director answers the two routes the runner uses (<c>POST /sessions</c> records the seed
-/// PrePrompt; <c>GET /sessions/{sid}/buffer</c> serves the IMPL-LOOP-TERMINAL sentinel), simulating
-/// the seeded session exactly the way the #274/#276 queue-runner proofs did. It proves:
+/// the REAL production <see cref="GatewayHost"/> wiring, driven over real HTTP. Gateway Cleanup
+/// mission (the cut): the runner reaches its seeded session over THE TUNNEL, so a lightweight STUB
+/// Director registers UNREACHABLE and answers the two verbs the runner uses (<c>create</c> records
+/// the seed PrePrompt; <c>buffer</c> serves the IMPL-LOOP-TERMINAL sentinel), simulating the seeded
+/// session exactly the way the #274/#276 queue-runner proofs did. Because the advertised endpoint is
+/// dead, a working run proves the tunnel by construction. It proves:
 ///
 ///   1. A <c>source = devops</c> ref IS dispatched: a session-seed request is emitted with the
 ///      devops-mode seed prompt (<c>/implementation-loop --source devops &lt;id&gt;</c>).
@@ -46,31 +45,23 @@ public sealed class DevopsAdapterDispatchProofTests : IAsyncLifetime
     {
         Environment.SetEnvironmentVariable("CC_GATEWAY_NO_TAILSCALE", "1");
 
-        _stub = new StubDirector();
-        await _stub.StartAsync();
-
         _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
-            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            streamMode: true);
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
         _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {Token}");
 
-        _gateway.Registry.Upsert(new DirectorRegistrationRequest
-        {
-            DirectorId = "dir-300",
-            TailnetEndpoint = _stub.BaseUrl,
-            MachineName = "MACHINE-300",
-            Version = "1.0.0-test",
-            StartedAt = DateTime.UtcNow,
-        });
+        // Registered UNREACHABLE and connected over the tunnel under dir-300 / MACHINE-300.
+        _stub = await StubDirector.StartAsync(_gateway, Token, "dir-300", "MACHINE-300");
     }
 
     public async Task DisposeAsync()
     {
         _http.Dispose();
         await _gateway.StopAsync();
-        await _stub.StopAsync();
+        await _stub.DisposeAsync();
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); } catch { }
     }
 
@@ -155,17 +146,18 @@ public sealed class DevopsAdapterDispatchProofTests : IAsyncLifetime
     private sealed record RunItemDto(string Source, string Id, string? Area, string Outcome, string? Signal, string? SessionId, string Note);
 
     /// <summary>
-    /// A minimal stub Director simulating the seeded implementation session (the same simulation the
-    /// prior queue-runner proofs used): records each seed PrePrompt and serves a canned
-    /// IMPL-LOOP-TERMINAL block correlated to the item id parsed from the seed's last token.
+    /// A minimal TUNNEL stub Director simulating the seeded implementation session (the same simulation
+    /// the prior queue-runner proofs used): it answers the runner's two verbs over the tunnel - "create"
+    /// (records each seed PrePrompt, returns a session id) and "buffer" (serves a canned IMPL-LOOP-TERMINAL
+    /// block correlated to the item id parsed from the seed's last token). Registered UNREACHABLE, so a
+    /// working run rode the tunnel.
     /// </summary>
-    private sealed class StubDirector
+    private sealed class StubDirector : IAsyncDisposable
     {
-        private WebApplication _app = null!;
+        private FakeTunnelDirector _director = null!;
         private readonly object _gate = new();
         private readonly Dictionary<string, (string signal, string merged)> _signals = new();
 
-        public string BaseUrl { get; private set; } = "";
         public List<string> Seeds { get; } = new();
 
         public void SetSignal(string id, string signal, string merged = "no")
@@ -173,39 +165,41 @@ public sealed class DevopsAdapterDispatchProofTests : IAsyncLifetime
             lock (_gate) _signals[id] = (signal, merged);
         }
 
-        public async Task StartAsync()
+        public static async Task<StubDirector> StartAsync(GatewayHost gateway, string token, string directorId, string machineName)
         {
-            var port = AllocateFreePort();
-            BaseUrl = $"http://127.0.0.1:{port}";
-            var builder = WebApplication.CreateBuilder();
-            builder.Logging.ClearProviders();
-            _app = builder.Build();
-            _app.Urls.Add(BaseUrl);
-
-            _app.MapPost("/sessions", async (HttpContext ctx) =>
-            {
-                var req = await JsonSerializer.DeserializeAsync<NewSessionRequest>(ctx.Request.Body, JsonOpts);
-                var prePrompt = req?.PrePrompt ?? "";
-                var tokens = prePrompt.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var id = tokens.Length > 0 ? tokens[^1] : "";
-                lock (_gate) Seeds.Add(prePrompt);
-                return Results.Json(new SessionDto { SessionId = $"sid-{id}-{Guid.NewGuid():N}", ActivityState = "Working", Status = "Running" });
-            });
-
-            _app.MapGet("/sessions/{sid}/buffer", (string sid) =>
-            {
-                var parts = sid.Split('-');
-                var id = parts.Length >= 2 ? parts[1] : sid;
-                (string signal, string merged) s;
-                lock (_gate) s = _signals.TryGetValue(id, out var v) ? v : ("done", "yes");
-                var text = $"working on the item...\nIMPL-LOOP-TERMINAL\nissue: {id}\nsignal: {s.signal}\npr: none\nmerged: {s.merged}\nreason: stub session canned signal (issue-300 proof)\n";
-                return Results.Json(new BufferResponse { SessionId = sid, Text = text, TotalBytes = text.Length, NewCursor = text.Length });
-            });
-
-            await _app.StartAsync();
+            var stub = new StubDirector();
+            stub._director = await FakeTunnelDirector.StartAsync(gateway, token, directorId, machineName, stub.Dispatch);
+            return stub;
         }
 
-        public async Task StopAsync() => await _app.DisposeAsync();
+        private DirectorCommandResult Dispatch(DirectorCommand cmd)
+        {
+            switch (cmd.Verb)
+            {
+                case "create":
+                {
+                    var req = JsonSerializer.Deserialize<NewSessionRequest>(cmd.PayloadJson, FakeTunnelDirector.WebJson);
+                    var prePrompt = req?.PrePrompt ?? "";
+                    var tokens = prePrompt.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var id = tokens.Length > 0 ? tokens[^1] : "";
+                    lock (_gate) Seeds.Add(prePrompt);
+                    return FakeTunnelDirector.Ok(new SessionDto { SessionId = $"sid-{id}-{Guid.NewGuid():N}", ActivityState = "Working", Status = "Running" });
+                }
+                case "buffer":
+                {
+                    var parts = cmd.SessionId.Split('-');
+                    var id = parts.Length >= 2 ? parts[1] : cmd.SessionId;
+                    (string signal, string merged) s;
+                    lock (_gate) s = _signals.TryGetValue(id, out var v) ? v : ("done", "yes");
+                    var text = $"working on the item...\nIMPL-LOOP-TERMINAL\nissue: {id}\nsignal: {s.signal}\npr: none\nmerged: {s.merged}\nreason: stub session canned signal (issue-300 proof)\n";
+                    return FakeTunnelDirector.Ok(new BufferResponse { SessionId = cmd.SessionId, Text = text, TotalBytes = text.Length, NewCursor = text.Length });
+                }
+                default:
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
+            }
+        }
+
+        public ValueTask DisposeAsync() => _director.DisposeAsync();
     }
 
     /// <summary>Accumulates Expected/Actual rows and renders the HTML proof fragment (ASCII only).</summary>

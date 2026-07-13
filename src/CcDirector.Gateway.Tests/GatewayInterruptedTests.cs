@@ -2,13 +2,9 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -17,24 +13,34 @@ namespace CcDirector.Gateway.Tests;
 /// The Cockpit "Interrupted sessions" aggregator (issue #212 W3): GET /interrupted fans out
 /// to every Director for the crash journals left on its machine, flattens them to one row per
 /// recoverable session, dedupes journals reported by sibling Directors that share a machine
-/// dir, and routes a dismiss to the reporting Director.
+/// dir, and routes a dismiss/restore to the reporting Director.
+///
+/// Gateway Cleanup mission (the cut): the fan-out and the director-level dismiss/remove/restore
+/// verbs ride THE TUNNEL now - the Gateway never HTTP-dials a Director. Each Director registers
+/// UNREACHABLE and answers its verbs over the stream (interrupted-list / interrupted-dismiss /
+/// interrupted-remove for the journal work, and create + patch for the restore continuation), so
+/// a working result proves the tunnel by construction. The routing + dedupe assertions are
+/// preserved: they are exercised by pushing/answering from real tunnel-connected Directors.
 /// </summary>
 public sealed class GatewayInterruptedTests : IAsyncLifetime
 {
+    private const string Token = "test-token";
+
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
-    private readonly List<FakeDirector> _fakes = new();
+    private readonly List<TunnelFake> _fakes = new();
     private readonly string _instancesDir =
         Path.Combine(Path.GetTempPath(), "cc-instances-" + Guid.NewGuid().ToString("N"));
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
-            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            streamMode: true);
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
+        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
     }
 
     public async Task DisposeAsync()
@@ -58,7 +64,7 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
                 new CrashJournalSessionDto { SessionId = "s2", Name = "beta", RepoPath = "/repo/b" },
             },
         };
-        await Register(await StartFake("MACHINE_A", new[] { journal }));
+        await StartFake("MACHINE_A", new[] { journal });
 
         var rows = await GetInterrupted();
 
@@ -72,14 +78,14 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
     public async Task Dedupes_a_journal_reported_by_two_sibling_directors()
     {
         // Two live Directors on the same machine share the crash-journal dir, so both report
-        // the same dead journal. The aggregator must list its sessions once.
+        // the same dead journal over the tunnel. The aggregator must list its sessions once.
         var journal = new CrashJournalDto
         {
             DirectorId = "dead-1", Pid = 9001, MachineName = "MACHINE_A",
             Sessions = { new CrashJournalSessionDto { SessionId = "s1", Name = "alpha", RepoPath = "/r" } },
         };
-        await Register(await StartFake("MACHINE_A", new[] { journal }));
-        await Register(await StartFake("MACHINE_A", new[] { journal }));
+        await StartFake("MACHINE_A", new[] { journal });
+        await StartFake("MACHINE_A", new[] { journal });
 
         var rows = await GetInterrupted();
 
@@ -89,7 +95,7 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
     [Fact]
     public async Task Empty_when_no_director_has_a_dirty_journal()
     {
-        await Register(await StartFake("MACHINE_A", Array.Empty<CrashJournalDto>()));
+        await StartFake("MACHINE_A", Array.Empty<CrashJournalDto>());
         Assert.Empty(await GetInterrupted());
     }
 
@@ -102,20 +108,20 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
             Sessions = { new CrashJournalSessionDto { SessionId = "s1", Name = "alpha", RepoPath = "/r" } },
         };
         var fake = await StartFake("MACHINE_A", new[] { journal });
-        await Register(fake);
         var rows = await GetInterrupted();
         var reportedBy = rows[0].ReportedByDirectorId;
 
         var resp = await _http.DeleteAsync($"interrupted/dead-1/9001?via={reportedBy}");
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        // The interrupted-dismiss verb rode the tunnel to the reporting Director with the journal key.
         Assert.Equal(("dead-1", 9001), fake.LastDismiss);
     }
 
     [Fact]
     public async Task Dismiss_without_via_is_rejected()
     {
-        await Register(await StartFake("MACHINE_A", Array.Empty<CrashJournalDto>()));
+        await StartFake("MACHINE_A", Array.Empty<CrashJournalDto>());
         var resp = await _http.DeleteAsync("interrupted/dead-1/9001");
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
@@ -139,7 +145,6 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
             },
         };
         var fake = await StartFake("MACHINE_A", new[] { journal });
-        await Register(fake);
 
         var resp = await _http.PostAsJsonAsync("interrupted/dead-1/9001/restore",
             new RestoreInterruptedRequest { SessionId = "s1", Via = fake.DirectorId });
@@ -151,8 +156,8 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
         Assert.Equal(fake.CreatedSessionId, body.TargetSession?.SessionId);
         Assert.True(body.JournalCleaned);
 
-        // The continuation was created in the dead session's repo, seeded with a context
-        // that names the predecessor, its repo, and the prior Claude transcript.
+        // The continuation was created over the tunnel in the dead session's repo, seeded with a
+        // context that names the predecessor, its repo, and the prior Claude transcript.
         Assert.NotNull(fake.LastCreate);
         Assert.Equal("/repo/a", fake.LastCreate!.RepoPath);
         Assert.Contains("RESTORED", fake.LastCreate.PrePrompt);
@@ -174,8 +179,6 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
         };
         var reporter = await StartFake("MACHINE_A", new[] { journal });
         var target = await StartFake("MACHINE_A", Array.Empty<CrashJournalDto>());
-        await Register(reporter);
-        await Register(target);
 
         var resp = await _http.PostAsJsonAsync("interrupted/dead-1/9001/restore",
             new RestoreInterruptedRequest { SessionId = "s1", Via = reporter.DirectorId, ToDirectorId = target.DirectorId });
@@ -195,7 +198,6 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
             Sessions = { new CrashJournalSessionDto { SessionId = "s1", Name = "alpha", RepoPath = "/r" } },
         };
         var fake = await StartFake("MACHINE_A", new[] { journal });
-        await Register(fake);
 
         var resp = await _http.PostAsJsonAsync("interrupted/dead-1/9001/restore",
             new RestoreInterruptedRequest { SessionId = "ghost", Via = fake.DirectorId });
@@ -213,7 +215,6 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
             Sessions = { new CrashJournalSessionDto { SessionId = "s1", Name = "alpha", RepoPath = "/r" } },
         };
         var fake = await StartFake("MACHINE_A", new[] { journal });
-        await Register(fake);
 
         var resp = await _http.DeleteAsync($"interrupted/dead-1/9001/sessions/s1?via={fake.DirectorId}");
 
@@ -224,7 +225,7 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
     [Fact]
     public async Task Restore_without_via_is_rejected()
     {
-        await Register(await StartFake("MACHINE_A", Array.Empty<CrashJournalDto>()));
+        await StartFake("MACHINE_A", Array.Empty<CrashJournalDto>());
         var resp = await _http.PostAsJsonAsync("interrupted/dead-1/9001/restore",
             new RestoreInterruptedRequest { SessionId = "s1" });
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -235,26 +236,14 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
     private async Task<List<InterruptedSessionDto>> GetInterrupted()
     {
         var list = await _http.GetFromJsonAsync<List<InterruptedSessionDto>>("interrupted");
-        // Restrict to journals our fakes serve (a real Director on the dev box can't leak here:
-        // fakes use random director ids, but dead-journal ids are fixed - filter by those).
+        // Restrict to journals our fakes serve (dead-journal ids are fixed - filter by those).
         return (list ?? new()).Where(r => r.DeadDirectorId.StartsWith("dead-")).ToList();
     }
 
-    private async Task Register(FakeDirector fake)
+    private async Task<TunnelFake> StartFake(string machine, CrashJournalDto[] journals)
     {
-        var req = new DirectorRegistrationRequest
-        {
-            DirectorId = fake.DirectorId, TailnetEndpoint = fake.BaseUrl, Pid = 1234,
-            MachineName = fake.MachineName, User = "tester", Version = "test", StartedAt = DateTime.UtcNow,
-        };
-        var resp = await _http.PostAsJsonAsync("directors/register", req);
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-    }
-
-    private async Task<FakeDirector> StartFake(string machine, CrashJournalDto[] journals)
-    {
-        var fake = new FakeDirector(machine, journals);
-        await fake.StartAsync();
+        var fake = new TunnelFake(machine, journals);
+        fake.Director = await FakeTunnelDirector.StartAsync(_gateway, Token, fake.DirectorId, machine, fake.Dispatch);
         _fakes.Add(fake);
         return fake;
     }
@@ -266,74 +255,65 @@ public sealed class GatewayInterruptedTests : IAsyncLifetime
         try { return ((IPEndPoint)l.LocalEndpoint).Port; } finally { l.Stop(); }
     }
 
-    private sealed class FakeDirector : IAsyncDisposable
+    /// <summary>
+    /// A tunnel-connected stand-in Director: it registers UNREACHABLE and answers the interrupted-*
+    /// verbs plus the restore continuation verbs (create + patch) over the stream, capturing what the
+    /// Gateway sent so the routing/dedupe/restore assertions hold exactly as before - now over the tunnel.
+    /// </summary>
+    private sealed class TunnelFake : IAsyncDisposable
     {
+        public FakeTunnelDirector Director = null!;
         public string DirectorId { get; } = Guid.NewGuid().ToString();
         public string MachineName { get; }
-        public string BaseUrl { get; private set; } = "";
-        public (string, int)? LastDismiss { get; private set; }
 
-        // Restore-path captures (issue #212 W4).
+        public (string, int)? LastDismiss { get; private set; }
         public NewSessionRequest? LastCreate { get; private set; }
         public string? LastPatchName { get; private set; }
         public (string Dir, int Pid, string Sid)? LastSessionRemoval { get; private set; }
         public string CreatedSessionId { get; } = "new-" + Guid.NewGuid().ToString("N")[..8];
 
         private readonly CrashJournalDto[] _journals;
-        private WebApplication? _app;
 
-        public FakeDirector(string machine, CrashJournalDto[] journals)
+        public TunnelFake(string machine, CrashJournalDto[] journals)
         {
             MachineName = machine;
             _journals = journals;
         }
 
-        public async Task StartAsync()
+        public DirectorCommandResult Dispatch(DirectorCommand cmd)
         {
-            var port = FreePort();
-            BaseUrl = $"http://127.0.0.1:{port}";
-            var builder = WebApplication.CreateBuilder(new WebApplicationOptions { ApplicationName = "FakeDirector" });
-            builder.WebHost.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
-            builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, port));
-            builder.Logging.ClearProviders();
-            builder.Services.AddRoutingCore();
-
-            _app = builder.Build();
-            _app.UseRouting();
-            _app.MapGet("/interrupted", () => Results.Json(_journals));
-            _app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}", (string deadDirectorId, int deadPid) =>
+            switch (cmd.Verb)
             {
-                LastDismiss = (deadDirectorId, deadPid);
-                return Results.Json(new { dismissed = true });
-            });
-            _app.MapDelete("/interrupted/{deadDirectorId}/{deadPid:int}/sessions/{sessionId}",
-                (string deadDirectorId, int deadPid, string sessionId) =>
-            {
-                LastSessionRemoval = (deadDirectorId, deadPid, sessionId);
-                return Results.Json(new { removed = true });
-            });
-            _app.MapPost("/sessions", (NewSessionRequest req) =>
-            {
-                LastCreate = req;
-                return Results.Json(new SessionDto { SessionId = CreatedSessionId, RepoPath = req.RepoPath },
-                    statusCode: StatusCodes.Status201Created);
-            });
-            _app.MapMethods("/sessions/{sid}", new[] { "PATCH" }, (string sid, SessionUpdateRequest req) =>
-            {
-                LastPatchName = req.Name;
-                return Results.Json(new SessionDto { SessionId = sid, Name = req.Name });
-            });
-            await _app.StartAsync();
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_app is not null)
-            {
-                try { await _app.StopAsync(TimeSpan.FromSeconds(2)); } catch { }
-                await _app.DisposeAsync();
-                _app = null;
+                case "interrupted-list":
+                    return FakeTunnelDirector.Ok(_journals);
+                case "interrupted-dismiss":
+                {
+                    var p = JsonNode.Parse(cmd.PayloadJson)!.AsObject();
+                    LastDismiss = ((string)p["deadDirectorId"]!, (int)p["deadPid"]!);
+                    return FakeTunnelDirector.Ok(new { dismissed = true });
+                }
+                case "interrupted-remove":
+                {
+                    var p = JsonNode.Parse(cmd.PayloadJson)!.AsObject();
+                    LastSessionRemoval = ((string)p["deadDirectorId"]!, (int)p["deadPid"]!, (string)p["sessionId"]!);
+                    return FakeTunnelDirector.Ok(new { removed = true });
+                }
+                case "create":
+                {
+                    LastCreate = JsonSerializer.Deserialize<NewSessionRequest>(cmd.PayloadJson, FakeTunnelDirector.WebJson);
+                    return FakeTunnelDirector.Ok(new SessionDto { SessionId = CreatedSessionId, RepoPath = LastCreate?.RepoPath ?? "" });
+                }
+                case "patch":
+                {
+                    var req = JsonSerializer.Deserialize<SessionUpdateRequest>(cmd.PayloadJson, FakeTunnelDirector.WebJson);
+                    LastPatchName = req?.Name;
+                    return FakeTunnelDirector.Ok(new SessionDto { SessionId = cmd.SessionId, Name = req?.Name });
+                }
+                default:
+                    return DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}");
             }
         }
+
+        public ValueTask DisposeAsync() => Director is null ? ValueTask.CompletedTask : Director.DisposeAsync();
     }
 }

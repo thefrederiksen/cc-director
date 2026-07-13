@@ -1,10 +1,4 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using CcDirector.ControlApi;
-using CcDirector.Core.Configuration;
-using CcDirector.Core.Sessions;
-using CcDirector.Gateway.Contracts;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
@@ -12,6 +6,14 @@ namespace CcDirector.Gateway.Tests;
 /// <summary>
 /// Unit tests for the pure message-framing helper used by fleet session-to-session
 /// messaging (issue #705). Pure and machine-independent.
+///
+/// Gateway Cleanup mission (the cut): the fleet-relay ENDPOINTS that used this helper
+/// (the Director's POST /fleet/send, /fleet/ask, /fleet/broadcast) were removed when the
+/// Director REST surface was cut to its floor, and no Gateway/tunnel-verb replacement exists.
+/// The old FleetMessagingEndpointTests exercised those deleted routes and were removed with them.
+/// This framing helper still stands on its own, so its contract is still pinned here.
+/// (See the SB-3b worker report: the direct send/ask relay + the message-steward endpoint wiring
+/// are gone with no live equivalent - flagged for the Manager to confirm the re-home is intended.)
 /// </summary>
 public sealed class FleetMessagingFramingTests
 {
@@ -67,93 +69,5 @@ public sealed class FleetMessagingFramingTests
 
         Assert.DoesNotContain("\n", framed);
         Assert.Contains("Reply with exactly GREEN-42", framed); // body newlines collapsed to spaces
-    }
-}
-
-/// <summary>
-/// Endpoint validation tests for the /fleet/* relay routes (issue #705). These assert the
-/// deterministic request-validation behavior that runs before any Gateway interaction, so they
-/// pass whether or not this machine has a Gateway configured. The richer relay / no-Gateway
-/// delivery behavior is verified by live proof against a running Director.
-/// </summary>
-[Collection("DirectorRoot")]
-public sealed class FleetMessagingEndpointTests : IAsyncLifetime
-{
-    private ControlApiHost _host = null!;
-    private SessionManager _sm = null!;
-    private HttpClient _client = null!;
-
-    public async Task InitializeAsync()
-    {
-        _sm = new SessionManager(new AgentOptions());
-        _host = new ControlApiHost(_sm, "1.0.0-test", () => Task.CompletedTask, useEphemeralPort: true);
-        var port = await _host.StartAsync();
-        _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-        var token = DirectorAuth.LoadOrCreateToken();
-        _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-    }
-
-    public async Task DisposeAsync()
-    {
-        _client.Dispose();
-        await _host.StopAsync();
-        _sm.Dispose();
-        try
-        {
-            var f = Path.Combine(InstanceRegistration.InstancesDirectory, $"{_host.DirectorId}.json");
-            if (File.Exists(f)) File.Delete(f);
-        }
-        catch { /* test cleanup, ignore */ }
-    }
-
-    [Fact]
-    public async Task Fleet_send_missing_target_returns_400()
-    {
-        var resp = await _client.PostAsJsonAsync("fleet/send", new FleetSendRequest { ToSessionId = "", Text = "hi" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Fleet_send_bad_guid_returns_400()
-    {
-        var resp = await _client.PostAsJsonAsync("fleet/send", new FleetSendRequest { ToSessionId = "not-a-guid", Text = "hi" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Fleet_send_empty_text_returns_400()
-    {
-        var resp = await _client.PostAsJsonAsync("fleet/send",
-            new FleetSendRequest { ToSessionId = Guid.NewGuid().ToString(), Text = "" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Fleet_broadcast_empty_text_returns_400()
-    {
-        var resp = await _client.PostAsJsonAsync("fleet/broadcast", new FleetBroadcastRequest { Text = "" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Fleet_ask_missing_target_returns_400()
-    {
-        var resp = await _client.PostAsJsonAsync("fleet/ask", new FleetAskRequest { ToSessionId = "", Question = "q?" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Fleet_ask_bad_guid_returns_400()
-    {
-        var resp = await _client.PostAsJsonAsync("fleet/ask", new FleetAskRequest { ToSessionId = "not-a-guid", Question = "q?" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Fleet_ask_empty_question_returns_400()
-    {
-        var resp = await _client.PostAsJsonAsync("fleet/ask",
-            new FleetAskRequest { ToSessionId = Guid.NewGuid().ToString(), Question = "" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 }

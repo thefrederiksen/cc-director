@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using CcDirector.ControlApi;
 using CcDirector.Core.Configuration;
 using CcDirector.Core.Sessions;
@@ -10,13 +11,20 @@ using Xunit;
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// End-to-end tests for the session-self-service REST slice: handover CRUD
-/// (POST /handovers, DELETE /handovers, GET /handovers?repo=), explicit repo management
-/// (POST /repos, PATCH /repos, GET /repos/overview), the repo filter on
-/// GET /claude-sessions, and the Control API info handoff to the SessionManager
-/// (CC_DIRECTOR_API / CC_DIRECTOR_ID injection source). Runs a real ControlApiHost on an
-/// ephemeral port with CC_DIRECTOR_ROOT + CC_VAULT_PATH redirected to a temp dir.
-/// In the "DirectorRoot" collection (serializes root-touching tests).
+/// Gateway Cleanup mission (the cut): the Director's self-service REST slice is deleted from the loopback
+/// Control API. The saved-document/registry READS survive as tunnel verbs whose cores live in
+/// <see cref="CatalogReadExecutor"/> (claude-sessions repo filter, handovers repo filter), so this asserts
+/// those cores directly against a seeded CC_DIRECTOR_ROOT / CC_VAULT_PATH - the same real read logic the old
+/// REST routes ran, now over the surviving code. It also keeps the Control API info handoff to the
+/// SessionManager (CC_DIRECTOR_API / CC_DIRECTOR_ID injection source), which is host lifecycle, not a route.
+/// Runs a real ControlApiHost on an ephemeral port with CC_DIRECTOR_ROOT + CC_VAULT_PATH redirected to a temp
+/// dir. In the "DirectorRoot" collection (serializes root-touching tests).
+///
+/// DELETED at the cut (no surviving surface - see the report/escalation): the self-service WRITE + overview
+/// operations POST /repos (repo-add), PATCH /repos (repo-rename), POST /handovers (handover-create),
+/// DELETE /handovers (handover-delete), and GET /repos/overview (repos-overview). Post-cut there is no
+/// Director REST route, no tunnel verb (none of the executors declare these verbs), no Gateway route, and no
+/// client caller for any of them, so the tests that exercised them are removed as deleted machinery.
 /// </summary>
 [Collection("DirectorRoot")]
 public sealed class RestApiSelfServiceEndpointsTests : IAsyncLifetime
@@ -100,214 +108,69 @@ public sealed class RestApiSelfServiceEndpointsTests : IAsyncLifetime
         Assert.Equal(_host.DirectorId, _sm.DirectorId);
     }
 
-    // ===== POST /handovers =====
+    // ===== GET /handovers?repo= (handovers-list verb core) =====
 
+    // Gateway Cleanup (the cut): GET /handovers is deleted from the Director's Control API; the saved-document
+    // read is now the handovers-list tunnel verb, whose core is CatalogReadExecutor.HandoversList. That core
+    // still applies the ?repo= frontmatter filter (normalized, case- and trailing-slash-insensitive). Asserted
+    // directly against the real core over the seeded vault, so the filter's strength is fully preserved.
+    // (Note: the Gateway's /directors/{id}/handovers route does not forward a repo filter today, so the filter
+    // is proven where it lives - in the verb core - not through that route.)
     [Fact]
-    public async Task Post_handovers_creates_listed_readable_document()
+    public void Handovers_repo_filter_matches_frontmatter_repositories()
     {
-        var resp = await _client.PostAsJsonAsync("handovers", new HandoverCreateRequest
-        {
-            Title = "API Created Handover",
-            Content = "## What happened\n\nEverything worked.",
-            RepoPaths = new List<string> { _repoB },
-            SessionName = "Self Service Test",
-        });
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-
-        var created = await resp.Content.ReadFromJsonAsync<HandoverDto>();
-        Assert.NotNull(created);
-        Assert.Equal("Api created handover", created.Title); // slug round-trip: first letter capitalized
-        Assert.Equal("Self Service Test", created.SessionName);
-        Assert.Equal(_repoB, created.RepoPath);
-
-        var content = await _client.GetFromJsonAsync<HandoverContentDto>(
-            $"handovers/content?path={Uri.EscapeDataString(created.Path)}");
-        Assert.NotNull(content);
-        Assert.Contains("Everything worked.", content.Content);
-
-        var all = await _client.GetFromJsonAsync<List<HandoverDto>>("handovers");
-        Assert.NotNull(all);
-        Assert.Contains(all, h => h.Path == created.Path);
-    }
-
-    [Theory]
-    [InlineData("", "some content")]
-    [InlineData("some title", "")]
-    public async Task Post_handovers_requires_title_and_content(string title, string content)
-    {
-        var resp = await _client.PostAsJsonAsync("handovers",
-            new HandoverCreateRequest { Title = title, Content = content });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    // ===== DELETE /handovers =====
-
-    [Fact]
-    public async Task Delete_handovers_removes_document()
-    {
-        var create = await _client.PostAsJsonAsync("handovers", new HandoverCreateRequest
-        {
-            Title = "Doomed Handover",
-            Content = "Delete me.",
-        });
-        var created = await create.Content.ReadFromJsonAsync<HandoverDto>();
-        Assert.NotNull(created);
-
-        var del = await _client.DeleteAsync($"handovers?path={Uri.EscapeDataString(created.Path)}");
-        del.EnsureSuccessStatusCode();
-        Assert.False(File.Exists(created.Path));
-
-        var again = await _client.DeleteAsync($"handovers?path={Uri.EscapeDataString(created.Path)}");
-        Assert.Equal(HttpStatusCode.NotFound, again.StatusCode);
-    }
-
-    [Fact]
-    public async Task Delete_handovers_rejects_path_outside_folder()
-    {
-        var resp = await _client.DeleteAsync($"handovers?path={Uri.EscapeDataString(_repoA)}");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Delete_handovers_requires_path()
-    {
-        var resp = await _client.DeleteAsync("handovers");
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    // ===== GET /handovers?repo= =====
-
-    [Fact]
-    public async Task Handovers_repo_filter_matches_frontmatter_repositories()
-    {
-        var forA = await _client.GetFromJsonAsync<List<HandoverDto>>(
-            $"handovers?repo={Uri.EscapeDataString(_repoA)}");
-        Assert.NotNull(forA);
+        var forA = ReadHandovers(_repoA);
         Assert.Contains(forA, h => h.Title == "Seeded handover");
 
         // Trailing slash + different casing must still match.
-        var forASlash = await _client.GetFromJsonAsync<List<HandoverDto>>(
-            $"handovers?repo={Uri.EscapeDataString(_repoA.ToUpperInvariant() + "\\")}");
-        Assert.NotNull(forASlash);
+        var forASlash = ReadHandovers(_repoA.ToUpperInvariant() + "\\");
         Assert.Contains(forASlash, h => h.Title == "Seeded handover");
 
-        var forB = await _client.GetFromJsonAsync<List<HandoverDto>>(
-            $"handovers?repo={Uri.EscapeDataString(_repoB)}");
-        Assert.NotNull(forB);
+        var forB = ReadHandovers(_repoB);
         Assert.DoesNotContain(forB, h => h.Title == "Seeded handover");
     }
 
-    // ===== POST /repos =====
+    // ===== GET /claude-sessions?repo= (claude-sessions verb core) =====
 
+    // Gateway Cleanup (the cut): GET /claude-sessions is deleted from the Director's Control API; the resumable-
+    // session read is now the claude-sessions tunnel verb, whose core is CatalogReadExecutor.ClaudeSessions.
+    // That core still applies the ?repo= filter over the merged workspace-history + Claude-metadata list.
+    // Asserted directly against the real core over the seeded history, so the filter's strength is preserved.
     [Fact]
-    public async Task Post_repos_registers_new_repo_201_then_200_on_duplicate()
+    public void Claude_sessions_repo_filter_includes_only_matching_repo()
     {
-        var resp = await _client.PostAsJsonAsync("repos", new RepoAddRequest { Path = _repoB });
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
-
-        var repos = await _client.GetFromJsonAsync<List<RepositoryDto>>("repos");
-        Assert.NotNull(repos);
-        Assert.Contains(repos, r => r.Name == "repoB");
-
-        var dup = await _client.PostAsJsonAsync("repos", new RepoAddRequest { Path = _repoB });
-        Assert.Equal(HttpStatusCode.OK, dup.StatusCode);
-    }
-
-    [Fact]
-    public async Task Post_repos_with_custom_name_applies_name()
-    {
-        var resp = await _client.PostAsJsonAsync("repos",
-            new RepoAddRequest { Path = _repoB, Name = "Nice Display Name" });
-        resp.EnsureSuccessStatusCode();
-
-        var repos = await _client.GetFromJsonAsync<List<RepositoryDto>>("repos");
-        Assert.NotNull(repos);
-        Assert.Contains(repos, r => r.Name == "Nice Display Name" && r.Path.EndsWith("repoB"));
-    }
-
-    [Fact]
-    public async Task Post_repos_rejects_missing_directory()
-    {
-        var resp = await _client.PostAsJsonAsync("repos",
-            new RepoAddRequest { Path = Path.Combine(_root, "no-such-dir") });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Post_repos_requires_path()
-    {
-        var resp = await _client.PostAsJsonAsync("repos", new RepoAddRequest { Path = "" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    // ===== PATCH /repos =====
-
-    [Fact]
-    public async Task Patch_repos_renames_registered_repo()
-    {
-        var resp = await _client.PatchAsJsonAsync("repos",
-            new RepoRenameRequest { Path = _repoA, Name = "Renamed Via API" });
-        resp.EnsureSuccessStatusCode();
-
-        var dto = await resp.Content.ReadFromJsonAsync<RepositoryDto>();
-        Assert.NotNull(dto);
-        Assert.Equal("Renamed Via API", dto.Name);
-
-        var repos = await _client.GetFromJsonAsync<List<RepositoryDto>>("repos");
-        Assert.NotNull(repos);
-        Assert.Contains(repos, r => r.Name == "Renamed Via API");
-    }
-
-    [Fact]
-    public async Task Patch_repos_unknown_path_returns_404()
-    {
-        var resp = await _client.PatchAsJsonAsync("repos",
-            new RepoRenameRequest { Path = Path.Combine(_root, "not-registered"), Name = "X" });
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
-
-    [Fact]
-    public async Task Patch_repos_requires_name()
-    {
-        var resp = await _client.PatchAsJsonAsync("repos",
-            new RepoRenameRequest { Path = _repoA, Name = "" });
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
-    }
-
-    // ===== GET /repos/overview =====
-
-    [Fact]
-    public async Task Repos_overview_aggregates_handovers_and_history()
-    {
-        var overview = await _client.GetFromJsonAsync<List<RepoOverviewDto>>("repos/overview");
-        Assert.NotNull(overview);
-
-        var a = Assert.Single(overview, r => r.Path == Path.GetFullPath(_repoA).TrimEnd('\\'));
-        Assert.True(a.PathExists);
-        Assert.Equal(1, a.HandoverCount);
-        Assert.NotNull(a.LastHandoverUtc);
-        Assert.Equal(1, a.HistorySessionCount);
-        Assert.Equal("selfsvc seeded prompt", a.LastSessionSummary);
-        Assert.NotNull(a.LastSessionAtUtc);
-        Assert.Equal(0, a.LiveSessionCount);
-        Assert.Empty(a.LiveSessionNames);
-    }
-
-    // ===== GET /claude-sessions?repo= =====
-
-    [Fact]
-    public async Task Claude_sessions_repo_filter_includes_only_matching_repo()
-    {
-        var forA = await _client.GetFromJsonAsync<List<ClaudeSessionDto>>(
-            $"claude-sessions?repo={Uri.EscapeDataString(_repoA)}");
-        Assert.NotNull(forA);
+        var forA = ReadClaudeSessions(_repoA);
         var entry = Assert.Single(forA);
         Assert.Equal("selfsvc-test-claude-session", entry.ClaudeSessionId);
         Assert.Equal("selfsvc seeded prompt", entry.Summary);
 
-        var forB = await _client.GetFromJsonAsync<List<ClaudeSessionDto>>(
-            $"claude-sessions?repo={Uri.EscapeDataString(_repoB)}");
-        Assert.NotNull(forB);
+        var forB = ReadClaudeSessions(_repoB);
         Assert.Empty(forB);
     }
+
+    // ===== helpers =====
+
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    private static DirectorCommand Command(string verb, object? payload) => new()
+    {
+        CommandId = "cmd-selfsvc",
+        Verb = verb,
+        SessionId = "",
+        PayloadJson = payload is null ? "" : JsonSerializer.Serialize(payload, Json),
+    };
+
+    private static List<T> ReadBody<T>(DirectorCommandResult result)
+    {
+        Assert.Equal(DirectorCommandStatus.Ok, result.Status);
+        return JsonSerializer.Deserialize<List<T>>(result.BodyJson ?? "[]", Json) ?? new List<T>();
+    }
+
+    // Invoke the real handovers-list verb core with an optional repo filter (the payload the tunnel carries).
+    private static List<HandoverDto> ReadHandovers(string? repo) =>
+        ReadBody<HandoverDto>(CatalogReadExecutor.HandoversList(Command("handovers-list", new HandoversListRequest { Repo = repo })));
+
+    // Invoke the real claude-sessions verb core with an optional repo filter.
+    private static List<ClaudeSessionDto> ReadClaudeSessions(string? repo) =>
+        ReadBody<ClaudeSessionDto>(CatalogReadExecutor.ClaudeSessions(Command("claude-sessions", new ClaudeSessionsRequest { Repo = repo })));
 }

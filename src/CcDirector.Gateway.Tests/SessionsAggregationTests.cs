@@ -6,30 +6,34 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CcDirector.Gateway;
 using CcDirector.Gateway.Contracts;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace CcDirector.Gateway.Tests;
 
 /// <summary>
-/// Phase-2 Gateway aggregation tests: <c>GET /sessions</c> fans out to every registered
-/// Director, parallelises the calls, stamps fleet-only fields, and surfaces unreachable
-/// Directors as <c>machineErrors</c> instead of dropping them silently.
+/// Gateway Cleanup mission (the cut): the <c>GET /sessions</c> aggregation. Post-cut the Gateway NEVER dials a
+/// Director over HTTP - the fleet ROSTER is read from the PUSH store (Directors push their sessions up the
+/// tunnel). So each Director here is registered UNREACHABLE (its advertised endpoint is dead and never dialed),
+/// opens a real tunnel connection, and delivers its sessions with <c>PushSnapshot</c>. Because the endpoint is
+/// dead, any session that appears could ONLY have come from the push store (tunnel-by-construction).
 ///
-/// Tests use lightweight fake-Director Kestrel hosts (not the real <c>ControlApiHost</c>)
-/// so they can simulate the exact failure modes we care about: HTTP 500, slow responses,
-/// empty session lists, varied session content.
+/// The aggregation still stamps the fleet-only fields (machine / user / tailnet endpoint / view url), computes
+/// automatic session roles from the whole fleet, folds the authoritative color / triage bucket / NeedsYouSince
+/// clock and the snooze-expiry overlay, applies the filters, and surfaces a Director that is NOT tunnel-connected
+/// (no fresh push) as a <c>machineErrors</c> entry instead of dropping it silently. Those behaviors now operate
+/// over pushed <see cref="SessionDto"/> rows; this exercises them by pushing the rows each case needs.
+///
+/// (The old "a Director whose HTTP dial returned 500 surfaces in machineErrors" trigger is gone - there is no
+/// HTTP dial. The replacement failure mode, "a registered Director that never connected to the tunnel", still
+/// surfaces in machineErrors, so that coverage is preserved with the new trigger.)
 /// </summary>
 public sealed class SessionsAggregationTests : IAsyncLifetime
 {
+    private const string Token = "test-token";
+
     private GatewayHost _gateway = null!;
     private HttpClient _http = null!;
-    private readonly List<FakeDirector> _fakes = new();
+    private readonly List<Fake> _fakes = new();
 
     // Isolated discovery dir so a real Director running on the dev machine never leaks
     // its sessions into these aggregation assertions.
@@ -38,19 +42,21 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _gateway = new GatewayHost(port: FreePort(), token: "test-token", authEnabled: true,
+        _gateway = new GatewayHost(port: FreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
             workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
-            snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"));
+            snoozePath: Path.Combine(_instancesDir, "snooze", "snooze.json"),
+            streamMode: true);
         await _gateway.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
+        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Token);
     }
 
     public async Task DisposeAsync()
     {
         _http.Dispose();
-        foreach (var f in _fakes) await f.DisposeAsync();
+        foreach (var f in _fakes)
+            if (f.Tunnel is not null) await f.Tunnel.DisposeAsync();
         await _gateway.StopAsync();
         try { if (Directory.Exists(_instancesDir)) Directory.Delete(_instancesDir, true); }
         catch { }
@@ -277,11 +283,14 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
     [Fact]
     public async Task Failed_director_surfaces_in_machine_errors_envelope()
     {
+        // GOOD is tunnel-connected and pushes a session; BAD is registered but never connects to the tunnel
+        // (no fresh push). Post-cut that unconnected Director is the failure mode - it must surface in
+        // machineErrors, never be dropped silently.
         var good = await StartFake("GOOD", "alice", new[]
         {
             Sample("g1", "ClaudeCode", "repo", "Idle", "green"),
         });
-        var bad = await StartFake("BAD", "alice", sessions: null, alwaysError: true);
+        var bad = await StartFake("BAD", "alice", sessions: null, connected: false);
         await Register(good);
         await Register(bad);
 
@@ -297,9 +306,10 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
     [Fact]
     public async Task Flat_response_drops_failed_directors_silently()
     {
-        // Backward-compat path. DirectorView still consumes the flat shape.
+        // Backward-compat path. DirectorView still consumes the flat shape. BAD is registered but never
+        // tunnel-connected, so it contributes no sessions and does not appear in the flat array.
         var good = await StartFake("GOOD", "alice", new[] { Sample("g1", "ClaudeCode", "repo", "Idle", "green") });
-        var bad = await StartFake("BAD", "alice", sessions: null, alwaysError: true);
+        var bad = await StartFake("BAD", "alice", sessions: null, connected: false);
         await Register(good);
         await Register(bad);
 
@@ -469,17 +479,19 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         var first = Assert.Single(await GetSessions()).NeedsYouSince;
         Assert.NotNull(first);
 
-        // A new turn starts: leaves red -> NeedsYouSince must go null.
+        // A new turn starts: leaves red -> NeedsYouSince must go null. The Director re-pushes the changed row.
         session.StatusColor = "blue";
         session.ActivityState = "Working";
+        await fake.Tunnel!.PushSnapshotAsync(session);
         var between = Assert.Single(await GetSessions()).NeedsYouSince;
         Assert.Null(between);
 
         await Task.Delay(50);
 
-        // Episode 2: returns to red -> a strictly-later stamp than episode 1.
+        // Episode 2: returns to red -> a strictly-later stamp than episode 1. Re-push the red row.
         session.StatusColor = "red";
         session.ActivityState = "WaitingForInput";
+        await fake.Tunnel!.PushSnapshotAsync(session);
         var second = Assert.Single(await GetSessions()).NeedsYouSince;
         Assert.NotNull(second);
         Assert.True(second!.Value > first!.Value,
@@ -503,27 +515,13 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
 
     // ---------- owner-cache pruning on observed exit (issue #291) ----------
 
-    [Fact]
-    public async Task Aggregator_prunes_owner_cache_for_session_no_longer_live_on_reachable_director_then_ws_proxy_is_404()
-    {
-        // A reachable Director that reports only "live". The cache still holds an OLD session "gone"
-        // attributed to this Director (it was seen on a prior poll, then exited). After the aggregator
-        // observes the Director's current live set, "gone" must be pruned, so the per-session WS proxy
-        // answers 404 (session gone) instead of #288's 503 (owner offline).
-        var fake = await StartFake("M", "u", new[] { Sample("live", "ClaudeCode", "r", "Idle", "green") });
-        await Register(fake);
-        _gateway.SessionOwners.Remember("gone", fake.DirectorId);
-        Assert.Equal(fake.DirectorId, _gateway.SessionOwners.OwnerOf("gone"));
-
-        // Drive one aggregation: the reachable Director reports "live" only -> "gone" is reconciled out.
-        await GetSessions();
-
-        Assert.Null(_gateway.SessionOwners.OwnerOf("gone"));
-
-        // The WS proxy now sees no cached owner and no live owner -> 404, not 503.
-        var resp = await _http.GetAsync("sessions/gone/stream");
-        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
-    }
+    // Gateway Cleanup (the cut) DELETED test:
+    // Aggregator_prunes_owner_cache_for_session_no_longer_live_on_reachable_director_then_ws_proxy_is_404.
+    // Its premise - the owner-cache prune flips the per-session WS proxy from #288's 503 (owner offline) to a
+    // 404 (session gone) - is deleted machinery. The WS proxy now resolves ONLY from the push store
+    // (PushedSessionStore.TryLocate): a session not in a fresh push is 503 "not connected", never 404, and the
+    // SessionOwnerCache is no longer consulted for that decision (nothing reads OwnerOf in production). So the
+    // 404 outcome the test asserted no longer exists by design.
 
     [Fact]
     public async Task Aggregator_prune_does_not_touch_a_session_owned_by_a_different_offline_director()
@@ -678,9 +676,16 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
         return sessions.Where(s => fakeIds.Contains(s.DirectorId)).ToList();
     }
 
-    private async Task Register(FakeDirector fake, string? tailnetOverride = null)
+    /// <summary>
+    /// Register the fake's identity in the Gateway registry - the fields the aggregation enriches from
+    /// (machine / user / tailnet endpoint) - then deliver its sessions over the tunnel (the ONLY roster source
+    /// post-cut). The endpoint is never dialed, so it only has to be a well-formed URL for the
+    /// TailnetEndpoint / ViewUrl derivation; <paramref name="tailnetOverride"/> exercises the trailing-slash path.
+    /// A not-connected fake pushes nothing, so it surfaces as a machineError.
+    /// </summary>
+    private async Task Register(Fake fake, string? tailnetOverride = null)
     {
-        var req = new DirectorRegistrationRequest
+        _gateway.Registry.Upsert(new DirectorRegistrationRequest
         {
             DirectorId = fake.DirectorId,
             TailnetEndpoint = tailnetOverride ?? fake.BaseUrl,
@@ -689,29 +694,40 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
             User = fake.User,
             Version = "test",
             StartedAt = DateTime.UtcNow,
-        };
-        var resp = await _http.PostAsJsonAsync("directors/register", req);
-        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        });
+
+        if (fake.Connected && fake.Tunnel is not null && fake.Sessions is not null)
+            await fake.Tunnel.PushSnapshotAsync(fake.Sessions);
     }
 
-    private async Task<FakeDirector> StartFake(string machine, string user, SessionDto[]? sessions, bool alwaysError = false)
+    private async Task<Fake> StartFake(string machine, string user, SessionDto[]? sessions, bool connected = true)
     {
-        var fake = new FakeDirector(machine, user, sessions, alwaysError);
-        await fake.StartAsync();
+        var fake = new Fake
+        {
+            DirectorId = Guid.NewGuid().ToString(),
+            MachineName = machine,
+            User = user,
+            // A plausible advertised endpoint that is NEVER dialed - the roster comes from the push store, so a
+            // working result proves the tunnel (tunnel-by-construction).
+            BaseUrl = $"http://127.0.0.1:{FreePort()}",
+            Sessions = sessions,
+            Connected = connected,
+        };
+        if (connected)
+            fake.Tunnel = await FakeTunnelDirector.StartAsync(_gateway, Token, fake.DirectorId, machine);
         _fakes.Add(fake);
         return fake;
     }
 
     /// <summary>
-    /// Issue #335: start a FakeDirector whose sessions already carry the four identity
-    /// fields (machineName, user, tailnetEndpoint, viewUrl) pre-populated - simulating a
-    /// new-version Director that populated them itself. The Gateway aggregation pass must
-    /// NOT overwrite these Director-supplied values with its own derived ones.
+    /// Issue #335: start a tunnel-connected fake whose sessions already carry the four identity fields
+    /// (machineName, user, tailnetEndpoint, viewUrl) pre-populated - simulating a new-version Director that
+    /// populated them itself. The Gateway aggregation pass must NOT overwrite these Director-supplied values.
     /// </summary>
-    private async Task<FakeDirector> StartFakeWithPrePopulatedIdentity(
+    private async Task<Fake> StartFakeWithPrePopulatedIdentity(
         string machine, string user, string tailnetEndpoint, string viewUrl, SessionDto[]? sessions)
     {
-        // Stamp the identity fields onto every session before the fake serves them.
+        // Stamp the identity fields onto every session before the fake pushes them.
         if (sessions is not null)
         {
             foreach (var s in sessions)
@@ -722,10 +738,7 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
                 s.ViewUrl = viewUrl;
             }
         }
-        var fake = new FakeDirector(machine, user, sessions, alwaysError: false);
-        await fake.StartAsync();
-        _fakes.Add(fake);
-        return fake;
+        return await StartFake(machine, user, sessions);
     }
 
     private static SessionDto Sample(string sid, string agent, string repo, string state, string color) => new()
@@ -749,67 +762,19 @@ public sealed class SessionsAggregationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Minimal Kestrel host that pretends to be a Director's Control API.
-    /// Only implements the surface the Gateway aggregator touches: GET /sessions.
+    /// A registered Director stand-in for the aggregation. Post-cut it delivers its roster ONLY over the tunnel
+    /// (via <see cref="FakeTunnelDirector"/>); its advertised endpoint (<see cref="BaseUrl"/>) is never dialed.
+    /// A not-<see cref="Connected"/> fake never opens the tunnel and never pushes, so the Gateway surfaces it as
+    /// a machineError (not tunnel-connected).
     /// </summary>
-    private sealed class FakeDirector : IAsyncDisposable
+    private sealed class Fake
     {
-        public string DirectorId { get; } = Guid.NewGuid().ToString();
-        public string MachineName { get; }
-        public string User { get; }
-        public string BaseUrl { get; private set; } = "";
-
-        private readonly SessionDto[]? _sessions;
-        private readonly bool _alwaysError;
-        private WebApplication? _app;
-
-        public FakeDirector(string machine, string user, SessionDto[]? sessions, bool alwaysError)
-        {
-            MachineName = machine;
-            User = user;
-            _sessions = sessions;
-            _alwaysError = alwaysError;
-        }
-
-        public async Task StartAsync()
-        {
-            var port = FreePort();
-            BaseUrl = $"http://127.0.0.1:{port}";
-
-            var builder = WebApplication.CreateBuilder(new WebApplicationOptions
-            {
-                ApplicationName = "FakeDirector",
-            });
-            builder.WebHost.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
-            builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, port));
-            builder.Logging.ClearProviders();
-            builder.Services.AddRoutingCore();
-
-            _app = builder.Build();
-            _app.UseRouting();
-            _app.MapGet("/sessions", () =>
-            {
-                if (_alwaysError) return Results.StatusCode(500);
-                return Results.Json(_sessions ?? Array.Empty<SessionDto>());
-            });
-            _app.MapGet("/sessions/{sid}", (string sid) =>
-            {
-                if (_alwaysError) return Results.StatusCode(500);
-                var s = _sessions?.FirstOrDefault(x => x.SessionId == sid);
-                return s is null ? Results.NotFound() : Results.Json(s);
-            });
-
-            await _app.StartAsync();
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_app is not null)
-            {
-                try { await _app.StopAsync(TimeSpan.FromSeconds(2)); } catch { }
-                await _app.DisposeAsync();
-                _app = null;
-            }
-        }
+        public string DirectorId { get; init; } = "";
+        public string MachineName { get; init; } = "";
+        public string User { get; init; } = "";
+        public string BaseUrl { get; init; } = "";
+        public SessionDto[]? Sessions { get; init; }
+        public bool Connected { get; init; }
+        public FakeTunnelDirector? Tunnel { get; set; }
     }
 }

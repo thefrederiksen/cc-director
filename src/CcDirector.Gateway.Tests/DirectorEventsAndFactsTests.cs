@@ -39,7 +39,8 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
 
         _gateway = new GatewayHost(port: AllocateFreePort(), token: Token, authEnabled: true,
             instancesDirectory: _instancesDir,
-            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"));
+            workListsPath: Path.Combine(_instancesDir, "worklists", "worklists.json"),
+            streamMode: true);
         await _gateway.StartAsync();
 
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_gateway.Port}/") };
@@ -132,14 +133,37 @@ public sealed class DirectorEventsAndFactsTests : IAsyncLifetime
     [Fact]
     public async Task Facts_Proxy_ReturnsToolInventoryAndLauncherFact()
     {
-        var facts = await _http.GetFromJsonAsync<DirectorFactsDto>($"directors/{_director.DirectorId}/facts");
+        // Gateway Cleanup mission (the cut): /directors/{id}/facts rides the tunnel ("facts" verb,
+        // director-level). A tunnel-connected Director registered UNREACHABLE answers with a
+        // DirectorFactsDto, so a working body could only have come over the tunnel. The Director-side
+        // facts core (the embedded catalog inventory + launcher probe) is exercised by its own executor
+        // tests; here the route -> verb -> DTO-shape contract is what is observable.
+        const string factsDir = "dir-facts-330";
+        await using var fake = await FakeTunnelDirector.StartAsync(_gateway, Token, factsDir, dispatch: cmd => cmd.Verb switch
+        {
+            "facts" => FakeTunnelDirector.Ok(new DirectorFactsDto
+            {
+                DirectorId = factsDir,
+                MachineName = "facts-machine",
+                Version = "1.0.0-test",
+                Tools = new List<ToolInventoryItemDto>
+                {
+                    new() { Name = "cc-vault", Category = "Vault", Version = "1.2.3", IsBuilt = true },
+                },
+                Launcher = new LauncherFactDto { Installed = false }, // "not installed" is a valid fact
+            }),
+            _ => DirectorCommandResult.Fail(DirectorCommandStatus.BadRequest, $"unexpected verb {cmd.Verb}"),
+        });
+
+        var facts = await _http.GetFromJsonAsync<DirectorFactsDto>($"directors/{factsDir}/facts");
 
         Assert.NotNull(facts);
-        Assert.Equal(_director.DirectorId, facts.DirectorId);
+        Assert.Equal(factsDir, facts!.DirectorId);
         Assert.Equal("1.0.0-test", facts.Version);
-        Assert.NotEmpty(facts.Tools); // the embedded catalog manifest always has tools
+        Assert.NotEmpty(facts.Tools);
         Assert.All(facts.Tools, t => Assert.False(string.IsNullOrEmpty(t.Name)));
         Assert.NotNull(facts.Launcher); // "not installed" is a valid fact, never a missing one
+        Assert.Equal("facts", fake.LastCommand?.Verb);
     }
 
     [Fact]
