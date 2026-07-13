@@ -7,7 +7,12 @@
 // speech-to-text front door), the voice is POST /wingman/tts (the one good voice, raw audio bytes).
 // The brain is the new POST /carmode/turn (built in Phase 2). Every call fails LOUD and specific -
 // no silent stall, no guess (decision 8).
-import { authHeaders, creditsErrorFrom, GatewayError } from "../api/client";
+import { authHeaders, creditsErrorFrom, gatewayFetch, GatewayError } from "../api/client";
+
+// Car Mode's transcribe / brain / speak calls route through gatewayFetch (NOT a raw fetch) so every
+// contact feeds the ONE app-wide connection-health signal (connection/health.ts): a thrown fetch or a
+// front-proxy 502/503/504 flips the shared "bad connection" state, and any answered request clears it.
+// Before Phase 4a these used raw fetch and the health store was blind to all Car Mode traffic (#1427).
 
 /**
  * Transcribe a captured utterance through the single Gateway speech-to-text front door
@@ -19,7 +24,7 @@ import { authHeaders, creditsErrorFrom, GatewayError } from "../api/client";
 export async function transcribeCarModeAudio(wav: Blob, signal?: AbortSignal): Promise<string> {
   const form = new FormData();
   form.append("audio", wav, "carmode.wav");
-  const res = await fetch("/wingman/transcribe", {
+  const res = await gatewayFetch("/wingman/transcribe", {
     method: "POST",
     headers: { ...authHeaders() },
     body: form,
@@ -41,7 +46,7 @@ export async function transcribeCarModeAudio(wav: Blob, signal?: AbortSignal): P
  * A 402 is the shared credits error; any other non-2xx throws a specific GatewayError.
  */
 export async function speakCarModeText(text: string, signal?: AbortSignal): Promise<Blob> {
-  const res = await fetch("/wingman/tts", {
+  const res = await gatewayFetch("/wingman/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ text }),
@@ -97,7 +102,7 @@ export interface CarModeTurnResult {
  * credits error; any other non-2xx throws a specific GatewayError so the failure is spoken, never silent.
  */
 export async function carModeTurn(text: string, signal?: AbortSignal): Promise<CarModeTurnResult> {
-  const res = await fetch("/carmode/turn", {
+  const res = await gatewayFetch("/carmode/turn", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...authHeaders() },
     body: JSON.stringify({ text }),

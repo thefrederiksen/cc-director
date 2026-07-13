@@ -12,7 +12,22 @@ import {
   type CarModeAction,
   type CarModeServerTiming,
 } from "./carModeApi";
-import { gatewayErrorMessage } from "../api/client";
+import {
+  deletePendingTurn,
+  getPendingTurn,
+  listPendingTurns,
+  savePendingTurn,
+  type PendingCarModeTurn,
+} from "./pendingTurnStore";
+import {
+  AMBIGUOUS_HELD_MESSAGE,
+  CONNECTION_DOWN_MESSAGE,
+  classifyHeldTurn,
+  HOLDING_MESSAGE,
+  nextTurnRetryDelayMs,
+  RECOVERY_PREFIX,
+} from "./turnRetry";
+import { CreditsError, gatewayErrorMessage } from "../api/client";
 
 // The Car Mode turn-taking machine (v3: button-first, mic never touched during playback). This shared hook
 // owns the whole walkie-talkie loop so the page is a thin view (decision 6).
@@ -128,8 +143,30 @@ export interface CarModeView {
    *  owner SEE what the phone heard). Empty until the first transcription of the current turn. */
   lastHeard: string;
   /** A short capture/transcription state for the debug readout ("listening", "transcribing",
-   *  'heard: "..."', "thinking", "speaking", "interrupt"). */
+   *  'heard: "..."', "thinking", "speaking", "interrupt", "held"). */
   captureState: string;
+  // ----- Offline resilience (mission Phase 4a, issue #1427) -------------------------------------------
+  /** True while one or more of the owner's spoken requests are SAVED on the device and waiting to send
+   *  (a dead zone). Never a loss: the audio is durable and auto-retries when the connection returns. */
+  holding: boolean;
+  /** How many spoken requests are currently saved-and-waiting on the device. */
+  heldCount: number;
+  /** The honest, saved-not-lost line to show/say for the current held state, or null when nothing is held.
+   *  Distinct from `error` (a loud red failure): holding is a calm "saved, will send" state. */
+  holdMessage: string | null;
+  /** The oldest held turn that cannot be auto-fired and needs the owner's explicit choice, or null.
+   *  `reason` is "stale" (never sent to the brain but older than the auto-fire cap - safe to send on the
+   *  owner's yes) or "ambiguous" (already sent to the brain, result unknown - can only be discarded in
+   *  Phase 4a, since a blind resend could act twice; Phase 4b's idempotency key makes resend safe). */
+  askOwnerTurn: { id: string; transcript: string; reason: "stale" | "ambiguous" } | null;
+  /** True once the hands-free end-phrase watch has failed to reach the Gateway several times in a row, so
+   *  the page can show the connection is down (paired with the spoken CONNECTION_DOWN cue). */
+  connectionDown: boolean;
+  /** Owner explicitly sends a "stale" held turn now (safe: it never reached the brain). A no-op for an
+   *  ambiguous held turn (resend is unsafe until Phase 4b) or an unknown id. */
+  sendHeldTurn: (id: string) => void;
+  /** Owner explicitly discards a held turn, dropping its saved audio for good. */
+  discardHeldTurn: (id: string) => void;
   /** The last transcription error line, or null when none. Distinct from `error` (the loud user-facing
    *  failure); this is the raw diagnostic detail from a background probe. */
   captureError: string | null;
@@ -170,6 +207,11 @@ const DEFAULT_END_PHRASE = "over and out";
 // (measured 9/9 on "over and out") instead of guessing when the owner paused. The touch button is the
 // instant path; this is the hands-free path, ~1s felt delay after the phrase (owner-accepted).
 const END_PHRASE_POLL_MS = 800;
+// How many consecutive failed end-phrase transcribe ticks (each ~800 ms) before Car Mode audibly tells
+// the owner the connection is down, so a dead zone never silently swallows his "over and out" forever
+// (the silent-stall fix). Four ticks is ~3 seconds - long enough to ride out a single blip, short enough
+// that a real dead zone is announced quickly.
+const END_PHRASE_FAIL_THRESHOLD = 4;
 
 /** Whether this browser can capture audio for Car Mode. Car Mode is Chromium-first (decision 7); elsewhere
  *  the page tells the owner plainly instead of silently degrading (no fallback, decision 8). */
@@ -177,6 +219,12 @@ function isCaptureSupported(): boolean {
   if (typeof navigator === "undefined" || typeof window === "undefined") return false;
   const md = navigator.mediaDevices as MediaDevices | undefined;
   return Boolean(md && md.getUserMedia) && typeof MediaRecorder !== "undefined";
+}
+
+/** True when the browser reports it is offline. A cheap pre-check so the retry driver does not burn a
+ *  transcribe round trip into a known-dead network; the real classification still comes from gatewayFetch. */
+function isOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
 }
 
 // A tiny, silent WAV clip (a valid RIFF/WAVE header with zero audio samples) used ONLY to unlock the
@@ -230,6 +278,12 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const [captureError, setCaptureError] = useState<string | null>(null);
   const unsupported = !isCaptureSupported();
 
+  // Offline resilience (Phase 4a): the held-turn state the page shows, plus the connection-down flag the
+  // end-phrase watch raises. `heldTurns` mirrors the durable store, refreshed after every store mutation.
+  const [heldTurns, setHeldTurns] = useState<PendingCarModeTurn[]>([]);
+  const [holdMessage, setHoldMessage] = useState<string | null>(null);
+  const [connectionDown, setConnectionDown] = useState(false);
+
   // Long-lived collaborators, held in refs so the effect wiring never re-creates them mid-session.
   const recorderRef = useRef<MicRecorder | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -261,6 +315,24 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   const endPollRef = useRef<number | null>(null);
   const endPollBusyRef = useRef(false);
   const endTickRef = useRef<() => void>(() => {});
+
+  // Offline resilience (Phase 4a) refs. currentRecordIdRef is the durable id of the turn in flight, so a
+  // brain success can delete exactly that record. The drive* refs run the background re-drive of held
+  // audio: drivingRef single-flights it, driveTimerRef holds the cadence timer, driveAttemptRef is the
+  // backoff step, and driveTickRef breaks the scheduleDrive <-> driveHeldTurns callback cycle (the same
+  // ref-indirection the end-phrase watch uses). endFailCountRef + connDownAnnouncedRef drive the silent-
+  // stall fix: after several failed end-phrase ticks the connection-down cue is spoken once.
+  const currentRecordIdRef = useRef<string | null>(null);
+  const drivingRef = useRef(false);
+  const driveTimerRef = useRef<number | null>(null);
+  const driveAttemptRef = useRef(0);
+  const driveTickRef = useRef<() => void>(() => {});
+  const endFailCountRef = useRef(0);
+  const connDownAnnouncedRef = useRef(false);
+  // The connectivity listeners installed while Car Mode is open, held so stop()/unmount can remove exactly
+  // them: a re-drive of held turns is kicked the instant the network returns or the app is foregrounded.
+  const onlineHandlerRef = useRef<(() => void) | null>(null);
+  const visibilityHandlerRef = useRef<(() => void) | null>(null);
 
   // The phase, read synchronously inside the loop/timer callbacks (not a React render). A ref mirror
   // avoids a stale closure so the machine always branches on the CURRENT phase.
@@ -361,13 +433,11 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     playbackStopRef.current?.();
   }, []);
 
-  // Announce a failure LOUDLY (decision 8). The failure is put on screen AND spoken through the browser's
-  // local speech synthesis - deliberately NOT the Gateway voice, because the most common failure (an
-  // offline / out-of-credit Gateway) is exactly when POST /wingman/tts is also down, and a spoken failure
-  // must still be heard eyes-free. Used ONLY to announce failures, never the assistant's normal replies.
-  const announceError = useCallback((message: string) => {
-    setError(message);
-    console.log(`[CarMode] FAILURE: ${message}`);
+  // Speak a short line through the browser's LOCAL speech synthesis - deliberately NOT the Gateway voice,
+  // because the states this is used for (a failure, or an offline/holding state) are exactly when
+  // POST /wingman/tts is also unreachable, and the line must still be heard eyes-free. Best-effort: a
+  // synthesis hiccup never throws into the turn loop.
+  const speakLocal = useCallback((message: string) => {
     try {
       const synth = (window as unknown as { speechSynthesis?: SpeechSynthesis }).speechSynthesis;
       if (synth) {
@@ -375,7 +445,26 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         synth.speak(new SpeechSynthesisUtterance(message));
       }
     } catch {
-      // Local synthesis is a courtesy on top of the on-screen error; never let it throw into the loop.
+      // Local synthesis is a courtesy on top of the on-screen state; never let it throw into the loop.
+    }
+  }, []);
+
+  // Announce a failure LOUDLY (decision 8): on screen AND spoken locally. Used ONLY for true failures,
+  // never the assistant's normal replies and never the calm "saved, will send" holding state (which uses
+  // holdMessage + speakLocal directly, not the red error surface).
+  const announceError = useCallback((message: string) => {
+    setError(message);
+    console.log(`[CarMode] FAILURE: ${message}`);
+    speakLocal(message);
+  }, [speakLocal]);
+
+  // Reload the held-turn list from the durable store into React state, so the page reflects exactly what
+  // is saved and waiting after every store mutation. Best-effort: an unreadable store shows nothing held.
+  const refreshHeldTurns = useCallback(async () => {
+    try {
+      setHeldTurns(await listPendingTurns());
+    } catch {
+      setHeldTurns([]);
     }
   }, []);
 
@@ -544,10 +633,233 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     [announceError, enterListening, playBlob, postTurnTelemetry, revokeClip, setPhaseBoth, stopThinkingCue],
   );
 
+  // ----- Offline resilience: holding, the audible states, and the background re-drive driver (Phase 4a) -
+
+  // Enter the HOLDING state after a transcribe failure (the brain call never started, so the durable
+  // record is brainSent=false and safe to auto-retry). This is NOT a red failure: the owner's speech is
+  // SAVED and will send when the connection returns. Say + show the calm held line, refresh the held list,
+  // hand the microphone back (the durable audio is safe, so restarting the live capture is fine now), and
+  // kick the retry driver so the cadence / online wait begins.
+  const enterHolding = useCallback(async () => {
+    stopThinkingCue();
+    setCaptureState("held");
+    setHoldMessage(HOLDING_MESSAGE);
+    speakLocal(HOLDING_MESSAGE);
+    await refreshHeldTurns();
+    await enterListening();
+    driveTickRef.current();
+  }, [stopThinkingCue, speakLocal, refreshHeldTurns, enterListening]);
+
+  // Clear the brain-sent mark on a held record back to auto-retriable. Used when a brain call failed for a
+  // reason that PROVES no action was taken (a money refusal: no credits means no model call and no tools),
+  // so the saved turn is safe to auto-retry when the cause clears - it is NOT the ambiguous "may have
+  // acted" case. Best-effort: a store hiccup just leaves the record marked ambiguous (still safe: it holds
+  // for the owner rather than firing blind).
+  const markAutoRetriable = useCallback(async (id: string) => {
+    try {
+      const r = await getPendingTurn(id);
+      if (r !== null) await savePendingTurn({ ...r, brainSent: false });
+    } catch {
+      // leave it as-is; the worst case is a held-for-owner turn instead of an auto one - never a double act
+    }
+    await refreshHeldTurns();
+  }, [refreshHeldTurns]);
+
+  // Enter the HELD-FOR-OWNER state after a brain-call failure whose result is unknown (the durable record
+  // is brainSent=true). It may have acted, so it is NOT auto-retried (a blind resend could act twice); it
+  // waits for the owner to discard it (Phase 4a) - Phase 4b's idempotency key will make an automatic
+  // resend safe. Say + show the honest ambiguous line and hand the microphone back.
+  const holdForOwner = useCallback(async () => {
+    stopThinkingCue();
+    setCaptureState("held");
+    setHoldMessage(AMBIGUOUS_HELD_MESSAGE);
+    speakLocal(AMBIGUOUS_HELD_MESSAGE);
+    await refreshHeldTurns();
+    await enterListening();
+  }, [stopThinkingCue, speakLocal, refreshHeldTurns, enterListening]);
+
+  // Re-drive ONE held command-audio record through the whole pipeline (transcribe -> brain -> speak),
+  // exactly like a live turn but announced with the "Back online" prefix so the owner knows this is the
+  // delayed answer to a request he made earlier (Architect Q3). The durable record is deleted ONLY after
+  // the brain call returns a definitive success (the turn is owned server-side); a failure keeps the audio
+  // and holds. brainSent is flipped true on the record right before the brain call, so a failure AFTER
+  // that point becomes held-for-owner (ambiguous), while a failure at transcribe stays auto-retriable.
+  const driveHeldTurn = useCallback(
+    async (rec: PendingCarModeTurn) => {
+      const recorder = recorderRef.current;
+      if (recorder === null) return;
+      // The mic must be the owner's and idle to take a recovered turn. Re-check here (not just in the
+      // caller) because a live "over and out" can fire during the driver's async gap - the phase would
+      // already be "thinking", and two turns must never run on one recorder/audio element.
+      if (phaseRef.current !== "listening") return;
+      // Reflect the recovered turn taking the turn, synchronously (responsive-first), same as a live end.
+      playReadyCue();
+      setPhaseBoth("thinking");
+      setCaptureState("thinking");
+      setHoldMessage(null);
+      stopThinkingCue();
+      thinkingCueStopRef.current = startThinkingCue();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      let sentBrain = false;
+      try {
+        // Stop + release the live microphone before Thinking/Speaking (v3 rule), so the recovered reply
+        // plays with getUserMedia released, just like a live reply.
+        try {
+          if (recorder.isRecording) await recorder.stop();
+        } catch {
+          // the segment is being torn down; nothing more to do
+        }
+
+        // Transcribe unless a prior attempt already cached the command text on the record.
+        let command = rec.transcript ?? null;
+        if (command === null) {
+          const { wav } = await blobToWav16kMono(rec.audio);
+          const transcript = (await transcribeCarModeAudio(wav, controller.signal)).trim();
+          const parsed = detectPhraseAtEnd(transcript, rec.endPhrase);
+          command = (parsed.ended ? parsed.command : transcript).trim();
+          try {
+            await savePendingTurn({ ...rec, transcript: command });
+          } catch {
+            // durable update failed; continue from the in-memory command this run
+          }
+        }
+        if (controller.signal.aborted) return;
+
+        if (command.length === 0) {
+          // The saved audio transcribed to nothing (noise): drop it rather than nagging the owner later.
+          await deletePendingTurn(rec.id);
+          await refreshHeldTurns();
+          await enterListening();
+          return;
+        }
+
+        setTranscript(command);
+        setLastHeard(command);
+        // Cross the brain boundary: a failure from here is ambiguous (may have acted).
+        try {
+          await savePendingTurn({ ...rec, transcript: command, brainSent: true });
+        } catch {
+          // durable update failed; the in-memory sentBrain flag below still routes the failure correctly
+        }
+        sentBrain = true;
+        turnMetricsRef.current = null; // re-drives are recovery, not part of the live performance telemetry
+
+        const answer = await respond(command, controller.signal);
+        if (controller.signal.aborted) return;
+        // The brain owns the turn: delete the durable record so it can never be re-driven / double-acted.
+        await deletePendingTurn(rec.id);
+        if (currentRecordIdRef.current === rec.id) currentRecordIdRef.current = null;
+        driveAttemptRef.current = 0; // a success resets the backoff so the next held turn retries hard
+        await refreshHeldTurns();
+
+        const spoken = answer.spoken.trim();
+        setReply(spoken);
+        setActions(answer.actions ?? []);
+        setPendingConfirmation(Boolean(answer.pendingConfirmation));
+        setHistory((prev) => [...prev, { command: command as string, spoken, actions: answer.actions ?? [] }]);
+        if (spoken.length === 0) {
+          await enterListening();
+          return;
+        }
+        // Speak the recovered answer with the "Back online" prefix so it is clearly the delayed reply.
+        await speakAndPlay(RECOVERY_PREFIX + spoken, controller.signal);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        stopThinkingCue();
+        console.log(`[CarMode] re-drive of a held turn failed: ${err instanceof Error ? err.message : String(err)}`);
+        // Keep the audio. A money refusal (402) proves nothing acted, so keep it auto-retriable and let the
+        // NEXT foreground / online / open re-drive it (no aggressive loop that a fast retry cannot fix). If
+        // the brain had already been sent for a non-credits reason, it is now ambiguous (held for the
+        // owner); otherwise the transcribe never reached the brain and it stays auto-retriable.
+        if (err instanceof CreditsError) {
+          await markAutoRetriable(rec.id);
+          setHoldMessage(HOLDING_MESSAGE);
+          await refreshHeldTurns();
+          await enterListening();
+        } else if (sentBrain) {
+          await holdForOwner();
+        } else {
+          setHoldMessage(HOLDING_MESSAGE);
+          await refreshHeldTurns();
+          await enterListening();
+          driveTickRef.current();
+        }
+      }
+    },
+    [refreshHeldTurns, enterListening, respond, speakAndPlay, setPhaseBoth, stopThinkingCue, holdForOwner, markAutoRetriable],
+  );
+
+  // Schedule the next automatic drive attempt on the retry cadence (hard for the first hour since the
+  // oldest auto-eligible turn was captured, then throttled - never stops). No-op when nothing is
+  // auto-eligible. Idempotent: a pending timer is not doubled.
+  const scheduleDrive = useCallback(() => {
+    if (driveTimerRef.current !== null) return;
+    void (async () => {
+      let all: PendingCarModeTurn[];
+      try {
+        all = await listPendingTurns();
+      } catch {
+        return;
+      }
+      const now = Date.now();
+      const auto = all
+        .filter((r) => classifyHeldTurn(r, now) === "auto")
+        .sort((a, b) => a.createdAt - b.createdAt)[0];
+      if (auto === undefined) return; // only ask-owner turns remain; they wait for the owner, not a timer
+      const delay = nextTurnRetryDelayMs(auto.createdAt, driveAttemptRef.current, now);
+      driveTimerRef.current = window.setTimeout(() => {
+        driveTimerRef.current = null;
+        driveAttemptRef.current += 1;
+        driveTickRef.current();
+      }, delay);
+    })();
+  }, []);
+
+  // Drive held turns when connectivity may have returned (the online event, app foreground, Start, and the
+  // cadence timer). Serialized: never while a live turn or another drive is in flight, never while the
+  // owner is mid-utterance (so a recovered answer cannot cut him off). Fires the oldest AUTO turn; any
+  // ask-owner turns are left surfaced in the UI for the owner's explicit choice.
+  const driveHeldTurns = useCallback(async () => {
+    if (drivingRef.current) return;
+    if (phaseRef.current !== "listening") return; // only when the microphone is the owner's and idle
+    const recorder = recorderRef.current;
+    // If the owner has already started talking this segment, defer so the drive cannot preempt him.
+    if (recorder !== null && recorder.snapshot().size >= MIN_CLIP_BYTES) {
+      scheduleDrive();
+      return;
+    }
+    let all: PendingCarModeTurn[];
+    try {
+      all = await listPendingTurns();
+    } catch {
+      return;
+    }
+    await refreshHeldTurns(); // keep the UI (ask-owner surface, held count) in sync every kick
+    const now = Date.now();
+    const auto = all
+      .filter((r) => classifyHeldTurn(r, now) === "auto")
+      .sort((a, b) => a.createdAt - b.createdAt)[0];
+    if (auto === undefined) return; // nothing safe to auto-fire
+    if (isOffline()) {
+      scheduleDrive(); // no point transcribing into a dead network; wait for online / the cadence
+      return;
+    }
+    drivingRef.current = true;
+    try {
+      await driveHeldTurn(auto);
+    } finally {
+      drivingRef.current = false;
+    }
+    scheduleDrive(); // continue draining any remaining auto turns on the cadence
+  }, [scheduleDrive, refreshHeldTurns, driveHeldTurn]);
+  // Point the scheduler's indirection ref at the latest driveHeldTurns (breaks the scheduleDrive cycle).
+  driveTickRef.current = () => void driveHeldTurns();
+
   // Take the turn: the command (already stripped of "over and out") is answered by the brain and the reply
   // is spoken. Guards against double-entry so a touch tap and a pause probe cannot both fire one turn.
   const takeTurn = useCallback(
-    async (command: string) => {
+    async (command: string, recordId: string | null) => {
       // v5: the screen is switched to Thinking SYNCHRONOUSLY in the endTurn tap handler (responsive-first),
       // so by the time this runs the phase is already "thinking" - guard on that (not "listening") so the
       // turn proceeds, while a second rapid tap is still a no-op (endTurn's own listening-guard blocks it).
@@ -571,13 +883,34 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
 
       try {
         if (trimmed.length === 0) {
-          // A forced turn with nothing heard: a canned nudge, no server turn, so no telemetry record.
+          // A forced turn with nothing heard: a canned nudge, no server turn, so no telemetry record. Drop
+          // any durable record too - saved noise is not worth holding or retrying.
           turnMetricsRef.current = null;
+          if (recordId !== null) {
+            try {
+              await deletePendingTurn(recordId);
+            } catch {
+              /* store hiccup; a later resume simply re-drops it */
+            }
+            if (currentRecordIdRef.current === recordId) currentRecordIdRef.current = null;
+            await refreshHeldTurns();
+          }
           await speakAndPlay("I didn't catch a request. Go ahead when you're ready.", controller.signal);
           return;
         }
         const brainStart = performance.now();
         const answer = await respond(trimmed, controller.signal);
+        // The brain owns the turn: delete the durable record so it can never be re-driven / double-acted.
+        if (recordId !== null) {
+          try {
+            await deletePendingTurn(recordId);
+          } catch {
+            /* store hiccup; the turn still succeeded, so a later resume re-drops it harmlessly */
+          }
+          if (currentRecordIdRef.current === recordId) currentRecordIdRef.current = null;
+          setHoldMessage(null);
+          await refreshHeldTurns();
+        }
         const spoken = answer.spoken.trim();
         // Fill the turn metrics the transcribe step started (same object via the ref), for telemetry.
         const metrics = turnMetricsRef.current;
@@ -601,24 +934,70 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         await speakAndPlay(spoken, controller.signal);
       } catch (err) {
         if (controller.signal.aborted) return; // stop()/interrupt aborted this turn on purpose
-        announceError(gatewayErrorMessage(err));
-        await enterListening();
+        // The brain call failed. A money refusal (402) proves nothing acted (no credits = no model call =
+        // no tools), so it is NOT ambiguous: announce the shared credits notice, keep the saved turn
+        // auto-retriable (it completes when credits return, on the next foreground / online), and hand the
+        // microphone back. Any OTHER failure with a durable record was marked brainSent=true, so its result
+        // is unknown - HOLD it for the owner (a blind resend could act twice). Without a durable record,
+        // fall back to the loud failure.
+        if (recordId !== null && err instanceof CreditsError) {
+          await markAutoRetriable(recordId);
+          announceError(err.message);
+          setHoldMessage(HOLDING_MESSAGE);
+          await enterListening();
+        } else if (recordId !== null) {
+          await holdForOwner();
+        } else {
+          announceError(gatewayErrorMessage(err));
+          await enterListening();
+        }
       }
     },
-    [respond, announceError, enterListening, speakAndPlay, setPhaseBoth],
+    [respond, announceError, enterListening, speakAndPlay, setPhaseBoth, holdForOwner, refreshHeldTurns, markAutoRetriable],
   );
 
   // Transcribe the audio captured so far and take the turn. This is the touch "Over and out" path, the
   // primary (and only) end-of-turn path in v3: the owner explicitly ended his turn, so a failure is
   // announced loudly. If he happened to say "over and out" it is stripped; otherwise the whole transcript is
   // the command (voice over-and-out is deferred - the button is the end path).
-  const transcribeAndTake = useCallback(async (prefetched?: { transcript: string; transcodeMs: number; pauseDetectedAt: number }) => {
+  const transcribeAndTake = useCallback(async (prefetched?: { transcript: string; transcodeMs: number; pauseDetectedAt: number; clip: Blob }) => {
     const rec = recorderRef.current;
     if (rec === null) return;
     // Time the command transcription from the tap so the telemetry shows how long the owner waits between
     // finishing and the brain starting. The voice end-phrase path already transcribed to DETECT the phrase,
     // so it passes its transcript + timings and we skip a second round trip.
     const pauseDetectedAt = prefetched ? prefetched.pauseDetectedAt : performance.now();
+
+    // Acquire the raw command audio for BOTH paths (the voice end-phrase path passes the very clip it
+    // transcribed). This is what gets persisted so speech is never lost.
+    const clip = prefetched ? prefetched.clip : rec.snapshot();
+    if (!prefetched && clip.size < MIN_CLIP_BYTES) {
+      void takeTurn("", null); // nothing captured: a canned nudge, no server turn, no durable record
+      return;
+    }
+
+    // Persist the command audio to the durable store BEFORE any transcribe, so a connection drop mid-turn
+    // can no longer lose the owner's speech (req a, #1427). brainSent=false marks it safe to auto-retry -
+    // the brain provably has not started yet.
+    const record: PendingCarModeTurn = {
+      id: crypto.randomUUID(),
+      audio: clip,
+      endPhrase: endPhraseRef.current,
+      createdAt: Date.now(),
+      brainSent: false,
+    };
+    let persisted = false;
+    try {
+      await savePendingTurn(record);
+      persisted = true;
+      currentRecordIdRef.current = record.id;
+      void refreshHeldTurns();
+    } catch {
+      // Durable storage genuinely unavailable (rare private-mode tab): continue best-effort on the live
+      // path; a transcribe failure then falls back to the loud error, since we cannot hold what we could
+      // not save (no fallback that silently drops the speech - it is announced).
+    }
+
     try {
       let transcript: string;
       let transcodeMs: number;
@@ -626,11 +1005,6 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         transcript = prefetched.transcript;
         transcodeMs = prefetched.transcodeMs;
       } else {
-        const clip = rec.snapshot();
-        if (clip.size < MIN_CLIP_BYTES) {
-          void takeTurn(""); // nothing captured: a canned nudge, no server turn
-          return;
-        }
         setCaptureState("transcribing");
         transcribeAttemptsRef.current += 1;
         // Measure the client-side transcode (phone CPU) separately from the transcribe round trip (network +
@@ -648,6 +1022,18 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       const parsed = detectPhraseAtEnd(transcript, endPhraseRef.current);
       const command = parsed.ended ? parsed.command : transcript;
       setCaptureState(`heard: "${transcript}"`);
+
+      // Transcription succeeded. Cache the command on the durable record and cross the brain boundary
+      // (brainSent=true) BEFORE the brain call: a failure from here on is ambiguous (held for the owner),
+      // while everything up to here stayed auto-retriable.
+      if (persisted) {
+        try {
+          await savePendingTurn({ ...record, transcript: command.trim(), brainSent: true });
+        } catch {
+          // durable update failed; the record stays brainSent=false. Worst case a later resume re-drives
+          // it as a fresh first brain call - still safe, and speech is never lost.
+        }
+      }
 
       // Seed the turn metrics the brain + speak steps fill, then take the turn. (v4: the "my turn" cue is
       // no longer fired here - it now fires SYNCHRONOUSLY in the endTurn tap handler, before this async
@@ -685,17 +1071,22 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
         footerVisible: false,
         posted: false,
       };
-      void takeTurn(command);
+      void takeTurn(command, persisted ? record.id : null);
     } catch (err) {
-      // The transcribe failed while we are already in Thinking (v5): silence the ambient cue and hand the
-      // microphone back to the owner so the screen does not stall on Thinking after a failure.
+      // The transcribe (or transcode) failed while we are already in Thinking (v5): silence the ambient
+      // cue. The brain never started, so the durable record is brainSent=false and safe to auto-retry:
+      // enter the calm HOLDING state (speech SAVED, not lost) instead of discarding the utterance. Without
+      // a durable record (no store) fall back to the loud failure, since there is nothing to hold.
       stopThinkingCue();
-      const msg = gatewayErrorMessage(err);
-      setCaptureError(msg);
-      announceError(msg);
-      await enterListening();
+      setCaptureError(gatewayErrorMessage(err));
+      if (persisted) {
+        await enterHolding();
+      } else {
+        announceError(gatewayErrorMessage(err));
+        await enterListening();
+      }
     }
-  }, [announceError, enterListening, stopThinkingCue, takeTurn]);
+  }, [announceError, enterListening, stopThinkingCue, takeTurn, refreshHeldTurns, enterHolding]);
 
   // The hands-free end-phrase tick: while Listening, re-transcribe the captured audio and, if it now ends
   // with the owner's sign-off phrase, take the turn (reusing the transcript so there is no second round
@@ -714,28 +1105,45 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       const { wav } = await blobToWav16kMono(clip);
       const transcodeMs = performance.now() - transcodeStart;
       const transcript = (await transcribeCarModeAudio(wav)).trim();
+      // This tick reached the Gateway: the connection is alive. Reset the silent-stall counter and clear
+      // the connection-down state / announce-once latch, so a recovered connection stops warning.
+      endFailCountRef.current = 0;
+      if (connDownAnnouncedRef.current) {
+        connDownAnnouncedRef.current = false;
+        setConnectionDown(false);
+      }
       // The owner may have tapped the button (or the session ended) during this ~1s transcribe: only commit
       // while STILL Listening, so the button and the watch can never both take one turn.
       if (phaseRef.current !== "listening") return;
       setLastHeard(transcript);
       if (!detectPhraseAtEnd(transcript, endPhraseRef.current).ended) return; // not done yet - keep listening
       // Heard the sign-off. Mirror the button's end-of-turn exactly: instant "my turn" cue, switch to
-      // Thinking, start the gentle working tone, stop the watch, then take the turn with the transcript we
-      // already have (transcribeAndTake reuses it and strips the phrase).
+      // Thinking, start the gentle working tone, stop the watch, then take the turn with the transcript AND
+      // the very clip we already transcribed (transcribeAndTake reuses both, persists the audio, strips the
+      // phrase).
       playReadyCue();
       setPhaseBoth("thinking");
       setCaptureState("thinking");
       stopThinkingCue();
       thinkingCueStopRef.current = startThinkingCue();
       stopEndPhraseWatch();
-      void transcribeAndTake({ transcript, transcodeMs, pauseDetectedAt: startedAt });
+      void transcribeAndTake({ transcript, transcodeMs, pauseDetectedAt: startedAt, clip });
     } catch (err) {
-      // A failed rolling transcribe must not kill the turn - skip this tick and try again next second.
+      // A failed rolling transcribe must not kill the turn - skip this tick and try again next second. But
+      // a dead zone must not silently swallow "over and out" forever: after several consecutive failures,
+      // say ONCE that the connection is down (the silent-stall fix). The owner's audio keeps accumulating
+      // locally the whole time, so nothing is lost - when the connection returns, his "over and out" lands.
+      endFailCountRef.current += 1;
+      if (endFailCountRef.current >= END_PHRASE_FAIL_THRESHOLD && !connDownAnnouncedRef.current) {
+        connDownAnnouncedRef.current = true;
+        setConnectionDown(true);
+        speakLocal(CONNECTION_DOWN_MESSAGE);
+      }
       console.log(`[CarMode] end-phrase watch skipped a tick: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       endPollBusyRef.current = false;
     }
-  }, [setPhaseBoth, stopThinkingCue, stopEndPhraseWatch, transcribeAndTake]);
+  }, [setPhaseBoth, stopThinkingCue, stopEndPhraseWatch, transcribeAndTake, speakLocal]);
   // Keep the interval (started in enterListening, before this tick is defined) pointing at the latest tick.
   endTickRef.current = endPhraseTick;
 
@@ -776,6 +1184,54 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
   // capture stream's AnalyserNode (display only) and returns 0 when the microphone is not capturing.
   const getMicLevel = useCallback(() => recorderRef.current?.level() ?? 0, []);
 
+  // Owner explicitly sends a "stale" held turn now (Architect Q2: a turn older than the auto-fire cap is
+  // surfaced for a yes). Safe ONLY because a stale held turn has brainSent=false - it never reached the
+  // brain, so this is a first brain call, no double-action. An ambiguous held turn (brainSent=true) is a
+  // no-op here: resend is unsafe until Phase 4b, so the UI only offers discard for it. Only drives while
+  // the microphone is the owner's and no other drive is running.
+  const sendHeldTurn = useCallback(
+    async (id: string) => {
+      if (drivingRef.current || phaseRef.current !== "listening") return;
+      let rec: PendingCarModeTurn | null;
+      try {
+        rec = await getPendingTurn(id);
+      } catch {
+        return;
+      }
+      if (rec === null || rec.brainSent) return; // gone, or ambiguous (resend unsafe in Phase 4a)
+      drivingRef.current = true;
+      try {
+        await driveHeldTurn(rec);
+      } finally {
+        drivingRef.current = false;
+      }
+    },
+    [driveHeldTurn],
+  );
+
+  // Owner explicitly discards a held turn, dropping its saved audio for good. Clears the held banner and
+  // the connection-down state when nothing is left waiting.
+  const discardHeldTurn = useCallback(
+    async (id: string) => {
+      try {
+        await deletePendingTurn(id);
+      } catch {
+        // store hiccup; a later resume simply re-drops it
+      }
+      if (currentRecordIdRef.current === id) currentRecordIdRef.current = null;
+      const remaining = await (async () => {
+        try {
+          return await listPendingTurns();
+        } catch {
+          return [];
+        }
+      })();
+      setHeldTurns(remaining);
+      if (remaining.length === 0) setHoldMessage(null);
+    },
+    [],
+  );
+
   const start = useCallback(async () => {
     if (started) return;
     if (unsupported) {
@@ -808,10 +1264,33 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     // sounds cleanly and does not churn the mobile audio session (which was ducking the spoken reply in v7).
     primeCueAudio();
 
+    // Offline resilience (Phase 4a): install the connectivity kickers so a held turn re-drives the instant
+    // the network returns or the app comes back to the foreground - not only on the cadence timer. On a
+    // kick the backoff resets to hard so recovery is immediate. Held both in refs so stop()/unmount removes
+    // exactly these listeners.
+    const onOnline = () => {
+      driveAttemptRef.current = 0;
+      driveTickRef.current();
+    };
+    const onVisible = () => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        driveAttemptRef.current = 0;
+        driveTickRef.current();
+      }
+    };
+    onlineHandlerRef.current = onOnline;
+    visibilityHandlerRef.current = onVisible;
+    if (typeof window !== "undefined") window.addEventListener("online", onOnline);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+    // Resume: surface (and, when the mic settles into Listening, auto-drive) any turns saved on a previous
+    // visit that never got delivered. refreshHeldTurns shows them now; driveTickRef drains the safe ones.
+    void refreshHeldTurns();
+    driveTickRef.current();
+
     // The turn ends hands-free when the rolling end-phrase watch hears the sign-off phrase, or instantly
     // when the owner taps "Over and out". The AnalyserNode drives the on-screen level meter (getMicLevel).
     await enterListening();
-  }, [started, unsupported, enterListening]);
+  }, [started, unsupported, enterListening, refreshHeldTurns]);
 
   const stop = useCallback(() => {
     console.log("[CarMode] stop");
@@ -825,6 +1304,26 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     stopEndPhraseWatch();
     // Release the shared cue audio channel opened at Start.
     releaseCueAudio();
+    // Offline resilience (Phase 4a): remove the connectivity kickers and cancel the retry cadence timer so
+    // nothing drives held turns after the owner leaves Car Mode. The saved AUDIO is deliberately kept in
+    // the durable store - it is never lost by ending the session - and re-surfaces next time Car Mode opens.
+    if (onlineHandlerRef.current !== null && typeof window !== "undefined") {
+      window.removeEventListener("online", onlineHandlerRef.current);
+      onlineHandlerRef.current = null;
+    }
+    if (visibilityHandlerRef.current !== null && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", visibilityHandlerRef.current);
+      visibilityHandlerRef.current = null;
+    }
+    if (driveTimerRef.current !== null) {
+      clearTimeout(driveTimerRef.current);
+      driveTimerRef.current = null;
+    }
+    driveAttemptRef.current = 0;
+    connDownAnnouncedRef.current = false;
+    endFailCountRef.current = 0;
+    setConnectionDown(false);
+    setHoldMessage(null);
     if (keepWarmRef.current !== null) {
       clearInterval(keepWarmRef.current);
       keepWarmRef.current = null;
@@ -858,6 +1357,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
       playbackStopRef.current?.();
       thinkingCueStopRef.current?.();
       if (keepWarmRef.current !== null) clearInterval(keepWarmRef.current);
+      // Offline resilience (Phase 4a): remove the connectivity kickers and cancel the retry cadence timer
+      // on unmount too (navigating away from Car Mode). The saved audio stays durable.
+      if (onlineHandlerRef.current !== null && typeof window !== "undefined")
+        window.removeEventListener("online", onlineHandlerRef.current);
+      if (visibilityHandlerRef.current !== null && typeof document !== "undefined")
+        document.removeEventListener("visibilitychange", visibilityHandlerRef.current);
+      if (driveTimerRef.current !== null) clearTimeout(driveTimerRef.current);
       try {
         recorderRef.current?.dispose();
       } catch {
@@ -876,6 +1382,21 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     };
   }, []);
 
+  // Derive the owner-facing held state from the store mirror. The oldest turn needing an explicit choice
+  // is surfaced as askOwnerTurn, tagged "stale" (never sent, safe to send on a yes) or "ambiguous" (sent
+  // to the brain, result unknown, discard-only in Phase 4a).
+  const now = Date.now();
+  const askOwnerRec = heldTurns
+    .filter((r) => classifyHeldTurn(r, now) === "ask-owner")
+    .sort((a, b) => a.createdAt - b.createdAt)[0];
+  const askOwnerTurn = askOwnerRec
+    ? {
+        id: askOwnerRec.id,
+        transcript: askOwnerRec.transcript ?? "",
+        reason: askOwnerRec.brainSent ? ("ambiguous" as const) : ("stale" as const),
+      }
+    : null;
+
   return {
     phase,
     started,
@@ -889,6 +1410,13 @@ export function useCarMode(options: UseCarModeOptions): CarModeView {
     lastHeard,
     captureState,
     captureError,
+    holding: heldTurns.length > 0,
+    heldCount: heldTurns.length,
+    holdMessage,
+    askOwnerTurn,
+    connectionDown,
+    sendHeldTurn: (id: string) => void sendHeldTurn(id),
+    discardHeldTurn: (id: string) => void discardHeldTurn(id),
     getMicLevel,
     endTurn,
     interrupt,
